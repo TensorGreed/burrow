@@ -109,6 +109,11 @@ jobs:
         with:
           command: check all
           arguments: --all-features
+      # cargo-deny sees Rust crates only. The native engines and everything they bundle
+      # are the other 82% of the shipped bytes, and they are checked here against
+      # ADR 0008's allowlist. Same job on purpose: one gate for the whole graph.
+      - name: engine licences (ADR 0008)
+        run: python3 tools/check-engine-licences.py
 
   audit:
     name: cargo-audit
