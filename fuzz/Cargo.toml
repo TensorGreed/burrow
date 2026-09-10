@@ -1,0 +1,25 @@
+# A separate workspace on purpose: cargo-fuzz requires it, and fuzzing needs nightly,
+# which the pinned stable toolchain in rust-toolchain.toml would otherwise override.
+# `fuzz` is listed in the root workspace's `exclude`.
+[package]
+name = "burrow-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+burrow-core = { path = "../core/burrow-core" }
+# libfuzzer-sys is added with the first real target in M1, when there is a parser to
+# fuzz. It needs nightly, so adding it now would break `cargo build` on stable.
+# libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "placeholder"
+path = "fuzz_targets/placeholder.rs"
+test = false
+doc = false
+bench = false

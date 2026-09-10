@@ -1,0 +1,16 @@
+[package]
+name = "burrow-core"
+description = "The public API surface of burrow: privacy-first, on-device file tools."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+burrow-types.workspace = true
+burrow-ops.workspace = true
+
+[lints]
+workspace = true

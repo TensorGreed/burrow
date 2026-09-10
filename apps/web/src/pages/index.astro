@@ -1,0 +1,44 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+// Tool pages land in M1, each at its own indexable URL. Listed here as the routes that
+// will exist, so the shape of the site is visible from the start.
+const plannedTools = [
+  { slug: "merge-pdf", name: "Merge PDF", blurb: "Combine several PDFs into one." },
+  { slug: "split-pdf", name: "Split PDF", blurb: "Split a PDF into separate documents." },
+  { slug: "rotate-pdf", name: "Rotate PDF", blurb: "Rotate pages in a PDF." },
+  { slug: "reorder-pdf", name: "Reorder PDF", blurb: "Rearrange the pages of a PDF." },
+  { slug: "compress-pdf", name: "Compress PDF", blurb: "Make a PDF smaller." },
+];
+---
+
+<BaseLayout
+  title="burrow — private file tools that run on your device"
+  description="Free, open-source PDF, image, and video tools. Your files are processed in your browser and never uploaded."
+>
+  <h1>Private file tools</h1>
+
+  <p>
+    burrow processes your files in your browser, using WebAssembly. Nothing is uploaded, there are
+    no accounts, and there is no tracking of what you open.
+  </p>
+
+  <p><strong>Status: pre-alpha.</strong> No tools work yet — this is the M1 milestone.</p>
+
+  <h2>Planned tools</h2>
+  <ul>
+    {
+      plannedTools.map((tool) => (
+        <li>
+          <strong>{tool.name}</strong> — {tool.blurb}
+        </li>
+      ))
+    }
+  </ul>
+
+  <p>
+    Source and roadmap: <a href="https://github.com/TensorGreed/burrow"
+      >github.com/TensorGreed/burrow</a
+    >
+  </p>
+</BaseLayout>

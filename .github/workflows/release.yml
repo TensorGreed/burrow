@@ -1,0 +1,96 @@
+name: Release
+
+# STUB — deliberately not wired up yet.
+#
+# There is nothing to release: burrow is pre-alpha (M0) with no working operations. This
+# file exists to record the intended shape of the release pipeline, so the decisions get
+# made before there is pressure to ship.
+#
+# Two things must be true before this is enabled, and neither is yet:
+#
+#   1. SBOM generation. Every release carries a CycloneDX SBOM covering Rust crates AND
+#      the vendored C/C++ engines (ADR 0004). cargo-cyclonedx handles the former; the
+#      latter needs the engine manifest that M1 introduces. A release without the native
+#      engines in its SBOM would be misleading, which is worse than having none.
+#
+#   2. Signed artifacts. Releases are signed with cosign keyless (OIDC), so the
+#      provenance chain is verifiable without us holding a key. This requires
+#      `id-token: write`, which is why permissions below are scoped per job.
+#
+# Until then: `workflow_dispatch` only, and it fails fast rather than producing an
+# unsigned, un-SBOM'd artifact that someone might mistake for a release.
+
+on:
+  workflow_dispatch:
+  # Enable when the checklist above is satisfied:
+  # push:
+  #   tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: not ready
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse to release
+        run: |
+          echo "Release pipeline is a stub. See the comment at the top of this file" >&2
+          echo "and docs/ROADMAP.md before enabling it." >&2
+          exit 1
+
+  # ---------------------------------------------------------------------------------
+  # Everything below is the planned shape, kept disabled via `if: false` so it is
+  # readable and reviewable without being runnable.
+  # ---------------------------------------------------------------------------------
+
+  sbom:
+    name: SBOM
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      # - run: cargo install --locked cargo-cyclonedx
+      # - run: cargo cyclonedx --all --format json
+      # - name: Merge in the native engine manifest (ADR 0004)
+      #   run: tools/sbom-merge.sh   # does not exist yet
+      # - uses: actions/upload-artifact@... # pin by SHA when enabled
+      - run: echo "planned; see file header"
+
+  build:
+    name: build ${{ matrix.target }}
+    if: false
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { target: wasm32-unknown-unknown, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-linux-android, os: ubuntu-latest }
+          - { target: armv7-linux-androideabi, os: ubuntu-latest }
+          - { target: aarch64-apple-ios, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: echo "planned; see file header"
+
+  sign:
+    name: sign and publish
+    if: false
+    needs: [sbom, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # cosign keyless signing via OIDC
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # - uses: sigstore/cosign-installer@...   # pin by SHA when enabled
+      # - name: Sign artifacts and SBOM
+      #   run: |
+      #     for f in artifacts/*; do cosign sign-blob --yes "$f" \
+      #       --output-signature "$f.sig" --output-certificate "$f.pem"; done
+      # - name: Publish release with checksums, signatures, and SBOM
+      #   run: gh release create "$GITHUB_REF_NAME" artifacts/* --verify-tag
+      - run: echo "planned; see file header"

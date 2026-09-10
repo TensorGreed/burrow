@@ -1,0 +1,27 @@
+[package]
+name = "burrow-engines"
+description = "Trait seams over the native engines burrow builds on (PDFium, qpdf, HarfBuzz, ...)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+burrow-types.workspace = true
+
+[lints.rust]
+# Relaxed from the workspace `forbid`: this crate wraps C/C++ engines. Every `unsafe`
+# block still needs a `// SAFETY:` comment. See CLAUDE.md.
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"

@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "core/burrow-types",
+    "core/burrow-engines",
+    "core/burrow-ops",
+    "core/burrow-core",
+    "bindings/burrow-ffi",
+    "bindings/burrow-wasm",
+]
+# `fuzz/` is its own workspace: cargo-fuzz requires that, and it needs nightly.
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/TensorGreed/burrow"
+authors = ["The burrow contributors"]
+
+[workspace.dependencies]
+burrow-types = { path = "core/burrow-types", version = "0.0.0" }
+burrow-engines = { path = "core/burrow-engines", version = "0.0.0" }
+burrow-ops = { path = "core/burrow-ops", version = "0.0.0" }
+burrow-core = { path = "core/burrow-core", version = "0.0.0" }
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# All input is hostile: nothing in library code may panic.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+integer_division = "deny"
+# Silent numeric truncation on attacker-controlled sizes is a real bug class.
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "unwind"  # never "abort": panics must be catchable at the FFI boundary
+
+[profile.release.package.burrow-wasm]
+opt-level = "z"

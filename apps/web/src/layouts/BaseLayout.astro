@@ -1,0 +1,55 @@
+---
+// The shell every page uses. Zero client-side JavaScript by itself: interactivity is
+// added per page by an island, never here.
+//
+// No third-party scripts, fonts, or analytics — on any page. See
+// docs/adr/0005-web-stack.md. A user with devtools open should see nothing leave.
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site ?? "http://localhost")} />
+  </head>
+  <body>
+    <header>
+      <a href="/">burrow</a>
+      <p>Private file tools. Your files never leave your device.</p>
+    </header>
+    <main>
+      <slot />
+    </main>
+    <footer>
+      <p>
+        Free and open source, <code>MIT OR Apache-2.0</code>. No accounts, no uploads, no tracking.
+      </p>
+    </footer>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    color-scheme: light dark;
+    font-family:
+      system-ui,
+      -apple-system,
+      "Segoe UI",
+      sans-serif;
+    line-height: 1.6;
+  }
+
+  body {
+    margin: 0 auto;
+    max-width: 46rem;
+    padding: 2rem 1rem;
+  }
+</style>

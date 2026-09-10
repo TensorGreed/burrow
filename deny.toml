@@ -1,0 +1,87 @@
+# cargo-deny configuration. This file is the machine-readable form of
+# non-negotiable #2 in CLAUDE.md: permissive licenses only.
+#
+#   cargo deny check                    # everything
+#   cargo deny check licenses           # just the allowlist
+#
+# Changing the `allow` list below is a licensing policy decision. It requires an ADR
+# amending docs/adr/0003-permissive-licensing.md, not just a commit.
+
+[graph]
+# Check every target we ship to, so a platform-specific GPL dependency cannot slip in
+# through a target we do not build on CI's host.
+targets = [
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "wasm32-unknown-unknown",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = true
+
+[licenses]
+# Anything not on this list fails the build. Note the absence of every GPL/LGPL/AGPL
+# variant, SSPL, and all non-commercial licenses.
+allow = [
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+]
+# A crate whose license we cannot determine is treated as forbidden ("anything unclear").
+unused-allowed-license = "allow"
+confidence-threshold = 0.93
+
+# Every exception must name the crate and the reason. Empty by design: prefer replacing
+# a dependency over granting it an exception.
+exceptions = []
+
+[licenses.private]
+# We do not publish the workspace crates to crates.io yet; do not require license text
+# resolution for our own `publish = false` crates.
+ignore = true
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+version = 2
+yanked = "deny"
+unmaintained = "all"
+# Empty by design. Adding an ID here means knowingly shipping a known vulnerability:
+# it needs a dated comment saying why, and an issue tracking its removal.
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Prefer a dependency graph we can actually audit.
+external-default-features = "allow"
+
+# Belt and braces alongside [licenses]: these are widely-pulled crates whose licensing
+# is incompatible with our policy, named explicitly so the failure message is obvious.
+deny = [
+    { crate = "openssl", reason = "OpenSSL 1.x licensing; use rustls (Apache-2.0/MIT/ISC) if TLS is ever needed" },
+    { crate = "openssl-sys", reason = "see openssl" },
+    { crate = "ring", reason = "custom non-OSI license; use a permissively licensed alternative" },
+]
+
+# Nothing in burrow may reach the network from a code path touching file content
+# (non-negotiable #1). These crates have no business in the dependency graph; if one
+# ever appears, that is a privacy review, not a routine dependency bump.
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

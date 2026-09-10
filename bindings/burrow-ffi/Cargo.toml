@@ -1,0 +1,33 @@
+[package]
+name = "burrow-ffi"
+description = "uniffi bindings for burrow: Swift (iOS) and Kotlin (Android)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+# `lib` keeps `cargo test` working; `cdylib`/`staticlib` are what the apps link against.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+burrow-core.workspace = true
+
+# uniffi is added in M3 (Android), when there is an API worth generating bindings for.
+# Adding it early would pin a version we have no tests against.
+# uniffi = { version = "0.29", features = ["cli"] }
+
+[lints.rust]
+# Relaxed from the workspace `forbid`: uniffi scaffolding generates `unsafe` code.
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"

@@ -1,0 +1,86 @@
+# --- Rust ---
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# --- cargo-fuzz ---
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+
+# --- Node / pnpm ---
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+
+# --- Astro / web build output ---
+apps/web/dist/
+apps/web/.astro/
+apps/web/.vercel/
+apps/web/.netlify/
+
+# --- WASM build output ---
+bindings/burrow-wasm/pkg/
+
+# --- Corpus: the manifest is tracked, the files are never committed ---
+# Test corpora can be large and can contain third-party or sensitive documents.
+# Fetch them with tools/corpus-fetch.sh using corpus/manifest.toml.
+corpus/files/
+corpus/cache/
+corpus/out/
+
+# --- Golden/regression run artifacts ---
+/tools/out/
+*.actual.pdf
+*.actual.png
+*.diff.png
+
+# --- Native engine build artifacts (M1) ---
+/vendor/**/build/
+/vendor/**/prebuilt/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.wasm.map
+
+# --- Android (M3) ---
+apps/android/.gradle/
+apps/android/build/
+apps/android/**/build/
+apps/android/local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# --- iOS / Xcode (M4) ---
+apps/ios/build/
+apps/ios/**/xcuserdata/
+apps/ios/**/*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+*.xcuserstate
+DerivedData/
+*.ipa
+*.dSYM.zip
+
+# --- Secrets: never committed, and unreadable by tooling. See .claude/settings.json ---
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision
+
+# --- Editors and OS ---
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
