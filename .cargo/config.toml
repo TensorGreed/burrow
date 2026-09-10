@@ -1,0 +1,37 @@
+# Linux link behaviour for the vendored native engines.
+#
+# WHY THIS FILE EXISTS
+# core/burrow-engines/build.rs emits `-lpdfium` and an absolute rpath. Cargo propagates
+# the `-l` to every downstream binary but NOT the rpath -- `rustc-link-arg` applies only
+# to the crate that emits it. So burrow-core's and burrow-ffi's test binaries acquire a
+# DT_NEEDED on libpdfium.so with no way to find it, and fail to start with
+# "error while loading shared libraries: libpdfium.so".
+#
+# `--as-needed` alone does not fix it: burrow-engines' rlib genuinely references FPDF_*
+# symbols, so the dependency is real wherever that rlib is linked.
+#
+# `$ORIGIN` resolves to the directory of the binary being run. build.rs copies the
+# checksum-verified libpdfium.so next to the test binaries, so every binary in the
+# workspace can load it -- from a copy of the pinned bytes, which the provenance test
+# verifies by hash rather than by path.
+#
+# `--disable-new-dtags` emits DT_RPATH instead of DT_RUNPATH. DT_RUNPATH is overridable
+# by LD_LIBRARY_PATH; DT_RPATH is not, so the pinned library cannot be shadowed by an
+# environment variable. This is dev/CI-only linkage (ADR 0004), so taking that
+# precedence away from the environment is exactly the intent.
+#
+# Scoped to the two Linux targets that are pinned. wasm, iOS and Android are untouched.
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+  "-C", "link-arg=-Wl,--as-needed",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN",
+  "-C", "link-arg=-Wl,--disable-new-dtags",
+]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+  "-C", "link-arg=-Wl,--as-needed",
+  "-C", "link-arg=-Wl,-rpath,$ORIGIN",
+  "-C", "link-arg=-Wl,--disable-new-dtags",
+]

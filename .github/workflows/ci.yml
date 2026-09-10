@@ -57,7 +57,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # The engines are a real build input from M1 PR 1 onward: `--all-features` turns on
+      # `native-engines`, which links libpdfium.so and libqpdf.a. Cached on the pin
+      # manifest and the build scripts, so an ordinary PR does not rebuild qpdf.
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+
+      # A cache hit restores engines/vendor without running fetch.sh, so re-verify the
+      # checksums rather than trusting the cache. build.rs checks libpdfium.so too; this
+      # covers the source tarballs as well.
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+
       - run: cargo test --workspace --all-features
+
+      # The engine tests are the riskiest part of the suite and are feature-gated, so a
+      # misconfiguration could silently drop them and still show green. Fail if they did
+      # not run. (This session has already been bitten twice by silent skips.)
+      - name: Assert the engine link tests actually ran
+        run: |
+          out=$(cargo test -p burrow-engines --all-features -- --list)
+          echo "$out"
+          n=$(printf '%s' "$out" | grep -c ': test$' || true)
+          if [ "$n" -lt 4 ]; then
+            echo "::error::expected at least 4 burrow-engines tests, found $n." >&2
+            echo "The native-engines feature is probably not taking effect." >&2
+            exit 1
+          fi
+          echo "burrow-engines tests discovered: $n"
+
       - name: doc tests and rustdoc warnings
         run: cargo doc --workspace --no-deps
         env:

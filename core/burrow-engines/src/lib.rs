@@ -18,6 +18,12 @@
     )
 )]
 
+// M1 PR 1: proof that the vendored native engines link and run. Not a public API and
+// not the real engine implementation -- that is PR 2. Only compiled when the engines are
+// actually available, which `build.rs` sets after verifying their checksums.
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+pub mod link_check;
+
 use burrow_types::{Limits, Result};
 
 /// A paged document engine: opens a document and reports its shape.

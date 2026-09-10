@@ -8,8 +8,33 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# Link the vendored native engines and enable the link-check tests.
+#
+# OFF by default on purpose. With it off, `cargo build`/`test` need no engines at all, so
+# a contributor can work on the rest of the workspace without a 28-second engine build,
+# and the wasm and mobile CI jobs stay untouched. CI's `test` job turns it on, with the
+# engine build cached on engines/pins.toml.
+#
+# Requires `engines/fetch.sh && engines/build-native.sh` to have run. If the libraries are
+# missing, build.rs FAILS -- it does not quietly skip. A test suite that silently drops
+# its riskiest half is worse than one that refuses to run.
+native-engines = []
+
 [dependencies]
 burrow-types.workspace = true
+
+[dev-dependencies]
+# The provenance test hashes whichever libpdfium the loader actually mapped, so it needs
+# the same digest the build script uses.
+sha2 = { version = "0.10", default-features = false }
+
+[build-dependencies]
+# For re-verifying the vendored libraries' checksums in build.rs. Shelling out to
+# sha256sum was the alternative and was rejected: a subprocess plus a PATH dependency in
+# a build script is worse than one small, ubiquitous crate.
+sha2 = { version = "0.10", default-features = false }
 
 [lints.rust]
 # Relaxed from the workspace `forbid`: this crate wraps C/C++ engines. Every `unsafe`

@@ -51,10 +51,12 @@ burrow itself is dual-licensed under [MIT](LICENSE-MIT) or
 dual-licensing upsell, and no paid tier — now or later.
 
 Every dependency must be permissively licensed (MIT, BSD-2/3, Apache-2.0, ISC, Zlib,
-MPL-2.0, or OFL for fonts). GPL, LGPL, AGPL, SSPL, non-commercial, and unclear licenses
-are rejected, and CI enforces this on every commit via
-[`cargo-deny`](deny.toml). See
-[ADR 0003](docs/adr/0003-permissive-licensing.md).
+MPL-2.0, OFL for fonts, and a short list of additional licenses carried by the bundled
+PDF engines). GPL, LGPL, AGPL, SSPL, non-commercial, and unclear licenses are rejected,
+and CI enforces this on every commit in two halves: [`cargo-deny`](deny.toml) for Rust
+crates, and [`engines/licenses.toml`](engines/licenses.toml) for the native engines and
+everything they bundle. See
+[ADR 0008](docs/adr/0008-widened-licence-allowlist.md).
 
 ## Contributing
 

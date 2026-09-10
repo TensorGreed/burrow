@@ -40,6 +40,17 @@ cargo build -p burrow-wasm --target wasm32-unknown-unknown
 cargo doc --workspace --no-deps   # RUSTDOCFLAGS="-D warnings" in CI
 ```
 
+Native engines (needed for `--all-features`; see `docs/adr/0004-native-engines.md`):
+
+```bash
+engines/fetch.sh              # pinned + checksum-verified; the ONLY network fetch
+engines/build-native.sh       # zlib, libjpeg-turbo, qpdf (+ an ASan/fuzzer variant)
+engines/build-wasm.sh         # the same engines for wasm
+python3 tools/check-engine-licences.py   # engines/licenses.toml vs ADR 0008
+
+cargo test --workspace --all-features    # links the engines; without --all-features it does not
+```
+
 Web (`apps/web/`):
 
 ```bash

@@ -22,6 +22,10 @@ cargo test -p burrow-types
 # the wasm target CI checks
 cargo build -p burrow-wasm --target wasm32-unknown-unknown
 
+# the native engines, behind the `native-engines` feature (default OFF)
+../engines/fetch.sh && ../engines/build-native.sh
+cargo test -p burrow-engines --features native-engines
+
 # fuzzing lives in its own workspace and needs nightly
 cargo +nightly fuzz run <target> -- -max_total_time=60
 ```
@@ -45,7 +49,13 @@ burrow-core   ← the public surface; the ONLY crate the bindings may depend on
   tiny and dependency-light.
 - **`burrow-engines`** — trait seams over PDFium, qpdf, HarfBuzz, and the codecs. Map
   every engine error code to a typed `Error` here; a raw code must never escape into
-  `burrow-ops`.
+  `burrow-ops`. The `native-engines` feature links the vendored libraries; it is **off by
+  default** so the rest of the workspace builds without them, and `build.rs` **fails**
+  rather than skipping if it is on and they are missing.
+  - **PDFium's library init is global and not re-entrant.** Two threads calling
+    `FPDF_InitLibrary` concurrently abort the process with `SIGTRAP` — measured, not
+    theoretical. Initialise once at process scope behind a `Once`, never per operation,
+    and do not call `FPDF_DestroyLibrary` while another thread might be inside PDFium.
 - **`burrow-ops`** — one module per operation. Takes and enforces `Limits`.
 - **`burrow-core`** — re-exports and the stable API. Adding to this surface means the
   bindings need updating too.
