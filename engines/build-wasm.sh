@@ -86,8 +86,10 @@ echo "   required entry points present"
 say "zlib + libjpeg-turbo for wasm"
 # Vendored, not Emscripten ports: the port shipped IJG libjpeg 9f while describing itself
 # as "BSD license", and using our own copies keeps native and wasm on the same versions.
-tar xzf "$vendor/zlib-1.3.2.tar.gz" -C "$src" 2>/dev/null || true
-tar xzf "$vendor/libjpeg-turbo-3.2.0.tar.gz" -C "$src" 2>/dev/null || true
+rm -rf "$src/zlib-1.3.2"
+tar xzf "$vendor/zlib-1.3.2.tar.gz" -C "$src"
+rm -rf "$src/libjpeg-turbo-3.2.0"
+tar xzf "$vendor/libjpeg-turbo-3.2.0.tar.gz" -C "$src"
 
 emcmake cmake -S "$src/zlib-1.3.2" -B "$src/build-zlib-wasm" \
   -DCMAKE_BUILD_TYPE=Release -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_TESTING=OFF \
@@ -106,7 +108,8 @@ echo "   libjpeg.a $(stat -c%s "$prefix/lib/libjpeg.a") bytes"
 
 # ---------------------------------------------------------------------------------
 say "qpdf 12.4.1 for wasm (native crypto only, exceptions enabled)"
-tar xzf "$vendor/qpdf-12.4.1.tar.gz" -C "$src" 2>/dev/null || true
+rm -rf "$src/qpdf-12.4.1"
+tar xzf "$vendor/qpdf-12.4.1.tar.gz" -C "$src"
 b="$src/build-qpdf-wasm"
 rm -rf "$b"
 # -fexceptions is MANDATORY: without it a qpdf throw aborts the whole module rather than

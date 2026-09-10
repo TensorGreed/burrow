@@ -1,29 +1,37 @@
-# Linux link behaviour for the vendored native engines.
+# Workspace rustflags. ONE source of truth on purpose.
 #
-# WHY THIS FILE EXISTS
-# core/burrow-engines/build.rs emits `-lpdfium` and an absolute rpath. Cargo propagates
-# the `-l` to every downstream binary but NOT the rpath -- `rustc-link-arg` applies only
-# to the crate that emits it. So burrow-core's and burrow-ffi's test binaries acquire a
-# DT_NEEDED on libpdfium.so with no way to find it, and fail to start with
-# "error while loading shared libraries: libpdfium.so".
+# DO NOT set the RUSTFLAGS environment variable anywhere -- in CI, in a shell profile, or
+# in a script. Cargo does not merge RUSTFLAGS with these tables: if the env var is set,
+# everything here is DISCARDED. `.github/workflows/ci.yml` previously set
+# `RUSTFLAGS: -D warnings` globally, which silently removed the rpath below and left
+# burrow-core's and burrow-ffi's test binaries with a DT_NEEDED on libpdfium.so and no way
+# to resolve it -- they failed to start, and on a host with a system libpdfium they would
+# have loaded an UNPINNED one instead. `-D warnings` therefore lives here now.
 #
-# `--as-needed` alone does not fix it: burrow-engines' rlib genuinely references FPDF_*
-# symbols, so the dependency is real wherever that rlib is linked.
+# WHY THE RPATH IS HERE AND NOT IN build.rs
+# core/burrow-engines/build.rs emits `-lpdfium`, which cargo propagates to every
+# downstream binary, and an rpath, which it does NOT (`rustc-link-arg` applies only to the
+# emitting crate). `--as-needed` does not save the downstream crates either: the
+# burrow-engines rlib genuinely references FPDF_* symbols, so the dependency is real
+# wherever that rlib is linked. A workspace-wide rpath is the available fix.
 #
-# `$ORIGIN` resolves to the directory of the binary being run. build.rs copies the
-# checksum-verified libpdfium.so next to the test binaries, so every binary in the
-# workspace can load it -- from a copy of the pinned bytes, which the provenance test
-# verifies by hash rather than by path.
+# `$ORIGIN` resolves to the directory of the running binary. build.rs copies the
+# checksum-verified libpdfium.so next to the test binaries and RE-VERIFIES that copy by
+# digest on every build, so what loads is always the pinned bytes. The provenance test
+# hashes whatever the loader actually mapped, which is the guarantee that matters.
 #
-# `--disable-new-dtags` emits DT_RPATH instead of DT_RUNPATH. DT_RUNPATH is overridable
-# by LD_LIBRARY_PATH; DT_RPATH is not, so the pinned library cannot be shadowed by an
-# environment variable. This is dev/CI-only linkage (ADR 0004), so taking that
-# precedence away from the environment is exactly the intent.
-#
-# Scoped to the two Linux targets that are pinned. wasm, iOS and Android are untouched.
+# `--disable-new-dtags` emits DT_RPATH rather than DT_RUNPATH; DT_RUNPATH is overridable
+# by LD_LIBRARY_PATH and DT_RPATH is not. Dev/CI-only linkage -- see ADR 0004.
+
+# Non-Linux targets (wasm, iOS, Android): lints only, no engine linkage.
+# NOTE: cargo uses a matching [target.<triple>] table INSTEAD of this one, never both, so
+# the Linux tables below must repeat `-D warnings`.
+[build]
+rustflags = ["-D", "warnings"]
 
 [target.aarch64-unknown-linux-gnu]
 rustflags = [
+  "-D", "warnings",
   "-C", "link-arg=-Wl,--as-needed",
   "-C", "link-arg=-Wl,-rpath,$ORIGIN",
   "-C", "link-arg=-Wl,--disable-new-dtags",
@@ -31,6 +39,7 @@ rustflags = [
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
+  "-D", "warnings",
   "-C", "link-arg=-Wl,--as-needed",
   "-C", "link-arg=-Wl,-rpath,$ORIGIN",
   "-C", "link-arg=-Wl,--disable-new-dtags",

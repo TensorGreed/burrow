@@ -32,18 +32,43 @@ import sys, tomllib
 with open(sys.argv[1], "rb") as fh:
     d = tomllib.load(fh)
 
+def safe(name: str) -> str:
+    """Reject a filename that could write outside engines/vendor/.
+
+    pins.toml is reviewed, so this is only reachable via a PR that edits it -- but it
+    turns "review this hash" into "review for arbitrary file overwrite", which is a much
+    worse review task than it looks. `file = "../../../.bashrc"` would otherwise be
+    honoured by the `mv` in the caller.
+    """
+    if "/" in name or name.startswith(".") or name in ("", ".."):
+        raise SystemExit(f"pins.toml: unsafe artifact filename {name!r}")
+    return name
+
+
 p = d["pdfium"]
 for name, a in p["artifacts"].items():
-    print(f"pdfium-{name}\t{p['base_url']}/{a['file']}\t{a['sha256']}\t{a['file']}")
+    print(f"pdfium-{name}\t{p['base_url']}/{a['file']}\t{a['sha256']}\t{safe(a['file'])}")
 
 for key in ("qpdf", "zlib", "libjpeg-turbo"):
     s = d[key]
-    print(f"{key}\t{s['url']}\t{s['sha256']}\t{s['url'].rsplit('/', 1)[-1]}")
+    print(f"{key}\t{s['url']}\t{s['sha256']}\t{safe(s['url'].rsplit('/', 1)[-1])}")
 PY
 }
 
+# Materialise the manifest and CHECK ITS STATUS. A process substitution's exit code is
+# not propagated and neither `set -e` nor `pipefail` covers it, so `done < <(manifest)`
+# meant that any failure in the parser -- malformed TOML, a renamed section, no tomllib --
+# printed a traceback and exited 0 with zero artifacts verified. For the "re-verify after
+# a cache restore" step in CI that is a silent pass on unverified bytes.
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+manifest > "$tmp" || { echo "fetch: could not read $pins" >&2; exit 1; }
+[ -s "$tmp" ] || { echo "fetch: $pins yielded no artifacts" >&2; exit 1; }
+expected_count="$(wc -l < "$tmp")"
+
 rc=0
 tbd=0
+verified=0
 
 while IFS=$'\t' read -r name url want file; do
   out="$vendor/$file"
@@ -83,7 +108,19 @@ while IFS=$'\t' read -r name url want file; do
   fi
 
   echo "  ok $name ($got)"
-done < <(manifest)
+  verified=$((verified + 1))
+done < "$tmp"
+
+# Assert we actually processed everything, so a mid-loop `continue` on every artifact
+# cannot be mistaken for a pass.
+if [ "$rc" = 0 ] && [ "$verified" -ne "$expected_count" ]; then
+  echo "fetch: verified $verified of $expected_count artifacts -- refusing to report success" >&2
+  rc=1
+fi
+
+if [ "$rc" = 0 ]; then
+  echo "  all $verified artifact(s) verified against $pins"
+fi
 
 if [ "$tbd" = 1 ]; then
   echo

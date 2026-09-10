@@ -59,6 +59,7 @@ echo "   libpdfium.so $(stat -c%s "$prefix/lib/libpdfium.so") bytes"
 
 # ---------------------------------------------------------------------------------
 say "zlib 1.3.2 (static)"
+rm -rf "$src/zlib-1.3.2"
 tar xzf "$vendor/zlib-1.3.2.tar.gz" -C "$src"
 cmake -S "$src/zlib-1.3.2" -B "$src/build-zlib-$arch" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -73,6 +74,7 @@ echo "   libz.a $(stat -c%s "$prefix/lib/libz.a") bytes"
 # ---------------------------------------------------------------------------------
 say "libjpeg-turbo 3.2.0 (static)"
 # libjpeg-TURBO, not IJG libjpeg 9f: maintained, SIMD, same codebase PDFium bundles.
+rm -rf "$src/libjpeg-turbo-3.2.0"
 tar xzf "$vendor/libjpeg-turbo-3.2.0.tar.gz" -C "$src"
 cmake -S "$src/libjpeg-turbo-3.2.0" -B "$src/build-jpeg-$arch" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -121,6 +123,7 @@ build_qpdf() { # variant extra_c_flags extra_cxx_flags outdir
 }
 
 say "qpdf 12.4.1 (static, native crypto only)"
+rm -rf "$src/qpdf-12.4.1"
 tar xzf "$vendor/qpdf-12.4.1.tar.gz" -C "$src"
 build_qpdf plain "" "" "$prefix/lib"
 cp -R "$src/qpdf-12.4.1/include/qpdf" "$prefix/include/"
@@ -134,6 +137,15 @@ build_qpdf fuzz \
   "-fsanitize=fuzzer-no-link,address -fno-omit-frame-pointer" \
   "$prefix/lib/fuzz"
 echo "   fuzz/libqpdf.a $(stat -c%s "$prefix/lib/fuzz/libqpdf.a") bytes"
+
+# Record what we produced. The static archives have no upstream hash to pin (we build
+# them, and the builds are not bit-reproducible), so core/burrow-engines/build.rs
+# verifies them against this instead. That catches a tree changed after the build --
+# including one restored from a CI cache that no longer matches it. It does not establish
+# upstream provenance: that comes from fetch.sh verifying the source tarballs.
+say "recording build manifest"
+( cd "$prefix/lib" && sha256sum libpdfium.so libqpdf.a libz.a libjpeg.a > BUILD_MANIFEST.sha256 )
+sed 's/^/   /' "$prefix/lib/BUILD_MANIFEST.sha256"
 
 say "done: $prefix"
 find "$prefix/lib" -maxdepth 2 -name '*.a' -o -maxdepth 2 -name '*.so' | sort | while read -r f; do

@@ -24,7 +24,11 @@ env:
   CARGO_TERM_COLOR: always
   # CI is not the place to discover a slow incremental build.
   CARGO_INCREMENTAL: 0
-  RUSTFLAGS: -D warnings
+  # RUSTFLAGS is deliberately NOT set here. Cargo does not merge the env var with
+  # .cargo/config.toml's rustflags tables -- setting it DISCARDS them, which silently
+  # removed the $ORIGIN rpath the native engines need and left test binaries unable to
+  # load libpdfium.so. `-D warnings` lives in .cargo/config.toml instead, so local and CI
+  # builds use the same flags. Do not reintroduce it.
 
 jobs:
   fmt:
@@ -79,6 +83,27 @@ jobs:
       # covers the source tarballs as well.
       - name: Re-verify engine checksums
         run: engines/fetch.sh
+
+      # The rpath comes from .cargo/config.toml, which a stray RUSTFLAGS would silently
+      # discard -- leaving these binaries with a DT_NEEDED on libpdfium.so and no way to
+      # resolve it, or worse, resolving it to an UNPINNED system copy. That breakage is
+      # invisible until a binary runs, so assert it directly.
+      - name: Assert downstream test binaries carry the $ORIGIN rpath
+        run: |
+          cargo test -p burrow-core --all-features --no-run 2>/dev/null
+          found=0
+          for bin in target/debug/deps/burrow_core-*; do
+            case "$bin" in *.d) continue ;; esac
+            [ -x "$bin" ] || continue
+            found=1
+            if ! readelf -d "$bin" | grep -q 'RPATH.*ORIGIN'; then
+              echo "::error::$bin has no \$ORIGIN rpath. Is RUSTFLAGS set somewhere?" >&2
+              readelf -d "$bin" | grep -E 'NEEDED|RPATH|RUNPATH' >&2
+              exit 1
+            fi
+          done
+          [ "$found" = 1 ] || { echo "::error::no burrow_core test binary found" >&2; exit 1; }
+          echo "downstream binaries carry the rpath"
 
       - run: cargo test --workspace --all-features
 

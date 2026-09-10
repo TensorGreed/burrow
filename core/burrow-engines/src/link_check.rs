@@ -139,6 +139,13 @@ pub const fn pinned_pdfium_sha256() -> &'static str {
 ///
 /// Linux-only, which is fine: this module only compiles on Linux.
 ///
+/// Entries marked `(deleted)` are skipped: their recorded path resolves to whatever is
+/// at that name now, which is not what was mapped, so hashing it would prove nothing.
+///
+/// Known limit, out of scope per `SECURITY.md` because it needs local write access: this
+/// identifies the file by path, so a library swapped before load and restored before the
+/// check would pass. Hashing `/proc/self/map_files/<range>` would pin the actual inode.
+///
 /// # Errors
 ///
 /// Returns [`Error::Io`](burrow_types::Error::Io) if `/proc/self/maps` cannot be read.
@@ -149,9 +156,24 @@ pub fn mapped_files_containing(needle: &str) -> burrow_types::Result<Vec<String>
         .lines()
         .filter_map(|line| {
             // Format: addr perms offset dev inode  [pathname]
-            // The pathname is optional and is the only field that can contain '/'.
-            let path = line.split_whitespace().nth(5)?;
-            path.contains(needle).then(|| path.to_owned())
+            //
+            // Take the REMAINDER of the line after the fifth field, not the sixth
+            // whitespace-delimited token: a pathname may contain spaces, and splitting
+            // on whitespace would truncate `/home/u/my repo/...` to `/home/u/my` and
+            // silently drop the entry.
+            let mut fields = line.split_whitespace();
+            let inode = fields.nth(4)?;
+            let idx = line.rfind(inode)? + inode.len();
+            let path = line.get(idx..)?.trim();
+            if path.is_empty() || !path.contains(needle) {
+                return None;
+            }
+            // A `(deleted)` entry parses back to the original path, so hashing it would
+            // hash bytes that are NOT the ones mapped. Refuse rather than mislead.
+            if path.ends_with("(deleted)") {
+                return None;
+            }
+            Some(path.to_owned())
         })
         .collect();
     out.sort_unstable();

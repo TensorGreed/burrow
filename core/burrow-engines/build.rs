@@ -84,9 +84,15 @@ fn main() {
     let expected = so_sha256_for(&pins, pin_key);
     let pdfium_so = lib_dir.join("libpdfium.so");
     verify(&pdfium_so, &expected);
+    // Watch the four libraries by name. Not the whole vendor tree -- that is hundreds of
+    // megabytes -- but enough that a rebuild re-runs the verification below instead of
+    // trusting a stale fingerprint.
+    println!("cargo:rerun-if-changed={}", pdfium_so.display());
 
-    for name in ["libqpdf.a", "libz.a", "libjpeg.a"] {
+    let archives = ["libqpdf.a", "libz.a", "libjpeg.a"];
+    for name in archives {
         let p = lib_dir.join(name);
+        println!("cargo:rerun-if-changed={}", p.display());
         if !p.is_file() {
             fail(&format!(
                 "{} is missing. Run: engines/build-native.sh",
@@ -95,7 +101,10 @@ fn main() {
         }
     }
 
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    // The static archives are built locally, so they have no upstream hash to pin. What
+    // build-native.sh CAN do is record what it produced; verify against that, so a tree
+    // modified after the build (or restored from a poisoned CI cache) is caught.
+    verify_build_manifest(&lib_dir, &archives);
 
     // PDFium is dynamic: no static archive is published for any platform (ADR 0004).
     println!("cargo:rustc-link-lib=dylib=pdfium");
@@ -111,7 +120,21 @@ fn main() {
 
     // Bake the rpath so the loader finds *our* libpdfium.so rather than searching.
     // Computed from CARGO_MANIFEST_DIR, never hardcoded.
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+    //
+    // Validated first: the compiler driver splits `-Wl,` arguments on commas, so a
+    // checkout path containing a comma would inject arbitrary linker options; and
+    // `Path::display()` is lossy, so a non-UTF-8 path would silently produce a rpath
+    // pointing somewhere else entirely.
+    let lib_dir_str = match lib_dir.to_str() {
+        Some(s) if !s.contains(',') => s,
+        Some(s) => fail(&format!(
+            "the engine directory path contains a comma, which would inject linker \
+             options via -Wl,: {s}\nMove the checkout somewhere without a comma in its path."
+        )),
+        None => fail("the engine directory path is not valid UTF-8; refusing to build"),
+    };
+    println!("cargo:rustc-link-search=native={lib_dir_str}");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir_str}");
     // Emit DT_RPATH rather than DT_RUNPATH. DT_RUNPATH is overridable by
     // LD_LIBRARY_PATH; DT_RPATH is not, so the pinned copy cannot be shadowed by an
     // environment variable. This is dev/CI-only linkage, so the usual objection to
@@ -125,7 +148,7 @@ fn main() {
     //
     // .cargo/config.toml gives every Linux binary `-Wl,-rpath,$ORIGIN`, which resolves
     // to the directory the binary sits in. Put a verified copy there so it resolves.
-    copy_beside_binaries(&pdfium_so);
+    copy_beside_binaries(&pdfium_so, &expected);
 
     // Let the tests assert that the loaded library is the pinned one.
     println!("cargo:rustc-env=BURROW_PDFIUM_SO={}", pdfium_so.display());
@@ -138,7 +161,7 @@ fn main() {
 /// `OUT_DIR` is `<target>/[<triple>/]<profile>/build/<pkg>-<hash>/out`, so three parents
 /// up is the profile directory in both native and cross layouts. Copies are only made
 /// from the file this script has already checksum-verified.
-fn copy_beside_binaries(verified: &Path) {
+fn copy_beside_binaries(verified: &Path, expected: &str) {
     let Ok(out_dir) = std::env::var("OUT_DIR") else {
         return;
     };
@@ -161,12 +184,13 @@ fn copy_beside_binaries(verified: &Path) {
             continue;
         }
         let dest = dir.join("libpdfium.so");
-        // Skip if a same-size copy is already there, so repeated builds do not churn.
-        // Size rather than content: the test hashes whatever the loader maps, so a
-        // mismatched copy fails loudly there rather than being silently tolerated.
-        if let (Ok(a), Ok(b)) = (std::fs::metadata(verified), std::fs::metadata(&dest))
-            && a.len() == b.len()
-        {
+
+        // Re-copy unless the existing file's DIGEST already matches. Comparing lengths
+        // would be a real hole: `$ORIGIN` sorts ahead of the vendor path in DT_RPATH, so
+        // this copy is what actually loads. A hostile library padded to the same size
+        // would then be executed by every binary in the workspace, and only
+        // burrow-engines' own provenance test would notice.
+        if file_sha256(&dest).as_deref() == Some(expected) {
             continue;
         }
         if let Err(e) = std::fs::copy(verified, &dest) {
@@ -174,8 +198,60 @@ fn copy_beside_binaries(verified: &Path) {
                 "cargo:warning=could not copy libpdfium.so to {}: {e}",
                 dir.display()
             );
+            continue;
+        }
+        // Prove the copy landed intact rather than assuming fs::copy succeeded silently.
+        if file_sha256(&dest).as_deref() != Some(expected) {
+            fail(&format!(
+                "copied libpdfium.so to {} but its digest does not match the pin",
+                dest.display()
+            ));
         }
     }
+}
+
+/// Verify the locally built archives against the manifest `build-native.sh` wrote.
+///
+/// These have no upstream hash to pin: we build them, and the builds are not
+/// bit-reproducible. What this catches is a tree changed *after* the build -- including
+/// one restored from a CI cache that no longer matches what produced it.
+///
+/// It does NOT establish upstream provenance for the archives, and cannot: an attacker
+/// who can rewrite the cached tree can rewrite the manifest inside it too. The upstream
+/// guarantee for these comes from `engines/fetch.sh` verifying their SOURCE tarballs.
+fn verify_build_manifest(lib_dir: &Path, archives: &[&str]) {
+    let manifest = lib_dir.join("BUILD_MANIFEST.sha256");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+
+    let text = match std::fs::read_to_string(&manifest) {
+        Ok(t) => t,
+        Err(e) => fail(&format!(
+            "{} is missing or unreadable ({e}).\nRun: engines/build-native.sh",
+            manifest.display()
+        )),
+    };
+
+    for name in archives {
+        let want = text
+            .lines()
+            .filter_map(|l| {
+                let (hash, file) = l.split_once("  ")?;
+                (file.trim() == *name).then_some(hash.trim())
+            })
+            .next()
+            .unwrap_or_else(|| {
+                fail(&format!(
+                    "{} does not record {name}. Re-run engines/build-native.sh",
+                    manifest.display()
+                ))
+            });
+        verify(&lib_dir.join(name), want);
+    }
+}
+
+/// sha256 of a file, or `None` if it cannot be read.
+fn file_sha256(path: &Path) -> Option<String> {
+    std::fs::read(path).ok().map(|b| hex(&Sha256::digest(&b)))
 }
 
 /// Extract `so_sha256` for one pdfium artifact from `engines/pins.toml`.
@@ -189,16 +265,30 @@ fn so_sha256_for(pins: &Path, artifact_key: &str) -> String {
         .unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", pins.display())));
 
     let section = format!("[pdfium.artifacts.{artifact_key}]");
-    let start = text
-        .find(&section)
-        .unwrap_or_else(|| fail(&format!("{} has no {section}", pins.display())));
 
-    // Stop at the next section header so we cannot pick up a neighbour's value.
-    let rest = &text[start + section.len()..];
-    let end = rest.find("\n[").unwrap_or(rest.len());
+    // Match the header only at the START of a line, and skip comments. A bare substring
+    // search would also match inside a comment or a string, so a future comment
+    // mentioning a section name would silently redirect this scan to the wrong table.
+    let mut in_section = false;
+    let mut lines_in_section = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_section = line == section;
+            continue;
+        }
+        if in_section {
+            lines_in_section.push(line);
+        }
+    }
+    if lines_in_section.is_empty() {
+        fail(&format!("{} has no {section}", pins.display()));
+    }
 
-    for line in rest[..end].lines() {
-        let line = line.trim();
+    for line in lines_in_section {
         if let Some(value) = line.strip_prefix("so_sha256") {
             let hash = value
                 .trim_start()

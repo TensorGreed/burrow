@@ -1,0 +1,3 @@
+- [User role](user_role.md) — burrow's maintainer; briefs precise review scopes, wants demonstrated findings only, values empirical proof.
+- [Reviews happen on live files](review_in_progress_edits.md) — work is often uncommitted and edited mid-review; re-read before concluding.
+- [M1 engine supply chain](m1_engine_supply_chain.md) — what the checksum/rpath provenance guarantee really covers, and where it stops.
