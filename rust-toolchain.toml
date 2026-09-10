@@ -3,5 +3,11 @@
 [toolchain]
 channel = "1.98.1"
 components = ["rustfmt", "clippy"]
-targets = ["wasm32-unknown-unknown"]
+targets = [
+    "wasm32-unknown-unknown",
+    # Checked in CI so a core change cannot silently break a mobile target long
+    # before M3/M4 build the apps. `cargo check` needs no SDK or NDK, only std.
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
 profile = "minimal"

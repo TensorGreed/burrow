@@ -67,18 +67,41 @@ wildcards = "deny"
 # Prefer a dependency graph we can actually audit.
 external-default-features = "allow"
 
-# Belt and braces alongside [licenses]: these are widely-pulled crates whose licensing
-# is incompatible with our policy, named explicitly so the failure message is obvious.
+# Two groups, both named explicitly so the failure message says why rather than just
+# which. If one of these ever appears in the graph, that is a privacy or licensing
+# review, not a routine dependency bump.
+#
+# The HTTP clients first: nothing in burrow may reach the network from a code path
+# touching file content. A transitive HTTP client is the most likely way that guarantee
+# erodes, because it usually arrives as an implementation detail of something else.
 deny = [
-    { crate = "openssl", reason = "OpenSSL 1.x licensing; use rustls (Apache-2.0/MIT/ISC) if TLS is ever needed" },
-    { crate = "openssl-sys", reason = "see openssl" },
-    { crate = "ring", reason = "custom non-OSI license; use a permissively licensed alternative" },
+    { crate = "reqwest", reason = "non-negotiable #1: no networking in core" },
+    { crate = "hyper", reason = "non-negotiable #1: no networking in core" },
+    { crate = "ureq", reason = "non-negotiable #1: no networking in core" },
+    { crate = "curl", reason = "non-negotiable #1: no networking in core" },
+    { crate = "isahc", reason = "non-negotiable #1: no networking in core" },
+    { crate = "surf", reason = "non-negotiable #1: no networking in core" },
+    { crate = "attohttpc", reason = "non-negotiable #1: no networking in core" },
+    # Then the TLS stacks. These are also licensing problems (OpenSSL 1.x terms; ring's
+    # custom non-OSI license), but the reason we do not want them is more basic: a TLS
+    # implementation has nothing to do in software that never opens a socket.
+    { crate = "openssl", reason = "no TLS or networking in core" },
+    { crate = "openssl-sys", reason = "no TLS or networking in core" },
+    { crate = "ring", reason = "no TLS or networking in core" },
 ]
 
-# Nothing in burrow may reach the network from a code path touching file content
-# (non-negotiable #1). These crates have no business in the dependency graph; if one
-# ever appears, that is a privacy review, not a routine dependency bump.
+# Crates exempted from the `multiple-versions` check above. Empty: we would rather
+# unify a duplicated dependency than silence the warning about it.
 skip = []
+
+# The web target needs its own guard. `web-sys` is a single crate gating the entire
+# browser API behind features, so denying the crate is not an option — we will need
+# plenty of it for file handling and workers. Deny the features that hand a page the
+# ability to talk to the network instead, so non-negotiable #1 is enforced on the web
+# by the same mechanism as everywhere else.
+[[bans.features]]
+crate = "web-sys"
+deny = ["RequestInit", "WebSocket", "XmlHttpRequest", "EventSource"]
 
 [sources]
 unknown-registry = "deny"

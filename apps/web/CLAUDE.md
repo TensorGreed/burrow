@@ -45,6 +45,22 @@ page load.
 **Heavy work goes in a Web Worker.** A large PDF must not freeze the tab. Report progress
 and support cancellation.
 
+**Assume the worker can die, and recover from it.** On `wasm32-unknown-unknown` a Rust
+panic **aborts** — it does not unwind. So the `catch_unwind` guard that protects the
+Swift and Kotlin boundaries does nothing here: there is no unwinding to catch, and the
+whole WASM instance is left unusable. Every operation therefore has two distinct failure
+modes on the web, and the UI must handle both:
+
+- A **typed error** returned normally from the core (`Malformed`, `LimitExceeded`,
+  `PasswordRequired`, …). Report it as-is.
+- A **dead worker** — the WASM instance aborted or the worker terminated. Detect it via
+  the worker's `error` event and an unanswered request, surface it to the UI as
+  `Error::Internal`, discard the instance, and **spawn a fresh worker** before the next
+  operation. A worker that has aborted cannot be reused for anything.
+
+Never echo the abort message: it comes from panic output and can carry input-derived
+bytes. Report the same content-free `Error::Internal` that the FFI guard does.
+
 **Never send file content anywhere**, including in logs and error messages. If an
 operation fails, report the typed error from the core, not the input.
 
