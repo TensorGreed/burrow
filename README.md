@@ -7,11 +7,11 @@ Your files never leave your machine. There is no upload, no account, no server-s
 processing, and no telemetry on file content. On the web, the work happens in your
 browser tab via WebAssembly; on mobile, in the app itself.
 
-## Status: pre-alpha (M0)
+## Status: pre-alpha (M1 in progress)
 
-**There are no working tools yet.** This repository currently contains project
-scaffolding only: the Rust workspace, CI, licensing enforcement, and documentation. The
-crates compile and the tests pass, but no PDF, image, or video operation is implemented.
+**There are no working tools yet.** Project setup is done — the Rust workspace, CI,
+licensing enforcement, and documentation are in place, the crates compile, and the tests
+pass. But no PDF, image, or video operation is implemented.
 
 Nothing here is ready to use for real work. There is no release, no published package,
 and no hosted website.
@@ -20,8 +20,8 @@ Roadmap, with the current milestone in bold — see [`docs/ROADMAP.md`](docs/ROA
 
 | Milestone | Scope | State |
 |---|---|---|
-| **M0** | Project setup: workspace, CI, licensing, docs | **in progress** |
-| M1 | Merge, split, rotate, reorder, compress — core + web | not started |
+| M0 | Project setup: workspace, CI, licensing, docs | complete |
+| **M1** | Merge, split, rotate, reorder, compress — core + web | **in progress** |
 | M2 | Redaction, with automatic verification | not started |
 | M3 | Android app (Jetpack Compose) | not started |
 | M4 | iOS app (SwiftUI) | not started |
