@@ -187,6 +187,137 @@ The same applies to the shim's `qpdf_probe_last_message()`, which exists here on
 prove the exception payload was readable. It must not be forwarded to the host: this is
 exactly what `burrow-ffi::guard` was changed to prevent in #2.
 
+## Finding 7 — option 1 meets the bar in full
+
+6/6 Playwright assertions pass in headless Chromium (`tests/option1.spec.mjs`), in
+2.5 s:
+
+- a real PDF opens in a Web Worker, driven from Rust, reporting **100 pages**
+- qpdf is linked and callable in the same worker
+- malformed input through **qpdf** is a typed error, worker survives, next call fine
+- malformed input through **PDFium** is a typed error, worker survives
+- the panic path behaves as measured (see Finding 8) and the respawn path works
+- measurements collected
+
+### Option 1 payload
+
+| Artifact | raw | gzip | brotli |
+|---|---|---|---|
+| `pdfium.wasm` | 5,315,922 | 2,431,675 | 1,904,807 |
+| `pdfium.js` | 164,487 | 30,193 | 26,174 |
+| `qpdf.wasm` | 917,305 | 307,988 | 242,408 |
+| `qpdf.js` | 74,780 | 18,972 | 16,848 |
+| Rust `.wasm` | 15,266 | 7,060 | 6,008 |
+| Rust glue + bridge + worker | 15,015 | 5,038 | 4,335 |
+| **TOTAL** | **6,502,775** | **2,800,926** | **2,200,580** |
+
+The Rust module is 15 KB: all the weight is the engines, and PDFium is 82% of it.
+
+### Option 1 timings and memory (headless Chromium, aarch64)
+
+Cold load, worker spawn → first page count: **57–75 ms**.
+
+| File | PDFium | qpdf | engine heap after |
+|---|---|---|---|
+| `small-1page.pdf` | 0.0 ms | 5.6 ms | 35.8 MB |
+| `medium-100page.pdf` | 0.0 ms | 3.1 ms | 35.8 MB |
+| `large-50mb.pdf` | 35.6 ms | 17.8 ms | **82.4 MB / 118.0 MB** |
+
+Peak engine heap reaches **118 MB for a 50 MB input** — the copy across the JS bridge
+is visible and material. Two wasm modules cannot share linear memory, so this is
+inherent to option 1, not an implementation shortcut.
+
+## Finding 8 — a Rust panic is a trap, not a worker death. `apps/web/CLAUDE.md` is wrong.
+
+Measured, and it contradicts what that file currently says (which I wrote in #2):
+
+```
+PANIC_REPLY {"ok":false,"threw":"RuntimeError: unreachable"}
+DEATHS 0
+AFTER_PANIC       {"pages":1,"isOk":true}
+AFTER_PANIC_QPDF  {"pages":100,"isOk":true}
+```
+
+On `wasm32-unknown-unknown` a panic ends in the `unreachable` instruction. That is a
+WebAssembly **trap**, and a trap surfaces in JS as a **catchable `RuntimeError`**. The
+worker does not die, no `error` event fires, and subsequent calls still succeed.
+
+They succeed only because this spike's Rust holds no state, and because in option 1 the
+engines live in *separate* modules whose heaps the trap never touched. The Rust
+instance's invariants are still broken after a trap, so the page must discard it
+**deliberately** — nothing forces its hand. That is a materially different contract from
+"a crashed worker surfaces as `Error::Internal` and a fresh worker is spawned", and
+`apps/web/CLAUDE.md` needs correcting.
+
+## Finding 9 — option 2 works, and `catch_unwind` works with it
+
+Rust on `wasm32-unknown-emscripten`, statically linked against the same qpdf:
+
+```
+shim reachable: true
+  small-1page.pdf                 603 B  Pages(1)
+  medium-100page.pdf            15859 B  Pages(100)
+  large-50mb.pdf             52429484 B  Pages(1)
+  malformed-truncated.pdf         402 B  Malformed
+  malformed-badxref.pdf         15859 B  Pages(100)
+  malformed-notpdf.bin           3700 B  Malformed
+catch_unwind result: CAUGHT (unwinding works)
+shim still reachable after catch: true
+open after caught panic: Pages(100)
+```
+
+**`catch_unwind` works on the Emscripten target.** ADR 0006 did not anticipate this, and
+it matters more than the size numbers: ADR 0002's rule that no panic crosses a boundary,
+enforced by `burrow-ffi::guard` mapping panics to `Error::Internal`, **holds on the web
+under option 2 and cannot under option 1**. Under option 1 a panic is an uncatchable
+trap; under option 2 it is a catchable unwind, and the module keeps working afterwards.
+
+Also: qpdf reads **directly out of Rust's slice**. Same linear memory, no copy, no
+second buffer.
+
+### Option 2 payload, like-for-like against option 1's qpdf path
+
+| | raw | gzip | brotli |
+|---|---|---|---|
+| Option 2 (Rust + qpdf, one module) | 876,710 | 332,438 | **261,633** |
+| Option 1 (Rust + bridge + qpdf module) | 1,020,214 | 338,058 | 268,759 |
+
+Option 2 is smaller *and* single-module — though the difference is small enough not to
+be the deciding factor.
+
+### The exception model must match, and that is the real blocker
+
+The first link attempt **failed**: `undefined symbol: __resumeException`,
+`llvm_eh_typeid_for`. Cause: qpdf was built with `-fexceptions` (Emscripten's JS-based
+EH) while Rust 1.98's emscripten target links with `-mllvm -exception-model=wasm` and
+`-lunwind-legacyexcept` — native wasm EH. Rebuilding qpdf and the shim with
+**`-fwasm-exceptions`** made it link.
+
+Two consequences:
+
+1. Every C++ dependency in option 2 must be built with the *same* exception model as
+   Rust's emscripten target. That is a whole-stack constraint, not a per-library flag.
+2. It compounds Finding 1. Even if pdfium-binaries did publish a wasm `libpdfium.a`, it
+   is built by emsdk 3.1.72 with its own flags and would be very unlikely to match
+   Rust 1.98's exception model. **Option 2 requires building PDFium from source not just
+   because no `.a` exists, but because a third-party `.a` almost certainly would not link.**
+
+Also required: `-C link-arg=-lc++ -lc++abi`, because rustc drives the link through
+`emcc` rather than `em++` and does not add the C++ runtime itself.
+
+### PDFium under option 2 — assessed, not attempted
+
+Per the session's decision, PDFium's from-source wasm build was not attempted. What the
+evidence says about its cost:
+
+- No prebuilt wasm `.a` exists (Finding 1), so it is `gn` + `ninja` + depot_tools.
+- pdfium-binaries' own wasm build needs patches to Chromium's `BUILDCONFIG.gn` and
+  `//build/toolchain/wasm` just to make `target_os = "emscripten"` work at all — it is
+  not a supported upstream configuration.
+- It would have to be rebuilt with `-fwasm-exceptions` to match Rust, which pdfium's
+  gn build does not expose as a switch.
+- depot_tools sync is ~15–20 GB before anything compiles.
+
 ## Test corpus
 
 Generated by `spikes/wasm-engines/common/make-corpus.py` — reproducible byte-for-byte,

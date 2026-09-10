@@ -1,0 +1,16 @@
+[package]
+name = "spike-option2"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "spike_option2"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+# Deliberately NOT panic="abort": the question is whether unwinding works on the
+# Emscripten target, since it does not on wasm32-unknown-unknown.
+panic = "unwind"
