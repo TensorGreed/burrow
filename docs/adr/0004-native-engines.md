@@ -4,8 +4,8 @@ Date: 2026-09-10
 
 ## Status
 
-Proposed — the engine list is settled; the acquisition strategy per engine is decided in
-M1 when the first operations need it.
+Accepted — the acquisition question is resolved by
+[spike 0001](../spikes/0001-wasm-engines.md). See *Acquisition (resolved)*.
 
 ## Context
 
@@ -41,9 +41,15 @@ We will build on these engines, each chosen for a distinct job rather than overl
 | **libavif** | AVIF encode/decode | BSD-2-Clause |
 
 PDFium and qpdf are complementary, not redundant: PDFium is the right tool for content
-and rendering, qpdf for document structure, encryption, and repairing damaged files.
-Expect operations to use both — and note that a file PDFium refuses may still be
-recoverable by qpdf first.
+and rendering, qpdf for **document structure, encryption, object streams, and
+linearisation**. Expect operations to use both.
+
+**Corrected by spike 0001:** this ADR originally justified qpdf partly as the repair path
+for files "PDFium refuses". That premise is weaker than assumed — PDFium silently
+reconstructed a *fully corrupted* xref table and returned the correct page count
+(Finding 4). qpdf reconstructed it too. So "repair" is not currently a reason to carry
+qpdf; the other four jobs are. If repair is to be claimed again, it needs a harder test
+case that PDFium actually fails, and that case belongs in the corpus.
 
 Every engine is wrapped behind a trait in `burrow-engines` (see
 [ADR 0002](0002-rust-core-and-bindings.md)), so `burrow-ops` never touches a C API and
@@ -72,6 +78,85 @@ no fetching at build time from an unpinned URL, and a license check on the engin
 its bundled third-party code* before it is vendored. PDFium in particular bundles
 components under several licenses, and jbig2enc pulls in Leptonica (BSD-2-Clause) — both
 need auditing as units, not by their headline license.
+
+## Acquisition (resolved)
+
+Decided by [spike 0001](../spikes/0001-wasm-engines.md), together with
+[ADR 0006](0006-wasm-linking-strategy.md) — the two could not be settled separately.
+
+### PDFium — prebuilt
+
+Prebuilt from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries), release
+**`chromium/8044`**, WebAssembly package, sha256
+`2528dfb9762a5325f141fa29868257da51dd05952b13e2c02a08d4de00711fe1`.
+
+Two things must be recorded honestly, because they are the weakest links in our supply
+chain:
+
+- **Upstream publishes no checksums and no signature.** Not a signed checksum file, not a
+  sigstore bundle, nothing. Our hash is **trust-on-first-use** — a value we captured on
+  first download and now enforce. It detects a *change*; it cannot detect that the
+  original download was already wrong.
+- **Upstream marks the WebAssembly build experimental**
+  ([issue #28](https://github.com/bblanchon/pdfium-binaries/issues/28)).
+
+Compare qpdf, which ships a PGP-clearsigned `.sha256` and a sigstore bundle — our qpdf
+tarball was verified against upstream's signed checksum, not merely against itself. That
+asymmetry is the argument for eventually building PDFium ourselves, and it is a second
+reason to revisit the pre-M2 gate in ADR 0006.
+
+There is also **no wasm `libpdfium.a`**: the package contains `pdfium.{html,js,wasm}` and
+no static library or CMake config. That is what forces option 1 in ADR 0006.
+
+### qpdf — from source
+
+Built from source, **12.4.1**, sha256
+`f045aa277be2356ff53a89a8622945958291177d2483afc20ede7c8a8cd3873c`, verified against
+upstream's PGP-clearsigned checksum file.
+
+**Configured with `-DUSE_IMPLICIT_CRYPTO=OFF -DREQUIRE_CRYPTO_NATIVE=ON`, asserted in
+CI.** `USE_IMPLICIT_CRYPTO` defaults **ON** upstream, and qpdf ships a GnuTLS backend —
+**LGPL-2.1-or-later**. A default build on any host where GnuTLS is discoverable would
+statically link LGPL code, exactly the case ADR 0003 says we cannot satisfy. Relying on
+"GnuTLS isn't installed in the container" is not enforcement: CI must fail if the crypto
+summary changes or `QPDFCrypto_gnutls` appears in the link.
+
+Also required: build with `-fexceptions` (or `-fwasm-exceptions` if option 2 is ever
+adopted — the models must match Rust's). Without an exception flag a `throw` **aborts the
+module**, losing qpdf's error reporting and the WASM instance with it.
+
+### zlib and libjpeg — vendored by us, not taken from Emscripten ports
+
+The spike used Emscripten's ports (`embuilder build zlib libjpeg`). That is a build-time
+fetch pinned by *Emscripten*, not by us, and it delivered a surprise: the libjpeg port is
+**IJG libjpeg 9f**, not libjpeg-turbo, and Emscripten's own port description calls it
+"BSD license" when the actual terms are the IJG licence. A tool's self-description was
+simply wrong.
+
+So both are vendored with **our own pinned versions and checksums**. libjpeg 9f is also a
+branch most distributions do not track, with no SIMD — a maintenance and hardening concern
+for a parser fed hostile input, independent of licensing.
+
+### emsdk — pinned
+
+The Emscripten SDK contributes musl-derived libc, compiler-rt, and the JS glue to every
+shipped wasm artifact. It is a **shipped dependency**, not just a tool, and must be pinned
+by version and verified like any other. The spike pinned it by version only (6.0.9)
+without verification; that is not sufficient.
+
+### Licensing
+
+All of the above is subject to
+[ADR 0008](0008-widened-licence-allowlist.md), which widened the allowlist to admit the
+`FTL`, `IJG`, `libpng-2.0` and `LicenseRef-AGG-2.3` components PDFium bundles, and records
+the two mandatory credit lines. Every component is enumerated in
+[`engines/licenses.toml`](../../engines/licenses.toml) and checked in CI.
+
+### The five unaudited engines
+
+HarfBuzz, jbig2enc (and Leptonica), mozjpeg, libwebp and libavif have **not** been through
+a licence audit or a wasm build. Nothing above applies to them. jbig2enc is flagged
+"verify" above and remains the likeliest to need its own ADR.
 
 ## Consequences
 

@@ -33,6 +33,28 @@ corpus/files/
 corpus/cache/
 corpus/out/
 
+# --- Generated corpus output, anywhere in the tree ---
+# Generated corpora are reproducible from their generator, so committing them is pure
+# cost. Spike 0001 committed a 50 MB generated PDF by mistake because its own .gitignore
+# lived only on the spike branch; these rules live on main so it cannot recur here.
+**/common/corpus/
+**/corpus/generated/
+*.generated.pdf
+
+# --- Spike artifacts (spikes/ is excluded from the cargo workspace) ---
+# Spike code is throwaway and its inputs are all reproducible: pinned+checksummed
+# downloads, deterministic generators, assembly scripts. Only sources belong in git.
+spikes/**/vendor/
+spikes/**/build/
+spikes/**/pkg/
+spikes/**/www/
+spikes/**/node_modules/
+spikes/**/target/
+spikes/**/test-results/
+spikes/**/playwright-report/
+spikes/**/*.wasm
+spikes/**/*.data
+
 # --- Golden/regression run artifacts ---
 /tools/out/
 *.actual.pdf
