@@ -1,6 +1,12 @@
-# pnpm 12 gates dependency build scripts by default. Only these two need to run one,
-# and both are build-time only: esbuild fetches its platform binary, sharp builds its
-# libvips binding. Everything else stays blocked.
+# pnpm gates dependency build scripts by default, and reads that setting from here
+# rather than from package.json. Only these two need to run one, and both are
+# build-time only: esbuild fetches its platform binary, sharp builds its libvips
+# binding. Everything else stays blocked.
+#
+# Note the pnpm version is pinned to 11.x in package.json, not the latest 12.x:
+# Dependabot's updater only ships pnpm 11 and cannot install 12 in its sandbox, so
+# pnpm 12 silently broke automated npm dependency and security updates. See the
+# comment in .github/dependabot.yml.
 allowBuilds:
   esbuild: true
   sharp: true
