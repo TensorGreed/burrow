@@ -51,6 +51,16 @@ updates:
       - rust
       - fuzzing
 
+  # This entry constrains the pnpm version in apps/web/package.json, which is pinned to
+  # 11.x rather than the latest 12.x on purpose.
+  #
+  # Dependabot's updater image ships pnpm 11 and resolves the version via
+  # `corepack install <version> --cache-only`. That sandbox cannot fetch, so a
+  # `packageManager` of pnpm@12.x makes every npm update fail with `unknown_error` —
+  # including security updates, and silently, since the failure is in Dependabot's own
+  # run rather than in CI. Do not bump `packageManager` to 12 until Dependabot supports
+  # it. The lockfile format (v9) is shared between pnpm 11 and 12, so this costs nothing
+  # else.
   - package-ecosystem: npm
     directory: /apps/web
     schedule:
