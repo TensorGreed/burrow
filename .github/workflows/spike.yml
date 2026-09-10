@@ -1,0 +1,122 @@
+name: Spike
+
+# Lives ONLY on spike/** branches. ci.yml triggers on main and PRs to main, so a pushed
+# spike branch would otherwise run nothing and we would have no x86-64 timings.
+#
+# This workflow is never merged to main. It exists to answer one question the local
+# aarch64 machine cannot: what does this cost on GitHub's runners?
+
+on:
+  push:
+    branches: ["spike/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  option1:
+    name: option 1 — engines via JS bridge
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install emsdk
+        id: emsdk
+        run: |
+          start=$(date +%s)
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git ~/emsdk
+          ~/emsdk/emsdk install latest
+          ~/emsdk/emsdk activate latest
+          echo "EMSDK_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch pinned engines
+        run: spikes/wasm-engines/scripts/fetch-engines.sh
+
+      - name: Generate corpus
+        run: |
+          start=$(date +%s)
+          python3 spikes/wasm-engines/common/make-corpus.py
+          echo "corpus generated in $(( $(date +%s) - start ))s"
+
+      - name: Build qpdf for wasm
+        id: qpdf
+        run: |
+          source ~/emsdk/emsdk_env.sh
+          cd spikes/wasm-engines
+          tar xzf vendor/qpdf-12.4.1.tar.gz -C vendor/
+          mkdir -p vendor/pdfium && tar xzf vendor/pdfium-wasm.tgz -C vendor/pdfium
+          embuilder build zlib libjpeg
+          start=$(date +%s)
+          mkdir -p build/qpdf-em && cd build/qpdf-em
+          # PKG_CONFIG_EXECUTABLE is broken on purpose: qpdf's pkg-config path finds the
+          # HOST zlib, which is the wrong ABI for wasm. See the spike report, Finding 5.
+          emcmake cmake ../../vendor/qpdf-12.4.1 \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON \
+            -DBUILD_DOC=OFF -DINSTALL_MANUAL=OFF -DINSTALL_EXAMPLES=OFF \
+            -DINSTALL_PKGCONFIG=OFF -DUSE_IMPLICIT_CRYPTO=OFF \
+            -DREQUIRE_CRYPTO_NATIVE=ON -DSKIP_OS_SECURE_RANDOM=ON \
+            -DPKG_CONFIG_EXECUTABLE=/nonexistent-on-purpose \
+            -DCMAKE_C_FLAGS="-fexceptions" -DCMAKE_CXX_FLAGS="-fexceptions" > /dev/null
+          cmake --build . --target libqpdf -j "$(nproc)" > /dev/null
+          echo "QPDF_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Link qpdf shim module
+        run: |
+          source ~/emsdk/emsdk_env.sh
+          cd spikes/wasm-engines
+          SYSROOT="$EMSDK/upstream/emscripten/cache/sysroot"
+          em++ -O2 -fexceptions -I vendor/qpdf-12.4.1/include \
+            option1-js-bridge/qpdf_shim.cpp \
+            build/qpdf-em/libqpdf/libqpdf.a \
+            "$SYSROOT/lib/wasm32-emscripten/libz.a" \
+            "$SYSROOT/lib/wasm32-emscripten/libjpeg.a" \
+            -sMODULARIZE=1 -sEXPORT_NAME=createQpdf -sEXPORT_ES6=0 \
+            -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=web,worker,node \
+            -sEXPORTED_FUNCTIONS='["_qpdf_probe_pages","_qpdf_probe_last_message","_qpdf_probe_version_ok","_malloc","_free"]' \
+            -sEXPORTED_RUNTIME_METHODS='["cwrap","HEAPU8","UTF8ToString"]' \
+            -o build/qpdf.js
+
+      - name: Build Rust for wasm32-unknown-unknown
+        id: rust
+        run: |
+          cargo install --locked wasm-pack || true
+          start=$(date +%s)
+          cd spikes/wasm-engines/option1-js-bridge/rust
+          wasm-pack build --release --target no-modules --out-dir ../pkg
+          echo "RUST_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble and measure
+        run: |
+          cd spikes/wasm-engines
+          ./option1-js-bridge/assemble.sh
+          node common/measure-sizes.mjs \
+            option1-js-bridge/www/spike_option1_bg.wasm \
+            option1-js-bridge/www/spike_option1.js \
+            option1-js-bridge/www/bridge.js \
+            option1-js-bridge/www/worker.js \
+            option1-js-bridge/www/pdfium/pdfium.wasm \
+            option1-js-bridge/www/pdfium/pdfium.js \
+            option1-js-bridge/www/qpdf/qpdf.wasm \
+            option1-js-bridge/www/qpdf/qpdf.js
+
+      - name: Playwright — the ADR 0006 bar
+        run: |
+          cd spikes/wasm-engines
+          npm install
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - name: Report build times
+        run: |
+          echo "### Spike build times (x86-64 runner)" >> "$GITHUB_STEP_SUMMARY"
+          echo "| step | seconds |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| emsdk install | ${{ steps.emsdk.outputs.EMSDK_SECONDS }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| qpdf -> wasm | ${{ steps.qpdf.outputs.QPDF_SECONDS }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| rust -> wasm | ${{ steps.rust.outputs.RUST_SECONDS }} |" >> "$GITHUB_STEP_SUMMARY"
