@@ -16,7 +16,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/anugram/burrow"
+repository = "https://github.com/TensorGreed/burrow"
 authors = ["The burrow contributors"]
 
 [workspace.dependencies]

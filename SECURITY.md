@@ -11,7 +11,7 @@ vulnerability.**
 
 Report privately through GitHub's private vulnerability reporting:
 
-1. Go to the [Security tab](https://github.com/anugram/burrow/security/advisories/new).
+1. Go to the [Security tab](https://github.com/TensorGreed/burrow/security/advisories/new).
 2. Click **Report a vulnerability**.
 3. Include the details below.
 
