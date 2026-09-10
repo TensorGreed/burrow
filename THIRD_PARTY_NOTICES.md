@@ -17,8 +17,8 @@ each app:
 
 > This software is based in part on the work of the Independent JPEG Group.
 
-And, once ADR 0010 is accepted, HarfBuzz's copyright notice together with **both** of its
-disclaimer paragraphs, reproduced in full from
+And HarfBuzz's copyright notice together with **both** of its disclaimer paragraphs,
+reproduced in full from
 [`docs/adr/licences/harfbuzz-14.3.1-COPYING.txt`](docs/adr/licences/harfbuzz-14.3.1-COPYING.txt)
 — which we commit ourselves because **PDFium's package ships no HarfBuzz licence file at
 all**.
@@ -85,14 +85,18 @@ Note that PDFium's package ships a top-level `LICENSE` that is the **packager's 
 license**, not PDFium's BSD-3-Clause. Recording "MIT" from that file would misdescribe an
 artifact containing nine other licenses.
 
-> **This section is blocked pending [ADR 0010](docs/adr/0010-harfbuzz-and-icu-in-pdfium.md).**
-> The component set is now fully determined — see `engines/licenses.toml`, 23 components,
-> 18 confirmed linked — but two of their licences (`MIT-Modern-Variant` for HarfBuzz,
-> `ICU` for ICU's legacy section) are not yet on the allowlist. ADR 0010 proposes
-> admitting both; `tools/check-engine-licences.py` fails until it is Accepted.
+> **Licence-clean, notices not yet on every required surface.** The component set is
+> fully determined — `engines/licenses.toml`, 23 components, 18 confirmed linked, checked
+> in CI by `tools/check-engine-licences.py` and `tools/detect-engine-components.py` — and
+> every licence is on the allowlist as amended by
+> [ADR 0010](docs/adr/0010-harfbuzz-and-icu-in-pdfium.md).
 >
-> **No build containing these engines has been distributed**, so no notice obligation is
-> currently unmet. That changes the moment one is.
+> What is still missing is **three of the four surfaces** ADR 0008 requires the credit
+> lines to appear on: the website credits page and both apps' open-source licence
+> screens. Only this file exists.
+>
+> **No build containing these engines has been distributed**, so nothing is in violation
+> today. That changes the moment one is.
 
 | Engine | License (as audited) | Status |
 |---|---|---|

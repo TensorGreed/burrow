@@ -4,11 +4,10 @@ Date: 2026-09-10
 
 ## Status
 
-Proposed — amends [0008](0008-widened-licence-allowlist.md).
+Accepted — amends [0008](0008-widened-licence-allowlist.md).
 
-The allowlist additions below take effect only when this is Accepted.
-`tools/check-engine-licences.py` deliberately **fails** until then, so PR #14 cannot merge
-on a licence surface nobody has signed off.
+`MIT-Modern-Variant` and `ICU` are now on the allowlist; see *On acceptance* below for
+the exact change that was made.
 
 ## Context
 
@@ -190,8 +189,8 @@ learned twice.
 
 ## On acceptance — the exact change
 
-Flipping this to Accepted requires **one edit**, so there is no ambiguity about what
-"accepted" authorises. In `tools/check-engine-licences.py`, add two entries to `ALLOWED`:
+Recorded so the scope of what "accepted" authorised is unambiguous. In
+`tools/check-engine-licences.py`, two entries were added to `ALLOWED`:
 
 ```python
     # Added by ADR 0010, for components bundled inside PDFium.
@@ -199,12 +198,10 @@ Flipping this to Accepted requires **one edit**, so there is no ambiguity about 
     "ICU",                  # ICU's legacy 1.8.1-57.1 section; X11-style
 ```
 
-Nothing else. The manifest already records the determined facts, the licence texts are
-already committed with provenance, and the detector already passes. After that edit
-`tools/check-engine-licences.py` returns 0 and PR #14's licence gate goes green.
-
-Until then it fails naming exactly these two identifiers — which is the intended
-behaviour, not an oversight.
+Nothing else: the manifest already recorded the determined facts, the licence texts were
+already committed with provenance, and the detector already passed. The lists in
+`CLAUDE.md`, `.claude/agents/license-auditor.md` and the `add-dependency` skill were
+updated to match, since all of them must agree.
 
 ## Consequences
 
