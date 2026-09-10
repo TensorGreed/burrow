@@ -1,0 +1,10 @@
+# Third-party engine artifacts and build output. Fetched by scripts/fetch-engines.sh,
+# which pins every download by version and sha256. Never committed: they are large,
+# third-party, and reproducible from the pinned manifest.
+vendor/
+build/
+node_modules/
+target/
+*.wasm
+*.o
+*.a
