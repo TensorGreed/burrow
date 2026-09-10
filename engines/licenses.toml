@@ -325,106 +325,78 @@ allowlist and that becomes a third blocking finding."""
 
 [[component]]
 name = "harfbuzz (bundled in pdfium)"
-version = "bundled with pdfium chromium/8044 (exact version not recorded by upstream)"
-license = "LicenseRef-UNDETERMINED-HarfBuzz-in-PDFium"
-license_file = "NONE SHIPPED -- see notes"
+version = "14.3.1"
+license = "MIT-Modern-Variant"
+license_file = "docs/adr/licences/harfbuzz-14.3.1-COPYING.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
-blocking = true
-notes = """BLOCKING. NEEDS DETERMINATION -- not a licence we may assume.
+notice_required = "Reproduce the copyright notice and both disclaimer paragraphs in all copies. MIT-Modern-Variant."
+notes = """DETERMINED by ADR 0010; was previously LicenseRef-UNDETERMINED.
 
-CONFIRMED LINKED into libpdfium.so (arm64): 1192 hb_* symbols, including the full public API
-(hb_blob_create, hb_face_create, hb_font_create, hb_face_builder_add_table,
-hb_icu_get_unicode_funcs) and internal C++ (OT::sbix::accelerator_t::get_png_extents). This is
-upstream third_party/harfbuzz-ng, not a PDFium reimplementation. pdfium.wasm also contains the
-HB_FONT_FUNCS string, so it is present there too, though the module is stripped of its name
-section and a symbol-level confirmation is not possible.
+Version and licence text are pinned to a commit, not guessed. PDFium's DEPS on branch \
+chromium/8044 pins harfbuzz_revision to 886fc1e645388080b72f6d9b06347533a0018045, and \
+meson.build at that commit reads version: '14.3.1'.
 
-NO harfbuzz licence file ships in ANY of the three artifacts. All three licences/ directories
-were enumerated and hashed: 13 upstream files (14 for Linux, adding llvm-libc.txt) and not one
-of them is harfbuzz. Upstream's steps/08-licenses.sh misses it.
+SPDX id VERIFIED, not assumed: the COPYING file calls itself "Old MIT", and its text from \
+the grant clause onward is byte-for-byte identical to SPDX's canonical MIT-Modern-Variant \
+licenseText after normalisation. OSI-approved.
 
-Why this blocks rather than resolves to MIT: THIRD_PARTY_NOTICES.md already lists HarfBuzz as
-"MIT (Old Style), not yet vendored", and ADR 0003 calls it MIT -- but that was written about
-vendoring hb-subset ourselves, from a tree that would contain COPYING. Here HarfBuzz arrives
-inside a prebuilt binary with no licence text, at an unrecorded version, and "Old Style MIT"
-has no SPDX identifier. MIT-style terms require reproducing a copyright notice; we do not
-possess the notice, so we cannot comply. ADR 0008's Consequences section explicitly lists
-HarfBuzz as one of the five engines it did NOT audit.
+THE ARTIFACT SHIPS NO HARFBUZZ LICENCE FILE. Upstream's steps/08-licenses.sh derives its \
+set from build.ninja and has no case for harfbuzz, so the notice the licence requires does \
+not travel with the binary. We commit it ourselves at the license_file path above, with \
+provenance and a re-fetch command in docs/adr/licences/PROVENANCE.md.
 
-TO RESOLVE (any one of these, recorded in an ADR superseding 0008):
-  1. Determine the bundled HarfBuzz version and commit its COPYING to
-     docs/adr/licences/, then record the exact identifier here (likely a
-     LicenseRef-HarfBuzz-OldMIT, since no SPDX id fits) and add it to the allowlist.
-  2. Get upstream pdfium-binaries to emit a harfbuzz licence file (issue against
-     steps/08-licenses.sh), then re-audit.
-Do NOT resolve it by writing `MIT` here."""
+Evidence: 557 demangled hb_* symbols in libpdfium.so (arm64), including \
+hb_icu_get_unicode_funcs -- which is also how ICU gets linked. In pdfium.wasm, names are \
+stripped, so the evidence is the HB_FONT_FUNCS string plus the inference from ICU's \
+presence (hb-icu is HarfBuzz's own ICU integration).
 
-# --- BLOCKING #2 ------------------------------------------------------------------
+M2 HAZARD: ADR 0004 selects hb-subset as our font-subsetting engine. Statically linking a \
+second HarfBuzz alongside PDFium's copy means two definitions of every hb_* symbol in one \
+binary, resolved first-wins by link order, with two allocator states. Must be resolved \
+before hb-subset is linked. See ADR 0010."""
 
 [[component]]
 name = "icu"
-version = "78 (symbol suffix _78; data icudt78l)"
-license = "Unicode-3.0 AND ICU AND BSD-3-Clause AND MIT"
+version = "78.2"
+license = "Unicode-3.0 AND ICU"
 license_file = "vendor/native-aarch64/licenses-pdfium/icu.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
-blocking = true
-notes = """BLOCKING. `ICU` (the ICU licence covering ICU 1.8.1 to ICU 57.1) is NOT on ADR
-0008's allowlist. Everything else in the expression is.
+notes = """Version pinned, not inferred: PDFium's DEPS on chromium/8044 pins icu_revision \
+to 8cc91d9b6ab9991802fd208ee03a69714fd0251c, whose source/common/unicode/uvernum.h reads \
+U_ICU_VERSION "78.2" -- matching the _78 symbol suffix observed in the binary.
 
-STATUS CHANGED: ADR 0008 and spike 0001 recorded `linked = false`, reasoning that
-pdf_enable_xfa = false makes ICU unnecessary. That reasoning was wrong -- ICU arrives via
-HarfBuzz's hb-icu integration, not via XFA. All three artifacts still set
-pdf_enable_xfa = false and pdf_enable_v8 = false, and ICU is linked anyway.
+ADR 0008 recorded linked = false, reasoning from pdf_enable_xfa = false. THAT REASONING \
+WAS WRONG: ICU arrives via HarfBuzz's hb-icu integration, not via XFA. Corrected by \
+ADR 0010.
 
-EVIDENCE. libpdfium.so (arm64): 123 version-suffixed ICU symbols -- ubidi_setPara_78,
-ubidi_writeReordered_78, ucase_toFullFolding_78, ucptrie_openFromBinary_78, u_charType_78,
-u_strlen_78, udata_openChoice_78. pdfium.wasm: ICU 78 RTTI type strings N6icu_787UObjectE,
-N6icu_7810UnicodeSetE, N6icu_7815Normalizer2ImplE, N6icu_7818ComposeNormalizer2E, plus the
-icudt78l / ICUDATA data-file names. RTTI name strings only exist if the classes were compiled
-in, so this is compiled ICU C++, not a stray reference.
+Evidence: 489 version-suffixed symbols in libpdfium.so (ubidi_setPara_78, u_charType_78, \
+ucase_toFullFolding_78, udata_openChoice_78). In pdfium.wasm, 18 RTTI type-name strings \
+(N6icu_7810UnicodeSetE, N6icu_7813UnicodeStringE) plus 4 icudt78/ICUDATA markers -- RTTI \
+names exist only if the classes were compiled in. Linked in ALL THREE artifacts.
 
-ADR 0008 required exactly this before flipping the flag: "If ICU is ever linked, its other
-sub-licences (the old ICU licence, MIT-old-style, BSD-3-Clause, public-domain tz data) must be
-enumerated here first." Full enumeration of icu.txt (568 lines):
-  - Unicode-3.0            headline grant, with an explicit SPDX-License-Identifier line (l.41)
-  - ICU                    "ICU License - ICU 1.8.1 to ICU 57.1" (l.53). NOT ALLOWLISTED.
-                           Upstream places it under the heading "Third-Party Software
-                           Licenses ... components included within ICU libraries", so by the
-                           file's own framing it covers something shipped, not just history.
-  - BSD-3-Clause           cjdict.txt (Google Inc.) and Google double-conversion (V8 authors)
-  - MIT                    nlohmann/json (ICU4C only); install-sh MIT/X (l.544);
-                           sorttable.js (ICU4J only, not shipped)
-  - public domain          IANA Time Zone Database data and code (BCP 175 s.7)
-  - bespoke dictionary terms  laodict.txt, burmesedict.txt (Unicode terms of use +
-                           github.com/kanyawtech word lists)
-  - GPL-2.0 / GPL-3.0      aclocal.m4, pkg.m4, config.guess, config.sub -- ICU4C autotools
-                           files ONLY, each carrying the Autoconf exception, none compiled and
-                           none present in a prebuilt binary. Same finding as ADR 0008;
-                           deliberately NOT in the `license` expression, because writing it
-                           there would make the checker report a copyleft violation that does
-                           not exist.
+The licence expression is narrowed to what is actually shipped. ADR 0010 audited every \
+third-party section of icu.txt against both artifacts:
 
-TO RESOLVE: an ADR superseding 0008 that either (a) admits `ICU` to the allowlist against the
-four-part admission test -- it is an MIT/X-style permissive grant and would very likely pass --
-or (b) establishes that no ICU-1.8.1-to-57.1-licensed file reaches the linked subset (ubidi,
-ucase, ucptrie, normalizer2, uset) and records that determination. Either way it is a policy
-decision, not this file's to make. The public-domain tz data and the bespoke dictionary terms
-also need a written position if the ICU data blob is shipped."""
+  Unicode-3.0 (headline)          LINKED    489 native / 18 wasm
+  ICU (ICU 1.8.1 to 57.1)         legacy    admitted by ADR 0010 rather than argued away
+  cjdict.txt  BSD-3-Clause        not linked   0 ubrk_/BreakIterator
+  laodict.txt                     not linked   0
+  burmesedict.txt                 not linked   0
+  Time Zone Database  public dom  not linked   0 ucal_/zoneinfo64
+  Google double-conversion  BSD-3 not linked   0
+  nlohmann/json  MIT              not linked   0
+  aclocal.m4  GPL-2.0+Autoconf    not linked   build script, not compiled
+  config.guess/sub  GPL-3.0+exc   not linked   build script, not compiled
+  install-sh  MIT-old-style       not linked   build script
+  sorttable.js  X11               not linked   ICU4J only; we use ICU4C
 
-# ---------------------------------------------------------------------------------
-# qpdf 12.4.1 -- built from source. Best provenance of anything here: the tarball is
-# verified against upstream's PGP-clearsigned checksum file. Unchanged from spike 0001;
-# re-verified this audit and carried forward.
-#
-# GnuTLS (LGPL-2.1-or-later) is EXCLUDED and that is asserted, not assumed. All three
-# qpdf configure logs report "GNU TLS crypto enabled: OFF", "OpenSSL crypto enabled: OFF",
-# "Native crypto enabled: ON", and none of the three libqpdf.a archives contains a gnutls,
-# SSL_ or EVP_ symbol.
-# ---------------------------------------------------------------------------------
+The GPL sections cover four ICU4C autotools files, each carrying the Autoconf exception, \
+none compiled -- checked for the third time. BSD-3-Clause and MIT were dropped from the \
+expression because the components carrying them are not linked."""
 
 [[component]]
 name = "qpdf"

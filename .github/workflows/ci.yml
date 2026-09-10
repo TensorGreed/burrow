@@ -146,6 +146,14 @@ jobs:
           done
           echo "engine link tests present"
 
+      # Asks the question check-engine-licences.py cannot: is every component we can
+      # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared
+      # through a whole ADR cycle. Lives here because it needs the built artifacts.
+      - name: Detect undeclared engine components (ADR 0010)
+        run: |
+          python3 tools/detect-engine-components.py
+          tools/test-detect-engine-components.sh
+
       - name: doc tests and rustdoc warnings
         run: cargo doc --workspace --no-deps
         env:

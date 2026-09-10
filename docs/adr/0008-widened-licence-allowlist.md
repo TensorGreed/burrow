@@ -5,6 +5,18 @@ Date: 2026-09-10
 ## Status
 
 Accepted — supersedes [0003](0003-permissive-licensing.md).
+**Corrected and amended by [0010](0010-harfbuzz-and-icu-in-pdfium.md).**
+
+Two errors in this ADR's record, found when M1 PR 1 audited the native artifacts:
+
+- The component table below says **ICU is not linked**, reasoning from
+  `pdf_enable_xfa = false`. That reasoning is wrong — ICU arrives through HarfBuzz's
+  `hb-icu` integration, and 489 of its symbols are in `libpdfium.so` with RTTI evidence
+  in `pdfium.wasm` too. ADR 0010 corrects it.
+- **HarfBuzz is missing entirely.** It is linked, and PDFium's package ships no licence
+  file for it, so this ADR's allowlist was incomplete rather than merely narrow.
+
+The decision and reasoning below stand as written.
 
 ## Context
 

@@ -17,9 +17,16 @@ each app:
 
 > This software is based in part on the work of the Independent JPEG Group.
 
+And, once ADR 0010 is accepted, HarfBuzz's copyright notice together with **both** of its
+disclaimer paragraphs, reproduced in full from
+[`docs/adr/licences/harfbuzz-14.3.1-COPYING.txt`](docs/adr/licences/harfbuzz-14.3.1-COPYING.txt)
+— which we commit ourselves because **PDFium's package ships no HarfBuzz licence file at
+all**.
+
 The first is required by the FreeType Project License §2, the second by the Independent
-JPEG Group license, LEGAL ISSUES condition (2). FTL §3 additionally forbids using the
-FreeType name for promotional purposes.
+JPEG Group license, LEGAL ISSUES condition (2), and the third by HarfBuzz's
+`MIT-Modern-Variant` terms. FTL §3 additionally forbids using the FreeType name for
+promotional purposes, and HarfBuzz's licence is notice-only with no such restriction.
 
 **A release that omits these is a license violation, not an oversight.** They apply as
 soon as a build containing PDFium is distributed; no such build exists yet.
@@ -78,13 +85,11 @@ Note that PDFium's package ships a top-level `LICENSE` that is the **packager's 
 license**, not PDFium's BSD-3-Clause. Recording "MIT" from that file would misdescribe an
 artifact containing nine other licenses.
 
-> **This section is incomplete and is blocked.** M1 PR 1 vendors PDFium, qpdf, zlib and
-> libjpeg-turbo, and the audit of those artifacts found **two components that are not on
-> ADR 0008's allowlist** — see `engines/licenses.toml`, which fails
-> `tools/check-engine-licences.py` on purpose. The engine rows below cannot be completed
-> honestly until that is resolved by an ADR superseding 0008, because the final component
-> set depends on its outcome. Writing them out now would make these notices look complete
-> when they are not.
+> **This section is blocked pending [ADR 0010](docs/adr/0010-harfbuzz-and-icu-in-pdfium.md).**
+> The component set is now fully determined — see `engines/licenses.toml`, 23 components,
+> 18 confirmed linked — but two of their licences (`MIT-Modern-Variant` for HarfBuzz,
+> `ICU` for ICU's legacy section) are not yet on the allowlist. ADR 0010 proposes
+> admitting both; `tools/check-engine-licences.py` fails until it is Accepted.
 >
 > **No build containing these engines has been distributed**, so no notice obligation is
 > currently unmet. That changes the moment one is.
