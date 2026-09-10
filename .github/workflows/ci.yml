@@ -136,7 +136,7 @@ jobs:
       # so this step starts at the repository root and cannot find the package.json
       # that pins the pnpm version. Point it at the real one rather than duplicating
       # the version here, so `packageManager` stays the single source of truth.
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: apps/web/package.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
