@@ -1,0 +1,22 @@
+# Third-party engine artifacts, build output, and generated files. All reproducible:
+# scripts/fetch-engines.sh (pinned + checksummed), common/make-corpus.py (deterministic),
+# option1-js-bridge/assemble.sh. None of it belongs in git.
+vendor/
+build/
+node_modules/
+target/
+test-results/
+playwright-report/
+
+# The test corpus is GENERATED, byte-for-byte reproducibly, by common/make-corpus.py.
+# It includes a 50 MB file, so committing it is both unnecessary and expensive.
+common/corpus/
+
+# The assembled servable tree is a copy of artifacts that live elsewhere.
+option1-js-bridge/www/
+option1-js-bridge/pkg/
+
+*.wasm
+*.o
+*.a
+*.data

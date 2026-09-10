@@ -9,7 +9,7 @@ members = [
     "bindings/burrow-wasm",
 ]
 # `fuzz/` is its own workspace: cargo-fuzz requires that, and it needs nightly.
-exclude = ["fuzz"]
+exclude = ["fuzz", "spikes"]
 
 [workspace.package]
 version = "0.0.0"
