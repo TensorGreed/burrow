@@ -21,7 +21,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // PDFium's public C API. Declared here rather than bindgen-generated: three functions do
 // not justify a code generator, and hand-written declarations are auditable.
 //
-// Signatures from `engines/vendor/native-*/include/pdfium/fpdfview.h`.
+// Signatures checked by hand against
+// `engines/vendor/native-*/include/pdfium/fpdfview.h` at lines 330, 346 and 627. Nothing
+// verifies them automatically, and a typo here is undefined behaviour that no test would
+// catch -- so re-check these against the header on any PDFium bump.
 unsafe extern "C" {
     /// `FPDF_EXPORT void FPDF_CALLCONV FPDF_InitLibrary()`
     fn FPDF_InitLibrary();
@@ -39,6 +42,14 @@ unsafe extern "C" {
 }
 
 /// Initialise PDFium exactly once per process, and return its error state.
+///
+/// # Invariant this function does not discharge on its own
+///
+/// `Once` guarantees *this* function initialises at most once. It does **not** stop
+/// anything else in the process calling `FPDF_InitLibrary`, and PR 2 adds another
+/// caller. The soundness obligation is therefore process-wide: **this must remain the
+/// only path that calls `FPDF_InitLibrary`.** Treat that as a live requirement, not as
+/// something already satisfied.
 ///
 /// # PDFium's library init is global, and calling it concurrently aborts
 ///
@@ -70,7 +81,7 @@ pub fn pdfium_ensure_init() -> u64 {
         // while another thread could still be using it is unsound, and there is no safe
         // point to do it in a multi-threaded test binary. The process exit reclaims
         // everything.
-        let err = unsafe {
+        let err: c_ulong = unsafe {
             FPDF_InitLibrary();
             FPDF_GetLastError()
         };
@@ -85,12 +96,13 @@ pub fn pdfium_ensure_init() -> u64 {
 /// Taking the function pointer forces the linker to bind the symbol, which is what we
 /// want to prove — while actually calling it would risk tearing PDFium down under
 /// another thread. See [`pdfium_ensure_init`].
-#[must_use]
-pub fn pdfium_destroy_symbol_resolves() -> bool {
+pub fn pdfium_destroy_symbol_resolves() {
     let f: unsafe extern "C" fn() = FPDF_DestroyLibrary;
-    // A resolved symbol is never null; comparing the address to zero is the cheapest way
-    // to use the pointer so the optimiser cannot discard the reference.
-    (f as usize) != 0
+    // `black_box` rather than a comparison: LLVM knows a function pointer is non-null, so
+    // `(f as usize) != 0` folds to `true` and the reference becomes elidable -- the test
+    // would still pass while proving nothing. This also avoids the pointer-to-integer
+    // cast that the workspace lints deny as a class.
+    std::hint::black_box(f);
 }
 
 /// The version string reported by the linked qpdf.
@@ -125,6 +137,15 @@ pub fn qpdf_version() -> burrow_types::Result<String> {
 #[must_use]
 pub const fn pinned_pdfium_path() -> &'static str {
     env!("BURROW_PDFIUM_SO")
+}
+
+/// The qpdf version pinned in `engines/pins.toml`.
+///
+/// Read from the pin at build time so the assertion cannot drift from what was actually
+/// fetched and built.
+#[must_use]
+pub const fn pinned_qpdf_version() -> &'static str {
+    env!("BURROW_QPDF_VERSION")
 }
 
 /// The sha256 `build.rs` verified `libpdfium.so` against, from `engines/pins.toml`.
@@ -198,14 +219,16 @@ mod tests {
 
     #[test]
     fn pdfium_teardown_symbol_links_even_though_we_never_call_it() {
-        assert!(pdfium_destroy_symbol_resolves());
+        // Compiles and links, or the binary would not have been produced at all.
+        pdfium_destroy_symbol_resolves();
     }
 
     #[test]
     fn qpdf_links_and_reports_the_pinned_version() {
         let v = qpdf_version().expect("qpdf should report a version");
         assert_eq!(
-            v, "12.4.1",
+            v,
+            pinned_qpdf_version(),
             "linked qpdf is not the version pinned in engines/pins.toml"
         );
     }

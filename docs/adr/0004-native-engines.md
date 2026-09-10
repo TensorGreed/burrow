@@ -194,6 +194,18 @@ trusted to have taken effect.
 the WASM build, so both paths link identical versions. That removes a divergence source
 before the differential conformance harness (M1 item 12) has to explain one.
 
+### Known asymmetry: the wasm artifacts have no build manifest
+
+`engines/build-native.sh` records `lib/BUILD_MANIFEST.sha256` for what it produced, and
+`build.rs` re-verifies the static archives against it — which closes the gap where a CI
+cache could restore archives that nothing had checksummed. **`engines/build-wasm.sh`
+records nothing equivalent**, and nothing re-verifies `pdfium.wasm` at bundle time.
+
+That is deliberate deferral, not oversight: the wasm artifacts are consumed by the web
+bundle, which does not exist until M1 PR 4, so the check belongs with the code that loads
+them. Recorded here so it is a decision someone made rather than something that was
+missed.
+
 ### Fuzzing a prebuilt engine — what it does and does not test
 
 `engines/build-native.sh` produces a **second** qpdf archive instrumented with

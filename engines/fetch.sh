@@ -2,8 +2,12 @@
 # Fetch every engine artifact named in engines/pins.toml, verifying each against its
 # pinned sha256 before it can be used.
 #
-# This is the ONLY place in the build that touches the network. build.rs reads the
-# vendored tree and pins.toml; it never downloads.
+# This is the only place that fetches PINNED ENGINE ARTIFACTS. build.rs reads the
+# vendored tree and pins.toml and never downloads.
+#
+# Not covered here: the emsdk toolchain, which a developer obtains with `git clone` plus
+# `emsdk install`. emsdk verifies its own downloads by sha512, but outside our pin
+# regime -- see the [emsdk] section of pins.toml.
 #
 # Fails closed:
 #   - a checksum mismatch is an error, and the artifact is quarantined, not left in place

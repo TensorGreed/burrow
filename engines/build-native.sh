@@ -22,13 +22,20 @@ arch="$(uname -m)"
 prefix="$vendor/native-$arch"
 jobs="$(nproc)"
 
+# Versions come from pins.toml, never from literals here -- see engines/pins.sh.
+# shellcheck source=engines/pins.sh
+source "$here/pins.sh"
+QPDF_VERSION="$(pins_get qpdf.version)" || { echo "$(basename "$0"): cannot read qpdf.version from pins.toml" >&2; exit 1; }
+ZLIB_VERSION="$(pins_get zlib.version)" || { echo "$(basename "$0"): cannot read zlib.version from pins.toml" >&2; exit 1; }
+JPEG_VERSION="$(pins_get libjpeg-turbo.version)" || { echo "$(basename "$0"): cannot read libjpeg-turbo.version from pins.toml" >&2; exit 1; }
+
 case "$arch" in
   aarch64) pdfium_pkg="pdfium-linux-arm64.tgz" ;;
   x86_64)  pdfium_pkg="pdfium-linux-x64.tgz" ;;
   *) echo "build-native: unsupported arch $arch (only aarch64 and x86_64 are pinned)" >&2; exit 1 ;;
 esac
 
-for f in "$pdfium_pkg" qpdf-12.4.1.tar.gz zlib-1.3.2.tar.gz libjpeg-turbo-3.2.0.tar.gz; do
+for f in "$pdfium_pkg" qpdf-$QPDF_VERSION.tar.gz zlib-$ZLIB_VERSION.tar.gz libjpeg-turbo-$JPEG_VERSION.tar.gz; do
   [ -f "$vendor/$f" ] || { echo "build-native: $f missing -- run engines/fetch.sh first" >&2; exit 1; }
 done
 
@@ -58,25 +65,32 @@ cp "$pd/LICENSE" "$prefix/licenses-pdfium/PACKAGING-LICENSE.txt"
 echo "   libpdfium.so $(stat -c%s "$prefix/lib/libpdfium.so") bytes"
 
 # ---------------------------------------------------------------------------------
-say "zlib 1.3.2 (static)"
-rm -rf "$src/zlib-1.3.2"
-tar xzf "$vendor/zlib-1.3.2.tar.gz" -C "$src"
-cmake -S "$src/zlib-1.3.2" -B "$src/build-zlib-$arch" \
+say "zlib $ZLIB_VERSION (static)"
+rm -rf "$src/zlib-$ZLIB_VERSION"
+tar xzf "$vendor/zlib-$ZLIB_VERSION.tar.gz" -C "$src"
+cmake -S "$src/zlib-$ZLIB_VERSION" -B "$src/build-zlib-$arch" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
   -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_TESTING=OFF \
   -DCMAKE_INSTALL_PREFIX="$prefix" >/dev/null
 cmake --build "$src/build-zlib-$arch" -j "$jobs" >/dev/null
 cmake --install "$src/build-zlib-$arch" >/dev/null
-# Some zlib versions install libz.a under a versioned name; normalise.
-[ -f "$prefix/lib/libz.a" ] || cp "$src/build-zlib-$arch"/libz.a "$prefix/lib/" 2>/dev/null || true
+# Some zlib versions install libz.a under a versioned name; normalise. Fail loudly if
+# the fallback cannot find it -- otherwise the `stat` below dies with a bare
+# "No such file or directory" and no clue why.
+if [ ! -f "$prefix/lib/libz.a" ]; then
+  cp "$src/build-zlib-$arch/libz.a" "$prefix/lib/" || {
+    echo "build-native: zlib built but libz.a is not where expected" >&2
+    exit 1
+  }
+fi
 echo "   libz.a $(stat -c%s "$prefix/lib/libz.a") bytes"
 
 # ---------------------------------------------------------------------------------
-say "libjpeg-turbo 3.2.0 (static)"
+say "libjpeg-turbo $JPEG_VERSION (static)"
 # libjpeg-TURBO, not IJG libjpeg 9f: maintained, SIMD, same codebase PDFium bundles.
-rm -rf "$src/libjpeg-turbo-3.2.0"
-tar xzf "$vendor/libjpeg-turbo-3.2.0.tar.gz" -C "$src"
-cmake -S "$src/libjpeg-turbo-3.2.0" -B "$src/build-jpeg-$arch" \
+rm -rf "$src/libjpeg-turbo-$JPEG_VERSION"
+tar xzf "$vendor/libjpeg-turbo-$JPEG_VERSION.tar.gz" -C "$src"
+cmake -S "$src/libjpeg-turbo-$JPEG_VERSION" -B "$src/build-jpeg-$arch" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
   -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_TURBOJPEG=OFF \
   -DCMAKE_INSTALL_PREFIX="$prefix" >/dev/null
@@ -95,7 +109,7 @@ build_qpdf() { # variant extra_c_flags extra_cxx_flags outdir
   #
   # USE_IMPLICIT_CRYPTO=OFF + REQUIRE_CRYPTO_NATIVE=ON is LOAD-BEARING: the upstream
   # default is ON and would link GnuTLS, which is LGPL-2.1-or-later. Asserted below.
-  cmake -S "$src/qpdf-12.4.1" -B "$b" \
+  cmake -S "$src/qpdf-$QPDF_VERSION" -B "$b" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
     -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON \
@@ -122,14 +136,14 @@ build_qpdf() { # variant extra_c_flags extra_cxx_flags outdir
   cp "$b/libqpdf/libqpdf.a" "$outdir/"
 }
 
-say "qpdf 12.4.1 (static, native crypto only)"
-rm -rf "$src/qpdf-12.4.1"
-tar xzf "$vendor/qpdf-12.4.1.tar.gz" -C "$src"
+say "qpdf $QPDF_VERSION (static, native crypto only)"
+rm -rf "$src/qpdf-$QPDF_VERSION"
+tar xzf "$vendor/qpdf-$QPDF_VERSION.tar.gz" -C "$src"
 build_qpdf plain "" "" "$prefix/lib"
-cp -R "$src/qpdf-12.4.1/include/qpdf" "$prefix/include/"
+cp -R "$src/qpdf-$QPDF_VERSION/include/qpdf" "$prefix/include/"
 echo "   libqpdf.a $(stat -c%s "$prefix/lib/libqpdf.a") bytes"
 
-say "qpdf 12.4.1 (fuzzer + ASan instrumented)"
+say "qpdf $QPDF_VERSION (fuzzer + ASan instrumented)"
 # For M1 PR 2's fuzz targets. Built here because we build qpdf from source, so we can
 # instrument it -- which the prebuilt PDFium cannot be. Unused until PR 2.
 build_qpdf fuzz \
@@ -148,6 +162,6 @@ say "recording build manifest"
 sed 's/^/   /' "$prefix/lib/BUILD_MANIFEST.sha256"
 
 say "done: $prefix"
-find "$prefix/lib" -maxdepth 2 -name '*.a' -o -maxdepth 2 -name '*.so' | sort | while read -r f; do
-  printf '   %-28s %10s bytes\n' "${f#$prefix/lib/}" "$(stat -c%s "$f")"
+find "$prefix/lib" -maxdepth 2 \( -name '*.a' -o -name '*.so' \) | sort | while read -r f; do
+  printf '   %-28s %10s bytes\n' "${f#"$prefix/lib/"}" "$(stat -c%s "$f")"
 done

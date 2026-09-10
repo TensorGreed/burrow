@@ -81,7 +81,7 @@ fn main() {
     // Verify the library we are about to link, against the pin for this architecture.
     // The tarball hash in pins.toml says nothing about what was unpacked, so the
     // extracted file is pinned separately as `so_sha256`.
-    let expected = so_sha256_for(&pins, pin_key);
+    let expected = pin_sha256(&pins, &format!("pdfium.artifacts.{pin_key}"), "so_sha256");
     let pdfium_so = lib_dir.join("libpdfium.so");
     verify(&pdfium_so, &expected);
     // Watch the four libraries by name. Not the whole vendor tree -- that is hundreds of
@@ -153,6 +153,11 @@ fn main() {
     // Let the tests assert that the loaded library is the pinned one.
     println!("cargo:rustc-env=BURROW_PDFIUM_SO={}", pdfium_so.display());
     println!("cargo:rustc-env=BURROW_PDFIUM_SHA256={expected}");
+    // So the link test asserts against the PIN rather than a literal it can drift from.
+    println!(
+        "cargo:rustc-env=BURROW_QPDF_VERSION={}",
+        pin_value(&pins, "qpdf", "version")
+    );
     println!("cargo:rustc-cfg=burrow_native_engines");
 }
 
@@ -254,17 +259,17 @@ fn file_sha256(path: &Path) -> Option<String> {
     std::fs::read(path).ok().map(|b| hex(&Sha256::digest(&b)))
 }
 
-/// Extract `so_sha256` for one pdfium artifact from `engines/pins.toml`.
+/// Extract one scalar value from a `[section]` of `engines/pins.toml`.
 ///
 /// A targeted scan rather than a TOML parser: this needs exactly one value, and pulling
 /// in `toml` plus `serde` as build dependencies to read one string is a poor trade. It
 /// fails closed — an unparseable or missing pin aborts the build rather than skipping
 /// verification.
-fn so_sha256_for(pins: &Path, artifact_key: &str) -> String {
+fn pin_value(pins: &Path, section_name: &str, key: &str) -> String {
     let text = std::fs::read_to_string(pins)
         .unwrap_or_else(|e| fail(&format!("cannot read {}: {e}", pins.display())));
 
-    let section = format!("[pdfium.artifacts.{artifact_key}]");
+    let section = format!("[{section_name}]");
 
     // Match the header only at the START of a line, and skip comments. A bare substring
     // search would also match inside a comment or a string, so a future comment
@@ -289,19 +294,32 @@ fn so_sha256_for(pins: &Path, artifact_key: &str) -> String {
     }
 
     for line in lines_in_section {
-        if let Some(value) = line.strip_prefix("so_sha256") {
-            let hash = value
+        if let Some(value) = line.strip_prefix(key) {
+            let value = value
                 .trim_start()
                 .strip_prefix('=')
                 .map(|v| v.trim().trim_matches('"'))
-                .unwrap_or_else(|| fail(&format!("malformed so_sha256 line in {section}")));
-            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                fail(&format!("so_sha256 in {section} is not a sha256: {hash:?}"));
+                .unwrap_or_else(|| fail(&format!("malformed {key} line in {section}")));
+            if value.is_empty() {
+                fail(&format!("{key} in {section} is empty"));
             }
-            return hash.to_owned();
+            return value.to_owned();
         }
     }
-    fail(&format!("{section} has no so_sha256 pin"))
+    fail(&format!("{section} has no {key} pin"))
+}
+
+/// Extract a sha256 pin, rejecting anything that is not 64 hex digits.
+///
+/// The shape check is the backstop that makes the targeted scan safe: if the section
+/// matching ever went wrong, a value from the neighbouring table would still have to
+/// look like a digest, and then fail verification against the real file.
+fn pin_sha256(pins: &Path, section_name: &str, key: &str) -> String {
+    let v = pin_value(pins, section_name, key);
+    if v.len() != 64 || !v.chars().all(|c| c.is_ascii_hexdigit()) {
+        fail(&format!("{key} in [{section_name}] is not a sha256: {v:?}"));
+    }
+    v
 }
 
 /// Abort the build with a message. Returns `!` so it can be used in expression position.

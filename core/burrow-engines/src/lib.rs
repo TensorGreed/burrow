@@ -21,8 +21,20 @@
 // M1 PR 1: proof that the vendored native engines link and run. Not a public API and
 // not the real engine implementation -- that is PR 2. Only compiled when the engines are
 // actually available, which `build.rs` sets after verifying their checksums.
-#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
-pub mod link_check;
+// Test-only, and deliberately so. Its whole purpose is to prove the vendored libraries
+// link and answer a call; nothing in the library needs it. Keeping it out of the
+// non-test build also keeps a raw `FPDF_GetLastError` value from being reachable through
+// a public item, which core/CLAUDE.md forbids.
+//
+// PR 2's real `DocumentEngine` implementation is non-test code that uses this FFI in
+// earnest; this module goes away then.
+#[cfg(all(
+    test,
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+mod link_check;
 
 use burrow_types::{Limits, Result};
 

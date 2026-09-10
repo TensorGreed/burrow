@@ -5,8 +5,10 @@
 # reads it again and re-verifies the shared library it is about to link, so a vendor tree
 # that was tampered with after fetching fails the build rather than the test suite.
 #
-# There is NO network access at build time outside fetch.sh. build.rs reads this file and
-# the vendored tree; it never downloads.
+# fetch.sh is the only thing that downloads the artifacts pinned here, and build.rs
+# reads this file and the vendored tree without ever downloading. The one thing outside
+# that regime is the emsdk toolchain: it is version-pinned below, and emsdk verifies its
+# own downloads by sha512, but we do not checksum it ourselves.
 #
 # Provenance is recorded honestly per artifact. `tofu` means trust-on-first-use: a hash we
 # captured on first download because upstream publishes nothing to check against. It

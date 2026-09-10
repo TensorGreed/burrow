@@ -19,7 +19,14 @@ src="$vendor/src"
 prefix="$vendor/wasm"
 jobs="$(nproc)"
 
-for f in pdfium-wasm.tgz qpdf-12.4.1.tar.gz zlib-1.3.2.tar.gz libjpeg-turbo-3.2.0.tar.gz; do
+# Versions come from pins.toml, never from literals here -- see engines/pins.sh.
+# shellcheck source=engines/pins.sh
+source "$here/pins.sh"
+QPDF_VERSION="$(pins_get qpdf.version)" || { echo "$(basename "$0"): cannot read qpdf.version from pins.toml" >&2; exit 1; }
+ZLIB_VERSION="$(pins_get zlib.version)" || { echo "$(basename "$0"): cannot read zlib.version from pins.toml" >&2; exit 1; }
+JPEG_VERSION="$(pins_get libjpeg-turbo.version)" || { echo "$(basename "$0"): cannot read libjpeg-turbo.version from pins.toml" >&2; exit 1; }
+
+for f in pdfium-wasm.tgz qpdf-$QPDF_VERSION.tar.gz zlib-$ZLIB_VERSION.tar.gz libjpeg-turbo-$JPEG_VERSION.tar.gz; do
   [ -f "$vendor/$f" ] || { echo "build-wasm: $f missing -- run engines/fetch.sh first" >&2; exit 1; }
 done
 
@@ -29,7 +36,8 @@ EMSDK_DIR="${EMSDK:-$HOME/.local/share/emsdk}"
 [ -f "$EMSDK_DIR/emsdk_env.sh" ] || {
   echo "build-wasm: emsdk not found at $EMSDK_DIR" >&2
   echo "  git clone --depth 1 https://github.com/emscripten-core/emsdk.git $EMSDK_DIR" >&2
-  echo "  $EMSDK_DIR/emsdk install latest && $EMSDK_DIR/emsdk activate latest" >&2
+  echo "  $EMSDK_DIR/emsdk install $(sed -n '/^\[emsdk\]/,/^\[/p' "$here/pins.toml" | sed -n 's/^version = "\(.*\)"/\1/p')" >&2
+  echo "  $EMSDK_DIR/emsdk activate <that same version>" >&2
   exit 1
 }
 # shellcheck disable=SC1091
@@ -86,19 +94,19 @@ echo "   required entry points present"
 say "zlib + libjpeg-turbo for wasm"
 # Vendored, not Emscripten ports: the port shipped IJG libjpeg 9f while describing itself
 # as "BSD license", and using our own copies keeps native and wasm on the same versions.
-rm -rf "$src/zlib-1.3.2"
-tar xzf "$vendor/zlib-1.3.2.tar.gz" -C "$src"
-rm -rf "$src/libjpeg-turbo-3.2.0"
-tar xzf "$vendor/libjpeg-turbo-3.2.0.tar.gz" -C "$src"
+rm -rf "$src/zlib-$ZLIB_VERSION"
+tar xzf "$vendor/zlib-$ZLIB_VERSION.tar.gz" -C "$src"
+rm -rf "$src/libjpeg-turbo-$JPEG_VERSION"
+tar xzf "$vendor/libjpeg-turbo-$JPEG_VERSION.tar.gz" -C "$src"
 
-emcmake cmake -S "$src/zlib-1.3.2" -B "$src/build-zlib-wasm" \
+emcmake cmake -S "$src/zlib-$ZLIB_VERSION" -B "$src/build-zlib-wasm" \
   -DCMAKE_BUILD_TYPE=Release -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_TESTING=OFF \
   -DCMAKE_INSTALL_PREFIX="$prefix" >"$src/zlib-wasm.log" 2>&1
 cmake --build "$src/build-zlib-wasm" -j "$jobs" >>"$src/zlib-wasm.log" 2>&1
 cmake --install "$src/build-zlib-wasm" >>"$src/zlib-wasm.log" 2>&1
 echo "   libz.a $(stat -c%s "$prefix/lib/libz.a") bytes"
 
-emcmake cmake -S "$src/libjpeg-turbo-3.2.0" -B "$src/build-jpeg-wasm" \
+emcmake cmake -S "$src/libjpeg-turbo-$JPEG_VERSION" -B "$src/build-jpeg-wasm" \
   -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=OFF -DENABLE_STATIC=ON \
   -DWITH_TURBOJPEG=OFF -DWITH_SIMD=OFF \
   -DCMAKE_INSTALL_PREFIX="$prefix" >"$src/jpeg-wasm.log" 2>&1
@@ -107,9 +115,9 @@ cmake --install "$src/build-jpeg-wasm" >>"$src/jpeg-wasm.log" 2>&1
 echo "   libjpeg.a $(stat -c%s "$prefix/lib/libjpeg.a") bytes"
 
 # ---------------------------------------------------------------------------------
-say "qpdf 12.4.1 for wasm (native crypto only, exceptions enabled)"
-rm -rf "$src/qpdf-12.4.1"
-tar xzf "$vendor/qpdf-12.4.1.tar.gz" -C "$src"
+say "qpdf $QPDF_VERSION for wasm (native crypto only, exceptions enabled)"
+rm -rf "$src/qpdf-$QPDF_VERSION"
+tar xzf "$vendor/qpdf-$QPDF_VERSION.tar.gz" -C "$src"
 b="$src/build-qpdf-wasm"
 rm -rf "$b"
 # -fexceptions is MANDATORY: without it a qpdf throw aborts the whole module rather than
@@ -117,7 +125,7 @@ rm -rf "$b"
 #
 # PKG_CONFIG_EXECUTABLE is broken on purpose so qpdf cannot find the HOST zlib/libjpeg,
 # which would be the wrong ABI entirely for wasm.
-emcmake cmake -S "$src/qpdf-12.4.1" -B "$b" \
+emcmake cmake -S "$src/qpdf-$QPDF_VERSION" -B "$b" \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON \
   -DBUILD_DOC=OFF -DINSTALL_MANUAL=OFF -DINSTALL_EXAMPLES=OFF -DINSTALL_PKGCONFIG=OFF \
@@ -134,7 +142,7 @@ grep -q "Native crypto enabled: ON"    "$src/qpdf-wasm-configure.log" || { echo 
 
 cmake --build "$b" --target libqpdf -j "$jobs" >>"$src/qpdf-wasm-configure.log" 2>&1
 cp "$b/libqpdf/libqpdf.a" "$prefix/lib/"
-cp -R "$src/qpdf-12.4.1/include/qpdf" "$prefix/include/"
+cp -R "$src/qpdf-$QPDF_VERSION/include/qpdf" "$prefix/include/"
 echo "   libqpdf.a $(stat -c%s "$prefix/lib/libqpdf.a") bytes"
 
 # ---------------------------------------------------------------------------------
@@ -164,6 +172,6 @@ createQpdfProbe({ locateFile: (f) => process.argv[2] + "/" + f }).then((m) => {
 });
 ' "$src/qpdf-probe.cjs" "$prefix/lib" 2>/dev/null)"
 echo "   qpdf reports: ${version:-<no answer>}"
-[ "$version" = "12.4.1" ] || { echo "build-wasm: wasm qpdf reported '${version}', expected 12.4.1" >&2; exit 1; }
+[ "$version" = "$QPDF_VERSION" ] || { echo "build-wasm: wasm qpdf reported '${version}', expected $QPDF_VERSION" >&2; exit 1; }
 
 say "done: $prefix"

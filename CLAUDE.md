@@ -43,7 +43,7 @@ cargo doc --workspace --no-deps   # RUSTDOCFLAGS="-D warnings" in CI
 Native engines (needed for `--all-features`; see `docs/adr/0004-native-engines.md`):
 
 ```bash
-engines/fetch.sh              # pinned + checksum-verified; the ONLY network fetch
+engines/fetch.sh              # pinned + checksum-verified engine artifacts
 engines/build-native.sh       # zlib, libjpeg-turbo, qpdf (+ an ASan/fuzzer variant)
 engines/build-wasm.sh         # the same engines for wasm
 python3 tools/check-engine-licences.py   # engines/licenses.toml vs ADR 0008

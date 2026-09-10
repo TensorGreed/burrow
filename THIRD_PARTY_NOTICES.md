@@ -46,6 +46,20 @@ the current (M0) build beyond the Rust standard library.
 | `thiserror-impl` | MIT OR Apache-2.0 | `thiserror` | Proc-macro implementation |
 | `syn`, `quote`, `proc-macro2` | MIT OR Apache-2.0 | `thiserror-impl` | Proc-macro support; compile-time only |
 | `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | `proc-macro2` | Unicode identifier tables |
+| `sha2` | MIT OR Apache-2.0 | `burrow-engines` | Verifies vendored engine checksums; **build/dev only** |
+| `digest` | MIT OR Apache-2.0 | `sha2` | Digest traits; build/dev only |
+| `block-buffer` | MIT OR Apache-2.0 | `digest` | Build/dev only |
+| `crypto-common` | MIT OR Apache-2.0 | `digest` | Build/dev only |
+| `generic-array` | MIT | `block-buffer` | **MIT only, not dual-licensed** |
+| `typenum` | MIT OR Apache-2.0 | `generic-array` | Build/dev only |
+| `version_check` | MIT OR Apache-2.0 | `generic-array` | Build/dev only |
+| `cfg-if` | MIT OR Apache-2.0 | `cpufeatures` | Build/dev only |
+| `cpufeatures` | MIT OR Apache-2.0 | `sha2` | CPU feature detection; build/dev only |
+| `libc` | MIT OR Apache-2.0 | `cpufeatures` | Build/dev only |
+
+The `sha2` group is a **build- and dev-dependency of `burrow-engines` only**. It runs in
+`build.rs` to re-verify the vendored engine libraries, and in the link tests. It ships in
+no binary.
 
 The Rust standard library is distributed under `MIT OR Apache-2.0`.
 
@@ -64,10 +78,23 @@ Note that PDFium's package ships a top-level `LICENSE` that is the **packager's 
 license**, not PDFium's BSD-3-Clause. Recording "MIT" from that file would misdescribe an
 artifact containing nine other licenses.
 
+> **This section is incomplete and is blocked.** M1 PR 1 vendors PDFium, qpdf, zlib and
+> libjpeg-turbo, and the audit of those artifacts found **two components that are not on
+> ADR 0008's allowlist** — see `engines/licenses.toml`, which fails
+> `tools/check-engine-licences.py` on purpose. The engine rows below cannot be completed
+> honestly until that is resolved by an ADR superseding 0008, because the final component
+> set depends on its outcome. Writing them out now would make these notices look complete
+> when they are not.
+>
+> **No build containing these engines has been distributed**, so no notice obligation is
+> currently unmet. That changes the moment one is.
+
 | Engine | License (as audited) | Status |
 |---|---|---|
-| PDFium | BSD-3-Clause AND Apache-2.0, bundling **FTL**, **IJG**, **LicenseRef-AGG-2.3**, **libpng-2.0**, BSD-2-Clause, MIT, Zlib, Unicode-3.0 | not yet vendored |
-| qpdf | Apache-2.0 (dual with Artistic-2.0 at our option; we take Apache-2.0) | not yet vendored |
+| PDFium | BSD-3-Clause AND Apache-2.0, bundling **FTL**, **IJG**, **LicenseRef-AGG-2.3**, **libpng-2.0**, BSD-2-Clause, MIT, Zlib, Unicode-3.0, `Apache-2.0 WITH LLVM-exception` (Linux only) — plus **HarfBuzz (licence undetermined, no notice text shipped)** and **ICU (linked, contrary to ADR 0008)** | vendored, audit **blocked** |
+| qpdf | Apache-2.0 (dual with Artistic-2.0 at our option; we take Apache-2.0) | vendored, built from source |
+| zlib | Zlib | vendored 1.3.2, built from source |
+| libjpeg-turbo | IJG AND BSD-3-Clause AND Zlib | vendored 3.2.0, built from source |
 | HarfBuzz (`hb-subset`) | MIT (Old Style) | not yet vendored |
 | mozjpeg | BSD-3-Clause / IJG | not yet vendored |
 | libwebp | BSD-3-Clause | not yet vendored |
