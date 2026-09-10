@@ -377,6 +377,94 @@ The asymmetry is worth recording: qpdf ships a signed checksum file and a sigsto
 bundle; pdfium-binaries ships neither. If PDFium is adopted from prebuilts, our only
 integrity anchor is a hash we captured ourselves.
 
+## CI on GitHub's x86-64 runners
+
+`.github/workflows/spike.yml` (spike branches only) runs the whole option 1 path,
+including the Playwright bar. **Total 4 m 51 s**, green.
+
+| Step | x86-64 runner | this machine (aarch64, 20 cores) |
+|---|---|---|
+| emsdk install | 24 s | 17 s |
+| corpus generation | 8 s | 5 s |
+| qpdf → wasm | **96 s** | **6 s** |
+| shim link | 3 s | 1 s |
+| Rust → wasm (incl. `wasm-pack` install) | 96 s | 3 s |
+| assemble + measure | 24 s | — |
+| Playwright (6 tests) | 29 s | 3 s |
+
+The dev machine is 16× faster on the qpdf build (20 cores vs 4). CI cost is acceptable
+either way, and `Swatinem/rust-cache` plus caching the emsdk and qpdf archive would cut
+most of the 4 minutes.
+
+## Licensing — the result that actually gates M1
+
+Full `license-auditor` pass on the three engines. Verdicts: **PDFium FAIL, qpdf PASS
+(conditional), Emscripten libjpeg FAIL.**
+
+No GPL, LGPL, AGPL or SSPL code reaches any shipped artifact. Every failure is a
+*permissive licence that is not on `deny.toml`'s allowlist*, which under
+[ADR 0003](../adr/0003-permissive-licensing.md) fails identically.
+
+| Licence | Component | Where |
+|---|---|---|
+| **`FTL`** (FreeType Project) | freetype | **in `pdfium.wasm`** — confirmed by `FREETYPE_PROPERTIES`, `tt-glyf`, `tt-cmaps` strings |
+| **`IJG`** | libjpeg-turbo's libjpeg API half; and libjpeg 9f via the Emscripten port | **in both `pdfium.wasm` and `qpdf.wasm`** |
+| **AGG 2.3** | agg23 | bespoke grant, **no SPDX identifier at all** |
+| **`libpng-2.0`** | libpng | shipped in the package; not confirmed in the wasm |
+| `ICU`, MIT-old-style | icu third-party sections | `pdf_enable_xfa = false`, so probably not linked |
+
+Three things worth pulling out.
+
+**The package's top-level `LICENSE` is the packager's MIT licence, not PDFium's
+BSD-3-Clause.** Auditing by that file alone would have recorded "MIT" for an artifact
+containing nine other licences. ADR 0004's instruction to audit engines "as units, not
+by their headline licence" was correct, and this is the concrete case.
+
+**Emscripten mislabels libjpeg.** `--use-port=libjpeg` self-describes as "BSD license";
+the actual terms in `jpeg-9f/README` are the IJG licence. A tool's own summary was
+simply wrong, which is exactly the trap the `add-dependency` skill warns about.
+
+**ICU contains GPL-2.0 and GPL-3.0 text — and it is not a problem.** It covers four
+ICU4C autotools files (`aclocal.m4`, `pkg.m4`, `config.guess`, `config.sub`), each
+carrying the Autoconf exception, none compiled. Traced rather than assumed, because
+"PDFium contains GPL code" would be a false alarm with real consequences.
+
+### Two affirmative notice obligations
+
+Both are distribution requirements, not bookkeeping, and both apply to
+**executable-only** distribution — which is what we ship:
+
+- **FreeType FTL §2** — binary distribution must disclaim that the software is "based in
+  part of the work of the FreeType Team".
+- **IJG condition (2)** — documentation must state "this software is based in part on the
+  work of the Independent JPEG Group".
+
+### qpdf's GnuTLS trap
+
+`USE_IMPLICIT_CRYPTO` defaults **ON** upstream, and qpdf ships a GnuTLS backend —
+**LGPL-2.1-or-later**. A default build on a host where GnuTLS is discoverable would
+statically link LGPL code, precisely the case ADR 0003 says we cannot satisfy. The spike
+configured around it (`-DUSE_IMPLICIT_CRYPTO=OFF -DREQUIRE_CRYPTO_NATIVE=ON`, crypto
+summary confirms all three providers off but native). **Those flags are load-bearing and
+must be CI-asserted**, not left to "GnuTLS isn't installed in the container".
+
+### Provenance gaps
+
+- PDFium wasm is a **third party's prebuilt binary**, verified only by a sha256 we
+  recorded ourselves on first download. No signature, no attestation, no reproducible
+  build, and marked experimental upstream.
+- **emsdk is not verified by `fetch-engines.sh`**, yet its ports contribute libjpeg,
+  zlib, musl libc and compiler-rt to the shipped wasm.
+- **wasi-sdk was downloaded with no pin at all** — my own violation of the spike's rule,
+  found by the audit.
+
+**This is the real M1 blocker, and it is orthogonal to the linking decision.** Building
+PDFium from source would bundle the same components under the same licences, so option 2
+does not avoid it either. Nothing here threatens burrow's `MIT OR Apache-2.0` licensing
+or App Store distribution; the honest reading is that ADR 0003's allowlist was drawn up
+for Rust crates and is too narrow to describe a bundled C/C++ PDF engine. Widening it
+requires **a new ADR superseding ADR 0003** — not a `deny.toml` edit.
+
 ## Still to do
 
 - Build qpdf → wasm with `-fexceptions`; typed error on malformed input
