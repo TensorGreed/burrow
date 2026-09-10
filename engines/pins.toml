@@ -1,0 +1,109 @@
+# Every third-party engine artifact, pinned by version and sha256.
+#
+# This file is the single source of truth for engine acquisition. engines/fetch.sh reads
+# it and refuses to proceed on a mismatch or on a `TBD` pin. core/burrow-engines/build.rs
+# reads it again and re-verifies the shared library it is about to link, so a vendor tree
+# that was tampered with after fetching fails the build rather than the test suite.
+#
+# fetch.sh is the only thing that downloads the artifacts pinned here, and build.rs
+# reads this file and the vendored tree without ever downloading. The one thing outside
+# that regime is the emsdk toolchain: it is version-pinned below, and emsdk verifies its
+# own downloads by sha512, but we do not checksum it ourselves.
+#
+# Provenance is recorded honestly per artifact. `tofu` means trust-on-first-use: a hash we
+# captured on first download because upstream publishes nothing to check against. It
+# detects a later change; it cannot detect that the original download was already wrong.
+
+[meta]
+version = 1
+# ADR governing acquisition, and the licence policy the components are checked against.
+acquisition_adr = "docs/adr/0004-native-engines.md"
+licence_adr = "docs/adr/0008-widened-licence-allowlist.md"
+
+# ---------------------------------------------------------------------------------
+# PDFium -- prebuilt, three artifacts from ONE release so all targets agree.
+#
+# No static archive is published for any platform: build.yml suffixes static artifacts
+# `-static` and no such asset exists at this release. Native linkage is therefore
+# DYNAMIC (libpdfium.so). See ADR 0004.
+#
+# The licence set differs per artifact, because 08-licenses.sh derives it from that
+# platform's build.ninja. Each is audited separately into engines/licenses.toml.
+# ---------------------------------------------------------------------------------
+
+[pdfium]
+release = "chromium/8044"
+base_url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8044"
+provenance = "tofu"
+provenance_note = "Upstream publishes no checksums and no signature. Marked experimental for wasm (issue #28)."
+
+[pdfium.artifacts.wasm]
+file = "pdfium-wasm.tgz"
+sha256 = "2528dfb9762a5325f141fa29868257da51dd05952b13e2c02a08d4de00711fe1"
+contains = "pdfium.js + pdfium.wasm (finished Emscripten module, no static archive)"
+
+[pdfium.artifacts.linux-arm64]
+file = "pdfium-linux-arm64.tgz"
+sha256 = "e98400ef5f005f27cfba5c14f72d464e25187298f04950de46646033cf24cef0"
+contains = "lib/libpdfium.so"
+# Hash of the EXTRACTED library. core/burrow-engines/build.rs verifies this before
+# emitting any link flag, so a vendor tree tampered with after fetching fails the build.
+# The tarball hash above cannot cover this: it says nothing about what was unpacked.
+so_sha256 = "794a43ec86642d48ed69becb6923022cd0b34d23c81c524452d6f0549398d710"
+
+[pdfium.artifacts.linux-x64]
+file = "pdfium-linux-x64.tgz"
+sha256 = "eb142f416aed3a72fc5a02dbd5884868a16cb99dc0cf53e6bdd64afbf67b05f4"
+contains = "lib/libpdfium.so"
+so_sha256 = "b0361f8ba0bc6ffeb2325949a88f08b09356f46abe257ffdf846202999daa27b"
+
+# ---------------------------------------------------------------------------------
+# qpdf -- built from source. Best provenance of anything here: upstream ships a
+# PGP-clearsigned checksum file and a sigstore bundle.
+# ---------------------------------------------------------------------------------
+
+[qpdf]
+version = "12.4.1"
+url = "https://github.com/qpdf/qpdf/releases/download/v12.4.1/qpdf-12.4.1.tar.gz"
+sha256 = "f045aa277be2356ff53a89a8622945958291177d2483afc20ede7c8a8cd3873c"
+provenance = "pgp-signed-checksum"
+provenance_note = "Verified against upstream qpdf-12.4.1.sha256, which is PGP-clearsigned. A sigstore bundle is also published."
+signed_checksum_url = "https://github.com/qpdf/qpdf/releases/download/v12.4.1/qpdf-12.4.1.sha256"
+
+# ---------------------------------------------------------------------------------
+# qpdf's dependencies, vendored by us rather than taken from Emscripten's ports.
+#
+# ADR 0004 requires this. The ports route delivered IJG libjpeg 9f -- an unmaintained
+# branch, no SIMD -- while Emscripten's own port description called it "BSD license",
+# which is wrong. Vendoring both means native and wasm builds use the SAME versions,
+# which also removes a divergence source for the differential conformance harness.
+# ---------------------------------------------------------------------------------
+
+[zlib]
+version = "1.3.2"
+url = "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz"
+sha256 = "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+provenance = "tofu"
+provenance_note = "Upstream publishes a detached .asc signature; we record the hash ourselves. Verifying the signature would need the maintainer's key in CI."
+signature_url = "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz.asc"
+
+# libjpeg-TURBO, deliberately, not IJG libjpeg 9f: maintained, SIMD, and the same
+# codebase PDFium bundles. Licence IJG AND BSD-3-Clause AND Zlib, all allowed by ADR 0008.
+[libjpeg-turbo]
+version = "3.2.0"
+url = "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz"
+sha256 = "6f30092cef9fb839779646608f4ee14ae3cbac989c47fa05e841b0841f09878e"
+provenance = "tofu"
+provenance_note = "Upstream publishes a detached .sig signature; we record the hash ourselves."
+signature_url = "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.2.0/libjpeg-turbo-3.2.0.tar.gz.sig"
+
+# ---------------------------------------------------------------------------------
+# Emscripten SDK. A SHIPPED dependency, not just a tool: it contributes musl-derived
+# libc, compiler-rt, and the JS glue to every wasm artifact. ADR 0004 requires it pinned.
+# ---------------------------------------------------------------------------------
+
+[emsdk]
+version = "6.0.9"
+repo = "https://github.com/emscripten-core/emsdk.git"
+provenance = "version-pinned"
+provenance_note = "emsdk verifies its own downloads by sha512. We pin the SDK version; the toolchain archive itself is fetched and checked by emsdk."

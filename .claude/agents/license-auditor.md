@@ -16,13 +16,21 @@ the policy; `deny.toml` is its machine-readable form.
 **Allowed:** MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0 (including WITH
 LLVM-exception), ISC, Zlib, MPL-2.0, OFL-1.1 (fonts), Unicode-3.0, CC0-1.0, Unlicense.
 
-**Also allowed, for bundled native engine components only** (added by ADR 0008): `FTL`
-(FreeType), `IJG`, `libpng-2.0`, and `LicenseRef-AGG-2.3` — a local identifier for
+**Also allowed, for bundled native engine components only:** `FTL` (FreeType), `IJG`,
+`libpng-2.0`, and `LicenseRef-AGG-2.3` (added by ADR 0008) — a local identifier for
 Anti-Grain Geometry **2.3**, whose grant text is committed at
 `docs/adr/licences/LicenseRef-AGG-2.3.txt`. AGG 2.4 and later are GPL, so check the
-version, not just the name.
+version, not just the name. Plus `MIT-Modern-Variant` (HarfBuzz) and `ICU` (ICU's legacy
+1.8.1–57.1 section), added by ADR 0010.
 
-`FTL` and `IJG` carry **affirmative notice obligations** that bind executable-only
+**HarfBuzz is the case to learn from.** It was linked into PDFium for a whole ADR cycle
+with **no licence file in the artifact** and no manifest entry, because upstream's
+`08-licenses.sh` derives its set from `build.ninja` and misses it. Reading licence files
+would never have found it. `tools/detect-engine-components.py` now scans the binaries for
+undeclared components — run it, and treat a licence directory as a starting point rather
+than an inventory.
+
+`FTL`, `IJG` and `MIT-Modern-Variant` carry **affirmative notice obligations** that bind executable-only
 distribution — credit lines in user-reachable documentation, not just a repo file. If you
 see either, verify the obligation is recorded in `engines/licenses.toml` and reflected in
 `THIRD_PARTY_NOTICES.md`.

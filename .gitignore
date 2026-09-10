@@ -61,7 +61,13 @@ spikes/**/*.data
 *.actual.png
 *.diff.png
 
-# --- Native engine build artifacts (M1) ---
+# --- Vendored native engines (M1) ---
+# Everything under engines/vendor/ is reproducible from engines/pins.toml via
+# engines/fetch.sh (checksum-verified) plus the build scripts. Nothing there is
+# committed: the artifacts are large, third-party, and byte-pinned elsewhere.
+engines/vendor/
+
+# --- Native engine build artifacts ---
 /vendor/**/build/
 /vendor/**/prebuilt/
 *.o

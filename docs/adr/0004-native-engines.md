@@ -144,6 +144,88 @@ shipped wasm artifact. It is a **shipped dependency**, not just a tool, and must
 by version and verified like any other. The spike pinned it by version only (6.0.9)
 without verification; that is not sufficient.
 
+### Native Linux — added by M1 PR 1
+
+The original acquisition section covered only the **WASM** package, which was a gap:
+`cargo test`, the fuzz targets (libFuzzer is native), and the corpus regression runs on
+the GB10 all run **native**. So `linux-aarch64` and `linux-x86_64` are acquired too.
+
+**PDFium: prebuilt, from the same release as the WASM build.**
+`pdfium-linux-arm64.tgz` and `pdfium-linux-x64.tgz` at `chromium/8044` — the same release,
+so every target agrees on the engine version. Hashes are **trust-on-first-use**, like the
+WASM package, for the same reason: upstream publishes no checksums and no signature.
+
+Both the tarball **and the extracted `libpdfium.so`** are pinned. The tarball hash says
+nothing about what was unpacked, so `engines/pins.toml` carries a separate `so_sha256`
+per architecture and `core/burrow-engines/build.rs` re-verifies the library it is about to
+link. A vendor tree tampered with after fetching fails the build, not the test suite.
+
+**Native linkage is DYNAMIC, and that is not a choice.** No static archive is published
+for any platform: upstream's `build.yml` suffixes static artifacts `-static`, and no such
+asset exists at this release. `07-stage.sh` stages `libpdfium.so` for `linux-shared`.
+
+So `build.rs` links the shared library at build time — a recorded `DT_NEEDED` entry, not
+a `dlopen` of a searched path — with an rpath computed from `CARGO_MANIFEST_DIR` and
+`-Wl,--disable-new-dtags` so **`DT_RPATH`** is emitted rather than `DT_RUNPATH`. The
+difference matters: `DT_RUNPATH` is overridable by `LD_LIBRARY_PATH`, `DT_RPATH` is not,
+so the pinned copy cannot be shadowed by an environment variable. A test reads
+`/proc/self/maps` after PDFium initialises and asserts the mapped library is the pinned
+file under `engines/vendor/` — linking is not enough on its own, because the loader could
+satisfy the dependency from `/usr/lib` and every other test would still pass.
+
+**This linkage is dev/CI only.** It is how the test suite and corpus runner reach the
+engine on Linux. It is not a shipping decision:
+
+- **Shipped mobile linkage is decided at M3/M4.** Android and iOS have their own
+  constraints (App Store rules on dynamic libraries, NDK packaging) and neither is
+  acquired yet.
+- **ADR 0006's pre-M2 gate now also covers static native archives**, not just the wasm
+  question. If we take on a from-source PDFium build, static native linking comes with it
+  and this section should be revisited.
+
+**qpdf: from source, same tarball as the WASM build.** The same
+PGP-clearsigned 12.4.1 source, built for the host architecture with the same
+`-DUSE_IMPLICIT_CRYPTO=OFF -DREQUIRE_CRYPTO_NATIVE=ON`. `engines/build-native.sh` greps
+the configure log and **exits non-zero** unless all three of "GNU TLS crypto enabled: OFF",
+"OpenSSL crypto enabled: OFF" and "Native crypto enabled: ON" appear — the flags are not
+trusted to have taken effect.
+
+**zlib and libjpeg-turbo are vendored for native too**, from the same pinned sources as
+the WASM build, so both paths link identical versions. That removes a divergence source
+before the differential conformance harness (M1 item 12) has to explain one.
+
+### Known asymmetry: the wasm artifacts have no build manifest
+
+`engines/build-native.sh` records `lib/BUILD_MANIFEST.sha256` for what it produced, and
+`build.rs` re-verifies the static archives against it — which closes the gap where a CI
+cache could restore archives that nothing had checksummed. **`engines/build-wasm.sh`
+records nothing equivalent**, and nothing re-verifies `pdfium.wasm` at bundle time.
+
+That is deliberate deferral, not oversight: the wasm artifacts are consumed by the web
+bundle, which does not exist until M1 PR 4, so the check belongs with the code that loads
+them. Recorded here so it is a decision someone made rather than something that was
+missed.
+
+### Fuzzing a prebuilt engine — what it does and does not test
+
+`engines/build-native.sh` produces a **second** qpdf archive instrumented with
+`-fsanitize=fuzzer-no-link,address`. We can do that because we build qpdf from source.
+
+**We cannot do it for PDFium.** The prebuilt has no sanitizer instrumentation and no
+coverage feedback, so a fuzz target that goes through it exercises **our wrapper, our
+error mapping, and our `Limits` enforcement** — not PDFium's internals. libFuzzer will be
+driving a black box: crashes inside PDFium would still be detected as crashes, but
+coverage-guided exploration of PDFium's own parser will not happen.
+
+That is an acceptable division of labour, and it should be stated rather than assumed:
+**PDFium's internals are fuzzed upstream by OSS-Fuzz**, continuously and with
+instrumentation we are not going to match. Our fuzz targets exist to prove *our* boundary
+is sound — that hostile input becomes a typed error, that no limit is escaped, and that
+nothing panics or aborts. Claiming our fuzzing covers PDFium would be false.
+
+If we ever build PDFium from source (ADR 0006's pre-M2 gate), instrumenting it becomes
+possible and this changes.
+
 ### Licensing
 
 All of the above is subject to

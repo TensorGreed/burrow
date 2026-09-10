@@ -12,11 +12,12 @@ These are not preferences. A change that violates one is wrong, however well it 
    content may make a network call. No telemetry on file content, ever.
 2. **Permissive licenses only.** Allowed: MIT, BSD-2/3, Apache-2.0, ISC, Zlib, MPL-2.0,
    OFL (fonts), Unicode-3.0, CC0-1.0, Unlicense — plus, for bundled native engine
-   components, FTL, IJG, libpng-2.0 and LicenseRef-AGG-2.3. Forbidden: GPL, LGPL, AGPL,
+   components, FTL, IJG, libpng-2.0, LicenseRef-AGG-2.3, MIT-Modern-Variant and ICU.
+   Forbidden: GPL, LGPL, AGPL,
    SSPL, non-commercial, and anything unclear. CI enforces this in two halves:
    `cargo-deny` for Rust crates, `tools/check-engine-licences.py` against
    `engines/licenses.toml` for the engines. Adding a licence needs an ADR, not a config
-   edit. See `docs/adr/0008-widened-licence-allowlist.md`.
+   edit. See `docs/adr/0008-widened-licence-allowlist.md` and `docs/adr/0010-harfbuzz-and-icu-in-pdfium.md`.
 3. **All input is hostile.** Every file is untrusted and possibly adversarial. Every
    parser entry point gets a fuzz target. No panics cross the FFI boundary; errors are
    typed. Every operation enforces memory, time, and page/pixel limits.
@@ -38,6 +39,17 @@ cargo deny check                # licenses, advisories, bans
 cargo audit
 cargo build -p burrow-wasm --target wasm32-unknown-unknown
 cargo doc --workspace --no-deps   # RUSTDOCFLAGS="-D warnings" in CI
+```
+
+Native engines (needed for `--all-features`; see `docs/adr/0004-native-engines.md`):
+
+```bash
+engines/fetch.sh              # pinned + checksum-verified engine artifacts
+engines/build-native.sh       # zlib, libjpeg-turbo, qpdf (+ an ASan/fuzzer variant)
+engines/build-wasm.sh         # the same engines for wasm
+python3 tools/check-engine-licences.py   # engines/licenses.toml vs ADR 0008
+
+cargo test --workspace --all-features    # links the engines; without --all-features it does not
 ```
 
 Web (`apps/web/`):

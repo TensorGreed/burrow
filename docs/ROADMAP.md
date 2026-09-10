@@ -47,7 +47,17 @@ The first usable product: five PDF operations, in the core and on the web.
 Each operation is one vertical slice and is **not** done until every layer below is
 present. This is the `add-operation` checklist; it is not optional per-operation.
 
-### Foundations
+### Foundations — PR sequence
+
+Agreed sequence. Each PR is squash-merged with CI green before the next starts.
+
+| PR | Scope | Items |
+|---|---|---|
+| **1** | **Engine acquisition** — pinned fetch, native (linux-aarch64 + linux-x86_64) and wasm builds, licence manifest, crypto assertions, CI caching, proof of linkage | 1–3 |
+| **2** | `DocumentEngine` trait + **native PDFium** implementation: injected clock, `Limits` enforcement, typed error mapping, `page_count` as the thinnest end-to-end slice with all four test kinds, document-open fuzz target | 4, 5, 8 |
+| **3** | **qpdf native** behind its own trait, logging suppression, and the "a secret never reaches the console or an error" test | 6, 7 |
+| **4** | **Web path**: wasm binding + worker harness, `wasmBinary`, `-sENVIRONMENT=web,worker`, CSP `connect-src 'none'`, worker recovery per ADR 0009, wasm size budget, and the **differential conformance harness** | 9–12 |
+| **5+** | Operations, one at a time, starting with `merge` | — |
 
 The linking strategy is **settled** by [spike 0001](spikes/0001-wasm-engines.md):
 option 1, Emscripten engine modules bridged through JS, with Rust on
@@ -55,12 +65,19 @@ option 1, Emscripten engine modules bridged through JS, with Rust on
 decision and its seven requirements, and [ADR 0004](adr/0004-native-engines.md) for
 acquisition. The spike is not production code and nothing from it is reused directly.
 
-1. **Engine acquisition, per ADR 0004.** Prebuilt PDFium `chromium/8044` with its
-   trust-on-first-use hash recorded (upstream publishes no signature); qpdf 12.4.1 from
-   source, verified against upstream's PGP-signed checksum; zlib and libjpeg **vendored
-   with our own checksums**, not taken from Emscripten ports; emsdk pinned and verified.
-   *Testable:* a fetch script fails closed on any checksum mismatch, and CI builds all
-   engines from the pinned manifest alone.
+1. **Engine acquisition, per ADR 0004.** Both **native** (linux-aarch64 and
+   linux-x86_64) and **wasm** — `cargo test`, the fuzz targets and the corpus runs are
+   all native, so wasm alone is not enough. Prebuilt PDFium `chromium/8044` for all three
+   targets with trust-on-first-use hashes (upstream publishes no signature), and the
+   **extracted `libpdfium.so` pinned separately** from its tarball; qpdf 12.4.1 from
+   source, verified against upstream's PGP-signed checksum; zlib and libjpeg-turbo
+   **vendored with our own checksums** for both native and wasm, not taken from
+   Emscripten ports; emsdk pinned. Native linkage is dynamic with a pinned `DT_RPATH` —
+   see ADR 0004.
+   *Testable:* the fetch script fails closed on any checksum mismatch; `build.rs`
+   re-verifies the library before linking it; a test reads `/proc/self/maps` and asserts
+   the loaded PDFium is the pinned file; CI builds every engine from the pinned manifest
+   alone, on both architectures.
 2. **Engine licence manifest wired into the build.** Extend
    [`engines/licenses.toml`](../engines/licenses.toml) as each engine is vendored, and
    keep `tools/check-engine-licences.py` green. Add the two mandatory credit lines
@@ -118,6 +135,15 @@ acquisition. The spike is not production code and nothing from it is reused dire
 11. **wasm size budget in CI.** Record the module size and fail on an unexplained
     regression. The spike measured 6.50 MB raw / 2.20 MB brotli for the full option 1
     payload, 82% of it PDFium — that is the starting point, not a target.
+12. **Differential conformance between the two `DocumentEngine` implementations.** The
+    native path and the web path are separate implementations of one trait, and almost
+    every test exercises only the native one — the web path is otherwise covered just by
+    Playwright. So run the **same corpus through both** — native via `cargo test`, web via
+    headless Chromium — and assert **identical typed outcomes**. Divergence fails CI.
+    *Testable:* a corpus file that returns `Malformed` natively must return `Malformed` on
+    the web, and a page count must match exactly. This matters most at M2, where both
+    paths have to reach the same redaction verdict; a divergence discovered then would be
+    a redaction bug, not a test failure.
 
 ### Operations
 
@@ -243,7 +269,7 @@ Native SwiftUI app. No WebView. Requires macOS and Xcode.
 
 DOCX, XLSX, PPTX → PDF, on-device.
 
-- Evaluate what is achievable within [ADR 0003](adr/0003-permissive-licensing.md), using
+- Evaluate what is achievable within [ADR 0008](adr/0008-widened-licence-allowlist.md), using
   what each platform already provides rather than writing a layout engine:
   **iOS system rendering**; **docx-preview (Apache-2.0)** on web and Android;
   **LibreOffice (MPL-2.0, on our allowlist)** evaluated as a high-fidelity option. Record

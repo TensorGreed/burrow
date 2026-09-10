@@ -34,7 +34,7 @@ anything else.
 **Allowed:** MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0 (incl. WITH LLVM-exception),
 ISC, Zlib, MPL-2.0, OFL-1.1 (fonts), Unicode-3.0, CC0-1.0, Unlicense. For **bundled
 native engine components only**, ADR 0008 also allows `FTL`, `IJG`, `libpng-2.0` and
-`LicenseRef-AGG-2.3`.
+`LicenseRef-AGG-2.3`, and ADR 0010 adds `MIT-Modern-Variant` and `ICU`.
 
 **Forbidden:** GPL, LGPL, AGPL, SSPL, any non-commercial or field-of-use restriction, and
 **anything you cannot determine**. Unclear means forbidden.
@@ -50,15 +50,16 @@ Check these specifically:
   jbig2enc pulls in Leptonica.
 
 Do not add an exception to `deny.toml`. Its exceptions list is empty by design, and
-changing the allowlist requires a new ADR superseding 0008.
+changing the allowlist requires a new ADR (0008, as amended by 0010).
 
 A licence may pass ADR 0008's **admission test** (permissive; no copyleft; no
 field-of-use or non-commercial restriction; obligations limited to notices and credit
 lines) and still not be allowed. Passing the test only makes it *eligible* to be added by
 an ADR. The test explains the policy; it does not bypass it.
 
-If the dependency is a **native engine** rather than a crate or npm package, it also
-needs an entry in `engines/licenses.toml` — component, version, SPDX id or `LicenseRef-`,
+If the dependency is a **native engine** rather than a crate or npm package, run
+`tools/detect-engine-components.py` against the built artifact — reading its licence
+directory is not enough, as HarfBuzz proved — and add an entry to `engines/licenses.toml` — component, version, SPDX id or `LicenseRef-`,
 licence file, whether it is confirmed linked, and any notice obligation.
 `tools/check-engine-licences.py` fails CI otherwise.
 

@@ -25,6 +25,9 @@ env:
   # CI is not the place to discover a slow incremental build.
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: -D warnings
+  # NOTE: if .cargo/config.toml ever gains a `rustflags` table, this env var must go --
+  # cargo does not merge them, it DISCARDS the tables. That silently dropped an rpath
+  # once already.
 
 jobs:
   fmt:
@@ -46,6 +49,26 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # clippy RUNS BUILD SCRIPTS, and --all-features turns on `native-engines`, whose
+      # build.rs fails when the vendored libraries are absent. So this job needs the
+      # engines even though it never links. Same cache key as `test`, so on a warm cache
+      # this is a restore rather than a rebuild.
+      #
+      # Dropping --all-features instead would leave link_check.rs -- the only code in the
+      # project with `unsafe` -- unlinted, which is the wrong trade.
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+
       # --all-targets covers tests and benches, where the panic lints are relaxed but
       # everything else still applies.
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -57,7 +80,80 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # The engines are a real build input from M1 PR 1 onward: `--all-features` turns on
+      # `native-engines`, which links libpdfium.so and libqpdf.a. Cached on the pin
+      # manifest and the build scripts, so an ordinary PR does not rebuild qpdf.
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+
+      # A cache hit restores engines/vendor without running fetch.sh, so re-verify the
+      # checksums rather than trusting the cache. build.rs checks libpdfium.so too; this
+      # covers the source tarballs as well.
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+
+      # burrow-engines' own binary carries an absolute DT_RPATH into engines/vendor,
+      # emitted by its build.rs. That is the binary the provenance test runs in, so if
+      # the rpath goes missing the test could start passing against a system library.
+      # Assert it directly -- this breakage is invisible until something runs.
+      - name: Assert burrow-engines carries a DT_RPATH into engines/vendor
+        run: |
+          cargo test -p burrow-engines --all-features --no-run 2>/dev/null
+          found=0
+          for bin in target/debug/deps/burrow_engines-*; do
+            case "$bin" in *.d) continue ;; esac
+            [ -x "$bin" ] || continue
+            found=1
+            if ! readelf -d "$bin" | grep -E 'RPATH' | grep -q 'engines/vendor'; then
+              echo "::error::$bin has no DT_RPATH into engines/vendor" >&2
+              readelf -d "$bin" | grep -E 'NEEDED|RPATH|RUNPATH' >&2
+              exit 1
+            fi
+          done
+          [ "$found" = 1 ] || { echo "::error::no burrow_engines test binary found" >&2; exit 1; }
+          echo "burrow-engines carries the pinned rpath"
+
       - run: cargo test --workspace --all-features
+
+      # The engine tests are the riskiest part of the suite and are feature-gated, so a
+      # misconfiguration could silently drop them and still show green. Assert on
+      # IDENTITY, not on a count: a threshold would start passing the moment PR 2 adds
+      # engine-independent unit tests to this crate.
+      - name: Assert the engine link tests actually ran
+        run: |
+          list=$(cargo test -p burrow-engines --all-features -- --list)
+          echo "$list"
+          for t in \
+            link_check::tests::the_loaded_pdfium_is_the_pinned_library \
+            link_check::tests::pdfium_links_and_initialises_cleanly \
+            link_check::tests::qpdf_links_and_reports_the_pinned_version
+          do
+            printf '%s' "$list" | grep -q "^$t: test$" || {
+              echo "::error::$t was not discovered. Is native-engines taking effect?" >&2
+              exit 1
+            }
+          done
+          echo "engine link tests present"
+
+      # Asks the question check-engine-licences.py cannot: is every component we can
+      # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared
+      # through a whole ADR cycle. Lives here because it needs the built artifacts.
+      - name: Detect undeclared engine components (ADR 0010)
+        run: |
+          python3 tools/detect-engine-components.py
+          tools/test-detect-engine-components.sh
+
       - name: doc tests and rustdoc warnings
         run: cargo doc --workspace --no-deps
         env:

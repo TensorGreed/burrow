@@ -25,8 +25,9 @@ MANIFEST = REPO / "engines" / "licenses.toml"
 # ADR 0008's allowlist. Keep in sync with deny.toml's `allow` (Rust crates) and the
 # lists in CLAUDE.md, .claude/agents/license-auditor.md, and the add-dependency skill.
 #
-# Changing this set is a POLICY change: it requires a new ADR superseding 0008, not an
-# edit here. See docs/adr/0008-widened-licence-allowlist.md.
+# Changing this set is a POLICY change: it requires a new ADR, not an edit here. See
+# docs/adr/0008-widened-licence-allowlist.md and its amendment
+# docs/adr/0010-harfbuzz-and-icu-in-pdfium.md.
 ALLOWED = {
     # From ADR 0003.
     "MIT",
@@ -46,6 +47,13 @@ ALLOWED = {
     "IJG",
     "libpng-2.0",
     "LicenseRef-AGG-2.3",
+    # Added by ADR 0010, for components bundled inside PDFium that ADR 0008 missed.
+    # HarfBuzz 14.3.1 -- SPDX id verified byte-for-byte against SPDX's canonical text,
+    # and its notice is committed at docs/adr/licences/ because the artifact ships none.
+    "MIT-Modern-Variant",
+    # ICU's legacy "ICU 1.8.1 to 57.1" section. X11-style. Admitted rather than argued
+    # inapplicable at ICU 78.2 -- see ADR 0010 for why that argument was refused.
+    "ICU",
 }
 
 # Never acceptable. Listed explicitly so the failure message says why rather than just

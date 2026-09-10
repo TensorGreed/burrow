@@ -13,5 +13,6 @@ One file per decision, numbered, never rewritten. See
 | [0005](0005-web-stack.md) | Astro with Svelte islands for the web app | Accepted |
 | [0006](0006-wasm-linking-strategy.md) | WASM linking strategy for the C/C++ engines | Accepted (option 1) |
 | [0007](0007-limit-enforcement-per-platform.md) | Per-platform enforcement of time and memory limits | Proposed |
-| [0008](0008-widened-licence-allowlist.md) | Widened licence allowlist for bundled native engines | Accepted |
+| [0008](0008-widened-licence-allowlist.md) | Widened licence allowlist for bundled native engines | Accepted, corrected by [0010](0010-harfbuzz-and-icu-in-pdfium.md) |
 | [0009](0009-web-panic-contract-and-binding-boundary.md) | The web panic contract, and where the binding boundary really is | Accepted |
+| [0010](0010-harfbuzz-and-icu-in-pdfium.md) | HarfBuzz and ICU inside PDFium: licences, and detecting undeclared components | Accepted |
