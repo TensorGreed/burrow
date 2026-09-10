@@ -2,16 +2,25 @@
 # PostToolUse hook: format ONLY the file that was just edited.
 #
 # This must stay fast — it runs after every Edit and Write. So: one file, one formatter,
-# no workspace-wide passes, no linting, no builds. It exits 0 unconditionally; a
-# formatting failure must never block an edit.
+# no workspace-wide passes, no linting, no builds.
+#
+# Exit codes, and why:
+#
+#   0  formatted, or nothing to do. The overwhelmingly common case.
+#   1  the formatter this file needs is missing. A non-blocking error: the edit still
+#      stands, but the message reaches the user instead of vanishing. Silence here is
+#      how rustfmt went un-run for an entire session — the hook reported success while
+#      formatting nothing.
+#
+# Never exit 2, and never fail because a formatter *ran* and disliked the file. A
+# formatting problem must not block an edit; only a missing tool is worth reporting, and
+# only because it is invisible otherwise.
 #
 # Claude Code passes the tool payload as JSON on stdin.
 set -uo pipefail
 
 # Hook shells do not inherit an interactive profile, so cargo's bin directory is
-# usually absent from PATH. Without this, rustfmt is silently not found and every
-# .rs edit goes unformatted -- the failure is invisible because the hook always
-# exits 0.
+# usually absent from PATH.
 PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 
 payload=$(cat 2>/dev/null || true)
@@ -31,7 +40,13 @@ repo_root=$(git -C "$(dirname "$file")" rev-parse --show-toplevel 2>/dev/null) |
 case "$file" in
   *.rs)
     # rustfmt directly on the single file: `cargo fmt` would format the whole workspace.
-    command -v rustfmt >/dev/null 2>&1 && rustfmt --edition 2024 "$file" >/dev/null 2>&1
+    if ! command -v rustfmt >/dev/null 2>&1; then
+      echo "format-file.sh: rustfmt not found, so $file was left unformatted." >&2
+      echo "  Install it with: rustup component add rustfmt" >&2
+      echo "  (CI runs 'cargo fmt --all -- --check' and will fail on this.)" >&2
+      exit 1
+    fi
+    rustfmt --edition 2024 "$file" >/dev/null 2>&1
     ;;
   *.astro | *.svelte | *.ts | *.tsx | *.js | *.mjs | *.cjs | *.json | *.jsonc | *.css | *.scss | *.html | *.md | *.yml | *.yaml)
     # Only inside apps/web. That is exactly what `pnpm lint` checks in CI, and the
@@ -43,9 +58,13 @@ case "$file" in
       "$web"/* | apps/web/*) ;;
       *) exit 0 ;;
     esac
-    if [ -x "$web/node_modules/.bin/prettier" ]; then
-      (cd "$web" && ./node_modules/.bin/prettier --write --ignore-unknown "$file" >/dev/null 2>&1)
+    if [ ! -x "$web/node_modules/.bin/prettier" ]; then
+      echo "format-file.sh: prettier not found, so $file was left unformatted." >&2
+      echo "  Install it with: pnpm -C apps/web install" >&2
+      echo "  (CI runs 'pnpm lint' and will fail on this.)" >&2
+      exit 1
     fi
+    (cd "$web" && ./node_modules/.bin/prettier --write --ignore-unknown "$file" >/dev/null 2>&1)
     ;;
 esac
 

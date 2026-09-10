@@ -34,9 +34,6 @@
       "Bash(git blame:*)",
       "Bash(rg:*)",
       "Bash(ls:*)",
-      "Bash(cat:*)",
-      "Bash(head:*)",
-      "Bash(tail:*)",
       "Bash(wc:*)",
       "Bash(file:*)"
     ],

@@ -76,6 +76,28 @@ jobs:
       # is real (M1), add a size budget step here so growth is a visible decision.
       - run: cargo build -p burrow-wasm --target wasm32-unknown-unknown --release
 
+  mobile:
+    name: check ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-ios
+          - aarch64-linux-android
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: ${{ matrix.target }}
+      # `check`, not `build`: this needs no Xcode SDK and no Android NDK, so it runs on
+      # a Linux runner years before M3/M4 can build the apps. The point is that a core
+      # change which breaks a mobile target fails now rather than at the start of M3.
+      - run: cargo check --workspace --all-features --target ${{ matrix.target }}
+
   deny:
     name: cargo-deny (licenses, advisories, bans, sources)
     runs-on: ubuntu-latest
@@ -134,7 +156,7 @@ jobs:
     name: ci
     runs-on: ubuntu-latest
     if: always()
-    needs: [fmt, clippy, test, wasm, deny, audit, web]
+    needs: [fmt, clippy, test, wasm, mobile, deny, audit, web]
     steps:
       - name: Fail if any job failed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

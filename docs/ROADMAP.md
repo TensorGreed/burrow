@@ -8,8 +8,8 @@ Dates are deliberately absent. The order is the commitment.
 
 | Milestone | Scope | State |
 |---|---|---|
-| [M0](#m0--project-setup) | Project setup | in progress |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | not started |
+| [M0](#m0--project-setup) | Project setup | **complete** |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started |
 | [M4](#m4--ios) | iOS app | not started |
@@ -33,7 +33,10 @@ Repository scaffolding, engineering rules, and enforcement. No product logic.
 - [x] Astro + Svelte web scaffold
 - [x] Corpus manifest and headless tool stubs
 - [x] Verify CI green on GitHub — all 8 checks pass ([#1](https://github.com/TensorGreed/burrow/pull/1))
-- [ ] SBOM generation and signed releases (stubbed in `release.yml`, wired up before M1 ships)
+
+**M0 is complete.** SBOM generation and signed releases moved to M1 as a pre-ship task:
+a meaningful SBOM has to cover the native engines, and those do not exist until M1
+vendors them.
 
 ---
 
@@ -46,27 +49,42 @@ present. This is the `add-operation` checklist; it is not optional per-operation
 
 ### Foundations
 
-1. **Engine acquisition for PDFium** — resolve [ADR 0004](adr/0004-native-engines.md)'s
-   open question. Pinned version and checksum; builds for `linux-arm64`, `wasm32`,
-   `x86_64-linux`. Provenance recorded in `THIRD_PARTY_NOTICES.md`.
-   *Testable:* CI links PDFium and calls one function on all three targets.
-2. **`DocumentEngine` implementation over PDFium** in `burrow-engines`, with every C
+1. **Spike: prove Rust + PDFium + qpdf run in a browser worker.** The first task,
+   before any operation. Prebuilt PDFium WASM builds are Emscripten artifacts and do not
+   link with `wasm32-unknown-unknown`, so the target we assumed in
+   [ADR 0002](adr/0002-rust-core-and-bindings.md) and the engines we chose in
+   [ADR 0004](adr/0004-native-engines.md) do not currently compose. Evaluate the three
+   routes in [ADR 0006](adr/0006-wasm-linking-strategy.md). This spike decides ADR 0006
+   **and** ADR 0004's open acquisition question — they cannot be settled separately.
+   Include qpdf, not just PDFium: it leans on C++ exceptions and is the harder half.
+   *Testable:* in CI, a browser worker opens a real PDF and reports its page count,
+   driven from Rust, with qpdf linked and callable.
+2. **Engine acquisition**, following whatever route the spike picked. Pinned versions and
+   checksums; builds for `linux-arm64`, `wasm32`, `x86_64-linux`. Provenance recorded in
+   `THIRD_PARTY_NOTICES.md`, and a `license-auditor` pass covering each engine's bundled
+   third-party code.
+   *Testable:* CI links PDFium and qpdf and calls one function on all three targets.
+3. **`DocumentEngine` implementation over PDFium** in `burrow-engines`, with every C
    error code mapped to a typed `Error` variant and no raw code escaping the crate.
    *Testable:* every PDFium error path has a test asserting the mapped variant.
-3. **Open and parse with limits enforced** — `max_input_bytes`, `max_pages`,
-   `max_duration_ms`, `max_memory_bytes`.
+4. **Open and parse with limits enforced** — `max_input_bytes`, `max_pages`,
+   `max_duration_ms`, `max_memory_bytes`, per
+   [ADR 0007](adr/0007-limit-enforcement-per-platform.md): an injected clock rather than
+   `Instant::now()`, which panics on wasm, and estimate-based memory pre-checks on native.
    *Testable:* a 20k-page document and a 2 GB file both return `LimitExceeded`, not a
-   crash or an OOM kill.
-4. **qpdf integration for repair** — a damaged file that PDFium rejects is repaired by
+   crash or an OOM kill; timeout behaviour is tested with a fake clock, not by waiting.
+5. **qpdf integration for repair** — a damaged file that PDFium rejects is repaired by
    qpdf and retried.
    *Testable:* a corpus of truncated and damaged files; each either succeeds after repair
    or returns `Malformed`.
-5. **Fuzz target for document open** — the first parser entry point.
+6. **Fuzz target for document open** — the first parser entry point.
    *Testable:* 10 minutes clean on CI, longer on the regression machine.
-6. **wasm-bindgen surface and Web Worker harness** — operations callable from the browser
-   with progress reporting, off the main thread.
-   *Testable:* a Playwright test drives a real file through a worker.
-7. **wasm size budget in CI** — record the module size and fail on an unexplained
+7. **Web binding surface and Web Worker harness** — operations callable from the browser
+   with progress reporting, off the main thread. Whether this is wasm-bindgen depends on
+   the spike: two of ADR 0006's three routes rule it out.
+   *Testable:* a Playwright test drives a real file through a worker, and recovers when
+   the worker aborts (wasm panics abort rather than unwind).
+8. **wasm size budget in CI** — record the module size and fail on an unexplained
    regression.
 
 ### Operations
@@ -108,6 +126,18 @@ assert:
 - Implement `tools/corpus-fetch.sh`, `corpus-run.sh`, `visual-diff.sh` (currently stubs)
 - Register the first corpora in `corpus/manifest.toml` with licenses and checksums
 - A headless regression run on the self-hosted `linux-arm64` machine
+
+### Before M1 ships
+
+Moved here from M0, because both depend on the native engines existing.
+
+- **SBOM generation.** A CycloneDX SBOM covering Rust crates *and* the vendored C/C++
+  engines. `cargo-cyclonedx` handles the former; the latter needs the engine manifest
+  this milestone introduces. An SBOM that omits PDFium would be worse than none, because
+  it would look complete.
+- **Signed releases.** cosign keyless (OIDC) signing of artifacts and the SBOM, so
+  provenance is verifiable without us holding a key.
+- Enable `.github/workflows/release.yml`, which is currently a stub that refuses to run.
 
 ---
 
@@ -160,12 +190,14 @@ Native SwiftUI app. No WebView. Requires macOS and Xcode.
 
 ## M5 — Office to PDF
 
-DOCX, XLSX, PPTX → PDF, on-device, with no permissively licensed converter available to
-lean on.
+DOCX, XLSX, PPTX → PDF, on-device.
 
-- Evaluate what is achievable within [ADR 0003](adr/0003-permissive-licensing.md);
-  LibreOffice is LGPL/MPL and not embeddable under our constraints, so expect to
-  implement layout ourselves
+- Evaluate what is achievable within [ADR 0003](adr/0003-permissive-licensing.md), using
+  what each platform already provides rather than writing a layout engine:
+  **iOS system rendering**; **docx-preview (Apache-2.0)** on web and Android;
+  **LibreOffice (MPL-2.0, on our allowlist)** evaluated as a high-fidelity option. Record
+  the outcome in an ADR — the three routes will not agree on output, and that divergence
+  is the decision to make explicitly
 - Start with DOCX text and paragraph layout; be explicit about unsupported constructs
   rather than producing wrong output silently
 - Font handling and substitution, with an OFL-licensed fallback family

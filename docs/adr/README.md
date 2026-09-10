@@ -11,3 +11,5 @@ One file per decision, numbered, never rewritten. See
 | [0003](0003-permissive-licensing.md) | Permissive licenses only, enforced by CI | Accepted |
 | [0004](0004-native-engines.md) | Native engine selection | Proposed |
 | [0005](0005-web-stack.md) | Astro with Svelte islands for the web app | Accepted |
+| [0006](0006-wasm-linking-strategy.md) | WASM linking strategy for the C/C++ engines | Proposed |
+| [0007](0007-limit-enforcement-per-platform.md) | Per-platform enforcement of time and memory limits | Proposed |
