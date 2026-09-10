@@ -50,7 +50,7 @@ jobs:
     if: false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       # - run: cargo install --locked cargo-cyclonedx
       # - run: cargo cyclonedx --all --format json
@@ -73,7 +73,7 @@ jobs:
           - { target: aarch64-apple-ios, os: macos-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: echo "planned; see file header"
 
   sign:
@@ -85,7 +85,7 @@ jobs:
       contents: write # create the release
       id-token: write # cosign keyless signing via OIDC
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # - uses: sigstore/cosign-installer@...   # pin by SHA when enabled
       # - name: Sign artifacts and SBOM
       #   run: |
