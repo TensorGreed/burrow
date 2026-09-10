@@ -1,0 +1,223 @@
+# Licence manifest for native engines and everything they bundle.
+#
+# WHY THIS FILE EXISTS
+# cargo-deny sees Rust crates and nothing else. It cannot see PDFium, qpdf, or the
+# components they vendor -- and that is exactly where every finding in ADR 0008 came
+# from. A manual audit found them; this file makes the result repeatable and
+# machine-checked.
+#
+# RULES
+# - Every licence here must be on ADR 0008's allowlist. tools/check-engine-licences.py
+#   fails CI otherwise.
+# - `linked` means "confirmed present in a shipped artifact", by symbol inspection, not
+#   by assumption. `linked = false` with a licence still listed means the component ships
+#   in the package but was not found in the binary.
+# - Adding a component whose licence is not on the allowlist requires a new ADR. Do not
+#   add the licence here first.
+#
+# LIMITS OF THIS FILE
+# It is hand-maintained. The CI check verifies that every DECLARED licence is allowed; it
+# cannot detect a component nobody declared. That still needs a periodic audit. Treat
+# this as a floor, not a guarantee.
+#
+# This manifest is also the input for M1's SBOM (see .github/workflows/release.yml).
+
+[meta]
+version = 1
+# ADR that governs the allowlist this file is checked against.
+policy_adr = "docs/adr/0008-widened-licence-allowlist.md"
+# Audit that produced the current contents.
+last_audited = "2026-09-10"
+last_audited_by = "spike 0001 (docs/spikes/0001-wasm-engines.md)"
+
+# ---------------------------------------------------------------------------------
+# PDFium -- prebuilt WebAssembly package from pdfium-binaries.
+# Upstream publishes NO checksums and NO signature; the hash is trust-on-first-use.
+# See ADR 0004.
+# ---------------------------------------------------------------------------------
+
+[[component]]
+name = "pdfium-binaries (packaging)"
+version = "chromium/8044"
+license = "MIT"
+license_file = "vendor/pdfium/LICENSE"
+linked = false
+notes = "The package's TOP-LEVEL LICENSE is the packager's MIT, not PDFium's BSD-3-Clause. Auditing by that file alone records the wrong licence for the whole artifact."
+
+[[component]]
+name = "pdfium"
+version = "chromium/8044"
+license = "BSD-3-Clause AND Apache-2.0"
+license_file = "vendor/pdfium/licenses/pdfium.txt"
+linked = true
+
+[[component]]
+name = "freetype"
+version = "bundled with pdfium chromium/8044"
+license = "FTL"
+license_file = "vendor/pdfium/licenses/freetype.txt"
+linked = true
+notice_required = "Binary distribution must state that the software is based in part of the work of the FreeType Team. FTL section 2."
+notes = "Confirmed in pdfium.wasm via FREETYPE_PROPERTIES, tt-glyf, tt-cmaps symbols. FTL only -- no GPLv2 alternative is offered, so there is no dual-licence choice. FTL section 3 also forbids promotional use of the FreeType name."
+
+[[component]]
+name = "libjpeg-turbo"
+version = "bundled with pdfium chromium/8044"
+license = "IJG AND BSD-3-Clause AND Zlib"
+license_file = "vendor/pdfium/licenses/libjpeg_turbo.ijg"
+linked = true
+notice_required = "Documentation must state: this software is based in part on the work of the Independent JPEG Group. IJG LEGAL ISSUES condition 2."
+notes = "Upstream states the zlib-licensed SIMD terms are subsumed by IJG for the libjpeg API library, which is the part we use."
+
+[[component]]
+name = "agg23"
+version = "2.3"
+license = "LicenseRef-AGG-2.3"
+license_file = "docs/adr/licences/LicenseRef-AGG-2.3.txt"
+linked = true
+notes = "No SPDX identifier exists; named locally by ADR 0008 with the grant text committed. VERSION PIN IS LOAD-BEARING: AGG 2.4 and later are GPL."
+
+[[component]]
+name = "libpng"
+version = "bundled with pdfium chromium/8044"
+license = "libpng-2.0"
+license_file = "vendor/pdfium/licenses/libpng.txt"
+linked = false
+notes = "Ships in the package; no png_* symbols found in pdfium.wasm, consistent with PDFium using libpng only in test utilities. Listed because it is distributed."
+
+[[component]]
+name = "libopenjpeg"
+version = "bundled with pdfium chromium/8044"
+license = "BSD-2-Clause"
+license_file = "vendor/pdfium/licenses/libopenjpeg.txt"
+linked = true
+
+[[component]]
+name = "abseil-cpp"
+version = "bundled with pdfium chromium/8044"
+license = "Apache-2.0"
+license_file = "vendor/pdfium/licenses/abseil.txt"
+linked = true
+
+[[component]]
+name = "lcms"
+version = "2.19"
+license = "MIT"
+license_file = "vendor/pdfium/licenses/lcms.txt"
+linked = true
+
+[[component]]
+name = "simdutf"
+version = "bundled with pdfium chromium/8044"
+license = "MIT"
+license_file = "vendor/pdfium/licenses/simdutf.txt"
+linked = true
+
+[[component]]
+name = "fast_float"
+version = "bundled with pdfium chromium/8044"
+license = "MIT"
+license_file = "vendor/pdfium/licenses/fast_float.txt"
+linked = true
+
+[[component]]
+name = "zlib (pdfium's bundled copy)"
+version = "1.3.2.1"
+license = "Zlib"
+license_file = "vendor/pdfium/licenses/zlib.txt"
+linked = true
+
+[[component]]
+name = "icu"
+version = "bundled with pdfium chromium/8044"
+license = "Unicode-3.0"
+license_file = "vendor/pdfium/licenses/icu.txt"
+linked = false
+notes = """args.gn sets pdf_enable_xfa = false, so ICU is very likely not linked. \
+Its licence file contains GPL-2.0 and GPL-3.0 text covering four ICU4C autotools files \
+(aclocal.m4, pkg.m4, config.guess, config.sub), each carrying the Autoconf exception and \
+none compiled. Traced, not assumed. If ICU is ever linked, its other sub-licences (the \
+old ICU licence, MIT-old-style, BSD-3-Clause, public-domain tz data) must be enumerated \
+here first."""
+
+# ---------------------------------------------------------------------------------
+# qpdf -- built from source. Tarball verified against upstream's PGP-clearsigned
+# checksum file, which is stronger provenance than PDFium's.
+# ---------------------------------------------------------------------------------
+
+[[component]]
+name = "qpdf"
+version = "12.4.1"
+license = "Apache-2.0"
+license_file = "vendor/qpdf-12.4.1/LICENSE.txt"
+linked = true
+notes = """Dual-licensed Apache-2.0 OR Artistic-2.0 (pre-v7 terms remain available at our \
+option); we take Apache-2.0. MUST be configured with USE_IMPLICIT_CRYPTO=OFF and \
+REQUIRE_CRYPTO_NATIVE=ON -- the default is ON and would link GnuTLS, which is \
+LGPL-2.1-or-later. CI asserts this; see ADR 0004."""
+
+[[component]]
+name = "sphlib sha2 (in libqpdf)"
+version = "3.0"
+license = "MIT"
+license_file = "vendor/qpdf-12.4.1/NOTICE.md"
+linked = true
+
+[[component]]
+name = "rijndael (in libqpdf)"
+version = "bundled with qpdf 12.4.1"
+license = "CC0-1.0"
+license_file = "vendor/qpdf-12.4.1/NOTICE.md"
+linked = true
+notes = """Actually a bare public-domain dedication by Philip J. Erdelsky, not a formal \
+CC0-1.0 grant. Recorded as CC0-1.0 because that is the closest allowlisted identifier and \
+the intent is unambiguous in NOTICE.md. Flagged rather than nodded through: if a stricter \
+reading is ever needed, this needs its own LicenseRef."""
+
+[[component]]
+name = "qtest"
+version = "bundled with qpdf 12.4.1"
+license = "Artistic-2.0"
+license_file = "vendor/qpdf-12.4.1/Artistic-2.0"
+linked = false
+test_only = true
+notes = """Four Perl files, invoked only by CMake's RUN_QTEST at test time. Never compiled \
+or linked. Artistic-2.0 is NOT on the allowlist and does not need to be, because this \
+never reaches a shipped artifact -- but if qpdf is vendored into the repo, either exclude \
+qtest/ or keep this entry marked test_only."""
+
+# ---------------------------------------------------------------------------------
+# Build-time toolchain components that contribute CODE to shipped artifacts.
+# These are easy to forget because they arrive via the compiler, not a dependency file.
+# ---------------------------------------------------------------------------------
+
+[[component]]
+name = "zlib (Emscripten port)"
+version = "1.3.2"
+license = "Zlib"
+license_file = "emsdk:tools/ports/zlib.py"
+linked = true
+notes = "Emscripten port, sha512-pinned by emsdk to the upstream madler/zlib tarball. ADR 0004 requires replacing this with our own vendored + checksummed copy."
+
+[[component]]
+name = "libjpeg (Emscripten port)"
+version = "9f"
+license = "IJG"
+license_file = "emsdk:cache/ports/libjpeg/jpeg-9f/README"
+linked = true
+notice_required = "Documentation must state: this software is based in part on the work of the Independent JPEG Group. IJG LEGAL ISSUES condition 2."
+notes = """IJG libjpeg 9f, NOT libjpeg-turbo -- a different codebase from the one PDFium \
+bundles, with no SIMD, on a branch most distributions do not track. Emscripten's own port \
+description claims 'BSD license', which is WRONG; the actual terms in the README are the \
+IJG licence. ADR 0004 requires vendoring this ourselves. The historical GPL ansi2knr.c is \
+absent from 9f."""
+
+[[component]]
+name = "Emscripten runtime (musl libc, compiler-rt, JS glue)"
+version = "6.0.9"
+license = "MIT AND Apache-2.0 WITH LLVM-exception"
+license_file = "emsdk:LICENSE"
+linked = true
+notes = """Contributes musl-derived libc and compiler-rt to every wasm artifact, plus the \
+164 KB pdfium.js / 75 KB qpdf.js glue. NOT listed in the licences/ directory that the \
+pdfium package ships, so that package's notices are incomplete on their own."""

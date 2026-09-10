@@ -25,6 +25,15 @@ all-features = true
 [licenses]
 # Anything not on this list fails the build. Note the absence of every GPL/LGPL/AGPL
 # variant, SSPL, and all non-commercial licenses.
+#
+# This list covers RUST CRATES ONLY -- it is all cargo-deny can see. The native engines
+# and everything they bundle are governed by the same policy but checked separately, via
+# engines/licenses.toml and tools/check-engine-licences.py, which run in the same CI job.
+#
+# ADR 0008 widened the policy allowlist with FTL, IJG, libpng-2.0 and LicenseRef-AGG-2.3.
+# Those are deliberately NOT added here: no Rust crate uses them, and an entry cargo-deny
+# never matches is noise that outlives the reason for it. Add one here if and when a crate
+# actually needs it.
 allow = [
     "MIT",
     "BSD-2-Clause",

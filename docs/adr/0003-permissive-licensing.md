@@ -4,7 +4,12 @@ Date: 2026-09-10
 
 ## Status
 
-Accepted
+Superseded by [0008](0008-widened-licence-allowlist.md).
+
+The reasoning below still holds and is still the reason we reject copyleft. What changed
+is the allowlist itself: it was drawn up for Rust crates and proved too narrow to
+describe a bundled C/C++ PDF engine. ADR 0008 widens it, adds an admission test, and
+records the notice obligations that come with it. This body is left as written.
 
 ## Context
 

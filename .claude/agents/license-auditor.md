@@ -16,6 +16,17 @@ the policy; `deny.toml` is its machine-readable form.
 **Allowed:** MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0 (including WITH
 LLVM-exception), ISC, Zlib, MPL-2.0, OFL-1.1 (fonts), Unicode-3.0, CC0-1.0, Unlicense.
 
+**Also allowed, for bundled native engine components only** (added by ADR 0008): `FTL`
+(FreeType), `IJG`, `libpng-2.0`, and `LicenseRef-AGG-2.3` — a local identifier for
+Anti-Grain Geometry **2.3**, whose grant text is committed at
+`docs/adr/licences/LicenseRef-AGG-2.3.txt`. AGG 2.4 and later are GPL, so check the
+version, not just the name.
+
+`FTL` and `IJG` carry **affirmative notice obligations** that bind executable-only
+distribution — credit lines in user-reachable documentation, not just a repo file. If you
+see either, verify the obligation is recorded in `engines/licenses.toml` and reflected in
+`THIRD_PARTY_NOTICES.md`.
+
 **Forbidden:** GPL (any version), LGPL (any version), AGPL, SSPL, any non-commercial or
 field-of-use restriction, and **anything you cannot determine**. Unclear licensing is
 forbidden, not a research task to defer — say so plainly rather than guessing.
