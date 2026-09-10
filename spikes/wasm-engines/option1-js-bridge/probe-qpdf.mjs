@@ -1,13 +1,20 @@
 // Does a malformed PDF come back from qpdf as a typed error, or does it abort?
 // This is the C++ exceptions test that ADR 0006 says decides the linking strategy.
-import { readFileSync } from "node:fs";
+import { readFileSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const CORPUS = path.resolve(import.meta.dirname, "../common/corpus");
-// Modularised, so a plain require works -- no global-scope workaround needed.
-const createQpdf = require(path.resolve(import.meta.dirname, "../build/qpdf.js"));
+
+// The glue is modularised (unlike PDFium's) so require() is enough -- but this
+// package.json sets "type": "module", which makes Node treat the UMD glue's .js
+// extension as ESM and skip its `module.exports =` branch. Copy it to .cjs so the
+// CommonJS branch runs. Nothing to do with the engine; purely Node module resolution.
+const src = path.resolve(import.meta.dirname, "../build/qpdf.js");
+const cjs = path.resolve(import.meta.dirname, "../build/qpdf.probe.cjs");
+copyFileSync(src, cjs);
+const createQpdf = require(cjs);
 
 const mod = await createQpdf({});
 const pages = mod.cwrap("qpdf_probe_pages", "number", ["number", "number"]);

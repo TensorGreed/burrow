@@ -1,6 +1,6 @@
 # Spike 0001 — WASM engine linking
 
-**Status: in progress.** Updated as work happens, not at the end.
+**Status: complete.** Written as the work happened, not at the end.
 
 Decides [ADR 0006](../adr/0006-wasm-linking-strategy.md) (WASM linking strategy) and
 [ADR 0004](../adr/0004-native-engines.md)'s open acquisition question.
@@ -465,11 +465,196 @@ or App Store distribution; the honest reading is that ADR 0003's allowlist was d
 for Rust crates and is too narrow to describe a bundled C/C++ PDF engine. Widening it
 requires **a new ADR superseding ADR 0003** — not a `deny.toml` edit.
 
-## Still to do
+## Security review of the option 1 bridge
 
-- Build qpdf → wasm with `-fexceptions`; typed error on malformed input
-- Option 1: Rust (`wasm32-unknown-unknown`) + both engines via JS bridge, in a worker
-- Playwright/Chromium test in CI; panic-kills-worker + respawn
-- Option 2: Rust `wasm32-unknown-emscripten` + qpdf `.a`, single module
-- Option 3: qpdf under wasi-sdk, exceptions behaviour
-- Full measurements table; `license-auditor` and `security-reviewer` passes
+Full `security-reviewer` pass. **The network audit is clean; the concurrency finding is
+not, and it is a property of option 1 rather than of my glue code.**
+
+### Network: no off-origin capability at all
+
+Parsed from the binaries' import sections: **neither `.wasm` imports a network
+primitive.** No sockets, no host calls. Across both glue files: `WebSocket` 0,
+`EventSource` 0, `sendBeacon` 0, `withCredentials` 0, and zero absolute `http(s)://`
+URLs under `www/`.
+
+What they do use, all same-origin by construction:
+
+| Primitive | Purpose | Off-origin? |
+|---|---|---|
+| `fetch(binaryFile, {credentials:"same-origin"})` | streaming-compile its own `.wasm` | No — `locateFile` derives from `self.location.href` |
+| **Synchronous XHR** (both files, worker branch) | fallback fetch of the same `.wasm` | No — same URL derivation, no `withCredentials` |
+| Range XHR (`createLazyFile`) | Emscripten lazy-file feature | **Unreachable** — `FS` is not exported on either module |
+| `require("fs")` (node branch) | Node file reads | Not taken in a worker |
+
+The sync XHR is a **liveness** risk, not egress: a synchronous XHR in a worker has no
+default timeout, so a stalled origin blocks module init uninterruptibly.
+
+**Recommended hardening, which converts this from "audited" to "impossible":** fetch both
+`.wasm` files ourselves and pass `Module.wasmBinary` (PDFium's glue already supports it),
+build with `-sENVIRONMENT=web,worker` to drop the Node branch, then ship the worker with
+a CSP of `connect-src 'none'`. Non-negotiable #1 then rests on the browser rather than on
+re-auditing 240 KB of minified third-party JS on every PDFium bump — and nothing in CI
+would otherwise notice a new `fetch` appearing in a future build.
+
+### HIGH — loading PDFium twice in one scope mixes two instances' memory
+
+`pdfium.js` is not modularised, so its state lives in worker-global `var`s: `wasmMemory`,
+`HEAPU8`, `wasmExports`, `wasmImports`. `importScripts` does not dedupe by URL.
+
+My `ensureReady()` and `initEngines()` both set their guard flag *after* an `await`, so
+two messages arriving before the first init resolves each run it to completion,
+re-evaluating `pdfium.js` and rebinding every global to instance B — while `bridge.js`
+still holds instance A's `Module`. An in-flight call on A then does `memcpy` into **B's**
+linear memory, grows **B's** memory and writes past its own limit, and dispatches
+indirect calls through **B's** function table.
+
+Sandbox holds, so there is no host escape. Inside it: heap corruption and **confidently
+wrong parse results** — in a real pipeline, document A's content mixed with document B's,
+or a redaction pass inspecting a different heap from the one it edits.
+
+`qpdf.js` is immune: we built it with `-sMODULARIZE=1`, so each instance gets its own
+closure. The asymmetry comes entirely from the prebuilt artifact.
+
+Two fixes, both wanted: memoize the init **promise** rather than its result, and either
+one engine instance per worker or rebuild PDFium's glue with `-sMODULARIZE=1`. Note the
+second **undercuts option 1's main selling point**: "use the prebuilt as published" turns
+into "use the prebuilt, but relink its glue".
+
+### Other findings that carry into production
+
+- **MEDIUM — qpdf's warnings reach `console.error`.** Confirms Finding 6 and sharpens it:
+  they fire on *successfully parsed* files too (`malformed-badxref.pdf` returned 100 pages
+  and still logged three warnings with object numbers and offsets). Fix:
+  `setSuppressWarnings(true)` plus a discarding `QPDFLogger`, and belt-and-braces
+  `printErr: () => {}` on both modules.
+- **MEDIUM — my error mapping fails open.** `return -pdfium._FPDF_GetLastError()` yields
+  `-0`, and `-0 === 0` in JS, so a failed load whose error code is `FPDF_ERR_SUCCESS`
+  becomes `Outcome { pages: 0, error: Ok }` — "engine refused this file" read as "opened
+  fine, zero pages". Do not encode success and failure in one number.
+- **LOW/MED — my password detection is string matching on input-influenced text.**
+  `last_message.find("password")` classifies a crafted file's parse error as
+  `PasswordRequired`. Use qpdf's `e.getErrorCode() == qpdf_e_password`. (Also, my second
+  condition `find("invalid password")` is dead code.) This is exactly the
+  "map engine codes, never engine prose" rule in `core/CLAUDE.md` — which I wrote and
+  then broke.
+- **MEDIUM — an Emscripten `abort()` inside an engine bricks the worker silently.** It
+  throws a JS exception, becomes a normal `Internal` reply, and the worker stays alive
+  with `ready`/`pdfium`/`qpdf` still truthy — so one crafted PDF disables the engine for
+  the session while the page keeps feeding it work. `Internal` must be treated as fatal
+  to the instance.
+- **A live-view trap for any future bridge function.** The `&[u8]` the bridge receives is
+  `subarray()` over Rust's memory, not a copy. It is valid here only because nothing in
+  `withEngineHeap` re-enters Rust. Any bridge function that holds the slice and calls back
+  into Rust gets a detached or reallocated buffer.
+- **Signed `int` length in the shim.** `qpdf_probe_pages(..., int len)` would turn a >2 GiB
+  input into a negative `i32` and a ~4 GiB `size_t`. Unreachable today only because both
+  modules cap the heap at 2 GiB so `_malloc` fails first. Production takes `size_t` and
+  rejects against `Limits::max_input_bytes` before allocating.
+- `playwright.config.mjs` runs `npx --yes http-server` — unpinned remote code in the test
+  harness, in a project that otherwise pins everything.
+
+### Confirmed sound
+
+`_malloc` return checked; one length value used for allocate/copy/call; `HEAPU8` read
+fresh each call so `ALLOW_MEMORY_GROWTH` view replacement is handled; frees run on error
+paths; no document-handle leak, and the `finally` nesting correctly keeps the input buffer
+alive longer than the PDFium document (PDFium does not copy it).
+
+### One agent claim I checked and can explain
+
+The review reported `probe-qpdf.mjs` broken with `createQpdf is not a function`. Correct
+now, though the recorded results were genuine: the probe ran before I added
+`spikes/wasm-engines/package.json` for Playwright, and its `"type": "module"` then made
+Node treat the UMD glue as ESM and skip its `module.exports` branch. Fixed by requiring a
+`.cjs` copy; it reproduces the same numbers.
+
+## Recommendation
+
+**Adopt option 1 for M1. Record option 2 as the better architecture and the intended
+destination.**
+
+### Why option 1 now
+
+It is the only route that works today with an obtainable PDFium. Option 2 needs a
+from-source PDFium wasm build — not merely because no `.a` is published, but because a
+third-party `.a` would have to match Rust's exception model and almost certainly would
+not. Option 3 does not run in any current browser.
+
+Option 1 meets ADR 0006's bar in full, headless, in CI, on both architectures.
+
+### What option 1 costs, honestly
+
+| Cost | Evidence |
+|---|---|
+| Two heaps, so the input is copied | 118 MB peak engine heap for a 50 MB input |
+| Payload | 6.50 MB raw / 2.20 MB brotli, 82% of it PDFium |
+| A panic is an uncatchable trap | `RuntimeError: unreachable`; `catch_unwind` cannot help |
+| The prebuilt glue is not modularised | HIGH finding above; a fragile invariant to carry |
+| Cancellation is only `worker.terminate()` | kills everything else in flight in that worker |
+
+### What it means for ADR 0002's "bindings contain no logic"
+
+The rule survives, but only just, and it needs restating rather than reaffirming.
+
+`bridge.js` is ~60 lines and genuinely mechanical: allocate, copy, call one function,
+free. Every decision — what an error code means, which engine to use, what to do next —
+stayed in Rust, and the error taxonomy lives in `SpikeError`. That is evidence the rule is
+keepable for *single-call* operations.
+
+It will not hold as written for multi-step work. Anything that opens a document, iterates
+pages, and writes output must either keep the engine handle alive across many JS round
+trips with Rust orchestrating each one, or move the loop into JS. The first keeps the rule
+and pays in call overhead; the second breaks it. ADR 0002 should be amended to say
+explicitly: **bindings may hold engine handles and marshal, but no branch on engine state
+may live in JS** — otherwise the rule will be quietly eroded the first time someone writes
+a page loop.
+
+The panic difference is the sharper problem. ADR 0002 requires that no panic crosses a
+boundary and that `guard` maps panics to `Error::Internal`. **Under option 1 that is
+unachievable on the web** — a trap is not catchable in Rust. Under option 2 it is
+achievable, measurably. So adopting option 1 means ADR 0002's guard rule holds on iOS and
+Android but is replaced on the web by "the page detects an `Internal` result or a trap and
+discards the instance". That belongs in the ADR, not in a comment.
+
+### The blocker that is not about linking at all
+
+**M1 cannot ship PDFium under either option until ADR 0003's allowlist is widened.** The
+prebuilt fails on `FTL`, `IJG`, AGG 2.3 and `libpng-2.0`; building from source bundles the
+same components under the same licences, so option 2 does not avoid it. None of it is
+copyleft and none threatens our own licensing — the allowlist was written for Rust crates
+and is too narrow to describe a bundled C/C++ PDF engine.
+
+That needs a new ADR superseding ADR 0003, recording the widened list and the two
+affirmative notice obligations (FreeType FTL §2, IJG condition 2). It is a policy
+decision, not a config edit, and it is now the critical path for M1.
+
+### Conditions I would attach to adopting option 1
+
+1. Memoize the init promise, and one engine instance per worker. Non-negotiable given the
+   HIGH finding.
+2. Suppress engine logging at both the C++ and JS layers before any real file is opened.
+3. Pass `Module.wasmBinary`, build `-sENVIRONMENT=web,worker`, ship `connect-src 'none'`.
+4. Assert qpdf's crypto flags in CI so a default build cannot link GnuTLS.
+5. Pin emsdk and wasi-sdk in `pins.env` — the audit caught wasi-sdk unpinned, my own rule
+   violation.
+6. Replace the `-FPDF_GetLastError()` sentinel and the password string-match before either
+   pattern reaches `burrow-engines`.
+7. Re-audit `pdfium.js` on every PDFium bump, or make it structurally unnecessary via (3).
+
+### Revisit option 2 when
+
+We take on a from-source PDFium build for any reason — smaller wasm, disabling unused
+features, or supply-chain provenance, all of which the licensing work may force anyway.
+At that point option 2's advantages arrive nearly free: one heap, no copy, working
+`catch_unwind`, and an engine wrapper that looks the same on every platform. The cost is
+reopening ADR 0002's wasm-bindgen choice.
+
+## The bar — final status
+
+- [x] A real PDF opens inside a browser Web Worker, driven from Rust, reporting page count
+- [x] qpdf also linked and callable in the same setup
+- [x] A malformed PDF through qpdf returns a typed error, not an abort
+- [x] Runs headless in CI (Playwright + Chromium), on x86-64 as well as local aarch64
+
+**Spike complete.** Reproduce with `spikes/wasm-engines/scripts/fetch-engines.sh`,
+`common/make-corpus.py`, `option1-js-bridge/assemble.sh`, then `npx playwright test`.
