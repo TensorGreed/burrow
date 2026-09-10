@@ -1,0 +1,7 @@
+# Pinned so every machine and CI runner builds with the same compiler.
+# Bumping this is a deliberate change: run the full test suite and cargo-deny after.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

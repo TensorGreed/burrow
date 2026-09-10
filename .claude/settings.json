@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo deny:*)",
+      "Bash(cargo audit:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(cargo +nightly fuzz list)",
+      "Bash(rustup show)",
+      "Bash(rustup target list:*)",
+      "Bash(rustup component list:*)",
+      "Bash(pnpm install)",
+      "Bash(pnpm install --frozen-lockfile)",
+      "Bash(pnpm build)",
+      "Bash(pnpm check)",
+      "Bash(pnpm lint)",
+      "Bash(pnpm format)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm why:*)",
+      "Bash(pnpm licenses:*)",
+      "Bash(pnpm -C apps/web:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git blame:*)",
+      "Bash(rg:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(file:*)"
+    ],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --delete:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -fdx:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git config --global:*)",
+      "Bash(rm -rf /:*)",
+      "Bash(rm -rf ~:*)",
+      "Bash(rm -rf /home:*)",
+      "Bash(rm -rf /usr:*)",
+      "Bash(rm -rf /etc:*)",
+      "Bash(rm -rf /var:*)",
+      "Bash(rm -rf /tmp:*)",
+      "Bash(rm -rf ..:*)",
+      "Bash(sudo:*)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.p12)",
+      "Read(**/*.keystore)",
+      "Read(**/*.jks)",
+      "Read(**/id_rsa)",
+      "Read(**/id_ed25519)",
+      "Edit(.env)",
+      "Edit(.env.*)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Edit(LICENSE-MIT)",
+      "Edit(LICENSE-APACHE)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/format-file.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

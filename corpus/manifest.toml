@@ -1,0 +1,51 @@
+# burrow test corpus manifest.
+#
+# This file is tracked in git. The files it describes are NOT: see `corpus/files/` in
+# .gitignore. Corpora are large, and can contain third-party or sensitive documents.
+#
+# Fetch with:  tools/corpus-fetch.sh
+# Run against: tools/corpus-run.sh
+#
+# Every entry needs a `license` field. A corpus file we cannot redistribute is still
+# usable for local regression runs, but must be marked `redistributable = false` so CI
+# never publishes it.
+
+[meta]
+version = 1
+# Where fetched files land, relative to the repository root.
+root = "corpus/files"
+
+# --- Sets ---------------------------------------------------------------------------
+# A set is a named group of inputs exercised together by the corpus runner. Sets are
+# declared before the corpora that populate them so the runner can report empty sets.
+
+[[sets]]
+name = "smoke"
+description = "A handful of small, well-formed documents. Runs on every CI build."
+
+[[sets]]
+name = "malformed"
+description = "Damaged, truncated, and fuzzer-derived files. Must never crash or hang."
+
+[[sets]]
+name = "regression"
+description = "Large real-world corpus. Runs on the self-hosted linux-arm64 machine."
+
+[[sets]]
+name = "redaction"
+description = "Documents with known secrets at known locations, for M2 verification."
+
+# --- Corpora ------------------------------------------------------------------------
+# No corpora are registered yet: the first ones land in M1 alongside merge and split.
+# Shape of an entry, for reference:
+#
+# [[corpora]]
+# name = "pdfa-conformance"
+# set = "regression"
+# url = "https://example.org/pdfa-suite.tar.zst"
+# sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+# license = "CC-BY-4.0"
+# redistributable = true
+# notes = "Upstream conformance suite; see docs for provenance."
+
+corpora = []

@@ -1,0 +1,6 @@
+# pnpm 12 gates dependency build scripts by default. Only these two need to run one,
+# and both are build-time only: esbuild fetches its platform binary, sharp builds its
+# libvips binding. Everything else stays blocked.
+allowBuilds:
+  esbuild: true
+  sharp: true

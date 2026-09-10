@@ -1,0 +1,16 @@
+[package]
+name = "burrow-ops"
+description = "File operations (merge, split, rotate, redact, ...) built on burrow's engine seams."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+burrow-types.workspace = true
+burrow-engines.workspace = true
+
+[lints]
+workspace = true
