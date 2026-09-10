@@ -32,7 +32,7 @@ Repository scaffolding, engineering rules, and enforcement. No product logic.
 - [x] ADRs 0001–0005
 - [x] Astro + Svelte web scaffold
 - [x] Corpus manifest and headless tool stubs
-- [ ] Verify CI green on GitHub (requires a push)
+- [x] Verify CI green on GitHub — all 8 checks pass ([#1](https://github.com/TensorGreed/burrow/pull/1))
 - [ ] SBOM generation and signed releases (stubbed in `release.yml`, wired up before M1 ships)
 
 ---

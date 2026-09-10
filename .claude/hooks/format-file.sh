@@ -8,6 +8,12 @@
 # Claude Code passes the tool payload as JSON on stdin.
 set -uo pipefail
 
+# Hook shells do not inherit an interactive profile, so cargo's bin directory is
+# usually absent from PATH. Without this, rustfmt is silently not found and every
+# .rs edit goes unformatted -- the failure is invisible because the hook always
+# exits 0.
+PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+
 payload=$(cat 2>/dev/null || true)
 
 # Pull the edited path out of the payload. Prefer jq; fall back to a narrow grep so the
@@ -28,8 +34,15 @@ case "$file" in
     command -v rustfmt >/dev/null 2>&1 && rustfmt --edition 2024 "$file" >/dev/null 2>&1
     ;;
   *.astro | *.svelte | *.ts | *.tsx | *.js | *.mjs | *.cjs | *.json | *.jsonc | *.css | *.scss | *.html | *.md | *.yml | *.yaml)
-    # Prettier config lives with the web app; run from there so plugins resolve.
+    # Only inside apps/web. That is exactly what `pnpm lint` checks in CI, and the
+    # prettier config lives there. Running it repo-wide reformats files nothing
+    # verifies -- padding every markdown table and rewriting emphasis markers -- which
+    # buries a one-line change in twenty lines of churn.
     web="$repo_root/apps/web"
+    case "$file" in
+      "$web"/* | apps/web/*) ;;
+      *) exit 0 ;;
+    esac
     if [ -x "$web/node_modules/.bin/prettier" ]; then
       (cd "$web" && ./node_modules/.bin/prettier --write --ignore-unknown "$file" >/dev/null 2>&1)
     fi
