@@ -4,7 +4,14 @@ Date: 2026-09-10
 
 ## Status
 
-Accepted
+Accepted — amended by [0009](0009-web-panic-contract-and-binding-boundary.md).
+
+Two rules stated below were measured by [spike 0001](../spikes/0001-wasm-engines.md) and
+do not hold on the web as written: the `catch_unwind` panic guarantee (a wasm panic is a
+trap, not an unwind, so it cannot be caught in Rust) and "bindings contain no logic"
+(kept, but restated as a testable rule). ADR 0009 records what replaces them. Everything
+else here stands, and the guard remains correct and required for iOS and Android. This
+body is left as written.
 
 ## Context
 

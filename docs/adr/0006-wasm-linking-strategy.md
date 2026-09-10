@@ -4,7 +4,10 @@ Date: 2026-09-10
 
 ## Status
 
-Proposed — decided by the M1 spike described below.
+Accepted — **option 1**, decided by [spike 0001](../spikes/0001-wasm-engines.md).
+
+The seven conditions in *Requirements* below are part of the decision, not advice. Option
+2 is recorded as the better architecture, to be re-evaluated at a named **pre-M2 gate**.
 
 ## Context
 
@@ -89,6 +92,74 @@ engines built with `wasi-sdk`, and a shim providing the WASI imports in the brow
   configuration, so this route almost certainly means **building PDFium from source** for
   wasm — which is exactly the expensive path ADR 0004 hoped to avoid. Exception support
   under wasi-sdk is the weakest of the three.
+
+## Decision (resolved)
+
+**Option 1: Emscripten engine modules bridged through JS.** Rust on
+`wasm32-unknown-unknown` with wasm-bindgen, driving prebuilt PDFium and a source-built
+qpdf as separate Emscripten modules, inside a classic Web Worker.
+
+It is the only route that works with an obtainable PDFium, and it meets this ADR's bar in
+full: 6/6 Playwright assertions green in headless Chromium, locally on aarch64 and in CI
+on x86-64.
+
+Options 2 and 3 were eliminated by evidence, not preference:
+
+- **Option 2** needs a from-source PDFium wasm build for two independent reasons. There is
+  no wasm `libpdfium.a` — pdfium-binaries stages only `pdfium.{html,js,wasm}` for
+  Emscripten targets — *and* the whole C++ stack must be built with the same exception
+  model as Rust's emscripten target. Linking `-fexceptions` qpdf against Rust failed on
+  `__resumeException`/`llvm_eh_typeid_for`; `-fwasm-exceptions` was required. A
+  third-party `.a` built by emsdk 3.1.72 would be very unlikely to match.
+- **Option 3** does not run. wasi-sdk 34 does ship EH-enabled sysroot variants (an
+  earlier reading that it had none was wrong), and it links — but Chromium 153 rejects the
+  result: *"module uses a mix of legacy and new exception handling instructions."*
+
+### Requirements
+
+These are conditions of the decision. A web build that does not satisfy all seven is not
+compliant with this ADR.
+
+1. **Memoise the init promise, and use one engine instance per worker.** `pdfium.js` is
+   not modularised, so its state lives in worker-global `var`s and `importScripts` does
+   not dedupe. Loading it twice rebinds every global while the bridge still holds the
+   first instance — an in-flight call then reads and writes the *other* instance's linear
+   memory and dispatches through its function table. The sandbox holds, but parses return
+   confidently wrong data. Non-negotiable given what redaction does in M2.
+2. **Suppress engine logging at both layers before any real file is opened.** qpdf's
+   default logger writes warnings containing object numbers and byte offsets to stderr,
+   which reaches the devtools console — including for files that parse *successfully*.
+   `setSuppressWarnings(true)` plus a discarding `QPDFLogger`, and `printErr`/`print`
+   stubbed on both modules.
+3. **Pass `Module.wasmBinary`, build `-sENVIRONMENT=web,worker`, and ship
+   `connect-src 'none'`.** This makes non-negotiable #1 enforced by the browser rather
+   than by re-auditing 240 KB of minified third-party JS on every PDFium bump.
+4. **Assert qpdf's crypto flags in CI.** `USE_IMPLICIT_CRYPTO` defaults ON upstream and
+   would link GnuTLS (LGPL-2.1-or-later) into a static artifact. See
+   [ADR 0004](0004-native-engines.md).
+5. **Pin emsdk and wasi-sdk** in the engine pin manifest. The audit caught wasi-sdk
+   fetched with no pin at all.
+6. **No sentinel that can alias success, and no error classification by string match.**
+   `-FPDF_GetLastError()` yields `-0`, and `-0 === 0` in JS, so a failed load reads as
+   "opened fine, zero pages". Password detection must use qpdf's error *code*, never its
+   prose — the rule already in `core/CLAUDE.md`.
+7. **Re-audit `pdfium.js` on every PDFium bump**, or make that unnecessary via (3).
+
+### Pre-M2 gate: re-evaluate option 2
+
+Not "someday". **Before M2 starts**, option 2 is re-evaluated against the same bar, because
+redaction is exactly where option 1's two weaknesses bite hardest: the shared-glue-globals
+hazard in requirement 1, and trap-versus-unwind semantics. A redaction pass that inspects
+one heap and edits another is the failure mode M2 exists to prevent.
+
+Option 2's measured advantages: `catch_unwind` **works** on the Emscripten target, so ADR
+0002's guard rule holds on the web — which it cannot under option 1, where a panic is an
+uncatchable trap. One heap, so no cross-heap copy. And slightly smaller.
+
+**Open question for that gate:** whether PDFium's from-source `gn`/`ninja` wasm build
+works on a `linux-aarch64` host, or has to run on x86-64 CI runners. The dev and corpus
+machine is aarch64, so this determines whether the build is reproducible where the
+regression runs happen.
 
 ## Consequences
 

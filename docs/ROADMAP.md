@@ -49,43 +49,75 @@ present. This is the `add-operation` checklist; it is not optional per-operation
 
 ### Foundations
 
-1. **Spike: prove Rust + PDFium + qpdf run in a browser worker.** The first task,
-   before any operation. Prebuilt PDFium WASM builds are Emscripten artifacts and do not
-   link with `wasm32-unknown-unknown`, so the target we assumed in
-   [ADR 0002](adr/0002-rust-core-and-bindings.md) and the engines we chose in
-   [ADR 0004](adr/0004-native-engines.md) do not currently compose. Evaluate the three
-   routes in [ADR 0006](adr/0006-wasm-linking-strategy.md). This spike decides ADR 0006
-   **and** ADR 0004's open acquisition question — they cannot be settled separately.
-   Include qpdf, not just PDFium: it leans on C++ exceptions and is the harder half.
-   *Testable:* in CI, a browser worker opens a real PDF and reports its page count,
-   driven from Rust, with qpdf linked and callable.
-2. **Engine acquisition**, following whatever route the spike picked. Pinned versions and
-   checksums; builds for `linux-arm64`, `wasm32`, `x86_64-linux`. Provenance recorded in
-   `THIRD_PARTY_NOTICES.md`, and a `license-auditor` pass covering each engine's bundled
-   third-party code.
-   *Testable:* CI links PDFium and qpdf and calls one function on all three targets.
-3. **`DocumentEngine` implementation over PDFium** in `burrow-engines`, with every C
-   error code mapped to a typed `Error` variant and no raw code escaping the crate.
-   *Testable:* every PDFium error path has a test asserting the mapped variant.
-4. **Open and parse with limits enforced** — `max_input_bytes`, `max_pages`,
-   `max_duration_ms`, `max_memory_bytes`, per
+The linking strategy is **settled** by [spike 0001](spikes/0001-wasm-engines.md):
+option 1, Emscripten engine modules bridged through JS, with Rust on
+`wasm32-unknown-unknown`. See [ADR 0006](adr/0006-wasm-linking-strategy.md) for the
+decision and its seven requirements, and [ADR 0004](adr/0004-native-engines.md) for
+acquisition. The spike is not production code and nothing from it is reused directly.
+
+1. **Engine acquisition, per ADR 0004.** Prebuilt PDFium `chromium/8044` with its
+   trust-on-first-use hash recorded (upstream publishes no signature); qpdf 12.4.1 from
+   source, verified against upstream's PGP-signed checksum; zlib and libjpeg **vendored
+   with our own checksums**, not taken from Emscripten ports; emsdk pinned and verified.
+   *Testable:* a fetch script fails closed on any checksum mismatch, and CI builds all
+   engines from the pinned manifest alone.
+2. **Engine licence manifest wired into the build.** Extend
+   [`engines/licenses.toml`](../engines/licenses.toml) as each engine is vendored, and
+   keep `tools/check-engine-licences.py` green. Add the two mandatory credit lines
+   (FreeType FTL §2, IJG condition 2) to `THIRD_PARTY_NOTICES.md` **and** a website
+   credits page, per [ADR 0008](adr/0008-widened-licence-allowlist.md).
+   *Testable:* CI fails if a component is declared with a licence outside the allowlist;
+   a test asserts both credit lines are present in the built site.
+3. **qpdf crypto flags asserted in CI.** `USE_IMPLICIT_CRYPTO=OFF`,
+   `REQUIRE_CRYPTO_NATIVE=ON`. The upstream default would link GnuTLS (LGPL-2.1+).
+   *Testable:* CI fails if the crypto summary changes or `QPDFCrypto_gnutls` appears in
+   the link.
+4. **`DocumentEngine` implementation over PDFium** in `burrow-engines`, with every C
+   error code mapped to a typed `Error` and no raw code escaping the crate. No sentinel
+   that can alias success — `-FPDF_GetLastError()` yields `-0`, and `-0 === 0` in JS — and
+   **no error classification by string matching**; use engine codes, never engine prose.
+   *Testable:* every PDFium error path has a test asserting the mapped variant, including
+   one that a zero error code cannot read as success.
+5. **Open and parse with limits enforced**, per
    [ADR 0007](adr/0007-limit-enforcement-per-platform.md): an injected clock rather than
-   `Instant::now()`, which panics on wasm, and estimate-based memory pre-checks on native.
+   `Instant::now()`, which panics on wasm; WASM maximum memory as the web ceiling;
+   estimate-based pre-checks on native. Reject oversized input **before** allocating, and
+   take `size_t`, not `int` — a signed length turns a >2 GiB input into a huge
+   out-of-bounds read.
    *Testable:* a 20k-page document and a 2 GB file both return `LimitExceeded`, not a
    crash or an OOM kill; timeout behaviour is tested with a fake clock, not by waiting.
-5. **qpdf integration for repair** — a damaged file that PDFium rejects is repaired by
-   qpdf and retried.
-   *Testable:* a corpus of truncated and damaged files; each either succeeds after repair
-   or returns `Malformed`.
-6. **Fuzz target for document open** — the first parser entry point.
+6. **qpdf integration for structure, encryption, object streams, and linearisation.**
+   Note the correction in ADR 0004: PDFium reconstructs a corrupted xref by itself, so
+   "repair" is **not** currently a justification for qpdf. If it is to be claimed, it
+   needs a corpus case PDFium actually fails.
+   *Testable:* a corpus of structurally damaged files; each either succeeds or returns
+   `Malformed`, and no case aborts.
+7. **Engine logging suppressed at both layers.** qpdf's default logger emits object
+   numbers and byte offsets to stderr — reaching the devtools console — *including for
+   files that parse successfully*. `setSuppressWarnings(true)` plus a discarding
+   `QPDFLogger`, and `printErr`/`print` stubbed on every module.
+   *Testable:* a test opens a file containing a recognisable secret and asserts nothing
+   from it reaches console or any error string.
+8. **Fuzz target for document open** — the first parser entry point. Note that
+   `max_duration_ms` is checkpoint-based and cannot catch a hang, so libFuzzer's own
+   `-timeout` is required.
    *Testable:* 10 minutes clean on CI, longer on the regression machine.
-7. **Web binding surface and Web Worker harness** — operations callable from the browser
-   with progress reporting, off the main thread. Whether this is wasm-bindgen depends on
-   the spike: two of ADR 0006's three routes rule it out.
-   *Testable:* a Playwright test drives a real file through a worker, and recovers when
-   the worker aborts (wasm panics abort rather than unwind).
-8. **wasm size budget in CI** — record the module size and fail on an unexplained
-   regression.
+9. **Web binding surface and Web Worker harness**, satisfying ADR 0006's requirements 1
+   and 3: one engine instance per worker, the init **promise** memoised (not the result),
+   `Module.wasmBinary` supplied, built `-sENVIRONMENT=web,worker`, and shipped with
+   `connect-src 'none'` so non-negotiable #1 is enforced by the browser rather than by
+   re-auditing minified third-party JS.
+   *Testable:* a Playwright test drives a real file through a worker; another asserts the
+   CSP blocks any outbound connection.
+10. **Worker recovery, per [ADR 0009](adr/0009-web-panic-contract-and-binding-boundary.md).**
+    A panic is a catchable trap and the worker *survives* — so recovery is the page's
+    decision. Any `Internal` result or wasm exception discards the instance and spawns a
+    fresh worker; `Malformed`/`LimitExceeded`/`PasswordRequired` must not cost a worker.
+    *Testable:* a test panics deliberately, asserts the instance is discarded, and asserts
+    the next operation succeeds on a fresh worker.
+11. **wasm size budget in CI.** Record the module size and fail on an unexplained
+    regression. The spike measured 6.50 MB raw / 2.20 MB brotli for the full option 1
+    payload, 82% of it PDFium — that is the starting point, not a target.
 
 ### Operations
 
@@ -145,6 +177,25 @@ Moved here from M0, because both depend on the native engines existing.
 
 The highest-risk feature in the project. A bug here leaks the secret the user was
 removing, so the verifier is part of the feature, not a test of it.
+
+### Gate: re-evaluate option 2 before M2 starts
+
+**This is a gate, not a maybe.** [ADR 0006](adr/0006-wasm-linking-strategy.md) chose
+option 1 for M1, and redaction is precisely where option 1's two weaknesses bite hardest:
+the shared-glue-globals hazard (a parse against the wrong linear memory returns
+confidently wrong data) and trap-versus-unwind semantics. A redaction pass that inspects
+one heap and edits another is the failure mode this milestone exists to prevent.
+
+Option 2's measured advantages: `catch_unwind` **works** on `wasm32-unknown-emscripten`,
+so ADR 0002's guard rule holds on the web — it cannot under option 1. One heap, so no
+cross-heap copy. Slightly smaller.
+
+Its cost is a from-source PDFium `gn`/`ninja` build, and the **open question for this
+gate** is whether that build works on a `linux-aarch64` host or has to run on x86-64 CI
+runners. The dev and corpus machine is aarch64, so the answer determines whether the build
+is reproducible where the regression runs happen.
+
+Decide, record the outcome in an ADR, and only then start redaction.
 
 - Redaction of text, images, annotations, and vector content by region
 - **Removal, not concealment** — a black rectangle over text is not redaction
