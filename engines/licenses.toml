@@ -44,10 +44,14 @@ pins = "engines/pins.toml"
 # Audit that produced the current contents.
 last_audited = "2026-09-10"
 last_audited_by = "M1 PR 1 production acquisition audit (branch feat/engine-acquisition)"
-# Two entries below are DELIBERATELY not allowlisted, so this manifest FAILS the CI
-# check. See the BLOCKING FINDINGS block further down. Do not "fix" them by editing
-# tools/check-engine-licences.py.
-status = "failing-on-purpose"
+# Every component below is declared with a licence on ADR 0008's allowlist, so
+# tools/check-engine-licences.py passes. This manifest spent M1 PR 1 deliberately failing
+# -- see RESOLVED FINDINGS further down for what was blocked and what unblocked it.
+#
+# If you are here because the check now fails: do NOT "fix" it by editing the checker or by
+# adding a licence to ADR 0008's allowlist. Adding a licence needs an ADR.
+status = "passing"
+resolved_by = "docs/adr/0010-harfbuzz-and-icu-in-pdfium.md"
 
 # ---------------------------------------------------------------------------------
 # Shipped artifacts, by id. `artifacts` / `linked_in` on each component refer to these.
@@ -115,12 +119,17 @@ files = "vendor/native-aarch64/lib/libjpeg.a, vendor/native-aarch64/bin/{cjpeg,d
 source = "built from source, libjpeg-turbo-3.2.0.tar.gz, SIMD enabled (NEON)"
 
 # =================================================================================
-# BLOCKING FINDINGS -- read before touching anything else.
+# RESOLVED FINDINGS -- both closed by ADR 0010. Kept because the reasoning is the
+# reason the components below carry the licences they do.
 #
-# This audit found two components in the PDFium artifacts that ADR 0008 did not
-# account for. Both are recorded below with licence identifiers that are NOT on the
-# allowlist, so tools/check-engine-licences.py fails. That is deliberate: the honest
-# state of the audit is "blocked", and a passing check would hide it.
+# M1 PR 1's audit found two components in the PDFium artifacts that ADR 0008 did not
+# account for. Both were recorded with licence identifiers that were NOT on the
+# allowlist, so tools/check-engine-licences.py failed on purpose: the honest state of
+# the audit was "blocked", and a passing check would have hidden it.
+#
+# ADR 0010 resolved both -- HarfBuzz as MIT-Modern-Variant with the licence text
+# committed under docs/adr/licences/, ICU as ICU (Unicode-3.0-compatible) -- and
+# widened the allowlist to admit them. The findings as they stood are below.
 #
 #   1. harfbuzz -- CONFIRMED LINKED into libpdfium.so (1192 hb_* symbols) and almost
 #      certainly into pdfium.wasm, yet NO harfbuzz licence file ships in ANY of the
@@ -134,8 +143,11 @@ source = "built from source, libjpeg-turbo-3.2.0.tar.gz, SIMD enabled (NEON)"
 #      enumerated here first." They are now enumerated, and one of them -- the ICU
 #      licence for ICU 1.8.1 to ICU 57.1 -- is not on the allowlist.
 #
-# Resolving either requires a new ADR superseding 0008, not an edit here or to the
-# checker. See the report attached to M1 PR 1.
+# Resolving either required a new ADR, not an edit here or to the checker. That ADR is
+# docs/adr/0010-harfbuzz-and-icu-in-pdfium.md, and it also added
+# tools/detect-engine-components.py -- which asks the question this manifest cannot,
+# namely whether a component nobody declared is present in the artifacts at all. That
+# is how HarfBuzz went undeclared through a whole ADR cycle in the first place.
 # =================================================================================
 
 # ---------------------------------------------------------------------------------
@@ -321,7 +333,7 @@ GPLv2 mentions are inside the LLVM Exception's own GPLv2-compatibility waiver --
 grant. If any NCSA-only LLVM code turns out to be present, NCSA is not on ADR 0008's \
 allowlist and that becomes a third blocking finding."""
 
-# --- BLOCKING #1 ------------------------------------------------------------------
+# --- WAS BLOCKING #1, resolved by ADR 0010 ----------------------------------------
 
 [[component]]
 name = "harfbuzz (bundled in pdfium)"

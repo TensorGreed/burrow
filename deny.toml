@@ -7,18 +7,33 @@
 # Changing the `allow` list below is a licensing policy decision. It requires an ADR
 # amending docs/adr/0003-permissive-licensing.md, not just a commit.
 
-# KNOWN GAP: cargo-deny does not see dev-dependencies.
+# CORRECTION (2026-09-11): an earlier version of this comment claimed cargo-deny does not
+# see dev-dependencies, and that the ban list below therefore did not cover them. **That
+# was wrong**, and it reached ADR 0012, a commit message and a PR description before it was
+# rechecked.
 #
-# Measured with cargo-deny 0.20.2 on this repository: `proptest`, `serde`, `serde_json`
-# and their transitives do not appear in the graph, and neither `[graph] exclude-dev =
-# false` nor clearing `targets` changes that. So "cargo deny check passes" means "the
-# non-dev graph passes".
+# What it was based on: `cargo deny list` omits dev-dependencies from its output, and both
+# the audit and the verification of it used `list`. The `check` subcommand -- the one CI
+# runs -- does include them. Measured by planting `ureq = "2"` as a dev-dependency of
+# burrow-engines and running `cargo deny check`: it failed on `ureq`, and caught transitive
+# `ring` with it. Banning a dev-only transitive two levels deep (`zmij`, via `serde_json`)
+# also fails. `[graph] exclude-dev` is a real key and defaults to false; setting it
+# explicitly changes nothing, because nothing was being excluded.
 #
-# That is not only a licensing gap. The `[bans] deny` list below names reqwest, hyper and
-# friends and is part of how non-negotiable #1 is enforced -- and it does not apply to any
-# dev-dependency either. A test-only HTTP client would not be caught here.
+# One loose end, left loose on purpose: cargo-deny's graph is still not the lockfile. With
+# an emptied allowlist its licence check names 31 crates while Cargo.lock holds 48, and
+# `serde_json` is in the lockfile but absent from that output while `proptest`, `serde` and
+# `rand` are present. We did not find out why, and stopped looking, because the property
+# that matters is now checked independently by
 #
-# Dev-dependencies are audited by hand at review time until this is fixed. See ADR 0012.
+#   tools/check-no-network-deps.sh
+#
+# which walks `cargo tree -e normal,dev,build --target all` for every workspace member
+# *and* for fuzz/, reads this file's ban list so the two cannot drift, and fails on a plain
+# name match. It sees 47 crates where cargo-deny's licence graph sees 31. Its self-test
+# (tools/test-check-no-network-deps.sh) plants a banned crate as a dev-dependency, as a
+# transitive of one, as a build-dependency, and behind a foreign target cfg, proves the
+# check catches all four, and proves an empty ban list is an error rather than a pass.
 
 [graph]
 # Check every target we ship to, so a platform-specific GPL dependency cannot slip in

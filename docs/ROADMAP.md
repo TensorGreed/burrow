@@ -164,6 +164,12 @@ what later PRs can assume:
     deadline expired. Measured at 716 ms against a 1 ms budget. A bounded wait and a
     registry-level cap on open documents are both recorded in ADR 0011 and neither is in
     PR 2.
+- **Retracted after PR 2 merged:** PR 2 claimed `cargo-deny` cannot see dev-dependencies,
+  and that non-negotiable #1's network ban therefore did not cover them. That was wrong —
+  it came from `cargo deny list`, which omits them from its output, while `cargo deny
+  check` includes them. Corrected in [ADR 0012](adr/0012-ncsa-for-libfuzzer.md) and at the
+  top of `deny.toml`, and `tools/check-no-network-deps.sh` now checks the property
+  independently of cargo-deny either way.
 9. **Web binding surface and Web Worker harness**, satisfying ADR 0006's requirements 1
    and 3: one engine instance per worker, the init **promise** memoised (not the result),
    `Module.wasmBinary` supplied, built `-sENVIRONMENT=web,worker`, and shipped with
