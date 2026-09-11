@@ -144,5 +144,11 @@ A change is done when all of these hold:
 - Prefer `rg` over `grep`, and the file tools over shell text editing.
 - Do not add docs, changelogs, coverage passes, or formatting sweeps that were not asked for.
 - Do not commit or push unless asked.
+- **A CI monitor watches one run ID, and is stopped on every push.** Use
+  `gh run watch <id> --exit-status`, never `gh pr checks <pr>`: the latter reports whichever
+  run is *current*, so a monitor started for one commit silently begins reporting on another.
+  Four of them accumulated across one PR, all polling the same endpoint — a green from any
+  would have read as confirmation while saying nothing about the commit it was started for.
+  Stop the previous monitor before starting the next.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.

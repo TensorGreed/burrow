@@ -125,10 +125,25 @@ async function runGuard(protocol: string, world: World): Promise<GuardOutcome> {
   // The completion value, not properties of the context: `const` in a script evaluated by
   // `vm` is a lexical binding in that script's scope and never becomes a property of the
   // context object, so reading `scope.CREATED_FROM_BLOB` yields `undefined`.
-  const result = runInNewContext(`${prelude}\n;({ CREATED_FROM_BLOB, POLICED })`, scope) as {
+  const result = runInNewContext(
+    `${prelude}\n;({ CREATED_FROM_BLOB, POLICED, compiled })`,
+    scope,
+  ) as {
     CREATED_FROM_BLOB: boolean;
-    POLICED: Promise<boolean>;
+    POLICED: Promise<{ policed: boolean; reason: string }>;
+    compiled: Record<string, Promise<unknown>>;
   };
+
+  // Observe the engine-fetch rejections.
+  //
+  // In production `init()` awaits these. This suite never calls it, and since the guard
+  // stopped using an engine fetch as its control — it has a dedicated one now — nothing else
+  // awaits them either. In the `network-broken` world they reject unobserved, and vitest
+  // fails the RUN on unhandled rejections while reporting every test as passed. CI caught
+  // that; local timing had been hiding it.
+  for (const pending of Object.values(result.compiled)) {
+    pending.catch(() => {});
+  }
 
   const verdict = await result.POLICED;
   return {

@@ -134,24 +134,47 @@ jobs:
         run: |
           list=$(cargo test -p burrow-engines --all-features -- --list)
           echo "$list"
+          # TWO GROUPS, because they prove different things and conflating them weakened the
+          # check. Three names below moved in M1 PR 4a-i, when the error tables were hoisted
+          # out of the native-engines cfg gate so the web path could share them -- and simply
+          # renaming them here would have left this step listing UNGATED tests, which say
+          # nothing at all about whether `native-engines` took effect.
+          #
+          # Group 1: GATED. These exist only when the engines are linked, so their presence is
+          # the actual evidence this step is named for.
           for t in \
             link_check::tests::the_loaded_pdfium_is_the_pinned_library \
             link_check::tests::pdfium_links_and_initialises_cleanly \
             link_check::tests::qpdf_links_and_reports_the_pinned_version \
             pdfium::tests::a_valid_document_opens_and_reports_its_pages \
             pdfium::tests::an_encrypted_document_with_no_password_needs_one \
-            pdfium::errors::tests::a_zero_error_code_on_a_failed_call_is_never_success \
-            qpdf::errors::tests::a_zero_code_on_a_failed_call_is_never_success \
-            qpdf::ffi::tests::warnings_alone_are_not_an_error \
-            qpdf::tests::every_failure_path_returns_a_typed_error_rather_than_unwinding \
-            prescan::xref::tests::a_prev_chain_pointing_at_itself_terminates
+            qpdf::tests::every_failure_path_returns_a_typed_error_rather_than_unwinding
           do
             printf '%s' "$list" | grep -q "^$t: test$" || {
               echo "::error::$t was not discovered. Is native-engines taking effect?" >&2
               exit 1
             }
           done
-          echo "engine link tests present"
+          echo "gated engine tests present"
+
+          # Group 2: UNGATED, and listed anyway. These are the named traps -- PDFium's `-0`
+          # sentinel reading as success (ADR 0006 requirement 6), qpdf's `QPDF_ERROR_CODE`
+          # bitmask, and the pre-scan's cycle bound. They now run on every target, which is
+          # the point of hoisting them, but they are the ones whose disappearance would be
+          # quietest and most expensive, so their names are pinned here too.
+          for t in \
+            codes::pdfium::tests::a_zero_error_code_on_a_failed_call_is_never_success \
+            codes::qpdf::tests::a_zero_code_on_a_failed_call_is_never_success \
+            codes::qpdf::tests::warnings_alone_are_not_an_error \
+            prescan::xref::tests::a_prev_chain_pointing_at_itself_terminates
+          do
+            printf '%s' "$list" | grep -q "^$t: test$" || {
+              echo "::error::$t was not discovered. It is ungated, so this is not a feature" >&2
+              echo "::error::  problem -- the test was renamed, moved, or deleted." >&2
+              exit 1
+            }
+          done
+          echo "named-trap tests present"
 
       # The integration tests are separate binaries with their own cfg gate, so the check
       # above says nothing about them. These are the ones that would silently vanish and
