@@ -124,24 +124,43 @@ test("the policy has no cross-origin source anywhere in it", async ({ page }) =>
  * The worker is where the file bytes are, and it was the half that was unprotected.
  *
  * A dedicated worker created from a same-origin *script URL* does not inherit the creating
- * document's CSP — it takes its policy from that script's HTTP response headers, and a
- * static host sends none. Measured during 4a-i: the worker ran with no policy at all and a
+ * document's CSP — it takes its policy from that script's HTTP response headers, and a static
+ * host sends none. Measured during 4a-i: the worker ran with no policy at all and a
  * cross-origin fetch from inside it reached the network, while every page-level test above
  * passed. So the worker is now constructed from a Blob, which does inherit.
  *
- * This runs in all three browsers, not just Chromium, because the inheritance rule is the
- * kind of thing engines have historically disagreed about — and being wrong about it in one
- * of them would silently remove the browser-enforced half of the guarantee there.
+ * **Asserted differentially, not by the violation event.** An allowlisted request must
+ * succeed and a non-allowlisted one must be refused; together those separate "the policy
+ * refused it" from "the network is broken" using only whether requests succeed. The earlier
+ * version required a `securitypolicyviolation` event — and **WebKit does not dispatch one in
+ * a worker**, so it reported no violation for requests it had correctly refused. The guard in
+ * the worker made the same mistake and refused every operation in WebKit; this is the test
+ * shaped like the fix.
  */
-test("the policy applies inside the worker, and the browser says so", async ({ page }) => {
+test("the policy applies inside the worker, and is what blocks the request", async ({ page }) => {
   await openHarness(page);
 
   // ABSOLUTE same-origin URLs. A relative one cannot be used here at all: a blob: worker's
   // `self.location` is an opaque blob: URL, so `fetch("/")` fails to parse before CSP is
-  // consulted — which would look like a pass for entirely the wrong reason. (The first
-  // version of this test used relative paths and "passed" the blocked assertion while
-  // recording no violation, which is how the difference surfaced.)
+  // consulted — which would look like a pass for entirely the wrong reason.
   const origin = new URL(page.url()).origin;
+
+  // THE CONTROL. An allowlisted engine URL, fetched from inside the same worker. If this
+  // were blocked too, every assertion below would be satisfied by a broken network rather
+  // than by a policy.
+  const allowlisted = await page.evaluate(async () => {
+    const manifest = JSON.parse(
+      document.getElementById("engines")?.getAttribute("data-engines") ?? "{}",
+    ) as Record<string, { url: string }>;
+    return window.burrowHarness.fetchFromWorker(
+      new URL(manifest.qpdfWasm.url, location.origin).href,
+    );
+  });
+  expect(allowlisted.failed, "the probe worker failed to start").toBeFalsy();
+  expect(
+    allowlisted.blocked,
+    "an allowlisted engine URL must NOT be blocked — otherwise this proves nothing",
+  ).toBe(false);
 
   for (const target of [
     "https://example.com/collect",
@@ -156,14 +175,42 @@ test("the policy applies inside the worker, and the browser says so", async ({ p
 
     expect(result.failed, `${target}: the probe worker failed to start`).toBeFalsy();
     expect(result.blocked, `${target} should be refused inside the worker`).toBe(true);
-    // "The fetch failed" and "the browser refused it" are different facts — an unreachable
-    // host produces the first without the second. Only the violation event distinguishes
-    // them, and it is the one that proves the policy is doing the work.
-    expect(
-      result.violations.some((v) => v.includes("connect-src")),
-      `${target}: expected a connect-src violation, got ${JSON.stringify(result.violations)}`,
-    ).toBe(true);
   }
+});
+
+/**
+ * Which browsers report a policy violation inside a worker.
+ *
+ * Informational, and deliberately not part of the guarantee above — but asserted rather than
+ * commented, so that "WebKit does not dispatch this" stays a measured fact. Chromium and
+ * Firefox do; if WebKit gains it, this test says so rather than quietly passing.
+ */
+test("securitypolicyviolation reaches the worker in Chromium and Firefox", async ({
+  page,
+}, testInfo) => {
+  await openHarness(page);
+  const origin = new URL(page.url()).origin;
+
+  const result: ProbeResult = await page.evaluate(
+    (url) => window.burrowHarness.fetchFromWorker(url),
+    `${origin}/engines/not-an-engine.wasm`,
+  );
+  expect(result.blocked, "the request must be refused regardless").toBe(true);
+
+  const dispatched = result.violations.some((v) => v.includes("connect-src"));
+  if (testInfo.project.name === "webkit") {
+    // Not asserted false: this is a gap, not a requirement. Recorded so the differential
+    // check above is understood to be load-bearing rather than belt-and-braces.
+    testInfo.annotations.push({
+      type: "browser-gap",
+      description: `WebKit dispatched ${dispatched ? "a" : "no"} securitypolicyviolation in the worker`,
+    });
+    return;
+  }
+  expect(
+    dispatched,
+    `expected a connect-src violation, got ${JSON.stringify(result.violations)}`,
+  ).toBe(true);
 });
 
 test("the worker refuses to touch a file unless it inherits the policy", async ({ page }) => {

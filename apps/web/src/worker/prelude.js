@@ -64,13 +64,13 @@
 const PROBE_PATH = "/__csp-probe";
 
 /**
- * How long to wait for `securitypolicyviolation` before concluding there is no policy.
+ * How long to wait for the probe request to settle before concluding nothing was refused.
  *
- * The event is dispatched on the event loop, so it lands within a turn or two of the fetch
- * rejecting; this is generous. It bounds a guard that must never hang: exceeding it resolves
- * *false*, and the worker then refuses to touch a file.
+ * A refusal is immediate — the browser never sends the request — so this is generous. It
+ * bounds a guard that must never hang: exceeding it resolves *false*, and the worker then
+ * refuses to touch a file.
  */
-const PROBE_TIMEOUT_MS = 250;
+const PROBE_TIMEOUT_MS = 5_000;
 
 /**
  * Whether this worker was created from a Blob.
@@ -83,65 +83,6 @@ const PROBE_TIMEOUT_MS = 250;
  * `self.location` in a Blob worker is the `blob:` URL it was constructed from.
  */
 const CREATED_FROM_BLOB = self.location.protocol === "blob:";
-
-/**
- * Whether a Content-Security-Policy is actually in force in *this* worker.
- *
- * **The fail-closed guard, and it measures the property rather than a proxy for it.**
- *
- * An earlier version checked only {@link CREATED_FROM_BLOB} and called itself
- * `INHERITS_PAGE_CSP` — which asserts a stronger thing than it tested. This attempts a fetch
- * to a same-origin URL that is deliberately *not* in `connect-src` and requires the browser
- * to refuse it, listening for `securitypolicyviolation` so that "refused by policy" is
- * distinguishable from "the request failed". A network error is not proof of a policy.
- *
- * The probe runs once, before any file can arrive, and is itself blocked — so it sends
- * nothing. Its cost is one refused request at init.
- */
-const POLICED = (async () => {
-  if (!CREATED_FROM_BLOB) {
-    return false;
-  }
-
-  /**
-   * Resolves true when the browser reports a policy violation, false if none arrives.
-   *
-   * Bounded: a guard that waited indefinitely for an event that may never come would hang
-   * the worker on its first message rather than refuse, which is a worse failure than the
-   * one it is preventing. The timeout resolves **false**, so the whole check fails closed.
-   */
-  const violation = new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      self.removeEventListener("securitypolicyviolation", onViolation);
-      resolve(false);
-    }, PROBE_TIMEOUT_MS);
-    function onViolation() {
-      clearTimeout(timer);
-      self.removeEventListener("securitypolicyviolation", onViolation);
-      resolve(true);
-    }
-    self.addEventListener("securitypolicyviolation", onViolation);
-  });
-
-  try {
-    // A same-origin path that is deliberately not in `connect-src`, and deliberately not a
-    // real route. NEVER a cross-origin URL: if the policy were missing, a cross-origin probe
-    // would actually reach a third party -- a guard whose failure mode is the thing it
-    // guards against. With `/__csp-probe` the worst case is a 404 on our own host.
-    //
-    // Absolute, because a blob: worker's `self.location` is opaque and cannot resolve a
-    // relative reference.
-    await fetch(new URL(PROBE_PATH, BURROW_ENGINES.probeOrigin).href, { mode: "no-cors" });
-    // The request was NOT refused, so there is no policy in force here.
-    return false;
-  } catch {
-    // A rejected fetch is not enough on its own: a network error rejects too. Only the
-    // violation event says the browser refused it, and it is dispatched asynchronously --
-    // reading a flag straight after the rejection reports false for a request the policy
-    // did refuse. (It did, and every engine test went red.)
-    return violation;
-  }
-})();
 
 /** Silence both modules at the JavaScript layer. ROADMAP item 7's web half. */
 const silent = { print: () => {}, printErr: () => {} };
@@ -187,6 +128,73 @@ function instantiateFrom(id) {
     return {};
   };
 }
+
+/**
+ * Whether a Content-Security-Policy is actually in force in *this* worker.
+ *
+ * **The fail-closed guard, and it measures the property rather than a proxy for it.**
+ *
+ * An earlier version checked only {@link CREATED_FROM_BLOB} and called itself
+ * `INHERITS_PAGE_CSP` — which asserts a stronger thing than it tested.
+ *
+ * It is a **differential** probe: an allowlisted fetch must succeed (the control) and a
+ * non-allowlisted one must be refused (the probe). That distinguishes "refused by policy"
+ * from "the network is broken" without relying on the `securitypolicyviolation` event —
+ * which is what the previous version used, and **WebKit does not dispatch it in a worker**.
+ * WebKit enforced the policy perfectly and the guard concluded there was none, refusing every
+ * operation. Measured; it is why the browser matrix exists.
+ *
+ * The probe runs once, before any file can arrive, and is itself refused — so it sends
+ * nothing. The control is an engine fetch already in flight, so it costs no extra request.
+ */
+const POLICED = (async () => {
+  if (!CREATED_FROM_BLOB) {
+    return false;
+  }
+
+  // THE CONTROL, and it is what makes this work in every browser.
+  //
+  // An allowlisted fetch must succeed first. If it does not, the network is broken or the
+  // artifact is missing, and a refused probe below would be indistinguishable from that --
+  // so there would be nothing to conclude and the guard fails closed.
+  //
+  // This costs no extra request: the engine fetches are already in flight from above, and
+  // init needs them regardless.
+  try {
+    await compiled.qpdfWasm;
+  } catch {
+    // Deliberately broad: a rejected control fetch, and nothing else, should reach here.
+    //
+    // It briefly caught a ReferenceError too -- `compiled` was declared BELOW this block, so
+    // touching it hit the temporal dead zone and the catch reported "not policed" for a
+    // programming error. Fail-closed, so not dangerous, but silent and wrong. Hence the
+    // ordering: everything this depends on is initialised above it.
+    return false;
+  }
+
+  // THE PROBE. A same-origin path that is deliberately not in `connect-src`, and
+  // deliberately not a real route. NEVER a cross-origin URL: if the policy were missing, a
+  // cross-origin probe would actually reach a third party -- a guard whose failure mode is
+  // the thing it guards against. With `/__csp-probe` the worst case is a 404 on our own
+  // host, and `fetch` RESOLVES on a 404, so "no policy" is reported correctly.
+  //
+  // Absolute, because a blob: worker's `self.location` is opaque and cannot resolve a
+  // relative reference.
+  const probe = fetch(new URL(PROBE_PATH, BURROW_ENGINES.probeOrigin).href, {
+    mode: "no-cors",
+  }).then(
+    () => false, // not refused: the control proved the network works, so there is no policy
+    () => true, // refused, and the control rules out a network cause
+  );
+
+  // Bounded, so a request that neither resolves nor rejects cannot hang the worker on its
+  // first message. The timeout resolves FALSE: an inconclusive probe is not a policy.
+  const timeout = new Promise((resolve) => {
+    setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+  });
+
+  return Promise.race([probe, timeout]);
+})();
 
 // PDFium's glue reads this at load time. It must exist before the next file in the bundle.
 self.Module = {
