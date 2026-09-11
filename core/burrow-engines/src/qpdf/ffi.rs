@@ -69,8 +69,9 @@
 //! `qpdf-c.h:134-139`. `QPDF_SUCCESS` is 0, but `QPDF_WARNINGS` and `QPDF_ERRORS` are
 //! separate bits that can both be set or neither. **`result != QPDF_SUCCESS` is wrong** —
 //! it treats a file that parsed perfectly but emitted a warning as a failure. The only
-//! correct test is `result & QPDF_ERRORS`, which is what [`has_errors`] does and what a
-//! named test in `errors.rs` pins down.
+//! correct test is `result & QPDF_ERRORS`, which is what [`has_errors`] does. Both it and
+//! the named test that pins it down live in [`crate::codes::qpdf`], so the web path gets
+//! the same helper rather than a second chance to get the bitmask wrong.
 
 #![allow(non_camel_case_types)]
 
@@ -91,19 +92,9 @@ pub(super) type QpdfBool = c_int;
 /// `#define QPDF_TRUE 1` — `qpdf-c.h:142`.
 pub(super) const QPDF_TRUE: QpdfBool = 1;
 
-/// `typedef int QPDF_ERROR_CODE` — `qpdf-c.h:136`.
-pub(super) type QpdfErrorCode = c_int;
-
-/// `#define QPDF_ERRORS 1 << 1` — `qpdf-c.h:139`. The **only** bit that means failure.
-pub(super) const QPDF_ERRORS: QpdfErrorCode = 1 << 1;
-
-/// Whether a `QPDF_ERROR_CODE` reports an actual error.
-///
-/// Exists so the bitmask test appears exactly once in the crate. See the module docs for
-/// why the obvious `!= QPDF_SUCCESS` is a bug.
-pub(super) const fn has_errors(code: QpdfErrorCode) -> bool {
-    code & QPDF_ERRORS != 0
-}
+// `QPDF_ERROR_CODE`, the `QPDF_ERRORS` bit and the `has_errors` test live in
+// `crate::codes::qpdf` so the bitmask trap is pinned down once for both paths.
+pub(super) use crate::codes::qpdf::{QpdfErrorCode, has_errors};
 
 // `enum qpdf_error_code_e` (`Constants.h:85-96`) lives in `crate::codes::qpdf::code`, not
 // here, so the native and web paths share one table. Its values are stable across major
@@ -258,34 +249,4 @@ unsafe extern "C" {
         func: *const core::ffi::c_void,
         udata: *mut core::ffi::c_void,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The trap the module docs describe, pinned down.
-    ///
-    /// `QPDF_ERROR_CODE` is a bitmask. A file that parses perfectly but emits a warning
-    /// returns `QPDF_WARNINGS`, which is non-zero — so `!= QPDF_SUCCESS` would report it
-    /// as a failure. Same class as PDFium's `-0` sentinel, same treatment.
-    #[test]
-    fn warnings_alone_are_not_an_error() {
-        const QPDF_SUCCESS: QpdfErrorCode = 0;
-        const QPDF_WARNINGS: QpdfErrorCode = 1 << 0;
-
-        assert!(!has_errors(QPDF_SUCCESS));
-        assert!(
-            !has_errors(QPDF_WARNINGS),
-            "a warnings-only result must not read as an error"
-        );
-        assert!(has_errors(QPDF_ERRORS));
-        assert!(
-            has_errors(QPDF_ERRORS | QPDF_WARNINGS),
-            "errors alongside warnings are still errors"
-        );
-
-        // And the naive test that this helper exists to replace really is wrong.
-        assert_ne!(QPDF_WARNINGS, QPDF_SUCCESS);
-    }
 }

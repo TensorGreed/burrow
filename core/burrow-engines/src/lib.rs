@@ -68,6 +68,12 @@ pub mod qpdf;
 // the JS bridge, and it should get it without a second implementation.
 pub mod prescan;
 
+// The web implementations of both engine traits, plus the bridge traits the JS binding
+// implements. Ungated for the same reason as `prescan`: the orchestration is shared Rust,
+// and compiling it everywhere is what lets `cargo test` drive the whole web path against a
+// fake bridge on an ordinary host. See ADR 0006 and ADR 0009.
+pub mod web;
+
 // Proof that the vendored native engines link and run: PDFium's provenance, and qpdf's
 // version. Test-only -- nothing in the library needs it, and keeping it out of the
 // non-test build keeps a raw `FPDF_GetLastError` value from being reachable through a

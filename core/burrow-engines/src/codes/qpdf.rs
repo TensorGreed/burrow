@@ -21,6 +21,26 @@
 use burrow_types::Error;
 use core::ffi::c_int;
 
+/// `typedef int QPDF_ERROR_CODE` — `qpdf-c.h:136`.
+pub(crate) type QpdfErrorCode = c_int;
+
+/// `#define QPDF_ERRORS 1 << 1` — `qpdf-c.h:139`. The **only** bit that means failure.
+pub(crate) const QPDF_ERRORS: QpdfErrorCode = 1 << 1;
+
+/// Whether a `QPDF_ERROR_CODE` reports an actual error.
+///
+/// `QPDF_ERROR_CODE` is a **bitmask, not an enum** (`qpdf-c.h:134-139`): `QPDF_SUCCESS` is
+/// 0, but `QPDF_WARNINGS` and `QPDF_ERRORS` are separate bits that can both be set or
+/// neither. So the obvious `result != QPDF_SUCCESS` is **wrong** — it reports a file that
+/// parsed perfectly but emitted a warning as a failure. The only correct test is
+/// `result & QPDF_ERRORS`.
+///
+/// This lives here, beside the code table, so the test below is the one place in the crate
+/// the trap is pinned down — for the native path and the web path at once.
+pub(crate) const fn has_errors(code: QpdfErrorCode) -> bool {
+    code & QPDF_ERRORS != 0
+}
+
 /// `enum qpdf_error_code_e` — `Constants.h:85-96`. Upstream guarantees the numbering
 /// across major releases, which is what makes mapping by code safe to rely on.
 pub(crate) mod code {
@@ -174,5 +194,26 @@ mod tests {
                 "a digit reached the message for code {code}: {rendered:?}"
             );
         }
+    }
+
+    /// The bitmask trap, pinned down. Same class as PDFium's `-0` sentinel, same treatment.
+    #[test]
+    fn warnings_alone_are_not_an_error() {
+        const QPDF_SUCCESS: QpdfErrorCode = 0;
+        const QPDF_WARNINGS: QpdfErrorCode = 1 << 0;
+
+        assert!(!has_errors(QPDF_SUCCESS));
+        assert!(
+            !has_errors(QPDF_WARNINGS),
+            "a warnings-only result must not read as an error"
+        );
+        assert!(has_errors(QPDF_ERRORS));
+        assert!(
+            has_errors(QPDF_ERRORS | QPDF_WARNINGS),
+            "errors alongside warnings are still errors"
+        );
+
+        // And the naive test this helper exists to replace really is wrong.
+        assert_ne!(QPDF_WARNINGS, QPDF_SUCCESS);
     }
 }
