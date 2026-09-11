@@ -24,11 +24,21 @@ native-engines = []
 
 [dependencies]
 burrow-types.workspace = true
+# Wipes the NUL-terminated copy of a password that PDFium's C API requires, as soon as the
+# load returns. Already a dependency of burrow-types for the same reason.
+zeroize.workspace = true
 
 [dev-dependencies]
 # The provenance test hashes whichever libpdfium the loader actually mapped, so it needs
-# the same digest the build script uses.
+# the same digest the build script uses. The conformance tests reuse it to pin each
+# committed fixture by content.
 sha2 = { version = "0.10", default-features = false }
+# Property tests. Required by the definition of done, not optional per operation.
+proptest = { version = "1", default-features = false, features = ["std"] }
+# Reads tests/conformance/expectations.json, which M1 PR 4's web harness reads too -- the
+# file is the contract between the two implementations, so neither of them owns it.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [build-dependencies]
 # For re-verifying the vendored libraries' checksums in build.rs. Shelling out to
@@ -50,3 +60,9 @@ panic = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+# Restored from the workspace table, which this crate's hand-rolled list had dropped.
+# `c_int` -> `u64` on an attacker-controlled page count is exactly the class these catch.
+integer_division = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+cast_possible_wrap = "deny"

@@ -1,0 +1,88 @@
+name: fuzz (nightly)
+
+# The 60-second smoke in ci.yml runs on every PR and catches the shallow bugs. This is the
+# longer run: 10 minutes per target, once a day, where the fuzzer has time to get past the
+# header check and into the parser.
+#
+# Longer runs come later on the self-hosted linux-arm64 machine, with a persistent corpus.
+# This workflow deliberately starts from an empty corpus each night — it is a regression
+# guard, not a campaign — so a finding here is reproducible from the artifact alone.
+
+on:
+  schedule:
+    # 03:17 UTC. Off the hour so it does not queue behind everything else scheduled at :00.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }} (10m)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - document_open
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Same pinned action as every other job (its `stable` branch); the `toolchain`
+      # input below is what selects nightly, which cargo-fuzz requires.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+
+      # Same cache key as ci.yml's jobs, so this usually restores rather than rebuilds.
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+
+      - name: Cache cargo-fuzz
+        id: cargo-fuzz-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ runner.arch }}-0.13.2
+
+      - if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 0.13.2 cargo-fuzz
+
+      # See fuzz/README.md for why each of these is required rather than tuning.
+      - name: fuzz ${{ matrix.target }} for 10 minutes
+        working-directory: fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=600 -timeout=10 -rss_limit_mb=2048
+
+      # A crash is only useful if the input survives the runner.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

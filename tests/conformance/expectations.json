@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "generated_by": "cargo run -p burrow-engines --example make-conformance-fixtures",
+  "cases": [
+    {
+      "name": "blank-1page",
+      "file": "fixtures/blank-1page.pdf",
+      "sha256": "bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0",
+      "password": null,
+      "expect": {
+        "ok": {
+          "page_count": 1
+        }
+      }
+    },
+    {
+      "name": "pages-10",
+      "file": "fixtures/pages-10.pdf",
+      "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe",
+      "password": null,
+      "expect": {
+        "ok": {
+          "page_count": 10
+        }
+      }
+    },
+    {
+      "name": "pages-137",
+      "file": "fixtures/pages-137.pdf",
+      "sha256": "257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da",
+      "password": null,
+      "expect": {
+        "ok": {
+          "page_count": 137
+        }
+      }
+    },
+    {
+      "name": "truncated",
+      "file": "fixtures/truncated.pdf",
+      "sha256": "46b5adcc2e35004d92b1323d49ec8fa325d78e82a2605c477b6c4cf14a8714d4",
+      "password": null,
+      "expect": {
+        "err": "Malformed"
+      }
+    },
+    {
+      "name": "not-a-pdf",
+      "file": "fixtures/not-a-pdf.bin",
+      "sha256": "66338f6baf4dd76fee3be07a4306744495073f0124f74d357fcf040971513a0d",
+      "password": null,
+      "expect": {
+        "err": "Malformed"
+      }
+    },
+    {
+      "name": "no-pages",
+      "file": "fixtures/no-pages.pdf",
+      "sha256": "375c75084e670596af448c3c48c0c048c0197baf97ab4256624929021483fbe4",
+      "password": null,
+      "expect": {
+        "err": "Malformed"
+      }
+    },
+    {
+      "name": "encrypted-no-password",
+      "file": "fixtures/encrypted.pdf",
+      "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74",
+      "password": null,
+      "expect": {
+        "err": "PasswordRequired"
+      }
+    },
+    {
+      "name": "encrypted-wrong-password",
+      "file": "fixtures/encrypted.pdf",
+      "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74",
+      "password": "not the password",
+      "expect": {
+        "err": "PasswordRequired"
+      }
+    }
+  ]
+}

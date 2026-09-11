@@ -25,6 +25,7 @@ burrow-engines = { path = "core/burrow-engines", version = "0.0.0" }
 burrow-ops = { path = "core/burrow-ops", version = "0.0.0" }
 burrow-core = { path = "core/burrow-core", version = "0.0.0" }
 thiserror = "2"
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -44,8 +44,8 @@ cargo deny list --layout crate --format json > /tmp/deny-list.json
 
 ## Rust dependencies
 
-Only build-time and transitive dependencies so far; no runtime third-party code ships in
-the current (M0) build beyond the Rust standard library.
+`zeroize` is the **first third-party crate that ships in the binary**. Everything else in
+the table below is compile-time, build-script, or test-only, as marked.
 
 | Crate | License | Used by | Notes |
 |---|---|---|---|
@@ -63,12 +63,93 @@ the current (M0) build beyond the Rust standard library.
 | `cfg-if` | MIT OR Apache-2.0 | `cpufeatures` | Build/dev only |
 | `cpufeatures` | MIT OR Apache-2.0 | `sha2` | CPU feature detection; build/dev only |
 | `libc` | MIT OR Apache-2.0 | `cpufeatures` | Build/dev only |
+| `zeroize` | Apache-2.0 OR MIT | `burrow-types`, `burrow-engines` | **Runtime; ships in the binary.** Wipes password buffers on drop. `default-features = false`, `features = ["alloc"]` — no transitive dependencies |
 
 The `sha2` group is a **build- and dev-dependency of `burrow-engines` only**. It runs in
 `build.rs` to re-verify the vendored engine libraries, and in the link tests. It ships in
 no binary.
 
 The Rust standard library is distributed under `MIT OR Apache-2.0`.
+
+### Test-only dependencies
+
+Dev-dependencies of `burrow-engines`. These build only under `cargo test`; none of them
+ships in any distributed artifact. They are listed anyway because the licences still
+apply to anyone redistributing the source tree.
+
+**`cargo-deny` does not see these.** Verified against the repository's own `deny.toml` on
+2026-09-10: with the workspace's dev-dependency graph, `cargo deny list` reports 23
+crates and none of `proptest`, `serde`, `serde_json` or their transitives appear, with
+`exclude-dev` either unset or explicitly `false`. The licences below were therefore read
+by hand from each crate's manifest in `~/.cargo/registry`.
+
+| Crate | License | Used by | Notes |
+|---|---|---|---|
+| `proptest` | MIT OR Apache-2.0 | `burrow-engines` | Property tests; **test only** |
+| `bitflags` | MIT OR Apache-2.0 | `proptest` | Test only |
+| `regex-syntax` | MIT OR Apache-2.0 | `proptest` | Test only |
+| `unarray` | MIT OR Apache-2.0 | `proptest` | Test only |
+| `num-traits` | MIT OR Apache-2.0 | `proptest` | Test only |
+| `autocfg` | Apache-2.0 OR MIT | `num-traits` | Build script of a test-only crate |
+| `rand` | MIT OR Apache-2.0 | `proptest` | Test only |
+| `rand_chacha` | MIT OR Apache-2.0 | `rand` | Test only |
+| `rand_core` | MIT OR Apache-2.0 | `rand` | Test only |
+| `rand_xorshift` | MIT OR Apache-2.0 | `proptest` | Test only |
+| `ppv-lite86` | MIT OR Apache-2.0 | `rand_chacha` | Test only |
+| `zerocopy`, `zerocopy-derive` | BSD-2-Clause OR Apache-2.0 OR MIT | `ppv-lite86` | Test only; we take MIT or Apache-2.0 |
+| `getrandom` | MIT OR Apache-2.0 | `rand_core` | Test only |
+| `r-efi` | MIT OR Apache-2.0 OR LGPL-2.1-or-later | `getrandom` (UEFI target only) | **Disjunctive**: we take MIT. The LGPL arm is one option among three and is not exercised |
+| `wasip2` | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | `getrandom` (`wasm32-wasip2` only) | Test only |
+| `wit-bindgen` | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | `wasip2` | Test only |
+| `serde` | MIT OR Apache-2.0 | `burrow-engines` | Reads `tests/conformance/expectations.json`; **test only** |
+| `serde_core` | MIT OR Apache-2.0 | `serde` | Test only |
+| `serde_derive` | MIT OR Apache-2.0 | `serde` | Proc macro; test only |
+| `serde_json` | MIT OR Apache-2.0 | `burrow-engines` | Test only |
+| `itoa` | MIT OR Apache-2.0 | `serde_json` | Test only |
+| `memchr` | Unlicense OR MIT | `serde_json` | Test only |
+| `zmij` | MIT | `serde_json` | Float formatting; **MIT only, not dual-licensed**; test only |
+| `syn` 2.x | MIT OR Apache-2.0 | `serde_derive`, `zerocopy-derive` | Test only. A **second** major version of `syn` alongside the 3.x the error derives use |
+
+### Fuzzing workspace (`fuzz/`)
+
+`fuzz/` is a separate cargo workspace (`exclude = ["fuzz"]` in the root `Cargo.toml`) with
+its own `fuzz/Cargo.lock`. Its binaries are never distributed — they are built by
+`cargo +nightly fuzz run` and nothing else.
+
+**`cargo-deny` does not cover this workspace.** The `deny` job in
+`.github/workflows/ci.yml` invokes `cargo-deny-action` at the repository root with no
+`manifest-path`, so `fuzz/Cargo.toml` is outside the graph it builds. Running the root
+`deny.toml` against `fuzz/` by hand is what produced the table below.
+
+| Crate | License | Used by | Notes |
+|---|---|---|---|
+| `libfuzzer-sys` | `(MIT OR Apache-2.0) AND NCSA` | `burrow-fuzz` | NCSA admitted by [ADR 0012](docs/adr/0012-ncsa-for-libfuzzer.md); see the note below. Fuzz harness only, never shipped |
+| `arbitrary` | MIT OR Apache-2.0 | `libfuzzer-sys` | Fuzz only |
+| `cc` | MIT OR Apache-2.0 | `libfuzzer-sys` | Compiles the vendored libFuzzer C++; build script, fuzz only |
+| `jobserver` | MIT OR Apache-2.0 | `cc` | Fuzz only |
+| `shlex` | MIT OR Apache-2.0 | `cc` | Fuzz only |
+| `find-msvc-tools` | MIT OR Apache-2.0 | `cc` | Fuzz only |
+| `getrandom` | MIT OR Apache-2.0 | `jobserver` | Fuzz only |
+| `r-efi` | MIT OR Apache-2.0 OR LGPL-2.1-or-later | `getrandom` (UEFI target only) | Disjunctive; we take MIT |
+| `libc` | MIT OR Apache-2.0 | `cc`, `getrandom` | Fuzz only |
+| `zeroize` | Apache-2.0 OR MIT | `burrow-types`, `burrow-engines` | Same crate as above, resolved into this lock file too |
+
+`libfuzzer-sys` vendors 55 C++ sources from LLVM's libFuzzer under
+`libfuzzer-sys-0.4.13/libfuzzer/`, compiled into the fuzz binary by `cc`. The artifact
+contradicts itself:
+
+- Its `Cargo.toml` declares `license = "(MIT OR Apache-2.0) AND NCSA"`, and its `README.md`
+  says "All files in the `libfuzzer` directory are licensed NCSA".
+- Every one of those 55 files actually carries
+  `SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception` — LLVM relicensed away from
+  NCSA — and the crate ships **no** NCSA licence text at all, only `LICENSE-APACHE` and
+  `LICENSE-MIT` for the Rust wrapper.
+
+`Apache-2.0 WITH LLVM-exception` is allowed; NCSA was not. Resolved by
+[ADR 0012](docs/adr/0012-ncsa-for-libfuzzer.md), which **admits NCSA to the allowlist** on
+its own merits — it is a permissive BSD-family licence — rather than granting the crate a
+`deny.toml` exception on the strength of our own reading of its source headers. The
+discrepancy is recorded here so it is not rediscovered from scratch.
 
 ## Native engines
 

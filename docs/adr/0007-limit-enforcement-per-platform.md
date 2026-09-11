@@ -4,8 +4,19 @@ Date: 2026-09-10
 
 ## Status
 
-Proposed — the mechanisms are settled in principle; the concrete implementation lands
-with the first operation in M1.
+Accepted. The native half landed in M1 PR 2: `burrow_types::Clock`, `ManualClock` and
+`Deadline` are the injectable clock; `burrow-engines`' `pdfium::estimate` is the
+estimate-based memory pre-check; and `Limits`' rustdoc says what each field actually
+guarantees.
+
+Two parts of this ADR are **not** implemented yet, and are not claimed to be:
+
+- The **web** mechanisms — `performance.now()` as the clock, and `max_memory_bytes` as the
+  WASM instance's maximum memory, which is the one place it is a hard ceiling. Those land
+  with the web path in M1 PR 4.
+- Wiring the deadline into an **engine progress or abort callback** to tighten the
+  granularity. PDFium exposes one; nothing uses it yet, so enforcement is exactly as
+  coarse as this ADR says — one engine call.
 
 ## Context
 
