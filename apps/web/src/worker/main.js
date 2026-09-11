@@ -18,7 +18,19 @@
 // make), but the promise is still what serialises two messages arriving before init has
 // finished.
 
-"use strict";
+// NO "use strict" HERE, deliberately.
+//
+// It was here and it was INERT: the bundle emits the generated `BURROW_ENGINES` const before
+// this file, so the directive is no longer in a directive prologue and has no effect on any
+// of the bundle's ~1,000 lines. Leaving it in would be a comment that claims a guarantee the
+// code does not have.
+//
+// Making it real would mean emitting it as the bundle's genuine first statement, which would
+// also flip 160 KB of third-party Emscripten glue to strict mode -- a much larger and
+// entirely untested change for no benefit we need. What strict mode would buy here is a
+// `ReferenceError` on an undeclared assignment, and `tsc -p src/worker` already reports that
+// as "Cannot find name" (verified). `src/production-build.test.ts` asserts the bundle's mode
+// so this cannot drift back silently.
 
 /** @type {Promise<void>|null} The memoised init promise. Never a boolean. */
 let ready = null;
@@ -125,11 +137,17 @@ self.onmessage = async (event) => {
   // policy at all -- measured, and the reason this bundle is loaded from a Blob. Refusing to
   // touch a file in that case means a regression is loud, instead of silently removing the
   // browser-enforced half of the guarantee while every test still passes.
-  if (!INHERITS_PAGE_CSP) {
+  //
+  // `POLICED` measures the property directly (a request the policy must refuse) rather than
+  // inferring it from the URL scheme, because a Blob worker inherits whatever policy the
+  // creating document had -- including none.
+  if (!(await POLICED)) {
     self.postMessage(
       internalFailure(
         request.id,
-        "worker was not created from a blob: URL, so it does not inherit the page's CSP",
+        CREATED_FROM_BLOB
+          ? "no content security policy is in force in this worker"
+          : "worker was not created from a blob: URL, so it inherits no policy",
       ),
     );
     return;

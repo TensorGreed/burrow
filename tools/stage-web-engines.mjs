@@ -125,14 +125,22 @@ function policyFor(wasmUrls, { forMeta }) {
     // 'wasm-unsafe-eval' is what permits WebAssembly compilation at all. It does not permit
     // eval() of JavaScript -- that would be 'unsafe-eval', which is absent.
     "script-src 'self' 'wasm-unsafe-eval'",
-    // `blob:` is required, and is the narrowest form of the thing it permits: the blob's
-    // content is this site's own worker bundle, fetched from a connect-src entry with its
-    // integrity pinned. Without it the worker cannot inherit this policy at all, and runs
-    // unpoliced -- which is the failure this whole arrangement exists to fix.
+    // `blob:` ONLY -- no `'self'`.
+    //
+    // `blob:` is what the design needs: a worker constructed from a Blob inherits this
+    // policy, and one loaded from a URL does not. `'self'` is a separate capability, and it
+    // is exactly the capability this arrangement exists to remove -- a same-origin,
+    // URL-loaded, UNPOLICED worker. It was in this list only so a test could construct the
+    // bad worker to prove the in-worker guard refuses it, which is the test dictating the
+    // policy.
+    //
+    // With it gone the browser refuses the mistake at construction, and the guard in
+    // `main.js` still catches a worker started from a context this policy does not govern.
+    // Strictly stronger than either alone.
     //
     // `script-src` deliberately does NOT get `blob:`. The worker is constructed from a
     // Blob; no script is ever *loaded* from one.
-    "worker-src 'self' blob:",
+    "worker-src blob:",
     // The whole point. Exactly the engine modules, by exact path, same origin.
     `connect-src ${wasmUrls.join(" ")}`,
     "style-src 'self'",
@@ -225,7 +233,7 @@ async function main() {
     // It also means the worker bundle is origin-bound in the same way the CSP is, which is
     // consistent: both are generated against BURROW_SITE and neither can be relocated
     // without a rebuild.
-    `const BURROW_ENGINES = ${JSON.stringify(absolute(staged), null, 2)};\n`,
+    `const BURROW_ENGINES = ${JSON.stringify({ ...absolute(staged), probeOrigin: ORIGIN }, null, 2)};\n`,
     await readFile(join(webApp, "src/worker/prelude.js"), "utf8"),
     await readFile(join(webApp, "src/worker/bridge.js"), "utf8"),
     // qpdf is MODULARIZE'd: it defines one function and touches nothing else.

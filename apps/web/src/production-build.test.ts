@@ -94,6 +94,31 @@ describe("the production build", () => {
     }
   });
 
+  it("has no misleading strict-mode directive in the worker bundle", () => {
+    // The bundle emits a generated const first, so a `"use strict"` anywhere inside it is
+    // not in a directive prologue and does nothing. Three of them used to be, which is a
+    // comment claiming a guarantee the code does not have.
+    //
+    // This asserts the decision rather than the mode: either the bundle genuinely starts
+    // with the directive, or it contains none of our own. What it must not be is the
+    // in-between state where the words are present and inert.
+    const bundle = files.find((f) => /^engines\/burrow-worker\..*\.js$/.test(f));
+    expect(bundle).toBeDefined();
+    const source = readFileSync(join(outDir, bundle as string), "utf8");
+
+    const startsStrict = /^\s*(?:\/\/[^\n]*\n|\s)*"use strict";/.test(source);
+    // Emscripten's own glue contains function-level directives, which are real and are not
+    // ours. Only top-level ones would be the misleading kind.
+    const topLevelDirectives = source
+      .split("\n")
+      .filter((line) => /^\s{0,2}"use strict";\s*$/.test(line)).length;
+
+    expect(
+      startsStrict || topLevelDirectives === 0,
+      `the bundle has ${topLevelDirectives} inert top-level "use strict" directive(s)`,
+    ).toBe(true);
+  });
+
   it("carries the generated CSP in every page it ships", () => {
     const pages = files.filter((f) => f.endsWith(".html"));
     expect(pages.length).toBeGreaterThan(0);
@@ -111,6 +136,10 @@ describe("the production build", () => {
     const content = readFileSync(headers, "utf8");
     expect(content).toContain("Content-Security-Policy:");
     expect(content).toContain("default-src 'none'");
+    // `frame-ancestors` is the reason the header exists as well as the meta tag: browsers
+    // ignore it in a <meta> element. `e2e/csp.spec.ts` says this test asserts it, so it had
+    // better.
+    expect(content, "frame-ancestors only works in a header").toContain("frame-ancestors 'none'");
   });
 
   it("has the harness when it is asked for, so the exclusion is doing the work", () => {

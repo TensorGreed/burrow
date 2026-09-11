@@ -87,10 +87,15 @@ Only `blob:`, `data:` and `about:` workers inherit. So:
 
 - The page fetches the worker's **source text** with `integrity`, from a `connect-src` entry
   naming its exact URL, wraps it in a `Blob`, and constructs the worker from that.
-- `worker-src` is `'self' blob:`. That is the one widening this design needs, and it is
-  narrow: the blob's content is this site's own bundle, fetched from a pinned URL with a
-  pinned digest. `script-src` deliberately does **not** get `blob:` — the worker is
-  *constructed* from a Blob, never is a script *loaded* from one.
+- `worker-src` is **`blob:` alone — not `'self' blob:`**. `blob:` is the widening this design
+  needs; `'self'` is a separate capability, and it is exactly the one this section exists to
+  remove: a same-origin, URL-loaded, *unpoliced* worker. It was in the list only so a test
+  could construct the bad worker and watch the in-worker guard refuse it, which was the test
+  dictating the policy. With it gone the browser refuses the mistake at construction **and**
+  the guard still catches a worker started from a context this policy does not govern; the
+  guard's refusing branch is unit-tested in `src/worker/guard.test.ts` instead.
+  `script-src` deliberately does **not** get `blob:` — the worker is *constructed* from a
+  Blob, never is a script *loaded* from one.
 - **All worker code is in one bundled file.** The page fetches one source text, so it must
   be. That is a gain rather than a cost: `importScripts` has no integrity mechanism, so the
   three Emscripten glue files — including 160 KB of third-party PDFium glue that owns the
@@ -106,14 +111,21 @@ Only `blob:`, `data:` and `about:` workers inherit. So:
 
 ### 1b. The worker fails closed
 
-`src/worker/prelude.js` computes `self.location.protocol === "blob:"`, and `main.js` refuses
-every file operation when it is false.
+The guard **measures whether a policy is in force**, rather than inferring it from the URL
+scheme. At init the worker fetches a same-origin URL that is deliberately not in
+`connect-src` and requires the browser to refuse it, listening for `securitypolicyviolation`
+so that "refused by policy" is distinguishable from "the request failed" — a network error is
+not evidence of a policy. It refuses every file operation unless that probe was refused.
 
-Without it, a future refactor that went back to `new Worker(url)` would silently restore the
-hole **and every test would still pass**, because they all exercise the blob path.
-`e2e/worker-guard.spec.ts` drives the other branch: it constructs the worker from its plain
-URL and asserts it refuses, with a control that constructs the same bundle from a Blob and
-asserts it works.
+The first version checked only `self.location.protocol === "blob:"` and was called
+`INHERITS_PAGE_CSP`. That name asserts more than the check established: a Blob worker inherits
+the creating document's policy **whatever that is, including none**. A page that omitted the
+layout, or a host that mangled the meta tag, yields a `blob:` worker with an empty policy, and
+the old check returned true for it.
+
+`src/worker/guard.test.ts` drives all four states in `node:vm` — including the two a browser
+cannot produce on a correctly configured page: a `blob:` worker with no policy, and a probe
+that failed for a network reason rather than a policy one.
 
 ### 2. The bytes are integrity-pinned
 

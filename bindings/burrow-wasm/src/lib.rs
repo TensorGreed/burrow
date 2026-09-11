@@ -2,9 +2,11 @@
 //!
 //! Everything here runs in the browser tab and touches user file content, so nothing in
 //! this crate or below it may make a network call. The one network operation on the web —
-//! fetching the two engine `.wasm` files — happens in the worker's JavaScript, before any
-//! file exists, under a CSP whose `connect-src` names exactly those two URLs. No Rust in
-//! this crate can reach the network at all: it depends on wasm-bindgen and nothing else.
+//! fetching the three `.wasm` modules and the worker bundle's own source — happens in the
+//! worker's JavaScript, before any file exists, under a CSP whose `connect-src` names
+//! exactly those four URLs. No Rust in this crate can reach the network: its only
+//! dependencies are `burrow-core` and `wasm-bindgen`, and neither `js-sys` nor `web-sys` is
+//! in the graph, so there is no binding to `fetch` here to call.
 //!
 //! # What crosses this boundary
 //!
@@ -190,6 +192,14 @@ fn is_fatal(error: &Error) -> bool {
     // round for an `#[non_exhaustive]` enum: a variant added upstream defaults to costing a
     // worker, which is the conservative answer for a state we cannot reason about.
     //
+    // `Error::Io` IS fatal here, which differs from what the variant means on native. On the
+    // web path it is produced in exactly one situation -- an engine `_malloc` returned 0 --
+    // and wasm linear memory never shrinks, so that module has reached its `MAXIMUM_MEMORY`
+    // ceiling for the rest of the worker's life and every later operation fails identically.
+    // Reporting it as recoverable would have the page keep a permanently broken worker
+    // rather than respawn into a fresh one, which is precisely the outcome ADR 0009's
+    // "poisons the instance" rule exists to avoid.
+    //
     // It was `matches!(error, Error::Internal(_))` with the unknown case bolted on at the
     // call site as `|| kind_of(error) == "Unknown"` — so the contract this function claims to
     // be the single definition of was actually decided in two places, one of them by
@@ -201,7 +211,6 @@ fn is_fatal(error: &Error) -> bool {
             | Error::PasswordRequired
             | Error::LimitExceeded { .. }
             | Error::InvalidArgument(_)
-            | Error::Io(_)
     )
 }
 
@@ -455,7 +464,6 @@ mod tests {
                 allowed: 0,
             },
             Error::InvalidArgument(String::new()),
-            Error::Io(String::new()),
         ] {
             assert!(
                 !is_fatal(&error),
@@ -463,7 +471,17 @@ mod tests {
                 kind_of(&error)
             );
         }
+
         assert!(is_fatal(&Error::Internal(String::new())));
+        // `Io` is fatal on the web specifically, which differs from the variant's meaning on
+        // native. Here it is produced in exactly one situation -- an engine `_malloc`
+        // returned 0 -- and wasm memory never shrinks, so the module is at its ceiling for
+        // the rest of the worker's life and every later operation fails identically. Keeping
+        // such a worker is worse than respawning into a fresh one.
+        assert!(
+            is_fatal(&Error::Io(String::new())),
+            "an exhausted engine heap must cost the worker"
+        );
     }
 
     /// A `LimitExceeded` must carry all three numbers, or the page cannot tell the user

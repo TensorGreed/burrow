@@ -176,7 +176,20 @@ impl DocumentEngine for WebPdfium {
 
         // b. The password into the engine heap, wiped again as soon as the load returns.
         //    Rust's `Zeroizing` cannot reach this copy: it is outside Rust's allocator.
+        //
+        //    The length is narrowed HERE, before anything is copied. It was narrowed at the
+        //    wipe instead, so the failure path returned with the password already in the
+        //    engine heap, unwiped, and the input buffer unfreed -- leaving the copy in the
+        //    module's free list for the life of the worker, which is the exact harm the
+        //    wipe exists to prevent. Unreachable on wasm32, where `usize` is 32 bits, but a
+        //    cleanup path that runs only on success is the wrong shape whatever guards it.
         let password_len = password.as_ref().map_or(0, |p| p.len());
+        let Ok(password_len_u32) = u32::try_from(password_len) else {
+            self.bridge.abandon_input(data);
+            return Err(Error::InvalidArgument(
+                "password is too large for the engine's address space".to_owned(),
+            ));
+        };
         let password_ptr = match password.as_ref() {
             None => PdfiumPtr::NULL,
             Some(p) => {
@@ -197,23 +210,15 @@ impl DocumentEngine for WebPdfium {
             .load_mem_document64(data, engine_len, password_ptr);
 
         if !password_ptr.is_null() {
-            // `password_len` is the Rust-side length of the same copy, so the wipe covers
-            // exactly the bytes written -- no over- or under-run.
+            // `password_len_u32` is the Rust-side length of the same copy, narrowed BEFORE
+            // the copy was made, so the wipe covers exactly the bytes written -- no over- or
+            // under-run, and no way to reach here with a length that does not fit.
             //
-            // The narrowing below cannot fail on wasm32, where `usize` is 32 bits. (An
-            // earlier comment claimed "a password that large was rejected at step 1", which
-            // is wrong: step 1 checks the DOCUMENT's length and nothing checks the
-            // password's.)
-            // `u32::MAX` as a fallback would have been a heap-wide wipe: `HEAPU8.fill`
-            // clamps `end` to the heap length, so an over-large length zeroes everything
-            // above `ptr`. Unreachable on wasm32 (where `usize` is 32 bits), but the
-            // fallback must not pick the destructive direction.
-            let Ok(wipe_len) = u32::try_from(password_len) else {
-                return Err(Error::Internal(
-                    "password length does not fit the engine's address space".to_owned(),
-                ));
-            };
-            self.bridge.wipe_and_free(password_ptr, wipe_len);
+            // Narrowing it here instead meant the failure path returned with the password
+            // already in the engine heap, unwiped, and the input buffer unfreed -- leaving
+            // the copy in the module's free list for the life of the worker, which is the
+            // exact harm the wipe exists to prevent.
+            self.bridge.wipe_and_free(password_ptr, password_len_u32);
         }
         drop(password);
 

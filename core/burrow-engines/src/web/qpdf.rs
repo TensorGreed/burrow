@@ -225,6 +225,17 @@ impl StructureEngine for WebQpdf {
             return Err(Error::Io("the qpdf module could not allocate".to_owned()));
         }
 
+        // Narrowed before the copy, not at the wipe. See the note on the PDFium path: the
+        // failure path otherwise returned with the password already in the engine heap,
+        // unwiped, and the description buffer unfreed.
+        let password_len = password.as_ref().map_or(0, |p| p.len());
+        let Ok(password_len_u32) = u32::try_from(password_len) else {
+            self.bridge.free(description);
+            return Err(Error::InvalidArgument(
+                "password is too large for the engine's address space".to_owned(),
+            ));
+        };
+
         let password_ptr = match password.as_ref() {
             None => QpdfPtr::NULL,
             Some(p) => {
@@ -251,15 +262,7 @@ impl StructureEngine for WebQpdf {
         // The password copy in the engine heap is outside Rust's allocator, so `Zeroizing`
         // cannot reach it. Wipe it explicitly, as soon as qpdf has read it.
         if !password_ptr.is_null() {
-            // See the PDFium path: `u32::MAX` as a fallback would be a heap-wide wipe,
-            // because `HEAPU8.fill` clamps `end` to the heap length. Unreachable on wasm32,
-            // but a fallback must not pick the destructive direction.
-            let Ok(wipe_len) = u32::try_from(password.as_ref().map_or(0, |p| p.len())) else {
-                return Err(Error::Internal(
-                    "password length does not fit the engine's address space".to_owned(),
-                ));
-            };
-            self.bridge.wipe_and_free(password_ptr, wipe_len);
+            self.bridge.wipe_and_free(password_ptr, password_len_u32);
         }
         drop(password);
         self.bridge.free(description);

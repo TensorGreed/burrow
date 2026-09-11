@@ -355,6 +355,9 @@ fn an_engine_heap_allocation_failure_is_reported_not_ignored() {
         )
         .expect_err("a failed allocation must not read as success");
     assert!(matches!(error, Error::Io(_)), "{error:?}");
+    // On the web this is not a recoverable condition: wasm memory never shrinks, so a
+    // module that could not allocate has reached its ceiling for the worker's life. The
+    // binding classifies it fatal for that reason; see `burrow_wasm::is_fatal`.
     state.assert_empty();
 }
 

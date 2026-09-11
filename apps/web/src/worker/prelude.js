@@ -40,19 +40,73 @@
 // `postMessage`, because the glue starts instantiating as soon as it is parsed — there is no
 // moment after load and before instantiation at which a message could be delivered.
 
-"use strict";
+// NO "use strict" HERE, deliberately.
+//
+// It was here and it was INERT: the bundle emits the generated `BURROW_ENGINES` const before
+// this file, so the directive is no longer in a directive prologue and has no effect on any
+// of the bundle's ~1,000 lines. Leaving it in would be a comment that claims a guarantee the
+// code does not have.
+//
+// Making it real would mean emitting it as the bundle's genuine first statement, which would
+// also flip 160 KB of third-party Emscripten glue to strict mode -- a much larger and
+// entirely untested change for no benefit we need. What strict mode would buy here is a
+// `ReferenceError` on an undeclared assignment, and `tsc -p src/worker` already reports that
+// as "Cannot find name" (verified). `src/production-build.test.ts` asserts the bundle's mode
+// so this cannot drift back silently.
 
 /**
- * Whether this worker was created from a Blob, and therefore inherits the page's CSP.
+ * Whether this worker was created from a Blob.
  *
- * **The fail-closed guard.** If this bundle is ever constructed from a plain URL — by a
- * future refactor, or by a page that has not been updated — it would run unpoliced, and
- * every CSP test would still pass because they exercise the blob path. Refusing to accept
- * files unless the protocol says otherwise means that mistake is loud rather than silent.
+ * Necessary but not sufficient: a Blob worker inherits the creating document's policy —
+ * *whatever that is*, including none. A page that omitted the layout, or a host that served
+ * a malformed meta tag, produces a `blob:` worker with an empty policy. So this is the cheap
+ * structural check and {@link POLICED} is the one that actually decides.
  *
  * `self.location` in a Blob worker is the `blob:` URL it was constructed from.
  */
-const INHERITS_PAGE_CSP = self.location.protocol === "blob:";
+const CREATED_FROM_BLOB = self.location.protocol === "blob:";
+
+/**
+ * Whether a Content-Security-Policy is actually in force in *this* worker.
+ *
+ * **The fail-closed guard, and it measures the property rather than a proxy for it.**
+ *
+ * An earlier version checked only {@link CREATED_FROM_BLOB} and called itself
+ * `INHERITS_PAGE_CSP` — which asserts a stronger thing than it tested. This attempts a fetch
+ * to a same-origin URL that is deliberately *not* in `connect-src` and requires the browser
+ * to refuse it, listening for `securitypolicyviolation` so that "refused by policy" is
+ * distinguishable from "the request failed". A network error is not proof of a policy.
+ *
+ * The probe runs once, before any file can arrive, and is itself blocked — so it sends
+ * nothing. Its cost is one refused request at init.
+ */
+const POLICED = (async () => {
+  if (!CREATED_FROM_BLOB) {
+    return false;
+  }
+  let violated = false;
+  const note = () => {
+    violated = true;
+  };
+  self.addEventListener("securitypolicyviolation", note);
+  try {
+    // `/` is same-origin and is not a connect-src entry, so a policy must refuse it. The
+    // URL is absolute because a blob: worker cannot resolve a relative one.
+    await fetch(new URL("/", BURROW_ENGINES.probeOrigin).href, { mode: "no-cors" });
+    return false;
+  } catch {
+    // The violation event is dispatched ASYNCHRONOUSLY -- it has not arrived by the time
+    // the rejected fetch lands here. Reading `violated` immediately reports false for a
+    // request the policy did refuse, and the guard then fails closed on a correctly
+    // configured page. (It did, and every engine test went red.)
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    return violated;
+  } finally {
+    self.removeEventListener("securitypolicyviolation", note);
+  }
+})();
 
 /** Silence both modules at the JavaScript layer. ROADMAP item 7's web half. */
 const silent = { print: () => {}, printErr: () => {} };

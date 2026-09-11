@@ -25,7 +25,19 @@
 //     so fetching it in a second round trip could attach a different operation's error to
 //     this one. One call, both values.
 
-"use strict";
+// NO "use strict" HERE, deliberately.
+//
+// It was here and it was INERT: the bundle emits the generated `BURROW_ENGINES` const before
+// this file, so the directive is no longer in a directive prologue and has no effect on any
+// of the bundle's ~1,000 lines. Leaving it in would be a comment that claims a guarantee the
+// code does not have.
+//
+// Making it real would mean emitting it as the bundle's genuine first statement, which would
+// also flip 160 KB of third-party Emscripten glue to strict mode -- a much larger and
+// entirely untested change for no benefit we need. What strict mode would buy here is a
+// `ReferenceError` on an undeclared assignment, and `tsc -p src/worker` already reports that
+// as "Cannot find name" (verified). `src/production-build.test.ts` asserts the bundle's mode
+// so this cannot drift back silently.
 
 /** @type {EmscriptenModule | null} The PDFium Emscripten module. */
 let pdfiumModule = null;

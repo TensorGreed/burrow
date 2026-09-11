@@ -69,23 +69,38 @@
       // no error event fires, so nothing forces our hand. `fatal` was computed in Rust;
       // nothing here re-derives it from `kind`.
       if (reply.fatal) {
-        w.terminate();
-        if (worker === w) worker = null;
         // Everything still in flight on a discarded worker fails, and is not retried: a
         // retry against a poisoned instance is worse than a visible failure.
-        for (const [id, settlePending] of pending) {
-          settlePending({
-            id,
-            ok: false,
-            kind: "Internal",
-            fatal: true,
-            message: "worker discarded",
-          });
-        }
-        pending.clear();
+        discard(w, "worker discarded");
       }
     };
+
+    // A worker killed by the browser, or an exception escaping the message handler after
+    // its try block, delivers no reply -- and `send()` resolves only on a reply, so every
+    // pending promise would hang forever. The `fatal` recovery path cannot help, because it
+    // runs only when a reply arrives.
+    //
+    // 4a-ii's watchdog is the general answer (nothing here bounds how long an engine call
+    // may take). This is the narrower half: when the browser *tells* us the worker is gone,
+    // fail everything on it rather than waiting.
+    w.onerror = (event) => {
+      // The event's message is not read or forwarded: it can carry module output, and
+      // ADR 0009 says never to echo it.
+      event.preventDefault?.();
+      discard(w, "worker terminated");
+    };
+
     return w;
+  }
+
+  /** Fail every request in flight on `w`, and drop it. Never retries. */
+  function discard(w, message) {
+    w.terminate();
+    if (worker === w) worker = null;
+    for (const [id, settlePending] of pending) {
+      settlePending({ id, ok: false, kind: "Internal", fatal: true, message });
+    }
+    pending.clear();
   }
 
   async function send(message, transfer) {

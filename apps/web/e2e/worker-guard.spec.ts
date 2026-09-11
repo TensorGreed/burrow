@@ -1,102 +1,91 @@
-// The fail-closed guard, driven from the branch that must never happen.
+// Two layers stop an unpoliced worker, and this checks the outer one.
 //
-// The worker checks `self.location.protocol === "blob:"` and refuses every file operation
-// otherwise. That check exists because of a measured finding: a dedicated worker created
-// from a same-origin *script URL* does not inherit the creating document's CSP, so it runs
-// with no policy at all — and every other test in this suite would still pass, because they
-// all exercise the blob path.
+// A dedicated worker created from a same-origin *script URL* does not inherit the creating
+// document's CSP — it takes its policy from that script's HTTP response headers, and a static
+// host sends none. Measured during 4a-i: such a worker ran with no policy at all and a
+// cross-origin fetch from inside it reached the network, while every page-level CSP test
+// passed.
 //
-// So this test does the wrong thing on purpose: it constructs the worker from its plain URL
-// and asserts it refuses to work. Without it, the guard is a line of code nothing executes,
-// and a future refactor that reverted to `new Worker(url)` would restore the hole silently.
+//   * **Outer layer, tested here:** `worker-src blob:` — with no `'self'` — so the browser
+//     refuses to construct a worker from a URL at all.
+//   * **Inner layer:** the worker itself refuses to touch a file unless a policy is actually
+//     in force, which it establishes by making a request the policy must refuse. That is a
+//     property of the bundle rather than of the browser, so it is unit-tested in
+//     `src/worker/guard.test.ts` where the environment can be controlled.
+//
+// `'self'` used to be in `worker-src` purely so this file could construct the bad worker and
+// watch the inner layer refuse it. That was the test dictating the policy: it kept alive
+// exactly the capability the design exists to remove. Both layers are stronger than either.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
-interface ManifestEntry {
-  url: string;
-  integrity: string;
-}
+import { openHarness } from "./harness";
 
-async function workerUrl(page: Page): Promise<string> {
-  await page.goto("/harness");
-  const raw = await page.getAttribute("#engines", "data-engines");
-  if (!raw) {
-    throw new Error("the harness page carries no engine manifest");
-  }
-  const manifest = JSON.parse(raw) as Record<string, ManifestEntry>;
-  return manifest.worker.url;
-}
+test("the browser refuses to build a worker from a URL", async ({ page }) => {
+  await openHarness(page);
 
-test("a worker created from a plain URL refuses to touch a file", async ({ page }) => {
-  const url = await workerUrl(page);
+  const outcome = await page.evaluate(async () => {
+    const violations: string[] = [];
+    const note = (event: SecurityPolicyViolationEvent) => {
+      violations.push(event.effectiveDirective || event.violatedDirective);
+    };
+    document.addEventListener("securitypolicyviolation", note);
+    try {
+      // Any same-origin script URL. It does not need to exist: `worker-src` is consulted
+      // before the fetch, so a policy that permitted it would get a 404 rather than a
+      // violation — which is exactly the difference being measured.
+      new Worker("/engines/does-not-matter.js");
+    } catch {
+      // Chromium reports this asynchronously rather than throwing; Firefox and WebKit
+      // differ. Either way the violation event is the signal.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    document.removeEventListener("securitypolicyviolation", note);
+    return violations;
+  });
 
-  const reply = await page.evaluate(async (workerScript) => {
-    // `worker-src 'self' blob:` permits this, deliberately — the guard is in the worker, not
-    // in the policy. A policy that forbade it would be a different (and weaker) design: it
-    // would stop this page, and say nothing about a worker started from anywhere else.
-    const worker = new Worker(workerScript);
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        worker.terminate();
-        resolve({ timedOut: true });
-      }, 15_000);
-      worker.onmessage = (event) => {
-        clearTimeout(timer);
-        worker.terminate();
-        resolve(event.data);
-      };
-      worker.postMessage({
-        id: 1,
-        op: "page_count",
-        bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer,
-        password: null,
-        limits: {
-          maxInputBytes: 1024,
-          maxMemoryBytes: 1024 * 1024,
-          maxDurationMs: 1000,
-          maxPages: 10,
-          maxPixels: 1000,
-        },
-      });
-    });
-  }, url);
-
-  expect(reply, "the worker should have answered rather than hanging").not.toHaveProperty(
-    "timedOut",
-  );
-  const typed = reply as { ok: boolean; kind: string; fatal: boolean; message: string };
-  expect(typed.ok).toBe(false);
-  expect(typed.kind).toBe("Internal");
-  // Fatal, so a page that ignored the guard would at least discard the instance.
-  expect(typed.fatal).toBe(true);
-  // The message names the actual problem. This one is not input-derived — it is a fixed
-  // constant about how the worker was constructed — so it is safe to be specific.
-  expect(typed.message).toContain("blob:");
+  expect(
+    outcome.some((directive) => directive.includes("worker-src")),
+    `expected a worker-src violation, got ${JSON.stringify(outcome)}`,
+  ).toBe(true);
 });
 
-test("the same worker, constructed from a Blob, does the work", async ({ page }) => {
-  // The control. Without it, a worker that refused everything unconditionally — or one that
-  // failed to load at all — would pass the test above and look like a working guard.
-  const url = await workerUrl(page);
+test("a blob: worker is still permitted, so the policy is not simply forbidding workers", async ({
+  page,
+}) => {
+  // The control. Without it, `worker-src 'none'` would pass the test above and break the
+  // entire application — a policy that forbids everything is not the same as one that
+  // forbids the right thing.
+  await openHarness(page);
 
-  const ready = await page.evaluate(async (workerScript) => {
-    const response = await fetch(workerScript);
-    const source = await response.text();
-    const blobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(blobUrl);
-    return new Promise((resolve) => {
+  const ran = await page.evaluate(async () => {
+    const blob = new Blob(["self.postMessage('alive')"], { type: "text/javascript" });
+    const worker = new Worker(URL.createObjectURL(blob));
+    return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         worker.terminate();
         resolve(false);
-      }, 60_000);
-      worker.onmessage = (event) => {
+      }, 5_000);
+      worker.onmessage = () => {
         clearTimeout(timer);
         worker.terminate();
-        resolve(event.data.ready === true);
+        resolve(true);
       };
-      worker.postMessage({ id: 1, type: "init" });
+      worker.onerror = () => {
+        clearTimeout(timer);
+        worker.terminate();
+        resolve(false);
+      };
     });
-  }, url);
+  });
 
-  expect(ready, "a blob: worker must initialise").toBe(true);
+  expect(ran, "a blob: worker must still be allowed to run").toBe(true);
+});
+
+test("the real worker is built from a blob and does the work", async ({ page }) => {
+  // The end-to-end complement: the engines initialise, which they cannot do unless the
+  // worker was constructed the permitted way and its own policy check passed.
+  await openHarness(page);
+  const ready = await page.evaluate(() => window.burrowHarness.workerInheritsCsp());
+  expect(ready).toBe(true);
 });
