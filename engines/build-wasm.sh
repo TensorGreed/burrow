@@ -146,31 +146,155 @@ cp -R "$src/qpdf-$QPDF_VERSION/include/qpdf" "$prefix/include/"
 echo "   libqpdf.a $(stat -c%s "$prefix/lib/libqpdf.a") bytes"
 
 # ---------------------------------------------------------------------------------
-say "qpdf wasm: version probe module"
-# The smallest possible module that proves libqpdf.a links under Emscripten and answers a
-# call. The real binding is PR 4.
-# .cpp with an explicit extern "C": libqpdf is C++ so the link must go through em++,
-# and em++ compiles a .c input as C++, which would name-mangle the export and make
-# wasm-ld reject `--export=burrow_qpdf_version`.
-cat > "$src/qpdf_version_probe.cpp" <<'CPP'
-#include <qpdf/qpdf-c.h>
-extern "C" char const* burrow_qpdf_version(void) { return qpdf_get_qpdf_version(); }
-CPP
-em++ -O2 -fexceptions -I "$prefix/include" \
-  "$src/qpdf_version_probe.cpp" "$prefix/lib/libqpdf.a" \
-  "$prefix/lib/libz.a" "$prefix/lib/libjpeg.a" \
-  -sMODULARIZE=1 -sEXPORT_NAME=createQpdfProbe -sENVIRONMENT=web,worker,node \
-  -sEXPORTED_FUNCTIONS='["_burrow_qpdf_version"]' \
-  -sEXPORTED_RUNTIME_METHODS='["cwrap","UTF8ToString"]' \
-  -o "$prefix/lib/qpdf-probe.js" 2>>"$src/qpdf-wasm-configure.log"
+say "qpdf $QPDF_VERSION for wasm: the shipping engine module"
+# The shipping qpdf engine module.
+#
+# EXPORTED_FUNCTIONS IS AN ALLOWLIST, AND THAT IS THE POINT. It is exactly the C API
+# surface `core/burrow-engines/src/qpdf/ffi.rs` declares -- the functions ADR 0013 verified
+# route through qpdf's `trap_errors` helper -- and nothing else. A function that is not
+# exported cannot be called from JS at all, which is the same "strongest available form"
+# argument that keeps qpdf's message accessors undeclared on the native side.
+#
+# Notably absent: _qpdf_is_encrypted and _qpdf_is_linearized. Neither is trapped, and an
+# object number above INT_MAX makes the latter throw std::range_error straight out of the C
+# API. On native that aborts the process; in a browser it surfaces as a JS exception at the
+# bridge, which is quieter but no safer.
+#
+# .cpp with an explicit extern "C": libqpdf is C++, so the link must go through em++, and
+# em++ compiles a .c input as C++ -- which would name-mangle the exports.
+qpdf_exports='"_malloc","_free",
+  "_qpdf_init","_qpdf_cleanup","_qpdf_silence_errors","_qpdf_set_suppress_warnings",
+  "_qpdf_set_logger","_qpdf_set_attempt_recovery","_qpdf_read_memory",
+  "_qpdf_has_error","_qpdf_get_error","_qpdf_get_error_code","_qpdf_get_num_pages",
+  "_qpdf_global_set_uint32","_qpdf_get_qpdf_version",
+  "_qpdflogger_create","_qpdflogger_set_info","_qpdflogger_set_warn","_qpdflogger_set_error"'
 
-cp "$prefix/lib/qpdf-probe.js" "$src/qpdf-probe.cjs"
+# A translation unit that references the C API, so wasm-ld keeps the archive members. The
+# -u flags emcc derives from EXPORTED_FUNCTIONS do the real work; this makes the intent
+# legible and gives the version probe below something to call.
+cat > "$src/qpdf_engine.cpp" <<'CPP'
+#include <qpdf/qpdf-c.h>
+#include <qpdf/qpdflogger-c.h>
+CPP
+
+# Flags that are load-bearing, each for a reason that is expensive to rediscover:
+#
+#   --no-entry            there is no main(); without it wasm-ld errors.
+#   -fexceptions          MUST match how libqpdf.a was built. -fwasm-exceptions is a
+#                         different model and will not link against it (spike 0001's
+#                         __resumeException failure is the same class).
+#   -sWASM_BIGINT=1       so qpdf_read_memory's `unsigned long long size` takes one BigInt
+#                         rather than Emscripten's legalized (lo, hi) i32 pair. A manual
+#                         64-bit split in JS would be arithmetic in the binding layer.
+#   -sMAXIMUM_MEMORY=2GB  not only a ceiling: it keeps every heap address below 2^31, so an
+#                         i32 pointer never reaches JS as a negative number.
+#   -sENVIRONMENT=web,worker   drops the Node branch's require("fs") and sync-XHR paths.
+#                         ADR 0006 requirement 3. `node` is deliberately NOT in the list.
+#   -sFILESYSTEM=0        there are no files. This is a privacy-first library.
+em++ -O2 -fexceptions --no-entry -I "$prefix/include" \
+  "$src/qpdf_engine.cpp" "$prefix/lib/libqpdf.a" \
+  "$prefix/lib/libz.a" "$prefix/lib/libjpeg.a" \
+  -sMODULARIZE=1 -sEXPORT_NAME=createQpdfModule -sENVIRONMENT=web,worker \
+  -sWASM_BIGINT=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=2GB \
+  -sFILESYSTEM=0 -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 \
+  -sEXPORTED_FUNCTIONS="[$qpdf_exports]" \
+  -sEXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPU32","stackSave","stackAlloc","stackRestore","UTF8ToString","cwrap"]' \
+  -o "$prefix/lib/qpdf.js" 2>>"$src/qpdf-wasm-configure.log"
+
+echo "   qpdf.js   $(stat -c%s "$prefix/lib/qpdf.js") bytes"
+echo "   qpdf.wasm $(stat -c%s "$prefix/lib/qpdf.wasm") bytes"
+
+# ---------------------------------------------------------------------------------
+say "qpdf wasm: the export surface must match the native FFI declarations"
+# THE EXPECTED SET IS DERIVED FROM core/burrow-engines/src/qpdf/ffi.rs, NOT FROM THE
+# EXPORTED_FUNCTIONS ABOVE.
+#
+# A first version compared the built module against the same `$qpdf_exports` variable used
+# to build it, so adding a function put it on both sides and the check always passed. It
+# could only ever catch emcc silently dropping a symbol -- never the failure that matters,
+# which is a human exporting something ADR 0013 never cleared. Verified by exporting
+# _qpdf_is_linearized: the old check reported "20 exports, exactly the declared set".
+#
+# So the two tables are cross-checked instead. ffi.rs is the file ADR 0013 governs -- every
+# function in it was verified to route through qpdf's `trap_errors` by reading qpdf-c.cc --
+# and the web module may export exactly those, plus the allocator and the version string.
+# Adding _qpdf_is_linearized here now fails unless it is also declared natively, where the
+# ADR applies. (M1 PR 4c closes the other end: generating the trapped set from qpdf's own
+# source and checking ffi.rs against it.)
+ffi_rs="$here/../core/burrow-engines/src/qpdf/ffi.rs"
+[ -f "$ffi_rs" ] || { echo "build-wasm: cannot find $ffi_rs to derive the allowlist from" >&2; exit 1; }
+declared="$(sed -n 's/^\s*pub(super) fn \(qpdf[a-z_0-9]*\)\s*(.*/\1/p' "$ffi_rs" | sort -u)"
+[ -n "$declared" ] || { echo "build-wasm: parsed ZERO functions out of ffi.rs -- the check would be vacuous" >&2; exit 1; }
+echo "   ffi.rs declares $(printf '%s\n' "$declared" | wc -l) qpdf functions"
+
+# malloc/free are the allocator the bridge needs; qpdf_get_qpdf_version is the probe below.
+# Neither parses a PDF, so neither is an ADR 0013 concern.
+allowed="$(printf '%s\nmalloc\nfree\nqpdf_get_qpdf_version\n' "$declared" | sort -u)"
+
+node -e '
+const fs = require("fs");
+const m = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+const allowed = new Set(fs.readFileSync(process.argv[2], "utf8").split("\n").filter(Boolean));
+const got = WebAssembly.Module.exports(m)
+  .map((e) => e.name)
+  .filter((n) => /^(qpdf|malloc|free)/.test(n))
+  .sort();
+const extra = got.filter((n) => !allowed.has(n));
+const missing = [...allowed].filter((n) => !got.includes(n)).sort();
+if (extra.length) {
+  console.error("  EXPORTED BUT NOT DECLARED NATIVELY (so not cleared by ADR 0013): " + extra.join(", "));
+}
+if (missing.length) {
+  console.error("  DECLARED NATIVELY BUT NOT EXPORTED (the web path cannot call it): " + missing.join(", "));
+}
+if (extra.length || missing.length) process.exit(1);
+console.log("   " + got.length + " exports, matching ffi.rs exactly");
+' "$prefix/lib/qpdf.wasm" <(printf '%s\n' "$allowed") || {
+  echo "build-wasm: qpdf.wasm's exports and the native FFI declarations disagree." >&2
+  echo "  These must be the same set: the native and web paths call the same C API, and" >&2
+  echo "  ADR 0013 cleared exactly that set for crossing back into Rust without unwinding." >&2
+  exit 1
+}
+
+# The module must not have acquired an async or threaded runtime: the bridge calls every
+# Emscripten export synchronously from Rust, and Asyncify or JSPI would make each one
+# return a Promise, which `DocumentEngine` (a sync trait) cannot accommodate.
+for forbidden in Asyncify _emscripten_proxy pthread_create SharedArrayBuffer; do
+  ! grep -q "$forbidden" "$prefix/lib/qpdf.js" || {
+    echo "build-wasm: qpdf.js contains '$forbidden' -- the synchronous bridge assumption is broken" >&2
+    exit 1
+  }
+done
+# And it must not reach the network. The worker supplies the wasm bytes itself; nothing in
+# the glue should be fetching anything.
+! grep -qE "https?://" "$prefix/lib/qpdf.js" || {
+  echo "build-wasm: qpdf.js contains an absolute URL -- non-negotiable #1" >&2
+  exit 1
+}
+echo "   no async runtime, no threads, no absolute URL"
+
+# ---------------------------------------------------------------------------------
+say "qpdf wasm: the artifact that ships is the one that answers"
+# Instantiated through Module.instantiateWasm, supplying the bytes ourselves -- which is
+# exactly how the worker does it under `connect-src` scoped to the engine URLs, and the
+# reason this probe cannot simply let the glue fetch: -sENVIRONMENT=web,worker has (rightly)
+# removed the Node file-reading path, so a `locateFile` filesystem path no longer resolves.
+# Verifying the hook here means a PDFium or emsdk bump that breaks it fails the build rather
+# than the browser.
+cp "$prefix/lib/qpdf.js" "$src/qpdf-engine.cjs"
 version="$(node -e '
-const createQpdfProbe = require(process.argv[1]);
-createQpdfProbe({ locateFile: (f) => process.argv[2] + "/" + f }).then((m) => {
-  console.log(m.cwrap("burrow_qpdf_version", "string", [])());
+const fs = require("fs");
+const createQpdfModule = require(process.argv[1]);
+const bytes = fs.readFileSync(process.argv[2]);
+createQpdfModule({
+  instantiateWasm(imports, done) {
+    WebAssembly.instantiate(bytes, imports).then((r) => done(r.instance, r.module));
+    return {};
+  },
+}).then((m) => {
+  console.log(m.cwrap("qpdf_get_qpdf_version", "string", [])());
 });
-' "$src/qpdf-probe.cjs" "$prefix/lib" 2>/dev/null)"
+' "$src/qpdf-engine.cjs" "$prefix/lib/qpdf.wasm" 2>&1 | tail -1)"
 echo "   qpdf reports: ${version:-<no answer>}"
 [ "$version" = "$QPDF_VERSION" ] || { echo "build-wasm: wasm qpdf reported '${version}', expected $QPDF_VERSION" >&2; exit 1; }
 
