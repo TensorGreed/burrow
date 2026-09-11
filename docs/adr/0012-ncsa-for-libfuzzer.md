@@ -111,7 +111,7 @@ or chasing it.
 `fuzz/`'s dependencies are now in scope for licence and advisory checks, which is a real
 improvement — it was an unaudited corner of the supply chain.
 
-### Known gap this ADR does **not** close
+### Known gap this ADR does **not** close — **RETRACTED, see the correction below**
 
 **`cargo-deny` does not see dev-dependencies.** Measured with cargo-deny 0.20.2 on this
 repository: `proptest`, `serde`, `serde_json` and their transitives do not appear in the
@@ -126,6 +126,44 @@ This PR's dev-dependencies were audited by hand instead, and are clean. The gap 
 recorded in `deny.toml` and needs its own change; it predates this PR, and fixing it
 properly means either upgrading cargo-deny, or generating the dev graph another way, which
 is more than a licence decision.
+
+### Correction, 2026-09-11: the section above is wrong
+
+Left standing rather than deleted, because [ADR 0001](0001-record-architecture-decisions.md)
+makes accepted ADRs append-only, and because a retracted claim is more useful with its
+reasoning visible than silently removed.
+
+**`cargo deny check` does see dev-dependencies.** The claim above came from
+`cargo deny list`, which omits them from its *output* — and the check that was supposed to
+verify the claim used `list` as well, so it confirmed the method rather than the fact.
+
+What was measured on 2026-09-11, all against cargo-deny 0.20.2:
+
+| Probe | Result |
+|---|---|
+| `ureq = "2"` planted as a dev-dependency of `burrow-engines`, then `cargo deny check` | **fails** on `ureq`, and on transitive `ring` with it |
+| `zmij` (dev-only, transitive via `serde_json`, two levels deep) added to `[bans] deny` | **fails** |
+| `proptest` (direct dev-dependency) added to `[bans] deny` | **fails** |
+| `[graph] exclude-dev = false` set explicitly | no change — nothing was being excluded |
+
+So non-negotiable #1's network and TLS ban **was never bypassed** by a dev-dependency, and
+no configuration change was needed.
+
+One thing remains genuinely unexplained, and is recorded rather than resolved: cargo-deny's
+graph is not the lockfile. With an emptied allowlist its licence check names 31 crates
+while `Cargo.lock` holds 48; `serde_json` is in the lockfile and absent from that output,
+while `proptest`, `serde` and `rand` are present. That is a discrepancy nobody here can
+account for, so the guarantee is no longer left resting on it alone:
+`tools/check-no-network-deps.sh` walks `cargo tree -e normal,dev,build --target all` over
+every workspace member and over `fuzz/`, reads this file's ban list so the two cannot
+drift, and fails on a plain name match. It sees 47 crates where cargo-deny's licence graph
+sees 31, and its self-test proves it catches a planted dev-dependency.
+
+**The lesson worth keeping** is not about cargo-deny. A negative finding — "tool X does not
+cover Y" — was accepted and propagated into an ADR, a commit message and a PR description
+on the strength of a check that shared the original's blind spot. Verifying a negative
+needs a *different* method from the one that produced it: here, planting the thing that
+should be caught and watching the real command fail.
 
 ## Alternatives considered
 

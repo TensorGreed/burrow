@@ -304,6 +304,15 @@ jobs:
           command: check licenses advisories sources
           arguments: --all-features --config deny.toml
 
+      # An independent backstop for non-negotiable #1, deliberately not using cargo-deny.
+      # `cargo tree` over every kind and every target, matching names against the same ban
+      # list, so the guarantee does not rest on one tool's view of the graph -- which is
+      # demonstrably not the lockfile. See the correction at the top of deny.toml.
+      - name: No network or TLS crate in any dependency graph
+        run: |
+          tools/check-no-network-deps.sh
+          tools/test-check-no-network-deps.sh
+
       # cargo-deny sees Rust crates only. The native engines and everything they bundle
       # are the other 82% of the shipped bytes, and they are checked here against
       # ADR 0008's allowlist. Same job on purpose: one gate for the whole graph.
