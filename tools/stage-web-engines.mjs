@@ -190,6 +190,33 @@ async function main() {
   const staged = {};
   const wasmUrls = [];
 
+  // The guard's CONTROL resource.
+  //
+  // A few bytes, staged and allowlisted like everything else, existing only so the worker can
+  // prove at init that an ALLOWLISTED request succeeds while a non-allowlisted one is
+  // refused. Without it, "refused by the policy" and "the network is unreachable" look
+  // identical from inside the worker.
+  //
+  // It is dedicated rather than reusing an engine fetch, and that is the point: an engine
+  // response can be served from the HTTP cache, so offline-with-a-warm-cache would satisfy a
+  // control that reused one -- the control would succeed from cache while the probe failed
+  // for network reasons, and the guard would report "policed" with nothing enforcing
+  // anything. This is fetched `cache: "no-store"`, at the same moment as the probe, so both
+  // face identical conditions.
+  const controlBytes = Buffer.from(
+    "burrow csp control: fetched at init to prove an allowlisted request succeeds.\n",
+    "utf8",
+  );
+  const controlName = `control.${contentHash(controlBytes)}.txt`;
+  await writeFile(join(outDir, controlName), controlBytes);
+  const controlUrl = `/engines/${controlName}`;
+  staged.control = {
+    url: controlUrl,
+    integrity: sriFor(controlBytes),
+    bytes: controlBytes.length,
+  };
+  console.log(`  guard control -> ${controlName}  (${controlBytes.length} bytes)`);
+
   for (const file of ENGINE_FILES) {
     const source = join(sources[file.source], file.from);
     if (!existsSync(source)) {
@@ -259,7 +286,7 @@ async function main() {
 
   // The page fetches the worker's SOURCE TEXT, so its URL is a connect-src entry like any
   // engine. It is not a `script-src` entry: it is never loaded as a script from that URL.
-  const fetchable = [...wasmUrls, `${ORIGIN}${workerUrl}`];
+  const fetchable = [...wasmUrls, `${ORIGIN}${workerUrl}`, `${ORIGIN}${controlUrl}`];
 
   const metaPolicy = policyFor(fetchable, { forMeta: true });
   const headerPolicy = policyFor(fetchable, { forMeta: false });

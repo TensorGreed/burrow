@@ -123,9 +123,38 @@ the creating document's policy **whatever that is, including none**. A page that
 layout, or a host that mangled the meta tag, yields a `blob:` worker with an empty policy, and
 the old check returned true for it.
 
-`src/worker/guard.test.ts` drives all four states in `node:vm` — including the two a browser
-cannot produce on a correctly configured page: a `blob:` worker with no policy, and a probe
-that failed for a network reason rather than a policy one.
+**The control is a dedicated resource, not a reused engine fetch.** An engine response can be
+served from the HTTP cache, so offline-with-a-warm-cache would let a reused control succeed
+while the probe failed for network reasons — and the guard would report "policed" with nothing
+enforcing anything. The control is a few bytes staged and allowlisted alongside the engines,
+fetched `cache: "no-store"`, **issued at the same moment as the probe** so both face identical
+conditions.
+
+**It does not depend on `securitypolicyviolation`.** An earlier version did, and **WebKit does
+not dispatch that event in a worker**: it refused the probe, fired nothing, and the guard
+concluded there was no policy and refused every operation in a browser that was enforcing it
+correctly. 13 of 17 tests failed on WebKit's first local run. Using only whether requests
+succeed is something every browser agrees on.
+
+**Only a `fetch` rejection is interpreted.** Anything else — a bug in the guard — yields a
+distinct `guard-error` verdict rather than being read as either answer. It still fails closed,
+and the reason reaches the page **by message, never the console**. The classification is
+structural (`error.name === "TypeError"`) rather than `instanceof`, because `instanceof`
+compares against the current realm's constructor and fails for an error that crossed a realm
+boundary — which is not hypothetical: it made every staged rejection in the unit tests read as
+`guard-error`.
+
+`src/worker/guard.test.ts` drives every state in `node:vm`, including the ones a browser
+cannot produce on a correctly configured page: a `blob:` worker with no policy, a probe that
+failed for a network reason, offline-with-a-warm-cache, a probe that never settles, and a
+guard that throws.
+
+**A service worker would invalidate all of this**, because it can answer either request from
+its own cache or synthesise a response without the network or the policy being consulted —
+and `cache: "no-store"` constrains the HTTP cache, not a service worker's `fetch` handler.
+Adding one requires re-deriving this section first; recorded in ADR 0006's amendment as well,
+because the temptation arrives as an offline-support feature with no obvious connection to
+the CSP.
 
 ### 2. The bytes are integrity-pinned
 

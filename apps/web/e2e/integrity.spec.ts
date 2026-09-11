@@ -42,14 +42,21 @@ test("the manifest pins every engine artifact by digest", async ({ page }) => {
   const engines = await readManifest(page);
 
   const ids = Object.keys(engines).sort();
-  expect(ids).toEqual(["burrowWasm", "pdfiumWasm", "qpdfWasm", "worker"]);
+  expect(ids).toEqual(["burrowWasm", "control", "pdfiumWasm", "qpdfWasm", "worker"]);
+
+  // The guard's control resource. Small on purpose: it is fetched `cache: "no-store"` at
+  // every worker start, and it exists only to prove an allowlisted request succeeds.
+  expect(engines.control.bytes, "the control should be a few bytes, not a payload").toBeLessThan(
+    1024,
+  );
+  expect(engines.control.url).toMatch(/^\/engines\/control\.[0-9a-f]{16}\.txt$/);
 
   for (const [id, entry] of Object.entries(engines)) {
     // sha384 rather than sha256: it is the SRI default for a reason, and there is no cost.
     expect(entry.integrity, `${id} integrity`).toMatch(/^sha384-[A-Za-z0-9+/]+=*$/);
     // Content-hashed, so a changed engine is a changed URL — which is also what makes the
     // generated CSP change with it.
-    expect(entry.url, `${id} url`).toMatch(/^\/engines\/.+\.[0-9a-f]{16}\.(js|wasm)$/);
+    expect(entry.url, `${id} url`).toMatch(/^\/engines\/.+\.[0-9a-f]{16}\.(js|wasm|txt)$/);
     expect(entry.bytes, `${id} size`).toBeGreaterThan(0);
   }
 });

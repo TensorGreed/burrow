@@ -141,15 +141,13 @@ self.onmessage = async (event) => {
   // `POLICED` measures the property directly (a request the policy must refuse) rather than
   // inferring it from the URL scheme, because a Blob worker inherits whatever policy the
   // creating document had -- including none.
-  if (!(await POLICED)) {
-    self.postMessage(
-      internalFailure(
-        request.id,
-        CREATED_FROM_BLOB
-          ? "no content security policy is in force in this worker"
-          : "worker was not created from a blob: URL, so it inherits no policy",
-      ),
-    );
+  const policy = await POLICED;
+  if (!policy.policed) {
+    // The reason travels to the page BY MESSAGE, not to the console. It is a fixed
+    // identifier from a closed set -- never engine output, never anything input-derived --
+    // and the console is both unread in production and the one place file bytes must never
+    // reach.
+    self.postMessage(internalFailure(request.id, `no policy in force: ${policy.reason}`));
     return;
   }
 

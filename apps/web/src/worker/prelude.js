@@ -130,70 +130,108 @@ function instantiateFrom(id) {
 }
 
 /**
- * Whether a Content-Security-Policy is actually in force in *this* worker.
+ * Whether a Content-Security-Policy is actually in force in *this* worker, and why.
  *
  * **The fail-closed guard, and it measures the property rather than a proxy for it.**
  *
- * An earlier version checked only {@link CREATED_FROM_BLOB} and called itself
- * `INHERITS_PAGE_CSP` — which asserts a stronger thing than it tested.
+ * Two earlier versions were wrong, and both are worth knowing about:
  *
- * It is a **differential** probe: an allowlisted fetch must succeed (the control) and a
- * non-allowlisted one must be refused (the probe). That distinguishes "refused by policy"
- * from "the network is broken" without relying on the `securitypolicyviolation` event —
- * which is what the previous version used, and **WebKit does not dispatch it in a worker**.
- * WebKit enforced the policy perfectly and the guard concluded there was none, refusing every
- * operation. Measured; it is why the browser matrix exists.
+ *   * `self.location.protocol === "blob:"` alone, named `INHERITS_PAGE_CSP`. A Blob worker
+ *     inherits the creating document's policy *whatever that is, including none*, so the name
+ *     asserted more than the check established.
+ *   * Requiring a `securitypolicyviolation` event. **WebKit does not dispatch one in a
+ *     worker**: it refused the probe, fired nothing, and the guard concluded there was no
+ *     policy and refused every operation in a browser that was enforcing it correctly.
  *
- * The probe runs once, before any file can arrive, and is itself refused — so it sends
- * nothing. The control is an engine fetch already in flight, so it costs no extra request.
+ * So it is **differential**, using only whether requests succeed — which every browser agrees
+ * on. An allowlisted request must succeed (the control) and a non-allowlisted one must be
+ * refused (the probe).
+ *
+ * **Both are issued together and both are `cache: "no-store"`**, so they face identical
+ * network conditions. The control is a dedicated few-byte resource rather than one of the
+ * engine fetches: an engine response can come from the HTTP cache, so offline-with-a-warm-
+ * cache would let the control succeed while the probe failed for network reasons, and the
+ * guard would report "policed" with nothing enforcing anything.
+ *
+ * Resolves a `{ policed, reason }` verdict. `reason` is reported to the page on refusal, by
+ * message — never to the console, which is where file-derived bytes must never go and which
+ * nobody reads in production anyway.
  */
 const POLICED = (async () => {
   if (!CREATED_FROM_BLOB) {
-    return false;
+    return { policed: false, reason: "not-a-blob-worker" };
   }
 
-  // THE CONTROL, and it is what makes this work in every browser.
-  //
-  // An allowlisted fetch must succeed first. If it does not, the network is broken or the
-  // artifact is missing, and a refused probe below would be indistinguishable from that --
-  // so there would be nothing to conclude and the guard fails closed.
-  //
-  // This costs no extra request: the engine fetches are already in flight from above, and
-  // init needs them regardless.
-  try {
-    await compiled.qpdfWasm;
-  } catch {
-    // Deliberately broad: a rejected control fetch, and nothing else, should reach here.
-    //
-    // It briefly caught a ReferenceError too -- `compiled` was declared BELOW this block, so
-    // touching it hit the temporal dead zone and the catch reported "not policed" for a
-    // programming error. Fail-closed, so not dangerous, but silent and wrong. Hence the
-    // ordering: everything this depends on is initialised above it.
-    return false;
-  }
+  /** @param {string} path */
+  const absolute = (path) => new URL(path, BURROW_ENGINES.probeOrigin).href;
 
-  // THE PROBE. A same-origin path that is deliberately not in `connect-src`, and
-  // deliberately not a real route. NEVER a cross-origin URL: if the policy were missing, a
-  // cross-origin probe would actually reach a third party -- a guard whose failure mode is
-  // the thing it guards against. With `/__csp-probe` the worst case is a 404 on our own
-  // host, and `fetch` RESOLVES on a 404, so "no policy" is reported correctly.
-  //
-  // Absolute, because a blob: worker's `self.location` is opaque and cannot resolve a
-  // relative reference.
-  const probe = fetch(new URL(PROBE_PATH, BURROW_ENGINES.probeOrigin).href, {
-    mode: "no-cors",
-  }).then(
-    () => false, // not refused: the control proved the network works, so there is no policy
-    () => true, // refused, and the control rules out a network cause
-  );
+  /**
+   * Run one request and classify the outcome, without swallowing anything unexpected.
+   *
+   * A `fetch` that is refused by the policy, or that fails at the network level, rejects with
+   * a `TypeError`. That is the ONLY rejection this is prepared to interpret. Anything else —
+   * a `ReferenceError` from a future edit, say — is a bug in the guard, not evidence about
+   * the policy, and must not be quietly read as either answer.
+   *
+   * A bare `catch { return false }` did swallow exactly that: `POLICED` once referenced a
+   * binding declared below it, hit the temporal dead zone, and reported "not policed" for a
+   * programming error. Fail-closed, so not dangerous, but silent and wrong.
+   */
+  /** @param {string} url @returns {Promise<"succeeded" | "rejected">} */
+  const attempt = async (url) => {
+    try {
+      await fetch(url, { mode: "no-cors", cache: "no-store" });
+      return "succeeded";
+    } catch (error) {
+      // `name`, not `instanceof`. `instanceof` compares against THIS realm's constructor, and
+      // an error that crossed a realm boundary fails it even when it is a TypeError -- which
+      // is not hypothetical: the unit tests drive this code in a `vm` context, and every
+      // rejection they stage was classified `guard-error` until this changed. A worker is one
+      // realm in production, but a check that depends on that is a check that only works
+      // where it is not tested.
+      // Structural, with no `instanceof` at all -- `instanceof Object` fails across realms
+      // for exactly the same reason `instanceof TypeError` does.
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        /** @type {{ name?: unknown }} */ (error).name === "TypeError"
+      ) {
+        return "rejected";
+      }
+      throw error;
+    }
+  };
 
-  // Bounded, so a request that neither resolves nor rejects cannot hang the worker on its
-  // first message. The timeout resolves FALSE: an inconclusive probe is not a policy.
+  /** Bounded, so a request that neither resolves nor rejects cannot hang the worker. */
   const timeout = new Promise((resolve) => {
-    setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+    setTimeout(() => resolve("timed-out"), PROBE_TIMEOUT_MS);
   });
 
-  return Promise.race([probe, timeout]);
+  try {
+    // Issued together, deliberately. Sequencing them would let conditions change in between,
+    // which is the whole thing the control exists to rule out.
+    const [control, probe] = await Promise.all([
+      Promise.race([attempt(absolute(BURROW_ENGINES.control.url)), timeout]),
+      Promise.race([attempt(absolute(PROBE_PATH)), timeout]),
+    ]);
+
+    if (control !== "succeeded") {
+      // The network is unreachable, or the control resource is missing. A refused probe
+      // proves nothing in that state, so there is nothing to conclude.
+      return { policed: false, reason: `control-${control}` };
+    }
+    if (probe === "rejected") {
+      return { policed: true, reason: "ok" };
+    }
+    // `fetch` resolves on a 404, so a probe that merely 404s lands here: something served it,
+    // which means nothing refused it.
+    return { policed: false, reason: `probe-${probe}` };
+  } catch {
+    // Anything `attempt` re-threw. Deliberately not inspected or logged: it can only be a bug
+    // in this file, and its text is not ours to forward. Distinct from every outcome above so
+    // the page can tell a broken guard from an absent policy.
+    return { policed: false, reason: "guard-error" };
+  }
 })();
 
 // PDFium's glue reads this at load time. It must exist before the next file in the bundle.

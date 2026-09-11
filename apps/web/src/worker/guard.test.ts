@@ -35,7 +35,20 @@ const prelude = readFileSync(join(here, "prelude.js"), "utf8");
 interface GuardOutcome {
   createdFromBlob: boolean;
   policed: boolean;
+  /** A fixed identifier from a closed set. Reported to the page by message, never logged. */
+  reason: string;
 }
+
+/** The worlds the guard has to tell apart. */
+type World =
+  | "policy-in-force"
+  | "no-policy"
+  | "network-broken"
+  /** Offline, but the engine responses are cached — the case a reused control would miss. */
+  | "offline-warm-cache"
+  | "probe-hangs"
+  /** Something in the guard throws a non-fetch error, e.g. a future refactor's bug. */
+  | "guard-throws";
 
 /**
  * Evaluate the prelude against a stubbed worker scope and report what the guard concluded.
@@ -43,10 +56,7 @@ interface GuardOutcome {
  * @param protocol what `self.location.protocol` reports
  * @param fetchBehaviour how the probe request resolves
  */
-async function runGuard(
-  protocol: string,
-  world: "policy-in-force" | "no-policy" | "network-broken" | "probe-hangs",
-): Promise<GuardOutcome> {
+async function runGuard(protocol: string, world: World): Promise<GuardOutcome> {
   const scope: Record<string, unknown> = {
     location: { protocol },
     addEventListener: () => {},
@@ -57,28 +67,46 @@ async function runGuard(
       pdfiumWasm: { url: "https://example.test/a.wasm", integrity: "sha384-x" },
       qpdfWasm: { url: "https://example.test/b.wasm", integrity: "sha384-y" },
       burrowWasm: { url: "https://example.test/c.wasm", integrity: "sha384-z" },
+      control: { url: "/engines/control.deadbeef.txt", integrity: "sha384-c" },
     },
     WebAssembly: { compileStreaming: async () => ({}), instantiate: async () => ({}) },
     URL,
-    fetch: async (url: string) => {
-      // The allowlisted engine fetches. These are the CONTROL: the guard requires one to
-      // succeed before it will read anything into the probe being refused.
+    fetch: async (url: string, init?: { cache?: string }) => {
+      // The engine modules. Not the control -- reusing one of these AS the control is the
+      // mistake this suite's `offline-warm-cache` case exists to catch.
       if (url.endsWith(".wasm")) {
         if (world === "network-broken") {
+          throw new TypeError("Failed to fetch");
+        }
+        // Cached, so it succeeds even offline. That is the whole point.
+        return { ok: true };
+      }
+
+      if (url.includes("/control.")) {
+        // The guard must request the control uncached, or a warm cache defeats it.
+        if (init?.cache !== "no-store") {
+          throw new Error("the control must be fetched with cache: no-store");
+        }
+        if (world === "network-broken" || world === "offline-warm-cache") {
           throw new TypeError("Failed to fetch");
         }
         return { ok: true };
       }
 
       // The probe, at a path nothing serves.
-      if (world === "no-policy") {
-        // No policy: the request goes out and 404s. `fetch` RESOLVES on a 404 — it only
-        // rejects on a network-level failure — so this is what "nothing refused it" looks
-        // like, and the guard must read it as "not policed".
-        return { ok: false, status: 404 };
+      if (world === "guard-throws") {
+        // NOT a TypeError: this stands in for a bug inside the guard, which must not be read
+        // as evidence about the policy in either direction.
+        throw new RangeError("something in the guard is broken");
       }
       if (world === "probe-hangs") {
         return new Promise(() => {});
+      }
+      if (world === "no-policy") {
+        // No policy: the request goes out and 404s. `fetch` RESOLVES on a 404 -- it only
+        // rejects on a network-level failure -- so this is what "nothing refused it" looks
+        // like, observable without any event.
+        return { ok: false, status: 404 };
       }
       // Refused by the policy. No violation event is dispatched, because WebKit does not
       // dispatch one in a worker and the guard must not depend on it.
@@ -102,9 +130,11 @@ async function runGuard(
     POLICED: Promise<boolean>;
   };
 
+  const verdict = await result.POLICED;
   return {
     createdFromBlob: result.CREATED_FROM_BLOB,
-    policed: await result.POLICED,
+    policed: verdict.policed,
+    reason: verdict.reason,
   };
 }
 
@@ -112,10 +142,7 @@ describe("the worker's fail-closed guard", () => {
   it("accepts a blob: worker whose probe the policy refuses", async () => {
     const outcome = await runGuard("blob:", "policy-in-force");
     expect(outcome.createdFromBlob).toBe(true);
-    expect(
-      outcome.policed,
-      "an allowlisted fetch succeeding while a non-allowlisted one is refused IS a policy",
-    ).toBe(true);
+    expect(outcome.policed, `reason was ${outcome.reason}`).toBe(true);
   });
 
   it("does not need a securitypolicyviolation event", async () => {
@@ -146,6 +173,35 @@ describe("the worker's fail-closed guard", () => {
     const outcome = await runGuard("blob:", "no-policy");
     expect(outcome.createdFromBlob).toBe(true);
     expect(outcome.policed, "an unrefused probe means there is no policy").toBe(false);
+  });
+
+  it("does not mistake OFFLINE-WITH-A-WARM-CACHE for a policy", async () => {
+    // The case that made the control a dedicated resource rather than a reused engine fetch.
+    //
+    // The engine responses are cached, so they succeed with no network at all. A control that
+    // reused one would succeed from cache while the probe failed for network reasons — and
+    // the guard would report "policed" with nothing enforcing anything. The dedicated control
+    // is fetched `cache: "no-store"` at the same moment as the probe, so it fails too.
+    const outcome = await runGuard("blob:", "offline-warm-cache");
+    expect(outcome.policed).toBe(false);
+    expect(outcome.reason, "the control is what must have failed").toMatch(/^control-/);
+  });
+
+  it("requests the control with cache: no-store", async () => {
+    // Pinned separately, because the test above only catches it when the cache and the
+    // network disagree. The fetch stub throws if the control is requested any other way, so a
+    // guard that dropped `no-store` reaches the `guard-error` branch rather than passing.
+    const outcome = await runGuard("blob:", "policy-in-force");
+    expect(outcome.reason).toBe("ok");
+  });
+
+  it("reports a guard-error distinctly, and still fails closed", async () => {
+    // A non-fetch exception is a bug in the guard, not evidence about the policy. It must not
+    // be read as either answer, and the page must be able to tell it from an absent policy —
+    // the two call for different responses from whoever is looking at it.
+    const outcome = await runGuard("blob:", "guard-throws");
+    expect(outcome.policed, "a broken guard must still fail closed").toBe(false);
+    expect(outcome.reason).toBe("guard-error");
   });
 
   it("does not mistake a broken network for a policy", async () => {

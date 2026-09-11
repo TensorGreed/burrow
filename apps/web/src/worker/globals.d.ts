@@ -108,6 +108,14 @@ interface BurrowEngines {
   pdfiumWasm: EngineEntry;
   qpdfWasm: EngineEntry;
   burrowWasm: EngineEntry;
+  /**
+   * A few bytes, allowlisted, existing only as the guard's control.
+   *
+   * Dedicated rather than reusing an engine fetch: an engine response can be served from the
+   * HTTP cache, and a cached control would succeed while the probe failed for network
+   * reasons — reporting "policed" with nothing enforcing anything.
+   */
+  control: EngineEntry;
   /** The origin this build's CSP was generated against; the guard probes it. */
   probeOrigin: string;
 }
