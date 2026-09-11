@@ -90,6 +90,28 @@ for sym in FPDF_InitLibrary FPDF_LoadMemDocument FPDF_GetPageCount FPDF_GetLastE
 done
 echo "   required entry points present"
 
+# The bundle's correctness depends on ONE line of upstream's glue.
+#
+# All worker code is concatenated into a single script (see tools/stage-web-engines.mjs and
+# ADR 0014), and `prelude.js` assigns `self.Module` before pdfium.js runs so that
+# `instantiateWasm` is in place. That survives only because pdfium.js writes
+#
+#   var Module = typeof Module != "undefined" ? Module : {}
+#
+# `var` hoisting creates the binding before any of the bundle executes, but `var x = v` only
+# ASSIGNS when its initialiser runs -- by which point the prelude has set the global, and the
+# conditional keeps it. If upstream ever simplified this to `var Module = {}`, our
+# configuration would be silently discarded: `instantiateWasm` would be gone, pdfium would
+# fall back to fetching its own .wasm relative to an opaque blob: URL, and the failure would
+# surface in a browser rather than here.
+grep -q 'var Module=typeof Module!="undefined"?Module:{}' "$prefix/lib/pdfium.js" || {
+  echo "build-wasm: pdfium.js no longer preserves a pre-existing Module." >&2
+  echo "  The worker bundle assigns self.Module before this glue runs, and relies on the" >&2
+  echo "  conditional form to keep it. Re-check prelude.js against the new glue." >&2
+  exit 1
+}
+echo "   the glue still honours a pre-existing Module"
+
 # ---------------------------------------------------------------------------------
 say "zlib + libjpeg-turbo for wasm"
 # Vendored, not Emscripten ports: the port shipped IJG libjpeg 9f while describing itself
