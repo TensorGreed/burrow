@@ -44,28 +44,9 @@ pub(crate) struct FpdfDocumentOpaque {
 /// `FPDF_DOCUMENT`. Null means "no document". `fpdfview.h:70`.
 pub(crate) type FpdfDocument = *mut FpdfDocumentOpaque;
 
-/// `FPDF_ERR_SUCCESS` — no error. `fpdfview.h:605`.
-pub(crate) const FPDF_ERR_SUCCESS: c_ulong = 0;
-/// `FPDF_ERR_UNKNOWN`. `fpdfview.h:606`.
-pub(crate) const FPDF_ERR_UNKNOWN: c_ulong = 1;
-/// `FPDF_ERR_FILE` — file not found or could not be opened. `fpdfview.h:607`.
-pub(crate) const FPDF_ERR_FILE: c_ulong = 2;
-/// `FPDF_ERR_FORMAT` — not in PDF format, or corrupted. `fpdfview.h:608`.
-pub(crate) const FPDF_ERR_FORMAT: c_ulong = 3;
-/// `FPDF_ERR_PASSWORD` — password required, or incorrect. `fpdfview.h:609`.
-pub(crate) const FPDF_ERR_PASSWORD: c_ulong = 4;
-/// `FPDF_ERR_SECURITY` — unsupported security scheme. `fpdfview.h:610`.
-pub(crate) const FPDF_ERR_SECURITY: c_ulong = 5;
-/// `FPDF_ERR_PAGE` — page not found or content error. `fpdfview.h:611`.
-pub(crate) const FPDF_ERR_PAGE: c_ulong = 6;
-/// `FPDF_ERR_XFALOAD`. `fpdfview.h:613`, behind `PDF_ENABLE_XFA` upstream.
-///
-/// Declared even though our build is not expected to define `PDF_ENABLE_XFA`: the code
-/// space is the engine's, not ours, and an unhandled value would fall into the
-/// "unrecognised" arm and cost a web worker.
-pub(crate) const FPDF_ERR_XFALOAD: c_ulong = 7;
-/// `FPDF_ERR_XFALAYOUT`. `fpdfview.h:614`, behind `PDF_ENABLE_XFA` upstream.
-pub(crate) const FPDF_ERR_XFALAYOUT: c_ulong = 8;
+// The `FPDF_ERR_*` codes moved to `crate::codes::pdfium` so the web implementation shares
+// one table; only the success sentinel is still needed in this module, for the init check.
+pub(super) use crate::codes::pdfium::FPDF_ERR_SUCCESS;
 
 unsafe extern "C" {
     /// `FPDF_EXPORT void FPDF_CALLCONV FPDF_InitLibrary()` — `fpdfview.h:330`.

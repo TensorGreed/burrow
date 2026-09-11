@@ -1,17 +1,13 @@
 //! Turning qpdf error codes into burrow's typed errors.
 //!
-//! The same three rules as [`crate::pdfium::errors`], for the same reasons:
+//! The constants and the mapping both live here rather than in `qpdf::ffi`, so the web
+//! implementation gets the *same* table without a second copy. See [`crate::codes`] for
+//! why, and for the three rules this table follows.
 //!
-//! 1. **Failure is decided by the primary return value**, then classified by the code.
-//! 2. **Classification is by code, never by prose.** qpdf makes this easy —
-//!    `qpdf_e_password` is a machine-readable "encrypted, and the password did not work",
-//!    so there is no temptation to match on `"invalid password"`.
-//! 3. **Messages are fixed constants.**
-//!
-//! Rule 3 matters more here than it did for PDFium, and it is why `ffi.rs` does not even
-//! declare `qpdf_get_error_full_text`, `qpdf_get_error_message_detail`,
-//! `qpdf_get_error_filename` or `qpdf_get_error_file_position`. qpdf's error text quotes
-//! the file:
+//! Rule 3 — fixed-constant messages — matters more here than it did for PDFium, and it is
+//! why `qpdf::ffi` does not even declare `qpdf_get_error_full_text`,
+//! `qpdf_get_error_message_detail`, `qpdf_get_error_filename` or
+//! `qpdf_get_error_file_position`. qpdf's error text quotes the file:
 //!
 //! ```text
 //! WARNING: spike-input (object 3 0, offset 9999999999): expected n n obj
@@ -19,17 +15,43 @@
 //!
 //! Object numbers and byte offsets are file content by any reasonable reading
 //! (spike 0001, Finding 6). A function that cannot be called cannot leak, so the safest
-//! version of "do not forward qpdf's messages" is to have no way to obtain them.
+//! version of "do not forward qpdf's messages" is to have no way to obtain them — and on
+//! the web that is enforced a second time, by the module's `EXPORTED_FUNCTIONS` allowlist.
 
 use burrow_types::Error;
 use core::ffi::c_int;
 
-use super::ffi::code;
+/// `enum qpdf_error_code_e` — `Constants.h:85-96`. Upstream guarantees the numbering
+/// across major releases, which is what makes mapping by code safe to rely on.
+pub(crate) mod code {
+    use core::ffi::c_int;
+
+    /// `qpdf_e_success` — no error. `Constants.h:86`.
+    pub(crate) const SUCCESS: c_int = 0;
+    /// `qpdf_e_internal` — a logic error in qpdf; indicates a bug. `Constants.h:87`.
+    pub(crate) const INTERNAL: c_int = 1;
+    /// `qpdf_e_system` — I/O or memory error. `Constants.h:88`.
+    pub(crate) const SYSTEM: c_int = 2;
+    /// `qpdf_e_unsupported` — a PDF feature qpdf does not support. `Constants.h:89`.
+    pub(crate) const UNSUPPORTED: c_int = 3;
+    /// `qpdf_e_password` — **incorrect password for an encrypted file**. `Constants.h:90`.
+    pub(crate) const PASSWORD: c_int = 4;
+    /// `qpdf_e_damaged_pdf` — syntax errors or other damage. `Constants.h:91`.
+    pub(crate) const DAMAGED_PDF: c_int = 5;
+    /// `qpdf_e_pages` — erroneous or unsupported page structure. `Constants.h:92`.
+    pub(crate) const PAGES: c_int = 6;
+    /// `qpdf_e_object` — type or bounds error accessing an object. `Constants.h:93`.
+    pub(crate) const OBJECT: c_int = 7;
+    /// `qpdf_e_json` — error in qpdf JSON. `Constants.h:94`.
+    pub(crate) const JSON: c_int = 8;
+    /// `qpdf_e_linearization` — a linearization warning. `Constants.h:95`.
+    pub(crate) const LINEARIZATION: c_int = 9;
+}
 
 /// Map a qpdf error code to a typed error.
 ///
 /// Call only when the call's own return value has already established failure.
-pub(super) fn map_code(code: c_int) -> Error {
+pub(crate) fn map_code(code: c_int) -> Error {
     match code {
         // The engine contradicted itself: the call failed, yet it reports no error. Same
         // reasoning as PDFium's zero-code case -- a state we do not understand is

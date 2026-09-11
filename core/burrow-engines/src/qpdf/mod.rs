@@ -28,7 +28,6 @@
 //! `qpdf-c.h:113-115` calls a leaked exception a bug to be reported. The declarations
 //! live in this module's private `ffi` submodule, and ADR 0013 §1 has the full argument.
 
-mod errors;
 mod ffi;
 mod limits;
 
@@ -39,8 +38,7 @@ use core::ffi::{c_char, c_ulonglong};
 
 use std::sync::Arc;
 
-use burrow_types::{Deadline, Error, Limits, Password, Result};
-use zeroize::Zeroizing;
+use burrow_types::{Deadline, Error, Limits, Result};
 
 use crate::{CheckOptions, StructureEngine, StructureReport};
 
@@ -140,33 +138,8 @@ impl Document {
             let error = ffi::qpdf_get_error(self.data);
             ffi::qpdf_get_error_code(self.data, error)
         };
-        Some(errors::map_code(code))
+        Some(crate::codes::qpdf::map_code(code))
     }
-}
-
-/// Build the NUL-terminated password argument qpdf's C API takes.
-///
-/// The same shape, and the same reasoning, as [`crate::pdfium`]'s: a PDF password is a
-/// byte string, an interior NUL would silently truncate it, and the copy is wiped when it
-/// goes out of scope.
-///
-/// # Errors
-///
-/// [`Error::InvalidArgument`] if the password contains a NUL byte. The message says only
-/// that, never the password.
-fn password_arg(password: Option<&Password>) -> Result<Option<Zeroizing<Vec<u8>>>> {
-    let Some(password) = password else {
-        return Ok(None);
-    };
-    if password.as_bytes().contains(&0) {
-        return Err(Error::InvalidArgument(
-            "password contains a NUL byte, which qpdf's C API cannot carry".to_owned(),
-        ));
-    }
-    let mut buf = Vec::with_capacity(password.len().saturating_add(1));
-    buf.extend_from_slice(password.as_bytes());
-    buf.push(0);
-    Ok(Some(Zeroizing::new(buf)))
 }
 
 impl StructureEngine for Qpdf {
@@ -196,7 +169,7 @@ impl StructureEngine for Qpdf {
         let deadline = Deadline::start(clock.as_ref(), &limits);
         deadline.checkpoint(clock.as_ref())?;
 
-        let password = password_arg(options.password)?;
+        let password = crate::password::nul_terminated(options.password, "qpdf")?;
         let size = c_ulonglong::try_from(bytes.len())
             .map_err(|_| Error::Internal("input length does not fit in size_t".to_owned()))?;
 

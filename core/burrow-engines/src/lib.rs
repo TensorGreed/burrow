@@ -34,6 +34,21 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Limits, Password, Result};
 
+// Engine error codes and their mapping to typed errors. Ungated, like `prescan` below and
+// for the same reason: M1 PR 4's web path needs the SAME mapping table, and two copies of
+// a mapping cannot be relied on to stay identical. Nothing here touches FFI -- a code is
+// an integer -- so there is nothing to link and nothing to gate on.
+mod codes;
+
+// Memory cost estimation, and the two checks built on it. Ungated for the same reason as
+// `codes`: the web path enforces the SAME ceiling with the same arithmetic, and only the
+// counter it reads differs (process RSS on native, the engine module's heap on the web).
+mod estimate;
+
+// Preparing a password for a C API. Ungated, and shared by both engines and both
+// platforms -- it copies bytes and appends a NUL, which needs no engine.
+mod password;
+
 // The PDFium implementation. Gated on the libraries actually being linked: `build.rs`
 // sets `burrow_native_engines` only when the `native-engines` feature is on, the target
 // is Linux, and every vendored library has passed its checksum. The trait above stays

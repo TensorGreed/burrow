@@ -105,34 +105,11 @@ pub(super) const fn has_errors(code: QpdfErrorCode) -> bool {
     code & QPDF_ERRORS != 0
 }
 
-/// `enum qpdf_error_code_e` — `Constants.h:85-96`.
-///
-/// Values are stable across major releases by upstream's explicit guarantee
-/// (`Constants.h:34-69`), because FFI callers hard-code them.
-pub(super) mod code {
-    use core::ffi::c_int;
-
-    /// `qpdf_e_success` — no error. `Constants.h:86`.
-    pub(in crate::qpdf) const SUCCESS: c_int = 0;
-    /// `qpdf_e_internal` — a logic error in qpdf; indicates a bug. `Constants.h:87`.
-    pub(in crate::qpdf) const INTERNAL: c_int = 1;
-    /// `qpdf_e_system` — I/O or memory error. `Constants.h:88`.
-    pub(in crate::qpdf) const SYSTEM: c_int = 2;
-    /// `qpdf_e_unsupported` — a PDF feature qpdf does not support. `Constants.h:89`.
-    pub(in crate::qpdf) const UNSUPPORTED: c_int = 3;
-    /// `qpdf_e_password` — **incorrect password for an encrypted file**. `Constants.h:90`.
-    pub(in crate::qpdf) const PASSWORD: c_int = 4;
-    /// `qpdf_e_damaged_pdf` — syntax errors or other damage. `Constants.h:91`.
-    pub(in crate::qpdf) const DAMAGED_PDF: c_int = 5;
-    /// `qpdf_e_pages` — erroneous or unsupported page structure. `Constants.h:92`.
-    pub(in crate::qpdf) const PAGES: c_int = 6;
-    /// `qpdf_e_object` — type or bounds error accessing an object. `Constants.h:93`.
-    pub(in crate::qpdf) const OBJECT: c_int = 7;
-    /// `qpdf_e_json` — error in qpdf JSON. `Constants.h:94`.
-    pub(in crate::qpdf) const JSON: c_int = 8;
-    /// `qpdf_e_linearization` — a linearization warning. `Constants.h:95`.
-    pub(in crate::qpdf) const LINEARIZATION: c_int = 9;
-}
+// `enum qpdf_error_code_e` (`Constants.h:85-96`) lives in `crate::codes::qpdf::code`, not
+// here, so the native and web paths share one table. Its values are stable across major
+// releases by upstream's explicit guarantee (`Constants.h:34-69`), which is what makes
+// hard-coding them safe. Nothing in this module needs them: the mapping is the only
+// consumer.
 
 /// `enum qpdf_log_dest_e` — `qpdflogger-c.h:58-64`.
 pub(super) mod log_dest {
