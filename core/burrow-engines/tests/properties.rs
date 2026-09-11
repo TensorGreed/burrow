@@ -38,6 +38,17 @@ const ALLOWED_MESSAGES: &[&str] = &[
     "pdfium reported an unrecognised error code",
     // mod.rs
     "document has no pages",
+    // Empty input, refused before the buffer reaches the engine.
+    //
+    // MISSING FROM THIS LIST UNTIL M1 PR 4a-i, and the gap was reachable the whole time:
+    // `arbitrary_bytes_return_a_typed_result` draws `vec(any::<u8>(), 0..4096)`, whose range
+    // includes zero. It simply never drew an empty vector until a CI run on case 22. The
+    // message was always a fixed constant, so the property held -- the allowlist was wrong,
+    // not the code.
+    //
+    // `an_empty_input_is_refused_with_an_allowed_message` below covers the case every run,
+    // rather than leaving it to the draw.
+    "input is empty",
     "password contains a NUL byte, which pdfium's C API cannot carry",
     "pdfium reported a page count that is not a count",
     "input length does not fit in u64",
@@ -91,6 +102,21 @@ fn check_outcome<T>(result: &Result<T, Error>) -> Result<(), String> {
         // `Error` is `#[non_exhaustive]`. A variant nobody has taught this test about is a
         // gap in the review, not a pass.
         Err(other) => Err(format!("unreviewed error variant: {other:?}")),
+    }
+}
+
+/// The empty input, checked every run rather than when proptest happens to draw it.
+///
+/// `arbitrary_bytes_return_a_typed_result` covers this only probabilistically: its generator
+/// is `0..4096`, so an empty vector is one draw among many, and the missing allowlist entry it
+/// eventually exposed had been reachable since M1 PR 2. A property test finding a gap is the
+/// system working; leaving that gap's regression coverage to chance is not.
+#[test]
+fn an_empty_input_is_refused_with_an_allowed_message() {
+    let result = open(Vec::new());
+    assert!(result.is_err(), "empty input is not a document");
+    if let Err(why) = check_outcome(&result) {
+        panic!("{why}");
     }
 }
 
