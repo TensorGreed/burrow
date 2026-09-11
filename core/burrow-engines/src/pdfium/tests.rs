@@ -4,8 +4,7 @@
 //! `errors.rs` and `estimate.rs` — including the one that says a zero error code can
 //! never read as success. What is here needs a real engine call.
 
-#[path = "../../testsupport/minimal_pdf.rs"]
-mod minimal_pdf;
+use crate::minimal_pdf;
 
 use std::sync::Arc;
 

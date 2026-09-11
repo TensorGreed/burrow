@@ -22,6 +22,12 @@ default = []
 # its riskiest half is worse than one that refuses to run.
 native-engines = []
 
+# Exposes `qpdf::enable_fuzz_mode`, which sets qpdf globals upstream describes as unsuitable
+# for production. OFF by default and enabled only by `fuzz/Cargo.toml`, so a production
+# build cannot reach it even by accident -- the switch is one-way and process-wide, which is
+# not something to leave lying around in the public API.
+fuzzing = []
+
 [dependencies]
 burrow-types.workspace = true
 # Wipes the NUL-terminated copy of a password that PDFium's C API requires, as soon as the

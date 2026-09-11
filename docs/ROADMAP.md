@@ -55,7 +55,7 @@ Agreed sequence. Each PR is squash-merged with CI green before the next starts.
 |---|---|---|
 | **1** | **Engine acquisition** — pinned fetch, native (linux-aarch64 + linux-x86_64) and wasm builds, licence manifest, crypto assertions, CI caching, proof of linkage | 1–3 |
 | **2** ✅ | `DocumentEngine` trait + **native PDFium** implementation: injected clock, `Limits` enforcement, typed error mapping, `page_count` as the thinnest end-to-end slice with all four test kinds, document-open fuzz target | 4, 5, 8 |
-| **3** | **qpdf native** behind its own trait, logging suppression, and the "a secret never reaches the console or an error" test | 6, 7 |
+| **3** ✅ | **qpdf native** behind its own trait, logging suppression, and the "a secret never reaches the console or an error" test | 6, 7 |
 | **4** | **Web path**: wasm binding + worker harness, `wasmBinary`, `-sENVIRONMENT=web,worker`, CSP `connect-src 'none'`, worker recovery per ADR 0009, wasm size budget, and the **differential conformance harness** | 9–12 |
 | **5+** | Operations, one at a time, starting with `merge` | — |
 
@@ -103,16 +103,25 @@ acquisition. The spike is not production code and nothing from it is reused dire
    out-of-bounds read.
    *Testable:* a 20k-page document and a 2 GB file both return `LimitExceeded`, not a
    crash or an OOM kill; timeout behaviour is tested with a fake clock, not by waiting.
-6. **qpdf integration for structure, encryption, object streams, and linearisation.**
-   Note the correction in ADR 0004: PDFium reconstructs a corrupted xref by itself, so
-   "repair" is **not** currently a justification for qpdf. If it is to be claimed, it
-   needs a corpus case PDFium actually fails.
+6. ~~**qpdf integration for structure, encryption, object streams, and linearisation.**~~
+   — **done, PR 3.** Behind its own `StructureEngine` trait, through qpdf's **C API only**:
+   it catches every C++ exception internally (`qpdf-c.h:113-115`), so no shim was needed
+   and no C++ was added. See [ADR 0013](adr/0013-qpdf-c-api-and-prescan.md).
+   **The repair question is answered.** ADR 0004's claim, withdrawn by spike 0001, is
+   re-established: qpdf reads a 290-byte truncated file (1 page) and a trailer-less one
+   (3 pages) that PDFium refuses outright. Pinned by
+   `tests/structure.rs::qpdf_recovers_two_files_pdfium_refuses`.
    *Testable:* a corpus of structurally damaged files; each either succeeds or returns
    `Malformed`, and no case aborts.
-7. **Engine logging suppressed at both layers.** qpdf's default logger emits object
-   numbers and byte offsets to stderr — reaching the devtools console — *including for
-   files that parse successfully*. `setSuppressWarnings(true)` plus a discarding
-   `QPDFLogger`, and `printErr`/`print` stubbed on every module.
+7. ~~**Engine logging suppressed at both layers.**~~ — **native half done, PR 3.**
+   `qpdf_silence_errors` + `qpdf_set_suppress_warnings(true)` + a logger with info, warn
+   and error all set to `qpdf_log_dest_discard` — qpdf's own `Pl_Discard`, reachable by
+   name from C, so no callback and no Rust code on a C++ stack.
+   Confirmed on this build: with the suppression removed qpdf writes
+   `WARNING: input (offset 4242): xref not found` and
+   `object 3 0 at offset 131` to stderr. `tests/secret_leak.rs` **fails** when it is
+   removed, which is what makes the claim checkable rather than asserted.
+   *Still open:* `printErr`/`print` stubbing on the wasm modules is PR 4's half.
    *Testable:* a test opens a file containing a recognisable secret and asserts nothing
    from it reaches console or any error string.
 8. ~~**Fuzz target for document open**~~ — **done, PR 2.** The first parser entry point. Note that
@@ -164,6 +173,68 @@ what later PRs can assume:
     deadline expired. Measured at 716 ms against a 1 ms budget. A bounded wait and a
     registry-level cap on open documents are both recorded in ADR 0011 and neither is in
     PR 2.
+**What PR 3 settled, beyond items 6 and 7.**
+
+- **The structural pre-scan closes PR 2's declared-size gap.** Bounded pure Rust,
+  `forbid(unsafe_code)`, O(1) allocation, no recursion — deliberately **not** driven by
+  qpdf, because a pre-scan running a C++ parser on ungated input would become the new
+  attack surface. The xref bomb is now refused before any engine allocates: measured, the
+  rejection grows the resident set by under 64 MB where it previously grew by ~1,250 MB.
+  Compiled on every platform, so M1 PR 4's web path uses it unchanged.
+- **The per-entry cost constant is 64 bytes, and it is not `sum(/W)`.** `/W` is the file's
+  encoding width; a cross-reference stream compresses, so 20M entries are 330 KB on disk
+  and 1.2 GB in memory. A first attempt compared `entries × sum(W)` (340 MB) against the
+  1 GiB ceiling and let the bomb through.
+- **qpdf runs on the caller's thread**, not PDFium's engine thread — ADR 0013. Its global
+  limits (all the decompression ones default to *unlimited*) and its discarding logger are
+  set once behind a `OnceLock`.
+- **qpdf's global limits cannot be per-operation.** They take no `qpdf_data`, so a caller's
+  `Limits` are enforced in Rust and qpdf's globals are a fixed floor under everything.
+- **`fuzz/libqpdf.a` is now in `BUILD_MANIFEST.sha256`.** It was linked into fuzz binaries
+  and checksummed by nothing.
+- **Two findings from security review, both fixed, both guarded.**
+  - **`qpdf_is_linearized` aborts the process** on an ordinary 356-byte PDF containing an
+    object number above `INT_MAX`. Only qpdf C functions routed through `trap_errors` catch
+    C++ exceptions — the header's blanket guarantee is not true per-function — and a
+    foreign exception is not a Rust panic, so nothing catches it. `StructureReport` now
+    reports only `pages`; `encrypted` and `linearized` are gone, because obtaining them
+    safely needs the C++ shim ADR 0013 argues against. The file that aborted is in the
+    damaged corpus, so reintroducing an untrapped call aborts the suite.
+  - **Three one-line bypasses of the pre-scan**, each restoring the full 2.5 GB
+    allocation: a `/Sizes 1 ` decoy before `/Size`, padding it past the dictionary window,
+    and junk after `%%EOF` pushing `startxref` past the tail window. All shared one shape —
+    make the scan read *nothing*, because "nothing declared" was indistinguishable from
+    "nothing to declare". Fixed with delimiter-checked keys, largest-of-all-occurrences,
+    and a whole-buffer backstop that runs only when the directed walk comes up empty.
+- **Bindings deferred, explicitly.** `StructureEngine`, `CheckOptions`, `StructureReport`,
+  `qpdf` and `prescan` are public in `burrow-engines`, which the bindings never depend on —
+  `burrow-core`'s surface is unchanged, so nothing is stale. The engine traits stay internal
+  until PR 5's first operation gives `burrow-ops` something to expose.
+- **Two new fuzz targets.** `prescan` is the only one in the project where coverage-guided
+  fuzzing actually steers the code under test — everything else drives a prebuilt black
+  box. `qpdf_check` links the **instrumented** qpdf archive, so it does get feedback from
+  an engine's own parser; CI runs it on x86-64, which is the open half of PR 2's ASan
+  finding.
+
+- **Deferred, and recorded here rather than rediscovered:**
+  - **A hang inside an engine cannot be interrupted from inside the process.** Time limits
+    are checkpoint-based ([ADR 0007](adr/0007-limit-enforcement-per-platform.md)) and qpdf
+    offers no timeout, cancellation or abort hook; PDFium offers none either. A single
+    engine call that runs forever is not stopped by anything we have.
+    - **Web:** recovery means terminating the worker, which PR 4 builds anyway for
+      [ADR 0009](adr/0009-web-panic-contract-and-binding-boundary.md)'s panic contract.
+    - **Android (M3):** a separate service process is available and is the obvious route.
+    - **iOS (M4):** **no subprocesses are permitted at all**, so process isolation cannot
+      be the uniform answer and the two platforms must decide separately.
+
+    This is the same constraint that makes an engine out-of-memory unsurvivable
+    (ADR 0011), and it should be settled once for both.
+  - **Queue-time attribution.** Carried from PR 2 and still open: one slow document delays
+    every other caller, and the delayed caller is told **its own** `max_duration_ms`
+    expired. Measured at 716 ms against a 1 ms budget. The fix is a bounded wait that
+    distinguishes "the queue was busy" from "your own work was slow", plus a
+    registry-level cap on concurrently open documents.
+
 - **Retracted after PR 2 merged:** PR 2 claimed `cargo-deny` cannot see dev-dependencies,
   and that non-negotiable #1's network ban therefore did not cover them. That was wrong —
   it came from `cargo deny list`, which omits them from its output, while `cargo deny

@@ -30,6 +30,8 @@ jobs:
       matrix:
         target:
           - document_open
+          - prescan
+          - qpdf_check
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Same pinned action as every other job (its `stable` branch); the `toolchain`
@@ -75,6 +77,11 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
+          # qpdf_check links the INSTRUMENTED archive, which is the only target that gets
+          # coverage feedback from an engine's own code rather than just our wrapper.
+          if [ "${{ matrix.target }}" = "qpdf_check" ]; then
+            export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
+          fi
           cargo +nightly fuzz run ${{ matrix.target }} -- \
             -max_total_time=600 -timeout=10 -rss_limit_mb=2048
 

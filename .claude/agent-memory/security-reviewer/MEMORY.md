@@ -2,3 +2,5 @@
 - [Reviews happen on live files](review_in_progress_edits.md) — work is often uncommitted and edited mid-review; re-read before concluding.
 - [M1 engine supply chain](m1_engine_supply_chain.md) — what the checksum/rpath provenance guarantee really covers, and where it stops.
 - [M1 limits: real strength](m1_limits_real_strength.md) — measured gaps in max_memory_bytes and the engine-thread deadline; a 330 kB file reaches 1.2 GB.
+- [qpdf exception boundary](m1_qpdf_exception_boundary.md) — qpdf-c.h's "catches everything" contract is false; `qpdf_is_linearized` aborts the process.
+- [Pre-scan key-scan bypass](m1_prescan_key_scan_bypass.md) — one decoy `/Sizes` key defeats the whole structural pre-scan; 2.5 GB measured.

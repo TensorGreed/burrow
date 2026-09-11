@@ -21,6 +21,7 @@ mod support;
 use std::sync::Arc;
 
 use burrow_engines::pdfium::Pdfium;
+use burrow_engines::prescan;
 use burrow_engines::{DocumentEngine, OpenOptions};
 use burrow_types::{Error, Limits, ManualClock};
 use support::{minimal_pdf, open_with};
@@ -145,7 +146,7 @@ fn an_input_at_the_top_of_the_address_space_cannot_wrap_its_estimate() {
 /// declared sizes before the load, which needs qpdf — M1 PR 3. See
 /// `docs/adr/0011-pdfium-engine-thread.md`.
 #[test]
-fn a_declared_size_bomb_is_rejected_rather_than_returned() {
+fn a_declared_size_bomb_is_rejected_before_anything_parses_it() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/conformance/fixtures/xref-bomb.pdf");
     let bytes = std::fs::read(&path).unwrap_or_else(|e| {
@@ -155,54 +156,67 @@ fn a_declared_size_bomb_is_rejected_rather_than_returned() {
         )
     });
 
-    // How much PDFium allocates for this file is architecture-dependent -- measurably more
-    // on aarch64 than on x86-64 -- so this test must not assert a number, and must not
-    // pick a ceiling that only one of them crosses. An earlier version used the default
-    // 1 GiB and passed locally while failing on CI for exactly that reason.
-    //
-    // What is stable is *which check* rejects it, so that is what is asserted.
-    let ceiling = 64 * 1024 * 1024;
+    // 330 KB declaring twenty million cross-reference entries. The size-based estimate
+    // predicts ~16 MB for it and waves it through; PDFium then allocates ~1.2 GB.
     let estimate = estimate_for(bytes.len());
     assert!(
-        estimate < ceiling,
-        "the size-based estimate for this file is {estimate}, which is not below the \
-         {ceiling}-byte ceiling below -- so the pre-check would reject it and this test \
-         would pass while proving nothing about the measured check"
+        estimate < 64 * 1024 * 1024,
+        "the size-based estimate is {estimate}, which is not the small number this test \
+         depends on being small"
     );
 
-    match open_with(
-        bytes.clone(),
-        Limits::with(|l| l.max_memory_bytes = ceiling),
-    ) {
-        Err(Error::LimitExceeded {
-            limit,
-            requested,
-            allowed,
-        }) => {
-            assert_eq!(limit, "max_memory_bytes");
-            assert_eq!(allowed, ceiling);
-            // The decisive assertion. The size-based estimate is ~16 MB; anything far
-            // above it can only have come from the measured post-open check.
-            assert!(
-                requested > estimate,
-                "reported {requested}, which is not above the size-based estimate of \
-                 {estimate} -- the measured check did not fire"
-            );
-        }
+    // The structural pre-scan reads what the file declares and refuses it outright.
+    let declared = prescan::describe(&bytes);
+    assert_eq!(declared.xref_entries, 20_000_000);
+    assert!(
+        declared.estimated_xref_bytes() > Limits::DEFAULT.max_memory_bytes,
+        "the declared table ({} bytes) should exceed the default ceiling",
+        declared.estimated_xref_bytes()
+    );
+
+    // THE ASSERTION THAT MATTERS: the rejection costs essentially nothing.
+    //
+    // Before the pre-scan existed this same call allocated ~1.25 GB and then threw it
+    // away. If someone removes the pre-scan, or moves it after the load, this fails --
+    // which is the regression that would otherwise be invisible, because the *outcome*
+    // (LimitExceeded) is identical either way.
+    let before = resident_kb();
+    let result = open_with(bytes.clone(), Limits::default());
+    let after = resident_kb();
+    let grew_mb = after.saturating_sub(before) / 1024;
+
+    match result {
+        Err(Error::LimitExceeded { limit, .. }) => assert_eq!(limit, "max_memory_bytes"),
         Ok(doc) => panic!(
-            "the bomb opened with {} pages; the measured memory check did not fire",
+            "the bomb opened with {} pages; nothing rejected it",
             doc.pages_at_open()
         ),
-        Err(other) => panic!("expected LimitExceeded on memory, got {other:?}"),
+        Err(other) => panic!("expected LimitExceeded, got {other:?}"),
     }
 
-    // And with a ceiling nothing will cross, the same bytes open fine. That is what makes
-    // the assertion above about *memory* rather than about a malformed file: there is
-    // nothing wrong with this document except what it costs.
+    assert!(
+        grew_mb < 64,
+        "rejecting the bomb grew the resident set by {grew_mb} MB. The pre-scan is meant \
+         to refuse it before any engine allocates; ~1200 MB means the file reached PDFium."
+    );
+
+    // And the file is not simply broken: with a ceiling nothing will cross, it opens.
+    // That is what makes this test about *cost* rather than about malformation.
     let generous = Limits::with(|l| l.max_memory_bytes = 8 * 1024 * 1024 * 1024);
     let doc = open_with(bytes, generous)
-        .expect("the bomb is structurally valid; only its cost is the problem");
+        .expect("the bomb is structurally valid; only what it costs is the problem");
     assert_eq!(doc.pages_at_open(), 1);
+}
+
+/// This process's resident set, in KiB, from `/proc/self/statm`.
+fn resident_kb() -> u64 {
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    let pages: u64 = statm
+        .split_whitespace()
+        .nth(1)
+        .and_then(|f| f.parse().ok())
+        .unwrap_or(0);
+    pages * 4
 }
 
 /// The size-based pre-check's estimate, mirrored from `pdfium::estimate`.

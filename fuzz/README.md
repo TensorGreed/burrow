@@ -108,6 +108,27 @@ it should now produce.
 
 ## Targets
 
-| Target | Entry point | Added |
-|---|---|---|
-| `document_open` | `DocumentEngine::open` + `page_count`, over PDFium | M1 PR 2 |
+| Target | Entry point | Instrumented? | Added |
+|---|---|---|---|
+| `document_open` | `DocumentEngine::open` + `page_count`, over PDFium | no — prebuilt | M1 PR 2 |
+| `prescan` | `prescan::check`, pure Rust | **yes, fully** | M1 PR 3 |
+| `qpdf_check` | `StructureEngine::check`, over qpdf | **yes** — needs the override below | M1 PR 3 |
+
+`prescan` is the only target in this project where coverage-guided fuzzing works the way it
+is supposed to: it is pure Rust, so libFuzzer can see and steer the code under test rather
+than exploring a black box. It still needs `LD_LIBRARY_PATH`, because it shares a crate
+with the engine wrappers and the whole fuzz package builds with `native-engines` on — the
+*code* needs no engine, the *binary* does.
+
+`qpdf_check` must be built against the **instrumented** archive, or it links the plain one
+and libFuzzer sees nothing inside qpdf:
+
+```bash
+RUSTFLAGS="-L native=$PWD/../engines/vendor/native-$(uname -m)/lib/fuzz" \
+  LD_LIBRARY_PATH=../engines/vendor/native-$(uname -m)/lib ASAN_OPTIONS=detect_leaks=0 \
+  cargo +nightly fuzz run qpdf_check -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+```
+
+It also calls `qpdf::enable_fuzz_mode()`, which sets limits upstream describes as unsuitable
+for production but necessary for fuzzing (`global.hh:98-133`). That is one-way and
+process-global, which is why it is a separate public function rather than an option.

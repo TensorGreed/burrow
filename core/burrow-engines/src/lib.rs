@@ -41,6 +41,18 @@ use burrow_types::{Clock, Limits, Password, Result};
 #[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
 pub mod pdfium;
 
+// The qpdf implementation, gated the same way. Answers different questions from PDFium --
+// structure, encryption, object streams, linearisation (ADR 0004) -- and runs on the
+// caller's thread rather than PDFium's engine thread (ADR 0013).
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+pub mod qpdf;
+
+// The structural pre-scan. Pure Rust and `forbid(unsafe_code)`, so unlike the engine
+// modules it is compiled everywhere -- there is nothing to link and nothing to gate on.
+// That is deliberate: M1 PR 4's web path needs exactly this check before it hands bytes to
+// the JS bridge, and it should get it without a second implementation.
+pub mod prescan;
+
 // Proof that the vendored native engines link and run: PDFium's provenance, and qpdf's
 // version. Test-only -- nothing in the library needs it, and keeping it out of the
 // non-test build keeps a raw `FPDF_GetLastError` value from being reachable through a
@@ -58,6 +70,13 @@ pub mod pdfium;
     target_os = "linux"
 ))]
 mod link_check;
+
+// The generated PDF fixtures, included once for the whole crate. Both engine test modules
+// need them, and including the file twice in one crate is a duplicate module -- so the
+// `#[path]` lives here and they `use crate::minimal_pdf`.
+#[cfg(test)]
+#[path = "../testsupport/minimal_pdf.rs"]
+mod minimal_pdf;
 
 /// Everything an engine needs to open one document safely.
 ///
@@ -108,6 +127,121 @@ impl core::fmt::Debug for OpenOptions<'_> {
             .field("has_password", &self.password.is_some())
             .finish_non_exhaustive()
     }
+}
+
+/// Everything a structure engine needs to inspect one document.
+#[non_exhaustive]
+pub struct CheckOptions<'a> {
+    /// The ceilings this check must enforce.
+    pub limits: Limits,
+    /// The clock the operation's deadline is measured against.
+    ///
+    /// Present for the same reason [`OpenOptions`] has one, and enforced the same way —
+    /// see [`StructureEngine::check`] for how little it buys and why it is here anyway.
+    pub clock: Arc<dyn Clock>,
+    /// The password for an encrypted document, if one is known.
+    pub password: Option<&'a Password>,
+    /// Whether the engine may reconstruct a damaged document to answer the question.
+    ///
+    /// **Off by default, deliberately.** A structural check that silently repairs the
+    /// structure it is checking is not a check — it answers "could this be made to work?"
+    /// when the caller asked "does this work?". Repair is also where a damaged file makes
+    /// an engine expensive.
+    ///
+    /// Turning it on is how you ask the other question, and it is what M1 item 6's
+    /// damaged-file corpus needs. Note that it makes engines chattier: qpdf's
+    /// reconstruction warnings quote byte offsets and object numbers, which is exactly
+    /// what `tests/secret_leak.rs` exists to keep out of any output.
+    pub attempt_recovery: bool,
+}
+
+impl<'a> CheckOptions<'a> {
+    /// Options with the given limits and clock, and no password.
+    #[must_use]
+    pub fn new(limits: Limits, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            limits,
+            clock,
+            password: None,
+            attempt_recovery: false,
+        }
+    }
+}
+
+impl core::fmt::Debug for CheckOptions<'_> {
+    /// Hand-written for the same reason [`OpenOptions`]'s is: this struct holds a
+    /// password, and a derive would be one field away from rendering a secret if
+    /// [`Password`]'s own `Debug` ever stopped redacting.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CheckOptions")
+            .field("limits", &self.limits)
+            .field("has_password", &self.password.is_some())
+            .field("attempt_recovery", &self.attempt_recovery)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What an engine can say about a document's structure without rendering it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct StructureReport {
+    /// Pages the document's page tree actually yields.
+    ///
+    /// The only field, for now. `encrypted` and `linearized` were here and were removed:
+    /// qpdf's `qpdf_is_encrypted` and `qpdf_is_linearized` do not catch C++ exceptions,
+    /// and the latter aborts the process on an ordinary small file. Reporting them needs a
+    /// C++ shim, which is a decision rather than a detail — see
+    /// [ADR 0013](../../../docs/adr/0013-qpdf-c-api-and-prescan.md).
+    ///
+    /// Encryption is still detectable, through the error path:
+    /// [`Error::PasswordRequired`](burrow_types::Error::PasswordRequired) means encrypted
+    /// and not openable with what was supplied.
+    pub pages: u64,
+}
+
+/// An engine that inspects a document's structure.
+///
+/// Deliberately **not** [`DocumentEngine`]. That trait is about opening a document to work
+/// with its pages; this one is about deciding whether a document's structure hangs
+/// together at all, and which engine is right for each is not the same question
+/// ([ADR 0004](../../../docs/adr/0004-native-engines.md)).
+pub trait StructureEngine {
+    /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Inspect `bytes` without rendering anything.
+    ///
+    /// Takes the bytes by value for the same reason [`DocumentEngine::open`] does: qpdf's
+    /// in-memory read does not copy its input (`QPDF.hh:88-90`), so the engine must own
+    /// the buffer for as long as it holds the document.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — the structure is unusable.
+    /// - [`Error::PasswordRequired`](burrow_types::Error::PasswordRequired) — encrypted,
+    ///   and the supplied password (or its absence) did not open it.
+    /// - [`Error::Unsupported`](burrow_types::Error::Unsupported) — a recognised feature
+    ///   the engine will not handle.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling in
+    ///   `options.limits`, or the structural pre-scan, rejected the file.
+    /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — the arguments
+    ///   cannot describe a valid check.
+    /// - [`Error::Io`](burrow_types::Error::Io) — an I/O or memory failure inside the
+    ///   engine. Not the document's fault, and deliberately not reported as if it were.
+    ///
+    /// # What `max_duration_ms` buys here, which is little
+    ///
+    /// A structure check is essentially **one uninterruptible engine call**, so the
+    /// deadline can only be observed on either side of it: it catches a caller whose
+    /// budget was already spent, and a check that overran — but it cannot stop one that is
+    /// running. No engine offers a timeout, a cancellation or an abort hook, so that is
+    /// the whole of what is available in-process
+    /// ([ADR 0013](../../../docs/adr/0013-qpdf-c-api-and-prescan.md) records the platform
+    /// answers).
+    ///
+    /// It is enforced anyway, because a `Limits` field that is silently ignored is worse
+    /// than one whose weakness is written down.
+    fn check(&self, bytes: Box<[u8]>, options: &CheckOptions<'_>) -> Result<StructureReport>;
 }
 
 /// A paged document engine: opens a document and reports its shape.

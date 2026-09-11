@@ -158,11 +158,18 @@ impl DocumentEngine for Pdfium {
         //    docs, and step (e) below for the half that catches what a byte count cannot.
         estimate::check_open_memory(input_len, &limits)?;
 
-        // 3. The password copy, before the deadline starts: it is our work, not the
+        // 3. The structural pre-scan: what the file *declares*, checked before anything
+        //    parses it. This is what step 2 cannot see and step (e) can only see after the
+        //    fact -- a 330 KB file declaring twenty million cross-reference entries is
+        //    refused here, having cost nothing, rather than after PDFium has allocated
+        //    1.2 GB for it. Pure Rust, bounded by construction; see `crate::prescan`.
+        crate::prescan::check(&bytes, &limits)?;
+
+        // 4. The password copy, before the deadline starts: it is our work, not the
         //    engine's, and a rejected password should not consume the caller's budget.
         let password = password_arg(options)?;
 
-        // 4. The budget for everything that follows, including later calls on the handle.
+        // 5. The budget for everything that follows, including later calls on the handle.
         let clock = Arc::clone(&options.clock);
         let deadline = Deadline::start(clock.as_ref(), &limits);
         deadline.checkpoint(clock.as_ref())?;
