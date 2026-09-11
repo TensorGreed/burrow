@@ -18,10 +18,30 @@ pnpm format     # prettier --write .
 pnpm test       # vitest
 ```
 
+```bash
+pnpm e2e        # playwright, against a build with the harness route
+pnpm build:harness  # that build, by hand
+```
+
 The wasm module comes from `bindings/burrow-wasm`; rebuild it from the repository root:
 
 ```bash
-wasm-pack build bindings/burrow-wasm --target web --out-dir pkg
+wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+```
+
+**`--target no-modules`, not `--target web`.** This file said `web` until M1 PR 4a-i, and
+that does not work: `--target web` emits an ES module, and the worker is a **classic**
+worker, which cannot `import` one. It has to be classic because the prebuilt `pdfium.js` is
+not modularised and can only be loaded by `importScripts`, which exists only there. The
+knock-on is that the bridge's `#[wasm_bindgen]` imports carry no `module = "..."` attribute
+and resolve from the worker's global scope, because that is the only style `no-modules`
+supports.
+
+After rebuilding, restage — the engine URLs are content-hashed and the CSP is generated
+from them, so a stale manifest means the browser refuses the new module:
+
+```bash
+node tools/stage-web-engines.mjs   # or just `pnpm build`, which runs it as `prebuild`
 ```
 
 ## Rules specific to this app
@@ -30,6 +50,22 @@ wasm-pack build bindings/burrow-wasm --target web --out-dir pkg
 no error reporting, no embedded media from another origin. Self-host every asset. This is
 not a performance preference — the privacy claim has to be verifiable by a user watching
 the network tab, and a page that handles files is the worst place for a supply-chain risk.
+
+**The CSP is generated, and it is strict enough to be inconvenient.** `default-src 'none'`
+with every directive explicit, and `connect-src` naming the exact content-hashed engine
+`.wasm` URLs — nothing else on the origin may be fetched. Written by
+`tools/stage-web-engines.mjs`; see [ADR 0014](../../docs/adr/0014-web-engine-loading-and-csp.md).
+
+Two consequences you will meet:
+
+- **No inline scripts.** `script-src 'self'` carries no `'unsafe-inline'` and no nonce, so
+  an inline `<script>` is refused — the harness hit this and moved to an external file
+  rather than the policy loosening. Pass data to a script through a `data-` attribute.
+- **The browser does not stop exfiltration, and the CSP cannot.** CSP ignores query
+  strings, so `…/qpdf.<hash>.wasm?leak=…` matches the permitted source. What closes that is
+  a test asserting **zero network requests of any type** once the engines have loaded. Both
+  halves are needed; neither is sufficient. `e2e/csp.spec.ts` includes a test that
+  deliberately demonstrates the hole, so nobody reads the other two and concludes otherwise.
 
 **Static only.** No SSR adapter, no API routes, no server-side anything. There must be no
 server that _could_ receive a file.

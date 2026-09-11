@@ -4,6 +4,23 @@
 //
 // No third-party scripts, fonts, or analytics — on any page. See
 // docs/adr/0005-web-stack.md. A user with devtools open should see nothing leave.
+//
+// THE CSP IS GENERATED, NOT WRITTEN HERE.
+//
+// `tools/stage-web-engines.mjs` content-hashes the engine artifacts and emits a policy
+// whose `connect-src` names exactly those `.wasm` URLs — a CSP path without a trailing
+// slash matches exactly. Everything else is `default-src 'none'` with every directive
+// spelled out, and no cross-origin source anywhere. See
+// docs/adr/0014-web-engine-loading-and-csp.md for why `connect-src 'none'` (ADR 0006
+// requirement 3, as literally written) is not achievable alongside loading the engines at
+// all, and for what the browser does and does not enforce here.
+//
+// A `<meta>` tag rather than only a header, because it is enforced in every environment
+// this is served from — `pnpm dev`, `pnpm preview`, Playwright, and a static host that
+// ignores `public/_headers`. The generator writes that header file too, for hosts that
+// read one.
+import { CSP } from "../generated/engines.js";
+
 interface Props {
   title: string;
   description: string;
@@ -15,6 +32,7 @@ const { title, description } = Astro.props;
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content={CSP} />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />

@@ -363,15 +363,74 @@ jobs:
   web:
     name: web
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # `defaults.run.working-directory` applies to `run` steps only, not to actions,
-      # so this step starts at the repository root and cannot find the package.json
-      # that pins the pnpm version. Point it at the real one rather than duplicating
-      # the version here, so `packageManager` stays the single source of truth.
+
+      # ---- the wasm engines -------------------------------------------------------
+      # New in M1 PR 4a-i. Until now CI never ran engines/build-wasm.sh at all, so the
+      # wasm artifacts were only ever built on a developer's machine. The web tests drive
+      # real PDFium and real qpdf in a real browser, so they need them here.
+      #
+      # Cached on the same key shape as the native engine jobs, plus build-wasm.sh and the
+      # emsdk version -- emsdk contributes code to the shipped artifact (musl libc,
+      # compiler-rt, the JS glue), so a version change must invalidate the cache.
+      - name: Cache vendored wasm engines
+        id: wasm-engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: wasm-engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh') }}
+
+      - name: Read the pinned emsdk version
+        id: emsdk
+        run: |
+          version="$(sed -n '/^\[emsdk\]/,/^\[/p' engines/pins.toml | sed -n 's/^version = "\(.*\)"/\1/p')"
+          [ -n "$version" ] || { echo "no emsdk version in engines/pins.toml" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache emsdk
+        if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.local/share/emsdk
+          key: emsdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.emsdk.outputs.version }}
+
+      - name: Install the pinned emsdk
+        if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+        run: |
+          version="${{ steps.emsdk.outputs.version }}"
+          if [ ! -f "$HOME/.local/share/emsdk/emsdk_env.sh" ]; then
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/.local/share/emsdk"
+          fi
+          "$HOME/.local/share/emsdk/emsdk" install "$version"
+          "$HOME/.local/share/emsdk/emsdk" activate "$version"
+
+      - name: Fetch and build the wasm engines
+        if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-wasm.sh
+
+      # Re-run the artifact checks even on a cache hit. A cache is not a provenance claim:
+      # the export allowlist, the crypto flags and the no-async/no-network assertions must
+      # hold for the bytes we are about to ship, not for the bytes that were built once.
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+
+      # ---- the Rust module --------------------------------------------------------
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked --version 0.15.0
+      # --target no-modules, NOT --target web: the worker is classic (pdfium.js is not
+      # modularised and needs importScripts), and a classic worker cannot import an ES
+      # module. See apps/web/CLAUDE.md.
+      - name: Build the wasm binding
+        run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+
+      # ---- the web app ------------------------------------------------------------
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: apps/web/package.json
@@ -380,11 +439,42 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm check
-      - run: pnpm build
-      - run: pnpm test
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        working-directory: apps/web
+        run: pnpm lint
+      - name: Type check
+        working-directory: apps/web
+        run: pnpm check
+      - name: Build
+        working-directory: apps/web
+        run: pnpm build
+      # Asserts what a production build contains: no harness route, no `burrowHarness`
+      # identifier in any shipped file, the CSP in every page, and -- as a control -- that
+      # the harness IS present when BURROW_HARNESS=1, so the gating is doing the work.
+      - name: Build-output tests
+        working-directory: apps/web
+        run: pnpm test
+
+      # ---- the browser ------------------------------------------------------------
+      # 4a-i is Chromium only. Firefox and WebKit arrive with the conformance matrix in 4b,
+      # where an engine that will not load in a browser is a finding to report rather than
+      # a test to skip.
+      - name: Install Chromium
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Engine end-to-end tests
+        working-directory: apps/web
+        run: pnpm exec playwright test
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
 
   # A single required status check, so branch protection does not need updating every
   # time a job is added.
