@@ -134,24 +134,47 @@ jobs:
         run: |
           list=$(cargo test -p burrow-engines --all-features -- --list)
           echo "$list"
+          # TWO GROUPS, because they prove different things and conflating them weakened the
+          # check. Three names below moved in M1 PR 4a-i, when the error tables were hoisted
+          # out of the native-engines cfg gate so the web path could share them -- and simply
+          # renaming them here would have left this step listing UNGATED tests, which say
+          # nothing at all about whether `native-engines` took effect.
+          #
+          # Group 1: GATED. These exist only when the engines are linked, so their presence is
+          # the actual evidence this step is named for.
           for t in \
             link_check::tests::the_loaded_pdfium_is_the_pinned_library \
             link_check::tests::pdfium_links_and_initialises_cleanly \
             link_check::tests::qpdf_links_and_reports_the_pinned_version \
             pdfium::tests::a_valid_document_opens_and_reports_its_pages \
             pdfium::tests::an_encrypted_document_with_no_password_needs_one \
-            pdfium::errors::tests::a_zero_error_code_on_a_failed_call_is_never_success \
-            qpdf::errors::tests::a_zero_code_on_a_failed_call_is_never_success \
-            qpdf::ffi::tests::warnings_alone_are_not_an_error \
-            qpdf::tests::every_failure_path_returns_a_typed_error_rather_than_unwinding \
-            prescan::xref::tests::a_prev_chain_pointing_at_itself_terminates
+            qpdf::tests::every_failure_path_returns_a_typed_error_rather_than_unwinding
           do
             printf '%s' "$list" | grep -q "^$t: test$" || {
               echo "::error::$t was not discovered. Is native-engines taking effect?" >&2
               exit 1
             }
           done
-          echo "engine link tests present"
+          echo "gated engine tests present"
+
+          # Group 2: UNGATED, and listed anyway. These are the named traps -- PDFium's `-0`
+          # sentinel reading as success (ADR 0006 requirement 6), qpdf's `QPDF_ERROR_CODE`
+          # bitmask, and the pre-scan's cycle bound. They now run on every target, which is
+          # the point of hoisting them, but they are the ones whose disappearance would be
+          # quietest and most expensive, so their names are pinned here too.
+          for t in \
+            codes::pdfium::tests::a_zero_error_code_on_a_failed_call_is_never_success \
+            codes::qpdf::tests::a_zero_code_on_a_failed_call_is_never_success \
+            codes::qpdf::tests::warnings_alone_are_not_an_error \
+            prescan::xref::tests::a_prev_chain_pointing_at_itself_terminates
+          do
+            printf '%s' "$list" | grep -q "^$t: test$" || {
+              echo "::error::$t was not discovered. It is ungated, so this is not a feature" >&2
+              echo "::error::  problem -- the test was renamed, moved, or deleted." >&2
+              exit 1
+            }
+          done
+          echo "named-trap tests present"
 
       # The integration tests are separate binaries with their own cfg gate, so the check
       # above says nothing about them. These are the ones that would silently vanish and
@@ -363,15 +386,87 @@ jobs:
   web:
     name: web
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # `defaults.run.working-directory` applies to `run` steps only, not to actions,
-      # so this step starts at the repository root and cannot find the package.json
-      # that pins the pnpm version. Point it at the real one rather than duplicating
-      # the version here, so `packageManager` stays the single source of truth.
+
+      # ---- the wasm engines -------------------------------------------------------
+      # New in M1 PR 4a-i. Until now CI never ran engines/build-wasm.sh at all, so the
+      # wasm artifacts were only ever built on a developer's machine. The web tests drive
+      # real PDFium and real qpdf in a real browser, so they need them here.
+      #
+      # Cached on the same key shape as the native engine jobs, plus build-wasm.sh and the
+      # emsdk version -- emsdk contributes code to the shipped artifact (musl libc,
+      # compiler-rt, the JS glue), so a version change must invalidate the cache.
+      - name: Cache vendored wasm engines
+        id: wasm-engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: wasm-engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh') }}
+
+      - name: Read the pinned emsdk version and repo commit
+        id: emsdk
+        run: |
+          block="$(sed -n '/^\[emsdk\]/,/^\[/p' engines/pins.toml)"
+          version="$(printf '%s' "$block" | sed -n 's/^version = "\(.*\)"/\1/p')"
+          commit="$(printf '%s' "$block" | sed -n 's/^repo_commit = "\(.*\)"/\1/p')"
+          [ -n "$version" ] || { echo "no emsdk version in engines/pins.toml" >&2; exit 1; }
+          [ -n "$commit" ] || { echo "no emsdk repo_commit in engines/pins.toml" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Cache emsdk
+        if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.local/share/emsdk
+          key: emsdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.emsdk.outputs.version }}
+
+      - name: Install the pinned emsdk
+        if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+        env:
+          EMSDK_REPO_COMMIT: ${{ steps.emsdk.outputs.commit }}
+        run: |
+          version="${{ steps.emsdk.outputs.version }}"
+          if [ ! -f "$HOME/.local/share/emsdk/emsdk_env.sh" ]; then
+            # The SDK VERSION is pinned in engines/pins.toml and asserted by
+            # engines/build-wasm.sh; the emsdk repo that installs it was not, which is out
+            # of step with everything else under engines/. emsdk verifies the toolchain
+            # archive it downloads by sha512, so the exposure is the installer script
+            # rather than the compiler -- but the installer runs in CI with the same
+            # privileges as the build.
+            git clone https://github.com/emscripten-core/emsdk.git "$HOME/.local/share/emsdk"
+            git -C "$HOME/.local/share/emsdk" checkout --detach "$EMSDK_REPO_COMMIT"
+          fi
+          "$HOME/.local/share/emsdk/emsdk" install "$version"
+          "$HOME/.local/share/emsdk/emsdk" activate "$version"
+
+      - name: Fetch and build the wasm engines
+        if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-wasm.sh
+
+      # Re-run the artifact checks even on a cache hit. A cache is not a provenance claim:
+      # the export allowlist, the crypto flags and the no-async/no-network assertions must
+      # hold for the bytes we are about to ship, not for the bytes that were built once.
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+
+      # ---- the Rust module --------------------------------------------------------
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked --version 0.15.0
+      # --target no-modules, NOT --target web: the worker is classic (pdfium.js is not
+      # modularised and needs importScripts), and a classic worker cannot import an ES
+      # module. See apps/web/CLAUDE.md.
+      - name: Build the wasm binding
+        run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+
+      # ---- the web app ------------------------------------------------------------
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: apps/web/package.json
@@ -380,11 +475,56 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm check
-      - run: pnpm build
-      - run: pnpm test
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+      # BEFORE lint and check. `src/generated/engines.js` is generated and gitignored, and
+      # `BaseLayout.astro` imports it -- so on a fresh checkout `pnpm check` fails with
+      # "Cannot find module '../generated/engines.js'" unless staging has run. Only `pnpm
+      # build` runs it automatically (as `prebuild`), and that comes later.
+      - name: Stage the engines and generate the CSP
+        working-directory: apps/web
+        run: pnpm run prebuild
+      - name: Lint
+        working-directory: apps/web
+        run: pnpm lint
+      - name: Type check
+        working-directory: apps/web
+        run: pnpm check
+      - name: Build
+        working-directory: apps/web
+        run: pnpm build
+      # Asserts what a production build contains: no harness route, no `burrowHarness`
+      # identifier in any shipped file, the CSP in every page, and -- as a control -- that
+      # the harness IS present when BURROW_HARNESS=1, so the gating is doing the work.
+      - name: Build-output tests
+        working-directory: apps/web
+        run: pnpm test
+
+      # ---- the browsers -----------------------------------------------------------
+      # ALL THREE, matching playwright.config.ts's projects.
+      #
+      # This installed `chromium` alone while the config already listed three projects, so
+      # `playwright test` would have failed launching Firefox and WebKit. Caught by reading
+      # the two against each other rather than by a run, because the job was failing earlier
+      # for an unrelated reason and never reached this step.
+      #
+      # `--with-deps` needs root, which the runner has and a developer machine generally does
+      # not -- WebKit in particular needs libgstreamer-plugins-bad and libavif, so it cannot
+      # be launched locally without installing them. CI is where WebKit actually runs.
+      - name: Install browsers
+        working-directory: apps/web
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - name: Engine end-to-end tests
+        working-directory: apps/web
+        run: pnpm exec playwright test
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
 
   # A single required status check, so branch protection does not need updating every
   # time a job is added.

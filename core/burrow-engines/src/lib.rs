@@ -34,6 +34,27 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Limits, Password, Result};
 
+// Engine error codes and their mapping to typed errors. Ungated, like `prescan` below and
+// for the same reason: M1 PR 4's web path needs the SAME mapping table, and two copies of
+// a mapping cannot be relied on to stay identical. Nothing here touches FFI -- a code is
+// an integer -- so there is nothing to link and nothing to gate on.
+mod codes;
+
+// Memory cost estimation, and the two checks built on it. Ungated for the same reason as
+// `codes`: the web path enforces the SAME ceiling with the same arithmetic, and only the
+// counter it reads differs (process RSS on native, the engine module's heap on the web).
+mod estimate;
+
+// Preparing a password for a C API. Ungated, and shared by both engines and both
+// platforms -- it copies bytes and appends a NUL, which needs no engine.
+mod password;
+
+// Reading how much memory an operation actually cost. Linux-only and gated with the engine
+// modules, because procfs is where the number comes from; the web path supplies its own
+// reading through the bridge instead. Both feed the same `estimate::check_measured_memory`.
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+mod rss;
+
 // The PDFium implementation. Gated on the libraries actually being linked: `build.rs`
 // sets `burrow_native_engines` only when the `native-engines` feature is on, the target
 // is Linux, and every vendored library has passed its checksum. The trait above stays
@@ -52,6 +73,12 @@ pub mod qpdf;
 // That is deliberate: M1 PR 4's web path needs exactly this check before it hands bytes to
 // the JS bridge, and it should get it without a second implementation.
 pub mod prescan;
+
+// The web implementations of both engine traits, plus the bridge traits the JS binding
+// implements. Ungated for the same reason as `prescan`: the orchestration is shared Rust,
+// and compiling it everywhere is what lets `cargo test` drive the whole web path against a
+// fake bridge on an ordinary host. See ADR 0006 and ADR 0009.
+pub mod web;
 
 // Proof that the vendored native engines link and run: PDFium's provenance, and qpdf's
 // version. Test-only -- nothing in the library needs it, and keeping it out of the

@@ -44,15 +44,20 @@ cargo deny list --layout crate --format json > /tmp/deny-list.json
 
 ## Rust dependencies
 
-`zeroize` is the **first third-party crate that ships in the binary**. Everything else in
-the table below is compile-time, build-script, or test-only, as marked.
+`zeroize` was the **first third-party crate that shipped in a binary**. It is no longer
+the only one: `wasm-bindgen` and its runtime dependencies (`cfg-if`, `once_cell`,
+`wasm-bindgen-shared`, and `unicode-ident` beneath it) are **normal** dependencies of
+`burrow-wasm` and so are in the wasm module's link graph, subject to dead-code
+elimination. Everything else in the table below is compile-time, build-script, or
+test-only, as marked. Rows are marked individually; do not read the table as uniformly
+compile-time.
 
 | Crate | License | Used by | Notes |
 |---|---|---|---|
 | `thiserror` | MIT OR Apache-2.0 | `burrow-types` | Derive macro for error enums; compile-time only |
 | `thiserror-impl` | MIT OR Apache-2.0 | `thiserror` | Proc-macro implementation |
-| `syn`, `quote`, `proc-macro2` | MIT OR Apache-2.0 | `thiserror-impl` | Proc-macro support; compile-time only |
-| `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | `proc-macro2` | Unicode identifier tables |
+| `syn`, `quote`, `proc-macro2` | MIT OR Apache-2.0 | `thiserror-impl`, `wasm-bindgen-macro`, `wasm-bindgen-macro-support` | Proc-macro support; compile-time only |
+| `unicode-ident` | (MIT OR Apache-2.0) AND Unicode-3.0 | `proc-macro2`, `wasm-bindgen-shared` | Unicode identifier tables. Via `wasm-bindgen-shared` this is a **normal** dependency, not only a proc-macro one, so it is in the wasm link graph |
 | `sha2` | MIT OR Apache-2.0 | `burrow-engines` | Verifies vendored engine checksums; **build/dev only** |
 | `digest` | MIT OR Apache-2.0 | `sha2` | Digest traits; build/dev only |
 | `block-buffer` | MIT OR Apache-2.0 | `digest` | Build/dev only |
@@ -60,14 +65,30 @@ the table below is compile-time, build-script, or test-only, as marked.
 | `generic-array` | MIT | `block-buffer` | **MIT only, not dual-licensed** |
 | `typenum` | MIT OR Apache-2.0 | `generic-array` | Build/dev only |
 | `version_check` | MIT OR Apache-2.0 | `generic-array` | Build/dev only |
-| `cfg-if` | MIT OR Apache-2.0 | `cpufeatures` | Build/dev only |
+| `cfg-if` | MIT OR Apache-2.0 | `cpufeatures`, `wasm-bindgen` | **No longer build/dev only**: `wasm-bindgen` uses it in `describe.rs` and `externref.rs`, so it is in the wasm module's link graph |
 | `cpufeatures` | MIT OR Apache-2.0 | `sha2` | CPU feature detection; build/dev only |
 | `libc` | MIT OR Apache-2.0 | `cpufeatures` | Build/dev only |
 | `zeroize` | Apache-2.0 OR MIT | `burrow-types`, `burrow-engines` | **Runtime; ships in the binary.** Wipes password buffers on drop. `default-features = false`, `features = ["alloc"]` — no transitive dependencies |
+| `wasm-bindgen` | MIT OR Apache-2.0 | `burrow-wasm` | **Runtime; ships in the wasm module.** The JS↔Rust boundary for the engine bridge. `default-features = false`, `features = ["std"]` — deliberately no `js-sys` and no `web-sys` |
+| `wasm-bindgen-macro` | MIT OR Apache-2.0 | `wasm-bindgen` | Proc macro expanding `#[wasm_bindgen]`; compile-time only |
+| `wasm-bindgen-macro-support` | MIT OR Apache-2.0 | `wasm-bindgen-macro` | Macro implementation; compile-time only |
+| `wasm-bindgen-shared` | MIT OR Apache-2.0 | `wasm-bindgen`, `wasm-bindgen-macro-support` | Schema version and identifier validation shared by the crate and its macro. A **normal** dependency of `wasm-bindgen`, so it is in the wasm link graph, not compile-time only |
+| `once_cell` | MIT OR Apache-2.0 | `wasm-bindgen` | **Runtime; in the wasm module's link graph.** `once_cell::unsync::Lazy` in `wasm-bindgen`'s `rt` module |
+| `bumpalo` | MIT OR Apache-2.0 | `wasm-bindgen-macro-support` | Arena allocator used while encoding the macro's output (`encode.rs`); compile-time only |
+| `rustversion` | MIT OR Apache-2.0 | `wasm-bindgen` | Build script detecting the compiler version; **build only** |
 
 The `sha2` group is a **build- and dev-dependency of `burrow-engines` only**. It runs in
 `build.rs` to re-verify the vendored engine libraries, and in the link tests. It ships in
 no binary.
+
+The `wasm-bindgen` group is a dependency of **`burrow-wasm` only**; it is absent from the
+iOS, Android, and native graphs. Four of its seven crates (`wasm-bindgen-macro`,
+`wasm-bindgen-macro-support`, `bumpalo`, `rustversion`) are proc-macro or build-script
+crates that run on the host and are never codegen'd into the module. `js-sys` and
+`web-sys` are **not** dependencies, by design: every bridge import in
+`bindings/burrow-wasm/src/bridge.rs` takes and returns integers or byte slices, so
+`deny.toml`'s `[[bans.features]]` ban on `web-sys`'s `RequestInit`, `WebSocket`,
+`XmlHttpRequest` and `EventSource` has no crate to apply to here.
 
 The Rust standard library is distributed under `MIT OR Apache-2.0`.
 

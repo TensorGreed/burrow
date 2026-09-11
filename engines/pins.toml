@@ -105,5 +105,10 @@ signature_url = "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/downloa
 [emsdk]
 version = "6.0.9"
 repo = "https://github.com/emscripten-core/emsdk.git"
+# The emsdk REPOSITORY, not the SDK. The SDK version above is what the toolchain is; this is
+# the installer that fetches it. It was unpinned -- `git clone --depth 1` of whatever master
+# happened to be -- which is out of step with everything else here, and the installer runs in
+# CI with the same privileges as the build.
+repo_commit = "5eb0bde7585670252e8ba05e9d361627bffd08b5"
 provenance = "version-pinned"
-provenance_note = "emsdk verifies its own downloads by sha512. We pin the SDK version; the toolchain archive itself is fetched and checked by emsdk."
+provenance_note = "emsdk verifies its own downloads by sha512. We pin both the SDK version and the emsdk repo commit that installs it; the toolchain archive itself is fetched and checked by emsdk."

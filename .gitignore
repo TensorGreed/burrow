@@ -19,6 +19,17 @@ pnpm-debug.log*
 
 # --- Astro / web build output ---
 apps/web/dist/
+# Staged engine artifacts and the CSP generated from them. Derived from engines/vendor/
+# (itself gitignored) and bindings/burrow-wasm/pkg/ by tools/stage-web-engines.mjs, and
+# content-hashed, so committing them would mean committing a 6 MB binary that changes name
+# on every engine bump.
+apps/web/public/engines/
+apps/web/public/_headers
+apps/web/src/generated/
+apps/web/dist-production-check/
+apps/web/dist-harness-check/
+apps/web/test-results/
+apps/web/playwright-report/
 apps/web/.astro/
 apps/web/.vercel/
 apps/web/.netlify/

@@ -18,10 +18,30 @@ pnpm format     # prettier --write .
 pnpm test       # vitest
 ```
 
+```bash
+pnpm e2e        # playwright, against a build with the harness route
+pnpm build:harness  # that build, by hand
+```
+
 The wasm module comes from `bindings/burrow-wasm`; rebuild it from the repository root:
 
 ```bash
-wasm-pack build bindings/burrow-wasm --target web --out-dir pkg
+wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+```
+
+**`--target no-modules`, not `--target web`.** This file said `web` until M1 PR 4a-i, and
+that does not work: `--target web` emits an ES module, and the worker is a **classic**
+worker, which cannot `import` one. It has to be classic because the prebuilt `pdfium.js` is
+not modularised and can only be loaded by `importScripts`, which exists only there. The
+knock-on is that the bridge's `#[wasm_bindgen]` imports carry no `module = "..."` attribute
+and resolve from the worker's global scope, because that is the only style `no-modules`
+supports.
+
+After rebuilding, restage — the engine URLs are content-hashed and the CSP is generated
+from them, so a stale manifest means the browser refuses the new module:
+
+```bash
+node tools/stage-web-engines.mjs   # or just `pnpm build`, which runs it as `prebuild`
 ```
 
 ## Rules specific to this app
@@ -30,6 +50,39 @@ wasm-pack build bindings/burrow-wasm --target web --out-dir pkg
 no error reporting, no embedded media from another origin. Self-host every asset. This is
 not a performance preference — the privacy claim has to be verifiable by a user watching
 the network tab, and a page that handles files is the worst place for a supply-chain risk.
+
+**The CSP is generated, and it is strict enough to be inconvenient.** `default-src 'none'`
+with every directive explicit, and `connect-src` naming the exact content-hashed engine
+`.wasm` URLs — nothing else on the origin may be fetched. Written by
+`tools/stage-web-engines.mjs`; see [ADR 0014](../../docs/adr/0014-web-engine-loading-and-csp.md).
+
+**The worker is created from a `blob:`, and that is a security property, not a style.** A
+dedicated worker loaded from a same-origin _script URL_ does **not** inherit the page's CSP —
+it takes its policy from that script's HTTP response headers, and a static host sends none,
+so it runs unpoliced. Measured in M1 PR 4a-i: a cross-origin `fetch` from inside such a
+worker reached the network while every page-level CSP test passed. The worker is the only
+place file bytes ever exist.
+
+So: `tools/stage-web-engines.mjs` bundles **all** worker code into one file (which also means
+one integrity digest covers the Emscripten glue, which `importScripts` could never pin), the
+page fetches its source with `integrity`, and constructs the worker from a `Blob`. The worker
+refuses every file operation unless `self.location.protocol === "blob:"`, so getting this
+wrong fails closed. Do not change it back to `new Worker(url)`.
+
+Three consequences you will meet:
+
+- **No inline scripts.** `script-src 'self'` carries no `'unsafe-inline'` and no nonce, so
+  an inline `<script>` is refused — the harness hit this and moved to an external file
+  rather than the policy loosening. Pass data to a script through a `data-` attribute.
+- **The browser does not stop exfiltration, and the CSP cannot.** CSP ignores query
+  strings, so `…/qpdf.<hash>.wasm?leak=…` matches the permitted source. What closes that is
+  a test asserting **zero network requests of any type** once the engines have loaded. Both
+  halves are needed; neither is sufficient. `e2e/csp.spec.ts` includes a test that
+  deliberately demonstrates the hole, so nobody reads the other two and concludes otherwise.
+- **Relative URLs do not work inside the worker.** A `blob:` worker's `self.location` is an
+  opaque `blob:` URL, so `fetch("/engines/…")` fails to parse before CSP is consulted. The
+  generated manifest inside the bundle carries absolute URLs, and Emscripten is handed
+  already-compiled modules so its `locateFile` path never runs.
 
 **Static only.** No SSR adapter, no API routes, no server-side anything. There must be no
 server that _could_ receive a file.

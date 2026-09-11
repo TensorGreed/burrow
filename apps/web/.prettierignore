@@ -1,4 +1,14 @@
 dist
+# Astro's generated type stubs, written by `astro check`/`astro sync`.
 .astro
+dist-production-check
+dist-harness-check
 node_modules
 pnpm-lock.yaml
+test-results
+playwright-report
+# Generated: content-hashed engine artifacts, the module derived from them, and the
+# _headers file carrying the generated CSP. All produced by tools/stage-web-engines.mjs.
+public/engines
+public/_headers
+src/generated

@@ -13,9 +13,6 @@
 // exactly one item, below.
 mod ffi;
 
-mod errors;
-mod estimate;
-mod rss;
 pub(crate) mod thread;
 
 use std::sync::Arc;
@@ -23,7 +20,6 @@ use std::sync::Arc;
 use core::ffi::{c_char, c_int, c_void};
 
 use burrow_types::{Clock, Deadline, Error, Limits, Result};
-use zeroize::Zeroizing;
 
 use crate::{DocumentEngine, OpenOptions};
 
@@ -97,36 +93,6 @@ impl Drop for PdfiumDocument {
     }
 }
 
-/// The password argument PDFium's C API takes: NUL-terminated, or null for none.
-///
-/// Held in a [`Zeroizing`] so the copy we made is wiped when the load returns, not left
-/// in freed memory.
-type PasswordArg = Option<Zeroizing<Vec<u8>>>;
-
-/// Build the NUL-terminated password buffer PDFium wants.
-///
-/// # Errors
-///
-/// [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) if the password
-/// contains a NUL byte. PDFium takes an `FPDF_BYTESTRING`, so an interior NUL would
-/// silently truncate the password and the document would fail to open for a reason the
-/// user could not possibly guess. Failing loudly is better — and the message says only
-/// that, never the password.
-fn password_arg(options: &OpenOptions<'_>) -> Result<PasswordArg> {
-    let Some(password) = options.password else {
-        return Ok(None);
-    };
-    if password.as_bytes().contains(&0) {
-        return Err(Error::InvalidArgument(
-            "password contains a NUL byte, which pdfium's C API cannot carry".to_owned(),
-        ));
-    }
-    let mut buf = Vec::with_capacity(password.len().saturating_add(1));
-    buf.extend_from_slice(password.as_bytes());
-    buf.push(0);
-    Ok(Some(Zeroizing::new(buf)))
-}
-
 /// Widen a page count PDFium reported, having already established it is not negative.
 fn page_count_to_u64(count: c_int) -> Result<u64> {
     u64::try_from(count)
@@ -156,7 +122,7 @@ impl DocumentEngine for Pdfium {
 
         // 2. The size-based memory pre-check. A floor, not a ceiling -- see `estimate`'s
         //    docs, and step (e) below for the half that catches what a byte count cannot.
-        estimate::check_open_memory(input_len, &limits)?;
+        crate::estimate::check_open_memory(input_len, &limits)?;
 
         // 3. The structural pre-scan: what the file *declares*, checked before anything
         //    parses it. This is what step 2 cannot see and step (e) can only see after the
@@ -167,7 +133,7 @@ impl DocumentEngine for Pdfium {
 
         // 4. The password copy, before the deadline starts: it is our work, not the
         //    engine's, and a rejected password should not consume the caller's budget.
-        let password = password_arg(options)?;
+        let password = crate::password::nul_terminated(options.password, "pdfium")?;
 
         // 5. The budget for everything that follows, including later calls on the handle.
         let clock = Arc::clone(&options.clock);
@@ -186,7 +152,7 @@ impl DocumentEngine for Pdfium {
 
             // From here on, `registry.remove(id)` is the single cleanup for every failure:
             // it frees the buffer, and closes the document too once one is attached.
-            let before = rss::resident_bytes();
+            let before = crate::rss::resident_bytes();
 
             // SAFETY: `data` is valid for `size` bytes -- it points into the buffer the
             // registry now owns, which is not moved again until `remove`, and PDFium reads
@@ -205,7 +171,7 @@ impl DocumentEngine for Pdfium {
                 // Failure is established by the null handle. The code only classifies it,
                 // and it was read in the same call, so it is this load's code.
                 registry.remove(id);
-                return Err(errors::map_failure(code));
+                return Err(crate::codes::pdfium::map_failure(code));
             }
 
             // b. Hand the document to the registry immediately, so from here every exit --
@@ -229,7 +195,7 @@ impl DocumentEngine for Pdfium {
                     // classifying by it would pin another operation's error to this one --
                     // a stale `FPDF_ERR_PASSWORD` would surface as `PasswordRequired` on a
                     // document that is already open.
-                    return Err(errors::unreadable_page_tree());
+                    return Err(crate::codes::pdfium::unreadable_page_tree());
                 }
                 let pages = page_count_to_u64(count)?;
                 if pages == 0 {
@@ -242,7 +208,11 @@ impl DocumentEngine for Pdfium {
                 // e. What the open actually cost. Step 2's estimate is blind to anything
                 //    the file *declares*, and a small file declaring an enormous structure
                 //    is exactly the case it misses.
-                estimate::check_measured_memory(before, rss::resident_bytes(), &limits)?;
+                crate::estimate::check_measured_memory(
+                    before,
+                    crate::rss::resident_bytes(),
+                    &limits,
+                )?;
 
                 Ok(pages)
             })();
@@ -282,7 +252,7 @@ impl DocumentEngine for Pdfium {
             let (count, _code) = unsafe { ffi::get_page_count(handle) };
             if count < 0 {
                 // See the note in `open`: the error global is undefined after this call.
-                return Err(errors::unreadable_page_tree());
+                return Err(crate::codes::pdfium::unreadable_page_tree());
             }
             page_count_to_u64(count)
         })?;

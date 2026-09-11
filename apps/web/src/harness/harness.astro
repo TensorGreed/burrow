@@ -1,0 +1,41 @@
+---
+// The engine harness: a test-only page that drives a real file through the real worker.
+//
+// NOT SHIPPED, and not even built. This file lives outside `src/pages/`, so Astro does not
+// route it; `astro.config.mjs` injects the route only when `BURROW_HARNESS=1`.
+// `src/production-build.test.ts` asserts the result, because "we intended not to ship it"
+// is a different claim from "it is not there".
+//
+// Two earlier attempts, both recorded because the reasons are not obvious:
+//
+//   * A `_harness.astro` filename. Astro treats a `_`-prefixed page as private and does not
+//     route it AT ALL, so it could not be built even with the flag on.
+//   * Building it always and deleting the output afterwards. That works for the HTML, but
+//     Vite had already named the site's shared CSS chunk `harness.<hash>.css` after one of
+//     its importers -- so a production build with no harness page still shipped a
+//     stylesheet named after it. Not a code leak, but production output named after a test
+//     fixture is a bad smell and would have needed explaining forever.
+//
+// It exists because a browser is the only place the JS bridge can be exercised at all. The
+// Rust orchestration is covered by `cargo test` against a fake bridge, on every target; what
+// is *not* covered there is the half this page reaches — that the engines load under the
+// real CSP, that `instantiateWasm` is wired correctly, and that a page count comes back.
+//
+// There is deliberately no styling and no framework island. It is a test fixture.
+//
+// The driver lives in `public/burrow-harness.js` rather than inline, because the CSP
+// refuses inline scripts -- `script-src 'self'` with no `'unsafe-inline'` and no nonce. That
+// is the policy doing its job, so the harness moved rather than the policy loosening. The
+// engine manifest reaches it through a `data-` attribute, which is the only way to hand
+// data to an external script without inlining something.
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { ENGINES } from "../generated/engines.js";
+---
+
+<BaseLayout title="burrow engine harness" description="Test-only harness. Not part of the site.">
+  <h1>engine harness</h1>
+  <div id="engines" data-engines={JSON.stringify(ENGINES)}></div>
+  <p id="status">idle</p>
+  <pre id="result"></pre>
+  <script src="/burrow-harness.js" is:inline></script>
+</BaseLayout>

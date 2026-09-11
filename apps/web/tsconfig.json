@@ -1,5 +1,18 @@
 {
   "extends": "astro/tsconfigs/strict",
   "include": [".astro/types.d.ts", "**/*"],
-  "exclude": ["dist"]
+  "exclude": [
+    "dist",
+    "node_modules",
+    "public/engines",
+    "public/burrow-harness.js",
+    "src/worker",
+    "dist-production-check",
+    "dist-harness-check",
+    "test-results",
+    "playwright-report"
+  ],
+  "compilerOptions": {
+    "types": ["node"]
+  }
 }

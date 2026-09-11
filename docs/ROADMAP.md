@@ -56,7 +56,10 @@ Agreed sequence. Each PR is squash-merged with CI green before the next starts.
 | **1** | **Engine acquisition** — pinned fetch, native (linux-aarch64 + linux-x86_64) and wasm builds, licence manifest, crypto assertions, CI caching, proof of linkage | 1–3 |
 | **2** ✅ | `DocumentEngine` trait + **native PDFium** implementation: injected clock, `Limits` enforcement, typed error mapping, `page_count` as the thinnest end-to-end slice with all four test kinds, document-open fuzz target | 4, 5, 8 |
 | **3** ✅ | **qpdf native** behind its own trait, logging suppression, and the "a secret never reaches the console or an error" test | 6, 7 |
-| **4** | **Web path**: wasm binding + worker harness, `wasmBinary`, `-sENVIRONMENT=web,worker`, CSP `connect-src 'none'`, worker recovery per ADR 0009, wasm size budget, and the **differential conformance harness** | 9–12 |
+| **4a-i** ✅ | **Web path, part 1**: the real qpdf Emscripten module, the `DocumentEngine`/`StructureEngine` web implementations over a bridge trait seam, the wasm binding, the classic worker, the generated CSP, and the engines loading end to end in a browser | 9 (part) |
+| **4a-ii** | Worker recovery per ADR 0009, the main-thread watchdog, heap-growth recycling, and the console-silence and zero-requests-after-init tests | 10 |
+| **4b** | The **differential conformance harness** and the Chromium/Firefox/WebKit matrix | 12 |
+| **4c** | Credits page (#16), the wasm size budget, and a CI check generating qpdf's `trap_errors` set from source | 11 |
 | **5+** | Operations, one at a time, starting with `merge` | — |
 
 The linking strategy is **settled** by [spike 0001](spikes/0001-wasm-engines.md):
@@ -121,7 +124,11 @@ acquisition. The spike is not production code and nothing from it is reused dire
    `WARNING: input (offset 4242): xref not found` and
    `object 3 0 at offset 131` to stderr. `tests/secret_leak.rs` **fails** when it is
    removed, which is what makes the claim checkable rather than asserted.
-   *Still open:* `printErr`/`print` stubbing on the wasm modules is PR 4's half.
+   ~~*Still open:* `printErr`/`print` stubbing on the wasm modules is PR 4's half.~~ —
+   **done, PR 4a-i:** both modules are constructed with `print`/`printErr` as no-ops, and
+   qpdf's C++-layer suppression runs on the web path too, from the same Rust. The
+   thorough console-silence test — every failure path, canary fixtures, worker consoles as
+   well as the page's, and a control that deliberately logs — is PR 4a-ii's.
    *Testable:* a test opens a file containing a recognisable secret and asserts nothing
    from it reaches console or any error string.
 8. ~~**Fuzz target for document open**~~ — **done, PR 2.** The first parser entry point. Note that
@@ -241,13 +248,25 @@ what later PRs can assume:
   check` includes them. Corrected in [ADR 0012](adr/0012-ncsa-for-libfuzzer.md) and at the
   top of `deny.toml`, and `tools/check-no-network-deps.sh` now checks the property
   independently of cargo-deny either way.
-9. **Web binding surface and Web Worker harness**, satisfying ADR 0006's requirements 1
-   and 3: one engine instance per worker, the init **promise** memoised (not the result),
-   `Module.wasmBinary` supplied, built `-sENVIRONMENT=web,worker`, and shipped with
-   `connect-src 'none'` so non-negotiable #1 is enforced by the browser rather than by
-   re-auditing minified third-party JS.
-   *Testable:* a Playwright test drives a real file through a worker; another asserts the
-   CSP blocks any outbound connection.
+9. ~~**Web binding surface and Web Worker harness**~~ — **done, PR 4a-i.** One engine
+   instance per worker with the init **promise** memoised (not the result); built
+   `-sENVIRONMENT=web,worker`; a classic worker, because `pdfium.js` is not modularised and
+   needs `importScripts` — which forces `wasm-pack --target no-modules`.
+   **ADR 0006 requirement 3 was amended, and it had to be.** It asks for
+   `Module.wasmBinary` *and* `connect-src 'none'`, which cancel out: supplying the bytes
+   means fetching them, and fetch is what `connect-src` governs. The policy is narrowed
+   instead — `default-src 'none'`, no cross-origin source anywhere, and `connect-src`
+   naming the **exact content-hashed engine URLs** — with the bytes integrity-pinned via
+   `fetch(url, { integrity })` and a streaming compile handed in through
+   `instantiateWasm`, which is better than `wasmBinary` on both counts. See
+   [ADR 0014](adr/0014-web-engine-loading-and-csp.md).
+   **The guarantee is split, and both halves are needed**: no cross-origin request,
+   enforced by the browser; no request at all after engine init, enforced by test, because
+   CSP ignores query strings. The second half is item 10's PR.
+   *Testable:* `apps/web/e2e/` — the engines load and answer under the generated CSP; every
+   conformance case matches; cross-origin and non-engine same-origin fetches are blocked;
+   a tampered digest fails the load; and one test deliberately *succeeds* at the
+   query-string hole so nobody reads the others as a complete guarantee.
 10. **Worker recovery, per [ADR 0009](adr/0009-web-panic-contract-and-binding-boundary.md).**
     A panic is a catchable trap and the worker *survives* — so recovery is the page's
     decision. Any `Internal` result or wasm exception discards the instance and spawns a

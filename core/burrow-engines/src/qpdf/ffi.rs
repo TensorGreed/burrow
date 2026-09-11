@@ -69,8 +69,9 @@
 //! `qpdf-c.h:134-139`. `QPDF_SUCCESS` is 0, but `QPDF_WARNINGS` and `QPDF_ERRORS` are
 //! separate bits that can both be set or neither. **`result != QPDF_SUCCESS` is wrong** —
 //! it treats a file that parsed perfectly but emitted a warning as a failure. The only
-//! correct test is `result & QPDF_ERRORS`, which is what [`has_errors`] does and what a
-//! named test in `errors.rs` pins down.
+//! correct test is `result & QPDF_ERRORS`, which is what [`has_errors`] does. Both it and
+//! the named test that pins it down live in [`crate::codes::qpdf`], so the web path gets
+//! the same helper rather than a second chance to get the bitmask wrong.
 
 #![allow(non_camel_case_types)]
 
@@ -91,83 +92,19 @@ pub(super) type QpdfBool = c_int;
 /// `#define QPDF_TRUE 1` — `qpdf-c.h:142`.
 pub(super) const QPDF_TRUE: QpdfBool = 1;
 
-/// `typedef int QPDF_ERROR_CODE` — `qpdf-c.h:136`.
-pub(super) type QpdfErrorCode = c_int;
+// `QPDF_ERROR_CODE`, the `QPDF_ERRORS` bit and the `has_errors` test live in
+// `crate::codes::qpdf` so the bitmask trap is pinned down once for both paths.
+pub(super) use crate::codes::qpdf::{QpdfErrorCode, has_errors};
 
-/// `#define QPDF_ERRORS 1 << 1` — `qpdf-c.h:139`. The **only** bit that means failure.
-pub(super) const QPDF_ERRORS: QpdfErrorCode = 1 << 1;
+// `enum qpdf_error_code_e` (`Constants.h:85-96`) lives in `crate::codes::qpdf::code`, not
+// here, so the native and web paths share one table. Its values are stable across major
+// releases by upstream's explicit guarantee (`Constants.h:34-69`), which is what makes
+// hard-coding them safe. Nothing in this module needs them: the mapping is the only
+// consumer.
 
-/// Whether a `QPDF_ERROR_CODE` reports an actual error.
-///
-/// Exists so the bitmask test appears exactly once in the crate. See the module docs for
-/// why the obvious `!= QPDF_SUCCESS` is a bug.
-pub(super) const fn has_errors(code: QpdfErrorCode) -> bool {
-    code & QPDF_ERRORS != 0
-}
-
-/// `enum qpdf_error_code_e` — `Constants.h:85-96`.
-///
-/// Values are stable across major releases by upstream's explicit guarantee
-/// (`Constants.h:34-69`), because FFI callers hard-code them.
-pub(super) mod code {
-    use core::ffi::c_int;
-
-    /// `qpdf_e_success` — no error. `Constants.h:86`.
-    pub(in crate::qpdf) const SUCCESS: c_int = 0;
-    /// `qpdf_e_internal` — a logic error in qpdf; indicates a bug. `Constants.h:87`.
-    pub(in crate::qpdf) const INTERNAL: c_int = 1;
-    /// `qpdf_e_system` — I/O or memory error. `Constants.h:88`.
-    pub(in crate::qpdf) const SYSTEM: c_int = 2;
-    /// `qpdf_e_unsupported` — a PDF feature qpdf does not support. `Constants.h:89`.
-    pub(in crate::qpdf) const UNSUPPORTED: c_int = 3;
-    /// `qpdf_e_password` — **incorrect password for an encrypted file**. `Constants.h:90`.
-    pub(in crate::qpdf) const PASSWORD: c_int = 4;
-    /// `qpdf_e_damaged_pdf` — syntax errors or other damage. `Constants.h:91`.
-    pub(in crate::qpdf) const DAMAGED_PDF: c_int = 5;
-    /// `qpdf_e_pages` — erroneous or unsupported page structure. `Constants.h:92`.
-    pub(in crate::qpdf) const PAGES: c_int = 6;
-    /// `qpdf_e_object` — type or bounds error accessing an object. `Constants.h:93`.
-    pub(in crate::qpdf) const OBJECT: c_int = 7;
-    /// `qpdf_e_json` — error in qpdf JSON. `Constants.h:94`.
-    pub(in crate::qpdf) const JSON: c_int = 8;
-    /// `qpdf_e_linearization` — a linearization warning. `Constants.h:95`.
-    pub(in crate::qpdf) const LINEARIZATION: c_int = 9;
-}
-
-/// `enum qpdf_log_dest_e` — `qpdflogger-c.h:58-64`.
-pub(super) mod log_dest {
-    use core::ffi::c_int;
-    /// `qpdf_log_dest_discard` — throw the output away. `qpdflogger-c.h:62`.
-    pub(in crate::qpdf) const DISCARD: c_int = 3;
-}
-
-/// `enum qpdf_param_e` — `Constants.h:275-319`. Process-global options and limits.
-pub(super) mod param {
-    use core::ffi::c_int;
-    /// `qpdf_p_limit_errors` — read-only count of limits exceeded. `Constants.h:277`.
-    ///
-    /// **Read-only**: `qpdf_global_set_uint32` has no case for it and returns
-    /// `qpdf_r_bad_parameter`. Kept only so `limits.rs` can assert it is never set.
-    #[cfg(test)]
-    pub(in crate::qpdf) const LIMIT_ERRORS: c_int = 0x0001_0020;
-    /// `qpdf_p_fuzz_mode` — tighten limits for fuzzing. `Constants.h:281`.
-    #[cfg(feature = "fuzzing")]
-    pub(in crate::qpdf) const FUZZ_MODE: c_int = 0x0001_1010;
-    /// `qpdf_p_doc_max_warnings` — 0 means unlimited. `Constants.h:290`.
-    pub(in crate::qpdf) const DOC_MAX_WARNINGS: c_int = 0x0001_2000;
-    /// `qpdf_p_parser_max_nesting` — object nesting depth. `Constants.h:293`.
-    pub(in crate::qpdf) const PARSER_MAX_NESTING: c_int = 0x0001_3000;
-    /// `qpdf_p_dct_max_memory` — 0 means unlimited. `Constants.h:302`.
-    pub(in crate::qpdf) const DCT_MAX_MEMORY: c_int = 0x0001_4020;
-    /// `qpdf_p_flate_max_memory` — 0 means unlimited. `Constants.h:306`.
-    pub(in crate::qpdf) const FLATE_MAX_MEMORY: c_int = 0x0001_4030;
-    /// `qpdf_p_png_max_memory` — 0 means unlimited. `Constants.h:309`.
-    pub(in crate::qpdf) const PNG_MAX_MEMORY: c_int = 0x0001_4040;
-    /// `qpdf_p_run_length_max_memory` — 0 means unlimited. `Constants.h:312`.
-    pub(in crate::qpdf) const RUN_LENGTH_MAX_MEMORY: c_int = 0x0001_4050;
-    /// `qpdf_p_tiff_max_memory` — 0 means unlimited. `Constants.h:315`.
-    pub(in crate::qpdf) const TIFF_MAX_MEMORY: c_int = 0x0001_4060;
-}
+// `enum qpdf_log_dest_e` and `enum qpdf_param_e` live in `crate::codes::qpdf::policy`,
+// ungated, with the values burrow sets them to -- so the native and web paths apply one
+// policy rather than two copies. The web path previously applied none at all.
 
 unsafe extern "C" {
     /// `qpdf_data qpdf_init()` — `qpdf-c.h:163`.
@@ -281,34 +218,4 @@ unsafe extern "C" {
         func: *const core::ffi::c_void,
         udata: *mut core::ffi::c_void,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The trap the module docs describe, pinned down.
-    ///
-    /// `QPDF_ERROR_CODE` is a bitmask. A file that parses perfectly but emits a warning
-    /// returns `QPDF_WARNINGS`, which is non-zero — so `!= QPDF_SUCCESS` would report it
-    /// as a failure. Same class as PDFium's `-0` sentinel, same treatment.
-    #[test]
-    fn warnings_alone_are_not_an_error() {
-        const QPDF_SUCCESS: QpdfErrorCode = 0;
-        const QPDF_WARNINGS: QpdfErrorCode = 1 << 0;
-
-        assert!(!has_errors(QPDF_SUCCESS));
-        assert!(
-            !has_errors(QPDF_WARNINGS),
-            "a warnings-only result must not read as an error"
-        );
-        assert!(has_errors(QPDF_ERRORS));
-        assert!(
-            has_errors(QPDF_ERRORS | QPDF_WARNINGS),
-            "errors alongside warnings are still errors"
-        );
-
-        // And the naive test that this helper exists to replace really is wrong.
-        assert_ne!(QPDF_WARNINGS, QPDF_SUCCESS);
-    }
 }

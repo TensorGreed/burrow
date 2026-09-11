@@ -145,7 +145,33 @@ compliant with this ADR.
    prose — the rule already in `core/CLAUDE.md`.
 7. **Re-audit `pdfium.js` on every PDFium bump**, or make that unnecessary via (3).
 
-### Pre-M2 gate: re-evaluate option 2
+### Amendment, 2026-09-11 (M1 PR 4a-i): requirement 3, and a service worker would break it
+
+Requirement 3 above asks for `Module.wasmBinary` **and** `connect-src 'none'`, which cancel
+out: supplying the bytes means fetching them, and fetch is what `connect-src` governs. It is
+replaced by [ADR 0014](0014-web-engine-loading-and-csp.md), which narrows the policy instead
+of loosening it and states the guarantee accurately.
+
+**A service worker invalidates the guard ADR 0014 specifies, and adding one requires
+re-evaluating it.** Recorded here, not only there, because the temptation arrives as an
+offline-support or caching feature that has nothing obviously to do with the CSP.
+
+The guard establishes that a policy is in force by making two requests and comparing them: an
+allowlisted one must succeed, a non-allowlisted one must be refused. A service worker sits in
+front of `fetch` and may answer either from its own cache or synthesise a response, without
+the network or the policy being consulted at all — so:
+
+- a synthesised answer to the **probe** makes an enforced policy look absent, and the worker
+  refuses every operation;
+- a synthesised answer to the **control** makes an unreachable network look healthy, which is
+  the failure the dedicated `cache: "no-store"` control exists to prevent — and `no-store`
+  constrains the HTTP cache, not a service worker's `fetch` handler;
+- a service worker also changes what `connect-src` is even observing, since a request it
+  handles locally may never become a network request.
+
+None of that is hypothetical or subtle to fix; it is simply a different set of assumptions.
+If burrow ever adds a service worker, ADR 0014 §1b must be re-derived against it before the
+worker path is trusted, and `src/worker/guard.test.ts` needs a world that models one.
 
 Not "someday". **Before M2 starts**, option 2 is re-evaluated against the same bar, because
 redaction is exactly where option 1's two weaknesses bite hardest: the shared-glue-globals

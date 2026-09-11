@@ -88,7 +88,7 @@ const MEASURED_NOISE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
 ///
 /// Saturating throughout: an absurd length must produce an absurd estimate, which is then
 /// rejected, rather than wrapping to a small one that passes.
-pub(super) fn estimated_open_bytes(input_len: u64) -> u64 {
+pub(crate) fn estimated_open_bytes(input_len: u64) -> u64 {
     // `div_euclid` rather than `/`: the workspace denies `integer_division` as a class
     // because silent truncation on an attacker-controlled size is a real bug, and this is
     // the deliberate exception rather than an accident. Truncating downward here is also
@@ -107,7 +107,7 @@ pub(super) fn estimated_open_bytes(input_len: u64) -> u64 {
 ///
 /// [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) with
 /// `limit: "max_memory_bytes"`, naming the estimate and the ceiling.
-pub(super) fn check_open_memory(input_len: u64, limits: &Limits) -> Result<()> {
+pub(crate) fn check_open_memory(input_len: u64, limits: &Limits) -> Result<()> {
     Limits::check(
         "max_memory_bytes",
         estimated_open_bytes(input_len),
@@ -117,16 +117,22 @@ pub(super) fn check_open_memory(input_len: u64, limits: &Limits) -> Result<()> {
 
 /// Reject a document whose open actually cost more than the caller allowed.
 ///
-/// `before` and `after` are resident-set readings from [`super::rss::resident_bytes`].
-/// Either being `None` — procfs unreadable — degrades to "no measurement", which is not an
-/// error: an operation must not fail because a diagnostic was unavailable.
+/// `before` and `after` are two readings of the same memory counter, taken around the
+/// open. **What that counter is differs per platform, and this function deliberately
+/// does not know**: on native it is the process resident set (`pdfium::rss`), and on the
+/// web it is the engine module's `HEAPU8.byteLength`, which is better attributed —
+/// it measures that engine rather than the whole process. Only the *delta* is used, so
+/// a WASM heap that never shrinks still reports each operation's own cost honestly.
+///
+/// Either being `None` — the counter unreadable — degrades to "no measurement", which is
+/// not an error: an operation must not fail because a diagnostic was unavailable.
 ///
 /// # Errors
 ///
 /// [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) with
 /// `limit: "max_memory_bytes"` when the growth exceeds the ceiling by more than the
 /// tolerance above.
-pub(super) fn check_measured_memory(
+pub(crate) fn check_measured_memory(
     before: Option<u64>,
     after: Option<u64>,
     limits: &Limits,
