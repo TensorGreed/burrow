@@ -106,6 +106,9 @@ pub struct Reply {
     limit: String,
     requested: u64,
     allowed: u64,
+    recycle: bool,
+    pdfium_heap_bytes: u64,
+    qpdf_heap_bytes: u64,
 }
 
 #[wasm_bindgen]
@@ -180,6 +183,38 @@ impl Reply {
     pub fn allowed(&self) -> u64 {
         self.allowed
     }
+
+    /// **Whether the page should recycle this worker after delivering the result.**
+    ///
+    /// Not a failure, and the caller must never see it as one: the reply is delivered, and
+    /// only then is the worker terminated and a fresh one spawned.
+    ///
+    /// Computed in Rust for the same reason [`Reply::fatal`] is. The threshold is derived
+    /// from [`burrow_core::Limits::max_memory_bytes`], and ADR 0009 forbids a binding
+    /// enforcing any part of `Limits`. See [`burrow_core::engines::web::recycle`].
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn recycle(&self) -> bool {
+        self.recycle
+    }
+
+    /// The PDFium module's heap size after this operation.
+    ///
+    /// Reported so the measurement harness can record it and so a page can show it while
+    /// debugging. **The decision is [`Reply::recycle`]** — a page comparing this against a
+    /// number of its own would be the thing this design exists to prevent.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn pdfium_heap_bytes(&self) -> u64 {
+        self.pdfium_heap_bytes
+    }
+
+    /// The qpdf module's heap size after this operation. See [`Reply::pdfium_heap_bytes`].
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn qpdf_heap_bytes(&self) -> u64 {
+        self.qpdf_heap_bytes
+    }
 }
 
 /// Whether an error is fatal to the engine instance.
@@ -241,7 +276,31 @@ impl Reply {
             limit: String::new(),
             requested: 0,
             allowed: 0,
+            recycle: false,
+            pdfium_heap_bytes: 0,
+            qpdf_heap_bytes: 0,
         }
+    }
+
+    /// Attach the worker-lifecycle verdict: both engine heap sizes, and whether the page
+    /// should recycle this worker after delivering the result.
+    ///
+    /// **Both engines are read whichever operation ran.** A worker holds one of each and is
+    /// only as healthy as its worse half, so reading only the engine that did the work would
+    /// let a qpdf-heavy session grow unbounded behind a run of PDFium operations.
+    ///
+    /// Applied on the success and the failure path alike. A file that fails is exactly the
+    /// kind that grows a heap — `xref-bomb.pdf` returns `LimitExceeded` *after* PDFium has
+    /// allocated — so skipping this on failure would miss the case it exists for.
+    fn with_lifecycle(mut self, limits: &Limits) -> Self {
+        self.pdfium_heap_bytes = pdfium().heap_bytes();
+        self.qpdf_heap_bytes = qpdf().heap_bytes();
+        self.recycle = burrow_core::engines::web::should_recycle(
+            self.pdfium_heap_bytes,
+            self.qpdf_heap_bytes,
+            limits,
+        );
+        self
     }
 
     fn failure(error: &Error) -> Self {
@@ -262,6 +321,9 @@ impl Reply {
             limit,
             requested,
             allowed,
+            recycle: false,
+            pdfium_heap_bytes: 0,
+            qpdf_heap_bytes: 0,
         }
     }
 }
@@ -362,6 +424,7 @@ pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimi
         Ok(document) => Reply::success(document.pages_at_open()),
         Err(error) => Reply::failure(&error),
     }
+    .with_lifecycle(&limits)
 }
 
 /// Check a document's structure with qpdf.
@@ -385,6 +448,7 @@ pub fn structure_check(
         Ok(report) => Reply::success(report.pages),
         Err(error) => Reply::failure(&error),
     }
+    .with_lifecycle(&limits)
 }
 
 /// The version of this build of burrow, for the web app's footer.

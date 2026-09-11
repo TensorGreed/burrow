@@ -1,0 +1,23 @@
+{
+  // A separate project for the same reason `src/worker` has one, in reverse: these files are
+  // page code and need the DOM lib, while the worker's need `WebWorker`. One project cannot
+  // give both, and `self` means a different thing in each.
+  //
+  // `src/host/*.js` is deliberately NOT excluded from the app's project as `src/worker` is:
+  // `worker-host.test.ts` imports the state machine, so the app's project has to be able to
+  // read its JSDoc types. This project is what type-CHECKS the implementation; the app's
+  // project consumes it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["*.js", "*.d.ts"],
+  "exclude": ["*.test.ts"]
+}

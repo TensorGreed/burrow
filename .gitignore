@@ -24,6 +24,9 @@ apps/web/dist/
 # content-hashed, so committing them would mean committing a 6 MB binary that changes name
 # on every engine bump.
 apps/web/public/engines/
+# The main-thread host, copied verbatim from apps/web/src/host/ by the same tool. The sources
+# are tracked; this copy is build output.
+apps/web/public/host/
 apps/web/public/_headers
 apps/web/src/generated/
 apps/web/dist-production-check/

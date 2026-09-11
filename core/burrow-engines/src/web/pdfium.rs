@@ -57,6 +57,19 @@ impl WebPdfium {
     pub fn new(bridge: Arc<dyn PdfiumBridge>) -> Self {
         Self { bridge }
     }
+
+    /// The module's current heap size, for the page's recycling decision.
+    ///
+    /// An **absolute** reading, unlike the deltas `crate::estimate::check_measured_memory`
+    /// consumes, and that is the point: what the page needs to know is how far this worker
+    /// has grown over its whole life, not what one operation cost. WASM memory never shrinks,
+    /// so the two questions have different answers and only this one decides a respawn.
+    ///
+    /// Feed it to [`super::should_recycle`] rather than comparing it against anything here.
+    #[must_use]
+    pub fn heap_bytes(&self) -> u64 {
+        self.bridge.heap_bytes()
+    }
 }
 
 impl core::fmt::Debug for WebPdfium {

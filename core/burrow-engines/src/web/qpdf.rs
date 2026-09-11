@@ -61,6 +61,15 @@ impl WebQpdf {
         }
     }
 
+    /// The module's current heap size, for the page's recycling decision.
+    ///
+    /// See [`super::WebPdfium::heap_bytes`]: absolute, not a delta, because the question the
+    /// page is asking is how far this worker has grown over its whole life.
+    #[must_use]
+    pub fn heap_bytes(&self) -> u64 {
+        self.bridge.heap_bytes()
+    }
+
     /// Apply the global limits and build the discarding logger. Runs at most once.
     ///
     /// The same policy the native path applies, from the same table

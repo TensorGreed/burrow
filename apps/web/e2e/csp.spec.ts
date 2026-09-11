@@ -223,10 +223,9 @@ test("the worker refuses to touch a file unless it inherits the policy", async (
   //
   // Here the worker IS a blob, so it must accept work. `e2e/worker-guard.spec.ts` drives the
   // other branch.
-  const ready = await page.evaluate(() =>
-    (
-      window as unknown as { burrowHarness: { workerInheritsCsp(): Promise<boolean> } }
-    ).burrowHarness.workerInheritsCsp(),
-  );
+  // No cast: `./harness` re-exports `src/host/harness-api.d.ts`, whose `Window` augmentation
+  // is in scope for every callback in this file. The inline `as unknown as { ... }` that used
+  // to be here is the one `e2e/harness.ts`'s header describes in the past tense.
+  const ready = await page.evaluate(() => window.burrowHarness.workerInheritsCsp());
   expect(ready, "a blob: worker must accept work").toBe(true);
 });

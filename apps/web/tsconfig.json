@@ -5,7 +5,7 @@
     "dist",
     "node_modules",
     "public/engines",
-    "public/burrow-harness.js",
+    "public/host",
     "src/worker",
     "dist-production-check",
     "dist-harness-check",
