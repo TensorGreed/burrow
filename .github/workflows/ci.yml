@@ -381,12 +381,16 @@ jobs:
           path: engines/vendor
           key: wasm-engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh') }}
 
-      - name: Read the pinned emsdk version
+      - name: Read the pinned emsdk version and repo commit
         id: emsdk
         run: |
-          version="$(sed -n '/^\[emsdk\]/,/^\[/p' engines/pins.toml | sed -n 's/^version = "\(.*\)"/\1/p')"
+          block="$(sed -n '/^\[emsdk\]/,/^\[/p' engines/pins.toml)"
+          version="$(printf '%s' "$block" | sed -n 's/^version = "\(.*\)"/\1/p')"
+          commit="$(printf '%s' "$block" | sed -n 's/^repo_commit = "\(.*\)"/\1/p')"
           [ -n "$version" ] || { echo "no emsdk version in engines/pins.toml" >&2; exit 1; }
+          [ -n "$commit" ] || { echo "no emsdk repo_commit in engines/pins.toml" >&2; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Cache emsdk
         if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
@@ -397,10 +401,19 @@ jobs:
 
       - name: Install the pinned emsdk
         if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+        env:
+          EMSDK_REPO_COMMIT: ${{ steps.emsdk.outputs.commit }}
         run: |
           version="${{ steps.emsdk.outputs.version }}"
           if [ ! -f "$HOME/.local/share/emsdk/emsdk_env.sh" ]; then
-            git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/.local/share/emsdk"
+            # The SDK VERSION is pinned in engines/pins.toml and asserted by
+            # engines/build-wasm.sh; the emsdk repo that installs it was not, which is out
+            # of step with everything else under engines/. emsdk verifies the toolchain
+            # archive it downloads by sha512, so the exposure is the installer script
+            # rather than the compiler -- but the installer runs in CI with the same
+            # privileges as the build.
+            git clone https://github.com/emscripten-core/emsdk.git "$HOME/.local/share/emsdk"
+            git -C "$HOME/.local/share/emsdk" checkout --detach "$EMSDK_REPO_COMMIT"
           fi
           "$HOME/.local/share/emsdk/emsdk" install "$version"
           "$HOME/.local/share/emsdk/emsdk" activate "$version"
@@ -442,6 +455,13 @@ jobs:
       - name: Install web dependencies
         working-directory: apps/web
         run: pnpm install --frozen-lockfile
+      # BEFORE lint and check. `src/generated/engines.js` is generated and gitignored, and
+      # `BaseLayout.astro` imports it -- so on a fresh checkout `pnpm check` fails with
+      # "Cannot find module '../generated/engines.js'" unless staging has run. Only `pnpm
+      # build` runs it automatically (as `prebuild`), and that comes later.
+      - name: Stage the engines and generate the CSP
+        working-directory: apps/web
+        run: pnpm run prebuild
       - name: Lint
         working-directory: apps/web
         run: pnpm lint

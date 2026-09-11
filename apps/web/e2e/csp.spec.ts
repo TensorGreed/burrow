@@ -21,10 +21,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-async function openHarness(page: Page) {
-  await page.goto("/harness");
-  await expect(page.locator("#status")).toHaveText("engines ready", { timeout: 60_000 });
-}
+import { openHarness, type ProbeResult } from "./harness";
 
 /** Try a fetch from the page and report whether the browser refused it. */
 async function fetchIsBlocked(page: Page, url: string): Promise<boolean> {
@@ -121,4 +118,68 @@ test("the policy has no cross-origin source anywhere in it", async ({ page }) =>
     expect(host.startsWith(origin), `${host} is not same-origin`).toBe(true);
   }
   expect(policy).not.toMatch(/[\s;]\*[\s;]|\*\./);
+});
+
+/**
+ * The worker is where the file bytes are, and it was the half that was unprotected.
+ *
+ * A dedicated worker created from a same-origin *script URL* does not inherit the creating
+ * document's CSP — it takes its policy from that script's HTTP response headers, and a
+ * static host sends none. Measured during 4a-i: the worker ran with no policy at all and a
+ * cross-origin fetch from inside it reached the network, while every page-level test above
+ * passed. So the worker is now constructed from a Blob, which does inherit.
+ *
+ * This runs in all three browsers, not just Chromium, because the inheritance rule is the
+ * kind of thing engines have historically disagreed about — and being wrong about it in one
+ * of them would silently remove the browser-enforced half of the guarantee there.
+ */
+test("the policy applies inside the worker, and the browser says so", async ({ page }) => {
+  await openHarness(page);
+
+  // ABSOLUTE same-origin URLs. A relative one cannot be used here at all: a blob: worker's
+  // `self.location` is an opaque blob: URL, so `fetch("/")` fails to parse before CSP is
+  // consulted — which would look like a pass for entirely the wrong reason. (The first
+  // version of this test used relative paths and "passed" the blocked assertion while
+  // recording no violation, which is how the difference surfaced.)
+  const origin = new URL(page.url()).origin;
+
+  for (const target of [
+    "https://example.com/collect",
+    "https://cdn.jsdelivr.net/npm/anything",
+    `${origin}/`,
+    `${origin}/engines/not-an-engine.wasm`,
+  ]) {
+    const result: ProbeResult = await page.evaluate(
+      (url) => window.burrowHarness.fetchFromWorker(url),
+      target,
+    );
+
+    expect(result.failed, `${target}: the probe worker failed to start`).toBeFalsy();
+    expect(result.blocked, `${target} should be refused inside the worker`).toBe(true);
+    // "The fetch failed" and "the browser refused it" are different facts — an unreachable
+    // host produces the first without the second. Only the violation event distinguishes
+    // them, and it is the one that proves the policy is doing the work.
+    expect(
+      result.violations.some((v) => v.includes("connect-src")),
+      `${target}: expected a connect-src violation, got ${JSON.stringify(result.violations)}`,
+    ).toBe(true);
+  }
+});
+
+test("the worker refuses to touch a file unless it inherits the policy", async ({ page }) => {
+  await openHarness(page);
+
+  // The fail-closed guard, from the other side. The worker checks
+  // `self.location.protocol === "blob:"` and refuses every operation otherwise, so a future
+  // refactor that constructs it from a plain URL — losing the CSP entirely — breaks loudly
+  // instead of silently running unpoliced with every test still green.
+  //
+  // Here the worker IS a blob, so it must accept work. `e2e/worker-guard.spec.ts` drives the
+  // other branch.
+  const ready = await page.evaluate(() =>
+    (
+      window as unknown as { burrowHarness: { workerInheritsCsp(): Promise<boolean> } }
+    ).burrowHarness.workerInheritsCsp(),
+  );
+  expect(ready, "a blob: worker must accept work").toBe(true);
 });

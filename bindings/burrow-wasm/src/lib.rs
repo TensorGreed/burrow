@@ -68,6 +68,28 @@ impl Clock for WebClock {
     }
 }
 
+thread_local! {
+    /// One engine pair per worker, built on first use.
+    ///
+    /// **Not constructed per operation.** `WebQpdf` holds the process-global setup — qpdf's
+    /// resource limits and the shared discarding logger — behind a `OnceLock`, so a fresh
+    /// engine per call would apply the limits repeatedly and, worse, create a logger per
+    /// call into a heap that never shrinks.
+    ///
+    /// `thread_local` rather than a `static`: a wasm worker is one thread, so this is one
+    /// instance per worker, which is exactly the lifetime ADR 0006 requirement 1 describes.
+    static PDFIUM: WebPdfium = WebPdfium::new(Arc::new(bridge::JsPdfium));
+    static QPDF: WebQpdf = WebQpdf::new(Arc::new(bridge::JsQpdf));
+}
+
+fn pdfium() -> WebPdfium {
+    PDFIUM.with(Clone::clone)
+}
+
+fn qpdf() -> WebQpdf {
+    QPDF.with(Clone::clone)
+}
+
 /// The outcome of one operation, as the worker sees it.
 ///
 /// Every field is a value Rust decided. The worker forwards them; it does not interpret
@@ -115,7 +137,14 @@ impl Reply {
         self.fatal
     }
 
-    /// The error's `Display` text — a fixed constant, never anything derived from the input.
+    /// The error's `Display` text.
+    ///
+    /// A fixed constant for every variant **except `LimitExceeded`**, whose `Display`
+    /// renders `requested` — and on the pre-scan path that number is computed from the
+    /// file's declared cross-reference size, so it is input-derived. It is not secret (it
+    /// is a declared size, and the page already holds the file), and the caller needs it to
+    /// know which ceiling they hit. Naming the exception here rather than claiming
+    /// otherwise.
     #[wasm_bindgen(getter)]
     #[must_use]
     pub fn message(&self) -> String {
@@ -157,7 +186,23 @@ impl Reply {
 /// fatal, this one line changes and the page, iOS and Android all follow — which is the
 /// whole reason it is not `kind === "Internal"` in JavaScript.
 fn is_fatal(error: &Error) -> bool {
-    matches!(error, Error::Internal(_))
+    // The NON-fatal variants are listed, and everything else is fatal. That is the right way
+    // round for an `#[non_exhaustive]` enum: a variant added upstream defaults to costing a
+    // worker, which is the conservative answer for a state we cannot reason about.
+    //
+    // It was `matches!(error, Error::Internal(_))` with the unknown case bolted on at the
+    // call site as `|| kind_of(error) == "Unknown"` — so the contract this function claims to
+    // be the single definition of was actually decided in two places, one of them by
+    // comparing strings.
+    !matches!(
+        error,
+        Error::Malformed(_)
+            | Error::Unsupported(_)
+            | Error::PasswordRequired
+            | Error::LimitExceeded { .. }
+            | Error::InvalidArgument(_)
+            | Error::Io(_)
+    )
 }
 
 /// The variant's name, as a stable string for the page.
@@ -201,9 +246,7 @@ impl Reply {
         };
         Self {
             ok: false,
-            // An unknown variant is treated as fatal: we do not understand the state the
-            // engine is in, and discarding a worker is cheap next to using a poisoned one.
-            fatal: is_fatal(error) || kind_of(error) == "Unknown",
+            fatal: is_fatal(error),
             kind: kind_of(error).to_owned(),
             message: error.to_string(),
             pages: 0,
@@ -306,8 +349,7 @@ pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimi
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
 
-    let engine = WebPdfium::new(Arc::new(bridge::JsPdfium));
-    match engine.open(bytes, &options) {
+    match pdfium().open(bytes, &options) {
         Ok(document) => Reply::success(document.pages_at_open()),
         Err(error) => Reply::failure(&error),
     }
@@ -330,8 +372,7 @@ pub fn structure_check(
     options.password = password.as_ref();
     options.attempt_recovery = attempt_recovery;
 
-    let engine = WebQpdf::new(Arc::new(bridge::JsQpdf));
-    match engine.check(bytes, &options) {
+    match qpdf().check(bytes, &options) {
         Ok(report) => Reply::success(report.pages),
         Err(error) => Reply::failure(&error),
     }
@@ -391,6 +432,38 @@ mod tests {
                 kind_of(&error)
             );
         }
+    }
+
+    /// An error variant this build does not know must default to fatal.
+    ///
+    /// `Error` is `#[non_exhaustive]`, so this cannot be written with a literal variant —
+    /// but the property is checkable through the list `is_fatal` inverts: every variant it
+    /// names is non-fatal, and nothing else is. If a future variant is added and someone
+    /// adds it to that list without thinking, this test does not help; if they leave it
+    /// alone, the default is the safe one.
+    #[test]
+    fn the_non_fatal_list_is_exactly_the_ordinary_outcomes() {
+        // Every variant that must NOT cost a worker. A malformed PDF tearing down the
+        // engine would make one bad file poison a session.
+        for error in [
+            Error::Malformed(String::new()),
+            Error::Unsupported(String::new()),
+            Error::PasswordRequired,
+            Error::LimitExceeded {
+                limit: "max_pages",
+                requested: 1,
+                allowed: 0,
+            },
+            Error::InvalidArgument(String::new()),
+            Error::Io(String::new()),
+        ] {
+            assert!(
+                !is_fatal(&error),
+                "{} must not cost a worker",
+                kind_of(&error)
+            );
+        }
+        assert!(is_fatal(&Error::Internal(String::new())));
     }
 
     /// A `LimitExceeded` must carry all three numbers, or the page cannot tell the user

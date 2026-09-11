@@ -5,6 +5,14 @@
 // a tampered deploy, a cache-poisoning proxy — would be serving code that runs over the
 // user's files, from an origin the policy trusts.
 //
+// FOUR ARTIFACTS, AND ALL THE WORKER'S CODE IS IN ONE OF THEM.
+//
+// An earlier shape staged the three Emscripten `.js` glue files separately and loaded them
+// with `importScripts`, which has no integrity mechanism — so 160 KB of third-party PDFium
+// glue, which owns the heap the bridge writes to, ran unverified while the manifest carried
+// a digest for it that nothing checked. Bundling all worker code into one file (done for the
+// blob: worker, see ADR 0014) makes that one digest cover every line of it.
+//
 // This is also the half that inlining the engines as base64 would have thrown away, which
 // is recorded in ADR 0014 as a reason that option was rejected.
 
@@ -34,7 +42,7 @@ test("the manifest pins every engine artifact by digest", async ({ page }) => {
   const engines = await readManifest(page);
 
   const ids = Object.keys(engines).sort();
-  expect(ids).toEqual(["burrowJs", "burrowWasm", "pdfiumJs", "pdfiumWasm", "qpdfJs", "qpdfWasm"]);
+  expect(ids).toEqual(["burrowWasm", "pdfiumWasm", "qpdfWasm", "worker"]);
 
   for (const [id, entry] of Object.entries(engines)) {
     // sha384 rather than sha256: it is the SRI default for a reason, and there is no cost.
@@ -43,6 +51,36 @@ test("the manifest pins every engine artifact by digest", async ({ page }) => {
     // generated CSP change with it.
     expect(entry.url, `${id} url`).toMatch(/^\/engines\/.+\.[0-9a-f]{16}\.(js|wasm)$/);
     expect(entry.bytes, `${id} size`).toBeGreaterThan(0);
+  }
+});
+
+test("the worker bundle contains all worker code, so one digest covers it", async ({ page }) => {
+  await page.goto("/harness");
+  const engines = await readManifest(page);
+
+  // The bundle carries the prelude, the bridge, both Emscripten glues, the wasm-bindgen glue
+  // and the protocol. If a future change split any of that back out into its own
+  // `importScripts`, this size floor would fail — and so would the guarantee, silently,
+  // because `importScripts` cannot be integrity-checked.
+  expect(
+    engines.worker.bytes,
+    "the worker bundle looks too small to contain the glue",
+  ).toBeGreaterThan(150_000);
+
+  const source = await page.evaluate(async (url) => {
+    const response = await fetch(url);
+    return response.text();
+  }, engines.worker.url);
+
+  for (const marker of [
+    "BURROW_ENGINES", // the generated manifest
+    "__burrow_pdfium_load", // the bridge
+    "createQpdfModule", // the qpdf glue
+    "FPDF_LoadMemDocument64", // the pdfium glue
+    "wasm_bindgen", // the Rust glue
+    "INHERITS_PAGE_CSP", // the fail-closed guard
+  ]) {
+    expect(source, `the bundle is missing ${marker}`).toContain(marker);
   }
 });
 

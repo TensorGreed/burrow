@@ -13,7 +13,6 @@
 // exactly one item, below.
 mod ffi;
 
-mod rss;
 pub(crate) mod thread;
 
 use std::sync::Arc;
@@ -153,7 +152,7 @@ impl DocumentEngine for Pdfium {
 
             // From here on, `registry.remove(id)` is the single cleanup for every failure:
             // it frees the buffer, and closes the document too once one is attached.
-            let before = rss::resident_bytes();
+            let before = crate::rss::resident_bytes();
 
             // SAFETY: `data` is valid for `size` bytes -- it points into the buffer the
             // registry now owns, which is not moved again until `remove`, and PDFium reads
@@ -209,7 +208,11 @@ impl DocumentEngine for Pdfium {
                 // e. What the open actually cost. Step 2's estimate is blind to anything
                 //    the file *declares*, and a small file declaring an enormous structure
                 //    is exactly the case it misses.
-                crate::estimate::check_measured_memory(before, rss::resident_bytes(), &limits)?;
+                crate::estimate::check_measured_memory(
+                    before,
+                    crate::rss::resident_bytes(),
+                    &limits,
+                )?;
 
                 Ok(pages)
             })();

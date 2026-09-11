@@ -24,9 +24,16 @@ pub use burrow_types::{Clock, Deadline, Error, Limits, Password, Result};
 /// externs, because the JavaScript side of the bridge can only be declared in a binding
 /// crate.
 ///
-/// It is deliberately *only* the seam. Every decision — the limit ordering, the pre-scan,
-/// the deadline, the error mapping — stays in `burrow-engines`, which is what makes
-/// ADR 0009's "no branch on engine state may live in JS" enforceable rather than aspirational.
+/// **This re-exports the whole `burrow-engines` crate, not just the web seam.** An earlier
+/// comment here said it was "deliberately only the seam", which was not true: `pdfium`,
+/// `qpdf` and `prescan` come with it. Narrowing it to `engines::web` would be tidier and is
+/// worth doing when something other than the bindings needs this; today the bindings are the
+/// only consumer and they use only `web`.
+///
+/// What *is* deliberate is that the seam contains no decisions. The limit ordering, the
+/// pre-scan, the deadline and the error mapping all stay inside `burrow-engines`, which is
+/// what makes ADR 0009's "no branch on engine state may live in JS" enforceable rather than
+/// aspirational.
 pub use burrow_ops::engines;
 
 /// The version of this build of burrow.

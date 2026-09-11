@@ -36,11 +36,21 @@ export default defineConfig({
     trace: process.env.CI ? "retain-on-failure" : "off",
   },
 
+  // All three browsers, from 4a-i rather than 4b.
+  //
+  // The CSP arrangement rests on a rule engines have historically disagreed about — that a
+  // blob: worker inherits the creating document's policy while a URL-loaded one does not —
+  // and being wrong about it in one browser would silently remove the browser-enforced half
+  // of the guarantee *there*, with every Chromium test still green.
+  //
+  // The other reason is the engines: spike 0001 found browsers differ in which WebAssembly
+  // exception-handling encoding they accept, and `pdfium.wasm` is a prebuilt whose encoding
+  // is not ours to choose. If an engine will not load in one of these, that is a finding to
+  // report, not a test to skip.
   projects: [
-    // 4a-i runs Chromium only. Firefox and WebKit arrive with the conformance matrix in
-    // 4b, where a browser that will not load an engine is a finding to report rather than
-    // a test to skip.
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],
 
   webServer: {

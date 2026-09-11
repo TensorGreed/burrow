@@ -21,6 +21,87 @@
 use burrow_types::Error;
 use core::ffi::c_int;
 
+/// qpdf's process-global resource limits: which parameters, and set to what.
+///
+/// **Hoisted out of the native module so the web path applies the same policy.** It was
+/// `qpdf::limits` only, and the web implementation silently shipped without any of it —
+/// which is worse there than on native, because an allocator giving up inside a C++ engine
+/// is an `abort()`, and in a browser an Emscripten `abort()` is quiet: it becomes an
+/// ordinary exception, leaves the worker alive with its init flags set, and bricks that
+/// engine for the rest of the session.
+///
+/// Every decompression memory limit qpdf offers **defaults to zero, meaning unlimited**
+/// (`global.hh:372-545`), as does the warning cap. Setting them is the single most
+/// valuable thing this policy does.
+///
+/// These are constants, not derived from [`burrow_types::Limits`], and that asymmetry is
+/// deliberate: `Limits` is per-operation, these take no `qpdf_data` and are process-global.
+/// The caller's ceilings are enforced in Rust per operation; these are a fixed floor under
+/// everything. ADR 0013 records it.
+pub(crate) mod policy {
+    use core::ffi::{c_int, c_uint};
+
+    /// Memory ceiling for each decompression filter family, in bytes.
+    ///
+    /// 256 MiB: far more than any legitimate stream, far less than the multi-gigabyte
+    /// allocation a bomb aims for. Applied per filter family, each of which otherwise has
+    /// **no limit at all**.
+    pub(crate) const FILTER_MAX_MEMORY: c_uint = 256 * 1024 * 1024;
+
+    /// Maximum object nesting depth while parsing — the deeply-nested-object bomb.
+    pub(crate) const PARSER_MAX_NESTING: c_uint = 64;
+
+    /// Maximum warnings for one document before qpdf gives up. Also defaults to unlimited.
+    pub(crate) const DOC_MAX_WARNINGS: c_uint = 256;
+
+    /// `qpdf_p_limit_errors` — read-only count of limits exceeded. `Constants.h:277`.
+    ///
+    /// **Read-only**: `qpdf_global_set_uint32` has no case for it and returns
+    /// `qpdf_r_bad_parameter`. Kept only so a test can assert it is never set.
+    #[cfg(test)]
+    pub(crate) const LIMIT_ERRORS: c_int = 0x0001_0020;
+    /// `qpdf_p_fuzz_mode` — tighten limits for fuzzing. `Constants.h:281`.
+    #[cfg(feature = "fuzzing")]
+    pub(crate) const FUZZ_MODE: c_int = 0x0001_1010;
+    /// `qpdf_p_doc_max_warnings` — 0 means unlimited. `Constants.h:290`.
+    pub(crate) const P_DOC_MAX_WARNINGS: c_int = 0x0001_2000;
+    /// `qpdf_p_parser_max_nesting` — object nesting depth. `Constants.h:293`.
+    pub(crate) const P_PARSER_MAX_NESTING: c_int = 0x0001_3000;
+    /// `qpdf_p_dct_max_memory` — 0 means unlimited. `Constants.h:302`.
+    pub(crate) const DCT_MAX_MEMORY: c_int = 0x0001_4020;
+    /// `qpdf_p_flate_max_memory` — 0 means unlimited. `Constants.h:306`.
+    pub(crate) const FLATE_MAX_MEMORY: c_int = 0x0001_4030;
+    /// `qpdf_p_png_max_memory` — 0 means unlimited. `Constants.h:309`.
+    pub(crate) const PNG_MAX_MEMORY: c_int = 0x0001_4040;
+    /// `qpdf_p_run_length_max_memory` — 0 means unlimited. `Constants.h:312`.
+    pub(crate) const RUN_LENGTH_MAX_MEMORY: c_int = 0x0001_4050;
+    /// `qpdf_p_tiff_max_memory` — 0 means unlimited. `Constants.h:315`.
+    pub(crate) const TIFF_MAX_MEMORY: c_int = 0x0001_4060;
+
+    /// Every global parameter burrow sets, and what to.
+    ///
+    /// A function rather than a `const` array so both engine paths and the tests assert on
+    /// the same list the code applies, rather than on copies of it.
+    #[must_use]
+    pub(crate) fn settings() -> [(c_int, c_uint); 7] {
+        [
+            (FLATE_MAX_MEMORY, FILTER_MAX_MEMORY),
+            (DCT_MAX_MEMORY, FILTER_MAX_MEMORY),
+            (PNG_MAX_MEMORY, FILTER_MAX_MEMORY),
+            (RUN_LENGTH_MAX_MEMORY, FILTER_MAX_MEMORY),
+            (TIFF_MAX_MEMORY, FILTER_MAX_MEMORY),
+            (P_PARSER_MAX_NESTING, PARSER_MAX_NESTING),
+            (P_DOC_MAX_WARNINGS, DOC_MAX_WARNINGS),
+            // `qpdf_p_limit_errors` is deliberately absent: it is READ-ONLY, so setting it
+            // is a guaranteed no-op. It was in this list briefly with a comment claiming it
+            // quieted qpdf's error path, which it never did.
+        ]
+    }
+
+    /// `qpdf_log_dest_discard` — throw the output away. `qpdflogger-c.h:62`.
+    pub(crate) const LOG_DEST_DISCARD: c_int = 3;
+}
+
 /// `typedef int QPDF_ERROR_CODE` — `qpdf-c.h:136`.
 pub(crate) type QpdfErrorCode = c_int;
 

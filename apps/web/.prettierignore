@@ -1,4 +1,6 @@
 dist
+# Astro's generated type stubs, written by `astro check`/`astro sync`.
+.astro
 dist-production-check
 dist-harness-check
 node_modules

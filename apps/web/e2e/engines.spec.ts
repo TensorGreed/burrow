@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 
 import { expect, test, type Page } from "@playwright/test";
 
+import { openHarness, type Reply } from "./harness";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const conformance = resolve(here, "../../../tests/conformance");
 
@@ -41,34 +43,17 @@ function fixtureBytes(relative: string): number[] {
   return Array.from(readFileSync(join(conformance, relative)));
 }
 
-interface Reply {
-  ok: boolean;
-  kind: string;
-  fatal: boolean;
-  message: string;
-  pages: number;
-  limit: string;
-  requested: number;
-  allowed: number;
-}
-
-async function openHarness(page: Page) {
-  await page.goto("/harness");
-  await expect(page.locator("#status")).toHaveText("engines ready", { timeout: 60_000 });
-}
-
 async function run(
   page: Page,
   op: "page_count" | "structure_check",
   bytes: number[],
   options: { password?: number[] } = {},
 ): Promise<Reply> {
-  return page.evaluate(
-    ([op, bytes, options]) =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).burrowHarness.run(op, bytes, options) as Promise<Reply>,
-    [op, bytes, options] as const,
-  );
+  return page.evaluate(([op, bytes, options]) => window.burrowHarness.run(op, bytes, options), [
+    op,
+    bytes,
+    options,
+  ] as const);
 }
 
 test("the engines initialise inside a worker under the generated CSP", async ({ page }) => {

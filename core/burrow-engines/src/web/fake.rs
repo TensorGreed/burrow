@@ -41,6 +41,8 @@ pub(super) enum Call {
     ReadMemory,
     NumPages,
     Free(u32),
+    GlobalSet(i32, u32),
+    LoggerCreate,
 }
 
 /// A stand-in for an Emscripten module's linear memory.
@@ -51,6 +53,14 @@ pub(super) enum Call {
 struct Heap {
     next: u32,
     live: Vec<(u32, Vec<u8>)>,
+    /// Allocations that are *meant* to outlive an operation — currently only qpdf's shared
+    /// discarding logger, which has no `qpdflogger_cleanup` on either path and lives as
+    /// long as the worker.
+    ///
+    /// Held apart from `live` so `assert_empty` can stay strict about everything else. The
+    /// interesting property is not "is it freed" but **"is there exactly one"**: one is the
+    /// design, one per operation is the unbounded leak this split exists to catch.
+    retained: Vec<u32>,
     bytes_grown: u64,
     /// When set, the next `copy_in` returns null — an allocation failure.
     fail_next_alloc: bool,
@@ -76,6 +86,16 @@ impl Heap {
         self.bytes_grown = self
             .bytes_grown
             .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        at
+    }
+
+    /// Allocate something that deliberately outlives the operation. See `retained`.
+    fn alloc_retained(&mut self, bytes: &[u8]) -> u32 {
+        let at = self.alloc(bytes);
+        if at != 0 {
+            self.live.retain(|(a, _)| *a != at);
+            self.retained.push(at);
+        }
         at
     }
 
@@ -111,10 +131,16 @@ impl FakeHeap {
         self.calls.lock().expect("not poisoned").push(call);
     }
 
+    /// How many deliberately long-lived allocations exist. See `Heap::retained`.
+    pub(super) fn retained(&self) -> usize {
+        self.heap.lock().expect("not poisoned").retained.len()
+    }
+
     /// Assert nothing is still allocated in the engine heap.
     ///
     /// The whole reason the fake tracks allocations. A leak here is a leak in the browser,
-    /// where nothing would report it.
+    /// where nothing would report it. Deliberately long-lived allocations are excluded —
+    /// [`retained`](FakeHeap::retained) is how those are checked instead.
     pub(super) fn assert_empty(&self) {
         let heap = self.heap.lock().expect("not poisoned");
         assert!(
@@ -263,6 +289,8 @@ pub(super) struct QpdfScript {
     pub(super) page_count: i32,
     /// Whether `qpdf_init` succeeds.
     pub(super) init_succeeds: bool,
+    /// Extra heap growth attributed to the read, in bytes — what a decompression bomb costs.
+    pub(super) read_grows_heap_by: u64,
     /// An error that appears in the slot *again*, once, after the first drain.
     ///
     /// Models qpdf recording a further problem after the orchestration's last
@@ -279,6 +307,7 @@ impl Default for QpdfScript {
             pending_error: None,
             page_count: 1,
             init_succeeds: true,
+            read_grows_heap_by: 0,
             error_reappears_once: None,
         }
     }
@@ -382,6 +411,12 @@ impl QpdfBridge for FakeQpdf {
         _password: QpdfPtr,
     ) -> i32 {
         self.state.record(Call::ReadMemory);
+        {
+            let mut heap = self.state.heap.lock().expect("not poisoned");
+            heap.bytes_grown = heap
+                .bytes_grown
+                .saturating_add(self.script.read_grows_heap_by);
+        }
         self.script.read_status
     }
 
@@ -413,8 +448,29 @@ impl QpdfBridge for FakeQpdf {
         self.script.page_count
     }
 
+    fn global_set_uint32(&self, param: i32, value: u32) -> i32 {
+        self.state.record(Call::GlobalSet(param, value));
+        0
+    }
+
     fn logger_create(&self) -> QpdfPtr {
-        QpdfPtr(0x109_0001)
+        self.state.record(Call::LoggerCreate);
+        // Allocated through the tracked heap, NOT returned as a fixed handle.
+        //
+        // It was a fixed handle, and that made the leak detector structurally blind to the
+        // one allocation the web path actually leaked: a logger created per operation and
+        // never released. A detector has to be able to see the thing it exists to detect.
+        //
+        // Retained rather than live: this one is *supposed* to outlive the operation, so the
+        // property worth asserting is that there is exactly one of them however many
+        // operations run.
+        QpdfPtr(
+            self.state
+                .heap
+                .lock()
+                .expect("not poisoned")
+                .alloc_retained(b"logger"),
+        )
     }
 
     fn logger_discard_all(&self, _logger: QpdfPtr) {}

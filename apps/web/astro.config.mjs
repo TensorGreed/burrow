@@ -17,9 +17,9 @@ import svelte from "@astrojs/svelte";
  * then removed it still shipped a shared CSS chunk Vite had named `harness.<hash>.css`
  * after it. Not a code leak, but production output named after a test fixture.
  *
- * The driver script is the one thing that cannot work this way -- it must be a classic
- * script at a stable URL, so it lives in `public/` and is copied verbatim like any other
- * asset. That one file is removed from `dist/` instead.
+ * Two scripts cannot work this way -- the harness driver and the CSP probe worker must be
+ * classic scripts at stable URLs, so they live in `public/` and are copied verbatim like
+ * any other asset. Those are removed from `dist/` instead.
  *
  * `src/production-build.test.ts` asserts both halves, and includes a control that builds
  * WITH the flag, so an integration that excluded unconditionally would fail rather than
@@ -46,7 +46,9 @@ function harnessGating() {
         if (included) {
           return;
         }
-        await rm(fileURLToPath(new URL("./burrow-harness.js", dir)), { force: true });
+        for (const testOnly of ["./burrow-harness.js", "./burrow-csp-probe.js"]) {
+          await rm(fileURLToPath(new URL(testOnly, dir)), { force: true });
+        }
       },
     },
   };

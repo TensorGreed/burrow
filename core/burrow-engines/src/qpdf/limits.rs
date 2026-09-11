@@ -36,26 +36,10 @@ use std::sync::OnceLock;
 
 use super::ffi;
 
-/// Memory ceiling for each decompression filter family, in bytes.
-///
-/// 256 MiB: far more than any legitimate stream in a document we would open, far less
-/// than the multi-gigabyte allocations a bomb aims for. Applied per filter family
-/// (`flate`, `dct`, `png`, `run_length`, `tiff`), each of which otherwise has **no
-/// limit at all**.
-const FILTER_MAX_MEMORY: c_uint = 256 * 1024 * 1024;
-
-/// Maximum object nesting depth while parsing.
-///
-/// The defence against a deeply nested object bomb — an array inside an array inside an
-/// array, thousands deep, which turns a parser's recursion into a stack overflow. Real
-/// documents nest a handful deep; the PDF specification's own guidance is far below this.
-const PARSER_MAX_NESTING: c_uint = 64;
-
-/// Maximum warnings for one document before qpdf gives up on it.
-///
-/// Also defaults to unlimited. A file engineered to produce a warning per object turns
-/// into unbounded work; past this qpdf throws, which the C layer turns into a clean error.
-const DOC_MAX_WARNINGS: c_uint = 256;
+// The limit VALUES and the parameter ids live in `crate::codes::qpdf::policy`, ungated, so
+// the web path applies exactly the same policy rather than a second copy of it -- or, as
+// was the case before M1 PR 4a-i, none at all.
+use crate::codes::qpdf::policy;
 
 /// The logger every `qpdf_data` is given. Created once; qpdf shares it internally.
 static LOGGER: OnceLock<LoggerHandle> = OnceLock::new();
@@ -110,22 +94,9 @@ fn apply_global_limits() {
 
 /// Every global parameter this crate sets, and what to.
 ///
-/// A function rather than a `const` array so the test below asserts on the same list the
-/// code applies, instead of a copy of it.
+/// Delegates to the shared policy, so the native and web paths cannot drift apart.
 fn limit_settings() -> [(c_int, c_uint); 7] {
-    [
-        (ffi::param::FLATE_MAX_MEMORY, FILTER_MAX_MEMORY),
-        (ffi::param::DCT_MAX_MEMORY, FILTER_MAX_MEMORY),
-        (ffi::param::PNG_MAX_MEMORY, FILTER_MAX_MEMORY),
-        (ffi::param::RUN_LENGTH_MAX_MEMORY, FILTER_MAX_MEMORY),
-        (ffi::param::TIFF_MAX_MEMORY, FILTER_MAX_MEMORY),
-        (ffi::param::PARSER_MAX_NESTING, PARSER_MAX_NESTING),
-        (ffi::param::DOC_MAX_WARNINGS, DOC_MAX_WARNINGS),
-        // `qpdf_p_limit_errors` is deliberately absent. It is READ-ONLY: `global.cc`'s
-        // `qpdf_global_set_uint32` has no case for it and returns `qpdf_r_bad_parameter`,
-        // so setting it is a guaranteed no-op. It was in this list briefly, with a comment
-        // claiming it quieted qpdf's error path, which it never did.
-    ]
+    policy::settings()
 }
 
 /// Create a logger whose info, warning and error streams all go nowhere.
@@ -150,7 +121,7 @@ fn make_discarding_logger() -> ffi::QpdfLoggerHandle {
         if logger.is_null() {
             return logger;
         }
-        let discard = ffi::log_dest::DISCARD;
+        let discard = policy::LOG_DEST_DISCARD;
         let none = core::ptr::null();
         let no_data = core::ptr::null_mut();
         ffi::qpdflogger_set_info(logger, discard, none, no_data);
@@ -180,7 +151,7 @@ pub fn enable_fuzz_mode() {
     // process is quiet for the same reasons production is.
     let _ = install();
     // SAFETY: as `apply_global_limits` -- two integers, no pointer, process-global.
-    let _ = unsafe { ffi::qpdf_global_set_uint32(ffi::param::FUZZ_MODE, 1) };
+    let _ = unsafe { ffi::qpdf_global_set_uint32(policy::FUZZ_MODE, 1) };
 }
 
 #[cfg(test)]
@@ -193,11 +164,11 @@ mod tests {
     fn every_filter_family_gets_a_memory_ceiling() {
         let settings = limit_settings();
         for param in [
-            ffi::param::FLATE_MAX_MEMORY,
-            ffi::param::DCT_MAX_MEMORY,
-            ffi::param::PNG_MAX_MEMORY,
-            ffi::param::RUN_LENGTH_MAX_MEMORY,
-            ffi::param::TIFF_MAX_MEMORY,
+            policy::FLATE_MAX_MEMORY,
+            policy::DCT_MAX_MEMORY,
+            policy::PNG_MAX_MEMORY,
+            policy::RUN_LENGTH_MAX_MEMORY,
+            policy::TIFF_MAX_MEMORY,
         ] {
             let found = settings.iter().find(|(p, _)| *p == param);
             let (_, value) = found.unwrap_or_else(|| {
@@ -210,7 +181,7 @@ mod tests {
     #[test]
     fn nesting_and_warnings_are_bounded() {
         let settings = limit_settings();
-        for param in [ffi::param::PARSER_MAX_NESTING, ffi::param::DOC_MAX_WARNINGS] {
+        for param in [policy::P_PARSER_MAX_NESTING, policy::P_DOC_MAX_WARNINGS] {
             let (_, value) = settings
                 .iter()
                 .find(|(p, _)| *p == param)
@@ -237,7 +208,7 @@ mod tests {
         assert!(
             !limit_settings()
                 .iter()
-                .any(|(p, _)| *p == ffi::param::LIMIT_ERRORS),
+                .any(|(p, _)| *p == policy::LIMIT_ERRORS),
             "qpdf_p_limit_errors is read-only; setting it cannot work"
         );
     }

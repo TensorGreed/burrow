@@ -304,9 +304,11 @@ fn the_input_size_limit_fires_before_anything_crosses_the_bridge() {
 fn the_declared_size_bomb_is_refused_before_the_bridge() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/conformance/fixtures/xref-bomb.pdf");
-    let Ok(bytes) = std::fs::read(&path) else {
-        return; // the fixture belongs to the integration tests; its absence is their failure
-    };
+    // `expect`, not a silent `return`. The fixture is committed (`tests/conformance/`), so a
+    // missing one is a broken checkout, and a test that quietly becomes a no-op is exactly
+    // the kind that stops protecting anything without anyone noticing.
+    let bytes =
+        std::fs::read(&path).expect("tests/conformance/fixtures/xref-bomb.pdf is committed");
     let (engine, state) = document_engine(PdfiumScript::default());
     match engine.open(
         bytes.into_boxed_slice(),
@@ -427,12 +429,12 @@ fn a_structure_check_reports_the_page_count() {
 /// warning that reaches a browser console carries object numbers and byte offsets.
 #[test]
 fn qpdf_is_silenced_before_it_reads_anything() {
-    let (engine, _state) = structure_engine(QpdfScript::default());
+    let (engine, state) = structure_engine(QpdfScript::default());
     let _ = engine.check(
         ordinary_pdf().into_boxed_slice(),
         &CheckOptions::new(Limits::default(), stopped()),
     );
-    let calls = engine_calls(&_state);
+    let calls = state.calls();
 
     let silence = calls
         .iter()
@@ -454,10 +456,6 @@ fn qpdf_is_silenced_before_it_reads_anything() {
     assert!(silence < read, "qpdf_silence_errors must precede the read");
     assert!(suppress < read, "warning suppression must precede the read");
     assert!(logger < read, "the discarding logger must precede the read");
-}
-
-fn engine_calls(state: &Arc<FakeHeap>) -> Vec<Call> {
-    state.calls()
 }
 
 /// `QPDF_ERROR_CODE` is a bitmask. A warnings-only status must not read as a failure —
@@ -599,5 +597,238 @@ fn too_many_pages_is_a_limit_error_on_the_web_path_too() {
         }
         other => panic!("expected LimitExceeded, got {other:?}"),
     }
+    state.assert_empty();
+}
+
+/// qpdf's process-global resource limits are applied on the web path, from the same table
+/// the native path uses.
+///
+/// They were not applied at all before, and that mattered more here than on native: every
+/// decompression memory limit qpdf offers defaults to **unlimited**, an allocator giving up
+/// inside C++ is an `abort()`, and an Emscripten `abort()` is quiet — it leaves the worker
+/// alive with its init flags set, so one crafted file bricks the engine for the session.
+#[test]
+fn the_global_resource_limits_are_applied_on_the_web_path_too() {
+    let (engine, state) = structure_engine(QpdfScript::default());
+    let _ = engine.check(
+        ordinary_pdf().into_boxed_slice(),
+        &CheckOptions::new(Limits::default(), stopped()),
+    );
+
+    let applied: Vec<_> = state
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::GlobalSet(param, value) => Some((param, value)),
+            _ => None,
+        })
+        .collect();
+
+    // The same list, not a copy of it: if the policy gains a parameter, this follows.
+    let expected = crate::codes::qpdf::policy::settings();
+    assert_eq!(
+        applied,
+        expected.to_vec(),
+        "the web path must apply exactly the shared policy"
+    );
+    assert!(
+        !applied.is_empty(),
+        "an empty policy would make this test vacuous"
+    );
+}
+
+/// The globals and the logger are installed once per engine, not once per operation.
+///
+/// The logger is the reason this matters. `qpdflogger_cleanup` is declared on neither path,
+/// so a logger created per `check()` is a permanent allocation in a heap that never shrinks
+/// — unbounded growth that no `Limits` covers. The native path avoids it with a
+/// process-wide `OnceLock`; this is the web equivalent.
+#[test]
+fn the_logger_and_the_globals_are_installed_once_not_once_per_operation() {
+    let (engine, state) = structure_engine(QpdfScript::default());
+    for _ in 0..5 {
+        let _ = engine.check(
+            ordinary_pdf().into_boxed_slice(),
+            &CheckOptions::new(Limits::default(), stopped()),
+        );
+    }
+
+    let loggers = state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::LoggerCreate))
+        .count();
+    assert_eq!(loggers, 1, "five operations created {loggers} loggers");
+
+    let installs = state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::GlobalSet(..)))
+        .count();
+    assert_eq!(
+        installs,
+        crate::codes::qpdf::policy::settings().len(),
+        "the global limits were applied more than once"
+    );
+
+    // The fake allocates the logger through its tracked heap, as a *retained* allocation:
+    // it is meant to outlive an operation, so the property is "exactly one", not "freed".
+    // Five operations creating five loggers is the unbounded growth this guards against.
+    assert_eq!(
+        state.retained(),
+        1,
+        "five operations left {} long-lived allocations",
+        state.retained()
+    );
+    state.assert_empty();
+}
+
+/// The web qpdf path does **not** apply the PDFium-derived size estimate, because the
+/// native qpdf path does not either.
+///
+/// An earlier version called `estimate::check_open_memory` here. The two paths then
+/// disagreed on any file between `max_memory_bytes / 1.25` and `max_memory_bytes` — a
+/// divergence in the module whose docs claim the two cannot diverge, and exactly what
+/// ROADMAP item 12's differential harness exists to catch.
+#[test]
+fn a_file_under_the_memory_ceiling_is_checked_rather_than_estimated_away() {
+    let bytes = ordinary_pdf();
+    // A ceiling above the input but below `input + input/4 + overhead`, which is what the
+    // estimate would have compared against.
+    let limits = Limits::with(|l| l.max_memory_bytes = u64::try_from(bytes.len()).unwrap() + 16);
+
+    let (engine, state) = structure_engine(QpdfScript {
+        page_count: 2,
+        ..QpdfScript::default()
+    });
+    let report = engine
+        .check(
+            bytes.into_boxed_slice(),
+            &CheckOptions::new(limits, stopped()),
+        )
+        .expect("a structural check must not apply PDFium's open-cost estimate");
+    assert_eq!(report.pages, 2);
+    state.assert_empty();
+}
+
+/// The measured memory check runs on the qpdf path too.
+///
+/// `QpdfBridge::heap_bytes` was declared and called from nowhere — a method that existed to
+/// make the two bridges look symmetric, in a trait whose own docs describe the method list
+/// as the audit surface. Unlike the size estimate (which is PDFium-derived and deliberately
+/// absent here), this one reads what the engine actually did.
+#[test]
+fn a_read_that_costs_more_than_allowed_is_caught_on_the_qpdf_path() {
+    let limits = Limits::with(|l| l.max_memory_bytes = 8 * 1024 * 1024);
+    let (engine, state) = structure_engine(QpdfScript {
+        // Far past the ceiling plus the noise margin, so this is unambiguous.
+        read_grows_heap_by: 4 * 1024 * 1024 * 1024,
+        ..QpdfScript::default()
+    });
+    match engine.check(
+        ordinary_pdf().into_boxed_slice(),
+        &CheckOptions::new(limits, stopped()),
+    ) {
+        Err(Error::LimitExceeded { limit, .. }) => assert_eq!(limit, "max_memory_bytes"),
+        other => panic!("expected the measured check to fire, got {other:?}"),
+    }
+    state.assert_empty();
+}
+
+/// `max_duration_ms` is enforced on the web path, at the checkpoints the native path uses.
+///
+/// The one `Limits` field the fake-bridge suite did not exercise: every other test here runs
+/// on a stopped `ManualClock`, so the deadline could have been removed entirely without any
+/// of them noticing. `page_count` deliberately takes no clock — PR 2 found that a second
+/// clock silently disabled the limit — so this advances the one the document was opened
+/// with.
+#[test]
+fn a_deadline_that_passes_between_calls_is_caught_on_the_web_path() {
+    let clock = Arc::new(ManualClock::new(0));
+    let limits = Limits::with(|l| l.max_duration_ms = 1_000);
+    let (engine, state) = document_engine(PdfiumScript::default());
+
+    let doc = engine
+        .open(
+            ordinary_pdf().into_boxed_slice(),
+            &OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>),
+        )
+        .expect("the budget has not been spent yet");
+
+    // Still inside the budget.
+    assert!(engine.page_count(&doc).is_ok());
+
+    clock.advance(1_001);
+    match engine.page_count(&doc) {
+        Err(Error::LimitExceeded { limit, .. }) => assert_eq!(limit, "max_duration_ms"),
+        other => panic!("expected the deadline to fire, got {other:?}"),
+    }
+    drop(doc);
+    state.assert_empty();
+}
+
+/// A clock that advances every time it is read.
+///
+/// `ManualClock` is the right tool when a test can advance time between calls, as the PDFium
+/// test above does. `check()` is a single call, so its two checkpoints bracket work that a
+/// stopped clock makes instantaneous — this makes time pass *inside* the operation, which is
+/// what a slow engine actually looks like.
+struct TickingClock {
+    now: std::sync::atomic::AtomicU64,
+    step: u64,
+}
+
+impl Clock for TickingClock {
+    fn now_ms(&self) -> u64 {
+        self.now
+            .fetch_add(self.step, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// The structure engine's deadline fires when the work outlasts the budget.
+///
+/// A first version set `max_duration_ms = 0` against a stopped clock and expected a failure.
+/// It did not fail, and the code was right: zero elapsed does not *exceed* a zero budget.
+/// The test premise was wrong, not the deadline.
+#[test]
+fn a_check_that_outlasts_its_budget_is_stopped_on_the_web_path() {
+    let clock: Arc<dyn Clock> = Arc::new(TickingClock {
+        now: std::sync::atomic::AtomicU64::new(0),
+        step: 1_000,
+    });
+    let limits = Limits::with(|l| l.max_duration_ms = 500);
+    let (engine, state) = structure_engine(QpdfScript::default());
+
+    match engine.check(
+        ordinary_pdf().into_boxed_slice(),
+        &CheckOptions::new(limits, clock),
+    ) {
+        Err(Error::LimitExceeded { limit, .. }) => assert_eq!(limit, "max_duration_ms"),
+        other => panic!("expected the deadline to fire, got {other:?}"),
+    }
+    state.assert_empty();
+}
+
+/// And a generous budget is not tripped by the same clock, so the test above is measuring
+/// the budget rather than the clock.
+#[test]
+fn a_check_inside_its_budget_is_not_stopped() {
+    let clock: Arc<dyn Clock> = Arc::new(TickingClock {
+        now: std::sync::atomic::AtomicU64::new(0),
+        step: 1_000,
+    });
+    let limits = Limits::with(|l| l.max_duration_ms = 1_000_000);
+    let (engine, state) = structure_engine(QpdfScript {
+        page_count: 4,
+        ..QpdfScript::default()
+    });
+
+    let report = engine
+        .check(
+            ordinary_pdf().into_boxed_slice(),
+            &CheckOptions::new(limits, clock),
+        )
+        .expect("a generous budget must not fire");
+    assert_eq!(report.pages, 4);
     state.assert_empty();
 }

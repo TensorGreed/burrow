@@ -213,6 +213,8 @@ impl StructureEngine for Qpdf {
             .as_ref()
             .map_or(core::ptr::null(), |p| p.as_ptr().cast::<c_char>());
 
+        let before = crate::rss::resident_bytes();
+
         // SAFETY: the buffer pointer addresses `document._bytes`, which this function owns
         // and which outlives `document.data` by construction. `size` is its length.
         // `DESCRIPTION` is a NUL-terminated literal. `password_ptr` is null or a
@@ -262,6 +264,16 @@ impl StructureEngine for Qpdf {
         }
 
         Limits::check("max_pages", pages, limits.max_pages)?;
+
+        // What the read actually cost. The pre-scan sees only what the file *declares*;
+        // this sees what qpdf did with it -- a decompression bomb costs memory here exactly
+        // as a declared-size bomb costs PDFium memory there.
+        //
+        // Added in M1 PR 4a-i, when the web qpdf path grew one and the two would otherwise
+        // have disagreed. It is the same function and the same tolerance the PDFium path
+        // uses; only the counter differs per platform.
+        crate::estimate::check_measured_memory(before, crate::rss::resident_bytes(), &limits)?;
+
         deadline.checkpoint(clock.as_ref())?;
 
         Ok(StructureReport { pages })

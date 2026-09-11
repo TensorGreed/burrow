@@ -49,6 +49,12 @@ mod estimate;
 // platforms -- it copies bytes and appends a NUL, which needs no engine.
 mod password;
 
+// Reading how much memory an operation actually cost. Linux-only and gated with the engine
+// modules, because procfs is where the number comes from; the web path supplies its own
+// reading through the bridge instead. Both feed the same `estimate::check_measured_memory`.
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+mod rss;
+
 // The PDFium implementation. Gated on the libraries actually being linked: `build.rs`
 // sets `burrow_native_engines` only when the `native-engines` feature is on, the target
 // is Linux, and every vendored library has passed its checksum. The trait above stays

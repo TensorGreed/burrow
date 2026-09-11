@@ -232,6 +232,14 @@ pub trait QpdfBridge: Send + Sync {
     /// `qpdf_get_num_pages`. Negative means the page structure could not be read.
     fn get_num_pages(&self, data: QpdfPtr) -> i32;
 
+    /// `qpdf_global_set_uint32`. Process-global; takes no `qpdf_data`.
+    ///
+    /// Returns qpdf's status code, passed through unexamined. The caller ignores it: qpdf
+    /// rejects a parameter it does not recognise, which is what a future version removing a
+    /// hardening knob looks like, and refusing to open any document because a knob moved
+    /// would be worse than opening it with qpdf's own defaults.
+    fn global_set_uint32(&self, param: i32, value: u32) -> i32;
+
     /// `qpdflogger_create`. [`QpdfPtr::NULL`] if qpdf could not allocate.
     fn logger_create(&self) -> QpdfPtr;
 

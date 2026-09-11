@@ -2,7 +2,7 @@
 //!
 //! # Why this exists, and what it is worth
 //!
-//! [`super::estimate`] predicts cost from the input's **length**, which is all it can see
+//! [`crate::estimate`] predicts cost from the input's **length**, which is all it can see
 //! before handing the buffer over. That misses an entire attack: a small file can declare
 //! an enormous structure, and the engine will materialise it. A 330 KB PDF whose
 //! cross-reference stream declares twenty million entries drives PDFium to allocate about
@@ -33,7 +33,7 @@
 ///
 /// `None` when it cannot be read, which is not an error: the caller degrades to the
 /// size-based estimate alone rather than failing an operation over a missing procfs.
-pub(super) fn resident_bytes() -> Option<u64> {
+pub(crate) fn resident_bytes() -> Option<u64> {
     // Field 2 of /proc/self/statm is the resident set, in pages. `statm` rather than
     // `status` because it is a single short line of integers -- no parsing of units, no
     // locale, and one read.

@@ -198,7 +198,7 @@ em++ -O2 -fexceptions --no-entry -I "$prefix/include" \
   -sWASM_BIGINT=1 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=2GB \
   -sFILESYSTEM=0 -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 \
   -sEXPORTED_FUNCTIONS="[$qpdf_exports]" \
-  -sEXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPU32","stackSave","stackAlloc","stackRestore","UTF8ToString","cwrap"]' \
+  -sEXPORTED_RUNTIME_METHODS='["HEAPU8","HEAPU32","stackSave","stackAlloc","stackRestore"]' \
   -o "$prefix/lib/qpdf.js" 2>>"$src/qpdf-wasm-configure.log"
 
 echo "   qpdf.js   $(stat -c%s "$prefix/lib/qpdf.js") bytes"
@@ -235,9 +235,22 @@ node -e '
 const fs = require("fs");
 const m = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
 const allowed = new Set(fs.readFileSync(process.argv[2], "utf8").split("\n").filter(Boolean));
+// Every export is examined. A prefix filter was used here first, which meant 12 exports --
+// the Emscripten and C++ ABI runtime symbols -- were never looked at at all, in a check
+// whose whole purpose is to notice an unexpected export. They are benign, so they are
+// allowlisted by name rather than skipped by pattern.
+const RUNTIME = new Set([
+  "__cxa_can_catch", "__cxa_decrement_exception_refcount", "__cxa_get_exception_ptr",
+  "__cxa_increment_exception_refcount", "__indirect_function_table", "__wasm_call_ctors",
+  "_emscripten_stack_alloc", "_emscripten_stack_restore", "_emscripten_tempret_set",
+  "emscripten_stack_get_current", "emscripten_stack_init", "emscripten_stack_get_free",
+  "emscripten_stack_get_base", "emscripten_stack_get_end", "memory", "setThrew",
+  "__errno_location", "__get_temp_ret", "__set_temp_ret", "stackSave", "stackRestore",
+  "stackAlloc",
+]);
 const got = WebAssembly.Module.exports(m)
   .map((e) => e.name)
-  .filter((n) => /^(qpdf|malloc|free)/.test(n))
+  .filter((n) => !RUNTIME.has(n))
   .sort();
 const extra = got.filter((n) => !allowed.has(n));
 const missing = [...allowed].filter((n) => !got.includes(n)).sort();
@@ -256,22 +269,34 @@ console.log("   " + got.length + " exports, matching ffi.rs exactly");
   exit 1
 }
 
-# The module must not have acquired an async or threaded runtime: the bridge calls every
-# Emscripten export synchronously from Rust, and Asyncify or JSPI would make each one
-# return a Promise, which `DocumentEngine` (a sync trait) cannot accommodate.
-for forbidden in Asyncify _emscripten_proxy pthread_create SharedArrayBuffer; do
-  ! grep -q "$forbidden" "$prefix/lib/qpdf.js" || {
-    echo "build-wasm: qpdf.js contains '$forbidden' -- the synchronous bridge assumption is broken" >&2
+# NEITHER module may have an async or threaded runtime: the bridge calls every Emscripten
+# export synchronously from Rust, and Asyncify or JSPI would make each one return a Promise,
+# which `DocumentEngine` (a sync trait) cannot accommodate.
+#
+# BOTH artifacts are checked, not just ours. An earlier version ran these over qpdf.js only
+# -- the one file that cannot change without us changing it -- and skipped pdfium.js, the
+# third-party prebuilt that is re-fetched on every bump and is the only one that could
+# acquire any of this without anyone noticing.
+for artifact in qpdf.js pdfium.js; do
+  for forbidden in Asyncify _emscripten_proxy pthread_create SharedArrayBuffer; do
+    ! grep -q "$forbidden" "$prefix/lib/$artifact" || {
+      echo "build-wasm: $artifact contains '$forbidden' -- the synchronous bridge assumption is broken" >&2
+      exit 1
+    }
+  done
+  # And neither may reach the network. The worker supplies the wasm bytes itself.
+  #
+  # pdfium.js DOES still contain `fetch(...)`, `XMLHttpRequest` and `require("fs")` -- it is
+  # an unmodified prebuilt, and we never applied -sENVIRONMENT=web,worker to it. None of
+  # that runs, because `instantiateWasm` pre-empts the fetch and a worker is not Node. What
+  # is checked here is narrower and still worth checking: no ABSOLUTE URL, so there is no
+  # host baked into the artifact for any of that machinery to reach.
+  ! grep -qE "https?://[a-zA-Z0-9]" "$prefix/lib/$artifact" || {
+    echo "build-wasm: $artifact contains an absolute URL -- non-negotiable #1" >&2
     exit 1
   }
 done
-# And it must not reach the network. The worker supplies the wasm bytes itself; nothing in
-# the glue should be fetching anything.
-! grep -qE "https?://" "$prefix/lib/qpdf.js" || {
-  echo "build-wasm: qpdf.js contains an absolute URL -- non-negotiable #1" >&2
-  exit 1
-}
-echo "   no async runtime, no threads, no absolute URL"
+echo "   neither module has an async runtime, threads, or an absolute URL"
 
 # ---------------------------------------------------------------------------------
 say "qpdf wasm: the artifact that ships is the one that answers"
@@ -292,7 +317,15 @@ createQpdfModule({
     return {};
   },
 }).then((m) => {
-  console.log(m.cwrap("qpdf_get_qpdf_version", "string", [])());
+  // Read straight out of the heap rather than through cwrap and UTF8ToString. Those were
+  // exported solely for this probe, and shipping a generic "read a NUL-terminated string
+  // out of the qpdf heap" helper sits badly beside the care taken to keep the qpdf message
+  // accessors unreachable. (No apostrophes in here: the whole script is inside a shell
+  // single-quoted string, and one closes it.)
+  const ptr = m._qpdf_get_qpdf_version();
+  let end = ptr;
+  while (m.HEAPU8[end] !== 0) end += 1;
+  console.log(new TextDecoder().decode(m.HEAPU8.subarray(ptr, end)));
 });
 ' "$src/qpdf-engine.cjs" "$prefix/lib/qpdf.wasm" 2>&1 | tail -1)"
 echo "   qpdf reports: ${version:-<no answer>}"

@@ -48,9 +48,9 @@ describe("the production build", () => {
     files = walk(outDir);
   }, 300_000);
 
-  it("does not contain the engine harness", () => {
-    const harness = files.filter((f) => f.includes("harness"));
-    expect(harness, `these should not ship: ${harness.join(", ")}`).toEqual([]);
+  it("does not contain the engine harness or its probe worker", () => {
+    const testOnly = files.filter((f) => f.includes("harness") || f.includes("csp-probe"));
+    expect(testOnly, `these should not ship: ${testOnly.join(", ")}`).toEqual([]);
   });
 
   it("does not expose the harness API anywhere in its output", () => {
@@ -63,13 +63,35 @@ describe("the production build", () => {
     expect(offenders, `burrowHarness leaked into: ${offenders.join(", ")}`).toEqual([]);
   });
 
-  it("still ships the engines and the worker, which are not test-only", () => {
+  it("still ships the engines and the worker bundle, which are not test-only", () => {
     // The complement of the assertions above. Without this, deleting too much would pass.
-    expect(files).toContain("burrow-worker.js");
-    expect(files).toContain("burrow-bridge.js");
-    expect(files.some((f) => /^engines\/pdfium\..*\.wasm$/.test(f))).toBe(true);
-    expect(files.some((f) => /^engines\/qpdf\..*\.wasm$/.test(f))).toBe(true);
-    expect(files.some((f) => /^engines\/burrow_wasm_bg\..*\.wasm$/.test(f))).toBe(true);
+    for (const pattern of [
+      /^engines\/pdfium\.[0-9a-f]{16}\.wasm$/,
+      /^engines\/qpdf\.[0-9a-f]{16}\.wasm$/,
+      /^engines\/burrow_wasm_bg\.[0-9a-f]{16}\.wasm$/,
+      /^engines\/burrow-worker\.[0-9a-f]{16}\.js$/,
+    ]) {
+      expect(
+        files.some((f) => pattern.test(f)),
+        `nothing matched ${pattern}`,
+      ).toBe(true);
+    }
+  });
+
+  it("ships the worker as ONE bundle, with no glue loose beside it", () => {
+    // The Emscripten glue used to be staged as three separate files and pulled in with
+    // `importScripts`, which has no integrity mechanism — so 160 KB of third-party PDFium
+    // glue ran unverified. It is now inside the worker bundle, covered by that file's
+    // digest. A regression would look like these files reappearing.
+    // The only `.js` under engines/ may be the worker bundle itself.
+    const scripts = files.filter((f) => f.startsWith("engines/") && f.endsWith(".js"));
+    expect(scripts, `loose glue beside the bundle: ${scripts.join(", ")}`).toHaveLength(1);
+    expect(scripts[0]).toMatch(/^engines\/burrow-worker\.[0-9a-f]{16}\.js$/);
+
+    const source = readFileSync(join(outDir, scripts[0]), "utf8");
+    for (const marker of ["createQpdfModule", "FPDF_LoadMemDocument64", "wasm_bindgen"]) {
+      expect(source, `the bundle is missing ${marker}`).toContain(marker);
+    }
   });
 
   it("carries the generated CSP in every page it ships", () => {

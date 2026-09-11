@@ -56,7 +56,20 @@ with every directive explicit, and `connect-src` naming the exact content-hashed
 `.wasm` URLs — nothing else on the origin may be fetched. Written by
 `tools/stage-web-engines.mjs`; see [ADR 0014](../../docs/adr/0014-web-engine-loading-and-csp.md).
 
-Two consequences you will meet:
+**The worker is created from a `blob:`, and that is a security property, not a style.** A
+dedicated worker loaded from a same-origin _script URL_ does **not** inherit the page's CSP —
+it takes its policy from that script's HTTP response headers, and a static host sends none,
+so it runs unpoliced. Measured in M1 PR 4a-i: a cross-origin `fetch` from inside such a
+worker reached the network while every page-level CSP test passed. The worker is the only
+place file bytes ever exist.
+
+So: `tools/stage-web-engines.mjs` bundles **all** worker code into one file (which also means
+one integrity digest covers the Emscripten glue, which `importScripts` could never pin), the
+page fetches its source with `integrity`, and constructs the worker from a `Blob`. The worker
+refuses every file operation unless `self.location.protocol === "blob:"`, so getting this
+wrong fails closed. Do not change it back to `new Worker(url)`.
+
+Three consequences you will meet:
 
 - **No inline scripts.** `script-src 'self'` carries no `'unsafe-inline'` and no nonce, so
   an inline `<script>` is refused — the harness hit this and moved to an external file
@@ -66,6 +79,10 @@ Two consequences you will meet:
   a test asserting **zero network requests of any type** once the engines have loaded. Both
   halves are needed; neither is sufficient. `e2e/csp.spec.ts` includes a test that
   deliberately demonstrates the hole, so nobody reads the other two and concludes otherwise.
+- **Relative URLs do not work inside the worker.** A `blob:` worker's `self.location` is an
+  opaque `blob:` URL, so `fetch("/engines/…")` fails to parse before CSP is consulted. The
+  generated manifest inside the bundle carries absolute URLs, and Emscripten is handed
+  already-compiled modules so its `locateFile` path never runs.
 
 **Static only.** No SSR adapter, no API routes, no server-side anything. There must be no
 server that _could_ receive a file.

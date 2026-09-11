@@ -82,6 +82,8 @@ extern "C" {
     fn qpdf_get_error_code(data: u32, error: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_get_num_pages)]
     fn qpdf_get_num_pages(data: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_global_set_uint32)]
+    fn qpdf_global_set_uint32(param: i32, value: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdflogger_create)]
     fn qpdflogger_create() -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdflogger_discard_all)]
@@ -221,6 +223,10 @@ impl QpdfBridge for JsQpdf {
 
     fn get_num_pages(&self, data: QpdfPtr) -> i32 {
         qpdf_get_num_pages(data.0)
+    }
+
+    fn global_set_uint32(&self, param: i32, value: u32) -> i32 {
+        qpdf_global_set_uint32(param, value)
     }
 
     fn logger_create(&self) -> QpdfPtr {

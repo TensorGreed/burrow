@@ -198,9 +198,21 @@ impl DocumentEngine for WebPdfium {
 
         if !password_ptr.is_null() {
             // `password_len` is the Rust-side length of the same copy, so the wipe covers
-            // exactly the bytes written. The narrowing cannot fail: the buffer is a
-            // password plus a NUL, and a password that large was rejected at step 1.
-            let wipe_len = u32::try_from(password_len).unwrap_or(u32::MAX);
+            // exactly the bytes written -- no over- or under-run.
+            //
+            // The narrowing below cannot fail on wasm32, where `usize` is 32 bits. (An
+            // earlier comment claimed "a password that large was rejected at step 1", which
+            // is wrong: step 1 checks the DOCUMENT's length and nothing checks the
+            // password's.)
+            // `u32::MAX` as a fallback would have been a heap-wide wipe: `HEAPU8.fill`
+            // clamps `end` to the heap length, so an over-large length zeroes everything
+            // above `ptr`. Unreachable on wasm32 (where `usize` is 32 bits), but the
+            // fallback must not pick the destructive direction.
+            let Ok(wipe_len) = u32::try_from(password_len) else {
+                return Err(Error::Internal(
+                    "password length does not fit the engine's address space".to_owned(),
+                ));
+            };
             self.bridge.wipe_and_free(password_ptr, wipe_len);
         }
         drop(password);

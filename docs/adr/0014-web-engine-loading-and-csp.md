@@ -22,10 +22,15 @@ ADR 0006 requirement 3 reads:
 The middle clause is right and is implemented. **The other two cancel each other out.**
 
 Supplying `Module.wasmBinary` means *we* obtain the engine bytes. Obtaining them means
-`fetch` or `XMLHttpRequest`, and that is precisely what `connect-src` governs — in the worker
-too, since a dedicated worker inherits its owner document's policy. `script-src` covers
-`importScripts`; `worker-src` covers `new Worker()`; neither covers fetching a `.wasm` file.
-There is no directive under which a `.wasm` can be retrieved while `connect-src` is `'none'`.
+`fetch` or `XMLHttpRequest`, and that is precisely what `connect-src` governs. `script-src`
+covers `importScripts`; `worker-src` covers `new Worker()`; neither covers fetching a `.wasm`
+file. There is no directive under which a `.wasm` can be retrieved while `connect-src` is
+`'none'`.
+
+(An earlier draft of this paragraph added "in the worker too, since a dedicated worker
+inherits its owner document's policy". That is **false** for a worker loaded from a script
+URL, which is how this was first built. §1a is what replaced it, and the correction came from
+a test rather than from re-reading the spec.)
 
 So a build satisfying requirement 3 as written cannot load PDFium at all. The requirement
 was stated from a correct intuition — the guarantee should rest on the browser rather than
@@ -42,18 +47,23 @@ anywhere**, and `connect-src` naming the **exact content-hashed engine URLs**:
 ```
 default-src 'none';
 script-src 'self' 'wasm-unsafe-eval';
-worker-src 'self';
+worker-src 'self' blob:;
 connect-src <origin>/engines/pdfium.<hash>.wasm
             <origin>/engines/qpdf.<hash>.wasm
-            <origin>/engines/burrow_wasm_bg.<hash>.wasm;
+            <origin>/engines/burrow_wasm_bg.<hash>.wasm
+            <origin>/engines/burrow-worker.<hash>.js;
 style-src 'self'; img-src 'self'; font-src 'self';
 base-uri 'none'; form-action 'none'; object-src 'none'
 ```
 
 A CSP path with no trailing slash matches exactly, so this is *stricter* than
-`connect-src 'self'` by a wide margin: not merely "same origin", but "these three files".
+`connect-src 'self'` by a wide margin: not merely "same origin", but "these four files".
 Every other URL on the origin is refused, which `e2e/csp.spec.ts` demonstrates against `/`,
-`/harness`, `/engines/` and `/engines/not-an-engine.wasm`.
+`/harness`, `/engines/` and `/engines/not-an-engine.wasm`, from the page **and** from inside
+the worker.
+
+The worker bundle is a `connect-src` entry because the page fetches its **source text** —
+see §1a. It is not a `script-src` entry: no script is ever loaded from that URL.
 
 Directives are listed even where `default-src 'none'` already covers them. A reader should
 not have to know which directives fall back, and a future directive that does not fall back
@@ -61,6 +71,49 @@ cannot then quietly open a hole.
 
 `'wasm-unsafe-eval'` is required for WebAssembly compilation. It is not `'unsafe-eval'`,
 which would permit `eval()` of JavaScript and is absent, as is `'unsafe-inline'`.
+
+### 1a. The worker is loaded from a `blob:`, because a page-level CSP does not reach it
+
+**This was found by a test, after the rest of this ADR was written and believed.**
+
+A dedicated worker created from a same-origin **script URL** does not inherit the creating
+document's CSP. It takes its policy from that script's own HTTP response headers, and a
+static host sends none — so the worker ran with **no policy at all**. Measured: a
+cross-origin `fetch` from inside it reached the network, while every page-level test in
+`e2e/csp.spec.ts` passed. The worker is the only place file bytes ever exist; the page hands
+them over and never sees them again. The protected half was the half that did not matter.
+
+Only `blob:`, `data:` and `about:` workers inherit. So:
+
+- The page fetches the worker's **source text** with `integrity`, from a `connect-src` entry
+  naming its exact URL, wraps it in a `Blob`, and constructs the worker from that.
+- `worker-src` is `'self' blob:`. That is the one widening this design needs, and it is
+  narrow: the blob's content is this site's own bundle, fetched from a pinned URL with a
+  pinned digest. `script-src` deliberately does **not** get `blob:` — the worker is
+  *constructed* from a Blob, never is a script *loaded* from one.
+- **All worker code is in one bundled file.** The page fetches one source text, so it must
+  be. That is a gain rather than a cost: `importScripts` has no integrity mechanism, so the
+  three Emscripten glue files — including 160 KB of third-party PDFium glue that owns the
+  heap the bridge writes to — were previously loaded entirely unverified. One digest now
+  covers every line of worker code.
+- The engine manifest is **generated into the bundle** rather than sent by `postMessage`:
+  `pdfium.js` begins instantiating as it is parsed, so there is no moment after load and
+  before instantiation at which a message could arrive.
+- The URLs inside the bundle are **absolute**. A `blob:` worker's `self.location` is an
+  opaque `blob:` URL with no useful base, so a relative `fetch("/engines/…")` fails to parse
+  before CSP is even consulted. This is the same reason `locateFile` must never run and the
+  compiled modules are handed to Emscripten directly.
+
+### 1b. The worker fails closed
+
+`src/worker/prelude.js` computes `self.location.protocol === "blob:"`, and `main.js` refuses
+every file operation when it is false.
+
+Without it, a future refactor that went back to `new Worker(url)` would silently restore the
+hole **and every test would still pass**, because they all exercise the blob path.
+`e2e/worker-guard.spec.ts` drives the other branch: it constructs the worker from its plain
+URL and asserts it refuses, with a control that constructs the same bundle from a Blob and
+asserts it works.
 
 ### 2. The bytes are integrity-pinned
 
@@ -81,9 +134,13 @@ wanted: the glue's own fetch path never runs.
 
 Requirement 3 is replaced by:
 
-> **No cross-origin requests — enforced by the browser.**
+> **No cross-origin requests, from the page or the worker — enforced by the browser.**
 > **No requests at all after engine init — enforced by test.**
-> **Engine bytes integrity-pinned.**
+> **All worker code and all engine bytes integrity-pinned.**
+
+The first line says "or the worker" because that is the part that was wrong for a while and
+is easy to assume. The third says "all worker code" because that was also once narrower than
+it read: the `.wasm` modules were pinned and the `.js` glue was not.
 
 The second line is there because of a property of CSP that is easy to miss and impossible to
 work around: **CSP ignores query strings.** `…/qpdf.<hash>.wasm?leak=<bytes>` matches the
@@ -155,4 +212,13 @@ unnecessarily weak: exact paths cost nothing extra, since the generator knows th
 **Put the policy only in a header.** Cleaner, and `frame-ancestors` would work. Rejected: a
 static host may not read `_headers`, and `pnpm dev`, `pnpm preview` and Playwright do not
 send one — so the policy would not be enforced in the environment where it is tested, which
-is the environment where a regression would be caught.
+is the environment where a regression would be caught. The generated `public/_headers` sends
+it too, on a host that reads one, as defence in depth; **the guarantee does not depend on
+it**, and the `<meta>` tag is what the tests exercise.
+
+**Serve the worker script with its own CSP response header.** The other way to bring the
+worker under a policy, and it keeps `worker-src 'self'` with no `blob:`. Rejected because the
+protection would be invisible when absent: deploy to a host that ignores `_headers` and the
+worker is silently unpoliced again, with every test still green because the test server sent
+it. A `blob:` worker inherits the document's policy wherever the document is served from,
+with no host configuration involved at all.

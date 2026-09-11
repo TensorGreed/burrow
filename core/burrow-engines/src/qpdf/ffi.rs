@@ -102,40 +102,9 @@ pub(super) use crate::codes::qpdf::{QpdfErrorCode, has_errors};
 // hard-coding them safe. Nothing in this module needs them: the mapping is the only
 // consumer.
 
-/// `enum qpdf_log_dest_e` — `qpdflogger-c.h:58-64`.
-pub(super) mod log_dest {
-    use core::ffi::c_int;
-    /// `qpdf_log_dest_discard` — throw the output away. `qpdflogger-c.h:62`.
-    pub(in crate::qpdf) const DISCARD: c_int = 3;
-}
-
-/// `enum qpdf_param_e` — `Constants.h:275-319`. Process-global options and limits.
-pub(super) mod param {
-    use core::ffi::c_int;
-    /// `qpdf_p_limit_errors` — read-only count of limits exceeded. `Constants.h:277`.
-    ///
-    /// **Read-only**: `qpdf_global_set_uint32` has no case for it and returns
-    /// `qpdf_r_bad_parameter`. Kept only so `limits.rs` can assert it is never set.
-    #[cfg(test)]
-    pub(in crate::qpdf) const LIMIT_ERRORS: c_int = 0x0001_0020;
-    /// `qpdf_p_fuzz_mode` — tighten limits for fuzzing. `Constants.h:281`.
-    #[cfg(feature = "fuzzing")]
-    pub(in crate::qpdf) const FUZZ_MODE: c_int = 0x0001_1010;
-    /// `qpdf_p_doc_max_warnings` — 0 means unlimited. `Constants.h:290`.
-    pub(in crate::qpdf) const DOC_MAX_WARNINGS: c_int = 0x0001_2000;
-    /// `qpdf_p_parser_max_nesting` — object nesting depth. `Constants.h:293`.
-    pub(in crate::qpdf) const PARSER_MAX_NESTING: c_int = 0x0001_3000;
-    /// `qpdf_p_dct_max_memory` — 0 means unlimited. `Constants.h:302`.
-    pub(in crate::qpdf) const DCT_MAX_MEMORY: c_int = 0x0001_4020;
-    /// `qpdf_p_flate_max_memory` — 0 means unlimited. `Constants.h:306`.
-    pub(in crate::qpdf) const FLATE_MAX_MEMORY: c_int = 0x0001_4030;
-    /// `qpdf_p_png_max_memory` — 0 means unlimited. `Constants.h:309`.
-    pub(in crate::qpdf) const PNG_MAX_MEMORY: c_int = 0x0001_4040;
-    /// `qpdf_p_run_length_max_memory` — 0 means unlimited. `Constants.h:312`.
-    pub(in crate::qpdf) const RUN_LENGTH_MAX_MEMORY: c_int = 0x0001_4050;
-    /// `qpdf_p_tiff_max_memory` — 0 means unlimited. `Constants.h:315`.
-    pub(in crate::qpdf) const TIFF_MAX_MEMORY: c_int = 0x0001_4060;
-}
+// `enum qpdf_log_dest_e` and `enum qpdf_param_e` live in `crate::codes::qpdf::policy`,
+// ungated, with the values burrow sets them to -- so the native and web paths apply one
+// policy rather than two copies. The web path previously applied none at all.
 
 unsafe extern "C" {
     /// `qpdf_data qpdf_init()` — `qpdf-c.h:163`.

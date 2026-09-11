@@ -1,0 +1,20 @@
+{
+  // A separate project because these files are workers, not page code: `self` is a
+  // `WorkerGlobalScope`, not a `Window`, and the app's tsconfig uses the DOM lib.
+  //
+  // They are checked at all because the bridge computes heap offsets and pointer values and
+  // previously had no static checking of any kind — it was excluded from the app's project
+  // along with the rest of `public/`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["*.js", "*.d.ts"]
+}
