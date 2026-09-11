@@ -13,13 +13,21 @@ cargo-fuzz = true
 
 [dependencies]
 burrow-core = { path = "../core/burrow-core" }
-# libfuzzer-sys is added with the first real target in M1, when there is a parser to
-# fuzz. It needs nightly, so adding it now would break `cargo build` on stable.
-# libfuzzer-sys = "0.4"
+libfuzzer-sys = "0.4"
+
+# A direct dependency on the engine crate, with the engines linked.
+#
+# The entry point being fuzzed is `DocumentEngine::open`, which lives here. It is not
+# reachable through `burrow-core` yet: `page_count` is an engine capability, not a
+# `burrow-ops` operation, and the first operation lands in M1 PR 5. When it does, this
+# target keeps its place -- the engine boundary is what our fuzzing is actually for (see
+# the target's docs and ADR 0004).
+burrow-engines = { path = "../core/burrow-engines", features = ["native-engines"] }
+burrow-types = { path = "../core/burrow-types" }
 
 [[bin]]
-name = "placeholder"
-path = "fuzz_targets/placeholder.rs"
+name = "document_open"
+path = "fuzz_targets/document_open.rs"
 test = false
 doc = false
 bench = false

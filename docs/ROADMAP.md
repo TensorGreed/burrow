@@ -54,7 +54,7 @@ Agreed sequence. Each PR is squash-merged with CI green before the next starts.
 | PR | Scope | Items |
 |---|---|---|
 | **1** | **Engine acquisition** — pinned fetch, native (linux-aarch64 + linux-x86_64) and wasm builds, licence manifest, crypto assertions, CI caching, proof of linkage | 1–3 |
-| **2** | `DocumentEngine` trait + **native PDFium** implementation: injected clock, `Limits` enforcement, typed error mapping, `page_count` as the thinnest end-to-end slice with all four test kinds, document-open fuzz target | 4, 5, 8 |
+| **2** ✅ | `DocumentEngine` trait + **native PDFium** implementation: injected clock, `Limits` enforcement, typed error mapping, `page_count` as the thinnest end-to-end slice with all four test kinds, document-open fuzz target | 4, 5, 8 |
 | **3** | **qpdf native** behind its own trait, logging suppression, and the "a secret never reaches the console or an error" test | 6, 7 |
 | **4** | **Web path**: wasm binding + worker harness, `wasmBinary`, `-sENVIRONMENT=web,worker`, CSP `connect-src 'none'`, worker recovery per ADR 0009, wasm size budget, and the **differential conformance harness** | 9–12 |
 | **5+** | Operations, one at a time, starting with `merge` | — |
@@ -89,13 +89,13 @@ acquisition. The spike is not production code and nothing from it is reused dire
    `REQUIRE_CRYPTO_NATIVE=ON`. The upstream default would link GnuTLS (LGPL-2.1+).
    *Testable:* CI fails if the crypto summary changes or `QPDFCrypto_gnutls` appears in
    the link.
-4. **`DocumentEngine` implementation over PDFium** in `burrow-engines`, with every C
+4. ~~**`DocumentEngine` implementation over PDFium**~~ — **done, PR 2.** In `burrow-engines`, with every C
    error code mapped to a typed `Error` and no raw code escaping the crate. No sentinel
    that can alias success — `-FPDF_GetLastError()` yields `-0`, and `-0 === 0` in JS — and
    **no error classification by string matching**; use engine codes, never engine prose.
    *Testable:* every PDFium error path has a test asserting the mapped variant, including
    one that a zero error code cannot read as success.
-5. **Open and parse with limits enforced**, per
+5. ~~**Open and parse with limits enforced**~~ — **done, PR 2**, per
    [ADR 0007](adr/0007-limit-enforcement-per-platform.md): an injected clock rather than
    `Instant::now()`, which panics on wasm; WASM maximum memory as the web ceiling;
    estimate-based pre-checks on native. Reject oversized input **before** allocating, and
@@ -115,10 +115,55 @@ acquisition. The spike is not production code and nothing from it is reused dire
    `QPDFLogger`, and `printErr`/`print` stubbed on every module.
    *Testable:* a test opens a file containing a recognisable secret and asserts nothing
    from it reaches console or any error string.
-8. **Fuzz target for document open** — the first parser entry point. Note that
+8. ~~**Fuzz target for document open**~~ — **done, PR 2.** The first parser entry point. Note that
    `max_duration_ms` is checkpoint-based and cannot catch a hang, so libFuzzer's own
    `-timeout` is required.
    *Testable:* 10 minutes clean on CI, longer on the regression machine.
+
+**What PR 2 settled, beyond the three items.** Recorded here because two of them change
+what later PRs can assume:
+
+- **PDFium is serialised on one dedicated engine thread**, not behind a lock —
+  [ADR 0011](adr/0011-pdfium-engine-thread.md). Document handles are ids, not pointers, so
+  they are `Send + Sync` with no `unsafe impl` anywhere. Throughput for engine work is
+  capped at one core on native, permanently; a thread pool is the escape hatch if that
+  ever binds.
+- **The `DocumentEngine` trait is handle-based and takes its input by value**, so PR 4 can
+  implement it over the JS bridge where nothing can be borrowed. It also requires every
+  bridge call to return its value *and* the engine error code in one round trip, because
+  `FPDF_GetLastError` is global.
+- **`tests/conformance/` holds the shared corpus** — generated fixtures plus
+  `expectations.json`, the typed outcome each must produce. Item 12's differential harness
+  reads that same file rather than restating the expectations in TypeScript.
+- **The clang 18 ASan interop question carried over from PR 1 is resolved: it works.** The
+  instrumented `lib/fuzz/libqpdf.a` links and runs under cargo-fuzz's Rust ASan (matching
+  `__asan_version_mismatch_check_v8`), with coverage feedback from qpdf's own code.
+  Measured on aarch64 only; `fuzz/README.md` has the method and the flags, and item 6's
+  qpdf fuzz target should use them.
+- **Bindings are deferred, explicitly.** `burrow-types` gained `Clock`, `SystemClock`,
+  `ManualClock`, `Deadline`, `Password` and `Limits::with`, and `burrow-engines` gained
+  `DocumentEngine`/`OpenOptions`/`pdfium`. None is wired into `burrow-ffi` or
+  `burrow-wasm`, and none needs to be yet: `burrow-core`'s surface is unchanged, so no
+  binding is stale today, and `DocumentEngine` is an engine seam that `burrow-ops` has no
+  operation to expose through. PR 4 supplies the web `Clock` over `performance.now()`;
+  uniffi exposure waits for M3. When it comes, **`Password` must cross uniffi as
+  `bytes`/`ByteArray`, never `String`** — the type exists precisely because a lossy
+  conversion changes the password — and `Deadline`/`ManualClock` should stay internal.
+- **Still missing, and known:**
+  - No fixture covers *"encrypted, and the password worked"*. That needs an encryptor, so
+    it belongs to item 6 with qpdf.
+  - **`max_memory_bytes` has no pre-emptive defence against a declared-size bomb.** The
+    size-based pre-check is blind to what a file declares: `tests/conformance/fixtures/xref-bomb.pdf`
+    is 330 KB, declares a twenty-million-entry cross-reference stream, and drives PDFium to
+    allocate ~1.2 GB. A measured post-open check now turns that into `LimitExceeded`
+    instead of `Ok`, but the allocation has already happened, and on a constrained device
+    the engine can `abort()` first — which is not a panic and cannot be caught. **The fix
+    is a structural pre-scan of the declared sizes before the load, and it belongs to
+    item 6**, because it needs a parser that is not PDFium. ADR 0011 records the reasoning.
+  - **One slow document delays every other caller**, and the victim is told its own
+    deadline expired. Measured at 716 ms against a 1 ms budget. A bounded wait and a
+    registry-level cap on open documents are both recorded in ADR 0011 and neither is in
+    PR 2.
 9. **Web binding surface and Web Worker harness**, satisfying ADR 0006's requirements 1
    and 3: one engine instance per worker, the init **promise** memoised (not the result),
    `Module.wasmBinary` supplied, built `-sENVIRONMENT=web,worker`, and shipped with

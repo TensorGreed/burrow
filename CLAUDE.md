@@ -12,12 +12,14 @@ These are not preferences. A change that violates one is wrong, however well it 
    content may make a network call. No telemetry on file content, ever.
 2. **Permissive licenses only.** Allowed: MIT, BSD-2/3, Apache-2.0, ISC, Zlib, MPL-2.0,
    OFL (fonts), Unicode-3.0, CC0-1.0, Unlicense — plus, for bundled native engine
-   components, FTL, IJG, libpng-2.0, LicenseRef-AGG-2.3, MIT-Modern-Variant and ICU.
+   components, FTL, IJG, libpng-2.0, LicenseRef-AGG-2.3, MIT-Modern-Variant and ICU —
+   plus NCSA, for libFuzzer (ADR 0012).
    Forbidden: GPL, LGPL, AGPL,
    SSPL, non-commercial, and anything unclear. CI enforces this in two halves:
    `cargo-deny` for Rust crates, `tools/check-engine-licences.py` against
    `engines/licenses.toml` for the engines. Adding a licence needs an ADR, not a config
-   edit. See `docs/adr/0008-widened-licence-allowlist.md` and `docs/adr/0010-harfbuzz-and-icu-in-pdfium.md`.
+   edit. See `docs/adr/0008-widened-licence-allowlist.md`, `docs/adr/0010-harfbuzz-and-icu-in-pdfium.md`
+   and `docs/adr/0012-ncsa-for-libfuzzer.md`.
 3. **All input is hostile.** Every file is untrusted and possibly adversarial. Every
    parser entry point gets a fuzz target. No panics cross the FFI boundary; errors are
    typed. Every operation enforces memory, time, and page/pixel limits.
@@ -83,6 +85,7 @@ cargo +nightly fuzz run <target> -- -max_total_time=60
 | `apps/web/` | Astro + Svelte islands. One indexable page per tool. |
 | `apps/android/`, `apps/ios/` | Native Compose / SwiftUI apps (M3 / M4). No WebViews. |
 | `corpus/` | `manifest.toml` is tracked; `corpus/files/` is gitignored. |
+| `tests/conformance/` | Small committed fixtures plus `expectations.json`, the typed outcome each must produce. Shared by the native tests and (from PR 4) the web differential harness, so it belongs to neither crate. |
 | `tools/` | Corpus runner, visual diff, headless scripts. |
 | `fuzz/` | cargo-fuzz targets, one per parser entry point. |
 | `docs/adr/` | Architecture decision records. Add one for any decision worth asking twice. |

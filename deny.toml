@@ -7,6 +7,19 @@
 # Changing the `allow` list below is a licensing policy decision. It requires an ADR
 # amending docs/adr/0003-permissive-licensing.md, not just a commit.
 
+# KNOWN GAP: cargo-deny does not see dev-dependencies.
+#
+# Measured with cargo-deny 0.20.2 on this repository: `proptest`, `serde`, `serde_json`
+# and their transitives do not appear in the graph, and neither `[graph] exclude-dev =
+# false` nor clearing `targets` changes that. So "cargo deny check passes" means "the
+# non-dev graph passes".
+#
+# That is not only a licensing gap. The `[bans] deny` list below names reqwest, hyper and
+# friends and is part of how non-negotiable #1 is enforced -- and it does not apply to any
+# dev-dependency either. A test-only HTTP client would not be caught here.
+#
+# Dev-dependencies are audited by hand at review time until this is fixed. See ADR 0012.
+
 [graph]
 # Check every target we ship to, so a platform-specific GPL dependency cannot slip in
 # through a target we do not build on CI's host.
@@ -47,6 +60,11 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "Unlicense",
+    # ADR 0012. Reaches us only through `libfuzzer-sys`, whose metadata declares
+    # `(MIT OR Apache-2.0) AND NCSA` -- conjunctive, so NCSA is not optional. A permissive
+    # BSD-family licence; admitted on its terms rather than by overriding the crate's
+    # declared licence with our reading of its source headers.
+    "NCSA",
 ]
 # A crate whose license we cannot determine is treated as forbidden ("anything unclear").
 unused-allowed-license = "allow"

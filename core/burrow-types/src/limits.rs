@@ -21,16 +21,24 @@
 ///
 /// - **On the web** it is a genuine hard ceiling — it becomes the WASM instance's
 ///   maximum memory, so exceeding it fails inside the sandbox and is recoverable.
-/// - **On native targets** it is an *estimate-based pre-check*. The allocations that
-///   dominate are made by C++ inside the engines, through their own allocators, and
-///   Rust cannot observe or cap them. Operations therefore estimate cost from page
-///   count, page dimensions, and decoded pixel counts, and reject up front when the
-///   estimate exceeds the limit. A sufficiently adversarial file can still exceed it in
-///   reality, and on a phone that means the OS terminating the app.
+/// - **On native targets** it is enforced in two weaker halves, neither of which is a
+///   cap. The allocations that dominate are made by C++ inside the engines, through their
+///   own allocators, and Rust cannot observe or bound them.
+///   1. A *size-based pre-check* before the input reaches the engine. It predicts cost
+///      from the input's **length**, so it is blind to anything the file *declares* — a
+///      small file declaring an enormous structure sails through it. That is a real gap,
+///      not a rounding error: a 330 KB PDF can drive an engine to allocate 1.2 GB.
+///   2. A *measured check* after the operation, comparing the process's resident set
+///      before and after. This catches what (1) cannot, but only after the memory has
+///      already been allocated. What it buys is that the operation fails instead of
+///      returning a handle that is already over budget.
 ///
-/// So on native, treat `max_memory_bytes` as a guard against accidental and amplified
-/// blowups, not as a sandbox. Set it conservatively on constrained devices rather than
-/// relying on it to save you.
+/// So on native, `max_memory_bytes` means "you will be told, and the result discarded, if
+/// an operation costs more than this" — **not** "an operation cannot cost more than this".
+/// A sufficiently adversarial file can still get the process killed by the OS before
+/// either check runs, because an engine's own out-of-memory abort is not something Rust
+/// can intercept. Set it conservatively on constrained devices rather than relying on it
+/// to save you.
 ///
 /// See `docs/adr/0007-limit-enforcement-per-platform.md` for why, and for what would
 /// have to change to make these uniform.
@@ -72,6 +80,25 @@ impl Limits {
         max_pixels: 256 * 1024 * 1024,
     };
 
+    /// [`Limits::DEFAULT`] with adjustments applied.
+    ///
+    /// `Limits` is `#[non_exhaustive]`, so callers outside this crate cannot write a
+    /// struct literal and cannot use `..Default::default()` either. This is the supported
+    /// way to build a customised set, and it keeps working when a field is added.
+    ///
+    /// ```
+    /// use burrow_types::Limits;
+    /// let limits = Limits::with(|l| l.max_pages = 100);
+    /// assert_eq!(limits.max_pages, 100);
+    /// assert_eq!(limits.max_input_bytes, Limits::DEFAULT.max_input_bytes);
+    /// ```
+    #[must_use]
+    pub fn with(edit: impl FnOnce(&mut Self)) -> Self {
+        let mut limits = Self::DEFAULT;
+        edit(&mut limits);
+        limits
+    }
+
     /// Checks `requested` against `allowed`, naming the limit in the error.
     ///
     /// # Errors
@@ -104,6 +131,14 @@ mod tests {
     fn check_permits_the_boundary_and_rejects_one_past_it() {
         assert!(Limits::check("max_pages", 10, 10).is_ok());
         assert!(Limits::check("max_pages", 11, 10).is_err());
+    }
+
+    #[test]
+    fn with_changes_only_what_it_is_asked_to() {
+        let limits = Limits::with(|l| l.max_duration_ms = 7);
+        assert_eq!(limits.max_duration_ms, 7);
+        assert_eq!(limits.max_pages, Limits::DEFAULT.max_pages);
+        assert_eq!(limits.max_memory_bytes, Limits::DEFAULT.max_memory_bytes);
     }
 
     #[test]

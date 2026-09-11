@@ -22,5 +22,8 @@ challenge point is the part of the review they will notice is missing.
   gitignored build outputs being absent.
 - Say "I could not verify this" rather than asserting, and label judgement calls as
   optional. They react badly to padded findings.
+- Work arrives **staged but uncommitted**, often with the feature branch sitting at the same
+  commit as `main`. `git diff main...HEAD` is then empty and says nothing — use
+  `git diff --cached` (plus `git diff` for anything another agent changed in flight).
 - Expect other agents to be editing the branch *while* you review it. Re-read files
   before reporting, and say which findings were already fixed in flight.

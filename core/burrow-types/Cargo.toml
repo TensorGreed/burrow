@@ -10,6 +10,10 @@ authors.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# Wipes a password's buffer on drop with a write the optimiser may not elide. This crate
+# is `forbid(unsafe_code)`, so a volatile write is not available here; zeroize exists for
+# exactly this and carries no transitive dependencies of its own.
+zeroize.workspace = true
 
 [lints]
 workspace = true

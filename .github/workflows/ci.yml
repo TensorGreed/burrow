@@ -137,7 +137,10 @@ jobs:
           for t in \
             link_check::tests::the_loaded_pdfium_is_the_pinned_library \
             link_check::tests::pdfium_links_and_initialises_cleanly \
-            link_check::tests::qpdf_links_and_reports_the_pinned_version
+            link_check::tests::qpdf_links_and_reports_the_pinned_version \
+            pdfium::tests::a_valid_document_opens_and_reports_its_pages \
+            pdfium::tests::an_encrypted_document_with_no_password_needs_one \
+            pdfium::errors::tests::a_zero_error_code_on_a_failed_call_is_never_success
           do
             printf '%s' "$list" | grep -q "^$t: test$" || {
               echo "::error::$t was not discovered. Is native-engines taking effect?" >&2
@@ -145,6 +148,22 @@ jobs:
             }
           done
           echo "engine link tests present"
+
+      # The integration tests are separate binaries with their own cfg gate, so the check
+      # above says nothing about them. These are the ones that would silently vanish and
+      # take the most important guarantees with them: that the serialisation holds, that
+      # the roadmap's named limits are enforced, and that the shared conformance corpus is
+      # actually exercised.
+      - name: Assert the engine integration tests actually ran
+        run: |
+          for suite in parallelism limits conformance properties; do
+            list=$(cargo test -p burrow-engines --all-features --test "$suite" -- --list)
+            printf '%s' "$list" | grep -q ': test$' || {
+              echo "::error::the $suite suite discovered no tests. Is native-engines taking effect?" >&2
+              exit 1
+            }
+            echo "$suite: $(printf '%s' "$list" | grep -c ': test$') tests"
+          done
 
       # Asks the question check-engine-licences.py cannot: is every component we can
       # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared
@@ -158,6 +177,72 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+  fuzz:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Nightly, because cargo-fuzz requires it. Pinned toolchain files do not apply:
+      # fuzz/ is its own workspace, excluded from the root one.
+      # Same pinned action as every other job (its `stable` branch); the `toolchain`
+      # input below is what selects nightly, which cargo-fuzz requires.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+
+      # Same cache key as the test and clippy jobs, so this is a restore on a warm cache.
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+
+      # cargo-fuzz takes a couple of minutes to build and this job is in the required
+      # `ci` gate, so every PR would pay for it. Keyed on the version, so a bump
+      # invalidates the cache rather than silently keeping the old binary.
+      - name: Cache cargo-fuzz
+        id: cargo-fuzz-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ runner.arch }}-0.13.2
+
+      - if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 0.13.2 cargo-fuzz
+
+      # 60 seconds per PR. The 10-minute run is nightly, in fuzz-nightly.yml; longer runs
+      # come with the self-hosted GB10 runner.
+      #
+      # -timeout and -rss_limit_mb are REQUIRED, not tuning. Limits::max_duration_ms is
+      # checkpoint-based (ADR 0007) and cannot catch a hang inside a single engine call,
+      # so libFuzzer's own timeout is the only thing that can.
+      #
+      # LD_LIBRARY_PATH because `cargo fuzz run` execs the binary directly rather than
+      # through cargo, so it does not get the deps/ path cargo adds for `cargo test`.
+      # ASAN_OPTIONS because FPDF_DestroyLibrary is deliberately never called, so PDFium's
+      # statics are live at exit by design. Both are explained in fuzz/README.md.
+      - name: fuzz document_open for 60s
+        working-directory: fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
+          cargo +nightly fuzz run document_open -- \
+            -max_total_time=60 -timeout=10 -rss_limit_mb=2048
 
   wasm:
     name: wasm build
@@ -205,6 +290,20 @@ jobs:
         with:
           command: check all
           arguments: --all-features
+      # `fuzz/` is EXCLUDED from the root workspace and has its own Cargo.lock, so the
+      # check above never saw it -- no fuzz dependency had ever been licence-checked, and
+      # libfuzzer-sys entered unnoticed in M1 PR 2. See ADR 0012.
+      #
+      # `bans` is deliberately not in this list: `wildcards = "deny"` fires on the three
+      # burrow-* path dependencies, which is right for a crate we might publish and
+      # meaningless for a fuzz harness we never will.
+      - name: cargo-deny for the fuzz workspace (ADR 0012)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          manifest-path: fuzz/Cargo.toml
+          command: check licenses advisories sources
+          arguments: --all-features --config deny.toml
+
       # cargo-deny sees Rust crates only. The native engines and everything they bundle
       # are the other 82% of the shipped bytes, and they are checked here against
       # ADR 0008's allowlist. Same job on purpose: one gate for the whole graph.
@@ -257,7 +356,7 @@ jobs:
     name: ci
     runs-on: ubuntu-latest
     if: always()
-    needs: [fmt, clippy, test, wasm, mobile, deny, audit, web]
+    needs: [fmt, clippy, test, fuzz, wasm, mobile, deny, audit, web]
     steps:
       - name: Fail if any job failed
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
