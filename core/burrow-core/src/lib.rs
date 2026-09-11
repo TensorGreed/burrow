@@ -14,7 +14,20 @@
 )]
 
 pub use burrow_ops as ops;
-pub use burrow_types::{Error, Limits, Result};
+pub use burrow_types::{Clock, Deadline, Error, Limits, Password, Result};
+
+/// The engine trait seams.
+///
+/// Most callers want [`ops`] instead. This is here for the **bindings**, which are the one
+/// place that legitimately needs the engine layer: `burrow-wasm` implements
+/// [`engines::web::PdfiumBridge`] and [`engines::web::QpdfBridge`] over `#[wasm_bindgen]`
+/// externs, because the JavaScript side of the bridge can only be declared in a binding
+/// crate.
+///
+/// It is deliberately *only* the seam. Every decision — the limit ordering, the pre-scan,
+/// the deadline, the error mapping — stays in `burrow-engines`, which is what makes
+/// ADR 0009's "no branch on engine state may live in JS" enforceable rather than aspirational.
+pub use burrow_ops::engines;
 
 /// The version of this build of burrow.
 #[must_use]

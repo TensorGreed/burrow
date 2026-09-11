@@ -14,9 +14,17 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 burrow-core.workspace = true
 
-# wasm-bindgen is added in M1 with the first operation exposed to the web. Until then
-# this crate proves the wasm32 target builds, which is what CI checks.
-# wasm-bindgen = "0.2"
+# wasm-bindgen lives HERE and not in burrow-engines, deliberately. burrow-engines is
+# already in the wasm32-unknown-unknown graph cargo-deny checks (via burrow-core), so
+# putting wasm-bindgen and its proc-macro chain there would pull all of it into the licence
+# and ban review. Keeping it in the binding also keeps `burrow-engines::web` compilable --
+# and therefore testable against a fake bridge -- on every target. See ADR 0006 and 0009.
+#
+# Only the core crate is used: no js-sys, no web-sys. Every bridge import takes and returns
+# numbers or byte slices, which is all the boundary needs, and it means deny.toml's
+# web-sys feature ban (RequestInit, WebSocket, XmlHttpRequest, EventSource) has nothing to
+# bite on here -- the engine fetch is in the worker's JavaScript, not in Rust.
+wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
