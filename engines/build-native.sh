@@ -105,7 +105,14 @@ build_qpdf() { # variant extra_c_flags extra_cxx_flags outdir
   rm -rf "$b"
   # PKG_CONFIG_EXECUTABLE is broken on purpose: qpdf's pkg-config path would find the
   # HOST zlib/libjpeg, defeating the point of vendoring. Failing it forces the
-  # find_path/find_library fallback, which we point at our prefix.
+  # find_path/find_library fallback, and the four paths below point that fallback at our
+  # prefix EXPLICITLY rather than hoping CMAKE_PREFIX_PATH wins the search order.
+  #
+  # This comment used to claim "which we point at our prefix" while setting only
+  # CMAKE_PREFIX_PATH and an -I flag, and nothing checked the result. The wasm build made
+  # the same assumption and was measurably wrong: it silently configured against
+  # Emscripten's zlib and libjpeg PORTS on a machine whose emsdk cache had them, and failed
+  # outright in CI where it did not. Asserted below, on both paths.
   #
   # USE_IMPLICIT_CRYPTO=OFF + REQUIRE_CRYPTO_NATIVE=ON is LOAD-BEARING: the upstream
   # default is ON and would link GnuTLS, which is LGPL-2.1-or-later. Asserted below.
@@ -117,6 +124,10 @@ build_qpdf() { # variant extra_c_flags extra_cxx_flags outdir
     -DUSE_IMPLICIT_CRYPTO=OFF -DREQUIRE_CRYPTO_NATIVE=ON \
     -DPKG_CONFIG_EXECUTABLE=/nonexistent-on-purpose \
     -DCMAKE_PREFIX_PATH="$prefix" \
+    -DZLIB_H_PATH="$prefix/include" \
+    -DZLIB_LIB_PATH="$prefix/lib/libz.a" \
+    -DLIBJPEG_H_PATH="$prefix/include" \
+    -DLIBJPEG_LIB_PATH="$prefix/lib/libjpeg.a" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_C_FLAGS="-I$prefix/include $cflags" \
     -DCMAKE_CXX_FLAGS="-I$prefix/include $cxxflags" \
@@ -125,6 +136,23 @@ build_qpdf() { # variant extra_c_flags extra_cxx_flags outdir
       tail -20 "$src/qpdf-$variant-$arch-configure.log" >&2 || true
       exit 1
     }
+
+  # Fail closed on WHICH zlib and libjpeg were used, not just on the crypto flags. A build
+  # against the host's copies is a different artifact from the one engines/licenses.toml
+  # declares, and nothing downstream would notice.
+  for var in ZLIB_H_PATH ZLIB_LIB_PATH LIBJPEG_H_PATH LIBJPEG_LIB_PATH; do
+    local resolved
+    resolved="$(sed -n "s/^$var:[A-Z]*=//p" "$b/CMakeCache.txt")"
+    case "$resolved" in
+      "$prefix"/*) ;;
+      *)
+        echo "build-native: qpdf ($variant) configured $var to '$resolved'" >&2
+        echo "  That is outside $prefix, so it is the host's copy rather than the" >&2
+        echo "  checksum-verified source engines/licenses.toml declares." >&2
+        exit 1
+        ;;
+    esac
+  done
 
   # Fail closed on the crypto question rather than trusting the flags took effect.
   local log="$src/qpdf-$variant-$arch-configure.log"

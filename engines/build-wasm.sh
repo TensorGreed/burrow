@@ -169,6 +169,29 @@ rm -rf "$b"
 #
 # PKG_CONFIG_EXECUTABLE is broken on purpose so qpdf cannot find the HOST zlib/libjpeg,
 # which would be the wrong ABI entirely for wasm.
+#
+# THE FOUR PATHS ARE PASSED EXPLICITLY, AND THAT IS NOT BELT AND BRACES.
+#
+# With pkg-config broken, qpdf falls back to `find_path(zlib.h)` / `find_library(z)`
+# (libqpdf/CMakeLists.txt:158-160, :178-179). Under the Emscripten toolchain those search
+# the emsdk SYSROOT, not CMAKE_PREFIX_PATH -- so on a machine whose emsdk cache happens to
+# have the zlib and libjpeg PORTS built, qpdf silently configures against
+# `emsdk/upstream/emscripten/cache/sysroot/`, and on a fresh emsdk it finds nothing and the
+# configure fails with "zlib not found".
+#
+# That is exactly what happened: the build worked on a developer machine and failed in CI,
+# and the developer machine was the one that was wrong. Measured from its CMakeCache:
+#
+#   ZLIB_LIB_PATH  = .../emsdk/upstream/emscripten/cache/sysroot/lib/wasm32-emscripten/libz.a
+#   LIBJPEG_H_PATH = .../emsdk/upstream/emscripten/cache/sysroot/include
+#
+# Using the ports is precisely what the comment above this block forbids, and it is not only
+# a version question: engines/licenses.toml declares OUR libjpeg-turbo 3.2.0 for the wasm
+# artifacts, while Emscripten's port is IJG libjpeg 9f described upstream as "BSD license".
+# A licence manifest that names a component the artifact was not built against is worse than
+# no manifest.
+#
+# Setting the four cache variables makes CMake skip the search entirely.
 emcmake cmake -S "$src/qpdf-$QPDF_VERSION" -B "$b" \
   -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON \
@@ -176,9 +199,31 @@ emcmake cmake -S "$src/qpdf-$QPDF_VERSION" -B "$b" \
   -DUSE_IMPLICIT_CRYPTO=OFF -DREQUIRE_CRYPTO_NATIVE=ON -DSKIP_OS_SECURE_RANDOM=ON \
   -DPKG_CONFIG_EXECUTABLE=/nonexistent-on-purpose \
   -DCMAKE_PREFIX_PATH="$prefix" \
+  -DZLIB_H_PATH="$prefix/include" \
+  -DZLIB_LIB_PATH="$prefix/lib/libz.a" \
+  -DLIBJPEG_H_PATH="$prefix/include" \
+  -DLIBJPEG_LIB_PATH="$prefix/lib/libjpeg.a" \
   -DCMAKE_C_FLAGS="-fexceptions -I$prefix/include" \
   -DCMAKE_CXX_FLAGS="-fexceptions -I$prefix/include" \
   >"$src/qpdf-wasm-configure.log" 2>&1
+
+# Assert qpdf configured against OUR zlib and libjpeg, not Emscripten's ports or the host's.
+# The paths are passed in above; this proves CMake honoured them rather than overriding them,
+# and it is the check whose absence let a developer machine and CI disagree for a whole
+# afternoon.
+for var in ZLIB_H_PATH ZLIB_LIB_PATH LIBJPEG_H_PATH LIBJPEG_LIB_PATH; do
+  resolved="$(sed -n "s/^$var:[A-Z]*=//p" "$b/CMakeCache.txt")"
+  case "$resolved" in
+    "$prefix"/*) ;;
+    *)
+      echo "build-wasm: qpdf configured $var to '$resolved'" >&2
+      echo "  That is outside $prefix, so it is Emscripten's port or the host's copy --" >&2
+      echo "  neither of which is the checksum-verified source engines/licenses.toml declares." >&2
+      exit 1
+      ;;
+  esac
+done
+echo "   zlib and libjpeg resolved inside the vendored prefix"
 
 grep -q "GNU TLS crypto enabled: OFF" "$src/qpdf-wasm-configure.log" || { echo "build-wasm: GnuTLS was NOT disabled" >&2; exit 1; }
 grep -q "OpenSSL crypto enabled: OFF"  "$src/qpdf-wasm-configure.log" || { echo "build-wasm: OpenSSL was NOT disabled" >&2; exit 1; }

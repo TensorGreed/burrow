@@ -94,6 +94,43 @@ describe("the production build", () => {
     }
   });
 
+  it("probes its own origin, never a third party", () => {
+    // The guard proves a policy is in force by making a request the policy must refuse. If
+    // the policy were ever absent, that request actually goes out — so it must be somewhere
+    // harmless. A cross-origin probe would make the guard's failure mode the exact thing it
+    // guards against: a request to a third party from a page holding a user's file.
+    const bundle = files.find((f) => /^engines\/burrow-worker\..*\.js$/.test(f));
+    expect(bundle).toBeDefined();
+    const source = readFileSync(join(outDir, bundle as string), "utf8");
+
+    const probePath = /const PROBE_PATH = "([^"]+)"/.exec(source)?.[1];
+    expect(probePath, "the bundle has no PROBE_PATH").toBeDefined();
+    // A path, not a URL: it is resolved against the build's own origin.
+    expect(probePath).toMatch(/^\/[A-Za-z0-9_\-/]*$/);
+    expect(probePath).not.toMatch(/^https?:/);
+    expect(probePath).not.toMatch(/^\/\//);
+
+    // And it must not be a real route, or a missing policy would fetch a live page rather
+    // than 404.
+    const asRoute = (probePath as string).replace(/^\//, "");
+    expect(files).not.toContain(`${asRoute}/index.html`);
+    expect(files).not.toContain(`${asRoute}.html`);
+
+    // The origin it is resolved against is this build's own.
+    const probeOrigin = /"probeOrigin": "([^"]+)"/.exec(source)?.[1];
+    expect(probeOrigin, "the bundle has no probeOrigin").toBeDefined();
+    const csp = readFileSync(join(outDir, "_headers"), "utf8");
+    expect(csp, "the probe origin is not the origin the policy was built for").toContain(
+      probeOrigin as string,
+    );
+
+    // The wait for the violation event is bounded, so the guard cannot hang.
+    const timeout = /const PROBE_TIMEOUT_MS = (\d+)/.exec(source)?.[1];
+    expect(timeout, "the bundle has no PROBE_TIMEOUT_MS").toBeDefined();
+    expect(Number(timeout)).toBeGreaterThan(0);
+    expect(Number(timeout)).toBeLessThanOrEqual(2_000);
+  });
+
   it("has no misleading strict-mode directive in the worker bundle", () => {
     // The bundle emits a generated const first, so a `"use strict"` anywhere inside it is
     // not in a directive prologue and does nothing. Three of them used to be, which is a

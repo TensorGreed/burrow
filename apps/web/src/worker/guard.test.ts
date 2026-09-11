@@ -74,6 +74,10 @@ async function runGuard(
       throw new TypeError("Failed to fetch");
     },
     setTimeout,
+    // `clearTimeout` too: without it the guard's listener throws a ReferenceError, the
+    // violation is never observed, and the bounded timeout fires instead -- which looks
+    // exactly like "no policy" and made this suite fail for a reason that was not the code.
+    clearTimeout,
     console,
   };
   scope.self = scope;
@@ -124,5 +128,28 @@ describe("the worker's fail-closed guard", () => {
     // the guard would pass with nothing enforcing anything.
     const outcome = await runGuard("blob:", "network-error");
     expect(outcome.policed).toBe(false);
+  });
+
+  it("gives up waiting for the violation event, and fails closed when it does", async () => {
+    // The wait must be BOUNDED. An unbounded one would hang the worker on its first message
+    // rather than refuse it — a worse failure than the one the guard prevents, and a silent
+    // one. This is the case where the event never comes at all.
+    const started = Date.now();
+    const outcome = await runGuard("blob:", "network-error");
+    const elapsed = Date.now() - started;
+
+    expect(outcome.policed, "no violation observed must mean not policed").toBe(false);
+    expect(elapsed, `the guard took ${elapsed}ms to give up`).toBeLessThan(2_000);
+  });
+
+  it("resolves as soon as the violation arrives, without waiting out the timeout", async () => {
+    // The complement: bounded does not mean slow. A guard that always waited the full
+    // timeout would add that to every worker's startup.
+    const started = Date.now();
+    const outcome = await runGuard("blob:", "refused-by-policy");
+    const elapsed = Date.now() - started;
+
+    expect(outcome.policed).toBe(true);
+    expect(elapsed, `the guard took ${elapsed}ms despite an immediate violation`).toBeLessThan(100);
   });
 });

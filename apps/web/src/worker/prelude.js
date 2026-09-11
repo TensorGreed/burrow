@@ -55,6 +55,24 @@
 // so this cannot drift back silently.
 
 /**
+ * The path the policy probe requests.
+ *
+ * Same-origin and not a real route, so that if the policy were somehow absent the request
+ * is a 404 on our own host rather than a request to anyone else. The leading `__` marks it
+ * as not-a-page; nothing serves it.
+ */
+const PROBE_PATH = "/__csp-probe";
+
+/**
+ * How long to wait for `securitypolicyviolation` before concluding there is no policy.
+ *
+ * The event is dispatched on the event loop, so it lands within a turn or two of the fetch
+ * rejecting; this is generous. It bounds a guard that must never hang: exceeding it resolves
+ * *false*, and the worker then refuses to touch a file.
+ */
+const PROBE_TIMEOUT_MS = 250;
+
+/**
  * Whether this worker was created from a Blob.
  *
  * Necessary but not sufficient: a Blob worker inherits the creating document's policy —
@@ -84,27 +102,44 @@ const POLICED = (async () => {
   if (!CREATED_FROM_BLOB) {
     return false;
   }
-  let violated = false;
-  const note = () => {
-    violated = true;
-  };
-  self.addEventListener("securitypolicyviolation", note);
+
+  /**
+   * Resolves true when the browser reports a policy violation, false if none arrives.
+   *
+   * Bounded: a guard that waited indefinitely for an event that may never come would hang
+   * the worker on its first message rather than refuse, which is a worse failure than the
+   * one it is preventing. The timeout resolves **false**, so the whole check fails closed.
+   */
+  const violation = new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      self.removeEventListener("securitypolicyviolation", onViolation);
+      resolve(false);
+    }, PROBE_TIMEOUT_MS);
+    function onViolation() {
+      clearTimeout(timer);
+      self.removeEventListener("securitypolicyviolation", onViolation);
+      resolve(true);
+    }
+    self.addEventListener("securitypolicyviolation", onViolation);
+  });
+
   try {
-    // `/` is same-origin and is not a connect-src entry, so a policy must refuse it. The
-    // URL is absolute because a blob: worker cannot resolve a relative one.
-    await fetch(new URL("/", BURROW_ENGINES.probeOrigin).href, { mode: "no-cors" });
+    // A same-origin path that is deliberately not in `connect-src`, and deliberately not a
+    // real route. NEVER a cross-origin URL: if the policy were missing, a cross-origin probe
+    // would actually reach a third party -- a guard whose failure mode is the thing it
+    // guards against. With `/__csp-probe` the worst case is a 404 on our own host.
+    //
+    // Absolute, because a blob: worker's `self.location` is opaque and cannot resolve a
+    // relative reference.
+    await fetch(new URL(PROBE_PATH, BURROW_ENGINES.probeOrigin).href, { mode: "no-cors" });
+    // The request was NOT refused, so there is no policy in force here.
     return false;
   } catch {
-    // The violation event is dispatched ASYNCHRONOUSLY -- it has not arrived by the time
-    // the rejected fetch lands here. Reading `violated` immediately reports false for a
-    // request the policy did refuse, and the guard then fails closed on a correctly
-    // configured page. (It did, and every engine test went red.)
-    await new Promise((resolve) => {
-      setTimeout(resolve, 50);
-    });
-    return violated;
-  } finally {
-    self.removeEventListener("securitypolicyviolation", note);
+    // A rejected fetch is not enough on its own: a network error rejects too. Only the
+    // violation event says the browser refused it, and it is dispatched asynchronously --
+    // reading a flag straight after the rejection reports false for a request the policy
+    // did refuse. (It did, and every engine test went red.)
+    return violation;
   }
 })();
 

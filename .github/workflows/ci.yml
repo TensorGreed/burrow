@@ -478,13 +478,20 @@ jobs:
         working-directory: apps/web
         run: pnpm test
 
-      # ---- the browser ------------------------------------------------------------
-      # 4a-i is Chromium only. Firefox and WebKit arrive with the conformance matrix in 4b,
-      # where an engine that will not load in a browser is a finding to report rather than
-      # a test to skip.
-      - name: Install Chromium
+      # ---- the browsers -----------------------------------------------------------
+      # ALL THREE, matching playwright.config.ts's projects.
+      #
+      # This installed `chromium` alone while the config already listed three projects, so
+      # `playwright test` would have failed launching Firefox and WebKit. Caught by reading
+      # the two against each other rather than by a run, because the job was failing earlier
+      # for an unrelated reason and never reached this step.
+      #
+      # `--with-deps` needs root, which the runner has and a developer machine generally does
+      # not -- WebKit in particular needs libgstreamer-plugins-bad and libavif, so it cannot
+      # be launched locally without installing them. CI is where WebKit actually runs.
+      - name: Install browsers
         working-directory: apps/web
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
       - name: Engine end-to-end tests
         working-directory: apps/web
         run: pnpm exec playwright test
