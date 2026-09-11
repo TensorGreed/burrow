@@ -140,7 +140,11 @@ jobs:
             link_check::tests::qpdf_links_and_reports_the_pinned_version \
             pdfium::tests::a_valid_document_opens_and_reports_its_pages \
             pdfium::tests::an_encrypted_document_with_no_password_needs_one \
-            pdfium::errors::tests::a_zero_error_code_on_a_failed_call_is_never_success
+            pdfium::errors::tests::a_zero_error_code_on_a_failed_call_is_never_success \
+            qpdf::errors::tests::a_zero_code_on_a_failed_call_is_never_success \
+            qpdf::ffi::tests::warnings_alone_are_not_an_error \
+            qpdf::tests::every_failure_path_returns_a_typed_error_rather_than_unwinding \
+            prescan::xref::tests::a_prev_chain_pointing_at_itself_terminates
           do
             printf '%s' "$list" | grep -q "^$t: test$" || {
               echo "::error::$t was not discovered. Is native-engines taking effect?" >&2
@@ -156,7 +160,7 @@ jobs:
       # actually exercised.
       - name: Assert the engine integration tests actually ran
         run: |
-          for suite in parallelism limits conformance properties; do
+          for suite in parallelism limits conformance properties structure secret_leak prescan; do
             list=$(cargo test -p burrow-engines --all-features --test "$suite" -- --list)
             printf '%s' "$list" | grep -q ': test$' || {
               echo "::error::the $suite suite discovered no tests. Is native-engines taking effect?" >&2
@@ -235,13 +239,36 @@ jobs:
       # through cargo, so it does not get the deps/ path cargo adds for `cargo test`.
       # ASAN_OPTIONS because FPDF_DestroyLibrary is deliberately never called, so PDFium's
       # statics are live at exit by design. Both are explained in fuzz/README.md.
-      - name: fuzz document_open for 60s
+      - name: fuzz document_open and prescan for 60s each
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          cargo +nightly fuzz run document_open -- \
+          for target in document_open prescan; do
+            cargo +nightly fuzz run "$target" -- \
+              -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+          done
+
+      # qpdf is built FROM SOURCE, so unlike PDFium it can be instrumented -- and
+      # `engines/build-native.sh` produces a second archive with
+      # `-fsanitize=fuzzer-no-link,address` for exactly this. The RUSTFLAGS override is
+      # what selects it; without it this would link the plain archive and libFuzzer would
+      # see nothing inside qpdf at all.
+      #
+      # THIS STEP IS ALSO A MEASUREMENT. M1 PR 2 established that clang 18's ASan runtime
+      # in that archive links with cargo-fuzz's Rust ASan -- on aarch64 only. CI is
+      # x86-64. If this step fails to link here, that is the answer to the open question,
+      # and the target moves to the self-hosted arm64 runner with the decision recorded
+      # rather than worked around. See fuzz/README.md.
+      - name: fuzz qpdf_check for 60s, against the instrumented archive
+        working-directory: fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
+          export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
+          cargo +nightly fuzz run qpdf_check -- \
             -max_total_time=60 -timeout=10 -rss_limit_mb=2048
 
   wasm:

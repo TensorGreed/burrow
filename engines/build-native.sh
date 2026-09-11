@@ -158,7 +158,11 @@ echo "   fuzz/libqpdf.a $(stat -c%s "$prefix/lib/fuzz/libqpdf.a") bytes"
 # including one restored from a CI cache that no longer matches it. It does not establish
 # upstream provenance: that comes from fetch.sh verifying the source tarballs.
 say "recording build manifest"
-( cd "$prefix/lib" && sha256sum libpdfium.so libqpdf.a libz.a libjpeg.a > BUILD_MANIFEST.sha256 )
+# The instrumented archive is covered too. It was not until M1 PR 3, which is a real gap:
+# fuzz/libqpdf.a is linked into fuzz binaries, and a CI cache restoring a tree nothing had
+# checksummed is exactly the case this manifest exists to catch. Recorded with its `fuzz/`
+# prefix so build.rs can tell the two apart.
+( cd "$prefix/lib" && sha256sum libpdfium.so libqpdf.a libz.a libjpeg.a fuzz/libqpdf.a > BUILD_MANIFEST.sha256 )
 sed 's/^/   /' "$prefix/lib/BUILD_MANIFEST.sha256"
 
 say "done: $prefix"

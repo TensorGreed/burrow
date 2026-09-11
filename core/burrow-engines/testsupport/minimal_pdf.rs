@@ -156,6 +156,153 @@ fn build(pages: usize, encrypt: Option<EncryptDict>) -> Vec<u8> {
     out
 }
 
+// ---------------------------------------------------------------------------------
+// Canary fixtures, for the secret-leak test.
+// ---------------------------------------------------------------------------------
+
+/// A PDF with `canary` embedded in every place an engine message might quote it.
+///
+/// The point of the secret-leak test is that nothing derived from a user's file reaches
+/// stdout, stderr, or an error string. A canary is only convincing if it sits where the
+/// engines actually quote from, so this puts it in all of them at once:
+///
+/// - a **name object** (`/BURROW-CANARY-…`), which qpdf prints in "expected n n obj"
+///   style warnings;
+/// - a **string object** (`(BURROW-CANARY-…)`), the most obvious candidate;
+/// - a **stream's contents**, which a decoder error would be quoting from;
+/// - a **dictionary key**, which a type error names;
+/// - and a deliberately **broken token immediately next to the canary**, so the parser
+///   fails at exactly the offset where the canary is, which is the case most likely to
+///   pull it into a message.
+///
+/// The file is intentionally damaged: it must reach a failure path, because a file that
+/// parses cleanly proves nothing about what failure messages contain.
+pub fn pdf_with_canary(canary: &str) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    out.extend_from_slice(
+        format!(
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /{canary} /{canary}Value /Title ({canary}) /Contents 4 0 R >>\nendobj\n"
+        )
+        .as_bytes(),
+    );
+    // A stream whose contents are the canary. `/Length` is deliberately a *plausible*
+    // wrong value rather than an enormous one: an enormous one would be refused by our own
+    // structural pre-scan before either engine saw the file, which would make every case
+    // built on this fixture a test of the pre-scan rather than of the engines. (It was,
+    // until a mutation test caught it.)
+    out.extend_from_slice(
+        format!(
+            "4 0 obj\n<< /Length 40 /{canary}Key ({canary}) >>\nstream\n\
+             BT /F1 12 Tf ({canary}) Tj ET\n"
+        )
+        .as_bytes(),
+    );
+    // The broken token, immediately after the canary and with no `endstream`.
+    out.extend_from_slice(format!("{canary} 0 obj obj obj\n").as_bytes());
+    out.extend_from_slice(b"trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n9\n%%EOF\n");
+    out
+}
+
+/// An ordinary PDF carrying an object number above `INT_MAX`.
+///
+/// # Why this exists
+///
+/// It is a regression guard for a **process abort**, found by review in M1 PR 3. qpdf's
+/// `qpdf_is_linearized` is one of the C API functions that does *not* route through
+/// `trap_errors`, and the `isLinearized()` behind it converts an object number with
+/// `QIntC::to_int`, which throws `std::range_error` above `INT_MAX`. A foreign exception
+/// is not a Rust panic, so nothing catches it:
+///
+/// ```text
+/// fatal runtime error: Rust cannot catch foreign exceptions, aborting
+/// ```
+///
+/// Measured on a 356-byte file exactly like this one. The document is otherwise
+/// completely ordinary — it parses, its page count is right, and then the process dies.
+///
+/// `burrow` no longer calls either untrapped function, so this file is now harmless. It
+/// is in the damaged corpus so that it stops being harmless the moment somebody adds one
+/// back: the corpus test would abort rather than fail, which is loud in exactly the right
+/// way.
+pub fn pdf_with_object_number_above_int_max() -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n");
+    // The oversized object number has to sit in the first 1024 bytes, because that is the
+    // window `isLinearized()` tokenises looking for `N N obj`.
+    out.extend_from_slice(b"9999999999 0 obj\nnull\nendobj\n");
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    out.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n",
+    );
+    out.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n9\n%%EOF\n");
+    out
+}
+
+/// A PDF whose objects nest `depth` levels deep.
+///
+/// The other bomb shape: an array inside an array inside an array. Where the xref bomb
+/// attacks memory, this attacks the parser's *stack*, and a recursive-descent parser
+/// without a depth limit overflows and dies with a signal no `catch_unwind` can see.
+/// qpdf's `parser_max_nesting` is what stops it; this generates the input that proves it.
+pub fn pdf_with_nesting(depth: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    out.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n",
+    );
+
+    out.extend_from_slice(b"4 0 obj\n");
+    out.extend(std::iter::repeat_n(b'[', depth));
+    out.push(b'0');
+    out.extend(std::iter::repeat_n(b']', depth));
+    out.extend_from_slice(b"\nendobj\n");
+    out.extend_from_slice(b"trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n9\n%%EOF\n");
+    out
+}
+
+/// A PDF that **parses successfully** but makes qpdf warn, with the canary in the warning's
+/// neighbourhood.
+///
+/// [Spike 0001](../../../docs/spikes/0001-wasm-engines.md) Finding 6's sharpest point: qpdf
+/// emits warnings quoting object numbers and byte offsets *for files that parse fine*, not
+/// only for broken ones. A leak test that exercised only failure paths would miss the case
+/// that actually shipped.
+///
+/// The `startxref` offset here is deliberately wrong, which makes qpdf reconstruct the
+/// cross-reference table and warn about doing so — while still producing a usable document,
+/// because everything else is intact.
+pub fn pdf_with_warnings_and_canary(canary: &str) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    out.extend_from_slice(
+        format!(
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /{canary} ({canary}) >>\nendobj\n"
+        )
+        .as_bytes(),
+    );
+    // A cross-reference table whose offsets are all wrong. qpdf notices, warns, rebuilds
+    // it, and carries on -- which is precisely the "successful parse, noisy stderr" case.
+    out.extend_from_slice(b"xref\n0 4\n");
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for _ in 0..3 {
+        out.extend_from_slice(b"0000009999 00000 n \n");
+    }
+    out.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\n");
+    // And a startxref pointing at nothing in particular, so the rebuild is forced.
+    out.extend_from_slice(b"startxref\n4242\n%%EOF\n");
+    out
+}
+
 #[cfg(test)]
 mod generator_tests {
     use super::*;

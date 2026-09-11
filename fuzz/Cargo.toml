@@ -22,12 +22,30 @@ libfuzzer-sys = "0.4"
 # `burrow-ops` operation, and the first operation lands in M1 PR 5. When it does, this
 # target keeps its place -- the engine boundary is what our fuzzing is actually for (see
 # the target's docs and ADR 0004).
-burrow-engines = { path = "../core/burrow-engines", features = ["native-engines"] }
+burrow-engines = { path = "../core/burrow-engines", features = ["native-engines", "fuzzing"] }
 burrow-types = { path = "../core/burrow-types" }
 
 [[bin]]
 name = "document_open"
 path = "fuzz_targets/document_open.rs"
+test = false
+doc = false
+bench = false
+
+# Pure Rust: no engine to link, and the one target where coverage-guided fuzzing actually
+# steers the code under test rather than a prebuilt black box.
+[[bin]]
+name = "prescan"
+path = "fuzz_targets/prescan.rs"
+test = false
+doc = false
+bench = false
+
+# Built against the INSTRUMENTED qpdf archive via a RUSTFLAGS override; see the target's
+# docs. qpdf is built from source, so unlike PDFium it can be instrumented.
+[[bin]]
+name = "qpdf_check"
+path = "fuzz_targets/qpdf_check.rs"
 test = false
 doc = false
 bench = false

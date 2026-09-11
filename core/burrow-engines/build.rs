@@ -89,7 +89,12 @@ fn main() {
     // trusting a stale fingerprint.
     println!("cargo:rerun-if-changed={}", pdfium_so.display());
 
-    let archives = ["libqpdf.a", "libz.a", "libjpeg.a"];
+    // `fuzz/libqpdf.a` is the ASan+fuzzer-instrumented qpdf. It is not linked by this
+    // build -- the fuzz targets select it with a `-L native=` override -- but it IS linked
+    // into fuzz binaries, and until M1 PR 3 nothing checksummed it at all. A CI cache
+    // restoring a tree nobody verified is precisely what the manifest exists to catch, and
+    // an unverified archive is no less dangerous for being used only by a fuzzer.
+    let archives = ["libqpdf.a", "libz.a", "libjpeg.a", "fuzz/libqpdf.a"];
     for name in archives {
         let p = lib_dir.join(name);
         println!("cargo:rerun-if-changed={}", p.display());
