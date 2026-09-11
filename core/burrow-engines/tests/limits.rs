@@ -10,7 +10,10 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    // Test arithmetic on known-good numbers. The lint is for attacker-controlled sizes in
+    // library code, where it stays denied.
+    clippy::integer_division
 )]
 
 mod support;
@@ -152,27 +155,38 @@ fn a_declared_size_bomb_is_rejected_rather_than_returned() {
         )
     });
 
-    // The size-based pre-check must NOT be what rejects this, or the test would pass while
-    // proving nothing about the measured check. Assert that first.
-    let estimate_would_allow = Limits::with(|l| l.max_memory_bytes = 64 * 1024 * 1024);
-    let by_size = open_with(bytes.clone(), estimate_would_allow);
+    // How much PDFium allocates for this file is architecture-dependent -- measurably more
+    // on aarch64 than on x86-64 -- so this test must not assert a number, and must not
+    // pick a ceiling that only one of them crosses. An earlier version used the default
+    // 1 GiB and passed locally while failing on CI for exactly that reason.
+    //
+    // What is stable is *which check* rejects it, so that is what is asserted.
+    let ceiling = 64 * 1024 * 1024;
+    let estimate = estimate_for(bytes.len());
     assert!(
-        by_size.is_err(),
-        "the bomb opened successfully under a 64 MiB ceiling"
+        estimate < ceiling,
+        "the size-based estimate for this file is {estimate}, which is not below the \
+         {ceiling}-byte ceiling below -- so the pre-check would reject it and this test \
+         would pass while proving nothing about the measured check"
     );
 
-    // Now with the default 1 GiB ceiling, which the size estimate (~16 MB) sails through.
-    match open_with(bytes, Limits::default()) {
+    match open_with(
+        bytes.clone(),
+        Limits::with(|l| l.max_memory_bytes = ceiling),
+    ) {
         Err(Error::LimitExceeded {
             limit,
             requested,
             allowed,
         }) => {
             assert_eq!(limit, "max_memory_bytes");
-            assert_eq!(allowed, Limits::DEFAULT.max_memory_bytes);
+            assert_eq!(allowed, ceiling);
+            // The decisive assertion. The size-based estimate is ~16 MB; anything far
+            // above it can only have come from the measured post-open check.
             assert!(
-                requested > allowed,
-                "the measured cost {requested} should exceed the ceiling {allowed}"
+                requested > estimate,
+                "reported {requested}, which is not above the size-based estimate of \
+                 {estimate} -- the measured check did not fire"
             );
         }
         Ok(doc) => panic!(
@@ -181,6 +195,24 @@ fn a_declared_size_bomb_is_rejected_rather_than_returned() {
         ),
         Err(other) => panic!("expected LimitExceeded on memory, got {other:?}"),
     }
+
+    // And with a ceiling nothing will cross, the same bytes open fine. That is what makes
+    // the assertion above about *memory* rather than about a malformed file: there is
+    // nothing wrong with this document except what it costs.
+    let generous = Limits::with(|l| l.max_memory_bytes = 8 * 1024 * 1024 * 1024);
+    let doc = open_with(bytes, generous)
+        .expect("the bomb is structurally valid; only its cost is the problem");
+    assert_eq!(doc.pages_at_open(), 1);
+}
+
+/// The size-based pre-check's estimate, mirrored from `pdfium::estimate`.
+///
+/// Duplicated rather than exported: making it `pub` would put an internal heuristic in the
+/// public API purely for a test, and the constants are stated in that module's docs. If
+/// they change, this test's first assertion fails loudly rather than silently weakening.
+fn estimate_for(input_len: usize) -> u64 {
+    let len = u64::try_from(input_len).unwrap();
+    len + len / 4 + 16 * 1024 * 1024
 }
 
 /// The time limit, driven by a fake clock. Nothing waits.
