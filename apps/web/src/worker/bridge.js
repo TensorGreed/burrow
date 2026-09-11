@@ -197,15 +197,18 @@ self.__burrow_qpdf_global_set_uint32 = (param, value) =>
 
 self.__burrow_qpdflogger_create = () => u32(qpdf()._qpdflogger_create());
 
-self.__burrow_qpdflogger_discard_all = (logger) => {
-  // qpdf_log_dest_discard is 3 (qpdflogger-c.h:62) -- qpdf's own Pl_Discard, reachable by
-  // name, so no callback and no JS running on a C++ stack. The value is fixed here rather
-  // than passed in because it is a protocol constant, not a decision: Rust choosing which
-  // destination to use would be a decision, and it does not make one.
-  const DISCARD = 3;
-  qpdf()._qpdflogger_set_info(logger, DISCARD, 0, 0);
-  qpdf()._qpdflogger_set_warn(logger, DISCARD, 0, 0);
-  qpdf()._qpdflogger_set_error(logger, DISCARD, 0, 0);
+self.__burrow_qpdflogger_discard_all = (logger, destination) => {
+  // `destination` is `qpdf_log_dest_discard` (3, qpdflogger-c.h:62) -- qpdf's own Pl_Discard,
+  // reachable by name, so no callback and no JS running on a C++ stack.
+  //
+  // Passed from Rust rather than written here. It was `const DISCARD = 3` in this file, which
+  // meant two independent definitions of one qpdf enum value: Rust's went unused (and failed
+  // the build without the native engines, where nothing else referenced it) while this copy
+  // was the one that actually ran.
+  const engine = qpdf();
+  engine._qpdflogger_set_info(logger, destination, 0, 0);
+  engine._qpdflogger_set_warn(logger, destination, 0, 0);
+  engine._qpdflogger_set_error(logger, destination, 0, 0);
 };
 
 self.__burrow_qpdf_heap_pages = () => heapPages(qpdf());

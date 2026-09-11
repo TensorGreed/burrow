@@ -87,7 +87,7 @@ extern "C" {
     #[wasm_bindgen(js_name = __burrow_qpdflogger_create)]
     fn qpdflogger_create() -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdflogger_discard_all)]
-    fn qpdflogger_discard_all(logger: u32);
+    fn qpdflogger_discard_all(logger: u32, destination: i32);
     /// The heap size in **WASM pages**, not bytes. See `pages_to_bytes`.
     #[wasm_bindgen(js_name = __burrow_qpdf_heap_pages)]
     fn qpdf_heap_pages() -> u32;
@@ -233,8 +233,8 @@ impl QpdfBridge for JsQpdf {
         QpdfPtr(qpdflogger_create())
     }
 
-    fn logger_discard_all(&self, logger: QpdfPtr) {
-        qpdflogger_discard_all(logger.0);
+    fn logger_discard_all(&self, logger: QpdfPtr, destination: i32) {
+        qpdflogger_discard_all(logger.0, destination);
     }
 
     fn heap_bytes(&self) -> u64 {

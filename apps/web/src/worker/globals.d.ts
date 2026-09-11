@@ -97,8 +97,22 @@ interface EngineEntry {
   bytes: number;
 }
 
-// --- generated into the bundle by tools/stage-web-engines.mjs ---
-declare const BURROW_ENGINES: Record<string, EngineEntry>;
+/**
+ * The manifest generated into the bundle by `tools/stage-web-engines.mjs`.
+ *
+ * Named fields rather than a `Record`, so `probeOrigin` is a string and the three artifacts
+ * are entries — a `Record<string, EngineEntry>` typed the origin as an entry and the
+ * distinction only showed up when something tried to use it.
+ */
+interface BurrowEngines {
+  pdfiumWasm: EngineEntry;
+  qpdfWasm: EngineEntry;
+  burrowWasm: EngineEntry;
+  /** The origin this build's CSP was generated against; the guard probes it. */
+  probeOrigin: string;
+}
+
+declare const BURROW_ENGINES: BurrowEngines;
 
 // `prelude.js` DEFINES `INHERITS_PAGE_CSP`, `silent`, `compiled` and `instantiateFrom`, so
 // they are not declared here -- redeclaring a `const` that a checked file also declares is an
@@ -197,7 +211,7 @@ interface WorkerGlobalScope {
   __burrow_qpdf_get_num_pages(data: number): number;
   __burrow_qpdf_global_set_uint32(param: number, value: number): number;
   __burrow_qpdflogger_create(): number;
-  __burrow_qpdflogger_discard_all(logger: number): void;
+  __burrow_qpdflogger_discard_all(logger: number, destination: number): void;
   __burrow_qpdf_heap_pages(): number;
 
   // --- the clock ---

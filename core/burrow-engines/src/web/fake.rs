@@ -43,6 +43,7 @@ pub(super) enum Call {
     Free(u32),
     GlobalSet(i32, u32),
     LoggerCreate,
+    LoggerDiscardAll(i32),
 }
 
 /// A stand-in for an Emscripten module's linear memory.
@@ -473,7 +474,9 @@ impl QpdfBridge for FakeQpdf {
         )
     }
 
-    fn logger_discard_all(&self, _logger: QpdfPtr) {}
+    fn logger_discard_all(&self, _logger: QpdfPtr, destination: i32) {
+        self.state.record(Call::LoggerDiscardAll(destination));
+    }
 
     fn heap_bytes(&self) -> u64 {
         self.state.heap.lock().expect("not poisoned").bytes_grown

@@ -56,6 +56,28 @@ mkdir -p "$prefix/lib" "$prefix/include" "$src"
 
 say() { printf '\n== %s\n' "$1"; }
 
+# Surface the build logs when something fails.
+#
+# Every cmake and em++ invocation below redirects to a log file, which keeps the normal
+# output readable -- and meant a failure in CI printed the section heading and then nothing
+# at all. `set -e` exits, the log stays on a machine nobody can reach, and the only
+# information is an exit code. Diagnosing that took a round trip through CI that should not
+# have been necessary.
+dump_logs_on_failure() {
+  local status=$?
+  [ "$status" -eq 0 ] && return 0
+  echo "" >&2
+  echo "build-wasm: FAILED (exit $status). Tail of every build log:" >&2
+  for log in "$src"/*.log; do
+    [ -f "$log" ] || continue
+    echo "" >&2
+    echo "---- $(basename "$log") ----" >&2
+    tail -40 "$log" >&2
+  done
+  return "$status"
+}
+trap dump_logs_on_failure EXIT
+
 # ---------------------------------------------------------------------------------
 say "PDFium wasm: unpack the prebuilt and check its exports"
 pd="$src/pdfium-wasm"

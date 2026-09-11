@@ -243,11 +243,16 @@ pub trait QpdfBridge: Send + Sync {
     /// `qpdflogger_create`. [`QpdfPtr::NULL`] if qpdf could not allocate.
     fn logger_create(&self) -> QpdfPtr;
 
-    /// Point a logger's info, warn and error streams at `qpdf_log_dest_discard`.
+    /// Point a logger's info, warn and error streams at `destination`.
     ///
-    /// One call for all three: they are always set together, and a bridge method that
-    /// could set one and not the others is a way to ship a half-silenced logger.
-    fn logger_discard_all(&self, logger: QpdfPtr);
+    /// One call for all three: they are always set together, and a bridge method that could
+    /// set one and not the others is a way to ship a half-silenced logger.
+    ///
+    /// `destination` is `qpdf_log_dest_e`, passed from Rust rather than hardcoded in the
+    /// bridge. It is a protocol constant, not a decision — but it is qpdf's constant, and
+    /// having the JavaScript carry its own copy meant two definitions of the same enum value
+    /// with nothing tying them together.
+    fn logger_discard_all(&self, logger: QpdfPtr, destination: i32);
 
     /// The module's current heap size. See [`PdfiumBridge::heap_bytes`].
     fn heap_bytes(&self) -> u64;

@@ -41,6 +41,21 @@ use super::ffi;
 // was the case before M1 PR 4a-i, none at all.
 use crate::codes::qpdf::policy;
 
+/// `qpdf_p_limit_errors` — read-only count of limits exceeded. `Constants.h:277`.
+///
+/// **Read-only**: `qpdf_global_set_uint32` has no case for it and returns
+/// `qpdf_r_bad_parameter`. Kept only so the test below can assert it is never set.
+///
+/// Native-only, and so is [`FUZZ_MODE`] below. Neither belongs in the shared policy: the web
+/// path uses neither, so putting them there made them dead code on every target without the
+/// native engines.
+#[cfg(test)]
+const LIMIT_ERRORS: c_int = 0x0001_0020;
+
+/// `qpdf_p_fuzz_mode` — tighten limits for fuzzing. `Constants.h:281`.
+#[cfg(feature = "fuzzing")]
+const FUZZ_MODE: c_int = 0x0001_1010;
+
 /// The logger every `qpdf_data` is given. Created once; qpdf shares it internally.
 static LOGGER: OnceLock<LoggerHandle> = OnceLock::new();
 
@@ -151,7 +166,7 @@ pub fn enable_fuzz_mode() {
     // process is quiet for the same reasons production is.
     let _ = install();
     // SAFETY: as `apply_global_limits` -- two integers, no pointer, process-global.
-    let _ = unsafe { ffi::qpdf_global_set_uint32(policy::FUZZ_MODE, 1) };
+    let _ = unsafe { ffi::qpdf_global_set_uint32(FUZZ_MODE, 1) };
 }
 
 #[cfg(test)]
@@ -206,9 +221,7 @@ mod tests {
     #[test]
     fn the_read_only_limit_counter_is_never_set() {
         assert!(
-            !limit_settings()
-                .iter()
-                .any(|(p, _)| *p == policy::LIMIT_ERRORS),
+            !limit_settings().iter().any(|(p, _)| *p == LIMIT_ERRORS),
             "qpdf_p_limit_errors is read-only; setting it cannot work"
         );
     }

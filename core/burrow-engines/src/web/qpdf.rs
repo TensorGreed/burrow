@@ -79,7 +79,8 @@ impl WebQpdf {
             }
             let logger = self.bridge.logger_create();
             if !logger.is_null() {
-                self.bridge.logger_discard_all(logger);
+                self.bridge
+                    .logger_discard_all(logger, crate::codes::qpdf::policy::LOG_DEST_DISCARD);
             }
             logger
         })

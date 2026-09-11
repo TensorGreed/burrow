@@ -54,15 +54,11 @@ pub(crate) mod policy {
     /// Maximum warnings for one document before qpdf gives up. Also defaults to unlimited.
     pub(crate) const DOC_MAX_WARNINGS: c_uint = 256;
 
-    /// `qpdf_p_limit_errors` — read-only count of limits exceeded. `Constants.h:277`.
-    ///
-    /// **Read-only**: `qpdf_global_set_uint32` has no case for it and returns
-    /// `qpdf_r_bad_parameter`. Kept only so a test can assert it is never set.
-    #[cfg(test)]
-    pub(crate) const LIMIT_ERRORS: c_int = 0x0001_0020;
-    /// `qpdf_p_fuzz_mode` — tighten limits for fuzzing. `Constants.h:281`.
-    #[cfg(feature = "fuzzing")]
-    pub(crate) const FUZZ_MODE: c_int = 0x0001_1010;
+    // `qpdf_p_limit_errors` and `qpdf_p_fuzz_mode` are NOT here. Both are native-only
+    // concerns -- asserting a read-only parameter is never set, and tightening limits for
+    // the native fuzz targets -- and the web path uses neither. Keeping them here made them
+    // dead code on every target without the native engines, which is a build error, not a
+    // warning. `qpdf::limits` holds them, next to their only users.
     /// `qpdf_p_doc_max_warnings` — 0 means unlimited. `Constants.h:290`.
     pub(crate) const P_DOC_MAX_WARNINGS: c_int = 0x0001_2000;
     /// `qpdf_p_parser_max_nesting` — object nesting depth. `Constants.h:293`.

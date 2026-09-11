@@ -118,7 +118,7 @@ const silent = { print: () => {}, printErr: () => {} };
 // tools/stage-web-engines.mjs.
 /** @type {Record<string, Promise<WebAssembly.Module>>} */
 const compiled = {};
-for (const id of ["pdfiumWasm", "qpdfWasm", "burrowWasm"]) {
+for (const id of /** @type {const} */ (["pdfiumWasm", "qpdfWasm", "burrowWasm"])) {
   const entry = BURROW_ENGINES[id];
   compiled[id] = fetch(entry.url, { integrity: entry.integrity }).then((response) => {
     if (!response.ok) {
