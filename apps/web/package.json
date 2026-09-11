@@ -8,7 +8,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check && tsc -p src/worker/tsconfig.json",
+    "check": "astro check && tsc -p src/worker/tsconfig.json && tsc -p src/host/tsconfig.json",
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run --passWithNoTests",

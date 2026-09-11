@@ -168,6 +168,10 @@ interface Reply {
   readonly limit: string;
   readonly requested: bigint;
   readonly allowed: bigint;
+  /** ADR 0009's lifecycle verdict, computed in Rust. See `recycle.rs`. */
+  readonly recycle: boolean;
+  readonly pdfium_heap_bytes: bigint;
+  readonly qpdf_heap_bytes: bigint;
   free(): void;
 }
 

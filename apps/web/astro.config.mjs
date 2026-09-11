@@ -17,9 +17,9 @@ import svelte from "@astrojs/svelte";
  * then removed it still shipped a shared CSS chunk Vite had named `harness.<hash>.css`
  * after it. Not a code leak, but production output named after a test fixture.
  *
- * Two scripts cannot work this way -- the harness driver and the CSP probe worker must be
- * classic scripts at stable URLs, so they live in `public/` and are copied verbatim like
- * any other asset. Those are removed from `dist/` instead.
+ * The harness DRIVER cannot work this way. It must be a script at a stable URL, so
+ * `tools/stage-web-engines.mjs` copies `src/host/*.js` into `public/host/` and Astro copies
+ * that into `dist/` like any other asset. That directory is removed from `dist/` instead.
  *
  * `src/production-build.test.ts` asserts both halves, and includes a control that builds
  * WITH the flag, so an integration that excluded unconditionally would fail rather than
@@ -46,9 +46,10 @@ function harnessGating() {
         if (included) {
           return;
         }
-        for (const testOnly of ["./burrow-harness.js", "./burrow-csp-probe.js"]) {
-          await rm(fileURLToPath(new URL(testOnly, dir)), { force: true });
-        }
+        // The whole directory, so a file added to `src/host/` later cannot be left behind by
+        // a list nobody remembered to update. The previous version named two files, one of
+        // which (`burrow-csp-probe.js`) no longer existed -- a list that had already rotted.
+        await rm(fileURLToPath(new URL("./host/", dir)), { recursive: true, force: true });
       },
     },
   };

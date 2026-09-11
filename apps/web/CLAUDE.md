@@ -78,7 +78,12 @@ Three consequences you will meet:
   strings, so `…/qpdf.<hash>.wasm?leak=…` matches the permitted source. What closes that is
   a test asserting **zero network requests of any type** once the engines have loaded. Both
   halves are needed; neither is sufficient. `e2e/csp.spec.ts` includes a test that
-  deliberately demonstrates the hole, so nobody reads the other two and concludes otherwise.
+  deliberately demonstrates the hole, so nobody reads the other two and concludes otherwise,
+  and `e2e/zero-requests.spec.ts` is the test that closes it. **The test server's request log
+  is the ground truth**, not `page.on("request")`: browser-reported network events for
+  dedicated workers are not equally complete across engines, and the worker is the only place
+  file bytes exist. `e2e/server.mjs` serves `dist/` and logs every request; a second origin
+  logs anything that reaches it and fails the test if anything does.
 - **Relative URLs do not work inside the worker.** A `blob:` worker's `self.location` is an
   opaque `blob:` URL, so `fetch("/engines/…")` fails to parse before CSP is consulted. The
   generated manifest inside the bundle carries absolute URLs, and Emscripten is handed
@@ -97,6 +102,43 @@ page load.
 
 **Heavy work goes in a Web Worker.** A large PDF must not freeze the tab. Report progress
 and support cancellation.
+
+**The worker lifecycle is a state machine, and it lives in `src/host/worker-host.js`.**
+See [ADR 0015](../../docs/adr/0015-web-worker-lifecycle.md). Five states — `idle`,
+`initialising`, `busy`, `dead`, `respawning` — with every dependency injected (`spawn`, `now`,
+`setTimer`, `clearTimer`), so `worker-host.test.ts` drives every transition in milliseconds
+against a fake worker. Do not put lifecycle logic in a page or an island; put it there, with a
+test.
+
+`src/host/*.js` are ES modules copied verbatim into `public/host/` by
+`tools/stage-web-engines.mjs` and deleted from production builds by `astro.config.mjs`. The
+sources live in `src/` so vitest can import them; `tsc -p src/host/tsconfig.json` type-checks
+them and runs as part of `pnpm check`.
+
+**The watchdog's clock starts when the worker takes the operation, not when the page asks.**
+The worker posts `{ id, ack: true }` before it begins; the page's timer starts on that ack.
+Engine start-up has its own bound (`initTimeoutMs`), because a cold 6.5 MB compile must never
+be charged to the file — that is the web form of the queue-time bug PR 2 fixed natively. A
+start-up failure is `Internal`, **never** `LimitExceeded`.
+
+**Operations are serialised, because the worker is.** `run()` queues; only one operation is
+posted at a time. Concurrency here is not free parallelism — the worker's message loop is
+single-threaded, so a second operation just sat unacked behind the first, and its start-up
+timer then killed the healthy worker running the first (ADR 0015 §2a). A queued request carries
+no deadline: nothing about waiting is the file's fault.
+
+**Send the `File`/`Blob`, never a transferred `ArrayBuffer`.** Structured clone passes a Blob by
+reference, so the page never holds the bytes — and, the part that matters for recovery, the
+caller still holds a usable handle after its worker is killed. A transferred buffer is detached
+page-side and gone, so retrying the same file would be impossible for exactly the files that
+needed it.
+
+**Never retry automatically, and the circuit breaker is why.** Three crashes in 60 seconds
+opens it; every later request returns `EngineUnavailable` and nothing is spawned until
+`reset()`, which a UI wires to a deliberate gesture. It counts **crashes**, not respawns — a
+recycle and a user cancel are respawns, and counting those took the page offline while every
+worker was healthy (measured; ADR 0015 §3). A tool page must surface `EngineUnavailable` as
+something a person can act on.
 
 **Any `Internal` result is fatal to the worker. Terminate it and spawn a fresh one.**
 
@@ -135,6 +177,16 @@ the _result_ as the signal.
   content-free `Internal`.
 - A test must assert this: panic deliberately, assert the instance is discarded, assert
   the next operation succeeds on a fresh worker. Required by ADR 0006, not optional.
+  `e2e/recovery.spec.ts` is it, and `src/host/worker-host.test.ts` covers the transitions a
+  browser will not reproduce on demand.
+
+**A worker whose engine heap has grown too far is recycled — after the result is delivered.**
+Recycling is not a failure and the caller must never see it as one. The verdict is
+`reply.recycle`, computed in Rust from `Limits::max_memory_bytes`
+(`core/burrow-engines/src/web/recycle.rs`), for the same reason `fatal` is: ADR 0009 forbids a
+binding enforcing any part of `Limits`. The threshold and the measurements behind it are in
+ADR 0015 §5-6 — ordinary corpus work sits at ~18 MiB per engine, and `xref-bomb.pdf` reaches
+1.9 GiB when a caller raises the ceiling far enough to let it.
 
 **One engine instance per worker, and memoise the init promise.** `pdfium.js` is not
 modularised: its state lives in worker-global `var`s and `importScripts` does not dedupe
@@ -158,7 +210,10 @@ operation fails, report the typed error from the core, not the input.
 src/pages/       one route per tool; index and static pages
 src/layouts/     page shells (zero JS)
 src/components/  Svelte islands and Astro components
+src/host/        the main-thread worker lifecycle (staged to public/host/, test-only today)
+src/worker/      the worker bundle's sources (concatenated into the generated bundle)
 public/          self-hosted static assets
+e2e/             Playwright, plus the logging test servers whose request log is ground truth
 ```
 
 ## Conventions

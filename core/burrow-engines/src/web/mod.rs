@@ -31,10 +31,12 @@
 pub mod bridge;
 mod pdfium;
 mod qpdf;
+pub mod recycle;
 
 pub use self::bridge::{LoadOutcome, PdfiumBridge, PdfiumPtr, QpdfBridge, QpdfPtr};
 pub use self::pdfium::{WebDocument, WebPdfium};
 pub use self::qpdf::WebQpdf;
+pub use self::recycle::{MIN_CONVERGING_MEMORY_BYTES, should_recycle, threshold_bytes};
 
 #[cfg(test)]
 mod fake;

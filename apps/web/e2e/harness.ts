@@ -1,54 +1,31 @@
-// The harness API, typed once.
+// The harness API, as Playwright sees it.
 //
-// `apps/web/CLAUDE.md`: "No `any` in committed code." Two specs were reaching into
-// `window` — one with `as any` plus an eslint-disable, the other with a long inline
-// `as unknown as { ... }` — to do the same job. One declaration is both honest and shorter.
+// The shape itself lives in `src/host/harness-api.d.ts`, beside the file that implements it,
+// and is re-exported here. It was declared only on this side until M1 PR 4a-ii, which meant
+// the implementation was never checked against the shape its callers assumed — a rename on one
+// side type-checked cleanly on the other.
+//
+// `apps/web/CLAUDE.md`: "No `any` in committed code." Two specs were reaching into `window` —
+// one with `as any` plus an eslint-disable, the other with a long inline `as unknown as { ... }`
+// — to do the same job. One declaration is both honest and shorter.
 //
 // The harness itself is test-only and is removed from production builds; see
 // `astro.config.mjs` and `src/production-build.test.ts`.
 
 import type { Page } from "@playwright/test";
 
-/** One operation's outcome, as the worker reports it. */
-export interface Reply {
-  ok: boolean;
-  kind: string;
-  /** Computed in Rust, not derived from `kind`. ADR 0009. */
-  fatal: boolean;
-  message: string;
-  pages: number;
-  limit: string;
-  /** Strings, not numbers: these are `u64` and can exceed 2^53. */
-  requested: string;
-  allowed: string;
-}
+export type {
+  BurrowHarness,
+  HarnessArming,
+  HarnessLimits,
+  ProbeResult,
+  Reply,
+} from "../src/host/harness-api.js";
 
-/** What a CSP probe inside a worker observed. */
-export interface ProbeResult {
-  blocked: boolean;
-  violations: string[];
-  /** Set when the probe worker could not start — a different fact from "blocked". */
-  failed?: boolean;
-}
-
-export interface BurrowHarness {
-  ready(): Promise<boolean>;
-  run(
-    op: "page_count" | "structure_check",
-    bytes: number[],
-    options?: { password?: number[]; attemptRecovery?: boolean },
-  ): Promise<Reply>;
-  spawnCount(): number;
-  hasWorker(): boolean;
-  fetchFromWorker(url: string): Promise<ProbeResult>;
-  workerInheritsCsp(): Promise<boolean>;
-}
-
-declare global {
-  interface Window {
-    burrowHarness: BurrowHarness;
-  }
-}
+// The `export type` above is what pulls in the declaration, and with it the
+// `Window.burrowHarness` augmentation `page.evaluate` callbacks rely on. A side-effect
+// `import` of the same path would be a RUNTIME import of a file that does not exist at
+// runtime — it is a `.d.ts` — and Playwright fails to collect the suite at all.
 
 /** Open the harness page and wait for both engines to initialise. */
 export async function openHarness(page: Page): Promise<void> {

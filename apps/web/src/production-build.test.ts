@@ -48,9 +48,19 @@ describe("the production build", () => {
     files = walk(outDir);
   }, 300_000);
 
-  it("does not contain the engine harness or its probe worker", () => {
-    const testOnly = files.filter((f) => f.includes("harness") || f.includes("csp-probe"));
+  it("does not contain the engine harness or the main-thread host", () => {
+    const testOnly = files.filter((f) => f.includes("harness") || f.startsWith("host/"));
     expect(testOnly, `these should not ship: ${testOnly.join(", ")}`).toEqual([]);
+  });
+
+  it("does not contain the worker state machine, which the harness imports", () => {
+    // Named separately from the pattern above because it does not match "harness": the host
+    // is two files and only one of them says so. A production build that shipped
+    // `host/worker-host.js` alone would have passed the previous assertion while leaving the
+    // module the harness driver imports sitting on the origin.
+    expect(files, "the state machine is staged for the harness only").not.toContain(
+      "host/worker-host.js",
+    );
   });
 
   it("does not expose the harness API anywhere in its output", () => {
@@ -191,6 +201,13 @@ describe("the production build", () => {
     });
     const built = walk(withHarness);
     expect(built.some((f) => f.includes("harness"))).toBe(true);
+    // Both halves of the control: the page AND the host it loads. Asserting only the page
+    // would let an exclusion that deleted `host/` unconditionally pass, which would leave the
+    // harness route present and broken rather than absent.
+    expect(built, "the driver must be there when the harness is").toContain(
+      "host/harness-driver.js",
+    );
+    expect(built).toContain("host/worker-host.js");
     rmSync(withHarness, { recursive: true, force: true });
   }, 300_000);
 });

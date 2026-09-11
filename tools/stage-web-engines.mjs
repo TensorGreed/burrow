@@ -61,6 +61,19 @@ const webApp = join(repo, "apps", "web");
 const outDir = join(webApp, "public", "engines");
 const generatedDir = join(webApp, "src", "generated");
 
+// The main-thread host, copied verbatim rather than bundled.
+//
+// `src/host/*.js` are ES modules the harness page loads with `<script type="module">`, and the
+// browser resolves the one relative import between them itself. `script-src 'self'` permits a
+// module script and its same-origin static imports, so no directive changes and no bundler is
+// needed. They are NOT content-hashed: they are script URLs, not `connect-src` entries, and a
+// stable path is what lets the page reference them.
+//
+// Copied rather than symlinked so `astro.config.mjs` can delete the whole directory from a
+// production build, which is what keeps `window.burrowHarness` out of the shipped site.
+const hostSrcDir = join(webApp, "src", "host");
+const hostOutDir = join(webApp, "public", "host");
+
 // The origin the policy is written against. A build for a different origin is a different
 // build; see the header.
 const ORIGIN = (() => {
@@ -329,6 +342,20 @@ export const CSP_HEADER = ${JSON.stringify(headerPolicy)};
   console.log(`\n  origin: ${ORIGIN}`);
   console.log(`  CSP:    ${metaPolicy}`);
   console.log(`  header: + frame-ancestors 'none'`);
+
+  // ---- the main-thread host -------------------------------------------------------
+  await rm(hostOutDir, { recursive: true, force: true });
+  await mkdir(hostOutDir, { recursive: true });
+  const hostFiles = (await readdir(hostSrcDir)).filter(
+    // Implementation only. The test files and the tsconfig are not page code and must not be
+    // served: `fake-worker.js` in particular exists to model a worker, and a copy of it on a
+    // real origin would be a confusing thing to find.
+    (name) => name.endsWith(".js") && !name.endsWith(".test.js") && name !== "fake-worker.js",
+  );
+  for (const name of hostFiles) {
+    await writeFile(join(hostOutDir, name), await readFile(join(hostSrcDir, name)));
+  }
+  console.log(`  host -> public/host/ (${hostFiles.join(", ")})`);
 
   const listing = await readdir(outDir);
   console.log(`\n  staged ${listing.length} files into apps/web/public/engines/`);

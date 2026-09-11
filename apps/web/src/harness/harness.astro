@@ -23,11 +23,17 @@
 //
 // There is deliberately no styling and no framework island. It is a test fixture.
 //
-// The driver lives in `public/burrow-harness.js` rather than inline, because the CSP
-// refuses inline scripts -- `script-src 'self'` with no `'unsafe-inline'` and no nonce. That
-// is the policy doing its job, so the harness moved rather than the policy loosening. The
-// engine manifest reaches it through a `data-` attribute, which is the only way to hand
-// data to an external script without inlining something.
+// The driver lives in `public/host/` rather than inline, because the CSP refuses inline
+// scripts -- `script-src 'self'` with no `'unsafe-inline'` and no nonce. That is the policy
+// doing its job, so the harness moved rather than the policy loosening. The engine manifest
+// reaches it through a `data-` attribute, which is the only way to hand data to an external
+// script without inlining something.
+//
+// It is a MODULE script, and its one static import (`worker-host.js`, the state machine) is
+// resolved by the browser. `script-src 'self'` governs both and neither needs a new source.
+// `tools/stage-web-engines.mjs` copies `src/host/*.js` there; the sources live in `src/` so
+// `worker-host.test.ts` can import the state machine directly and drive every transition
+// against a fake worker.
 import BaseLayout from "../layouts/BaseLayout.astro";
 import { ENGINES } from "../generated/engines.js";
 ---
@@ -37,5 +43,5 @@ import { ENGINES } from "../generated/engines.js";
   <div id="engines" data-engines={JSON.stringify(ENGINES)}></div>
   <p id="status">idle</p>
   <pre id="result"></pre>
-  <script src="/burrow-harness.js" is:inline></script>
+  <script type="module" src="/host/harness-driver.js" is:inline></script>
 </BaseLayout>

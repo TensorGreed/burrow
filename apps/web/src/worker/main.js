@@ -95,6 +95,11 @@ function internalFailure(id, message) {
     limit: "",
     requested: 0,
     allowed: 0,
+    // A worker that failed this way is being discarded anyway, so there is nothing to
+    // recycle and no heap reading worth trusting.
+    recycle: false,
+    pdfiumHeapBytes: "0",
+    qpdfHeapBytes: "0",
   };
 }
 
@@ -120,6 +125,14 @@ function drainReply(id, reply) {
       // user which ceiling they hit; a wrong number there is a small lie with no upside.
       requested: reply.requested.toString(),
       allowed: reply.allowed.toString(),
+      // THE LIFECYCLE VERDICT, computed in Rust like `fatal` and for the same reason: the
+      // threshold is derived from `max_memory_bytes`, and ADR 0009 forbids a binding
+      // enforcing any part of `Limits`. Read and forwarded; nothing here compares it
+      // against anything.
+      recycle: reply.recycle,
+      // Strings for the same reason `requested` is: these are `u64`.
+      pdfiumHeapBytes: reply.pdfium_heap_bytes.toString(),
+      qpdfHeapBytes: reply.qpdf_heap_bytes.toString(),
     };
   } finally {
     // A wasm-bindgen object is a boxed Rust value in the burrow module's heap, and wasm
@@ -166,7 +179,57 @@ self.onmessage = async (event) => {
   let reply = null;
   try {
     await ensureReady();
-    const bytes = new Uint8Array(request.bytes);
+
+    if (request.op !== "page_count" && request.op !== "structure_check") {
+      // BEFORE `limits` is constructed, deliberately. An unknown op is a bug in the page, not
+      // a poisoned engine, so it is reported without costing a worker — but returning after
+      // building a `WebLimits` would leak it: nothing consumes it on this path, and a
+      // wasm-bindgen struct is a boxed Rust value in a heap that never shrinks. Falling
+      // through to `page_count` would have been the one-line version and would silently do
+      // the wrong operation.
+      self.postMessage({
+        id: request.id,
+        ok: false,
+        kind: "InvalidArgument",
+        fatal: false,
+        message: "unknown operation",
+        pages: 0,
+        limit: "",
+        requested: "0",
+        allowed: "0",
+        recycle: false,
+        pdfiumHeapBytes: "0",
+        qpdfHeapBytes: "0",
+      });
+      return;
+    }
+
+    // THE ACK, AND WHY IT IS HERE RATHER THAN AT THE TOP OF THIS HANDLER.
+    //
+    // The page's watchdog starts its clock on this message, not on its own `postMessage`.
+    // Everything above this line -- the policy guard, and a cold 6.5 MB engine compile that
+    // `ensureReady()` may be awaiting -- is start-up, which the page bounds separately. A
+    // file must never be blamed for time spent before the worker could look at it.
+    //
+    // That is the web form of the bug PR 2 fixed natively: a caller delayed behind someone
+    // else's work was told its own deadline had expired.
+    //
+    // It goes out BEFORE `blob.arrayBuffer()` because reading the file IS the operation --
+    // a 100 MB blob takes real time and that time is attributable to the file, unlike the
+    // engine compile.
+    self.postMessage({ id: request.id, ack: true });
+
+    // A Blob, not a transferred ArrayBuffer. Structured clone passes a Blob BY REFERENCE,
+    // so the page never materialises the bytes in its own heap and -- the part that
+    // matters for recovery -- the caller still holds a usable handle to the same file after
+    // a worker is killed. A transferred ArrayBuffer is detached on the page side and gone,
+    // which would make "retry on a fresh worker" impossible for exactly the files that
+    // needed it.
+    //
+    // Reading a Blob is a memory read. It issues no request, so no CSP directive is
+    // consulted -- asserted rather than assumed by `e2e/zero-requests.spec.ts`, which
+    // delivers the whole corpus this way and watches the server's own log.
+    const bytes = new Uint8Array(await request.blob.arrayBuffer());
     const password = request.password ? new Uint8Array(request.password) : undefined;
     // NOT freed here, and that is not an oversight. wasm-bindgen passes a struct argument
     // BY VALUE: the generated glue calls `limits.__destroy_into_raw()` and hands the raw
@@ -185,29 +248,13 @@ self.onmessage = async (event) => {
 
     if (request.op === "page_count") {
       reply = wasm_bindgen.page_count(bytes, password, limits);
-    } else if (request.op === "structure_check") {
+    } else {
       reply = wasm_bindgen.structure_check(
         bytes,
         password,
         Boolean(request.attemptRecovery),
         limits,
       );
-    } else {
-      // An unknown op is a bug in the page, not a poisoned engine -- so it is reported
-      // without costing a worker. Falling through to `page_count` would have been the
-      // one-line version and would silently do the wrong operation.
-      self.postMessage({
-        id: request.id,
-        ok: false,
-        kind: "InvalidArgument",
-        fatal: false,
-        message: "unknown operation",
-        pages: 0,
-        limit: "",
-        requested: "0",
-        allowed: "0",
-      });
-      return;
     }
   } catch {
     // A trap, or an Emscripten abort. Deliberately no binding: the text is never inspected,
@@ -217,5 +264,19 @@ self.onmessage = async (event) => {
     return;
   }
 
-  self.postMessage(drainReply(request.id, reply));
+  // GUARDED, and it was not until M1 PR 4a-ii found out the hard way.
+  //
+  // `drainReply` reads getters off a wasm-bindgen object. A stale `pkg/` -- a Rust field added
+  // and the module not rebuilt -- makes one of them `undefined`, `.toString()` throws, the
+  // throw escapes this handler, and NO REPLY IS EVER SENT. The symptom was every operation
+  // failing as `max_duration_ms exceeded` thirty seconds later: the watchdog doing its job,
+  // reporting the only thing it can see, and naming entirely the wrong cause.
+  //
+  // Turning that into an immediate typed `Internal` costs three lines and is the difference
+  // between a confusing half-minute and an obvious failure.
+  try {
+    self.postMessage(drainReply(request.id, reply));
+  } catch {
+    self.postMessage(internalFailure(request.id, "internal error"));
+  }
 };
