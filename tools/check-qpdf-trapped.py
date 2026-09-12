@@ -325,7 +325,7 @@ def declared_functions() -> dict[str, list[str]]:
 
 
 def wasm_binding_is_covered() -> list[str]:
-    """Every `__burrow_qpdf_*` the wasm binding imports must be defined in the JS bridge.
+    r"""Every `__burrow_qpdf_*` the wasm binding imports must be defined in the JS bridge.
 
     This is part of what makes it safe for `declared_functions()` to read the JS bridge alone
     for the web path. The Rust half names bridge functions; the JS half is the only place that

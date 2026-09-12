@@ -219,6 +219,21 @@ jobs:
           python3 tools/detect-engine-components.py
           tools/test-detect-engine-components.sh
 
+      # ROADMAP M1 item 3's second half: "CI fails if ... `QPDFCrypto_gnutls` appears in
+      # the link". Only the first half existed -- `engines/build-native.sh` greps qpdf's
+      # CMake configure summary, which says what CMake DECIDED, not what reached the archive.
+      #
+      # And that grep lives inside the build step, which is gated on a cache miss. On an
+      # ordinary PR the cache hits, the build does not run, and the crypto assertion did not
+      # run either. This step is deliberately UNGATED: it reads the artifact, so it works on
+      # a restored cache. Same reasoning as "Re-verify engine checksums" above.
+      #
+      # GnuTLS is LGPL-2.1-or-later and qpdf links it by default (ADR 0008). Nothing else in
+      # this repository would catch it: cargo-deny sees Rust crates, and engines/licenses.toml
+      # is hand-maintained and would simply not mention it.
+      - name: qpdf links native crypto only, never GnuTLS (ROADMAP item 3, ADR 0008)
+        run: tools/check-qpdf-crypto.sh
+
       # The licence-copy DRIFT check, which needs the vendor tree and therefore cannot run in
       # the `deny` job where the rest of this script runs.
       #
@@ -434,6 +449,30 @@ jobs:
       - name: qpdf declarations are all trapped or accepted (ADR 0013 §1)
         run: python3 tools/check-qpdf-trapped.py
 
+      # Compile every tool in tools/ with warnings promoted to errors.
+      #
+      # M1 PR 4c shipped a regex in a non-raw docstring, so `check-qpdf-trapped.py` printed
+      # `SyntaxWarning: invalid escape sequence '\.'` on every run and nothing failed. A
+      # warning on stderr in a green job is the worst place for one: loud enough to be
+      # noise, quiet enough to be ignored, and in a security-critical checker where noise is
+      # what stops people reading the output. Python escalates this class to a SyntaxError
+      # in a future release, so the eventual break would land on an interpreter upgrade
+      # rather than on the commit that caused it.
+      - name: Python tools compile with no syntax warnings
+        run: python3 tools/check-python-syntax.py
+
+      # The crypto checker's adversarial self-test, HERE rather than beside the checker in
+      # `test`, by the rule in CLAUDE.md: it reads only committed files and needs only cc and
+      # ar, so a job that fetches nothing is where it belongs -- and running it on a clean
+      # checkout proves the checker works without a vendor tree, which running it next to the
+      # artifacts never could.
+      #
+      # It builds synthetic archives and modules for every way the checker could pass on
+      # input it should reject. A mutation sweep over the checker's nine defences leaves one
+      # survivor, and that one is documented in the script as subsumed rather than untested.
+      - name: The qpdf crypto checker fails on input it should reject
+        run: tools/test-check-qpdf-crypto.sh
+
   audit:
     name: cargo-audit
     runs-on: ubuntu-latest
@@ -565,6 +604,23 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The wasm half of the same assertion, and it names `qpdf.wasm` -- the LINKED module a
+      # user downloads -- not `libqpdf.a`.
+      #
+      # Two reasons, and the second is why this step is not simply the archive:
+      #
+      #   * The module is what ships. A library introduced at the emcc link step is invisible
+      #     in the archive, and an archive member the linker dropped as unused never reaches
+      #     anyone. The shipped bytes are the honest subject.
+      #   * Reading a wasm ARCHIVE needs `llvm-nm`; plain `nm` cannot, and emsdk is installed
+      #     in this job only on a cache MISS and never exported to PATH. So an archive check
+      #     here would fail closed on every warm-cache PR -- correct behaviour, red CI, no
+      #     added safety. Scanning the module needs only `strings`, from binutils.
+      #
+      # The native archives get the full symbol-table treatment in the `test` job.
+      - name: qpdf wasm links native crypto only, never GnuTLS (ROADMAP item 3, ADR 0008)
+        run: tools/check-qpdf-crypto.sh engines/vendor/wasm/lib/qpdf.wasm
+
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked --version 0.15.0
       # --target no-modules, NOT --target web: the worker is classic (pdfium.js is not

@@ -40,7 +40,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all                 # cargo fmt --all -- --check to verify
 cargo deny check                # licenses, advisories, bans
-cargo audit
+cargo audit                     # NOT optional when replicating CI -- see below
 cargo build -p burrow-wasm --target wasm32-unknown-unknown
 cargo doc --workspace --no-deps   # RUSTDOCFLAGS="-D warnings" in CI
 ```
@@ -169,6 +169,34 @@ A change is done when all of these hold:
   Four of them accumulated across one PR, all polling the same endpoint — a green from any
   would have read as confirmation while saying nothing about the commit it was started for.
   Stop the previous monitor before starting the next.
+- **`gh run watch --exit-status` is not the verdict. Confirm with
+  `gh run view <id> --json conclusion`.** Measured in M1 PR 4c: the watcher exited **0** on a
+  run whose conclusion was `failure`. Had that exit code been trusted, a red run would have
+  been reported as green — the precise failure the run-ID rule above exists to prevent, one
+  layer further in. Read the run's conclusion, and read the per-job conclusions with
+  `--json jobs` when you need to know *which* job failed and whether it is yours.
+- **Replicating CI locally means every job, and `cargo audit` is the one that gets skipped.**
+  It is in the command list above and it is easy to run twelve checks without it, because it
+  is the only Rust gate that consults something outside the repository. In M1 PR 4c the
+  branch was pushed after twelve green local checks and CI went red on the thirteenth. The
+  failure was not even ours — the audit *tool* would not build — but the point stands: a
+  local sweep that omits a job is not a replication of CI.
+- **Running a Python tool by importing it writes a `.pyc`, so never `git add -A` afterwards.**
+  Verifying `tools/*.py` by `importlib`-ing it leaves `tools/__pycache__/`, and a blanket add
+  commits an opaque binary. That reached `main` once, in PR #29. `.gitignore` covers it now,
+  but the ignore rule cannot untrack a file already staged on a branch that predates it, and
+  `git rm --cached` is then the only way out. Prefer `tools/check-python-syntax.py`, which
+  compiles in memory and writes nothing.
+- **Where a check lives in `ci.yml` is load-bearing, and consolidating jobs breaks checks
+  silently.** `engines/vendor/` is gitignored and only some jobs fetch it, so a check that
+  reads the vendor tree must live in a job that has one, and a check that reads only
+  committed files should live in a job that fetches nothing so it still runs on a clean
+  checkout. Two measured failures of this kind: the engine-licence *drift* comparison ran
+  only in `deny`, which fetches nothing, so it was firing on **zero** components; and the
+  qpdf crypto assertion lived inside a build step gated on a cache miss, so on an ordinary
+  PR with a warm cache it did not run at all. **A check that silently examines nothing is
+  worse than no check** — it reads as coverage. Before moving a step between jobs, ask what
+  it reads and whether that will be there.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
 - **Run `security-reviewer` and `code-reviewer` before the first push.** See *Conventions*;
