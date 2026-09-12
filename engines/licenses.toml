@@ -89,11 +89,27 @@ id = "pdfium-linux-x64"
 files = "lib/libpdfium.so inside vendor/pdfium-linux-x64.tgz"
 source = "prebuilt, pdfium-binaries chromium/8044, pdfium-linux-x64.tgz"
 licences_dir = "vendor/src/pdfium-x86_64-probe/licenses/"
-note = """Fetched and pinned but NOT yet staged into a vendor prefix: engines/build-native.sh \
-only builds for the host arch, and this audit ran on aarch64. Its licences/ directory is \
-byte-identical to pdfium-linux-arm64's (all 14 files verified by sha256), so its component \
-set is recorded as identical -- but its libpdfium.so was NOT symbol-inspected. Every \
-`linked_in` claim for this artifact is inherited from the arm64 build, not measured."""
+note = """CORRECTED 2026-09-12. The previous note said this artifact was "NOT yet staged \
+into a vendor prefix" and its libpdfium.so "NOT symbol-inspected". Both were true of the M1 \
+PR 1 audit machine and neither is true of CI, and the difference matters: \
+engines/build-native.sh builds for the HOST arch, and CI runs on x86-64. So CI stages \
+vendor/native-x86_64/ on every run and tools/detect-engine-components.py symbol-inspects \
+this artifact there -- 2472 harfbuzz hits, 256 agg23, and the rest \
+(run 34707958020). It is the AARCH64 build that no hosted runner covers, which is the \
+opposite of what the old note implied and is tracked in issue #30. \
+\
+What IS still inherited is this artifact's `linked_in`: it was written from the aarch64 \
+audit and has never been re-derived per artifact. detect-engine-components.py checks that \
+every component it RECOGNISES is declared; it does not populate or verify `linked_in`, and \
+it knows nine fingerprints (issue #15). Its licences/ directory is byte-identical to \
+pdfium-linux-arm64's (all 14 files verified by sha256), which is good evidence the DECLARED \
+component sets match and is not evidence the LINKED ones do -- that directory is derived \
+from the build config, not from the binary. \
+\
+The stale note had a cost beyond being wrong: it was read as a statement about CI, which is \
+how check-engine-licences.py came to compare licence texts against vendor/native-aarch64/ \
+paths that do not exist on a CI runner. Eleven of fifteen comparisons were silently skipped \
+until resolve_audited_original() started treating the arch as a wildcard."""
 
 [[artifact]]
 id = "qpdf-wasm"

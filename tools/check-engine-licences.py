@@ -92,6 +92,50 @@ def split_expression(expr: str) -> list[str]:
     return out
 
 
+def resolve_audited_original(license_file: str) -> pathlib.Path | None:
+    """Resolve a `license_file` path to a file that exists on THIS machine, or `None`.
+
+    **The recorded path names the architecture the AUDIT ran on, not the one you are on.**
+    Every `vendor/native-*/` path in the manifest says `native-aarch64`, because M1 PR 1's
+    audit ran on an aarch64 developer machine. `engines/build-native.sh` builds for the host
+    arch, and CI runs on x86-64 -- so in CI those paths do not exist.
+
+    That silently gutted this check. Measured on the manifest as committed: with a
+    `native-x86_64` tree and no `native-aarch64` one, **11 of 15 comparisons were skipped**
+    and reported nothing. The drift guard that M1 PR 4c moved into the `test` job to make it
+    run against a real vendor tree was still comparing four components.
+
+    So the arch component is treated as a wildcard: try the recorded path, then the same tail
+    under any other `vendor/native-*/` prefix that exists. The licence text of a component is
+    not architecture-specific -- `pdfium-binaries` ships the same `licences/` directory for
+    both Linux builds, verified byte-identical across all 14 files -- so comparing the
+    committed copy against whichever build is present is exactly as strong.
+
+    Returns `None` when no candidate exists, which is a genuine "no vendor tree" and is
+    skipped rather than failed.
+    """
+    if not license_file:
+        return None
+    if not license_file.startswith("vendor/"):
+        direct = REPO / license_file
+        return direct if direct.is_file() else None
+
+    exact = REPO / "engines" / license_file
+    if exact.is_file():
+        return exact
+
+    parts = pathlib.PurePosixPath(license_file).parts
+    if len(parts) < 2 or not parts[1].startswith("native-"):
+        return None
+
+    tail = pathlib.PurePosixPath(*parts[2:])
+    for prefix in sorted((REPO / "engines" / "vendor").glob("native-*")):
+        candidate = prefix / tail
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def check_license_text(comp: dict, name: str) -> list[str]:
     """Every `linked` component must carry a committed copy of its licence text.
 
@@ -135,13 +179,13 @@ def check_license_text(comp: dict, name: str) -> list[str]:
     # and verifies its own downloads; engines/licences/README.md records the exemption.
     if original_rel.startswith("emsdk:"):
         return []
+    original = resolve_audited_original(original_rel)
     # agg23 and harfbuzz point `license_text` at the same committed file as `license_file`,
     # because those texts exist nowhere else. Comparing a file with itself proves nothing.
-    original = REPO / "engines" / original_rel if original_rel.startswith("vendor/") else REPO / original_rel
-    if original.resolve() == copy.resolve():
+    if original is not None and original.resolve() == copy.resolve():
         return []
-    if not original.is_file():
-        # No vendor tree. Not a failure: see the docstring.
+    if original is None:
+        # No vendor tree at all. Not a failure: see the docstring.
         return []
     if original.read_bytes() != copy.read_bytes():
         return [
