@@ -7,3 +7,4 @@
 - [M1 web engine path](m1_web_engine_path.md) — the blob: worker bundle, verified no-collision concatenation, what the CSP and the fail-closed guard really cover.
 - [M1 web worker lifecycle](m1_web_worker_lifecycle.md) — where the ack, the pre-ack timer and the breaker actually bind; measured with the fake worker and a virtual clock.
 - [M1 differential harness](m1_differential_harness.md) — measured cost of the committed bombs, and what compare.ts's freshness check actually binds.
+- [CI artifact-check vacuity](m1_ci_check_vacuity.md) — measured ways a symbol-table check passes while reading nothing, and emsdk/llvm-nm absence in the web job.

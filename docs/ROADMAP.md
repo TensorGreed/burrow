@@ -88,10 +88,27 @@ acquisition. The spike is not production code and nothing from it is reused dire
    credits page, per [ADR 0008](adr/0008-widened-licence-allowlist.md).
    *Testable:* CI fails if a component is declared with a licence outside the allowlist;
    a test asserts both credit lines are present in the built site.
-3. **qpdf crypto flags asserted in CI.** `USE_IMPLICIT_CRYPTO=OFF`,
-   `REQUIRE_CRYPTO_NATIVE=ON`. The upstream default would link GnuTLS (LGPL-2.1+).
-   *Testable:* CI fails if the crypto summary changes or `QPDFCrypto_gnutls` appears in
-   the link.
+3. ~~**qpdf crypto flags asserted in CI.**~~ — **done.** `USE_IMPLICIT_CRYPTO=OFF`,
+   `REQUIRE_CRYPTO_NATIVE=ON`, set in both build scripts since PR 1. The upstream default
+   would link GnuTLS (LGPL-2.1+).
+
+   **Both halves of the testable now exist, and the second was missing until it was
+   checked.** The build scripts grep qpdf's CMake configure summary for
+   `GNU TLS crypto enabled: OFF` — that asserts what CMake *decided*.
+   `tools/check-qpdf-crypto.sh` asserts what reached the **archive**: `QPDFCrypto_native`
+   defined, no `QPDFCrypto_gnutls` or `QPDFCrypto_openssl`, and no TLS library symbols
+   under any name. Native archives are checked in the `test` job, the wasm one in `web`.
+
+   The gap was not the symbol check alone. The configure grep lives inside a build step
+   gated on `if: cache-hit != 'true'`, **so on an ordinary PR with a warm engine cache the
+   crypto assertion did not run at all**. The new step is deliberately ungated: it reads the
+   artifact, so a restored cache is still examined. Same reasoning as the `test` job's
+   "re-verify engine checksums rather than trusting the cache".
+
+   *Testable:* CI fails if the crypto summary changes **when the engines are rebuilt**, or —
+   **on every run, warm cache included** — if any crypto provider other than native reaches a
+   built artifact. The two halves have different coverage and the qualifier is the point:
+   writing this sentence unqualified is how the gap above survived being written down twice.
 4. ~~**`DocumentEngine` implementation over PDFium**~~ — **done, PR 2.** In `burrow-engines`, with every C
    error code mapped to a typed `Error` and no raw code escaping the crate. No sentinel
    that can alias success — `-FPDF_GetLastError()` yields `-0`, and `-0 === 0` in JS — and
