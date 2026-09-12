@@ -440,6 +440,14 @@ gate** is whether that build works on a `linux-aarch64` host or has to run on x8
 runners. The dev and corpus machine is aarch64, so the answer determines whether the build
 is reproducible where the regression runs happen.
 
+**One question came off this gate.** [Spike 0002](spikes/0002-wasm-memory-ceiling.md) showed
+that the engines can be given a real memory ceiling **without relinking PDFium** — a 1–2 byte
+patch to the declared maximum in the prebuilt module's memory section, with no size change and
+no new dependency. So [#25](https://github.com/TensorGreed/burrow/issues/25) no longer makes
+"bound engine memory" an option-2-sized decision, and this gate is back to the single question
+above. See ADR 0006's 2026-09-12 amendment. The spike mitigates #25 rather than resolving it:
+the ceiling is per *worker*, so a caller's own `max_memory_bytes` still bounds nothing.
+
 Decide, record the outcome in an ADR, and only then start redaction.
 
 - Redaction of text, images, annotations, and vector content by region
