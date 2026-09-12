@@ -27,3 +27,9 @@ challenge point is the part of the review they will notice is missing.
   `git diff --cached` (plus `git diff` for anything another agent changed in flight).
 - Expect other agents to be editing the branch *while* you review it. Re-read files
   before reporting, and say which findings were already fixed in flight.
+- Test strength is usually the headline ask. Mutation-test rather than eyeball: copy the
+  module and its test file into the scratchpad and run
+  `npx vitest run --root <scratchdir>` from `apps/web` (resolves vitest from the app's
+  `node_modules`, leaves the repo untouched). Report the exact mutations that survived.
+  Native `cargo test -p burrow-engines --all-features` runs locally — the engines are
+  already built in `engines/` on this machine.

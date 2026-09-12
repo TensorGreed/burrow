@@ -14,7 +14,7 @@
 )]
 
 pub use burrow_ops as ops;
-pub use burrow_types::{Clock, Deadline, Error, Limits, Password, Result};
+pub use burrow_types::{Clock, Deadline, Error, Limits, Password, Result, Stage};
 
 /// The engine trait seams.
 ///
@@ -60,8 +60,13 @@ mod tests {
     fn limits_and_errors_are_reachable_through_the_public_surface() {
         // Bindings only ever see `burrow_core`, so the re-exports must be usable here.
         let limits = super::Limits::default();
-        let err = super::Limits::check("max_pages", limits.max_pages + 1, limits.max_pages)
-            .expect_err("one past the ceiling must be rejected");
+        let err = super::Limits::check(
+            super::Stage::PageCount,
+            "max_pages",
+            limits.max_pages + 1,
+            limits.max_pages,
+        )
+        .expect_err("one past the ceiling must be rejected");
         assert!(matches!(err, super::Error::LimitExceeded { .. }));
     }
 }

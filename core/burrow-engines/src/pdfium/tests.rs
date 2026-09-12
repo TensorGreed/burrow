@@ -8,7 +8,7 @@ use crate::minimal_pdf;
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Error, Limits, ManualClock, Password, Result};
+use burrow_types::{Clock, Error, Limits, ManualClock, Password, Result, Stage};
 
 use super::{Pdfium, PdfiumDocument};
 use crate::{DocumentEngine, OpenOptions};
@@ -143,10 +143,12 @@ fn an_oversized_input_is_rejected_before_the_engine_sees_it() {
     ) {
         Err(Error::LimitExceeded {
             limit,
+            stage,
             requested: r,
             allowed,
         }) => {
             assert_eq!(limit, "max_input_bytes");
+            assert_eq!(stage, Stage::InputSize);
             assert_eq!(r, requested);
             assert_eq!(allowed, 16);
         }
@@ -163,10 +165,12 @@ fn too_many_pages_is_rejected_and_no_handle_is_returned() {
     ) {
         Err(Error::LimitExceeded {
             limit,
+            stage,
             requested,
             allowed,
         }) => {
             assert_eq!(limit, "max_pages");
+            assert_eq!(stage, Stage::PageCount);
             assert_eq!(requested, 5);
             assert_eq!(allowed, 2);
         }

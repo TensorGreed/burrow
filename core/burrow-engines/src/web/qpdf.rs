@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use burrow_types::{Deadline, Error, Limits, Result};
+use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
 use super::bridge::{QpdfBridge, QpdfPtr};
 use crate::{CheckOptions, StructureEngine, StructureReport};
@@ -175,7 +175,12 @@ impl StructureEngine for WebQpdf {
 
         let input_len = u64::try_from(bytes.len())
             .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check("max_input_bytes", input_len, limits.max_input_bytes)?;
+        Limits::check(
+            Stage::InputSize,
+            "max_input_bytes",
+            input_len,
+            limits.max_input_bytes,
+        )?;
         // NO size-based memory estimate here, deliberately -- and the native qpdf path does
         // not have one either. `crate::estimate`'s constants were measured against PDFium's
         // open cost; applying them to a structural check would reject files qpdf handles
@@ -301,7 +306,7 @@ impl StructureEngine for WebQpdf {
             return Err(error);
         }
 
-        Limits::check("max_pages", pages, limits.max_pages)?;
+        Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
 
         // What the read actually cost, measured rather than estimated. The pre-scan above
         // sees only what the file *declares*; this sees what qpdf did with it.

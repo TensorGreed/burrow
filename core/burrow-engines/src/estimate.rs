@@ -44,13 +44,26 @@
 //! sizes before the load, which needs a parser that is not PDFium: qpdf, in M1 PR 3.
 //! ADR 0011's consequences record this.
 //!
-//! On the **web** the same `Limits` field is a genuine hard ceiling, because it becomes
-//! the WASM instance's maximum memory and growth past it fails inside the sandbox. The
-//! guarantees are unequal, and visibly so.
+//! **The web is not different, and this paragraph used to say it was.** It claimed the same
+//! `Limits` field became the WASM instance's maximum memory and was therefore a hard ceiling.
+//! Measured in M1 PR 4b out of the modules' own memory sections: both declare a fixed 2 GiB
+//! maximum at build time, derived from nothing the caller sets, and burrow hands Emscripten an
+//! already-compiled module so there is no point at which a per-operation maximum could be
+//! applied. See [ADR 0016] and issue #25.
+//!
+//! So both checks below are what `max_memory_bytes` means on **every** target. The web's only
+//! extra is a 2 GiB per-module sandbox ceiling no caller can influence, at which an allocation
+//! fails cleanly instead of taking the process down.
+//!
+//! One real asymmetry survives, in the opposite direction from the old claim: the counter
+//! [`check_measured_memory`] reads is the process resident set on native and the module's heap
+//! size on the web, and a WASM heap never shrinks — so the web reading includes a peak that the
+//! native one can miss entirely.
 //!
 //! [ADR 0007]: ../../../../docs/adr/0007-limit-enforcement-per-platform.md
+//! [ADR 0016]: ../../../../docs/adr/0016-differential-conformance.md
 
-use burrow_types::{Limits, Result};
+use burrow_types::{Limits, Result, Stage};
 
 /// Fixed cost of having a document open at all, independent of its size.
 ///
@@ -86,6 +99,12 @@ const MEASURED_NOISE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Predicted peak engine memory for opening an input of `input_len` bytes.
 ///
+/// **This models PDFium, and only the PDFium paths call it.** Both constants above come from a
+/// PDFium heap reading, and `qpdf::check` does not use them — so a ceiling below the estimate
+/// refuses a file through one engine and not the other. Surfaced by
+/// `size-estimate-refuses-an-ordinary-file` in the conformance corpus, which is where the
+/// asymmetry is now recorded rather than merely true. Issue #26.
+///
 /// Saturating throughout: an absurd length must produce an absurd estimate, which is then
 /// rejected, rather than wrapping to a small one that passes.
 pub(crate) fn estimated_open_bytes(input_len: u64) -> u64 {
@@ -109,6 +128,7 @@ pub(crate) fn estimated_open_bytes(input_len: u64) -> u64 {
 /// `limit: "max_memory_bytes"`, naming the estimate and the ceiling.
 pub(crate) fn check_open_memory(input_len: u64, limits: &Limits) -> Result<()> {
     Limits::check(
+        Stage::SizeEstimate,
         "max_memory_bytes",
         estimated_open_bytes(input_len),
         limits.max_memory_bytes,
@@ -153,13 +173,18 @@ pub(crate) fn check_measured_memory(
 
     // Report the real measurement against the real limit, not against the tolerance: the
     // caller set `max_memory_bytes` and that is the number they need to see.
-    Limits::check("max_memory_bytes", grew_by, limits.max_memory_bytes)
+    Limits::check(
+        Stage::Measured,
+        "max_memory_bytes",
+        grew_by,
+        limits.max_memory_bytes,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burrow_types::Error;
+    use burrow_types::{Error, Stage};
 
     #[test]
     fn the_estimate_is_never_below_the_input_itself() {
@@ -195,10 +220,17 @@ mod tests {
         match check_open_memory(4096, &limits) {
             Err(Error::LimitExceeded {
                 limit,
+                stage,
                 requested,
                 allowed,
             }) => {
                 assert_eq!(limit, "max_memory_bytes");
+                // THE POINT OF `Stage`. This check and the measured one below both report
+                // `max_memory_bytes`; without the stage they are indistinguishable, and a
+                // regression that moved a rejection from one to the other would be invisible
+                // -- while meaning the difference between refusing a file and refusing it
+                // after the allocation had already happened.
+                assert_eq!(stage, Stage::SizeEstimate);
                 assert_eq!(requested, estimated_open_bytes(4096));
                 assert_eq!(allowed, 1024);
             }
@@ -241,10 +273,12 @@ mod tests {
         match check_measured_memory(Some(0), Some(MEASURED_NOISE_MARGIN_BYTES + 1_001), &limits) {
             Err(Error::LimitExceeded {
                 limit,
+                stage,
                 requested,
                 allowed,
             }) => {
                 assert_eq!(limit, "max_memory_bytes");
+                assert_eq!(stage, Stage::Measured);
                 assert_eq!(requested, MEASURED_NOISE_MARGIN_BYTES + 1_001);
                 // The caller's number, not the margin.
                 assert_eq!(allowed, 1_000);

@@ -298,6 +298,10 @@ describe("the watchdog", () => {
     // two vocabularies depending on which side of the boundary noticed.
     expect(reply.kind).toBe("LimitExceeded");
     expect(reply.limit).toBe("max_duration_ms");
+    // The host synthesises this string; `Stage::as_str` is where it comes from. Pinned here
+    // because nothing else stops the JS literal drifting from the Rust one, and a differential
+    // harness comparing stages would then see a divergence with no cause in either engine.
+    expect(reply.stage).toBe("deadline");
     expect(reply.allowed).toBe(String(MAX_DURATION_MS));
     expect(worker.terminations).toBe(1);
     expect(host.state()).toBe("dead");

@@ -17,12 +17,21 @@
 /// qpdf takes. A file crafted to make a single engine call run for a minute is not
 /// stopped by this limit.
 ///
-/// `max_memory_bytes` is enforced differently per platform:
+/// `max_memory_bytes` is **not a cap on any platform**, and the two enforcement halves below
+/// are what it actually means everywhere.
 ///
-/// - **On the web** it is a genuine hard ceiling — it becomes the WASM instance's
-///   maximum memory, so exceeding it fails inside the sandbox and is recoverable.
-/// - **On native targets** it is enforced in two weaker halves, neither of which is a
-///   cap. The allocations that dominate are made by C++ inside the engines, through their
+/// An earlier version of this paragraph said the web was different — that the value became
+/// the WASM instance's maximum memory and was therefore "a genuine hard ceiling". It is not,
+/// and never was: the engine modules declare their own maximum (2 GiB) in their memory
+/// sections at build time, and burrow hands Emscripten an already-compiled module rather than
+/// creating the memory, so there is no point at which a per-operation maximum could be
+/// applied. Measured and corrected in M1 PR 4b; see issue #25 and ADR 0016.
+///
+/// What the web does have is a 2 GiB per-module sandbox ceiling no caller can influence, at
+/// which an allocation fails cleanly rather than taking the process down. That is worth
+/// having and it is not this limit.
+///
+/// So on **every** target it is enforced in two weaker halves, neither of which is a cap. The allocations that dominate are made by C++ inside the engines, through their
 ///   own allocators, and Rust cannot observe or bound them.
 ///   1. A *size-based pre-check* before the input reaches the engine. It predicts cost
 ///      from the input's **length**, so it is blind to anything the file *declares* — a
@@ -33,12 +42,21 @@
 ///      already been allocated. What it buys is that the operation fails instead of
 ///      returning a handle that is already over budget.
 ///
-/// So on native, `max_memory_bytes` means "you will be told, and the result discarded, if
-/// an operation costs more than this" — **not** "an operation cannot cost more than this".
-/// A sufficiently adversarial file can still get the process killed by the OS before
-/// either check runs, because an engine's own out-of-memory abort is not something Rust
-/// can intercept. Set it conservatively on constrained devices rather than relying on it
-/// to save you.
+/// So `max_memory_bytes` means "you will be told, and the result discarded, if an operation
+/// costs more than this" — **not** "an operation cannot cost more than this". A sufficiently
+/// adversarial file can still get the process killed by the OS before either check runs,
+/// because an engine's own out-of-memory abort is not something Rust can intercept.
+///
+/// Two further honest limits, both measured in M1 PR 4b:
+///
+/// - The measured check compares a counter **before and after**, so a peak that occurs
+///   *during* and is released before the second reading is invisible to it. On native that
+///   counter is the process resident set; on the web it is the engine module's heap size,
+///   which never shrinks and therefore does see the peak.
+/// - The pre-scan reads declarations, so a small file that inflates a compressed stream
+///   passes it. Issue #24.
+///
+/// Set it conservatively on constrained devices rather than relying on it to save you.
 ///
 /// See `docs/adr/0007-limit-enforcement-per-platform.md` for why, and for what would
 /// have to change to make these uniform.
@@ -52,9 +70,9 @@ pub struct Limits {
     pub max_input_bytes: u64,
     /// Peak working memory an operation may use, in bytes.
     ///
-    /// A hard ceiling on the web; an estimate-based pre-check on native targets. See
-    /// the type-level docs — this is the weakest limit here, and the one most likely to
-    /// be trusted too far.
+    /// **Not a cap on any platform.** A declaration-based pre-scan and a size estimate before
+    /// the engine, and a measured check after it. See the type-level docs — this is the
+    /// weakest limit here, and the one most likely to be trusted too far.
     pub max_memory_bytes: u64,
     /// Wall-clock ceiling for one operation, in milliseconds.
     ///
@@ -99,16 +117,27 @@ impl Limits {
         limits
     }
 
-    /// Checks `requested` against `allowed`, naming the limit in the error.
+    /// Checks `requested` against `allowed`, naming both the limit and the check.
+    ///
+    /// `stage` comes first because it is the one argument a call site cannot get from context:
+    /// the limit name is right there in the field being compared, while *which check this is*
+    /// is knowledge only the call site has. It is a [`Stage`](crate::Stage) rather than a
+    /// second `&'static str` so the two cannot be transposed.
     ///
     /// # Errors
     ///
     /// Returns [`Error::LimitExceeded`](crate::Error::LimitExceeded) when
     /// `requested > allowed`.
-    pub fn check(limit: &'static str, requested: u64, allowed: u64) -> crate::Result<()> {
+    pub fn check(
+        stage: crate::Stage,
+        limit: &'static str,
+        requested: u64,
+        allowed: u64,
+    ) -> crate::Result<()> {
         if requested > allowed {
             return Err(crate::Error::LimitExceeded {
                 limit,
+                stage,
                 requested,
                 allowed,
             });
@@ -129,8 +158,8 @@ mod tests {
 
     #[test]
     fn check_permits_the_boundary_and_rejects_one_past_it() {
-        assert!(Limits::check("max_pages", 10, 10).is_ok());
-        assert!(Limits::check("max_pages", 11, 10).is_err());
+        assert!(Limits::check(crate::Stage::PageCount, "max_pages", 10, 10).is_ok());
+        assert!(Limits::check(crate::Stage::PageCount, "max_pages", 11, 10).is_err());
     }
 
     #[test]

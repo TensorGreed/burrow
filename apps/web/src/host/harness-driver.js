@@ -296,6 +296,42 @@ const harness = {
     return (await held.arrayBuffer()).byteLength > 0;
   },
 
+  /**
+   * Run one operation over base64-encoded bytes.
+   *
+   * The conformance corpus runs 21 cases through 2 operations in 3 browsers, and the biggest
+   * fixture is 330 KB. As a `number[]` that is a ~1.3 MB JSON payload per `page.evaluate`;
+   * base64 is a third of that and decodes in one call. `run()` keeps taking an array, because
+   * every other spec is more readable that way and their fixtures are tiny.
+   */
+  async runBase64(op, base64, options = {}) {
+    sourceForSpawn = await ensureSource();
+    // ON THE CORE'S DEFAULTS, not the page's. `expectations.json` says an omitted `limits`
+    // block means `Limits::DEFAULT`, and the native side honours that literally -- so merging
+    // a case's overrides onto `DEFAULT_LIMITS` (100 MiB of `maxInputBytes` against the core's
+    // 512 MiB) would mean the two sides of the differential harness ran under different
+    // ceilings. No fixture is large enough for it to bite today, which is exactly why it would
+    // have gone unnoticed.
+    const base = host.coreDefaultLimits() ?? DEFAULT_LIMITS;
+    const limits = { ...base, ...(options.limits ?? {}) };
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const password = options.password ? new TextEncoder().encode(options.password).buffer : null;
+    return host.run(
+      {
+        op,
+        blob: new Blob([bytes], { type: "application/pdf" }),
+        password,
+        limits,
+        attemptRecovery: options.attemptRecovery ?? false,
+      },
+      { maxDurationMs: limits.maxDurationMs },
+    );
+  },
+
   /** How many workers have been spawned. The recovery tests read this. */
   spawnCount: () => host.spawnCount(),
 
@@ -304,6 +340,12 @@ const harness = {
 
   /** The lifecycle state, by name. */
   state: () => host.state(),
+
+  /** The recycling floor, as Rust reports it. See `worker-host.js`. */
+  minConvergingMemoryBytes: () => host.minConvergingMemoryBytes(),
+
+  /** `Limits::DEFAULT` as Rust reports it. The conformance harness builds its limits on it. */
+  coreDefaultLimits: () => host.coreDefaultLimits(),
 
   /** Whether the circuit breaker has tripped. */
   breakerOpen: () => host.breakerOpen(),

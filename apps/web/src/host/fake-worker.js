@@ -210,6 +210,7 @@ export function workerReply(id, overrides = {}) {
     message: "",
     pages: 1,
     limit: "",
+    stage: "",
     requested: "0",
     allowed: "0",
     recycle: false,

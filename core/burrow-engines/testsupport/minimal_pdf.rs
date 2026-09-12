@@ -303,6 +303,98 @@ pub fn pdf_with_warnings_and_canary(canary: &str) -> Vec<u8> {
     out
 }
 
+// ---------------------------------------------------------------------------------
+// The adversarial corpus, for the differential harness (M1 PR 4b).
+// ---------------------------------------------------------------------------------
+//
+// Every file below already existed as a `format!` inside one test. They are here now
+// because ROADMAP item 12 runs the corpus through **both** engine implementations, and a
+// fixture that lives inside a native `#[test]` is one the web path never sees — which is
+// precisely the asymmetry item 12 exists to close.
+//
+// Moving them here rather than copying them is the same rule this file's header states:
+// one generator, so there is nothing to drift.
+
+/// Entries a hidden-bomb fixture declares. Chosen to match `xref-bomb.pdf`, so the three
+/// bypass fixtures are comparable with the bomb they were derived from.
+const HIDDEN_BOMB_ENTRIES: u64 = 20_000_000;
+
+/// A declared-size bomb hidden behind a **decoy key**.
+///
+/// `/Sizes` contains `/Size`, so a literal first-match search read `s 1` as the value,
+/// failed to parse it, and reported nothing declared. Found by security review of M1 PR 3;
+/// each of these three restored the full 2.5 GB behaviour with a one-line edit.
+pub fn xref_bomb_hidden_by_decoy_key() -> Vec<u8> {
+    format!(
+        "%PDF-1.5\n4 0 obj\n<< /Type /XRef /Sizes 1 /Size {HIDDEN_BOMB_ENTRIES} /W [1 8 8] >>\n\
+         stream\nx\nendstream\nendobj\nstartxref\n9\n%%EOF\n"
+    )
+    .into_bytes()
+}
+
+/// The same bomb, with the real `/Size` padded out of the dictionary window.
+pub fn xref_bomb_hidden_by_dictionary_padding() -> Vec<u8> {
+    let padding = " ".repeat(8 * 1024);
+    format!(
+        "%PDF-1.5\n4 0 obj\n<< /Type /XRef{padding} /Size {HIDDEN_BOMB_ENTRIES} /W [1 8 8] >>\n\
+         stream\nx\nendstream\nendobj\nstartxref\n9\n%%EOF\n"
+    )
+    .into_bytes()
+}
+
+/// The same bomb, with `startxref` pushed out of the tail window by trailing junk.
+pub fn xref_bomb_hidden_by_trailing_junk() -> Vec<u8> {
+    let junk = "%".repeat(8 * 1024);
+    format!(
+        "%PDF-1.5\n4 0 obj\n<< /Type /XRef /Size {HIDDEN_BOMB_ENTRIES} /W [1 8 8] >>\n\
+         stream\nx\nendstream\nendobj\nstartxref\n9\n%%EOF\n{junk}"
+    )
+    .into_bytes()
+}
+
+/// A valid three-page file cut in half: no xref, no trailer, and an object left open.
+///
+/// One of the two files **qpdf reads and PDFium refuses** (ADR 0013, *The repair question,
+/// answered*). It is in the corpus because the two engines legitimately disagree about it,
+/// which is exactly what a per-operation expectation exists to express.
+pub fn truncated_mid_object() -> Vec<u8> {
+    let valid = pdf_with_pages(3);
+    let cut = valid.len() / 2;
+    valid.into_iter().take(cut).collect()
+}
+
+/// The same file with its trailer removed entirely.
+///
+/// The other half of ADR 0013's pair, and the one pinned exactly: PDFium returns
+/// `Malformed`, qpdf recovers all three pages. Unlike [`truncated_mid_object`], its
+/// recovered page count does not depend on where a byte cut landed.
+pub fn trailer_removed() -> Vec<u8> {
+    let valid = pdf_with_pages(3);
+    let needle = b"trailer";
+    let at = valid
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("the generator writes a trailer");
+    valid.into_iter().take(at).collect()
+}
+
+/// The canary string the **committed** canary fixture carries.
+///
+/// Fixed, and deliberately different from the per-run canary
+/// `core/burrow-engines/tests/secret_leak.rs` and
+/// `apps/web/e2e/console-silence.spec.ts` generate.
+///
+/// A leak matcher needs a canary nothing else could have produced, so it generates a fresh
+/// one per run. A corpus fixture is pinned by sha256 and cannot. They are different jobs:
+/// this file asks "do both implementations reach the same typed outcome on a file built to
+/// make a parser quote it", and the answer must not depend on a random string.
+pub const FIXED_CANARY: &str = "BURROW-CANARY-FIXED-0000";
+
+/// The canary fixture, with [`FIXED_CANARY`] embedded.
+pub fn pdf_with_fixed_canary() -> Vec<u8> {
+    pdf_with_canary(FIXED_CANARY)
+}
+
 #[cfg(test)]
 mod generator_tests {
     use super::*;

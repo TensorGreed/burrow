@@ -23,7 +23,7 @@ use std::sync::Arc;
 use burrow_engines::pdfium::Pdfium;
 use burrow_engines::prescan;
 use burrow_engines::{DocumentEngine, OpenOptions};
-use burrow_types::{Error, Limits, ManualClock};
+use burrow_types::{Error, Limits, ManualClock, Stage};
 use support::{minimal_pdf, open_with};
 
 /// A 20,000-page document is rejected on its page count, not by running out of anything.
@@ -44,10 +44,12 @@ fn a_twenty_thousand_page_document_is_a_limit_error_not_a_crash() {
     match open_with(bytes.clone(), limits) {
         Err(Error::LimitExceeded {
             limit,
+            stage,
             requested,
             allowed,
         }) => {
             assert_eq!(limit, "max_pages");
+            assert_eq!(stage, Stage::PageCount);
             assert_eq!(requested, 20_000, "PDFium should have counted all 20,000");
             assert_eq!(allowed, 10_000);
         }
@@ -86,10 +88,12 @@ fn a_two_gigabyte_input_is_a_limit_error_not_an_oom() {
     match open_with(bytes, limits) {
         Err(Error::LimitExceeded {
             limit,
+            stage,
             requested,
             allowed,
         }) => {
             assert_eq!(limit, "max_input_bytes");
+            assert_eq!(stage, Stage::InputSize);
             assert_eq!(requested, len);
             assert_eq!(allowed, u64::try_from(TWO_GIB).unwrap());
         }
@@ -255,10 +259,12 @@ fn the_duration_limit_is_enforced_against_the_injected_clock() {
     match Pdfium::new().page_count(&doc) {
         Err(Error::LimitExceeded {
             limit,
+            stage,
             requested,
             allowed,
         }) => {
             assert_eq!(limit, "max_duration_ms");
+            assert_eq!(stage, Stage::Deadline);
             assert_eq!(requested, 51);
             assert_eq!(allowed, 50);
         }

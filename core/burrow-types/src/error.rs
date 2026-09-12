@@ -24,10 +24,17 @@ pub enum Error {
     PasswordRequired,
 
     /// A [`Limits`](crate::Limits) ceiling was reached. Never a crash — always this.
-    #[error("limit exceeded: {limit} (requested {requested}, allowed {allowed})")]
+    ///
+    /// `limit` and `stage` answer different questions and both are needed. `limit` is the
+    /// field the **caller set**, so they can see which number to change. `stage` is the
+    /// **check that fired**, and for `max_memory_bytes` that is three different mechanisms
+    /// with three different meanings — see [`Stage`](crate::Stage).
+    #[error("limit exceeded: {limit} at {stage} (requested {requested}, allowed {allowed})")]
     LimitExceeded {
-        /// Which ceiling was hit, e.g. `"max_pages"`.
+        /// Which ceiling was hit, e.g. `"max_pages"`. The field the caller set.
         limit: &'static str,
+        /// Which check rejected the operation. The route it was reached by.
+        stage: crate::Stage,
         /// What the input asked for.
         requested: u64,
         /// What the configured limit permitted.
@@ -55,6 +62,7 @@ mod tests {
     fn limit_exceeded_names_the_limit_and_both_numbers() {
         let err = Error::LimitExceeded {
             limit: "max_pages",
+            stage: crate::Stage::PageCount,
             requested: 90_000,
             allowed: 10_000,
         };
@@ -62,6 +70,9 @@ mod tests {
         assert!(rendered.contains("max_pages"), "{rendered}");
         assert!(rendered.contains("90000"), "{rendered}");
         assert!(rendered.contains("10000"), "{rendered}");
+        // The route is in the rendered text too. A limit failure a user reports should say
+        // which check produced it without needing the caller to have logged it separately.
+        assert!(rendered.contains("page_count"), "{rendered}");
     }
 
     #[test]

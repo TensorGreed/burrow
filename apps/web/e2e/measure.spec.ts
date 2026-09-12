@@ -137,6 +137,49 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
     );
   }
 
+  // ---- the baseline, and the constant that rests on it ---------------------------
+  //
+  // `MIN_CONVERGING_MEMORY_BYTES` (64 MiB) exists because a worker that has done any real
+  // work occupies a baseline per engine, and a `max_memory_bytes` under roughly twice that
+  // puts the recycling threshold below the baseline — so every operation costs a respawn and
+  // the heap never gets back under the line.
+  //
+  // Until PR 4b that baseline was ONE MEASUREMENT, taken once, written into a doc comment.
+  // This is the check that it stays true: the floor is read from Rust (not copied into this
+  // file, which would be a second definition free to drift), and the baseline is whatever the
+  // engines actually report on a fresh worker in this browser.
+  //
+  // It is not a coincidence that the numbers are stable. The Emscripten modules declare their
+  // initial memory in the module's own memory section — 17 MiB for PDFium, 16 MiB for qpdf,
+  // both `-sMAXIMUM_MEMORY=2GB` — so the baseline is a build-time property of the artifacts,
+  // not an empirical accident. A pinned engine bump that changed it would land here.
+  const floor = Number(await page.evaluate(() => window.burrowHarness.minConvergingMemoryBytes()));
+  expect(floor, "the worker must report the floor Rust defines").toBeGreaterThan(0);
+
+  const baselinePdfium = Math.min(...rows.map((r) => r.pdfiumMiB));
+  const baselineQpdf = Math.min(...rows.map((r) => r.qpdfMiB));
+  console.log(
+    `baseline [${testInfo.project.name}]: pdfium ${baselinePdfium} MiB, qpdf ${baselineQpdf} ` +
+      `MiB, recycling floor ${floor / MIB} MiB`,
+  );
+
+  // The relationship the constant encodes: the threshold at the floor is half of it, and the
+  // worse engine's baseline must sit below that. If this fails, the floor is too low for the
+  // engines as they are now, and the constant needs raising rather than this bound relaxing.
+  expect(
+    Math.max(baselinePdfium, baselineQpdf) * MIB,
+    `a worker's baseline must sit below the recycling threshold at MIN_CONVERGING_MEMORY_BYTES ` +
+      `(${floor / MIB} MiB), or a caller who honours that floor still recycles every operation`,
+  ).toBeLessThan(floor / 2);
+
+  // And not absurdly below either: a baseline far under the assumption would mean the floor is
+  // needlessly conservative and a mobile page is being told to allow more than it needs.
+  expect(
+    Math.max(baselinePdfium, baselineQpdf) * MIB,
+    "the baseline has dropped far below what the floor assumes; MIN_CONVERGING_MEMORY_BYTES " +
+      "is now more conservative than it needs to be and should be revisited",
+  ).toBeGreaterThan(floor / 8);
+
   // A heap that never grew would mean the reading is not wired up — the same failure the
   // native side hit in 4a-i, where `heap_bytes` was declared and called from nowhere.
   expect(peakPdfium, "an engine heap that never grows means the reading is dead").toBeGreaterThan(

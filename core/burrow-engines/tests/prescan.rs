@@ -17,7 +17,7 @@
 )]
 
 use burrow_engines::prescan;
-use burrow_types::{Error, Limits};
+use burrow_types::{Error, Limits, Stage};
 use proptest::prelude::*;
 
 /// Every message the pre-scan can produce. Fixed strings, all of them.
@@ -115,8 +115,12 @@ proptest! {
             &Limits::with(|l| l.max_memory_bytes = estimated.saturating_sub(1)),
         );
         match under {
-            Err(Error::LimitExceeded { limit, requested, allowed }) => {
+            Err(Error::LimitExceeded { limit, stage, requested, allowed }) => {
                 prop_assert_eq!(limit, "max_memory_bytes");
+                // The PRE-SCAN, not the length-based estimate and not the measured check.
+                // All three report `max_memory_bytes`; only this one runs before an engine
+                // sees a file that merely *declares* something enormous.
+                prop_assert_eq!(stage, Stage::Prescan);
                 prop_assert_eq!(requested, estimated);
                 prop_assert_eq!(allowed, estimated.saturating_sub(1));
             }

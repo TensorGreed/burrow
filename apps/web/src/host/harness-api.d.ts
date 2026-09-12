@@ -14,6 +14,8 @@ export interface Reply {
   message: string;
   pages: number;
   limit: string;
+  /** Which check fired: `prescan`, `size_estimate`, `measured`, … See `burrow_types::Stage`. */
+  stage: string;
   /** Strings, not numbers: these are `u64` and can exceed 2^53. */
   requested: string;
   allowed: string;
@@ -69,6 +71,21 @@ export interface BurrowHarness {
       limits?: Partial<HarnessLimits>;
     },
   ): Promise<Reply>;
+  /**
+   * Run one operation over base64-encoded bytes, with the password as a plain string.
+   *
+   * What the conformance corpus uses: a third the payload of a `number[]`, and the password
+   * arrives in the form `expectations.json` records it.
+   */
+  runBase64(
+    op: "page_count" | "structure_check",
+    base64: string,
+    options?: {
+      password?: string | null;
+      attemptRecovery?: boolean;
+      limits?: Partial<HarnessLimits>;
+    },
+  ): Promise<Reply>;
   /** Keep one `File` in page scope, so an operation can run against the same object twice. */
   holdFile(bytes: number[]): void;
   runHeld(
@@ -80,6 +97,10 @@ export interface BurrowHarness {
   spawnCount(): number;
   hasWorker(): boolean;
   state(): "idle" | "initialising" | "busy" | "dead" | "respawning";
+  /** The recycling floor `burrow_types` defines, as a decimal string. Empty before init. */
+  minConvergingMemoryBytes(): string;
+  /** `Limits::DEFAULT` as Rust reports it, or `null` before a worker has initialised. */
+  coreDefaultLimits(): Record<string, number> | null;
   breakerOpen(): boolean;
   reset(): void;
   arm(options?: HarnessArming): void;

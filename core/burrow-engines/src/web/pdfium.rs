@@ -36,7 +36,7 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Deadline, Error, Limits, Result};
+use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
 use super::bridge::{PdfiumBridge, PdfiumPtr};
 use crate::{DocumentEngine, OpenOptions};
@@ -152,7 +152,12 @@ impl DocumentEngine for WebPdfium {
         //    that reads a File must check its length before reading it in.
         let input_len = u64::try_from(bytes.len())
             .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check("max_input_bytes", input_len, limits.max_input_bytes)?;
+        Limits::check(
+            Stage::InputSize,
+            "max_input_bytes",
+            input_len,
+            limits.max_input_bytes,
+        )?;
 
         // 2. The size-based estimate. A floor, not a ceiling; step (e) is the other half.
         crate::estimate::check_open_memory(input_len, &limits)?;
@@ -175,6 +180,10 @@ impl DocumentEngine for WebPdfium {
         // limit check cannot disagree about how big the buffer is.
         let engine_len = u32::try_from(bytes.len()).map_err(|_| Error::LimitExceeded {
             limit: "max_input_bytes",
+            // The same stage as the `max_input_bytes` check above, because it is the same
+            // question asked against a second ceiling: this one is the engine's, not the
+            // caller's. A caller who sets `max_input_bytes` above 4 GiB gets told here.
+            stage: Stage::InputSize,
             requested: input_len,
             allowed: u64::from(u32::MAX),
         })?;
@@ -269,7 +278,7 @@ impl DocumentEngine for WebPdfium {
         }
 
         // e. The page limit, on a number the engine produced.
-        Limits::check("max_pages", pages, limits.max_pages)?;
+        Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
 
         // f. What the open actually cost. Step 2's estimate is blind to anything the file
         //    *declares*; this is the reading that is not.

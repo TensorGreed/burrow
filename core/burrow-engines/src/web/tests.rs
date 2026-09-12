@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Error, Limits, ManualClock, Password};
+use burrow_types::{Clock, Error, Limits, ManualClock, Password, Stage};
 
 use super::fake::{Call, FakeHeap, FakePdfium, FakeQpdf, PdfiumScript, QpdfScript};
 use super::{WebPdfium, WebQpdf};
@@ -283,10 +283,15 @@ fn the_input_size_limit_fires_before_anything_crosses_the_bridge() {
     ) {
         Err(Error::LimitExceeded {
             limit,
+            stage,
             requested: r,
             allowed,
         }) => {
             assert_eq!(limit, "max_input_bytes");
+            // The SAME stage the native path reports for the same file. ROADMAP item 12's
+            // harness compares this across the two implementations; asserting it here is
+            // what stops the two drifting before the harness ever sees them.
+            assert_eq!(stage, Stage::InputSize);
             assert_eq!(r, requested);
             assert_eq!(allowed, 16);
         }

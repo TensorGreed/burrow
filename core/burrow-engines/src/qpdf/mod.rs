@@ -38,7 +38,7 @@ use core::ffi::{c_char, c_ulonglong};
 
 use std::sync::Arc;
 
-use burrow_types::{Deadline, Error, Limits, Result};
+use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
 use crate::{CheckOptions, StructureEngine, StructureReport};
 
@@ -156,7 +156,12 @@ impl StructureEngine for Qpdf {
 
         let input_len = u64::try_from(bytes.len())
             .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check("max_input_bytes", input_len, limits.max_input_bytes)?;
+        Limits::check(
+            Stage::InputSize,
+            "max_input_bytes",
+            input_len,
+            limits.max_input_bytes,
+        )?;
 
         // The structural pre-scan runs here too, for the same reason it runs before
         // PDFium: qpdf is a C++ parser and this is untrusted input. qpdf's own global
@@ -263,7 +268,7 @@ impl StructureEngine for Qpdf {
             return Err(error);
         }
 
-        Limits::check("max_pages", pages, limits.max_pages)?;
+        Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
 
         // What the read actually cost. The pre-scan sees only what the file *declares*;
         // this sees what qpdf did with it -- a decompression bomb costs memory here exactly

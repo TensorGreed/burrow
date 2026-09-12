@@ -168,7 +168,12 @@ impl Deadline {
     /// Returns [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
     /// `limit: "max_duration_ms"` once more than the budget has elapsed.
     pub fn checkpoint(&self, clock: &dyn Clock) -> Result<()> {
-        Limits::check("max_duration_ms", self.elapsed_ms(clock), self.budget_ms)
+        Limits::check(
+            crate::Stage::Deadline,
+            "max_duration_ms",
+            self.elapsed_ms(clock),
+            self.budget_ms,
+        )
     }
 }
 
@@ -212,10 +217,12 @@ mod tests {
         match deadline.checkpoint(&clock) {
             Err(Error::LimitExceeded {
                 limit,
+                stage,
                 requested,
                 allowed,
             }) => {
                 assert_eq!(limit, "max_duration_ms");
+                assert_eq!(stage, crate::Stage::Deadline);
                 assert_eq!(requested, 101);
                 assert_eq!(allowed, 100);
             }

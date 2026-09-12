@@ -5,16 +5,38 @@
 //!
 //! # Why this file is data and not a list of `assert_eq!`s
 //!
-//! M1 PR 4 adds a **differential conformance harness**: the same corpus run through the
-//! native `DocumentEngine` and through the web one, asserting identical typed outcomes
-//! (ROADMAP M1 item 12). If the expected outcomes lived in Rust `assert_eq!`s, the web
-//! side would have to restate every one of them in TypeScript, and the two lists would
-//! drift — which is the failure this file exists to prevent. The JSON is the contract;
+//! M1 PR 4b is a **differential conformance harness**: the same corpus run through the
+//! native `DocumentEngine`/`StructureEngine` and through the web ones, asserting identical
+//! typed outcomes (ROADMAP M1 item 12). If the expected outcomes lived in Rust `assert_eq!`s,
+//! the web side would have to restate every one of them in TypeScript, and the two lists
+//! would drift — which is the failure this file exists to prevent. The JSON is the contract;
 //! neither implementation owns it.
 //!
-//! So the schema is deliberately dull and language-neutral: no Rust types leak into it,
-//! the outcome is a tag rather than a message, and every field is something JavaScript
-//! can read without a parser of its own.
+//! So the schema is deliberately dull and language-neutral: no Rust types leak into it, the
+//! outcome is a tag rather than a message, and every field is something JavaScript can read
+//! without a parser of its own.
+//!
+//! # What schema 2 added, and why each part was forced
+//!
+//! Schema 1 modelled **one engine** under **one set of limits** producing **one error kind**.
+//! Each of those was a real limitation, not a simplification:
+//!
+//! - **Per-operation outcomes.** `page_count` is PDFium and `structure_check` is qpdf, and
+//!   they legitimately disagree: ADR 0013 records two files qpdf reads and PDFium refuses.
+//!   Under schema 1 those files could not be in the corpus at all.
+//! - **Per-case limits.** `xref-bomb.pdf` has been on disk since PR 3 and was deliberately
+//!   *absent* from the expectations, because its outcome is a function of the ceiling it is
+//!   opened with and the schema could not say so.
+//! - **The stage.** Three different checks produce `LimitExceeded { limit: "max_memory_bytes" }`
+//!   — the length-based estimate, the structural pre-scan, and the measured post-open check.
+//!   Comparing outcomes without the stage would read "the same error reached by a completely
+//!   different route" as agreement, and the difference between refusing a file and refusing it
+//!   *after* allocating a gigabyte is the entire value of the pre-scan.
+//! - **`platform_expectations`.** Some differences are by design and must be recorded rather
+//!   than skipped — a skipped case records "untested", which is the wrong memory to leave for
+//!   M2. See [`PlatformExpectation`].
+//! - **`known_gap`.** A case that documents a defect we have not fixed yet, with the issue
+//!   that tracks it. See [`KnownGap`].
 
 #![allow(dead_code)]
 
@@ -28,44 +50,230 @@ pub struct Expectations {
     pub schema: u32,
     /// The command that produced this file and the fixtures beside it.
     pub generated_by: String,
-    /// One entry per committed fixture.
+    /// One entry per (fixture, limits) combination worth asserting.
     pub cases: Vec<Case>,
 }
 
-/// One fixture and what opening it must produce.
+/// One fixture, the conditions it is opened under, and what every operation must produce.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Case {
-    /// Short identifier, for test output.
+    /// Short identifier, for test output. Unique across the file.
     pub name: String,
     /// Path to the fixture, relative to the directory holding this file.
+    ///
+    /// Several cases may name the same file: `encrypted.pdf` appears with and without a
+    /// password, and `objstm-bomb.pdf` appears under two different ceilings.
     pub file: String,
     /// sha256 of the fixture, so an edited file fails instead of quietly changing what is
     /// asserted.
     pub sha256: String,
     /// Password to open with, or `null` for none.
     ///
-    /// A string, not bytes: every fixture's password is ASCII, and a JSON string is what
-    /// the web harness can pass straight through. A fixture needing a non-UTF-8 password
-    /// would need this field to grow a byte-array form, and that is a schema bump.
+    /// A string, not bytes: every fixture's password is ASCII, and a JSON string is what the
+    /// web harness can pass straight through. A fixture needing a non-UTF-8 password would
+    /// need this field to grow a byte-array form, and that is a schema bump.
     pub password: Option<String>,
-    /// What opening the fixture must produce.
-    pub expect: Expect,
+    /// Ceilings to open under. Omitted fields keep `Limits::DEFAULT`.
+    ///
+    /// **A case's outcome is a function of these**, which is why they are here rather than
+    /// assumed. A bomb is `Ok` under a generous ceiling and `LimitExceeded` under a tight
+    /// one, and both are worth asserting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<CaseLimits>,
+    /// Whether qpdf runs with recovery enabled for this case.
+    ///
+    /// Off by default, matching `CheckOptions`: a structural check that silently repairs the
+    /// structure it is checking answers a question the caller did not ask.
+    #[serde(default)]
+    pub attempt_recovery: bool,
+    /// What each operation must produce.
+    pub expect: Outcomes,
+    /// Differences that are **by design**, with a mandatory reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platform_expectations: Vec<PlatformExpectation>,
+    /// A defect this case documents rather than asserts as correct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub known_gap: Option<KnownGap>,
 }
 
-/// The required outcome: a value, or a specific error variant.
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// Ceilings for one case. Every field optional; omitted means `Limits::DEFAULT`.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct CaseLimits {
+    /// See [`burrow_types::Limits::max_input_bytes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_bytes: Option<u64>,
+    /// See [`burrow_types::Limits::max_memory_bytes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_memory_bytes: Option<u64>,
+    /// See [`burrow_types::Limits::max_duration_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration_ms: Option<u64>,
+    /// See [`burrow_types::Limits::max_pages`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pages: Option<u64>,
+}
+
+impl CaseLimits {
+    /// The `Limits` this describes.
+    #[must_use]
+    pub fn to_limits(self) -> burrow_types::Limits {
+        burrow_types::Limits::with(|l| {
+            if let Some(v) = self.max_input_bytes {
+                l.max_input_bytes = v;
+            }
+            if let Some(v) = self.max_memory_bytes {
+                l.max_memory_bytes = v;
+            }
+            if let Some(v) = self.max_duration_ms {
+                l.max_duration_ms = v;
+            }
+            if let Some(v) = self.max_pages {
+                l.max_pages = v;
+            }
+        })
+    }
+}
+
+/// The operations a case is run through. Both are required: a case that exercised only one
+/// engine would leave the other implementation's behaviour on that file unrecorded.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Outcomes {
+    /// `DocumentEngine::open` + `pages_at_open`, i.e. PDFium.
+    pub page_count: Outcome,
+    /// `StructureEngine::check`, i.e. qpdf.
+    pub structure_check: Outcome,
+}
+
+/// Which operation an outcome belongs to.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 #[serde(rename_all = "snake_case")]
-pub enum Expect {
-    /// The document opens, and reports this many pages.
+pub enum Operation {
+    /// PDFium.
+    PageCount,
+    /// qpdf.
+    StructureCheck,
+}
+
+impl Operation {
+    /// Every operation, in a stable order.
+    pub const ALL: [Self; 2] = [Self::PageCount, Self::StructureCheck];
+
+    /// The name used in the JSON and in the harness's records.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PageCount => "page_count",
+            Self::StructureCheck => "structure_check",
+        }
+    }
+}
+
+/// Which implementation an outcome came from.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone, Copy, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Platform {
+    /// `burrow-engines`' PDFium and qpdf, linked natively.
+    Native,
+    /// The same Rust over the JS bridge, in a browser worker.
+    Web,
+}
+
+/// The required outcome: a value, or a specific typed failure.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    /// The operation succeeds, and reports this many pages.
     Ok {
         /// Pages the engine must report.
         page_count: u64,
     },
-    /// The document does not open, and fails as this variant.
+    /// The operation fails, exactly this way.
+    Err(Failure),
+}
+
+/// A typed failure, in as much detail as is comparable across implementations.
+///
+/// The **variant**, never the message. Messages are ours to reword; a variant is the
+/// contract, and it is what both implementations have to agree on.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+pub struct Failure {
+    /// The `burrow_types::Error` variant.
+    pub kind: ErrorKind,
+    /// For `LimitExceeded`: the field the caller set, e.g. `"max_memory_bytes"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<String>,
+    /// For `LimitExceeded`: which check fired, from `burrow_types::Stage::as_str`.
     ///
-    /// The **variant**, never the message. Messages are ours to reword; a variant is the
-    /// contract, and it is what both implementations have to agree on.
-    Err(ErrorKind),
+    /// **Required whenever `kind` is `LimitExceeded`**, and
+    /// `the_schema_records_a_route_for_every_limit_failure` enforces it. An expectation that
+    /// omitted it would let a rejection move between the pre-scan and the measured check
+    /// without anything noticing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// What the input asked for.
+    ///
+    /// Omitted for `stage: "measured"`, and **only** there: that number is the process
+    /// resident set on native and the engine module's `HEAPU8.byteLength` on the web, a
+    /// difference ADR 0007 records deliberately, so the two can never be equal. Every other
+    /// stage computes it from the file and must match exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested: Option<u64>,
+    /// What the configured limit permitted. Always comparable: it is the caller's own number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<u64>,
+}
+
+impl Failure {
+    /// A failure with no limit detail.
+    #[must_use]
+    pub fn of(kind: ErrorKind) -> Self {
+        Self {
+            kind,
+            limit: None,
+            stage: None,
+            requested: None,
+            allowed: None,
+        }
+    }
+}
+
+/// A difference between implementations that is **expected**, with the reason it exists.
+///
+/// # Not the same thing as the allowlist
+///
+/// This records a difference we **designed**. `tests/conformance/divergences.toml` records a
+/// difference we have **accepted but not designed**, and it needs an issue link. Conflating
+/// them would turn "we know why these differ" into "we have not got round to this", which is
+/// exactly the distinction a reader six months later needs.
+///
+/// The archetype is a hang fixture: the native path cannot interrupt a single engine call
+/// (ADR 0007), while the web path's watchdog terminates the worker (ADR 0015 §2). Skipping
+/// such a case would record it as untested; this records what it actually does, and fails if
+/// that stops being true.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+pub struct PlatformExpectation {
+    /// The implementation this applies to.
+    pub platform: Platform,
+    /// The operation this applies to.
+    pub operation: Operation,
+    /// What that platform produces instead of [`Case::expect`].
+    pub expect: Outcome,
+    /// Why. **Mandatory**, and a mechanism rather than a restatement of the difference.
+    pub reason: String,
+}
+
+/// A defect a case documents rather than endorses.
+///
+/// The outcome recorded for such a case is what burrow **does**, not what it **should** do.
+/// CI stays green, the harness prints it in its summary, and — the part that makes this
+/// honest — fixing the defect changes the outcome, which breaks the recorded expectation and
+/// forces the fixture and the issue to be closed together.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+pub struct KnownGap {
+    /// The issue tracking it. **Mandatory.**
+    pub issue: String,
+    /// What is wrong, in one sentence. **Mandatory.**
+    pub reason: String,
 }
 
 /// A `burrow_types::Error` variant, by name.
@@ -108,6 +316,51 @@ impl ErrorKind {
     }
 }
 
+/// Turn a real result into the shape the schema records.
+///
+/// The single place a live outcome becomes a comparable one, so the native harness and the
+/// generator cannot describe the same result differently.
+///
+/// `requested` is **dropped for `Stage::Measured`** — see [`Failure::requested`]. Dropping it
+/// here rather than at the comparison is deliberate: the recorded outcome should not contain
+/// a number that is not a fact about the file, or someone will eventually compare it.
+pub fn outcome_of(result: &burrow_types::Result<u64>) -> Outcome {
+    match result {
+        Ok(pages) => Outcome::Ok { page_count: *pages },
+        Err(error) => {
+            let kind = ErrorKind::of(error).unwrap_or_else(|| {
+                // NOT `{error:?}`. Several variants carry a `String` payload, and on a damaged
+                // file that payload is the one place something input-derived could be. This is
+                // reachable only by adding an `Error` variant, so the message does not need the
+                // value to be actionable -- it needs the reader to go and add the variant here.
+                panic!(
+                    "an Error variant the conformance schema does not know about. Add it to \
+                     ErrorKind and decide what both implementations must report."
+                )
+            });
+            match error {
+                burrow_types::Error::LimitExceeded {
+                    limit,
+                    stage,
+                    requested,
+                    allowed,
+                } => Outcome::Err(Failure {
+                    kind,
+                    limit: Some((*limit).to_owned()),
+                    stage: Some(stage.as_str().to_owned()),
+                    requested: if *stage == burrow_types::Stage::Measured {
+                        None
+                    } else {
+                        Some(*requested)
+                    },
+                    allowed: Some(*allowed),
+                }),
+                _ => Outcome::Err(Failure::of(kind)),
+            }
+        }
+    }
+}
+
 /// Lowercase hex of a sha256 digest.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -131,4 +384,40 @@ pub fn conformance_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance")
         })
+}
+
+// ---------------------------------------------------------------------------------
+// The record the two implementations produce, and the harness compares.
+// ---------------------------------------------------------------------------------
+
+/// One implementation's answers for the whole corpus.
+///
+/// Written by the native conformance test and by the web Playwright spec, then diffed. The
+/// shared expectations file already catches "both paths are wrong the same way"; this catches
+/// what transitivity cannot — a divergence in something nobody thought to put in the schema.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OutcomeRecord {
+    /// Which implementation produced it.
+    pub platform: Platform,
+    /// A label for the run — the browser name on the web, `"native"` otherwise.
+    pub runner: String,
+    /// sha256 of `expectations.json` as this run read it.
+    ///
+    /// **The freshness stamp.** A stale record from a previous corpus would otherwise compare
+    /// cleanly against a corpus it never saw, and report agreement about files it never ran.
+    pub expectations_sha256: String,
+    /// One entry per case × operation. Every one is required: a missing entry is a divergence,
+    /// never agreement.
+    pub results: Vec<RecordedOutcome>,
+}
+
+/// One case × operation, as one implementation actually answered it.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+pub struct RecordedOutcome {
+    /// The case's `name`.
+    pub case: String,
+    /// The operation.
+    pub operation: Operation,
+    /// What happened.
+    pub outcome: Outcome,
 }

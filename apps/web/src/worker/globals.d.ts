@@ -144,6 +144,14 @@ declare const wasm_bindgen: {
     maxPages: bigint,
     maxPixels: bigint,
   ) => WebLimits;
+  min_converging_memory_bytes(): bigint;
+  default_limits(): WebLimits & {
+    readonly max_input_bytes: bigint;
+    readonly max_memory_bytes: bigint;
+    readonly max_duration_ms: bigint;
+    readonly max_pages: bigint;
+    readonly max_pixels: bigint;
+  };
   page_count(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
   structure_check(
     bytes: Uint8Array,
@@ -166,6 +174,8 @@ interface Reply {
   readonly message: string;
   readonly pages: bigint;
   readonly limit: string;
+  /** Which check fired. See `burrow_types::Stage`. Empty unless `kind` is LimitExceeded. */
+  readonly stage: string;
   readonly requested: bigint;
   readonly allowed: bigint;
   /** ADR 0009's lifecycle verdict, computed in Rust. See `recycle.rs`. */

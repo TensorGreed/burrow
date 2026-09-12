@@ -53,6 +53,7 @@
  * @property {string} message
  * @property {number} pages
  * @property {string} limit
+ * @property {string} stage
  * @property {string} requested
  * @property {string} allowed
  * @property {boolean} recycle
@@ -101,7 +102,7 @@ export const DEFAULT_BREAKER_WINDOW_MS = 60_000;
  *
  * @param {string} kind
  * @param {string} message
- * @param {{ limit?: string, requested?: string, allowed?: string }} [detail]
+ * @param {{ limit?: string, stage?: string, requested?: string, allowed?: string }} [detail]
  * @returns {HostReply}
  */
 function hostFailure(kind, message, detail = {}) {
@@ -116,6 +117,7 @@ function hostFailure(kind, message, detail = {}) {
     message,
     pages: 0,
     limit: detail.limit ?? "",
+    stage: detail.stage ?? "",
     requested: detail.requested ?? "0",
     allowed: detail.allowed ?? "0",
     recycle: false,
@@ -137,6 +139,7 @@ function hostSuccess() {
     message: "",
     pages: 0,
     limit: "",
+    stage: "",
     requested: "0",
     allowed: "0",
     recycle: false,
@@ -265,6 +268,27 @@ export function createWorkerHost(options) {
   let breakerOpen = false;
 
   let disposed = false;
+
+  /**
+   * What the worker reported for `MIN_CONVERGING_MEMORY_BYTES`, as a string.
+   *
+   * Carried from Rust rather than duplicated here. See `min_converging_memory_bytes` in
+   * `bindings/burrow-wasm`: a page choosing limits for a constrained device needs the floor
+   * below which every operation costs a respawn, and a second definition in JavaScript would
+   * be free to drift from the one that decides.
+   */
+  let minConverging = "";
+
+  /**
+   * `Limits::DEFAULT`, as Rust reports it.
+   *
+   * A caller that wants the core's ceilings must get the core's ceilings, not whatever the page
+   * chose — the conformance harness in particular, where the native side takes an omitted
+   * `limits` block literally and the two sides must run under the same numbers.
+   *
+   * @type {Record<string, number> | null}
+   */
+  let coreDefaults = null;
 
   // ---------------------------------------------------------------------------------
   // Teardown
@@ -458,7 +482,9 @@ export function createWorkerHost(options) {
    * `apps/web/CLAUDE.md` forbids: an operation reply (a full `HostReply` plus its id), an
    * `ack`, and an init answer carrying `ready`. Everything read below is named.
    *
-   * @param {Partial<HostReply> & { id?: number, ack?: boolean, ready?: boolean }} data
+   * @param {Partial<HostReply> & { id?: number, ack?: boolean, ready?: boolean,
+   *   minConvergingMemoryBytes?: string,
+   *   defaultLimits?: Record<string, number> }} data
    */
   function handleMessage(data) {
     const entry = data.id === undefined ? undefined : pending.get(data.id);
@@ -496,6 +522,12 @@ export function createWorkerHost(options) {
 
     // An init reply. `ready: true` is the only success; `startWorker`'s settle reads it.
     if (typeof data.ready === "boolean") {
+      if (data.minConvergingMemoryBytes !== undefined) {
+        minConverging = data.minConvergingMemoryBytes;
+      }
+      if (data.defaultLimits !== undefined) {
+        coreDefaults = data.defaultLimits;
+      }
       entry.settle(
         data.ready ? hostSuccess() : hostFailure("Internal", "engines failed to initialise"),
       );
@@ -549,6 +581,11 @@ export function createWorkerHost(options) {
         id,
         hostFailure("LimitExceeded", `max_duration_ms exceeded: ${budgetMs}`, {
           limit: "max_duration_ms",
+          // The same stage Rust reports when its own checkpoint catches the deadline. The
+          // watchdog is a different MECHANISM -- it terminates the worker rather than
+          // returning from a checkpoint -- but it is the same ceiling and the same question,
+          // and a caller should not have to know which side noticed.
+          stage: "deadline",
           requested: String(budgetMs + WATCHDOG_GRACE_MS),
           allowed: String(budgetMs),
         }),
@@ -625,6 +662,17 @@ export function createWorkerHost(options) {
 
     /** Whether a live worker is held. */
     hasWorker: () => worker !== null,
+
+    /**
+     * The smallest `max_memory_bytes` at which recycling converges, as Rust reports it.
+     *
+     * A string because it is a `u64`. Empty until a worker has initialised — there is no
+     * sensible default, and a page inventing one would be the copy this exists to avoid.
+     */
+    minConvergingMemoryBytes: () => minConverging,
+
+    /** `Limits::DEFAULT` as Rust reports it, or `null` before a worker has initialised. */
+    coreDefaultLimits: () => coreDefaults,
 
     /** Whether the circuit breaker has tripped. */
     breakerOpen: () => breakerOpen,

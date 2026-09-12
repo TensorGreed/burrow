@@ -30,6 +30,11 @@ Two related facts from the same source read:
   exact suppression setup: the message still reaches process stderr. burrow's discarding
   logger does not cover it; only draining the error before drop does.
 
+**Closed in M1 PR 4b (2026-09-11):** `qpdf_is_linearized` and `qpdf_is_encrypted` are declared
+in neither `qpdf/ffi.rs` nor `engines/build-wasm.sh`'s export list, and the abort input is now a
+committed fixture, `tests/conformance/fixtures/object-number-above-int-max.pdf`. Re-measured:
+PDFium returns `Ok(1)` and qpdf returns `Malformed`, no abort, on both paths.
+
 **How to apply:** when reviewing any new qpdf call, check `libqpdf/qpdf-c.cc` for a
 `trap_errors` wrapper around that specific function rather than trusting the header's
 blanket statement. Anything unwrapped needs `extern "C-unwind"` plus a catch, or a

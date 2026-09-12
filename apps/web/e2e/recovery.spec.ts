@@ -78,7 +78,9 @@ test("a deliberate engine failure discards the worker, and the next operation su
     (bytes) => window.burrowHarness.run("page_count", bytes),
     fixture("pages-10.pdf"),
   );
-  expect(recovered.ok, `${recovered.kind}: ${recovered.message}`).toBe(true);
+  // The KIND, never the message. `Error::to_string()` renders qpdf's object numbers and byte
+  // offsets, and a Playwright failure message is a CI log like any other.
+  expect(recovered.ok, `unexpected ${recovered.kind}`).toBe(true);
   expect(recovered.pages).toBe(10);
 
   const after = await page.evaluate(() => window.burrowHarness.spawnCount());
@@ -154,7 +156,7 @@ test("the watchdog kills a worker stuck inside a single engine call", async ({ p
     (bytes) => window.burrowHarness.run("page_count", bytes),
     fixture("pages-10.pdf"),
   );
-  expect(recovered.ok, `${recovered.kind}: ${recovered.message}`).toBe(true);
+  expect(recovered.ok, `unexpected ${recovered.kind}`).toBe(true);
 });
 
 test("the circuit breaker stops a respawn loop, and only reset() restarts it", async ({ page }) => {
@@ -198,7 +200,7 @@ test("the circuit breaker stops a respawn loop, and only reset() restarts it", a
     (bytes) => window.burrowHarness.run("page_count", bytes),
     fixture("pages-10.pdf"),
   );
-  expect(recovered.ok, `${recovered.kind}: ${recovered.message}`).toBe(true);
+  expect(recovered.ok, `unexpected ${recovered.kind}`).toBe(true);
   expect(await page.evaluate(() => window.burrowHarness.spawnCount())).toBe(spawns + 1);
 });
 
@@ -228,6 +230,6 @@ test("the SAME file handle survives the worker that was reading it", async ({ pa
 
   await page.evaluate(() => window.burrowHarness.arm({}));
   const retried = await page.evaluate(() => window.burrowHarness.runHeld("page_count"));
-  expect(retried.ok, `${retried.kind}: ${retried.message}`).toBe(true);
+  expect(retried.ok, `unexpected ${retried.kind}`).toBe(true);
   expect(retried.pages).toBe(10);
 });

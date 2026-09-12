@@ -21,7 +21,7 @@ use crate::minimal_pdf;
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Error, Limits, ManualClock, Password, Result};
+use burrow_types::{Clock, Error, Limits, ManualClock, Password, Result, Stage};
 
 use super::Qpdf;
 use crate::{CheckOptions, StructureEngine, StructureReport};
@@ -166,10 +166,12 @@ fn an_oversized_input_is_rejected_before_qpdf_sees_it() {
     ) {
         Err(Error::LimitExceeded {
             limit,
+            stage,
             requested: r,
             allowed,
         }) => {
             assert_eq!(limit, "max_input_bytes");
+            assert_eq!(stage, Stage::InputSize);
             assert_eq!(r, requested);
             assert_eq!(allowed, 16);
         }

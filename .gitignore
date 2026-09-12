@@ -126,3 +126,4 @@ DerivedData/
 *~
 .DS_Store
 Thumbs.db
+tests/conformance/native-outcomes.json

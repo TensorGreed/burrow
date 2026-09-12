@@ -18,6 +18,7 @@ mod clock;
 mod error;
 mod limits;
 mod password;
+mod stage;
 
 #[cfg(not(target_family = "wasm"))]
 pub use clock::SystemClock;
@@ -25,3 +26,4 @@ pub use clock::{Clock, Deadline, ManualClock};
 pub use error::{Error, Result};
 pub use limits::Limits;
 pub use password::Password;
+pub use stage::Stage;

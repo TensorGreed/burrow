@@ -1,0 +1,36 @@
+# Accepted divergences between the native and web implementations.
+#
+# THIS LIST IS EMPTY, AND THAT IS THE CLAIM
+#
+# `burrow` has two implementations of one trait — `Pdfium`/`Qpdf` linked natively, and
+# `WebPdfium`/`WebQpdf` over the JS bridge — and ROADMAP item 12 requires them to produce
+# identical typed outcomes for every file in `fixtures/`. An entry here is an admission that
+# they do not, for a file we have not got round to understanding.
+#
+# At M2 a divergence between the two paths is a redaction bug rather than a test failure, so
+# an entry is a debt with a deadline, not a configuration knob.
+#
+# NOT THE SAME THING AS `platform_expectations`
+#
+# `expectations.json`'s `platform_expectations` records a difference we **designed** — the
+# archetype is a hang fixture, where the native path cannot interrupt a single engine call
+# (ADR 0007) and the web path's watchdog terminates the worker (ADR 0015 §2). That is expected
+# behaviour and is asserted exactly.
+#
+# This file records a difference we have **accepted but not designed**. Keeping them apart
+# matters because they age differently: one is a decision a reader should learn from, the other
+# is a job nobody has done.
+#
+# FORMAT
+#
+# Every field is mandatory, and `apps/web/src/conformance/compare.ts` refuses an entry missing
+# any of them — an entry that cannot explain itself is not a waiver.
+#
+#   [[divergence]]
+#   case = "the case name from expectations.json"
+#   operation = "page_count" | "structure_check"
+#   reason = "why the two implementations differ, in terms of a mechanism"
+#   issue = "https://github.com/TensorGreed/burrow/issues/N"
+#
+# An entry whose divergence stops happening also fails, so a fixed difference cannot be left
+# here to be believed by the next reader.
