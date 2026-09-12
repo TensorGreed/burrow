@@ -1,0 +1,81 @@
+{
+  "$comment": [
+    "First-load budgets for the web app. Enforced by src/size-budget.test.ts; reported on",
+    "every PR by tools/report-size-budget.mjs. JSON carries no comments, so the reasoning",
+    "lives in `why` fields and in apps/web/src/size-budget.test.ts's header.",
+    "",
+    "WHAT IS BUDGETED is the TOTAL first-load payload -- the page shell plus every engine",
+    "artifact a user downloads before their first operation can run -- not only per-file",
+    "sizes. Three files each growing 4% is a 4% regression that no 10%-per-file budget",
+    "notices. So `total` is the binding gate and the per-artifact lines say WHERE it went.",
+    "",
+    "ORIGIN. docs/spikes/0001-wasm-engines.md measured the option-1 payload at 6,502,775",
+    "raw / 2,200,580 brotli, 82% of it PDFium, and ROADMAP item 11 records that as 'the",
+    "starting point, not a target'. The shipped build has since drifted above it: qpdf is",
+    "now built from source against our own vendored zlib and libjpeg-turbo (1,199,200 raw",
+    "against the spike's 917,305), the Rust module has grown from 15,266 to 43,072, and",
+    "the three glue files the spike listed separately now live inside one worker bundle.",
+    "The numbers below are a fresh measurement of what actually ships, not the spike's",
+    "table. pdfium.wasm's brotli size is unchanged from the spike to the byte.",
+    "",
+    "TO CHANGE A BUDGET: re-measure, update `measured_brotli` AND `budget_brotli`, and say",
+    "why in the commit. An engine pin bump is the expected reason. Raising a budget to make",
+    "CI pass without knowing what grew is the thing this file exists to prevent."
+  ],
+  "measured_on": "2026-09-12, apps/web production build (no BURROW_HARNESS), linux-aarch64",
+  "headroom": {
+    "per_artifact": 0.1,
+    "total": 0.03,
+    "why": [
+      "Per-artifact headroom is loose (10%) because those lines are diagnostic: they say",
+      "which file moved. Total headroom is tight (3%, about 67 KB) because that line is the",
+      "gate. The asymmetry is deliberate and makes the total bind first in every case that",
+      "matters -- 10% of pdfium alone is 8.5% of the total, so a single artifact cannot",
+      "reach its own ceiling without the total having failed long before."
+    ]
+  },
+  "artifacts": {
+    "engines/pdfium.wasm": {
+      "measured_raw": 5315922,
+      "measured_brotli": 1904807,
+      "budget_brotli": 2095288,
+      "why": "82% of the payload. Prebuilt, pdfium-binaries chromium/8044; changes only on an engine pin bump."
+    },
+    "engines/qpdf.wasm": {
+      "measured_raw": 1199200,
+      "measured_brotli": 265985,
+      "budget_brotli": 292584,
+      "why": "Built from source at the pinned version against our vendored zlib and libjpeg-turbo, so it moves with a pin bump or a build-flag change."
+    },
+    "engines/burrow-worker.js": {
+      "measured_raw": 255535,
+      "measured_brotli": 45052,
+      "budget_brotli": 49558,
+      "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR."
+    },
+    "engines/burrow_wasm_bg.wasm": {
+      "measured_raw": 43072,
+      "measured_brotli": 16018,
+      "budget_brotli": 17620,
+      "why": "The Rust binding. Grows as operations land, which is expected -- a merge implementation should move this line and nothing else."
+    },
+    "engines/control.txt": {
+      "measured_raw": 78,
+      "measured_brotli": 68,
+      "budget_brotli": 75,
+      "why": "A fixed 78-byte literal fetched at init to prove an allowlisted request succeeds (ADR 0014). It has no reason to change; if it does, that is worth a question."
+    },
+    "page": {
+      "measured_raw": 2271,
+      "measured_brotli": 881,
+      "budget_brotli": 51200,
+      "why": "The entry page and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage: 10% of 881 bytes is 89 bytes of headroom, which a paragraph of prose would blow, and failing CI on editorial work teaches people to raise budgets without reading them. 50 KiB still catches the failure that matters -- a page accidentally shipping a large script -- and anything smaller than that is caught by the total."
+    }
+  },
+  "total": {
+    "measured_raw": 6816078,
+    "measured_brotli": 2232811,
+    "budget_brotli": 2299796,
+    "why": "The binding gate. Everything a user downloads before their first operation runs."
+  }
+}

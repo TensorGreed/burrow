@@ -289,7 +289,26 @@ what later PRs can assume:
     of the wasm module, asserts the instance is discarded and the next operation succeeds on a
     fresh worker; six hostile files cost zero workers; a synchronous hang inside one engine
     call is interrupted.
-11. **wasm size budget in CI.** Record the module size and fail on an unexplained
+11. ~~**wasm size budget in CI.**~~ — **done, PR 4c.** `apps/web/size-budget.json`, enforced
+    by `apps/web/src/size-budget.test.ts` and reported as a step summary on every PR by
+    `tools/report-size-budget.mjs`.
+
+    **Not the module size, which is the wrong thing to budget.** What a user pays is the
+    whole first-load payload — the page shell, the worker bundle, all three `.wasm` modules
+    and the CSP control file — and budgeting those individually lets three files each grow
+    4% while every per-file budget passes. The **total** is the gate (3% headroom, ~67 KB);
+    the per-artifact lines (10%) say where it went. A test plants exactly that distributed
+    regression against the recorded numbers and fails if the total's headroom is ever loose
+    enough to miss it.
+
+    Measured, not inherited: the spike's 6.50 MB raw / 2.20 MB brotli is recorded as the
+    origin, but the shipped build has drifted above it — qpdf is now built from source
+    against our vendored zlib and libjpeg-turbo (1,199,200 raw against 917,305), and the
+    Rust module has grown from 15,266 to 43,072. Current first load is **6,816,078 raw /
+    2,232,811 brotli**, 82% of it still PDFium, whose brotli size is unchanged from the
+    spike to the byte.
+
+    *The original entry, for reference:* Record the module size and fail on an unexplained
     regression. The spike measured 6.50 MB raw / 2.20 MB brotli for the full option 1
     payload, 82% of it PDFium — that is the starting point, not a target.
 12. ~~**Differential conformance between the two `DocumentEngine` implementations.**~~ —

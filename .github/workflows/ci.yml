@@ -322,8 +322,12 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # The web app's whole payload rides on this target building. Once the wasm module
-      # is real (M1), add a size budget step here so growth is a visible decision.
+      # The web app's whole payload rides on this target building.
+      #
+      # The size budget this comment used to ask for is in the `web` job, not here, and that
+      # is the right place: this job builds one .wasm and a user pays for six artifacts. A
+      # budget on the Rust module alone would have passed every regression that mattered --
+      # it is 0.7% of the payload. See apps/web/size-budget.json.
       - run: cargo build -p burrow-wasm --target wasm32-unknown-unknown --release
 
   mobile:
@@ -555,6 +559,18 @@ jobs:
       - name: Build
         working-directory: apps/web
         run: pnpm build
+      # Reports the first-load payload against its budget on every PR, as a step summary.
+      #
+      # A step summary and not a PR comment: this workflow runs with `permissions:
+      # contents: read`, a comment needs `pull-requests: write`, and a token with write
+      # access to the repository is not worth adding for a size table. A summary also
+      # renders on a fork's PR, which a comment from this trigger cannot.
+      #
+      # BEFORE `pnpm test`, deliberately: the budget is enforced there, and the table is
+      # most wanted on the run where it fails.
+      - name: First-load size budget
+        working-directory: apps/web
+        run: node ../../tools/report-size-budget.mjs dist
       # Asserts what a production build contains: no harness route, no `burrowHarness`
       # identifier in any shipped file, the CSP in every page, and -- as a control -- that
       # the harness IS present when BURROW_HARNESS=1, so the gating is doing the work.
