@@ -186,12 +186,26 @@ A change is done when all of these hold:
   branch was pushed after twelve green local checks and CI went red on the thirteenth. The
   failure was not even ours — the audit *tool* would not build — but the point stands: a
   local sweep that omits a job is not a replication of CI.
-- **Running a Python tool by importing it writes a `.pyc`, so never `git add -A` afterwards.**
-  Verifying `tools/*.py` by `importlib`-ing it leaves `tools/__pycache__/`, and a blanket add
-  commits an opaque binary. That reached `main` once, in PR #29. `.gitignore` covers it now,
-  but the ignore rule cannot untrack a file already staged on a branch that predates it, and
-  `git rm --cached` is then the only way out. Prefer `tools/check-python-syntax.py`, which
-  compiles in memory and writes nothing.
+- **Never `git add -A` after running or building anything. Stage explicitly, or read
+  `git status` first.** Twice this has put generated output on `main`:
+
+  | | what landed | why the rule did not stop it |
+  |---|---|---|
+  | PR #29 | `tools/__pycache__/…​.pyc` | The rule did not exist yet. Verifying a tool by `importlib`-ing it had written the bytecode. |
+  | PR #37 | 24 Playwright sweep logs under `spikes/**/results/` | The rule existed, in a **branch-local** `.gitignore` inside the spike directory. |
+
+  The second is the instructive one. **An ignore rule that governs generated output belongs in
+  the root `.gitignore`, never in a branch-local one** — checking out another branch deletes
+  the tracked rule from the working tree, so it is absent at exactly the moment it matters.
+  And a `.gitignore` cannot untrack what is already staged; `git rm -r --cached` is then the
+  only way out.
+
+  **A habit that has failed twice is not a control**, so `tools/check-no-generated-files.sh`
+  now fails CI on any tracked file matching a generated-output pattern — `*.pyc`,
+  `__pycache__/`, `results/`, `test-results/`, build output, `*.wasm`, the vendor tree. It
+  scans the whole tracked tree rather than a diff, so it needs no merge base and stays red
+  until the file is actually removed. Its self-test has one case per pattern, including both
+  incidents by name.
 - **Where a check lives in `ci.yml` is load-bearing, and consolidating jobs breaks checks
   silently.** `engines/vendor/` is gitignored and only some jobs fetch it, so a check that
   reads the vendor tree must live in a job that has one, and a check that reads only

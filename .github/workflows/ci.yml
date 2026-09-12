@@ -461,6 +461,19 @@ jobs:
       - name: Python tools compile with no syntax warnings
         run: python3 tools/check-python-syntax.py
 
+      # Generated output must never be tracked. Twice it reached main while the ignore rule
+      # that should have stopped it existed: a `.pyc` in #29, and 24 spike sweep logs in #37,
+      # whose rule lived in a BRANCH-LOCAL .gitignore that checking out main removed.
+      #
+      # Here, in the job that fetches nothing, because it reads only `git ls-files` -- and it
+      # scans the whole tracked tree rather than a diff, so it needs no merge base and stays
+      # red until the file is actually removed rather than passing forever once something has
+      # landed.
+      - name: No tracked file is generated output
+        run: |
+          tools/check-no-generated-files.sh
+          tools/test-check-no-generated-files.sh
+
       # The crypto checker's adversarial self-test, HERE rather than beside the checker in
       # `test`, by the rule in CLAUDE.md: it reads only committed files and needs only cc and
       # ar, so a job that fetches nothing is where it belongs -- and running it on a clean
