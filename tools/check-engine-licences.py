@@ -22,6 +22,15 @@ import tomllib
 REPO = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = REPO / "engines" / "licenses.toml"
 
+# The only two directories a `license_text` may name. Every committed licence text is in one
+# of them; engines/licences/README.md says why the second exists.
+#
+# A CONTAINMENT CHECK, NOT TIDINESS. `license_text` is a free-form string from a manifest,
+# and it is read and embedded verbatim into the published credits page by
+# tools/generate-credits.mjs. Without this, one line of a file reviewers skim as a manifest
+# rather than as code could publish the contents of any path on the build machine.
+LICENCE_ROOTS = (REPO / "engines" / "licences", REPO / "docs" / "adr" / "licences")
+
 # ADR 0008's allowlist. Keep in sync with deny.toml's `allow` (Rust crates) and the
 # lists in CLAUDE.md, .claude/agents/license-auditor.md, and the add-dependency skill.
 #
@@ -83,6 +92,65 @@ def split_expression(expr: str) -> list[str]:
     return out
 
 
+def check_license_text(comp: dict, name: str) -> list[str]:
+    """Every `linked` component must carry a committed copy of its licence text.
+
+    `license_file` points at the audited original under `engines/vendor/`, which is
+    gitignored. The website credits page is generated from this manifest at build time and
+    has to build from a clean checkout, and CI's web job stages only the *wasm* vendor
+    prefix while most `license_file` paths name `vendor/native-aarch64/`. So the text that
+    ships is a committed copy under `engines/licences/`, recorded as `license_text`.
+
+    Committing a copy introduces exactly one failure mode -- the copy drifting from the
+    original -- so **when the vendor tree is present the two are compared byte for byte**.
+    Absent (a clean checkout, or CI's licence job, which fetches nothing) the comparison is
+    skipped rather than failed: it would make this check unrunnable where it is most useful.
+    """
+    if not comp.get("linked"):
+        # A component that is not in any shipped artifact carries no notice obligation we
+        # have to discharge in the product, so it needs no shipped copy.
+        return []
+
+    rel = comp.get("license_text")
+    if rel is None:
+        return [
+            f"{name}: linked, but no `license_text` recorded. Every linked component "
+            f"needs a committed copy under engines/licences/ -- see its README"
+        ]
+
+    copy = (REPO / rel).resolve()
+    if not any(copy == root or root in copy.parents for root in LICENCE_ROOTS):
+        return [
+            f"{name}: `license_text` {rel} resolves outside the committed licence "
+            f"directories. Licence text must live in engines/licences/ or docs/adr/licences/."
+        ]
+    if not copy.is_file():
+        return [f"{name}: `license_text` {rel} does not exist"]
+    if copy.stat().st_size == 0:
+        return [f"{name}: `license_text` {rel} is empty"]
+
+    original_rel = comp.get("license_file") or ""
+    # `emsdk:...` is a pseudo-path into the pinned SDK install, not into engines/vendor/,
+    # so there is nothing here to resolve. The SDK is version-pinned in engines/pins.toml
+    # and verifies its own downloads; engines/licences/README.md records the exemption.
+    if original_rel.startswith("emsdk:"):
+        return []
+    # agg23 and harfbuzz point `license_text` at the same committed file as `license_file`,
+    # because those texts exist nowhere else. Comparing a file with itself proves nothing.
+    original = REPO / "engines" / original_rel if original_rel.startswith("vendor/") else REPO / original_rel
+    if original.resolve() == copy.resolve():
+        return []
+    if not original.is_file():
+        # No vendor tree. Not a failure: see the docstring.
+        return []
+    if original.read_bytes() != copy.read_bytes():
+        return [
+            f"{name}: `license_text` {rel} has drifted from the audited original "
+            f"{original_rel}. Re-copy it; do not edit either by hand"
+        ]
+    return []
+
+
 def main() -> int:
     if not MANIFEST.is_file():
         print(f"error: {MANIFEST.relative_to(REPO)} not found", file=sys.stderr)
@@ -131,6 +199,8 @@ def main() -> int:
 
         if comp.get("license_file") is None:
             problems.append(f"{name}: no `license_file` recorded")
+
+        problems.extend(check_license_text(comp, name))
 
     print(f"engines/licenses.toml: {len(components)} components, {linked} linked")
 

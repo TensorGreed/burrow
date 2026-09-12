@@ -127,3 +127,10 @@ DerivedData/
 .DS_Store
 Thumbs.db
 tests/conformance/native-outcomes.json
+
+# Python bytecode. tools/*.py are run directly by CI and by developers, so the interpreter
+# writes these beside them; one was committed in M1 PR 4c before this rule existed. An
+# opaque binary artifact of a security-critical checker is the wrong thing to have in a
+# repository whose whole engine story is about provenance.
+__pycache__/
+*.pyc

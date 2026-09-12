@@ -8,6 +8,39 @@ Accepted. Amends [0004](0004-native-engines.md) — its repair justification, wi
 [spike 0001](../spikes/0001-wasm-engines.md), is **re-established** with the corpus case
 it asked for. See *The repair question, answered* below.
 
+### Amendment, 2026-09-12 (M1 PR 4c): §1's rule is now checked from source
+
+§1's table of which functions route through `trap_errors` was produced by a reviewer
+reading `qpdf-c.cc` by hand. That was the right way to find the problem and the wrong way
+to keep it found: it is current only until the next version bump, and **upstream can move a
+function out of the trapped set without changing its signature**, so a compile, the headers,
+and `engines/build-wasm.sh`'s export-table check would all still pass.
+
+`tools/check-qpdf-trapped.py` now generates the set from the pinned
+`libqpdf/qpdf-c.cc` into `engines/qpdf-trapped-functions.txt`, and checks every qpdf
+function burrow declares — natively in `qpdf/ffi.rs` and on the web in
+`apps/web/src/worker/bridge.js` — against it. Regenerating it is step 2 of
+*Bumping an engine pin* in `engines/pins.toml`; CI regenerates and diffs, so a stale list
+fails rather than continuing to assert something nobody re-derived.
+
+Generating the set reproduced §1's hand audit exactly: 22 trapped functions at qpdf 12.4.1,
+`qpdf_read_memory` and `qpdf_get_num_pages` among them, `qpdf_is_encrypted` and
+`qpdf_is_linearized` not.
+
+**The check has two buckets, because "every declared function must be trapped" is not the
+rule this ADR set.** Fourteen of burrow's sixteen declarations are the non-parsing setters,
+accessors, logger calls and `qpdf_init`/`qpdf_cleanup` that §1 accepts explicitly — they
+can fail only by allocation, a defined abort since Rust 1.81. A check demanding they be
+trapped would fail on day one, and its only remedies would be the C++ shim this ADR
+rejected or dropping calls the crate needs. So each of them carries a written argument in
+`engines/qpdf-untrapped-accepted.toml`, and the four `qpdflogger-c.h` functions are
+recorded there on a **narrower** basis than the rest, stated as such: `qpdflogger-c.cc`
+contains no try/catch at all, so they rest on the non-parsing argument alone.
+
+Two directions of staleness fail too: an exemption for a function nobody declares, and an
+exemption for a function upstream *does* trap — the latter because a warning about a hazard
+that is not there teaches people to stop reading the file.
+
 ## Context
 
 M1 PR 1 linked qpdf; nothing used it. This decision covers how it is called, and it had to

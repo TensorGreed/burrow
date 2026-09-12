@@ -238,11 +238,16 @@ echo "   libqpdf.a $(stat -c%s "$prefix/lib/libqpdf.a") bytes"
 say "qpdf $QPDF_VERSION for wasm: the shipping engine module"
 # The shipping qpdf engine module.
 #
-# EXPORTED_FUNCTIONS IS AN ALLOWLIST, AND THAT IS THE POINT. It is exactly the C API
-# surface `core/burrow-engines/src/qpdf/ffi.rs` declares -- the functions ADR 0013 verified
-# route through qpdf's `trap_errors` helper -- and nothing else. A function that is not
+# EXPORTED_FUNCTIONS IS AN ALLOWLIST, AND THAT IS THE POINT. It is the C API surface
+# `core/burrow-engines/src/qpdf/ffi.rs` declares, plus the allocator (_malloc, _free) and
+# _qpdf_get_qpdf_version for the probe below -- and nothing else. A function that is not
 # exported cannot be called from JS at all, which is the same "strongest available form"
 # argument that keeps qpdf's message accessors undeclared on the native side.
+#
+# Whether those declarations are themselves safe -- routed through qpdf's `trap_errors`, or
+# justified as non-parsing -- is checked from qpdf's own source by
+# tools/check-qpdf-trapped.py (M1 PR 4c). This allowlist and that check are the two ends of
+# the same rule: this one bounds what the module exposes, that one bounds what we may ask for.
 #
 # Notably absent: _qpdf_is_encrypted and _qpdf_is_linearized. Neither is trapped, and an
 # object number above INT_MAX makes the latter throw std::range_error straight out of the C

@@ -22,7 +22,9 @@ These are not preferences. A change that violates one is wrong, however well it 
    and `docs/adr/0012-ncsa-for-libfuzzer.md`.
 3. **All input is hostile.** Every file is untrusted and possibly adversarial. Every
    parser entry point gets a fuzz target. No panics cross the FFI boundary; errors are
-   typed. Every operation enforces memory, time, and page/pixel limits.
+   typed. Every operation takes a `Limits` and applies every ceiling in it. Input size, page
+   count and pixel count are checked exactly, before anything is allocated. Time is
+   cooperative and memory is **detected, not bounded** — see *Limits* below.
 4. **Correctness before features.** Most of all in redaction, where a bug leaks secrets.
    Redaction output is verified automatically after every run.
 5. **Tests are part of the feature.** Every operation ships unit, property (proptest),
@@ -102,8 +104,18 @@ do not let raw codes escape into `burrow-ops`.
 `catch_unwind` where a panic is conceivably reachable, and map it to an
 `Error::Internal` variant. `panic = "abort"` is not an acceptable substitute.
 
-**Limits.** Every operation takes a `Limits` and enforces it. A missing limit is a
-denial-of-service bug, not a nicety.
+**Limits.** Every operation takes a `Limits` and applies every ceiling in it. A missing limit
+is a denial-of-service bug, not a nicety.
+
+**They are not equally strong, and the difference is documented rather than smoothed over.**
+`max_input_bytes`, `max_pages` and `max_pixels` are exact. `max_duration_ms` is cooperative:
+overshoot of up to one engine call is possible. **`max_memory_bytes` bounds nothing on any
+platform** — a structural pre-scan and a length-based estimate before the engine, a measured
+check after it, so an overrun is *detected*, not prevented. Say "detect" where we detect and
+"bound" only where something is actually bounded; `burrow_types::Limits`' rustdoc and
+`docs/adr/0007`'s 2026-09-12 amendment carry the per-path detail. An overclaiming doc comment
+here is a bug, not a wording preference: this one was load-bearing in two later ADRs' reasoning
+before PR 4b measured it.
 
 **`unsafe`.** Crates default to `#![forbid(unsafe_code)]`. Only `burrow-engines` and
 `burrow-ffi` may relax it, to `#![deny(unsafe_op_in_unsafe_fn)]`. Every `unsafe` block

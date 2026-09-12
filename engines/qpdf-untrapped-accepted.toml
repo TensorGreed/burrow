@@ -1,0 +1,182 @@
+# qpdf C functions burrow calls that do NOT route through `trap_errors`, and why each is
+# accepted.
+#
+# READ THIS BEFORE ADDING AN ENTRY.
+#
+# `qpdf-c.h:113-115` reads like a blanket promise that C++ exceptions never escape the C
+# API. It is not true per-function: the catching is done by one helper, `trap_errors`, and
+# only functions routed through it are covered. `qpdf_is_linearized` is not, and an ordinary
+# 356-byte PDF containing `9999999999 0 obj` kills the process through it --
+#
+#     fatal runtime error: Rust cannot catch foreign exceptions, aborting
+#
+# -- measured during M1 PR 3's review. `catch_unwind` does not help; a foreign exception is
+# not a Rust panic. On the web that is the worker, on mobile the app. ADR 0013 §1.
+#
+# So an entry here is an ARGUMENT, not a waiver. It has to say why this particular function
+# cannot throw, and "it looked fine" is not that. The bar every entry below meets:
+#
+#   The function is NON-PARSING. It assigns a field, flips a flag, or reads a stored value.
+#   It never touches the PDF's bytes, never resolves an object, never converts a
+#   file-derived number. Its only failure mode is allocation -- and since Rust 1.81,
+#   unwinding out of an `extern "C"` frame is a DEFINED abort rather than undefined
+#   behaviour, so an allocation failure here is a clean process death, not memory unsafety.
+#
+# ON ALLOCATION FAILURE, SPECIFICALLY: C++ `new` THROWS `std::bad_alloc`. It does not return
+# null. So the honest description of OOM in an untrapped function here is a foreign exception
+# out of an `extern "C"` frame -- the accepted defined-abort case above -- and NOT a graceful
+# null the caller inspects. Two entries below said otherwise and were corrected in M1 PR 4c's
+# security review. The crate's null checks are defensive belt-and-braces; they are not the
+# expected path, and no entry may claim they are.
+#
+# A function that reads the document is not eligible, however harmless it looks.
+# `qpdf_is_linearized` is one line long.
+#
+# tools/check-qpdf-trapped.py enforces that every declared function is either on the
+# generated trapped list or here, that every entry here is actually declared, and that no
+# entry here is one upstream DOES trap -- because an exemption for a function that is
+# genuinely safe reads as a hazard that is not there.
+
+[meta]
+adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
+qpdf_version = "12.4.1"
+# The version these arguments were checked against. A bump re-checks them: `trap_errors`
+# routing can change without a signature changing. See "Bumping an engine pin" in
+# engines/pins.toml.
+
+# ---------------------------------------------------------------------------------
+# Lifecycle. Allocation only.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_init"
+reason = """\
+Allocates the `qpdf_data` struct and returns it; no PDF exists yet, so there is nothing to \
+parse and nothing to throw about. It is a `new` expression, so on allocation failure it \
+throws `std::bad_alloc` rather than returning null -- accepted as a defined abort per the \
+preamble. The crate's null check is defensive, not the expected path."""
+
+[[function]]
+name = "qpdf_cleanup"
+reason = """\
+Frees the struct. `qpdf-c.cc`'s implementation checks whether an error was left unretrieved \
+and, if so, writes to the DEFAULT logger -- which is not gated on `qpdf_silence_errors` and \
+whose text carries byte offsets. `Document::drop` drains the error slot before calling this, \
+so that branch is unreachable; ADR 0013 §2 records it because it is a property of our \
+control flow rather than of the type."""
+
+# ---------------------------------------------------------------------------------
+# Setters. Each assigns one field on `qpdf_data`.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_silence_errors"
+reason = """\
+Sets a bool on `qpdf_data`. Load-bearing rather than optional: without it, functions that do \
+not return an error code print to the host process's stderr, which in a browser is the \
+devtools console. `tests/secret_leak.rs` fails when it is removed."""
+
+[[function]]
+name = "qpdf_set_suppress_warnings"
+reason = """\
+Sets a bool on `qpdf_data`. No document is consulted; qpdf's warning path reads the flag \
+later, inside functions that are themselves trapped."""
+
+[[function]]
+name = "qpdf_set_logger"
+reason = """\
+Stores a `qpdf_logger` handle on `qpdf_data`. Takes no callback into Rust, so no Rust code \
+ever runs on a C++ stack -- which is why ADR 0013 §2 could use qpdf's own \
+`qpdf_log_dest_discard` rather than writing a C++ shim."""
+
+[[function]]
+name = "qpdf_set_attempt_recovery"
+reason = """\
+Sets a bool consulted during a later read. The read itself is `qpdf_read_memory`, which is \
+trapped, so the recovery work that flag enables happens inside the trapped call."""
+
+[[function]]
+name = "qpdf_global_set_uint32"
+reason = """\
+Writes one process-global `uint32_t` limit and returns a status code. Takes no `qpdf_data` \
+and touches no document. ADR 0013 §5: every decompression memory limit qpdf offers defaults \
+to unlimited, so these are set once behind a `OnceLock` before any `qpdf_data` exists."""
+
+# ---------------------------------------------------------------------------------
+# Error accessors. These read a stored error; they do not produce one.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_has_error"
+reason = """\
+Reads a bool that a trapped call already set. Cannot itself fail: whatever threw did so \
+inside the trapped function, which stored the result rather than propagating it."""
+
+[[function]]
+name = "qpdf_get_error"
+reason = """\
+Moves the stored `QPDFExc` out of the slot and returns a handle, consuming it. No parsing; \
+the exception was caught and stored by `trap_errors` before this is reachable. Draining the \
+slot is also what keeps `qpdf_cleanup`'s default-logger branch unreachable."""
+
+[[function]]
+name = "qpdf_get_error_code"
+reason = """\
+Reads the integer code off a stored error. `qpdf_error_code_e`'s numbering is guaranteed \
+across major releases (`Constants.h`), which is why the crate matches on codes and does not \
+declare the message accessors at all -- a function that cannot be called cannot leak."""
+
+# ---------------------------------------------------------------------------------
+# The logger C binding. A DIFFERENT acceptance, and weaker -- say so rather than reuse the
+# paragraph above.
+# ---------------------------------------------------------------------------------
+#
+# These four live in `libqpdf/qpdflogger-c.cc`, which contains NO try/catch at all -- not
+# even the partial coverage `qpdf-c.cc` has. They are accepted on the non-parsing argument
+# alone: each allocates or assigns and none is handed a document. That is a narrower basis
+# than the functions above, which sit in a file where trapping at least exists, and it is
+# recorded here rather than smoothed over. ADR 0013 §1 calls this the
+# "accepted-abort-on-OOM category".
+
+[[function]]
+name = "qpdflogger_create"
+reason = """\
+Allocates a `QPDFLogger` handle. In qpdflogger-c.cc, which has no try/catch anywhere, so \
+this rests on the non-parsing argument alone: it is handed no document. A `new` expression, \
+so allocation failure throws `std::bad_alloc` rather than returning null -- accepted as a \
+defined abort per the preamble. The crate's null check, which skips `qpdf_set_logger`, is \
+defensive rather than the expected path."""
+
+[[function]]
+name = "qpdflogger_set_info"
+reason = """\
+Points the logger's info stream at a `qpdf_log_dest_e` -- here `qpdf_log_dest_discard`, \
+which is qpdf's own `Pl_Discard`. Assigns a pipeline; parses nothing. Same weaker basis as \
+`qpdflogger_create`: qpdflogger-c.cc has no try/catch."""
+
+[[function]]
+name = "qpdflogger_set_warn"
+reason = """\
+As `qpdflogger_set_info`, for the warning stream. This is the one that matters most for \
+privacy: qpdf's warnings quote object numbers and byte offsets for files that parse \
+SUCCESSFULLY, not only for failures."""
+
+[[function]]
+name = "qpdflogger_set_error"
+reason = """\
+As `qpdflogger_set_info`, for the error stream. Assigns a destination constant; parses \
+nothing. Same weaker basis: qpdflogger-c.cc has no try/catch."""
+
+# ---------------------------------------------------------------------------------
+# Link proof. Declared in a `#[cfg(test)]`-gated block far from the qpdf module.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_get_qpdf_version"
+reason = """\
+Returns `QPDF::QPDFVersion().c_str()` -- a `static std::string const&` (`QPDF.hh:55`), so \
+there is no temporary to dangle and no allocation to fail. No `qpdf_data`, no document, \
+nothing to parse. Declared in `core/burrow-engines/src/link_check.rs`'s `extern "C"` block \
+to prove libqpdf is actually linked, and gated on `#[cfg(test)]`, so it never ships. It was \
+invisible to this check until M1 PR 4c's security review found the fourth declaration \
+site."""

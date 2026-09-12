@@ -12,8 +12,8 @@
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run --passWithNoTests",
-    "prebuild": "node ../../tools/stage-web-engines.mjs",
-    "build:harness": "node ../../tools/stage-web-engines.mjs && BURROW_HARNESS=1 astro build",
+    "prebuild": "node ../../tools/stage-web-engines.mjs && node ../../tools/generate-credits.mjs",
+    "build:harness": "node ../../tools/stage-web-engines.mjs && node ../../tools/generate-credits.mjs && BURROW_HARNESS=1 astro build",
     "e2e": "playwright test"
   },
   "dependencies": {

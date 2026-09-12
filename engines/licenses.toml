@@ -27,10 +27,23 @@
 # cannot detect a component nobody declared. That still needs a periodic audit. Treat
 # this as a floor, not a guarantee.
 #
-# Also: `license_file` paths under `vendor/` point into engines/vendor/, which is
-# GITIGNORED (reproducible from engines/pins.toml via engines/fetch.sh). The licence
-# TEXT that travels with a burrow release lives in THIRD_PARTY_NOTICES.md; these paths
-# say where the audited original is, not where the shipped notice is.
+# TWO PATHS PER COMPONENT, AND THEY DO DIFFERENT JOBS
+# - `license_file` is the AUDITED ORIGINAL. Paths under `vendor/` point into
+#   engines/vendor/, which is GITIGNORED (reproducible from engines/pins.toml via
+#   engines/fetch.sh). It records where the audit read the text, not where it ships.
+# - `license_text` is a COMMITTED COPY, under engines/licences/. Mandatory for every
+#   `linked = true` component. It exists because the website credits page is generated
+#   from this manifest at build time and must build from a clean checkout -- and because
+#   CI's web job stages only the WASM vendor prefix, while most `license_file` paths name
+#   vendor/native-aarch64/. See engines/licences/README.md.
+#
+# tools/check-engine-licences.py requires the copy to exist AND, when the vendor tree is
+# present, to be byte-identical to the original. Editing one without the other fails CI,
+# which is the drift a committed copy would otherwise introduce.
+#
+# Two components point `license_text` at docs/adr/licences/ instead: agg23 and harfbuzz,
+# whose texts are committed there because they exist NOWHERE ELSE -- AGG has no SPDX
+# identifier and PDFium's package ships no HarfBuzz licence file at all.
 #
 # This manifest is also the input for M1's SBOM (see .github/workflows/release.yml).
 
@@ -183,6 +196,7 @@ name = "pdfium"
 version = "chromium/8044"
 license = "BSD-3-Clause AND Apache-2.0"
 license_file = "vendor/native-aarch64/licenses-pdfium/pdfium.txt"
+license_text = "engines/licences/pdfium.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -193,6 +207,7 @@ name = "freetype"
 version = "bundled with pdfium chromium/8044"
 license = "FTL"
 license_file = "vendor/native-aarch64/licenses-pdfium/freetype.txt"
+license_text = "engines/licences/freetype.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -207,6 +222,7 @@ name = "libjpeg-turbo (bundled in pdfium)"
 version = "bundled with pdfium chromium/8044"
 license = "IJG AND BSD-3-Clause AND Zlib"
 license_file = "vendor/native-aarch64/licenses-pdfium/libjpeg_turbo.ijg"
+license_text = "engines/licences/libjpeg-turbo-pdfium.ijg"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -222,6 +238,7 @@ name = "agg23"
 version = "2.3"
 license = "LicenseRef-AGG-2.3"
 license_file = "docs/adr/licences/LicenseRef-AGG-2.3.txt"
+license_text = "docs/adr/licences/LicenseRef-AGG-2.3.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -252,6 +269,7 @@ name = "libopenjpeg"
 version = "bundled with pdfium chromium/8044"
 license = "BSD-2-Clause"
 license_file = "vendor/native-aarch64/licenses-pdfium/libopenjpeg.txt"
+license_text = "engines/licences/libopenjpeg.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -262,6 +280,7 @@ name = "abseil-cpp"
 version = "bundled with pdfium chromium/8044"
 license = "Apache-2.0"
 license_file = "vendor/native-aarch64/licenses-pdfium/abseil.txt"
+license_text = "engines/licences/abseil-cpp.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -272,6 +291,7 @@ name = "lcms"
 version = "2.19"
 license = "MIT"
 license_file = "vendor/native-aarch64/licenses-pdfium/lcms.txt"
+license_text = "engines/licences/lcms.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -295,6 +315,7 @@ name = "fast_float"
 version = "bundled with pdfium chromium/8044"
 license = "MIT"
 license_file = "vendor/native-aarch64/licenses-pdfium/fast_float.txt"
+license_text = "engines/licences/fast_float.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -305,6 +326,7 @@ name = "zlib (pdfium's bundled copy)"
 version = "1.3.2.1"
 license = "Zlib"
 license_file = "vendor/native-aarch64/licenses-pdfium/zlib.txt"
+license_text = "engines/licences/zlib-pdfium.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -318,6 +340,7 @@ name = "llvm libc++ / libc++abi / compiler-rt (bundled in pdfium Linux builds)"
 version = "bundled with pdfium chromium/8044"
 license = "Apache-2.0 WITH LLVM-exception"
 license_file = "vendor/native-aarch64/licenses-pdfium/llvm-libc.txt"
+license_text = "engines/licences/llvm-libc.txt"
 artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -340,6 +363,7 @@ name = "harfbuzz (bundled in pdfium)"
 version = "14.3.1"
 license = "MIT-Modern-Variant"
 license_file = "docs/adr/licences/harfbuzz-14.3.1-COPYING.txt"
+license_text = "docs/adr/licences/harfbuzz-14.3.1-COPYING.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -374,6 +398,7 @@ name = "icu"
 version = "78.2"
 license = "Unicode-3.0 AND ICU"
 license_file = "vendor/native-aarch64/licenses-pdfium/icu.txt"
+license_text = "engines/licences/icu.txt"
 artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
@@ -415,6 +440,7 @@ name = "qpdf"
 version = "12.4.1"
 license = "Apache-2.0"
 license_file = "vendor/src/qpdf-12.4.1/LICENSE.txt"
+license_text = "engines/licences/qpdf.txt"
 artifacts = ["qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked_in = ["qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked = true
@@ -429,6 +455,7 @@ name = "sphlib sha2 (in libqpdf)"
 version = "3.0"
 license = "MIT"
 license_file = "vendor/src/qpdf-12.4.1/NOTICE.md"
+license_text = "engines/licences/qpdf-NOTICE.md"
 artifacts = ["qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked_in = ["qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked = true
@@ -439,6 +466,7 @@ name = "rijndael (in libqpdf)"
 version = "bundled with qpdf 12.4.1"
 license = "CC0-1.0"
 license_file = "vendor/src/qpdf-12.4.1/NOTICE.md"
+license_text = "engines/licences/qpdf-NOTICE.md"
 artifacts = ["qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked_in = ["qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked = true
@@ -478,6 +506,7 @@ name = "zlib"
 version = "1.3.2"
 license = "Zlib"
 license_file = "vendor/src/zlib-1.3.2/LICENSE"
+license_text = "engines/licences/zlib.txt"
 artifacts = ["zlib-wasm", "zlib-native-aarch64", "qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked_in = ["zlib-wasm", "zlib-native-aarch64"]
 linked = true
@@ -498,6 +527,7 @@ name = "libjpeg-turbo"
 version = "3.2.0"
 license = "IJG AND BSD-3-Clause AND Zlib"
 license_file = "vendor/native-aarch64/share/doc/libjpeg-turbo/LICENSE.md"
+license_text = "engines/licences/libjpeg-turbo.md"
 artifacts = ["jpeg-wasm", "jpeg-native-aarch64", "qpdf-wasm", "qpdf-native-aarch64", "qpdf-fuzz-aarch64"]
 linked_in = ["jpeg-wasm", "jpeg-native-aarch64"]
 linked = true
@@ -555,6 +585,7 @@ name = "Emscripten runtime (musl libc, libc++, compiler-rt, JS glue)"
 version = "6.0.9"
 license = "MIT AND Apache-2.0 WITH LLVM-exception"
 license_file = "emsdk:upstream/emscripten/LICENSE"
+license_text = "engines/licences/emscripten.txt"
 artifacts = ["pdfium-wasm", "qpdf-wasm", "zlib-wasm", "jpeg-wasm"]
 linked_in = ["pdfium-wasm", "qpdf-wasm", "jpeg-wasm"]
 linked = true

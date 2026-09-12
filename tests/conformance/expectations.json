@@ -1,6 +1,7 @@
 {
   "schema": 2,
   "generated_by": "cargo run -p burrow-engines --example make-conformance-fixtures",
+  "current_milestone": "M1",
   "cases": [
     {
       "name": "blank-1page",
@@ -289,7 +290,8 @@
       },
       "known_gap": {
         "issue": "https://github.com/TensorGreed/burrow/issues/26",
-        "reason": "the length-based memory estimate runs on the PDFium path and not the qpdf path, so `max_memory_bytes` does not get its cheapest pre-check when a caller asks for a structure check. Consistent across native and web, so not a divergence -- but undocumented until this case surfaced it."
+        "reason": "the length-based memory estimate runs on the PDFium path and not the qpdf path, so `max_memory_bytes` does not get its cheapest pre-check when a caller asks for a structure check. Consistent across native and web, so not a divergence -- but undocumented until this case surfaced it.",
+        "milestone": "M2"
       }
     },
     {
@@ -312,7 +314,8 @@
       },
       "known_gap": {
         "issue": "https://github.com/TensorGreed/burrow/issues/24",
-        "reason": "the pre-scan does not model object-stream inflation, and the measured check compares resident set before and after so it cannot see a transient peak. Measured on a 1.4 MB variant: PDFium peaks at 2,437 MB and the file still returns Ok under the default 1 GiB ceiling."
+        "reason": "the pre-scan does not model object-stream inflation, and the measured check compares resident set before and after so it cannot see a transient peak. Measured on a 1.4 MB variant: PDFium peaks at 2,437 MB and the file still returns Ok under the default 1 GiB ceiling.",
+        "milestone": "M2"
       }
     },
     {

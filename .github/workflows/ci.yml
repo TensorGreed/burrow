@@ -219,6 +219,38 @@ jobs:
           python3 tools/detect-engine-components.py
           tools/test-detect-engine-components.sh
 
+      # The licence-copy DRIFT check, which needs the vendor tree and therefore cannot run in
+      # the `deny` job where the rest of this script runs.
+      #
+      # `check-engine-licences.py` compares each committed text under engines/licences/ against
+      # the audited original under engines/vendor/ byte for byte -- but only when the vendor
+      # tree is present, and it skips silently otherwise so it stays runnable on a clean
+      # checkout. The `deny` job fetches nothing, so in CI that comparison was firing for ZERO
+      # components: the allowlist half was gated and the drift half was local-only. Running it
+      # again here, where the engines exist, is what makes engines/licences/README.md's claim
+      # true. Both runs are cheap and neither subsumes the other.
+      - name: Engine licence texts have not drifted from the vendor originals (ADR 0008)
+        run: python3 tools/check-engine-licences.py
+
+      # The OTHER half of the qpdf exception audit. engines/build-wasm.sh already checks
+      # the built module's export table against ffi.rs; this checks ffi.rs against qpdf's
+      # OWN SOURCE -- the set of functions actually routed through `trap_errors`.
+      #
+      # Here because engines/vendor/ is gitignored and this job has already fetched it.
+      # Regenerating and diffing, rather than trusting the committed list: upstream can
+      # stop routing a function through the helper without changing its signature, and a
+      # committed list nobody re-derives would keep saying it was safe. A stale list is a
+      # failure, not a warning.
+      - name: qpdf trapped-function list is current (ADR 0013 §1)
+        run: |
+          cp engines/qpdf-trapped-functions.txt "$RUNNER_TEMP/committed.txt"
+          python3 tools/check-qpdf-trapped.py --generate
+          diff -u "$RUNNER_TEMP/committed.txt" engines/qpdf-trapped-functions.txt || {
+            echo "::error::engines/qpdf-trapped-functions.txt is stale. Regenerate it with" \
+                 "python3 tools/check-qpdf-trapped.py --generate and commit the result." >&2
+            exit 1
+          }
+
       - name: doc tests and rustdoc warnings
         run: cargo doc --workspace --no-deps
         env:
@@ -322,8 +354,12 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # The web app's whole payload rides on this target building. Once the wasm module
-      # is real (M1), add a size budget step here so growth is a visible decision.
+      # The web app's whole payload rides on this target building.
+      #
+      # The size budget this comment used to ask for is in the `web` job, not here, and that
+      # is the right place: this job builds one .wasm and a user pays for six artifacts. A
+      # budget on the Rust module alone would have passed every regression that mattered --
+      # it is 0.7% of the payload. See apps/web/size-budget.json.
       - run: cargo build -p burrow-wasm --target wasm32-unknown-unknown --release
 
   mobile:
@@ -387,6 +423,16 @@ jobs:
       # ADR 0008's allowlist. Same job on purpose: one gate for the whole graph.
       - name: engine licences (ADR 0008)
         run: python3 tools/check-engine-licences.py
+
+      # Every qpdf C function burrow declares -- natively and on the web -- must be on the
+      # generated trapped list or in the justified exemption list. An untrapped call lets a
+      # C++ exception cross the FFI boundary, which aborts the process: `qpdf_is_linearized`
+      # did exactly that on an ordinary 356-byte PDF. ADR 0013 §1.
+      #
+      # Here rather than in `test` because it reads only committed files, so it runs on a
+      # clean checkout with no engine fetch. The `test` job checks the list is not stale.
+      - name: qpdf declarations are all trapped or accepted (ADR 0013 §1)
+        run: python3 tools/check-qpdf-trapped.py
 
   audit:
     name: cargo-audit
@@ -555,6 +601,18 @@ jobs:
       - name: Build
         working-directory: apps/web
         run: pnpm build
+      # Reports the first-load payload against its budget on every PR, as a step summary.
+      #
+      # A step summary and not a PR comment: this workflow runs with `permissions:
+      # contents: read`, a comment needs `pull-requests: write`, and a token with write
+      # access to the repository is not worth adding for a size table. A summary also
+      # renders on a fork's PR, which a comment from this trigger cannot.
+      #
+      # BEFORE `pnpm test`, deliberately: the budget is enforced there, and the table is
+      # most wanted on the run where it fails.
+      - name: First-load size budget
+        working-directory: apps/web
+        run: node ../../tools/report-size-budget.mjs dist
       # Asserts what a production build contains: no harness route, no `burrowHarness`
       # identifier in any shipped file, the CSP in every page, and -- as a control -- that
       # the harness IS present when BURROW_HARNESS=1, so the gating is doing the work.

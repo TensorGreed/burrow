@@ -193,12 +193,19 @@ artifact containing nine other licenses.
 > every licence is on the allowlist as amended by
 > [ADR 0010](docs/adr/0010-harfbuzz-and-icu-in-pdfium.md).
 >
-> What is still missing is **three of the four surfaces** ADR 0008 requires the credit
-> lines to appear on: the website credits page and both apps' open-source licence
-> screens. Only this file exists.
+> What is still missing is **two of the four surfaces** ADR 0008 requires the credit lines
+> to appear on. As of M1 PR 4c:
+>
+> - [x] This file.
+> - [x] **The website credits page** — `/credits`, linked from the footer of every page,
+>       generated at build time from `engines/licenses.toml` so it cannot drift from the CI
+>       licence gate, and asserted against the built output by
+>       `apps/web/src/credits.test.ts` (issue #16).
+> - [ ] Android open-source licences screen (M3).
+> - [ ] iOS open-source licences screen (M4).
 >
 > **No build containing these engines has been distributed**, so nothing is in violation
-> today. That changes the moment one is.
+> today. That changes the moment one is, and two of four is still short of the bar.
 
 | Engine | License (as audited) | Status |
 |---|---|---|

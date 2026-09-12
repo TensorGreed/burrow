@@ -50,6 +50,20 @@ const { title, description } = Astro.props;
       <p>
         Free and open source, <code>MIT OR Apache-2.0</code>. No accounts, no uploads, no tracking.
       </p>
+      {
+        /*
+        THE CREDITS LINK IS PART OF A LICENCE OBLIGATION. Do not remove it.
+
+        ADR 0008's FTL, IJG and MIT-Modern-Variant notices bind "documentation accompanying
+        the distribution". A notices page nobody can navigate to does not discharge that, so
+        the page and the route to it are one requirement, not two. It lives in the layout
+        rather than on one page so every page carries it.
+
+        `src/credits.test.ts` resolves this href against the built output and fails if it
+        does not land on the credits page.
+      */
+      }
+      <p><a href="/credits">Credits and open-source licences</a></p>
     </footer>
   </body>
 </html>
