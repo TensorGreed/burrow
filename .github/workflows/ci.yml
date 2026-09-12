@@ -437,7 +437,9 @@ jobs:
       # are the other 82% of the shipped bytes, and they are checked here against
       # ADR 0008's allowlist. Same job on purpose: one gate for the whole graph.
       - name: engine licences (ADR 0008)
-        run: python3 tools/check-engine-licences.py
+        run: |
+          python3 tools/check-engine-licences.py
+          tools/test-check-engine-licences.sh
 
       # Every qpdf C function burrow declares -- natively and on the web -- must be on the
       # generated trapped list or in the justified exemption list. An untrapped call lets a
@@ -447,7 +449,9 @@ jobs:
       # Here rather than in `test` because it reads only committed files, so it runs on a
       # clean checkout with no engine fetch. The `test` job checks the list is not stale.
       - name: qpdf declarations are all trapped or accepted (ADR 0013 §1)
-        run: python3 tools/check-qpdf-trapped.py
+        run: |
+          python3 tools/check-qpdf-trapped.py
+          tools/test-check-qpdf-trapped.sh
 
       # Compile every tool in tools/ with warnings promoted to errors.
       #
