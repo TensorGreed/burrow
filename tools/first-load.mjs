@@ -13,9 +13,12 @@
 //
 // Everything fetched before an operation can run:
 //
-//   * the page's own HTML, and every same-origin asset it references (CSS, and the island
-//     runtime once a tool page has one -- derived from the markup, so it follows along
-//     without this list being maintained);
+//   * the page's own HTML, and every same-origin asset it references -- CSS, the island
+//     runtime once a tool page has one, self-hosted fonts, images. Derived from the markup,
+//     so it follows along as pages grow. **One honest limit: assets referenced from inside
+//     CSS are not followed** -- a `url(...)` in an `@font-face` or a background. No HTML scan
+//     can see those, and a CSS parser here would be the wrong amount of machinery; the total
+//     budget is what catches them, since the font still has to be downloaded;
 //   * the worker bundle, which carries the Emscripten glue for both engines, the
 //     wasm-bindgen glue and the worker itself;
 //   * all three .wasm modules -- pdfium, qpdf, and the Rust binding;
@@ -80,10 +83,17 @@ export function firstLoad(dir, entryPage = "index.html") {
 
   // Same-origin assets the entry page pulls in. Root-relative only: a cross-origin one would
   // be a privacy violation long before it was a size problem, and `_headers` forbids it.
+  //
+  // The extension list is deliberately wide. It started as css/js/mjs/wasm, which was true of
+  // the build at the time and would have gone quietly wrong the moment a self-hosted font or
+  // a logo was added to the layout -- exactly when a size budget needs to notice. Fonts are
+  // the live case: `apps/web/CLAUDE.md` permits no third-party fonts, so any font burrow ever
+  // uses is a first-load cost.
+  const ASSET = /\.(css|js|mjs|wasm|woff2?|ttf|otf|svg|png|jpe?g|webp|avif|gif|ico)$/;
   const referenced = new Set();
   for (const [, url] of html.matchAll(/(?:href|src)="(\/[^"]*)"/g)) {
     const path = url.replace(/[?#].*$/, "").replace(/^\//, "");
-    if (!/\.(css|js|mjs|wasm)$/.test(path)) continue;
+    if (!ASSET.test(path)) continue;
     if (!files.includes(path)) {
       throw new Error(`${entryPage} references ${url}, which is not in the build`);
     }

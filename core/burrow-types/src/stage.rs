@@ -2,8 +2,11 @@
 //!
 //! # Why a limit failure needs to say where it came from
 //!
-//! `max_memory_bytes` is enforced by **three** different mechanisms, and until M1 PR 4b all
-//! three reported the same thing:
+//! `max_memory_bytes` is consulted by **three** different mechanisms, and until M1 PR 4b all
+//! three reported the same thing. *Consulted*, not enforced: every one of them **detects** an
+//! overrun rather than bounding it, which is the distinction
+//! [`Limits`](crate::Limits)' own documentation turns on. What differs between them is how
+//! early they notice, and that is worth a great deal even when none of them prevents.
 //!
 //! | mechanism | when it runs | what it knows |
 //! |---|---|---|

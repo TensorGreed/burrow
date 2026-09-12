@@ -39,3 +39,26 @@ PDFium returns `Ok(1)` and qpdf returns `Malformed`, no abort, on both paths.
 `trap_errors` wrapper around that specific function rather than trusting the header's
 blanket statement. Anything unwrapped needs `extern "C-unwind"` plus a catch, or a
 `trap_errors`-wrapped alternative. See [[m1-prescan-key-scan-bypass]] and [[user-role]].
+
+**Mechanised in M1 PR 4c (2026-09-12): `tools/check-qpdf-trapped.py`.** Generates
+`engines/qpdf-trapped-functions.txt` (22 names) from `libqpdf/qpdf-c.cc` and checks every
+declaration against it or against `engines/qpdf-untrapped-accepted.toml` (14 entries). I
+re-derived the 22 with an independent comment- and string-aware scanner: **byte-identical, no
+false positives**, and all 14 exemption arguments check out against the C++ source.
+
+Three limits of the mechanisation, all verified:
+- The trapped set is scanned from **one file**. `qpdf_global_set_uint32` actually lives in
+  `libqpdf/global.cc`, so it can never be recognised as trapped no matter what upstream does.
+  Conservative direction (missing → must be exempted), but the coverage claim is narrower than
+  the docstring says.
+- `declared_functions()` enumerates **four hard-coded file paths**. `core/burrow-engines/src/
+  link_check.rs` declares `qpdf_get_qpdf_version` and is invisible to it (test-only, benign).
+- `brace_body()` is brace-counting with **no string/comment awareness**. qpdf-c.cc 12.4.1 has
+  no brace inside a literal, so today it is correct — but `*p << "{";` appears in JSON.cc and
+  QPDF_json.cc, and qpdf-c.cc has JSON entry points. A single such literal on a version bump
+  swallows the next function's body and can list an untrapped function as trapped.
+
+The real backstop on the web is `engines/build-wasm.sh`'s `EXPORTED_FUNCTIONS` allowlist,
+derived from `ffi.rs` plus `{malloc, free, qpdf_get_qpdf_version}` and asserted against the
+built module's export table. No `cwrap`/`ccall` is exported, so there is no dynamic call
+surface past that allowlist.

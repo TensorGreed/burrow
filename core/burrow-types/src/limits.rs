@@ -17,9 +17,12 @@
 /// qpdf takes. A file crafted to make a single engine call run for a minute is not
 /// stopped by this limit.
 ///
-/// `max_memory_bytes` **bounds nothing, on any platform.** Everything below *detects* an
-/// overrun; nothing prevents one. The two words are used deliberately throughout this
-/// documentation and are worth keeping straight.
+/// **Nothing derived from `max_memory_bytes` bounds memory during an operation, on any
+/// platform.** Every mechanism driven by this field *detects* an overrun; none prevents one.
+/// The two words are used deliberately throughout this documentation and are worth keeping
+/// straight. (Two things elsewhere *do* bound an allocation, neither derived from this field
+/// — see *What does bound an allocation* below. Saying "nothing bounds memory" would be the
+/// opposite error to the one this section corrects.)
 ///
 /// The reason is not an implementation shortcut. The allocations that dominate are made by
 /// C++ inside the engines, through their own allocators. Rust's allocator never sees them,
@@ -69,9 +72,26 @@
 ///   threshold derived from this value is discarded *after* its result is delivered. That
 ///   bounds accumulation across operations. It does not bound any single one.
 /// - **A 2 GiB per-module ceiling**, on the web only, fixed at build time and not derived
-///   from anything a caller sets. It is the one real bound in this whole picture, an
-///   allocation past it fails cleanly rather than taking the tab down, and it is **not this
-///   limit**.
+///   from anything a caller sets. An allocation past it fails cleanly rather than taking the
+///   tab down, and it is **not this limit**.
+///
+/// # What *does* bound an allocation
+///
+/// Two things do, and neither is this field. They are named because leaving them out would
+/// be the mirror of the overclaim above — an underclaim that hides a real defence:
+///
+/// - **qpdf's global decompression ceilings**, on *both* platforms: 256 MiB each for
+///   `flate`, `dct`, `png`, `run_length` and `tiff`, plus `parser_max_nesting = 64`. qpdf
+///   enforces them *inside* the operation, so they stop a decompression bomb rather than
+///   reporting one. Every one of them defaults to **unlimited** upstream.
+/// - **The web engine modules' build-time 2 GiB maximum**, described above.
+///
+/// Both are fixed constants. qpdf's are process-global and take no document handle, so they
+/// cannot be per-operation: a caller who sets a *tighter* `max_memory_bytes` still gets it,
+/// and one who sets a looser one does not get to raise these. They are a floor under
+/// everything rather than a ceiling anyone chose. And they cover **one engine** — PDFium has
+/// no equivalent configured, which is the asymmetry issue #24 records. See
+/// `docs/adr/0013-qpdf-c-api-and-prescan.md` §5.
 ///
 /// Set it conservatively on constrained devices rather than relying on it to save you.
 ///

@@ -39,7 +39,8 @@ apps/       web (Astro + Svelte), android (Compose), ios (SwiftUI)
 ```
 
 The core is deliberately boring and defensive: every input is treated as hostile, every
-operation enforces memory/time/page limits, every parser entry point gets a fuzz target,
+operation takes a `Limits` and applies every ceiling in it, every parser entry point gets a
+fuzz target,
 and no panic is allowed to cross a language boundary. See
 [`CLAUDE.md`](CLAUDE.md) for the engineering rules and
 [`docs/adr/`](docs/adr/) for why things are the way they are.

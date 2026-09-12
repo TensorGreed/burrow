@@ -63,8 +63,13 @@ export interface KnownGap {
    *
    * Enforced on the Rust side, against `Expectations.current_milestone` -- there, and not
    * here, because governance of the corpus belongs in one place and the native suite is the
-   * one CI asserts by name actually ran. Declared in this type so a file missing the field
-   * fails to typecheck rather than being read as an untargeted gap.
+   * one CI asserts by name actually ran.
+   *
+   * Declaring it here buys **nothing at runtime**, and an earlier version of this comment
+   * claimed otherwise. `conformance.spec.ts` reads the file with
+   * `JSON.parse(raw) as Expectations`, an unchecked assertion, so an `expectations.json`
+   * without this field typechecks and renders "due by undefined". The type is a statement of
+   * the shape for readers and for code that constructs one, not a gate.
    */
   milestone: string;
 }

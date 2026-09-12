@@ -3,8 +3,10 @@
 //
 // WHY THIS IS GENERATED, AND WHY IT IS A LICENCE OBLIGATION RATHER THAN A NICETY
 //
-// ADR 0008 and ADR 0010 admit three licences that impose AFFIRMATIVE notice obligations
-// binding executable-only distribution -- which is exactly what a wasm bundle is:
+// ADR 0008 and ADR 0010 admit three LICENCES that impose AFFIRMATIVE notice obligations
+// binding executable-only distribution -- which is exactly what a wasm bundle is. They are
+// carried by FOUR manifest entries, because libjpeg-turbo appears twice at different
+// versions (PDFium's bundled copy, and the one we vendor):
 //
 //   * FreeType, FTL section 2      -- "based in part of the work of the FreeType Team"
 //   * Independent JPEG Group, (2)  -- "based in part on the work of the Independent JPEG Group"
@@ -22,18 +24,41 @@
 // FTL SECTION 3: the FreeType name must NOT be used to promote burrow. Nothing does today.
 // If a "powered by" badge is ever proposed, that is the clause it violates.
 //
-// INPUTS ARE COMMITTED FILES ONLY. Every `license_text` path resolves inside the repository,
-// never into engines/vendor/, which is gitignored -- see engines/licences/README.md. That is
-// what lets `pnpm build` produce a complete credits page from a clean checkout, and what lets
-// CI's web job (which stages only the wasm vendor prefix) build it at all.
+// INPUTS ARE COMMITTED FILES ONLY, and that is ENFORCED rather than assumed -- see
+// `resolveLicenceText`. Every `license_text` path must resolve inside engines/licences/ or
+// docs/adr/licences/, never into engines/vendor/, which is gitignored. That is what lets
+// `pnpm build` produce a complete credits page from a clean checkout, and what lets CI's web
+// job (which stages only the wasm vendor prefix) build it at all.
 
 import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
 const generatedDir = join(repo, "apps", "web", "src", "generated");
+
+// The only two directories a `license_text` may name. Every committed licence text is in
+// one of them (engines/licences/README.md says why the other exists).
+//
+// THIS IS A CONTAINMENT CHECK, NOT TIDINESS. `license_text` is a free-form string from
+// engines/licenses.toml, and `path.join` collapses `..` -- so without this, one line of a
+// file reviewers skim as a manifest rather than as code could make this script read any
+// path on the machine and embed its contents verbatim into a PUBLISHED page. `prebuild`
+// runs this on every build, and the output is 170 KB nobody reads line by line.
+const LICENCE_ROOTS = [join(repo, "engines", "licences"), join(repo, "docs", "adr", "licences")];
+
+/** Resolve a manifest `license_text` path, refusing anything outside {@link LICENCE_ROOTS}. */
+function resolveLicenceText(name, relative) {
+  const path = resolve(repo, relative);
+  if (!LICENCE_ROOTS.some((root) => path === root || path.startsWith(root + sep))) {
+    throw new Error(
+      `${name}: license_text ${relative} resolves outside the committed licence ` +
+        `directories. Licence text must live in engines/licences/ or docs/adr/licences/.`,
+    );
+  }
+  return path;
+}
 
 /**
  * A deliberately small TOML reader for the subset engines/licenses.toml uses.
@@ -67,6 +92,17 @@ function parseToml(text) {
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
 
+    // A dotted table header (`[component.extra]`) nests under the preceding table in real
+    // TOML; this reader would flatten it to a root key called "component.extra" and lose the
+    // data silently. The docstring promises this parser throws rather than guesses, so it
+    // throws. Same for dotted keys below.
+    if (/^\[\[?[A-Za-z0-9_-]+\./.test(trimmed)) {
+      throw new Error(
+        `licenses.toml: dotted table header on line ${i} is not supported by this reader: ` +
+          `${trimmed}. Use a flat [[component]] entry, or teach parseToml to nest.`,
+      );
+    }
+
     const arrayTable = /^\[\[([A-Za-z0-9_.-]+)\]\]$/.exec(trimmed);
     if (arrayTable) {
       const key = arrayTable[1];
@@ -85,6 +121,12 @@ function parseToml(text) {
 
     const kv = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/.exec(trimmed);
     if (!kv) throw new Error(`licenses.toml: cannot parse line ${i}: ${trimmed}`);
+    if (kv[1].includes(".")) {
+      throw new Error(
+        `licenses.toml: dotted key on line ${i} is not supported by this reader: ${kv[1]}. ` +
+          `It would become a flat key of that literal name rather than a nested table.`,
+      );
+    }
     const key = kv[1];
     let rest = kv[2];
 
@@ -97,8 +139,12 @@ function parseToml(text) {
         i += 1;
       }
       body = body.slice(0, body.indexOf('"""'));
+      // TOML trims a newline IMMEDIATELY after the opening delimiter. Without this a
+      // `notice_required` rewritten as a `"""` block would render with a blank first line.
+      body = body.replace(/^\r?\n/, "");
       // A trailing backslash joins the line to the next, per TOML's line-ending backslash.
-      setScalar(current, key, body.replace(/\\\n\s*/g, ""));
+      // Applied before `unescape` so the join is not mistaken for an escape sequence.
+      setScalar(current, key, unescape(body.replace(/\\\n\s*/g, "")));
       continue;
     }
 
@@ -164,7 +210,7 @@ async function main() {
 
     let text = null;
     if (comp.license_text) {
-      text = await readFile(join(repo, comp.license_text), "utf8");
+      text = await readFile(resolveLicenceText(name, comp.license_text), "utf8");
       if (text.trim() === "") {
         throw new Error(`${name}: license_text ${comp.license_text} is empty`);
       }
@@ -189,8 +235,9 @@ async function main() {
 
   const notices = entries.filter((e) => e.noticeRequired !== null);
   if (notices.length === 0) {
-    // Three obligations exist today. Zero means the manifest lost its `notice_required`
-    // fields, which would silently produce a page that discharges nothing.
+    // Four entries carry an obligation today (three distinct licences -- libjpeg-turbo
+    // appears twice). Zero means the manifest lost its `notice_required` fields, which
+    // would silently produce a page that discharges nothing.
     throw new Error("engines/licenses.toml declares no notice_required obligations");
   }
 

@@ -219,6 +219,19 @@ jobs:
           python3 tools/detect-engine-components.py
           tools/test-detect-engine-components.sh
 
+      # The licence-copy DRIFT check, which needs the vendor tree and therefore cannot run in
+      # the `deny` job where the rest of this script runs.
+      #
+      # `check-engine-licences.py` compares each committed text under engines/licences/ against
+      # the audited original under engines/vendor/ byte for byte -- but only when the vendor
+      # tree is present, and it skips silently otherwise so it stays runnable on a clean
+      # checkout. The `deny` job fetches nothing, so in CI that comparison was firing for ZERO
+      # components: the allowlist half was gated and the drift half was local-only. Running it
+      # again here, where the engines exist, is what makes engines/licences/README.md's claim
+      # true. Both runs are cheap and neither subsumes the other.
+      - name: Engine licence texts have not drifted from the vendor originals (ADR 0008)
+        run: python3 tools/check-engine-licences.py
+
       # The OTHER half of the qpdf exception audit. engines/build-wasm.sh already checks
       # the built module's export table against ffi.rs; this checks ffi.rs against qpdf's
       # OWN SOURCE -- the set of functions actually routed through `trap_errors`.

@@ -39,6 +39,32 @@ function pageText(): string {
 }
 
 /**
+ * The component roster the built page actually lists, from its `data-component` attributes.
+ *
+ * **Not a substring search of the page.** A completeness check written as
+ * `html.includes(name)` passes with a component missing: the page is 170 KB of other
+ * people's licence text, `"icu"` is a substring of "PARTICULAR", and every BSD disclaimer
+ * here contains that word. Measured -- stripping ICU's row and section out of the built HTML
+ * left `html.includes("icu")` true. `zlib`, `qpdf`, `pdfium`, `freetype` and
+ * `libjpeg-turbo` are all weak the same way, because each appears inside some other
+ * component's licence text.
+ *
+ * `credits.astro` emits the exact name as an attribute for this reason, and says so.
+ */
+function rosterInPage(): string[] {
+  const html = readBuilt(PRODUCTION_DIR, PAGE);
+  return [...html.matchAll(/data-component="([^"]*)"/g)].map(([, name]) =>
+    name
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&amp;/g, "&"),
+  );
+}
+
+/**
  * The manifest, read with Python's `tomllib` rather than with the generator's own reader.
  *
  * The point is independence. `tools/generate-credits.mjs` hand-rolls a small TOML reader,
@@ -144,12 +170,16 @@ describe("the built credits page", () => {
         component.license_text,
         `${component.name} has an obligation but no text`,
       ).toBeTruthy();
-      expect(html, `${component.name} is not named on the credits page`).toContain(component.name);
+      expect(
+        rosterInPage(),
+        `${component.name} carries a notice obligation but is not on the page's roster`,
+      ).toContain(component.name);
     }
   });
 
-  it("names every component in the manifest", () => {
-    // Completeness, from the independent parser.
+  it("lists every component in the manifest, by name, in its roster", () => {
+    // Completeness, from the independent parser, against the page's OWN roster rather than
+    // against its prose -- see `rosterInPage`.
     //
     // Note what this does and does not catch. Adding a component to engines/licenses.toml
     // does NOT fail here, and should not: the page is generated from that manifest, so the
@@ -158,11 +188,11 @@ describe("the built credits page", () => {
     // parse, the template filtering the roster, `prebuild` not running. Those are the ways a
     // page silently stops covering what we ship, and they are invisible to any assertion
     // written against the generator's own output.
-    const html = pageText();
-    const missing = manifestViaPython()
-      .component.map((c) => c.name)
-      .filter((name) => !html.includes(name));
-    expect(missing, `components missing from the credits page: ${missing.join(", ")}`).toEqual([]);
+    const expected = manifestViaPython().component.map((c) => c.name);
+    const listed = rosterInPage();
+
+    expect(listed.length, "the page lists no components at all").toBeGreaterThan(0);
+    expect(listed, "the built roster does not match the manifest").toEqual(expected);
   });
 
   it("carries the full licence text of every linked component", () => {

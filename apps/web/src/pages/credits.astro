@@ -100,7 +100,15 @@ const slug = (name: string) =>
     <tbody>
       {
         CREDITS.components.map((component) => (
-          <tr>
+          /*
+            `data-component` carries the component's exact name as an attribute so a test can
+            assert the ROSTER rather than search the document. Matching a bare name against
+            this page does not work: it is 170 KB of other people's licence text, and
+            `"icu"` is a substring of "PARTICULAR", which appears in every BSD disclaimer
+            here. A completeness check written that way passes with ICU missing entirely --
+            measured, not hypothesised. Do not remove this attribute.
+          */
+          <tr data-component={component.name}>
             <th scope="row">
               {component.licenseText ? (
                 <a href={`#licence-${slug(component.name)}`}>{component.name}</a>

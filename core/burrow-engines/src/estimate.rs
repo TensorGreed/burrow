@@ -83,7 +83,15 @@
 //! and the result discarded" — never "this cannot be exceeded". The words *detect* and *bound*
 //! are used deliberately here and in [`burrow_types::Limits`]; keep them apart.
 //!
+//! **That is a statement about `max_memory_bytes`, not about burrow.** Two things do bound an
+//! allocation, and neither is derived from `Limits`: qpdf's global decompression ceilings
+//! (256 MiB per filter family, applied on **both** platforms — `codes::qpdf::policy`, and
+//! [ADR 0013] §5), and the web engine modules' build-time 2 GiB maximum. They are a fixed
+//! floor under everything rather than a ceiling a caller chose, and they cover qpdf only:
+//! PDFium has no equivalent configured, which is the asymmetry issue #24 records.
+//!
 //! [ADR 0007]: ../../../../docs/adr/0007-limit-enforcement-per-platform.md
+//! [ADR 0013]: ../../../../docs/adr/0013-qpdf-c-api-and-prescan.md
 //! [ADR 0016]: ../../../../docs/adr/0016-differential-conformance.md
 
 use burrow_types::{Limits, Result, Stage};

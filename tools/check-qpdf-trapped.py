@@ -81,6 +81,12 @@ NATIVE_FFI = REPO / "core" / "burrow-engines" / "src" / "qpdf" / "ffi.rs"
 WEB_BRIDGE_JS = REPO / "apps" / "web" / "src" / "worker" / "bridge.js"
 WEB_TRAIT = REPO / "core" / "burrow-engines" / "src" / "web" / "bridge.rs"
 WASM_BINDING = REPO / "bindings" / "burrow-wasm" / "src" / "bridge.rs"
+# A fourth `extern "C"` block, easy to miss because it is `#[cfg(test)]`-gated and lives
+# nowhere near the qpdf module. It declared `qpdf_get_qpdf_version` invisibly to an earlier
+# version of this check, which made the stated invariant ("every qpdf C function burrow
+# declares") false. Enumerating declaration sites by hand is the weak point of this tool;
+# `every_extern_block_is_scanned()` guards it.
+LINK_CHECK = REPO / "core" / "burrow-engines" / "src" / "link_check.rs"
 
 
 def qpdf_version() -> str:
@@ -89,8 +95,71 @@ def qpdf_version() -> str:
         return tomllib.load(fh)["qpdf"]["version"]
 
 
-def qpdf_c_source(version: str) -> pathlib.Path:
-    return REPO / "engines" / "vendor" / "src" / f"qpdf-{version}" / "libqpdf" / "qpdf-c.cc"
+# Every translation unit that DEFINES a C API function burrow might call. More than one,
+# which is easy to miss: `qpdf_global_set_uint32` lives in `global.cc`, not `qpdf-c.cc`, so a
+# scan of the latter alone could never see it however upstream changed it.
+#
+# `sources_defining()` below fails if a declared function is defined in none of these, so the
+# list being short is a loud failure rather than a silent exemption.
+C_API_SOURCES = ("qpdf-c.cc", "qpdflogger-c.cc", "global.cc")
+
+
+def qpdf_sources(version: str) -> list[pathlib.Path]:
+    libqpdf = REPO / "engines" / "vendor" / "src" / f"qpdf-{version}" / "libqpdf"
+    return [libqpdf / name for name in C_API_SOURCES]
+
+
+def blank_literals_and_comments(source: str) -> str:
+    """Replace every comment, string literal and char literal with spaces of equal length.
+
+    **The brace walk below counts raw braces, and this is what makes that safe.** A `{` inside
+    a string literal would extend an extracted body past its real closing brace and into the
+    *next* function -- and if that next function calls `trap_errors`, the untrapped
+    predecessor lands on the "safe to call" list. That is the one direction
+    [`trapped_functions`] promises cannot happen, so it is closed here rather than argued
+    about.
+
+    It does not fire on qpdf 12.4.1: there is no brace inside any literal or comment in
+    `qpdf-c.cc` today. But the shape is routine in this codebase -- `libqpdf/JSON.cc` writes
+    `*p << "{";` -- and `qpdf-c.cc` already carries the JSON entry points, so one such literal
+    added upstream would silently bless whatever function preceded it. Blanking rather than
+    deleting keeps every byte offset identical, so the definition regex still points at the
+    real source positions.
+    """
+    out = list(source)
+    i, n = 0, len(source)
+    while i < n:
+        c = source[i]
+        if c == "/" and i + 1 < n and source[i + 1] == "/":
+            while i < n and source[i] != "\n":
+                out[i] = " "
+                i += 1
+        elif c == "/" and i + 1 < n and source[i + 1] == "*":
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i + 1 < n and not (source[i] == "*" and source[i + 1] == "/"):
+                if source[i] != "\n":
+                    out[i] = " "
+                i += 1
+            if i + 1 < n:
+                out[i] = out[i + 1] = " "
+                i += 2
+        elif c in "\"'":
+            quote = c
+            i += 1
+            while i < n and source[i] != quote:
+                if source[i] == "\\":
+                    out[i] = " "
+                    i += 1
+                    if i < n and source[i] != "\n":
+                        out[i] = " "
+                elif source[i] != "\n":
+                    out[i] = " "
+                i += 1
+            i += 1  # past the closing quote
+        else:
+            i += 1
+    return "".join(out)
 
 
 # A function definition in qpdf-c.cc is formatted with the return type alone on one line and
@@ -119,6 +188,9 @@ def trapped_functions(source: str) -> list[str]:
     means somebody must justify it in the exemption list, with a reason a reviewer reads.
     Adding one would mean the check blessed a call that can abort the process.
     """
+    # Offsets are preserved, so every index below still refers to the real source.
+    source = blank_literals_and_comments(source)
+
     found: list[str] = []
     for match in DEFINITION.finditer(source):
         name = match.group(1)
@@ -227,18 +299,55 @@ def declared_functions() -> dict[str, list[str]]:
     for name in re.findall(r"^\s*/// `(qpdf[a-z_0-9]*)`\.", WEB_TRAIT.read_text(), re.MULTILINE):
         record(name, "web/bridge.rs (doc)")
 
+    # Scoped to the `extern "C"` block. A bare `fn qpdf…` regex over the whole file also
+    # matches Rust test functions -- `qpdf_links_and_reports_the_pinned_version` -- which are
+    # not C symbols and would demand nonsense exemptions.
+    for block in re.findall(r'unsafe extern "C" \{(.*?)\n\}', LINK_CHECK.read_text(), re.S):
+        for name in re.findall(r"^\s*fn (qpdf[a-z_0-9]*)\s*\(", block, re.MULTILINE):
+            record(name, "link_check.rs")
+
+    # PER-SOURCE GUARD. Merging sources means one can fall silent without the total reaching
+    # zero: if `bridge.js` changed call style -- `mod["_qpdf_read_memory"](x)`, or a hoisted
+    # member -- its regex would match nothing while `ffi.rs` kept `declared` non-empty, and
+    # this check would keep reporting OK while covering the native path alone. That is the
+    # exact vacuity shape the rest of this tool is careful about.
+    for label, minimum in (("qpdf/ffi.rs", 10), ("worker/bridge.js", 10), ("link_check.rs", 1)):
+        found = sum(1 for where in out.values() if label in where)
+        if found < minimum:
+            sys.exit(
+                f"error: parsed only {found} qpdf declarations out of {label} (expected at "
+                f"least {minimum}). Its call style has probably changed and the regex in "
+                f"declared_functions() no longer matches -- this check would silently stop "
+                f"covering that path."
+            )
+
     return {name: sorted(set(where)) for name, where in out.items()}
 
 
 def wasm_binding_is_covered() -> list[str]:
     """Every `__burrow_qpdf_*` the wasm binding imports must be defined in the JS bridge.
 
-    This is what makes it safe for `declared_functions()` to read the JS bridge alone for
-    the web path. The Rust half names bridge functions; the JS half is the only place that
+    This is part of what makes it safe for `declared_functions()` to read the JS bridge alone
+    for the web path. The Rust half names bridge functions; the JS half is the only place that
     says which qpdf C export each one actually calls. If a `__burrow_qpdf_*` import existed
     with no JS definition, the web path would be calling something this check never saw --
     and at runtime it would be `undefined`, so the failure would surface as a trap in a
-    worker rather than as a licence-of-abstraction problem anyone could read.
+    worker rather than as a problem anyone could read.
+
+    **The regex is not what makes the web surface complete, and it should not be mistaken for
+    it.** `\._(qpdf…)\(` is shape-dependent and trivially evaded by hand:
+    `mod["_qpdf_is_linearized"](x)`, or hoisting the member into a variable. What closes that
+    is the layer below, and it is worth stating because it is not obvious:
+
+      * `engines/build-wasm.sh` builds qpdf.wasm with a CLOSED `EXPORTED_FUNCTIONS` allowlist,
+        derived from `qpdf/ffi.rs` and asserted against the built module's actual export
+        table. A qpdf symbol not on that list is not in the module at all.
+      * `EXPORTED_RUNTIME_METHODS` is `HEAPU8, HEAPU32, stackSave, stackAlloc, stackRestore`
+        -- **no `cwrap`, no `ccall`**. So there is no dynamic call surface either.
+
+    So any qpdf function the JS could reach, by any syntax, must first appear in the file this
+    check already reads. The composition is what holds; the regex only has to catch honest
+    code, and the per-source guard in `declared_functions()` catches it falling silent.
     """
     js = WEB_BRIDGE_JS.read_text()
     defined = set(re.findall(r"self\.__burrow_(qpdf[a-z_0-9]*)\s*=", js))
@@ -275,6 +384,20 @@ def load_accepted() -> dict[str, str]:
         sys.exit(f"error: {ACCEPTED_LIST.relative_to(REPO)} is missing")
     with ACCEPTED_LIST.open("rb") as fh:
         data = tomllib.load(fh)
+
+    # The exemptions are arguments about a SPECIFIC version's implementation -- upstream can
+    # start throwing from a function without changing its signature. `qpdf_version` records
+    # which version they were checked against, and engines/pins.toml's bump procedure tells
+    # the reader that field means something. This is what makes it mean something.
+    checked = data.get("meta", {}).get("qpdf_version")
+    pinned = qpdf_version()
+    if checked != pinned:
+        sys.exit(
+            f"error: {ACCEPTED_LIST.name} records its arguments as checked against qpdf "
+            f"{checked}, but engines/pins.toml pins {pinned}. Re-read each exemption against "
+            f"the new source, then update meta.qpdf_version. See 'Bumping an engine pin'."
+        )
+
     accepted = {}
     for entry in data.get("function", []):
         name = entry.get("name")
@@ -292,26 +415,28 @@ def load_accepted() -> dict[str, str]:
 
 def generate() -> int:
     version = qpdf_version()
-    source_path = qpdf_c_source(version)
-    if not source_path.is_file():
-        sys.exit(
-            f"error: {source_path.relative_to(REPO)} not found. Run engines/fetch.sh first "
-            f"-- engines/vendor/ is gitignored and reproducible from engines/pins.toml."
-        )
+    sources = qpdf_sources(version)
+    for path in sources:
+        if not path.is_file():
+            sys.exit(
+                f"error: {path.relative_to(REPO)} not found. Run engines/fetch.sh first "
+                f"-- engines/vendor/ is gitignored and reproducible from engines/pins.toml."
+            )
 
-    trapped = trapped_functions(source_path.read_text())
+    trapped = sorted({fn for path in sources for fn in trapped_functions(path.read_text())})
     if len(trapped) < 10:
         # The parser silently returning nothing would produce an empty list that failed
         # every declaration, or -- worse, if it were ever inverted -- passed everything.
         sys.exit(
             f"error: parsed only {len(trapped)} trapped functions out of qpdf-c.cc. "
-            f"The parser is broken; a real qpdf has ~24."
+            f"The parser is broken; qpdf 12.4.1 has 22."
         )
 
+    scanned = ", ".join(C_API_SOURCES)
     header = f"""\
 # qpdf C API functions that route through `trap_errors`, GENERATED. Do not edit by hand.
 #
-# Source: engines/vendor/src/qpdf-{version}/libqpdf/qpdf-c.cc
+# Source: engines/vendor/src/qpdf-{version}/libqpdf/{{{scanned}}}
 # Regenerate: python3 tools/check-qpdf-trapped.py --generate
 #
 # Only functions listed here are safe to call from Rust: everything else can let a C++

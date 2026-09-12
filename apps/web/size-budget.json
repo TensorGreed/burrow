@@ -25,13 +25,17 @@
   "measured_on": "2026-09-12, apps/web production build (no BURROW_HARNESS), linux-aarch64",
   "headroom": {
     "per_artifact": 0.1,
+    "page": "absolute",
     "total": 0.03,
     "why": [
       "Per-artifact headroom is loose (10%) because those lines are diagnostic: they say",
       "which file moved. Total headroom is tight (3%, about 67 KB) because that line is the",
       "gate. The asymmetry is deliberate and makes the total bind first in every case that",
       "matters -- 10% of pdfium alone is 8.5% of the total, so a single artifact cannot",
-      "reach its own ceiling without the total having failed long before."
+      "reach its own ceiling without the total having failed long before.",
+      "",
+      "`page` is the exception and is recorded as such rather than left to look like 10%:",
+      "its budget is an ABSOLUTE 50 KiB, 58x its measurement. The reason is on that line."
     ]
   },
   "artifacts": {

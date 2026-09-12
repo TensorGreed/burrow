@@ -21,8 +21,9 @@ sentence it retracts was comparative — "the web is the best-protected platform
 retracting one side of a comparison leaves the other side reading as a cap. It is not one
 either. This amendment states the whole picture in one place, so no two documents disagree.
 
-**Nothing bounds memory during an operation on either path.** Every mechanism below runs
-before the engine sees the file, or after it is finished with it.
+**Nothing derived from `max_memory_bytes` bounds memory during an operation on either path.**
+Every mechanism driven by that field runs before the engine sees the file, or after it is
+finished with it.
 
 | | native | web |
 |---|---|---|
@@ -30,11 +31,28 @@ before the engine sees the file, or after it is finished with it.
 | length-based size estimate, `estimate::check_open_memory` | `pdfium/mod.rs` only; **not** called on the qpdf path (issue #26) | `web/pdfium.rs` only; same gap, so this is an engine difference and not a platform divergence |
 | measured check, `estimate::check_measured_memory` | **after** the open: process resident set before vs after, so a peak that occurs during and is released is invisible | **after** the operation: the engine module's heap size, which never shrinks, so it *does* see the peak |
 | worker recycling on heap growth | — | **after** the result is delivered (ADR 0015 §5) |
-| anything that actually bounds an allocation | **none** | the engine modules' build-time 2 GiB maximum, which no caller can influence and which is not this limit |
 
-The words are chosen and should be kept: these mechanisms **detect** an overrun. The only
-thing here that **bounds** one is the fixed 2 GiB module maximum, and `max_memory_bytes` is
-not it.
+The words are chosen and should be kept: every mechanism in that table **detects** an
+overrun. None of them prevents one.
+
+**Two things do bound an allocation, and neither is this limit.** Saying "nothing bounds
+memory" would be the mirror of the error this amendment corrects — an underclaim that makes
+a real defence invisible — so they are named here rather than left out:
+
+| | native | web |
+|---|---|---|
+| qpdf's global decompression ceilings — 256 MiB each for `flate`, `dct`, `png`, `run_length` and `tiff`, plus `parser_max_nesting = 64` ([ADR 0013](0013-qpdf-c-api-and-prescan.md) §5) | yes, `qpdf/limits.rs` behind a `OnceLock` | yes, `web/qpdf.rs` behind a `OnceLock` — the same constants |
+| the engine modules' build-time **2 GiB** maximum memory | — | yes, and no caller can influence it |
+
+Both are **fixed constants, not derived from `Limits`**. ADR 0013 §5 explains why that
+asymmetry is deliberate: qpdf's parameters are process-global and take no `qpdf_data`, so
+there is no way to give one caller a 16 MiB ceiling and another 1 GiB in the same process.
+They do a different job — a floor under everything, which a caller can tighten past with
+their own `Limits` but cannot loosen.
+
+And they cover **one engine**. **PDFium has no equivalent configured**, which is the
+asymmetry issue #24 records: a file that inflates a compressed object stream is refused by
+qpdf past 256 MiB and drives PDFium to 2,437 MB.
 
 Two consequences the original decision text does not admit:
 

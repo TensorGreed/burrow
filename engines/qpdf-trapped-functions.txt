@@ -1,6 +1,6 @@
 # qpdf C API functions that route through `trap_errors`, GENERATED. Do not edit by hand.
 #
-# Source: engines/vendor/src/qpdf-12.4.1/libqpdf/qpdf-c.cc
+# Source: engines/vendor/src/qpdf-12.4.1/libqpdf/{qpdf-c.cc, qpdflogger-c.cc, global.cc}
 # Regenerate: python3 tools/check-qpdf-trapped.py --generate
 #
 # Only functions listed here are safe to call from Rust: everything else can let a C++

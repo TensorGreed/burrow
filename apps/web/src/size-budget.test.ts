@@ -142,6 +142,19 @@ describe("the first-load size budget", () => {
     ).toBeGreaterThan(budget.total.budget_brotli);
   });
 
+  it("has per-artifact measurements that add up to the recorded total", () => {
+    // The "+4% across three files" test above sums `artifacts[*].measured_brotli` and
+    // compares the result to `total.budget_brotli`. That is only meaningful while the two
+    // halves of this file describe the same build: a per-artifact number left stale after a
+    // re-measure would silently weaken it, and nothing else would notice.
+    const summed = Object.values(budget.artifacts).reduce((n, a) => n + a.measured_brotli, 0);
+    expect(
+      summed,
+      "size-budget.json's per-artifact measurements do not sum to its recorded total; " +
+        "one half was re-measured and the other was not",
+    ).toBe(budget.total.measured_brotli);
+  });
+
   it("records the measurement each budget was set from", () => {
     // `measured_brotli` is what makes a budget auditable: a reviewer can see how much slack a
     // line has without rebuilding. A budget below its own measurement is a typo that would

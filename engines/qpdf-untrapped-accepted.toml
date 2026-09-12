@@ -22,6 +22,13 @@
 #   unwinding out of an `extern "C"` frame is a DEFINED abort rather than undefined
 #   behaviour, so an allocation failure here is a clean process death, not memory unsafety.
 #
+# ON ALLOCATION FAILURE, SPECIFICALLY: C++ `new` THROWS `std::bad_alloc`. It does not return
+# null. So the honest description of OOM in an untrapped function here is a foreign exception
+# out of an `extern "C"` frame -- the accepted defined-abort case above -- and NOT a graceful
+# null the caller inspects. Two entries below said otherwise and were corrected in M1 PR 4c's
+# security review. The crate's null checks are defensive belt-and-braces; they are not the
+# expected path, and no entry may claim they are.
+#
 # A function that reads the document is not eligible, however harmless it looks.
 # `qpdf_is_linearized` is one line long.
 #
@@ -45,8 +52,9 @@ qpdf_version = "12.4.1"
 name = "qpdf_init"
 reason = """\
 Allocates the `qpdf_data` struct and returns it; no PDF exists yet, so there is nothing to \
-parse and nothing to throw about. Returns null on allocation failure, which the crate \
-handles as a typed error rather than as a crash."""
+parse and nothing to throw about. It is a `new` expression, so on allocation failure it \
+throws `std::bad_alloc` rather than returning null -- accepted as a defined abort per the \
+preamble. The crate's null check is defensive, not the expected path."""
 
 [[function]]
 name = "qpdf_cleanup"
@@ -134,8 +142,10 @@ declare the message accessors at all -- a function that cannot be called cannot 
 name = "qpdflogger_create"
 reason = """\
 Allocates a `QPDFLogger` handle. In qpdflogger-c.cc, which has no try/catch anywhere, so \
-this rests on the non-parsing argument alone: it is handed no document. Returns null on \
-allocation failure, and the crate then skips `qpdf_set_logger` rather than proceeding."""
+this rests on the non-parsing argument alone: it is handed no document. A `new` expression, \
+so allocation failure throws `std::bad_alloc` rather than returning null -- accepted as a \
+defined abort per the preamble. The crate's null check, which skips `qpdf_set_logger`, is \
+defensive rather than the expected path."""
 
 [[function]]
 name = "qpdflogger_set_info"
@@ -156,3 +166,17 @@ name = "qpdflogger_set_error"
 reason = """\
 As `qpdflogger_set_info`, for the error stream. Assigns a destination constant; parses \
 nothing. Same weaker basis: qpdflogger-c.cc has no try/catch."""
+
+# ---------------------------------------------------------------------------------
+# Link proof. Declared in a `#[cfg(test)]`-gated block far from the qpdf module.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_get_qpdf_version"
+reason = """\
+Returns `QPDF::QPDFVersion().c_str()` -- a `static std::string const&` (`QPDF.hh:55`), so \
+there is no temporary to dangle and no allocation to fail. No `qpdf_data`, no document, \
+nothing to parse. Declared in `core/burrow-engines/src/link_check.rs`'s `extern "C"` block \
+to prove libqpdf is actually linked, and gated on `#[cfg(test)]`, so it never ships. It was \
+invisible to this check until M1 PR 4c's security review found the fourth declaration \
+site."""

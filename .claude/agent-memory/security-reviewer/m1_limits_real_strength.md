@@ -50,3 +50,17 @@ engine), treat `max_memory_bytes` on native as "you will be told afterwards", ne
 cap. Ask what the operation
 reads from the file that multiplies cost, and whether the estimate is fed that value or
 only the byte count. See [[m1-engine-supply-chain]] and [[user-role]].
+
+**Addendum, M1 PR 4c review (2026-09-12): one real in-operation bound does exist, and the
+4c docs erase it.** `core/burrow-engines/src/codes/qpdf.rs::policy::settings()` sets five
+qpdf global decompression ceilings to 256 MiB each (`flate`/`dct`/`png`/`run_length`/`tiff`
+`_max_memory`, all of which default to *unlimited*) plus `parser_max_nesting = 64` and
+`doc_max_warnings = 256`. Applied on BOTH paths — native `qpdf/limits.rs::apply_global_limits`
+behind a `OnceLock`, web `web/qpdf.rs::install()` behind a `OnceLock` — and enforced by qpdf
+*during* the operation, i.e. they bound an allocation rather than detect it. They are
+qpdf-only (nothing equivalent for PDFium) and are not derived from `max_memory_bytes`.
+
+So the honest sentence is: *nothing derived from `max_memory_bytes` bounds anything; qpdf's
+own filter ceilings do, at a fixed 256 MiB, on both platforms.* ADR 0007's 2026-09-12
+amendment writes "anything that actually bounds an allocation | none | the 2 GiB module
+maximum", which is an underclaim in both cells.

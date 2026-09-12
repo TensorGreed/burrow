@@ -22,6 +22,15 @@ import tomllib
 REPO = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = REPO / "engines" / "licenses.toml"
 
+# The only two directories a `license_text` may name. Every committed licence text is in one
+# of them; engines/licences/README.md says why the second exists.
+#
+# A CONTAINMENT CHECK, NOT TIDINESS. `license_text` is a free-form string from a manifest,
+# and it is read and embedded verbatim into the published credits page by
+# tools/generate-credits.mjs. Without this, one line of a file reviewers skim as a manifest
+# rather than as code could publish the contents of any path on the build machine.
+LICENCE_ROOTS = (REPO / "engines" / "licences", REPO / "docs" / "adr" / "licences")
+
 # ADR 0008's allowlist. Keep in sync with deny.toml's `allow` (Rust crates) and the
 # lists in CLAUDE.md, .claude/agents/license-auditor.md, and the add-dependency skill.
 #
@@ -109,7 +118,12 @@ def check_license_text(comp: dict, name: str) -> list[str]:
             f"needs a committed copy under engines/licences/ -- see its README"
         ]
 
-    copy = REPO / rel
+    copy = (REPO / rel).resolve()
+    if not any(copy == root or root in copy.parents for root in LICENCE_ROOTS):
+        return [
+            f"{name}: `license_text` {rel} resolves outside the committed licence "
+            f"directories. Licence text must live in engines/licences/ or docs/adr/licences/."
+        ]
     if not copy.is_file():
         return [f"{name}: `license_text` {rel} does not exist"]
     if copy.stat().st_size == 0:
