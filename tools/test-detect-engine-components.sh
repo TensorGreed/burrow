@@ -86,6 +86,59 @@ check "removing agg23 is detected" 1 "$tmp/no-agg.toml"
 # A missing manifest must fail, not be treated as "nothing declared, nothing to check".
 check "missing manifest fails" 1 "$tmp/does-not-exist.toml"
 
+# --- the PROBE GATE itself must exist ---------------------------------------------------
+#
+# Every fingerprint is verified against its own probe on each run. That gate is only
+# observable when a fingerprint is broken, so a mutation sweep found that DELETING it left
+# every test above green -- the real artifacts still detect fine, so nothing noticed.
+#
+# These two cases break a fingerprint in a COPY of the tool and assert it refuses to run.
+# Each asserts the mutation applied first: a sed that silently matched nothing would leave
+# the copy identical to the original, and "it passed" would read as "the gate works".
+# THE COPY LIVES IN tools/, AND THE MESSAGE IS ASSERTED.
+#
+# Both halves were learned the hard way. A first version wrote the copy to a temp directory --
+# where `REPO = Path(__file__).resolve().parent.parent` resolves to `/`, so the copy exited 1
+# with "licenses.toml not found". The case asserted only a non-zero exit, so it reported "ok"
+# WITH THE PROBE GATE DELETED. A test that passes for the wrong reason is worse than no test.
+#
+# So: the copy sits beside the original so its paths resolve, and the case asserts the output
+# names the probe failure.
+broken_tool() {
+  local out="$here/.probe-fixture-$1.py" find="$2" replace="$3" expect="$4" name="$5"
+  sed "s|$find|$replace|" "$here/detect-engine-components.py" >"$out"
+  if cmp -s "$out" "$here/detect-engine-components.py"; then
+    echo "  FAIL fixture $1: the mutation did not apply, so this case would prove nothing"
+    fail=$((fail + 1))
+    rm -f "$out"
+    return
+  fi
+  local got
+  got="$(python3 "$out" 2>&1)" && {
+    echo "  FAIL $name: the tool ran anyway"
+    fail=$((fail + 1))
+    rm -f "$out"
+    return
+  }
+  if grep -qF "$expect" <<<"$got"; then
+    echo "  ok   $name"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL $name: it failed, but not for the stated reason"
+    sed 's/^/        /' <<<"$got" | head -4
+    fail=$((fail + 1))
+  fi
+  rm -f "$out"
+}
+
+broken_tool inert 'r"\\bhb_\[a-z_\]+\\b"' 'r"\\bZZZZnomatch\\b"' \
+  "do not detect their own probe" \
+  "an inert fingerprint stops the tool before it scans anything"
+
+broken_tool loose 'r"Bogus Huffman table"' 'r"e"' \
+  "match the near-miss" \
+  "a fingerprint loose enough to match its near-miss stops the tool"
+
 echo
 echo "  $pass passed, $fail failed"
 [ "$fail" = 0 ]

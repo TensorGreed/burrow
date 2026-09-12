@@ -151,9 +151,17 @@ A change is done when all of these hold:
 - [ ] New operations have unit, property, golden, and fuzz tests, and enforce `Limits`.
 - [ ] No new `unwrap`/`expect`/`panic!` in library code; new `unsafe` has `// SAFETY:`.
 - [ ] No new network call reachable from code that touches file content.
+- [ ] Any new check ships with **per-rule probes**: every pattern or rule matches its own
+      positive fixture and rejects a near-miss, verified on **every run**, so the reported
+      count is a measurement rather than a claim. A rule that matches nothing passes
+      everything; one that matches everything fails everything; neither is a check.
 - [ ] Any new check **reports what it examined**, and gates on the expected count where that
       count is knowable — not merely on non-zero. See *Working agreements*: "4 of 15" reads
       as success.
+- [ ] The probe gate itself has a test: break a rule in a **copy** of the checker and assert
+      it refuses, **naming the reason**. Put the copy beside the original — a copy in a temp
+      directory resolves its own paths wrongly and exits non-zero for the wrong reason, which
+      an exit-code-only assertion reports as a pass.
 - [ ] Any new mutation or negative test **asserts the mutation applied** before running the
       suite it is meant to exercise.
 - [ ] Public API changes are reflected in bindings (uniffi + wasm) or explicitly deferred.

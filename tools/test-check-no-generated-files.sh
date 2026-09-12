@@ -99,6 +99,35 @@ else
 fi
 
 echo
+echo "the liveness gate exists"
+# Only observable when a pattern is broken, so deleting it leaves everything above green.
+# The copy sits beside the original -- it resolves `repo` from its own location -- and the
+# message is asserted, because a non-zero exit for the wrong reason reads as a pass.
+gate_fixture="$here/.liveness-gate-fixture.sh"
+# Break a PROBE rather than a pattern: the probe strings are plain paths, so the fixture is
+# a one-token substitution with nothing to escape. Either way the liveness gate must fire --
+# it asserts pattern and probe agree, and this breaks the agreement from the other side.
+sed 's@tools/__pycache__/x.py@tools/no-such-directory/x.py@' "$checker" >"$gate_fixture"
+chmod +x "$gate_fixture"
+if cmp -s "$gate_fixture" "$checker"; then
+  echo "  FAIL fixture: the mutation did not apply, so this case would prove nothing"
+  fail=$((fail + 1))
+else
+  if out="$("$gate_fixture" "README.md" 2>&1)"; then
+    echo "  FAIL an inert pattern does not stop the checker"
+    fail=$((fail + 1))
+  elif grep -qF "match nothing and are inert" <<<"$out"; then
+    echo "  ok   an inert pattern stops the checker before it examines anything"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL it failed, but not for the stated reason"
+    sed 's/^/        /' <<<"$out" | head -3
+    fail=$((fail + 1))
+  fi
+fi
+rm -f "$gate_fixture"
+
+echo
 echo "the real tracked tree is clean"
 if "$checker" >/dev/null 2>&1; then
   echo "  ok   no tracked file matches a generated-output pattern"

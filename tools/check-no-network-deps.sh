@@ -56,6 +56,44 @@ fi
 
 echo "banned crates from $(basename "$deny_toml"): ${banned[*]}"
 
+# PROBES. Every banned name must be caught by the matcher below, and a near-miss must not.
+#
+# The matcher is `grep -qxF`, which is about as simple as a rule gets -- but "simple" is what
+# `check-no-generated-files.sh` was before 15 of its 16 patterns turned out to be inert, and
+# what this script's own crate-graph count was before it turned out to gate nothing. The
+# expensive part of a check is not writing it, it is proving it is not inert. So the rule is
+# exercised against fixtures on every run, using the SAME matcher the real loop uses.
+matches() { printf '%s\n' "$2" | grep -qxF "$1"; }
+
+probe_problems=0
+for crate in "${banned[@]}"; do
+  # Positive: the exact name must be caught.
+  if ! matches "$crate" "serde
+$crate
+libc"; then
+    echo "::error::the matcher does not catch '$crate', which it is supposed to ban" >&2
+    probe_problems=$((probe_problems + 1))
+  fi
+  # Negative: a name that merely CONTAINS it must not be. `reqwest-middleware` and
+  # `hyper-rustls` are real crates; banning them by substring would be wrong, and matching
+  # them by accident would make every graph look poisoned.
+  if matches "$crate" "serde
+${crate}-middleware
+not-${crate}
+${crate}_sys
+libc"; then
+    echo "::error::the matcher catches a near-miss of '$crate' -- it is not an exact match" >&2
+    probe_problems=$((probe_problems + 1))
+  fi
+done
+
+if [ "$probe_problems" -ne 0 ]; then
+  echo "A ban list whose matcher does not behave as declared bans nothing, or bans" >&2
+  echo "everything. Neither is a check." >&2
+  exit 2
+fi
+echo "  ${#banned[@]} ban(s), each verified to match itself and reject a near-miss"
+
 # `--target all` covers every platform, so a dependency gated behind cfg(windows) cannot
 # hide. `-e normal,dev,build` covers every kind, which is the whole point.
 found=0
@@ -75,6 +113,46 @@ for manifest in "${manifests[@]}"; do
   names="$(printf '%s\n' "$tree" | awk 'NF {print $1}' | sort -u)"
   count="$(printf '%s\n' "$names" | grep -c . || true)"
   echo "$(realpath --relative-to="$repo" "$manifest" 2>/dev/null || echo "$manifest"): $count distinct crates"
+
+  # COVERAGE: the graph must contain the crates we KNOW are in it.
+  #
+  # A bare count is not a gate -- `cargo tree` returning three crates would have printed "3
+  # distinct crates" and passed, and every ban would have been checked against a graph that
+  # was not the graph. The expected members are knowable exactly, so they are asserted rather
+  # than eyeballed.
+  # DERIVED from the manifest, not hardcoded. A hardcoded list was wrong twice over: it
+  # would rot when a member is added, and it made this script unusable against any manifest
+  # but this repository's -- which broke its own self-test, whose fixtures are synthetic
+  # workspaces. Reading the manifest keeps the expectation exact AND general.
+  expected_members="$(python3 - "$manifest" <<'PYEOF'
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    data = tomllib.load(fh)
+members = data.get("workspace", {}).get("members", [])
+names = [m.rstrip("/").split("/")[-1] for m in members]
+if not names:
+    package = data.get("package", {}).get("name")
+    if package:
+        names = [package]
+print(" ".join(names))
+PYEOF
+  )"
+  if [ -z "$expected_members" ]; then
+    echo "::error::could not derive any expected crate from $manifest" >&2
+    echo "  Without an expectation the crate count below gates nothing." >&2
+    exit 2
+  fi
+  missing_members=""
+  for member in $expected_members; do
+    printf '%s\n' "$names" | grep -qxF "$member" || missing_members="$missing_members $member"
+  done
+  if [ -n "$missing_members" ]; then
+    echo "::error::the dependency graph for $manifest is missing workspace member(s):$missing_members" >&2
+    echo "  cargo tree returned something that is not this workspace's graph, so every ban" >&2
+    echo "  below would have been checked against the wrong thing." >&2
+    exit 2
+  fi
+  echo "  contains all $(printf '%s' "$expected_members" | wc -w) expected workspace member(s)"
 
   for crate in "${banned[@]}"; do
     if printf '%s\n' "$names" | grep -qxF "$crate"; then

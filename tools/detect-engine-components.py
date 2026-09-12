@@ -65,6 +65,18 @@ class Component:
     # How many hits before we call it present. Above 1 for fingerprints that could
     # plausibly appear by coincidence.
     threshold: int = 1
+    # PROBES. Text this component's fingerprints MUST detect, and text they must NOT.
+    #
+    # Checked on every run, against the real `detect()`, before any artifact is scanned.
+    # Without them the hit counts this tool prints are a claim rather than a measurement: a
+    # fingerprint that silently stopped matching would report "nothing detected" for a
+    # component that is right there in the binary, and the only signal would be a number
+    # nobody has a baseline for. `check-no-generated-files.sh` shipped with exactly that bug
+    # -- 15 of 16 patterns inert while the output said 16 -- which is why every pattern set
+    # in this repository now carries its own fixture.
+    probe_symbols: str = ""
+    probe_strings: str = ""
+    near_miss: str = ""
     note: str = ""
 
 
@@ -77,17 +89,29 @@ COMPONENTS: tuple[Component, ...] = (
         strings=(r"HB_FONT_FUNCS", r"HB_SCRIPT_", r"harfbuzz"),
         note="Linked via PDFium's third_party/harfbuzz. Ships NO licence file in the "
         "artifact -- the whole reason this tool exists. See ADR 0010.",
+        probe_symbols="hb_font_create hb_buffer_add_utf8",
+        probe_strings="HB_FONT_FUNCS harfbuzz",
+        near_miss="xhb_font_create Thb_buffer",
     ),
     Component(
         label="icu",
         manifest_names=("icu",),
         # ICU exports version-suffixed C symbols (ubidi_setPara_78) and, in C++,
         # namespaced RTTI names that only exist if the classes were compiled in.
-        symbols=(r"\b(u|ubidi|ucase|ucptrie|udata|uscript|unorm2)_[a-z_]*_\d\d\b",),
+        #
+        # `[A-Za-z_]`, not `[a-z_]`: the character class used to be lowercase-only, which
+        # rejected `ubidi_setPara_78` -- the example in the line above. It matched only the
+        # all-lowercase minority (`ubidi_close_78`, `udata_open_78`), so it worked by
+        # accident on a real artifact and would have gone on doing so. Found by the probe
+        # below, which is exactly the case probes exist for.
+        symbols=(r"\b(u|ubidi|ucase|ucptrie|udata|uscript|unorm2)_[A-Za-z_]*_\d\d\b",),
         strings=(r"N6icu_\d\d\d?\d?[A-Za-z]+E", r"icudt\d\d"),
         threshold=3,
         note="Arrives via HarfBuzz's hb-icu integration, NOT via XFA. ADR 0008 "
         "recorded linked=false on that mistaken reasoning; ADR 0010 corrects it.",
+        probe_symbols="ubidi_setPara_78 ucase_addCaseClosure_78 u_charType_78",
+        probe_strings="N6icu_78UnicodeStringE icudt78 N6icu_78LocaleE",
+        near_miss="ubidi_setPara ucase_toFullLower u_charType",
     ),
     Component(
         label="freetype",
@@ -95,6 +119,9 @@ COMPONENTS: tuple[Component, ...] = (
         symbols=(r"\bFT_(Init|Done|Load|New|Get|Set)[A-Za-z_]*\b",),
         strings=(r"FREETYPE_PROPERTIES", r"tt-glyf", r"tt-cmaps"),
         note="FTL: carries a mandatory binary-distribution credit line.",
+        probe_symbols="FT_Init_FreeType FT_Load_Glyph",
+        probe_strings="FREETYPE_PROPERTIES tt-glyf",
+        near_miss="FT_Render_Glyph FT_Outline_Decompose",
     ),
     Component(
         label="libjpeg",
@@ -102,6 +129,9 @@ COMPONENTS: tuple[Component, ...] = (
         symbols=(r"\bj(peg|init|copy)_[a-z_]+\b",),
         strings=(r"Bogus Huffman table", r"Unsupported JPEG", r"Independent JPEG Group"),
         note="IJG: carries a mandatory documentation credit line.",
+        probe_symbols="jpeg_read_header jinit_memory_mgr",
+        probe_strings="Independent JPEG Group",
+        near_miss="jxx_read_header jfoo_bar",
     ),
     Component(
         label="libpng",
@@ -109,6 +139,9 @@ COMPONENTS: tuple[Component, ...] = (
         symbols=(r"\bpng_(create|read|write|set|get)_[a-z_]+\b",),
         strings=(r"libpng version", r"png_create_read_struct"),
         note="Shipped in PDFium's licences but not found linked; declared anyway.",
+        probe_symbols="png_create_read_struct png_set_sig_bytes",
+        probe_strings="libpng version 1.6",
+        near_miss="png_destroy_read_struct png_free_data",
     ),
     Component(
         label="zlib",
@@ -117,6 +150,9 @@ COMPONENTS: tuple[Component, ...] = (
         strings=(r"incorrect header check", r"invalid distance too far back"),
         threshold=2,
         note="PDFium bundles its own copy in addition to the one we vendor.",
+        probe_symbols="inflateInit2 deflateEnd",
+        probe_strings="incorrect header check\ninvalid distance too far back",
+        near_miss="deflated inflator",
     ),
     Component(
         label="agg23",
@@ -125,13 +161,21 @@ COMPONENTS: tuple[Component, ...] = (
         symbols=(r"pdfium::agg::", r"\bagg::"),
         strings=(r"outline_aa", r"rasterizer_scanline", r"vcgen_stroke"),
         note="AGG 2.3 only -- 2.4+ is GPL. LicenseRef-AGG-2.3.",
+        probe_symbols="pdfium::agg::rasterizer_scanline_aa agg::path_storage",
+        probe_strings="outline_aa rasterizer_scanline",
+        near_miss="xagg::foo myagg::bar",
     ),
     Component(
         label="libopenjpeg",
         manifest_names=("libopenjpeg", "openjpeg"),
         symbols=(r"\bopj_[a-z_]+\b",),
-        strings=(r"opj_", r"openjpeg"),
+        # `\bopj_`, not a bare `opj_`: unanchored, it matched any substring -- `xopj_image`
+        # counted as two hits and cleared the threshold. Found by the near-miss probe.
+        strings=(r"\bopj_[a-z_]+", r"openjpeg"),
         threshold=2,
+        probe_symbols="opj_image_create opj_stream_destroy",
+        probe_strings="opj_image_create opj_stream_destroy openjpeg",
+        near_miss="xopj_image yopj_stream",
     ),
     Component(
         label="lcms",
@@ -139,6 +183,9 @@ COMPONENTS: tuple[Component, ...] = (
         symbols=(r"\bcms[A-Z][A-Za-z]+\b",),
         strings=(r"little cms", r"lcms"),
         threshold=2,
+        probe_symbols="cmsCreateContext cmsOpenProfileFromMem",
+        probe_strings="little cms lcms",
+        near_miss="cmsopen cms_create",
     ),
 )
 
@@ -205,11 +252,14 @@ def string_text(path: Path) -> str:
     return r.stdout
 
 
-def scan(artifact: Artifact) -> None:
-    """Fill in `artifact.detected` with a hit count per component label."""
-    syms = symbol_text(artifact.path) if artifact.kind == "native" else ""
-    strs = string_text(artifact.path)
+def detect(syms: str, strs: str) -> dict[str, int]:
+    """Hit count per component label, for one artifact's symbol and string text.
 
+    Split out of `scan` so the probes below exercise **this** function rather than a
+    re-implementation of it. A probe that tested a copy of the matching logic would pass
+    while the real path was broken, which is the failure it exists to prevent.
+    """
+    detected: dict[str, int] = {}
     for comp in COMPONENTS:
         hits = 0
         for pat in comp.symbols:
@@ -222,7 +272,50 @@ def scan(artifact: Artifact) -> None:
                 if strs:
                     hits += len(re.findall(pat, strs))
         if hits >= comp.threshold:
-            artifact.detected[comp.label] = hits
+            detected[comp.label] = hits
+    return detected
+
+
+def scan(artifact: Artifact) -> None:
+    """Fill in `artifact.detected` with a hit count per component label."""
+    syms = symbol_text(artifact.path) if artifact.kind == "native" else ""
+    strs = string_text(artifact.path)
+    artifact.detected = detect(syms, strs)
+
+
+def check_probes() -> list[str]:
+    """Every fingerprint must detect its own probe and reject its near-miss.
+
+    Run before any artifact is scanned, on every invocation. Returns a list of problems.
+    """
+    problems: list[str] = []
+    for comp in COMPONENTS:
+        if not comp.probe_symbols or not comp.probe_strings or not comp.near_miss:
+            problems.append(f"{comp.label}: no probe fixtures; the fingerprint is untested")
+            continue
+
+        # Positive, through the symbol path and the string path separately -- for a wasm
+        # artifact the string patterns are the ONLY signal, so a broken string pattern
+        # behind a working symbol pattern would be invisible.
+        if comp.label not in detect(comp.probe_symbols, ""):
+            problems.append(
+                f"{comp.label}: its symbol fingerprints do not detect their own probe "
+                f"({comp.probe_symbols!r}) -- the pattern is inert"
+            )
+        if comp.label not in detect("", comp.probe_strings):
+            problems.append(
+                f"{comp.label}: its string fingerprints do not detect their own probe "
+                f"({comp.probe_strings!r}) -- the pattern is inert, and strings are the "
+                f"only signal for wasm"
+            )
+        # Negative. A fingerprint loose enough to match anything reports every artifact as
+        # containing every component, which is as useless as matching nothing.
+        if comp.label in detect(comp.near_miss, comp.near_miss):
+            problems.append(
+                f"{comp.label}: its fingerprints match the near-miss "
+                f"({comp.near_miss!r}) -- too loose to distinguish anything"
+            )
+    return problems
 
 
 def declared_labels() -> tuple[set[str], int]:
@@ -244,6 +337,25 @@ def main() -> int:
         print(f"error: {MANIFEST.relative_to(REPO)} not found", file=sys.stderr)
         return 1
 
+    # PROBES FIRST. If a fingerprint cannot detect its own probe, every count this tool
+    # prints afterwards is meaningless -- and "nothing detected" would read as "nothing
+    # there". Fail before scanning rather than reporting numbers nobody can trust.
+    probe_problems = check_probes()
+    if probe_problems:
+        print(
+            f"FAILED — {len(probe_problems)} fingerprint(s) do not behave as declared:",
+            file=sys.stderr,
+        )
+        for problem in probe_problems:
+            print(f"  - {problem}", file=sys.stderr)
+        print(
+            "\n  A fingerprint that matches nothing reports a linked component as absent;\n"
+            "  one that matches everything reports every component as present. Both make\n"
+            "  this tool's output a claim rather than a measurement.",
+            file=sys.stderr,
+        )
+        return 1
+
     artifacts = find_artifacts()
     if not artifacts:
         print(
@@ -262,6 +374,7 @@ def main() -> int:
     broken: list[str] = []
 
     print(f"{MANIFEST.name}: {total} entries")
+    print(f"{len(COMPONENTS)} fingerprint(s), all verified against their own probes")
     print(f"scanned {len(artifacts)} artifact(s):\n")
     for art in artifacts:
         rel = art.path.relative_to(REPO)

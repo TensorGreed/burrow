@@ -200,6 +200,40 @@ check "a module yielding no strings fails, rather than passing vacuously" \
 # --- Case 7: nothing to examine is a failure, not a pass --------------------------------
 check "a path that does not exist fails" 1 "COMPLETE symbol table" "$work/does-not-exist.a"
 
+# --- the per-run probe gate must exist --------------------------------------------------
+#
+# The checker verifies each of its three rules against a fixture and a near-miss on every
+# invocation. That gate is only observable when a rule is broken, so deleting it left every
+# case above green. This breaks a rule in a COPY and asserts the copy refuses, naming the
+# reason. The copy sits beside the original because the script resolves `repo` from its own
+# location -- a copy in /tmp exits non-zero for the wrong reason, which an exit-code-only
+# assertion would report as a pass.
+check_probe_gate() {
+  local copy="$here/.probe-gate-fixture.sh"
+  sed "s/FORBIDDEN_SYMBOL_RE='gnutls_|/FORBIDDEN_SYMBOL_RE='ZZZnomatch|/" "$checker" >"$copy"
+  chmod +x "$copy"
+  if cmp -s "$copy" "$checker"; then
+    echo "  FAIL fixture: the mutation did not apply, so this case would prove nothing"
+    fail=$((fail + 1))
+    rm -f "$copy"
+    return
+  fi
+  local got
+  if got="$("$copy" "$work/clean.a" 2>&1)"; then
+    echo "  FAIL a rule that matches nothing does not stop the checker"
+    fail=$((fail + 1))
+  elif grep -qF "does not match its own fixture" <<<"$got"; then
+    echo "  ok   a rule that matches nothing stops the checker before it examines anything"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL it failed, but not for the stated reason"
+    sed 's/^/        /' <<<"$got" | head -4
+    fail=$((fail + 1))
+  fi
+  rm -f "$copy"
+}
+check_probe_gate
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

@@ -317,9 +317,26 @@ say "qpdf wasm: the export surface must match the native FFI declarations"
 # source and checking ffi.rs against it.)
 ffi_rs="$here/../core/burrow-engines/src/qpdf/ffi.rs"
 [ -f "$ffi_rs" ] || { echo "build-wasm: cannot find $ffi_rs to derive the allowlist from" >&2; exit 1; }
-declared="$(sed -n 's/^\s*pub(super) fn \(qpdf[a-z_0-9]*\)\s*(.*/\1/p' "$ffi_rs" | sort -u)"
+# PROBE THE PARSE BEFORE TRUSTING IT. The `-n` guard below catches a sed that matches
+# NOTHING; it cannot catch one that matches the wrong thing -- a looser expression that also
+# picked up a commented-out declaration would quietly widen the allowlist this check exists to
+# narrow. So the expression is run against fixtures first, positive and negative.
+parse_decls() { sed -n 's/^\s*pub(super) fn \(qpdf[a-z_0-9]*\)\s*(.*/\1/p'; }
+probe_fail=0
+[ "$(printf '    pub(super) fn qpdf_read_memory(\n' | parse_decls)" = "qpdf_read_memory" ] \
+  || { echo "build-wasm: the ffi.rs parse does not match its own fixture" >&2; probe_fail=1; }
+for bad in '    // pub(super) fn qpdf_is_linearized(' \
+           '    /// `qpdf_is_linearized` is deliberately absent' \
+           '    pub fn qpdf_is_linearized(' \
+           '    pub(super) fn pdfium_load(' ; do
+  [ -z "$(printf '%s\n' "$bad" | parse_decls)" ] \
+    || { echo "build-wasm: the ffi.rs parse matches a near-miss it must reject: $bad" >&2; probe_fail=1; }
+done
+[ "$probe_fail" = 0 ] || { echo "build-wasm: refusing to derive an allowlist from a parse that does not behave as declared" >&2; exit 1; }
+
+declared="$(parse_decls <"$ffi_rs" | sort -u)"
 [ -n "$declared" ] || { echo "build-wasm: parsed ZERO functions out of ffi.rs -- the check would be vacuous" >&2; exit 1; }
-echo "   ffi.rs declares $(printf '%s\n' "$declared" | wc -l) qpdf functions"
+echo "   ffi.rs declares $(printf '%s\n' "$declared" | wc -l) qpdf functions (parse verified against 1 fixture and 4 near-misses)"
 
 # malloc/free are the allocator the bridge needs; qpdf_get_qpdf_version is the probe below.
 # Neither parses a PDF, so neither is an ADR 0013 concern.
