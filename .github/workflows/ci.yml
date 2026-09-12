@@ -396,6 +396,37 @@ jobs:
       issues: write # audit-check opens an issue for a new advisory on push to main
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      # INSTALL cargo-audit OURSELVES, PINNED AND `--locked`, BEFORE THE ACTION RUNS.
+      #
+      # `rustsec/audit-check` shells out to a bare `cargo install cargo-audit` when the binary
+      # is not already on PATH — unpinned, and without `--locked`, so it resolves the audit
+      # tool's own dependencies to whatever is newest at that moment. On 2026-09-12 that
+      # became `jiff 0.2.36`, whose published tarball has `include_str!("../../../../PLATFORM.md")`
+      # paths that do not resolve inside the crates.io package:
+      #
+      #     error: couldn't read .../jiff-0.2.36/src/../../../../PLATFORM.md
+      #     error: could not compile `jiff` (lib) due to 4 previous errors
+      #     error: failed to compile `cargo-audit v0.22.2`
+      #
+      # burrow had no advisory and no dependency change; the AUDIT TOOL would not build. Every
+      # repository using this action broke at the same moment, which is the point: an unpinned
+      # `cargo install` in a required check makes the whole gate depend on the health of a
+      # transitive dependency of a tool, and it fails closed on green code.
+      #
+      # `--locked` uses cargo-audit's OWN Cargo.lock (jiff 0.2.28 here), which is the version
+      # its maintainers tested. Verified locally: the same `cargo-audit v0.22.2` installs clean.
+      #
+      # The action still runs, and still does the part only it can do — opening an issue for a
+      # new advisory on push to main, which is why this job holds `issues: write`. It just
+      # finds the binary already present and skips its own install.
+      #
+      # Bump `--version` deliberately. The advisory DATABASE is fetched at run time regardless,
+      # so a pinned tool still sees new advisories; what is pinned is the code that reads them.
+      - name: Install cargo-audit, pinned and --locked
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
       # Note: this covers Rust crates only. Vendored C/C++ engines (M1) are tracked
       # separately — see ADR 0004 and THIRD_PARTY_NOTICES.md.
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
