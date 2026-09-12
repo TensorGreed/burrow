@@ -151,6 +151,11 @@ A change is done when all of these hold:
 - [ ] New operations have unit, property, golden, and fuzz tests, and enforce `Limits`.
 - [ ] No new `unwrap`/`expect`/`panic!` in library code; new `unsafe` has `// SAFETY:`.
 - [ ] No new network call reachable from code that touches file content.
+- [ ] Any new check **reports what it examined**, and gates on the expected count where that
+      count is knowable — not merely on non-zero. See *Working agreements*: "4 of 15" reads
+      as success.
+- [ ] Any new mutation or negative test **asserts the mutation applied** before running the
+      suite it is meant to exercise.
 - [ ] Public API changes are reflected in bindings (uniffi + wasm) or explicitly deferred.
 - [ ] Docs updated: rustdoc on public items, plus `docs/ROADMAP.md` or an ADR if scope
       or a decision changed.
@@ -197,6 +202,37 @@ A change is done when all of these hold:
   PR with a warm cache it did not run at all. **A check that silently examines nothing is
   worse than no check** — it reads as coverage. Before moving a step between jobs, ask what
   it reads and whether that will be there.
+
+  That rule is necessary and it is **not sufficient**: it was written from those two
+  failures and did not prevent a third two commits later. What catches this class is the
+  next bullet — make the check say what it examined, so the log answers the question
+  instead of the reader inferring it.
+- **Every check reports what it examined, and gates on the expected count where that count
+  is knowable.** A non-zero gate is not enough, because the failure mode is almost never
+  zero. Measured instances, all of which printed `OK`:
+
+  | check | examined | expected | |
+  |---|--:|--:|---|
+  | engine-licence drift, in CI | **4** | 15 | a real defect, fixed |
+  | the same, with the resolver broken behind a zero-gate | **4** | 15 | why a zero-gate is not a gate |
+  | `detect-engine-components.py`, CI vs a dev machine | **1** | 3 | probably fine — and unknowable from the output |
+
+  The third row is the point as much as the first two. One artifact in CI may be entirely
+  correct, because that job stages only the native tree — but the output is `OK` either way,
+  so nobody can tell a legitimate 1 from a broken 1 without going and looking. A number
+  with no expectation beside it is not a report.
+
+  "4 of 15" reads exactly like success. So: print the count, and compare it against what the
+  count *should* be whenever that is derivable — `check-python-syntax.py` compares its glob
+  against `git ls-files '*.py'`, and `check-engine-licences.py` names every component whose
+  original it could not resolve. Where the expected count genuinely is not knowable, **say
+  what was examined by name** rather than printing a bare total.
+- **A mutation test must assert the mutation applied before running the suite.** Twice in
+  one session a `str.replace` silently matched nothing, the suite stayed green, and the
+  green read as "this defence works" when nothing had been mutated at all. A mutation that
+  does not apply is indistinguishable from a defence that holds. `assert old in s` before
+  writing, and check the file actually changed — the assertion costs one line and is the
+  only thing separating a real mutation sweep from a ritual.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
 - **Run `security-reviewer` and `code-reviewer` before the first push.** See *Conventions*;
