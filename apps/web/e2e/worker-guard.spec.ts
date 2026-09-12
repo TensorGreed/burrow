@@ -10,8 +10,16 @@
 //     refuses to construct a worker from a URL at all.
 //   * **Inner layer:** the worker itself refuses to touch a file unless a policy is actually
 //     in force, which it establishes by making a request the policy must refuse. That is a
-//     property of the bundle rather than of the browser, so it is unit-tested in
-//     `src/worker/guard.test.ts` where the environment can be controlled.
+//     property of the bundle rather than of the browser, so it is unit-tested where the
+//     environment can be controlled. It takes TWO files, and this comment used to name only
+//     the first, which left the second half reading as covered when it was not:
+//
+//       - `src/worker/guard.test.ts` evaluates `prelude.js` and covers how the verdict is
+//         **computed** -- the differential probe, and the worlds it has to tell apart.
+//       - `src/worker/init-memoisation.test.ts` evaluates `main.js` and covers how the
+//         verdict is **consumed** -- that a `policed: false` verdict means the file is never
+//         read. Measured by a security review: with the guard deleted from `main.js`, every
+//         other test in the repository stayed green.
 //
 // `'self'` used to be in `worker-src` purely so this file could construct the bad worker and
 // watch the inner layer refuse it. That was the test dictating the policy: it kept alive

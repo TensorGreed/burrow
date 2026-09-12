@@ -59,6 +59,163 @@ larger than it is:
 **Nothing is adopted by this amendment.** The spike's recommendation carries six conditions and
 belongs in its own ADR when someone takes it up.
 
+### Amendment, 2026-09-12: the gate is closed. Option 1 is settled, not deferred again.
+
+[Spike 0003](../spikes/0003-pdfium-source-build.md) answered the two inputs this gate was
+waiting on, and the answers close it. **Option 1 is the accepted linking strategy for the web,
+and this is a settled decision rather than a third deferral.** Option 2 remains the better
+architecture in the abstract; it is no longer a scheduled re-evaluation.
+
+Four reasons, in the order they changed the picture.
+
+**1. Upstream PDFium has no WASM target at all, so option 2 is a fork rather than a build.**
+Grepping the entire tree for Emscripten or WASM across `.gn` and `.gni` returns **one file**,
+`third_party/harfbuzz/BUILD.gn`, and its hits are HarfBuzz's own `hb-wasm-api-*.hh` shaper
+filenames — nothing to do with building PDFium for the web. `DEPS` mentions Emscripten **zero**
+times. There is no `target_os = "emscripten"`, no wasm toolchain and no wasm config.
+
+So "build PDFium from source for the web" does not mean "run `gn` with a wasm target". It means
+adopting the patch set that makes that target exist at all — `pdfium-binaries`' patches to
+Chromium's `BUILDCONFIG.gn` and `//build/toolchain/wasm` — and then carrying those patches
+across every PDFium bump, forever, on a configuration upstream does not test. The recurring
+cost is a third party's patch set, not a build.
+
+**2. `depot_tools` and `gn` do work on `linux-aarch64`, and the near-miss is worth recording.**
+The first run produced
+
+```
+Platform linux-arm64 is not supported by the CIPD client bootstrap:
+there's no pinned SHA256 hash for it in the *.digests file.
+```
+
+That message is real and **it is not what it looks like**: `cipd_client_version.digests` lists
+37 platforms including `linux-arm64`, `cipd_manifest.txt` declares it a `$VerifiedPlatform`,
+and `gn/gn/linux-arm64` is in CIPD and built daily. The failure was a relative path resolving
+against the wrong working directory. Run correctly, the CIPD client runs and the depot_tools
+Python bootstraps.
+
+This is recorded in the ADR rather than only in the spike because **a false blocker is an input
+to an architectural decision.** "aarch64 is unsupported" would have been a clean, plausible,
+checkable-sounding reason to close this gate, and it would have been wrong. The gate is closed
+on reason 1, which is a property of upstream PDFium, not on a property of this machine.
+
+**3. The shared-glue-globals hazard (requirement 1) is closed on both engines.** Spike 0001's
+HIGH finding was that loading `pdfium.js` twice in one scope rebinds every glue global while
+the bridge still holds the first instance, so calls read and write the other instance's linear
+memory — the sandbox holds and parses come back confidently wrong. The two engines needed
+different answers:
+
+| engine | closed by | what would reopen it |
+|---|---|---|
+| PDFium | **construction.** The glue is not modularised, it begins instantiating as the bundle is parsed, the worker is one bundled file ([ADR 0014](0014-web-engine-loading-and-csp.md) §1a) and a worker scope evaluates it once. There is no second `importScripts` to make. | splitting the glue back out of the bundle — which fails production-build's *"ships the worker as ONE bundle, with no glue loose beside it"* and integrity's *"the worker bundle contains all worker code, so one digest covers it"* |
+| qpdf | **the memoised promise, plus a test.** `qpdf.js` *is* `MODULARIZE`'d, so `createQpdfModule()` returns a fresh independent instance on every call; `ready ??= init()` in `apps/web/src/worker/main.js` is what prevents a second one. | reverting `ready` to a boolean flag set after the `await` — which now fails `apps/web/src/worker/init-memoisation.test.ts` |
+
+**This narrows a claim spike 0001 made, and the narrowing is the point.** That spike wrote
+"`qpdf.js` is immune: we built it with `-sMODULARIZE=1`, so each instance gets its own
+closure." That is true **of glue globals**, which is the mechanism it was describing — a second
+qpdf instance cannot rebind the first one's closure, and PDFium's asymmetry does come entirely
+from the prebuilt artifact. It is *not* true of the **bridge's single attachment point**:
+`__burrow_attach` assigns one `qpdfModule`, so a second instance rebinds what every subsequent
+`qpdf()` call returns, while an in-flight operation still holds pointers into the first
+instance's heap. Same outcome — a call reading and writing the wrong linear memory — reached by
+a different route. "Immune" was scoped to the mechanism and read as scoped to the hazard.
+
+When spike 0003 looked, the qpdf half was closed by one line that **no test covered**: the
+revert would have been silent. `init-memoisation.test.ts` closes that, and it applies the
+revert to a copy of `main.js` and asserts the invariant goes red, so the test has been shown
+able to fail rather than merely passing.
+
+**4. `catch_unwind` on the web is not required for M2.** This was the strongest argument for
+option 2 — [ADR 0009](0009-web-panic-contract-and-binding-boundary.md) records that a panic on
+`wasm32-unknown-unknown` is an uncatchable trap, so `burrow-ffi::guard` is inert on the web,
+and redaction is where a panic mid-operation is most consequential. It is nonetheless not a
+blocker, because **redaction safety does not depend on unwinding**:
+
+- Output is never emitted unless verification passed (non-negotiable 4). A panic mid-operation
+  produces no output, which is the safe outcome — the failure mode unwinding would prevent is
+  *losing the worker*, not *leaking a redaction*.
+- Panic payloads are **discarded by policy** in any case. ADR 0009 forbids echoing what the
+  module threw, because that text is panic output and can carry input-derived bytes; every
+  `catch` in the worker binds nothing and reports a fixed, content-free `Internal`. So
+  unwinding would carry nothing we keep.
+
+What happens today instead — trap, instance fatal, terminate the worker, spawn a fresh one — is
+implemented, tested in three browsers, and measured at 73–102 ms per respawn
+([ADR 0015](0015-web-worker-lifecycle.md) §6). That is a recovery story, not a gap.
+
+#### Two triggers that would reopen this
+
+Recorded as named conditions so this is closed rather than open-ended. Absent one of these,
+option 1 stands and no re-evaluation is scheduled.
+
+1. **A true per-operation memory bound becomes required** ([issue #25](https://github.com/TensorGreed/burrow/issues/25)).
+   Spike 0002's ceiling is per *worker*, and `-sIMPORTED_MEMORY` would be too unless combined
+   with a fresh instance per operation. If a per-operation bound becomes a requirement rather
+   than a wish, the linking model is back in scope.
+2. **`pdfium-binaries` stops publishing at a version we need.** It is the single external
+   dependency option 1 rests on, and reason 1 above is precisely why: the patch set that makes
+   a wasm build possible lives there and not upstream. Tracked as a supply-chain risk with no
+   action now: [issue #44](https://github.com/TensorGreed/burrow/issues/44).
+
+#### Two conditions this decision carries, and they are requirements rather than hopes
+
+Reason 4(a) — "no output is emitted unless verification passed" — is a claim about code M2 has
+not written. A security review of this amendment pointed out that it is **stronger** than
+non-negotiable 4 as CLAUDE.md states it ("redaction output is verified automatically after
+every run" permits output to exist and then be checked; the argument above requires emission to
+be *gated* on the check), and that under a trap the difference is real in exactly two cases M2
+has genuine pressure to introduce. So they are written down as conditions, because a
+requirement can be tested and an argument cannot:
+
+- **R8. Redaction output is a single value returned from one Rust call, and is posted only
+  after that call returns success.** No chunked or progressive emission of partial output.
+  `apps/web/CLAUDE.md` asks for progress reporting and cancellation, and with no per-operation
+  memory bound, streaming a large redaction out in pieces is the obvious way to avoid a 2×
+  heap — but a trap mid-stream leaves partially redacted, unverified bytes already in the
+  page's possession, and terminating the worker does not un-send them. Progress may report
+  *position*; it may not emit *content*.
+- **R9. Nothing is written outside the wasm heap before verification passes.** No OPFS or File
+  System Access write, and no `blob:` URL handed to the page, until the verifier has run.
+  `worker.terminate()` reclaims linear memory; it does not reclaim a file handle the page
+  already holds.
+
+Under an unwind both cases are recoverable — Rust returns `Err`, the buffer drops, a `Drop`
+impl deletes the file. Under a trap they are not. **These two conditions are what make reason
+4 true; without them, closing this gate on reason 4 would be wrong.**
+
+#### What this does not decide
+
+**The cross-engine two-heap divergence, which reason 3 does not touch.** Reason 3 closes the
+*same-engine* route: two instances of one engine, with the bridge rebound between them. It says
+nothing about the fact that PDFium and qpdf are **separate Emscripten modules with separate
+linear memories** — which is structural to option 1 and cannot be closed by memoisation. An M2
+redaction pass that analyses content in one engine's heap and emits output from the other holds
+two copies of the document, and "verification passed" against one copy is not a statement about
+the bytes emitted from the other. That is precisely *"a redaction pass that inspects one heap
+and edits another"*, this ADR's own words for the failure M2 exists to prevent.
+
+It is latent today — no current operation spans both engines; `page_count` is PDFium only and
+`structure_check` is qpdf only — and it becomes live the moment M2 writes one that does. It is
+**not** a reason to reopen the gate, because option 2 does not obviously fix it either (PDFium
+and qpdf would still be distinct modules unless both were relinked into one). It is an M2
+design requirement:
+
+- **R10. Redaction verification runs on the exact byte sequence that is emitted**, in the heap
+  it is emitted from — never on a sibling heap's copy of it.
+
+Nothing about the memory ceiling. Spike 0002 is still unadopted, issue #25 is still *mitigated,
+not resolved*, and [ADR 0007](0007-limit-enforcement-per-platform.md)'s 2026-09-12 amendment is
+unchanged. Closing this gate makes M2 plannable against option 1; it adopts nothing.
+
+#### Two forward references this resolves
+
+[ADR 0009](0009-web-panic-contract-and-binding-boundary.md) twice points at this gate as a
+scheduled decision — it notes that `catch_unwind` *does* work on `wasm32-unknown-emscripten`
+and schedules the gate, and its *Consequences* say "if the pre-M2 gate adopts option 2, most of
+section 1 becomes unnecessary". Both pointers now lead to a decision that has been made.
+**ADR 0009 §1 is permanent, not provisional.** Nothing in it is weakened by this closure; a
+reader is simply no longer waiting on an answer.
+
 ## Context
 
 [ADR 0002](0002-rust-core-and-bindings.md) chose wasm-bindgen and, implicitly, the
