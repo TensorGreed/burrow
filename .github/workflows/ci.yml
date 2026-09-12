@@ -245,7 +245,12 @@ jobs:
       # again here, where the engines exist, is what makes engines/licences/README.md's claim
       # true. Both runs are cheap and neither subsumes the other.
       - name: Engine licence texts have not drifted from the vendor originals (ADR 0008)
-        run: python3 tools/check-engine-licences.py
+        run: |
+          python3 tools/check-engine-licences.py
+          # The self-test HERE, not in `deny`: its architecture-wildcard case needs a
+          # vendor/native-* tree to fall back to, and `deny` fetches nothing. Same placement
+          # rule as the drift comparison above, for the same reason.
+          tools/test-check-engine-licences.sh
 
       # The OTHER half of the qpdf exception audit. engines/build-wasm.sh already checks
       # the built module's export table against ffi.rs; this checks ffi.rs against qpdf's
@@ -437,9 +442,7 @@ jobs:
       # are the other 82% of the shipped bytes, and they are checked here against
       # ADR 0008's allowlist. Same job on purpose: one gate for the whole graph.
       - name: engine licences (ADR 0008)
-        run: |
-          python3 tools/check-engine-licences.py
-          tools/test-check-engine-licences.sh
+        run: python3 tools/check-engine-licences.py
 
       # Every qpdf C function burrow declares -- natively and on the web -- must be on the
       # generated trapped list or in the justified exemption list. An untrapped call lets a

@@ -62,10 +62,20 @@ breaks_it "a split that drops a constituent is caught" \
 
 # The architecture wildcard. Removing it is what made the licence-text drift comparison run
 # on 4 of 15 components in CI while printing identical output.
+#
+# ONLY MEANINGFUL WHERE A NATIVE VENDOR TREE EXISTS. Without one there is nothing for the
+# wildcard to fall back TO, so the checker's own fixture skips the vendor cases and removing
+# the glob changes nothing -- the case would fail for the wrong reason. Skipped loudly rather
+# than silently: a skip nobody sees is how a check stops covering something.
+if [ -z "$(ls -d "$here/../engines/vendor/native-"* 2>/dev/null)" ]; then
+  echo "  SKIP removing the architecture wildcard is caught"
+  echo "       no engines/vendor/native-* tree here; this case runs in CI's \`test\` job"
+else
 breaks_it "removing the architecture wildcard is caught" \
   '    for prefix in sorted((REPO / "engines" / "vendor").glob("native-\*")):' \
   '    for prefix in []:' \
   "does not resolve a vendor path naming an architecture"
+fi
 
 # A resolver that invents paths would compare a committed text against the wrong original.
 breaks_it "a resolver that returns a nonexistent path is caught" \
