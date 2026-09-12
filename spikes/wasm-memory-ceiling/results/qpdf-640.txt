@@ -1,0 +1,59 @@
+# spike 0002 sweep: qpdf ceiling 640 MiB, project chromium
+# 2026-09-12T21:32:03Z
+
+$ node ../../tools/stage-web-engines.mjs && node ../../tools/generate-credits.mjs && BURROW_HARNESS=1 astro build
+  guard control -> control.ad9d8021d8ae20c5.txt  (78 bytes)
+  pdfium.wasm -> pdfium.cbaff19140954ba0.wasm  (5315922 bytes)
+  qpdf.wasm -> qpdf.982c9829ec9cb32c.wasm  (1199200 bytes)
+  burrow_wasm_bg.wasm -> burrow_wasm_bg.3d19c0d8256c0a19.wasm  (43072 bytes)
+  worker bundle -> burrow-worker.6849e0b4091fbaf9.js  (255535 bytes)
+
+  origin: http://localhost:4321
+  CSP:    default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src blob:; connect-src http://localhost:4321/engines/pdfium.cbaff19140954ba0.wasm http://localhost:4321/engines/qpdf.982c9829ec9cb32c.wasm http://localhost:4321/engines/burrow_wasm_bg.3d19c0d8256c0a19.wasm http://localhost:4321/engines/burrow-worker.6849e0b4091fbaf9.js http://localhost:4321/engines/control.ad9d8021d8ae20c5.txt; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'
+  header: + frame-ancestors 'none'
+  host -> public/host/ (harness-driver.js, worker-host.js)
+
+  staged 5 files into apps/web/public/engines/
+credits: 23 components (18 linked), 4 notice obligations, 18 licence texts
+17:32:05 [WARN] [burrow:harness-gating] BURROW_HARNESS=1 -- /harness IS in this build. Do not deploy it.
+17:32:05 [content] Syncing content
+17:32:05 [content] Synced content
+17:32:05 [types] Generated 25ms
+17:32:05 [build] output: "static"
+17:32:05 [build] mode: "static"
+17:32:05 [build] directory: /home/anuragj/Desktop/GitHub/burrow/apps/web/dist/
+17:32:05 [build] Collecting build info...
+17:32:05 [build] ✓ Completed in 40ms.
+17:32:05 [build] Building static entrypoints...
+17:32:05 [vite] ✓ built in 512ms
+17:32:05 [build] ✓ Completed in 529ms.
+
+ building client (vite) 
+17:32:05 [vite] transforming...
+17:32:05 [vite] ✓ 103 modules transformed.
+17:32:05 [vite] rendering chunks...
+17:32:05 [vite] computing gzip size...
+17:32:05 [vite] dist/_astro/client.svelte.FBAp6lSh.js  26.28 kB │ gzip: 10.35 kB
+17:32:05 [vite] ✓ built in 179ms
+
+ generating static routes 
+17:32:05 ▶ src/harness/harness.astro
+17:32:05   └─ /harness/index.html (+4ms) 
+17:32:05 ▶ src/pages/credits.astro
+17:32:05   └─ /credits/index.html (+3ms) 
+17:32:05 ▶ src/pages/index.astro
+17:32:05   └─ /index.html (+1ms) 
+17:32:05 ✓ Completed in 13ms.
+
+17:32:05 [build] 3 page(s) built in 771ms
+17:32:05 [build] Complete!
+
+Running 1 test using 1 worker
+
+
+known gaps in this corpus (2):
+  size-estimate-refuses-an-ordinary-file: https://github.com/TensorGreed/burrow/issues/26 (due by M2)
+  objstm-bomb-default-limits: https://github.com/TensorGreed/burrow/issues/24 (due by M2)
+  ✓  1 [chromium] › e2e/conformance.spec.ts:102:1 › every corpus file produces the same typed outcome as the native path (5.9s)
+
+  1 passed (7.8s)

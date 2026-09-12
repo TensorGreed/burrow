@@ -1,0 +1,92 @@
+# spike 0002 sweep: qpdf ceiling 64 MiB, project chromium
+# 2026-09-12T21:32:44Z
+
+$ node ../../tools/stage-web-engines.mjs && node ../../tools/generate-credits.mjs && BURROW_HARNESS=1 astro build
+  guard control -> control.ad9d8021d8ae20c5.txt  (78 bytes)
+  pdfium.wasm -> pdfium.cbaff19140954ba0.wasm  (5315922 bytes)
+  qpdf.wasm -> qpdf.eebfe05330d95894.wasm  (1199200 bytes)
+  burrow_wasm_bg.wasm -> burrow_wasm_bg.3d19c0d8256c0a19.wasm  (43072 bytes)
+  worker bundle -> burrow-worker.8518711c18223296.js  (255535 bytes)
+
+  origin: http://localhost:4321
+  CSP:    default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src blob:; connect-src http://localhost:4321/engines/pdfium.cbaff19140954ba0.wasm http://localhost:4321/engines/qpdf.eebfe05330d95894.wasm http://localhost:4321/engines/burrow_wasm_bg.3d19c0d8256c0a19.wasm http://localhost:4321/engines/burrow-worker.8518711c18223296.js http://localhost:4321/engines/control.ad9d8021d8ae20c5.txt; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'
+  header: + frame-ancestors 'none'
+  host -> public/host/ (harness-driver.js, worker-host.js)
+
+  staged 5 files into apps/web/public/engines/
+credits: 23 components (18 linked), 4 notice obligations, 18 licence texts
+17:32:46 [WARN] [burrow:harness-gating] BURROW_HARNESS=1 -- /harness IS in this build. Do not deploy it.
+17:32:46 [content] Syncing content
+17:32:46 [content] Synced content
+17:32:46 [types] Generated 23ms
+17:32:46 [build] output: "static"
+17:32:46 [build] mode: "static"
+17:32:46 [build] directory: /home/anuragj/Desktop/GitHub/burrow/apps/web/dist/
+17:32:46 [build] Collecting build info...
+17:32:46 [build] ✓ Completed in 39ms.
+17:32:46 [build] Building static entrypoints...
+17:32:46 [vite] ✓ built in 511ms
+17:32:46 [build] ✓ Completed in 527ms.
+
+ building client (vite) 
+17:32:46 [vite] transforming...
+17:32:46 [vite] ✓ 103 modules transformed.
+17:32:46 [vite] rendering chunks...
+17:32:46 [vite] computing gzip size...
+17:32:46 [vite] dist/_astro/client.svelte.FBAp6lSh.js  26.28 kB │ gzip: 10.35 kB
+17:32:46 [vite] ✓ built in 163ms
+
+ generating static routes 
+17:32:46 ▶ src/harness/harness.astro
+17:32:46   └─ /harness/index.html (+4ms) 
+17:32:46 ▶ src/pages/credits.astro
+17:32:46   └─ /credits/index.html (+3ms) 
+17:32:46 ▶ src/pages/index.astro
+17:32:46   └─ /index.html (+1ms) 
+17:32:46 ✓ Completed in 15ms.
+
+17:32:46 [build] 3 page(s) built in 754ms
+17:32:46 [build] Complete!
+
+Running 1 test using 1 worker
+
+
+known gaps in this corpus (2):
+  size-estimate-refuses-an-ordinary-file: https://github.com/TensorGreed/burrow/issues/26 (due by M2)
+  objstm-bomb-default-limits: https://github.com/TensorGreed/burrow/issues/24 (due by M2)
+  ✘  1 [chromium] › e2e/conformance.spec.ts:102:1 › every corpus file produces the same typed outcome as the native path (4.8s)
+
+
+  1) [chromium] › e2e/conformance.spec.ts:102:1 › every corpus file produces the same typed outcome as the native path 
+
+    Error: native and web disagree
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: ""
+    Received: "objstm-bomb-default-limits::structure_check: web (chromium) did not match the corpus
+        expected ok(1 pages)
+        actual   Malformed
+        fixture  fixtures/objstm-bomb.pdf sha256 54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b·
+    objstm-bomb-default-limits::structure_check: the two implementations disagree
+        native ok(1 pages)
+        web (chromium) Malformed
+        fixture fixtures/objstm-bomb.pdf sha256 54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b·
+    objstm-bomb-tight-ceiling::structure_check: web (chromium) did not match the corpus
+        expected LimitExceeded(limit=max_memory_bytes stage=measured allowed=100663296)
+        actual   Malformed
+        fixture  fixtures/objstm-bomb.pdf sha256 54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b"
+
+      223 |   }
+      224 |
+    > 225 |   expect(verdict.failures.join("\n\n"), "native and web disagree").toBe("");
+          |                                                                    ^
+      226 |   expect(
+      227 |     verdict.stale.join("\n\n"),
+      228 |     "a recorded difference no longer happens, so the record is stale",
+        at /home/anuragj/Desktop/GitHub/burrow/apps/web/e2e/conformance.spec.ts:225:68
+
+    Error Context: test-results/conformance-every-corpus-f-61698--outcome-as-the-native-path-chromium/error-context.md
+
+  1 failed
+    [chromium] › e2e/conformance.spec.ts:102:1 › every corpus file produces the same typed outcome as the native path 

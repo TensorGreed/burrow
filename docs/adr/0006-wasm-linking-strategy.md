@@ -9,6 +9,56 @@ Accepted — **option 1**, decided by [spike 0001](../spikes/0001-wasm-engines.m
 The seven conditions in *Requirements* below are part of the decision, not advice. Option
 2 is recorded as the better architecture, to be re-evaluated at a named **pre-M2 gate**.
 
+### Amendment, 2026-09-12: the gate returns to one question
+
+The pre-M2 gate had acquired a **second** question it was never designed to carry.
+[Issue #25](https://github.com/TensorGreed/burrow/issues/25) found that `max_memory_bytes`
+bounds nothing during an operation on the web, and the obvious remedy — supplying our own
+`WebAssembly.Memory` via `-sIMPORTED_MEMORY` — requires **relinking PDFium from source**
+rather than shipping the published artifact. That made "can we bound engine memory?" look
+like an option-1-versus-option-2 decision, and dragged an engine-pin change, a licence
+re-audit and a rebuilt size budget along with it.
+
+**[Spike 0002](../spikes/0002-wasm-memory-ceiling.md) removes that question from this gate.**
+A real ceiling is reachable without relinking anything: the declared maximum in the prebuilt
+`pdfium.wasm`'s memory section is a 3-byte LEB128 field, and lowering it is a **1–2 byte patch
+that leaves the file length identical**, because LEB128 permits non-minimal encodings and the
+new value pads to the existing width.
+
+The two measurements that make it a finding rather than a hope:
+
+- **The module's declared maximum is what binds, not Emscripten's glue.** Both shipped glues
+  check their own compiled-in 2 GiB `maxHeapSize`, pass, and then `wasmMemory.grow()` throws
+  because the module's maximum is lower; `growMemory` catches it and
+  `_emscripten_resize_heap` returns `false`. Neither glue can `abort()` there.
+- **The failure transition tracks the patched value.** PDFium's `xref-bomb` peak is
+  1900.7 MiB and the bomb flips from `ok` to `Internal` between 1920 and 1856 MiB; qpdf's peak
+  is 513 MiB and its transition sits between 576 and 512 MiB. Two engines with peaks two orders
+  of magnitude apart, both bracketed — which is what distinguishes the patch binding from a
+  bomb failing for some unrelated reason.
+
+18/18 across Chromium, Firefox and WebKit through the shipping path, deterministic over nine
+runs, zero bytes of artifact size change, and the failure lands on the instance-fatal path
+[ADR 0009](0009-web-panic-contract-and-binding-boundary.md) already defines.
+
+**So this gate returns to the question it was written for**: option 1 versus a **from-source
+PDFium build** for redaction safety — the shared-glue-globals hazard in requirement 1, and
+trap-versus-unwind semantics — together with the open question below of whether that build
+works on a `linux-aarch64` host.
+
+Two things the spike explicitly does **not** settle, recorded here so the gate is not read as
+larger than it is:
+
+- The ceiling is **per worker, not per operation**. A caller's own `max_memory_bytes` below it
+  stays detect-only, so issue #25 is *mitigated, not resolved*, and
+  [ADR 0007](0007-limit-enforcement-per-platform.md)'s 2026-09-12 amendment is unchanged.
+- The **value** for that ceiling is not established. Desktop WebKit is not iOS, and
+  [ADR 0015](0015-web-worker-lifecycle.md) §7 still refuses to propose mobile defaults from
+  desktop readings.
+
+**Nothing is adopted by this amendment.** The spike's recommendation carries six conditions and
+belongs in its own ADR when someone takes it up.
+
 ## Context
 
 [ADR 0002](0002-rust-core-and-bindings.md) chose wasm-bindgen and, implicitly, the
