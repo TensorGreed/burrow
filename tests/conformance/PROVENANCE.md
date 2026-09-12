@@ -145,6 +145,38 @@ fixture and the issue to be closed together.
 python3 tools/make-objstm-bomb.py tests/conformance/fixtures/objstm-bomb.pdf
 ```
 
+## `known_gap` has a ceiling, and every entry has a deadline
+
+A `known_gap` is green CI and an open defect at the same time. That is the right trade against
+the alternative — a skipped test records *"untested"*, which is the wrong memory to leave for
+M2 — but it is a trade that gets easier to make every time it is made. Left ungoverned,
+`known_gap` becomes where an inconvenient failure goes, and a corpus of documented gaps stays
+green while asserting nothing.
+
+So, enforced by `core/burrow-engines/tests/conformance.rs`:
+
+| Rule | Where |
+|---|---|
+| An issue link, and a reason that is a sentence rather than a label | `every_known_gap_names_an_issue_and_a_milestone` |
+| A **`milestone`** the gap must be closed by, from `M0`–`M6` | same test; an unrecognised name fails rather than sorting as zero |
+| The milestone must still be **ahead of** `current_milestone` | same test |
+| At most **`MAX_KNOWN_GAPS`** (2) entries in the whole corpus | `known_gaps_are_under_the_ceiling` |
+
+`current_milestone` sits at the top of `expectations.json`. **Bumping it is the act that calls
+in every outstanding gap**: each one whose milestone has been reached fails, and has to be
+fixed, or re-targeted in a commit that says why the date moved. Deleting the case is not the
+third option — that turns a documented defect into an undocumented one.
+
+A declared milestone rather than a calendar date or a GitHub query, deliberately. A date gate
+turns red on an idle branch for reasons that have nothing to do with the code. A query puts a
+network call and a token inside a check that has to run offline and locally.
+
+Both current entries target **M2**. Both are memory-enforcement gaps, and
+[ADR 0015 §7](../../docs/adr/0015-web-worker-lifecycle.md) already defers that decision to a
+pre-M2 gate — the same gate [#25](https://github.com/TensorGreed/burrow/issues/25) belongs to.
+M2 is also where a file reaching 2.4 GB stops being merely wasteful, because redaction is what
+runs on it.
+
 ### What `encrypted.pdf` does and does not cover
 
 Its `/O` and `/U` strings are fixed arbitrary bytes, so authentication fails for every

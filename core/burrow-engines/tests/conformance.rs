@@ -43,8 +43,8 @@ use burrow_engines::qpdf::Qpdf;
 use burrow_engines::{CheckOptions, DocumentEngine, OpenOptions, StructureEngine};
 use burrow_types::{Limits, ManualClock, Password};
 use expectations::{
-    Case, Expectations, Operation, Outcome, OutcomeRecord, Platform, RecordedOutcome,
-    conformance_dir, outcome_of, sha256_hex,
+    Case, Expectations, MILESTONES, Operation, Outcome, OutcomeRecord, Platform, RecordedOutcome,
+    conformance_dir, milestone_index, outcome_of, sha256_hex,
 };
 
 /// The schema version this test understands. A newer file must fail, not be guessed at.
@@ -307,10 +307,31 @@ fn the_schema_records_a_route_for_every_limit_failure() {
     }
 }
 
-/// A recorded gap needs somewhere to lead.
+/// The most `known_gap` entries this corpus may carry.
+///
+/// A `known_gap` is green CI and an open defect at the same time. That trade is reasonable --
+/// the alternative is a skipped test, and a skipped test records "untested", which is the
+/// wrong memory to leave for M2 -- but it is a trade that gets easier to make every time it
+/// is made. Without a ceiling, `known_gap` becomes where an inconvenient failure goes, and a
+/// corpus of documented gaps asserts nothing while staying green.
+///
+/// Raising this number is a deliberate act in a diff a reviewer sees, which is the point.
+/// It is the same shape as the licence allowlist: the constraint is worth having precisely
+/// because widening it cannot be done quietly.
+const MAX_KNOWN_GAPS: usize = 2;
+
+/// A recorded gap needs somewhere to lead, and a deadline to lead there by.
 #[test]
-fn every_known_gap_names_an_issue() {
-    for case in load().cases {
+fn every_known_gap_names_an_issue_and_a_milestone() {
+    let expectations = load();
+    let current = milestone_index(&expectations.current_milestone).unwrap_or_else(|| {
+        panic!(
+            "current_milestone {:?} is not one of {:?}",
+            expectations.current_milestone, MILESTONES
+        )
+    });
+
+    for case in &expectations.cases {
         let Some(gap) = &case.known_gap else { continue };
         assert!(
             gap.issue.starts_with("https://"),
@@ -323,7 +344,45 @@ fn every_known_gap_names_an_issue() {
             "case {:?}: a known gap needs a reason, not a label",
             case.name
         );
+
+        let target = milestone_index(&gap.milestone).unwrap_or_else(|| {
+            panic!(
+                "case {:?}: milestone {:?} is not one of {:?}",
+                case.name, gap.milestone, MILESTONES
+            )
+        });
+        assert!(
+            target > current,
+            "case {:?}: this gap was due by {} and we are in {}. {} is still open. \
+             Fix it, or re-target it in a commit that says why the date moved -- do not \
+             delete the case, which would turn a documented defect into an undocumented one",
+            case.name,
+            gap.milestone,
+            expectations.current_milestone,
+            gap.issue
+        );
     }
+}
+
+/// There is a ceiling on how many defects the corpus may document rather than fix.
+#[test]
+fn known_gaps_are_under_the_ceiling() {
+    let expectations = load();
+    let gaps: Vec<&str> = expectations
+        .cases
+        .iter()
+        .filter(|c| c.known_gap.is_some())
+        .map(|c| c.name.as_str())
+        .collect();
+
+    assert!(
+        gaps.len() <= MAX_KNOWN_GAPS,
+        "{} known gaps, ceiling is {MAX_KNOWN_GAPS}: {}. \
+         Close one before recording another, or raise MAX_KNOWN_GAPS deliberately and say \
+         in the commit what changed about the trade",
+        gaps.len(),
+        gaps.join(", ")
+    );
 }
 
 /// A recorded platform difference needs a reason that is a mechanism.

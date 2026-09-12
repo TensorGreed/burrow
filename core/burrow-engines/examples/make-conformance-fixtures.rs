@@ -54,6 +54,13 @@ struct Fixture {
 
 const GENERATED_BY: &str = "cargo run -p burrow-engines --example make-conformance-fixtures";
 
+/// The milestone burrow is working in, which is what makes a `known_gap`'s target enforceable.
+///
+/// Bumping this is the act that calls in every outstanding gap: `conformance.rs` fails on any
+/// whose milestone has been reached or passed. Bump it when the milestone closes, and expect
+/// to fix or deliberately re-target the gaps it surfaces in the same change.
+const CURRENT_MILESTONE: &str = "M1";
+
 /// The declared cross-reference bombs all cost the same, because they declare the same thing.
 ///
 /// 20,000,000 entries × 64 bytes per entry, the measured per-entry cost recorded in
@@ -307,6 +314,10 @@ fn main() {
                          and web, so not a divergence -- but undocumented until this case \
                          surfaced it."
                     .to_owned(),
+                // M2: this is one of the numbers ADR 0015 §7 deferred to a pre-M2 decision,
+                // and #25's remedy is the same decision. Fixing it before then would mean
+                // giving qpdf its own cost model on a guess.
+                milestone: "M2".to_owned(),
             }),
         },
         // ---- the bomb the pre-scan does NOT see --------------------------------------
@@ -331,6 +342,10 @@ fn main() {
                          2,437 MB and the file still returns Ok under the default 1 GiB \
                          ceiling."
                     .to_owned(),
+                // M2: teaching the pre-scan to bound stream inflation is the fix, and it
+                // lands with the rest of the memory-enforcement work the pre-M2 gate settles.
+                // Redaction is where a file reaching 2.4 GB stops being merely wasteful.
+                milestone: "M2".to_owned(),
             }),
         },
         Fixture {
@@ -529,6 +544,7 @@ fn main() {
     let expectations = Expectations {
         schema: 2,
         generated_by: GENERATED_BY.to_owned(),
+        current_milestone: CURRENT_MILESTONE.to_owned(),
         cases,
     };
     let json = serde_json::to_string_pretty(&expectations).expect("the schema should serialise");

@@ -50,6 +50,18 @@ pub struct Expectations {
     pub schema: u32,
     /// The command that produced this file and the fixtures beside it.
     pub generated_by: String,
+    /// The milestone burrow is currently working in, e.g. `"M1"`.
+    ///
+    /// This exists so [`KnownGap::milestone`] can mean something a check can enforce. A gap
+    /// targeted at a milestone we have reached or passed is a gap whose deadline went by,
+    /// and the conformance suite fails on it -- so bumping this field is the act that forces
+    /// every outstanding gap to be fixed or deliberately re-targeted, in a diff a reviewer
+    /// sees.
+    ///
+    /// A declared value rather than a date or a GitHub query: a date gate fails on an idle
+    /// branch, for reasons that have nothing to do with the code, and a query puts a network
+    /// call and a token inside a check that has to run offline.
+    pub current_milestone: String,
     /// One entry per (fixture, limits) combination worth asserting.
     pub cases: Vec<Case>,
 }
@@ -274,6 +286,29 @@ pub struct KnownGap {
     pub issue: String,
     /// What is wrong, in one sentence. **Mandatory.**
     pub reason: String,
+    /// The milestone this gap must be closed by, e.g. `"M2"`. **Mandatory.**
+    ///
+    /// A `known_gap` is green CI and an open defect at the same time. That trade is
+    /// reasonable -- the alternative is a skipped test, which records "untested", the wrong
+    /// memory to leave for M2 -- but it needs a deadline, or `known_gap` becomes where
+    /// inconvenient failures go and the corpus quietly stops asserting anything.
+    ///
+    /// Enforced against [`Expectations::current_milestone`]: a gap targeted at a milestone
+    /// that has been reached or passed fails the suite. It is not a soft warning, because a
+    /// warning on a green run is a thing people stop reading.
+    pub milestone: String,
+}
+
+/// The project's milestones, in order. Used to decide whether a [`KnownGap`] is overdue.
+///
+/// A fixed list rather than a parsed number: it is short, it is the same list
+/// `docs/ROADMAP.md` is organised around, and a typo in a milestone name should fail loudly
+/// rather than sort as zero.
+pub const MILESTONES: [&str; 7] = ["M0", "M1", "M2", "M3", "M4", "M5", "M6"];
+
+/// Position of `milestone` in [`MILESTONES`], or `None` if it is not a milestone we know.
+pub fn milestone_index(milestone: &str) -> Option<usize> {
+    MILESTONES.iter().position(|m| *m == milestone)
 }
 
 /// A `burrow_types::Error` variant, by name.

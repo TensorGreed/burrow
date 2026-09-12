@@ -58,6 +58,15 @@ export interface PlatformExpectation {
 export interface KnownGap {
   issue: string;
   reason: string;
+  /**
+   * The milestone this gap must be closed by, e.g. `"M2"`.
+   *
+   * Enforced on the Rust side, against `Expectations.current_milestone` -- there, and not
+   * here, because governance of the corpus belongs in one place and the native suite is the
+   * one CI asserts by name actually ran. Declared in this type so a file missing the field
+   * fails to typecheck rather than being read as an untargeted gap.
+   */
+  milestone: string;
 }
 
 export interface CaseLimits {
@@ -82,6 +91,8 @@ export interface Case {
 export interface Expectations {
   schema: number;
   generated_by: string;
+  /** The milestone burrow is working in. See {@link KnownGap.milestone}. */
+  current_milestone: string;
   cases: Case[];
 }
 
@@ -273,7 +284,7 @@ export function compare(
 
   for (const c of expectations.cases) {
     if (c.known_gap) {
-      gaps.push(`${c.name}: ${c.known_gap.issue}`);
+      gaps.push(`${c.name}: ${c.known_gap.issue} (due by ${c.known_gap.milestone})`);
     }
 
     for (const operation of OPERATIONS) {

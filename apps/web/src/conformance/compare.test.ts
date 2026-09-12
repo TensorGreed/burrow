@@ -49,6 +49,7 @@ function corpus(cases: Partial<Case>[]): Expectations {
   return {
     schema: 2,
     generated_by: "test",
+    current_milestone: "M1",
     cases: cases.map((c, i) => ({
       name: c.name ?? `case-${i}`,
       file: c.file ?? `fixtures/case-${i}.pdf`,
