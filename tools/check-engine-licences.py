@@ -153,46 +153,51 @@ def check_license_text(comp: dict, name: str) -> list[str]:
     if not comp.get("linked"):
         # A component that is not in any shipped artifact carries no notice obligation we
         # have to discharge in the product, so it needs no shipped copy.
-        return []
+        return [], "n/a"
 
     rel = comp.get("license_text")
     if rel is None:
         return [
             f"{name}: linked, but no `license_text` recorded. Every linked component "
             f"needs a committed copy under engines/licences/ -- see its README"
-        ]
+        ], "n/a"
 
     copy = (REPO / rel).resolve()
     if not any(copy == root or root in copy.parents for root in LICENCE_ROOTS):
         return [
             f"{name}: `license_text` {rel} resolves outside the committed licence "
             f"directories. Licence text must live in engines/licences/ or docs/adr/licences/."
-        ]
+        ], "n/a"
     if not copy.is_file():
-        return [f"{name}: `license_text` {rel} does not exist"]
+        return [f"{name}: `license_text` {rel} does not exist"], "n/a"
     if copy.stat().st_size == 0:
-        return [f"{name}: `license_text` {rel} is empty"]
+        return [f"{name}: `license_text` {rel} is empty"], "n/a"
 
     original_rel = comp.get("license_file") or ""
     # `emsdk:...` is a pseudo-path into the pinned SDK install, not into engines/vendor/,
     # so there is nothing here to resolve. The SDK is version-pinned in engines/pins.toml
     # and verifies its own downloads; engines/licences/README.md records the exemption.
     if original_rel.startswith("emsdk:"):
-        return []
+        return [], "n/a"
     original = resolve_audited_original(original_rel)
     # agg23 and harfbuzz point `license_text` at the same committed file as `license_file`,
     # because those texts exist nowhere else. Comparing a file with itself proves nothing.
     if original is not None and original.resolve() == copy.resolve():
-        return []
+        # agg23 and harfbuzz: the committed file IS the audited original, so there is no
+        # second copy to drift from. Not a skipped comparison.
+        return [], "n/a"
     if original is None:
-        # No vendor tree at all. Not a failure: see the docstring.
-        return []
+        # EXPECTED a comparison and could not resolve the original. On a clean checkout that
+        # is simply "no vendor tree"; with a tree present it means the paths do not resolve
+        # here, which is the silent-skip bug. main() decides which, because only it knows
+        # whether a tree exists.
+        return [], "unresolved"
     if original.read_bytes() != copy.read_bytes():
         return [
             f"{name}: `license_text` {rel} has drifted from the audited original "
             f"{original_rel}. Re-copy it; do not edit either by hand"
-        ]
-    return []
+        ], "compared"
+    return [], "compared"
 
 
 def main() -> int:
@@ -211,6 +216,8 @@ def main() -> int:
     problems: list[str] = []
     notices: list[tuple[str, str]] = []
     linked = 0
+    compared = 0
+    unresolved: list[str] = []
 
     for comp in components:
         name = comp.get("name", "<unnamed>")
@@ -244,9 +251,42 @@ def main() -> int:
         if comp.get("license_file") is None:
             problems.append(f"{name}: no `license_file` recorded")
 
-        problems.extend(check_license_text(comp, name))
+        text_problems, outcome = check_license_text(comp, name)
+        problems.extend(text_problems)
+        if outcome == "compared":
+            compared += 1
+        elif outcome == "unresolved":
+            unresolved.append(name)
 
     print(f"engines/licenses.toml: {len(components)} components, {linked} linked")
+
+    # REPORT THE COMPARISON COUNT, AND FAIL ON A SHORTFALL.
+    #
+    # Its absence is what made the skipping silent. Before the arch wildcard, 11 of 15
+    # comparisons were skipped in CI and this script's output was byte-identical to a run
+    # that compared all 15.
+    #
+    # A "zero comparisons" gate is NOT enough, and measuring proved it: with the resolver
+    # deliberately broken, four components still compared, because their `license_file`
+    # paths are under `vendor/src/` and carry no architecture. The real failure was never
+    # zero -- it was four of fifteen. So the gate is on the SHORTFALL, naming the components
+    # whose original could not be found.
+    native_trees = sorted((REPO / "engines" / "vendor").glob("native-*"))
+    if unresolved and native_trees:
+        problems.append(
+            f"{len(unresolved)} licence text(s) could not be compared against an audited "
+            f"original, though {native_trees[0].name} is present: {', '.join(unresolved)}. "
+            f"Their `license_file` paths do not resolve here -- see "
+            f"resolve_audited_original(). A silent skip is the failure this check exists to "
+            f"prevent"
+        )
+    elif unresolved:
+        print(
+            f"no native vendor tree: {len(unresolved)} licence-text comparison(s) skipped, "
+            f"{compared} made (see the docstring)"
+        )
+    if compared:
+        print(f"licence texts byte-compared against the audited originals: {compared}")
 
     if notices:
         print(f"\n{len(notices)} affirmative notice obligation(s) — these bind")
