@@ -1,0 +1,4 @@
+# Sweep logs. Reproducible from sweep.sh, and 24 files of Playwright output is not something
+# anyone reads from git -- the numbers that matter are in docs/spikes/0002-wasm-memory-ceiling.md.
+# Same reasoning as the root .gitignore's spike rules: only sources belong in git.
+results/
