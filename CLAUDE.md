@@ -171,6 +171,39 @@ A change is done when all of these hold:
 
 ## Working agreements
 
+### When to proceed, and when to stop and ask
+
+The default is **proceed**. Stopping for confirmation has its own cost, and it was being
+paid too often on changes nobody would have answered differently.
+
+**Proceed without asking**, in the current PR or the next one:
+
+- Test and check hardening — including a follow-up issue you filed yourself that is purely
+  about making a check non-inert.
+- Corrections to documentation, comments or stale notes you find to be wrong.
+- Refactors within the scope of the PR you are already writing, **including ones that go
+  slightly beyond the literal ask when the narrower change would leave something broken or
+  rotting**. Say so in the summary.
+- Filing issues, setting milestones, and fixing your own defects.
+
+**Stop and ask:**
+
+- Anything that changes a decision recorded in an accepted ADR.
+- The licence allowlist, engine pins, or the acquisition route.
+- Security posture: CSP, sandboxing, integrity pinning, the worker boundary, or what
+  reaches an error message or a log.
+- Anything that invalidates a measurement we rely on — size budgets, the licence audit,
+  the conformance corpus.
+- Milestone scope, or the order of the roadmap.
+- Any choice where the cheaper option is **irreversible** and the reversible option is
+  materially more expensive.
+
+**Summarise per batch, not per PR.** Group related PRs and give one summary at the end,
+naming each merge. Do **not** compress away mistakes, corrections or pushback: surfacing
+those at full candour is working and is not what "summarise" is asking you to shorten.
+
+### General
+
 - Ask rather than assume. If two readings of a task lead to materially different work,
   raise it with a recommendation and the tradeoffs.
 - Prefer `rg` over `grep`, and the file tools over shell text editing.

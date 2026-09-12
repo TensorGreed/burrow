@@ -258,6 +258,112 @@ def brace_body(source: str, start: int) -> str | None:
     return None
 
 
+# PARSER FIXTURES.
+#
+# THE SHARP CASE FOR THIS FILE: `engines/build-wasm.sh` parses the SAME `ffi.rs` with the
+# SAME shape, and got exactly this treatment in PR #40 -- one fixture and four near-misses,
+# including a commented-out declaration. This file did not, and its per-source floors would
+# not have noticed the difference that matters. A floor of 10 declarations passes with 15 of
+# 16 functions parsed, which is the "4 of 15" shape: a regex tightened so it stops matching
+# one real declaration NARROWS the set required to be trapped, and the count still looks fine.
+#
+# A loosened regex is the noisy direction -- it would demand justification for a function
+# nobody calls. A tightened one is the silent direction, and it is the one that lets an
+# untrapped call through.
+FFI_CASES: tuple[tuple[str, str | None, str], ...] = (
+    ("    pub(super) fn qpdf_read_memory(", "qpdf_read_memory", "an ordinary declaration"),
+    ("    pub(super) fn qpdf_init() -> QpdfData;", "qpdf_init", "one with no parameters"),
+    ("    pub(super) fn qpdflogger_create() -> QpdfLoggerHandle;", "qpdflogger_create",
+     "the logger family, which is a different prefix"),
+    ("    // pub(super) fn qpdf_is_linearized(", None, "a commented-out declaration"),
+    ("    /// `qpdf_is_linearized` is deliberately absent", None, "prose naming a function"),
+    ("    pub fn qpdf_is_linearized(", None, "`pub fn` without `(super)`"),
+    ("    pub(super) fn pdfium_load(", None, "a non-qpdf function"),
+)
+
+JS_CASES: tuple[tuple[str, str | None, str], ...] = (
+    ("self.__burrow_qpdf_read_memory = (d) => qpdf()._qpdf_read_memory(d);", "qpdf_read_memory",
+     "an ordinary bridge call"),
+    ("  qpdf()._qpdf_get_num_pages(data);", "qpdf_get_num_pages", "one on its own line"),
+    ("// qpdf()._qpdf_is_linearized(d)", "qpdf_is_linearized",
+     "a COMMENTED-OUT bridge call -- deliberately still matched, see below"),
+    ("self.__burrow_qpdf_copy_in = (b) => copyInto(qpdf(), b);", None,
+     "a bridge helper that never enters qpdf's C API"),
+    ("pdfium()._FPDF_LoadMemDocument64(x);", None, "a PDFium call"),
+)
+
+
+def parse_ffi(text: str) -> list[str]:
+    """Declarations in `qpdf/ffi.rs`'s `extern \"C\"` block."""
+    return re.findall(r"^\s*pub\(super\) fn (qpdf[a-z_0-9]*)\s*\(", text, re.MULTILINE)
+
+
+def parse_js_bridge(text: str) -> list[str]:
+    """qpdf C exports the JS bridge calls into the Emscripten module."""
+    return re.findall(r"\._(qpdf[a-z_0-9]*)\s*\(", text)
+
+
+def check_parser_fixtures() -> list[str]:
+    """Every declaration parser must find its own cases and reject its near-misses."""
+    problems: list[str] = []
+
+    for line, expected, label in FFI_CASES:
+        got = parse_ffi(line)
+        if expected is None and got:
+            problems.append(f"the ffi.rs parser matches {label}: {line.strip()!r} -> {got!r}")
+        elif expected is not None and got != [expected]:
+            problems.append(
+                f"the ffi.rs parser does not find {label}: {line.strip()!r} -> {got!r}, "
+                f"expected [{expected!r}]"
+            )
+
+    for line, expected, label in JS_CASES:
+        got = parse_js_bridge(line)
+        if expected is None and got:
+            problems.append(f"the JS bridge parser matches {label}: {line.strip()!r} -> {got!r}")
+        elif expected is not None and got != [expected]:
+            problems.append(
+                f"the JS bridge parser does not find {label}: {line.strip()!r} -> {got!r}, "
+                f"expected [{expected!r}]"
+            )
+
+    # The trapped-set parser, on a synthetic qpdf-c.cc. Both directions matter: a function
+    # whose body calls `trap_errors` must be found, and one that merely mentions it in a
+    # comment must not.
+    synthetic = """\
+QPDF_ERROR_CODE
+qpdf_trapped_example(qpdf_data qpdf)
+{
+    return trap_errors(qpdf, &call_thing);
+}
+
+int
+qpdf_untrapped_example(qpdf_data qpdf)
+{
+    // this one does not go through trap_errors
+    return qpdf->qpdf->isLinearized();
+}
+
+static int
+qpdf_static_helper(qpdf_data qpdf)
+{
+    return trap_errors(qpdf, &call_other);
+}
+"""
+    trapped = trapped_functions(synthetic)
+    if "qpdf_trapped_example" not in trapped:
+        problems.append("trapped_functions misses a function whose body calls trap_errors")
+    if "qpdf_untrapped_example" in trapped:
+        problems.append(
+            "trapped_functions reports an UNTRAPPED function as trapped -- it would bless a "
+            "call that can abort the process"
+        )
+    if "qpdf_static_helper" in trapped:
+        problems.append("trapped_functions includes a `static` helper, which is not C API")
+
+    return problems
+
+
 def declared_functions() -> dict[str, list[str]]:
     """Every qpdf C function burrow declares, mapped to where it is declared.
 
@@ -288,12 +394,10 @@ def declared_functions() -> dict[str, list[str]]:
     def record(name: str, where: str) -> None:
         out.setdefault(name, []).append(where)
 
-    for name in re.findall(
-        r"^\s*pub\(super\) fn (qpdf[a-z_0-9]*)\s*\(", NATIVE_FFI.read_text(), re.MULTILINE
-    ):
+    for name in parse_ffi(NATIVE_FFI.read_text()):
         record(name, "qpdf/ffi.rs")
 
-    for name in re.findall(r"\._(qpdf[a-z_0-9]*)\s*\(", WEB_BRIDGE_JS.read_text()):
+    for name in parse_js_bridge(WEB_BRIDGE_JS.read_text()):
         record(name, "worker/bridge.js")
 
     for name in re.findall(r"^\s*/// `(qpdf[a-z_0-9]*)`\.", WEB_TRAIT.read_text(), re.MULTILINE):
@@ -455,6 +559,19 @@ def generate() -> int:
 
 
 def verify() -> int:
+    # FIXTURES FIRST. The per-source floors below catch a parser that falls silent; they do
+    # not catch one that quietly finds one function fewer, which is the direction that lets an
+    # untrapped call through.
+    fixture_problems = check_parser_fixtures()
+    if fixture_problems:
+        print(
+            f"FAILED — {len(fixture_problems)} parsing rule(s) do not behave as declared:",
+            file=sys.stderr,
+        )
+        for problem in fixture_problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
+
     trapped = load_trapped()
     accepted = load_accepted()
     declared = declared_functions()
@@ -495,6 +612,10 @@ def verify() -> int:
         f"qpdf C API: {len(declared)} functions declared "
         f"({len(both)} trapped, {len(exempt)} accepted-untrapped), "
         f"against a generated set of {len(trapped)}"
+    )
+    print(
+        f"  parsers verified against {len(FFI_CASES)} ffi.rs case(s), {len(JS_CASES)} "
+        f"bridge case(s) and a synthetic qpdf-c.cc"
     )
     print(f"  trapped:            {', '.join(both) or '(none)'}")
     print(f"  accepted-untrapped: {', '.join(exempt) or '(none)'}")

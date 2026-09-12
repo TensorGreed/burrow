@@ -136,6 +136,83 @@ def resolve_audited_original(license_file: str) -> pathlib.Path | None:
     return None
 
 
+# PARSER FIXTURES. Every rule below matches its own case and rejects a near-miss, checked on
+# every run before any component is examined.
+#
+# `split_expression` is where it matters most. The allowlist check is only as good as the
+# split: an expression that came back as ONE token would be compared whole against the
+# allowlist and fail loudly -- survivable. One that silently dropped a constituent would pass
+# a licence nobody checked, which is the failure this whole file exists to prevent. The
+# count this script prints ("23 components, 18 linked") says nothing about either.
+#
+# `resolve_audited_original` is included because its architecture wildcard is what made the
+# drift comparison run on 15 components instead of 4, and a regression there is silent by
+# construction: fewer comparisons, same output.
+SPLIT_CASES: tuple[tuple[str, list[str]], ...] = (
+    # The real shapes in engines/licenses.toml today.
+    ("MIT", ["MIT"]),
+    ("BSD-3-Clause AND Apache-2.0", ["BSD-3-Clause", "Apache-2.0"]),
+    ("IJG AND BSD-3-Clause AND Zlib", ["IJG", "BSD-3-Clause", "Zlib"]),
+    ("Unicode-3.0 AND ICU", ["Unicode-3.0", "ICU"]),
+    ("MIT AND Apache-2.0 WITH LLVM-exception", ["MIT", "Apache-2.0 WITH LLVM-exception"]),
+    ("BSD-2-Clause AND libpng-2.0", ["BSD-2-Clause", "libpng-2.0"]),
+    # Parenthesised, which the manifest does not use today but SPDX permits.
+    ("(MIT OR Apache-2.0) AND Zlib", ["MIT", "Apache-2.0", "Zlib"]),
+    # NEAR-MISSES. Each must NOT collapse to a single token, because a single token is how a
+    # constituent gets dropped without anyone noticing.
+    ("Apache-2.0 WITH LLVM-exception", ["Apache-2.0 WITH LLVM-exception"]),
+    ("LicenseRef-AGG-2.3", ["LicenseRef-AGG-2.3"]),
+)
+
+
+def check_parser_fixtures() -> list[str]:
+    """Every parsing rule must handle its own cases. Returns a list of problems."""
+    problems: list[str] = []
+
+    for expr, expected in SPLIT_CASES:
+        got = split_expression(expr)
+        if got != expected:
+            problems.append(f"split_expression({expr!r}) returned {got!r}, expected {expected!r}")
+
+    # A dropped constituent is the dangerous direction, so it gets its own assertion rather
+    # than relying on the equality checks above to notice.
+    combined = "IJG AND BSD-3-Clause AND Zlib"
+    if len(split_expression(combined)) != 3:
+        problems.append(
+            f"split_expression dropped a constituent of {combined!r}; a licence would go "
+            f"unchecked against the allowlist"
+        )
+
+    # resolve_audited_original: the architecture is a wildcard, and a path outside
+    # engines/vendor/ must not be invented.
+    cases: tuple[tuple[str, bool, str], ...] = (
+        ("vendor/native-aarch64/licenses-pdfium/pdfium.txt", True, "an arch-specific vendor path"),
+        # THE WILDCARD ITSELF. The case above resolves EXACTLY on a machine that happens to
+        # have that architecture, so it does not exercise the fallback -- removing the glob
+        # left it green. This names an architecture that is not present locally but is in CI
+        # (or vice versa), so only the wildcard can resolve it. Without this the 4-of-15
+        # regression the wildcard fixed would be reintroducible in silence.
+        ("vendor/native-THIS-ARCH-DOES-NOT-EXIST/licenses-pdfium/pdfium.txt", True,
+         "a vendor path naming an architecture this machine does not have"),
+        ("docs/adr/licences/LicenseRef-AGG-2.3.txt", True, "a committed path outside vendor/"),
+        ("vendor/does-not-exist/nothing.txt", False, "a vendor path with no such file"),
+        ("docs/adr/licences/no-such-file.txt", False, "a committed path with no such file"),
+    )
+    native_trees = sorted((REPO / "engines" / "vendor").glob("native-*"))
+    for rel, should_resolve, label in cases:
+        # The arch-wildcard case can only be exercised where a native tree exists; without
+        # one, "did not resolve" is correct rather than a finding.
+        if rel.startswith("vendor/native-") and not native_trees:
+            continue
+        resolved = resolve_audited_original(rel)
+        if should_resolve and resolved is None:
+            problems.append(f"resolve_audited_original does not resolve {label}: {rel}")
+        if not should_resolve and resolved is not None:
+            problems.append(f"resolve_audited_original invented a path for {label}: {rel}")
+
+    return problems
+
+
 def check_license_text(comp: dict, name: str) -> list[str]:
     """Every `linked` component must carry a committed copy of its licence text.
 
@@ -208,6 +285,18 @@ def main() -> int:
     with MANIFEST.open("rb") as fh:
         data = tomllib.load(fh)
 
+    # FIXTURES FIRST. A parser that mis-splits an SPDX expression makes every allowlist
+    # verdict below meaningless, and the component count this script prints would not change.
+    fixture_problems = check_parser_fixtures()
+    if fixture_problems:
+        print(
+            f"FAILED — {len(fixture_problems)} parsing rule(s) do not behave as declared:",
+            file=sys.stderr,
+        )
+        for problem in fixture_problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
+
     components = data.get("component", [])
     if not components:
         print("error: manifest declares no components", file=sys.stderr)
@@ -259,6 +348,7 @@ def main() -> int:
             unresolved.append(name)
 
     print(f"engines/licenses.toml: {len(components)} components, {linked} linked")
+    print(f"{len(SPLIT_CASES)} SPDX split case(s) + 4 path case(s) verified")
 
     # REPORT THE COMPARISON COUNT, AND FAIL ON A SHORTFALL.
     #
