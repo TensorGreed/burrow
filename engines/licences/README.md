@@ -29,6 +29,17 @@ or if the file is missing. **When the vendor tree is present it also compares th
 byte**, so a copy that drifts from the original it was taken from is a build failure rather
 than a silent divergence — which is the whole failure mode committing a copy introduces.
 
+**The architecture in a `license_file` path is treated as a wildcard, and that is load-bearing.**
+Every `vendor/native-*/` path in the manifest says `native-aarch64`, because M1 PR 1's audit ran
+on an aarch64 machine — but `engines/build-native.sh` builds for the *host* arch and CI runs on
+x86-64, so those exact paths do not exist there. Measured: with a `native-x86_64` tree and no
+`native-aarch64` one, **11 of 15 comparisons were silently skipped**. `resolve_audited_original()`
+now tries the recorded path, then the same tail under any other `vendor/native-*/` prefix that
+exists. A component's licence text is not architecture-specific — `pdfium-binaries` ships a
+byte-identical `licences/` directory for both Linux builds, all 14 files verified — so comparing
+against whichever build is present is exactly as strong, and it is the difference between the
+check running and the check reporting nothing.
+
 Two files are exempt from the byte comparison, for stated reasons:
 
 - `agg23` and `harfbuzz` reference [`docs/adr/licences/`](../../docs/adr/licences/) directly.
