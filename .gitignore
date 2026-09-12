@@ -65,6 +65,7 @@ spikes/**/www/
 spikes/**/node_modules/
 spikes/**/target/
 spikes/**/test-results/
+spikes/**/results/
 spikes/**/playwright-report/
 spikes/**/*.wasm
 spikes/**/*.data
