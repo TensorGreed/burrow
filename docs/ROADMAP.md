@@ -58,7 +58,7 @@ Agreed sequence. Each PR is squash-merged with CI green before the next starts.
 | **3** ✅ | **qpdf native** behind its own trait, logging suppression, and the "a secret never reaches the console or an error" test | 6, 7 |
 | **4a-i** ✅ | **Web path, part 1**: the real qpdf Emscripten module, the `DocumentEngine`/`StructureEngine` web implementations over a bridge trait seam, the wasm binding, the classic worker, the generated CSP, and the engines loading end to end in a browser | 9 (part) |
 | **4a-ii** ✅ | Worker recovery per ADR 0009 as an explicit state machine, the main-thread watchdog (clock starting at the worker's ack), a crash-counting circuit breaker, heap-growth recycling with a measured threshold, and the console-silence and zero-requests-after-init tests. [ADR 0015](adr/0015-web-worker-lifecycle.md) | 10 |
-| **4b** | The **differential conformance harness** and the Chromium/Firefox/WebKit matrix | 12 |
+| **4b** ✅ | The **differential conformance harness** and the Chromium/Firefox/WebKit matrix. `Stage` on `LimitExceeded`, expectations schema 2, the adversarial corpus, and two measured findings. [ADR 0016](adr/0016-differential-conformance.md) | 12 |
 | **4c** | Credits page (#16), the wasm size budget, and a CI check generating qpdf's `trap_errors` set from source | 11 |
 | **5+** | Operations, one at a time, starting with `merge` | — |
 
@@ -292,7 +292,24 @@ what later PRs can assume:
 11. **wasm size budget in CI.** Record the module size and fail on an unexplained
     regression. The spike measured 6.50 MB raw / 2.20 MB brotli for the full option 1
     payload, 82% of it PDFium — that is the starting point, not a target.
-12. **Differential conformance between the two `DocumentEngine` implementations.** The
+12. ~~**Differential conformance between the two `DocumentEngine` implementations.**~~ —
+    **done, PR 4b.** [ADR 0016](adr/0016-differential-conformance.md). 21 cases × 2 engines ×
+    3 browsers, diffed against the native record, in 22 seconds; the whole corpus runs on
+    every PR. The corpus grew from 8 well-formed-or-damaged files to include every adversarial
+    file this project has found — the xref bomb, the three pre-scan bypasses security review
+    found in PR 3, the object number that used to abort the process, and the two files qpdf
+    reads and PDFium refuses.
+    **`Error::LimitExceeded` gained a `stage`**, because three separate checks produced an
+    identical error and "the same kind reached by a different route" has to read as a
+    divergence. **The comparator is a pure function** with planted-divergence unit tests, so
+    the defences against a vacuous pass are exercised rather than declared.
+    It found three things on its first runs: a pre-scan gap where a 1.4 MB file reaches
+    2,437 MB and still returns `Ok` ([#24](https://github.com/TensorGreed/burrow/issues/24));
+    that `max_memory_bytes` is **not** the hard ceiling on the web that ADR 0007 claimed
+    ([#25](https://github.com/TensorGreed/burrow/issues/25)); and that the web's measured check
+    is stronger than native's, which is now the first recorded `platform_expectations` entry.
+
+    *The original entry, for reference:* The
     native path and the web path are separate implementations of one trait, and almost
     every test exercises only the native one — the web path is otherwise covered just by
     Playwright. So run the **same corpus through both** — native via `cargo test`, web via

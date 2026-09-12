@@ -126,6 +126,25 @@ jobs:
 
       - run: cargo test --workspace --all-features
 
+      # The native half of the differential conformance harness (ROADMAP item 12). Written by
+      # `tests/conformance.rs` during the run above; the `web` job downloads it and diffs it
+      # against what the browsers produced for the same corpus.
+      #
+      # An artifact rather than recomputing it in the `web` job, because the native side needs
+      # the NATIVE engines and the web job has only the wasm ones. Both engine sets stay on
+      # their existing caches; neither is built twice.
+      #
+      # `if-no-files-found: error` matters more than it looks: a missing record would otherwise
+      # reach the web job as "nothing to compare", which is exactly the shape of a differential
+      # harness that has stopped comparing.
+      - name: Upload the native conformance record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-conformance-record
+          path: tests/conformance/native-outcomes.json
+          if-no-files-found: error
+          retention-days: 1
+
       # The engine tests are the riskiest part of the suite and are feature-gated, so a
       # misconfiguration could silently drop them and still show green. Assert on
       # IDENTITY, not on a count: a threshold would start passing the moment PR 2 adds
@@ -386,8 +405,19 @@ jobs:
   web:
     name: web
     runs-on: ubuntu-latest
+    # The differential harness diffs the browsers against the native record, so that record
+    # has to exist first. It is the only ordering constraint between the two jobs, and it buys
+    # the half of ROADMAP item 12 that a shared expectations file cannot: a divergence in a
+    # field nobody thought to put in the schema.
+    needs: [test]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the native conformance record
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: native-conformance-record
+          path: tests/conformance/
 
       # ---- the wasm engines -------------------------------------------------------
       # New in M1 PR 4a-i. Until now CI never ran engines/build-wasm.sh at all, so the

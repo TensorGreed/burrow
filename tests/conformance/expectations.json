@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "generated_by": "cargo run -p burrow-engines --example make-conformance-fixtures",
   "cases": [
     {
@@ -7,9 +7,17 @@
       "file": "fixtures/blank-1page.pdf",
       "sha256": "bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0",
       "password": null,
+      "attempt_recovery": false,
       "expect": {
-        "ok": {
-          "page_count": 1
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
         }
       }
     },
@@ -18,9 +26,17 @@
       "file": "fixtures/pages-10.pdf",
       "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe",
       "password": null,
+      "attempt_recovery": false,
       "expect": {
-        "ok": {
-          "page_count": 10
+        "page_count": {
+          "ok": {
+            "page_count": 10
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 10
+          }
         }
       }
     },
@@ -29,9 +45,17 @@
       "file": "fixtures/pages-137.pdf",
       "sha256": "257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da",
       "password": null,
+      "attempt_recovery": false,
       "expect": {
-        "ok": {
-          "page_count": 137
+        "page_count": {
+          "ok": {
+            "page_count": 137
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 137
+          }
         }
       }
     },
@@ -40,8 +64,18 @@
       "file": "fixtures/truncated.pdf",
       "sha256": "46b5adcc2e35004d92b1323d49ec8fa325d78e82a2605c477b6c4cf14a8714d4",
       "password": null,
+      "attempt_recovery": false,
       "expect": {
-        "err": "Malformed"
+        "page_count": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        }
       }
     },
     {
@@ -49,8 +83,18 @@
       "file": "fixtures/not-a-pdf.bin",
       "sha256": "66338f6baf4dd76fee3be07a4306744495073f0124f74d357fcf040971513a0d",
       "password": null,
+      "attempt_recovery": false,
       "expect": {
-        "err": "Malformed"
+        "page_count": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        }
       }
     },
     {
@@ -58,8 +102,18 @@
       "file": "fixtures/no-pages.pdf",
       "sha256": "375c75084e670596af448c3c48c0c048c0197baf97ab4256624929021483fbe4",
       "password": null,
+      "attempt_recovery": false,
       "expect": {
-        "err": "Malformed"
+        "page_count": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        }
       }
     },
     {
@@ -67,8 +121,18 @@
       "file": "fixtures/encrypted.pdf",
       "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74",
       "password": null,
+      "attempt_recovery": false,
       "expect": {
-        "err": "PasswordRequired"
+        "page_count": {
+          "err": {
+            "kind": "PasswordRequired"
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "PasswordRequired"
+          }
+        }
       }
     },
     {
@@ -76,8 +140,352 @@
       "file": "fixtures/encrypted.pdf",
       "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74",
       "password": "not the password",
+      "attempt_recovery": false,
       "expect": {
-        "err": "PasswordRequired"
+        "page_count": {
+          "err": {
+            "kind": "PasswordRequired"
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "PasswordRequired"
+          }
+        }
+      }
+    },
+    {
+      "name": "xref-bomb",
+      "file": "fixtures/xref-bomb.pdf",
+      "sha256": "ae2f916b2e0867f69a4cae984094a78ac44403ebcec4ffd080d234351adc5f4b",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        }
+      }
+    },
+    {
+      "name": "bomb-hidden-by-decoy-key",
+      "file": "fixtures/bomb-hidden-decoy-key.pdf",
+      "sha256": "db9cb3d636c34fa287d5451f2f4717294148d5ad246d4dfaeb6b14dce88ae139",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        }
+      }
+    },
+    {
+      "name": "bomb-hidden-by-dictionary-padding",
+      "file": "fixtures/bomb-hidden-padded-dictionary.pdf",
+      "sha256": "be9ae2de6767d19a5d51e6f2f58f4fe650aa25778762327b2a22dc18d7ef249f",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        }
+      }
+    },
+    {
+      "name": "bomb-hidden-by-trailing-junk",
+      "file": "fixtures/bomb-hidden-trailing-junk.pdf",
+      "sha256": "595f25bf02c6b882d9b9e29b3fb2397c39f17c28fab96b7143f812dd4ce82a86",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "prescan",
+            "requested": 1280000000,
+            "allowed": 1073741824
+          }
+        }
+      }
+    },
+    {
+      "name": "size-estimate-refuses-an-ordinary-file",
+      "file": "fixtures/pages-10.pdf",
+      "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe",
+      "password": null,
+      "limits": {
+        "max_memory_bytes": 8388608
+      },
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "size_estimate",
+            "requested": 16778951,
+            "allowed": 8388608
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 10
+          }
+        }
+      },
+      "known_gap": {
+        "issue": "https://github.com/TensorGreed/burrow/issues/26",
+        "reason": "the length-based memory estimate runs on the PDFium path and not the qpdf path, so `max_memory_bytes` does not get its cheapest pre-check when a caller asks for a structure check. Consistent across native and web, so not a divergence -- but undocumented until this case surfaced it."
+      }
+    },
+    {
+      "name": "objstm-bomb-default-limits",
+      "file": "fixtures/objstm-bomb.pdf",
+      "sha256": "54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        }
+      },
+      "known_gap": {
+        "issue": "https://github.com/TensorGreed/burrow/issues/24",
+        "reason": "the pre-scan does not model object-stream inflation, and the measured check compares resident set before and after so it cannot see a transient peak. Measured on a 1.4 MB variant: PDFium peaks at 2,437 MB and the file still returns Ok under the default 1 GiB ceiling."
+      }
+    },
+    {
+      "name": "objstm-bomb-tight-ceiling",
+      "file": "fixtures/objstm-bomb.pdf",
+      "sha256": "54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b",
+      "password": null,
+      "limits": {
+        "max_memory_bytes": 100663296
+      },
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "measured",
+            "allowed": 100663296
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        }
+      },
+      "platform_expectations": [
+        {
+          "platform": "web",
+          "operation": "structure_check",
+          "expect": {
+            "err": {
+              "kind": "LimitExceeded",
+              "limit": "max_memory_bytes",
+              "stage": "measured",
+              "allowed": 100663296
+            }
+          },
+          "reason": "the measured check reads a different counter on each platform, which ADR 0007 records deliberately: the process resident set on native, and the engine module's HEAPU8.byteLength on the web. WASM linear memory NEVER SHRINKS, so the web reading includes the peak this file causes while the native one sees only what was still held afterwards -- qpdf inflates 200 MiB and frees it before the native sampling. The web is therefore strictly stronger here, and this entry records that rather than hiding it behind a skipped case."
+        }
+      ]
+    },
+    {
+      "name": "object-number-above-int-max",
+      "file": "fixtures/object-number-above-int-max.pdf",
+      "sha256": "1457829ea5d5092a0f03e0cf82e5f6a570855a551b7d03ec476d0dd910472f4d",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        }
+      }
+    },
+    {
+      "name": "truncated-mid-object",
+      "file": "fixtures/truncated-mid-object.pdf",
+      "sha256": "f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        }
+      }
+    },
+    {
+      "name": "truncated-mid-object-recovered",
+      "file": "fixtures/truncated-mid-object.pdf",
+      "sha256": "f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75",
+      "password": null,
+      "attempt_recovery": true,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "trailer-removed",
+      "file": "fixtures/trailer-removed.pdf",
+      "sha256": "338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        }
+      }
+    },
+    {
+      "name": "trailer-removed-recovered",
+      "file": "fixtures/trailer-removed.pdf",
+      "sha256": "338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5",
+      "password": null,
+      "attempt_recovery": true,
+      "expect": {
+        "page_count": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 3
+          }
+        }
+      }
+    },
+    {
+      "name": "canary",
+      "file": "fixtures/canary.pdf",
+      "sha256": "0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d",
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        }
+      }
+    },
+    {
+      "name": "canary-recovered",
+      "file": "fixtures/canary.pdf",
+      "sha256": "0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d",
+      "password": null,
+      "attempt_recovery": true,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        }
       }
     }
   ]

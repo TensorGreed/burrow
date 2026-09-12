@@ -104,6 +104,7 @@ pub struct Reply {
     message: String,
     pages: u64,
     limit: String,
+    stage: String,
     requested: u64,
     allowed: u64,
     recycle: bool,
@@ -168,6 +169,21 @@ impl Reply {
     #[must_use]
     pub fn limit(&self) -> String {
         self.limit.clone()
+    }
+
+    /// **Which check rejected the operation**, for a `LimitExceeded` result.
+    ///
+    /// Empty for every other outcome. `limit` names the field the caller set; this names the
+    /// mechanism that fired, and for `max_memory_bytes` those are three different mechanisms
+    /// — the length-based estimate, the structural pre-scan, and the measured post-open check.
+    ///
+    /// ROADMAP item 12's differential harness compares this between the native and web
+    /// implementations, because the same error kind reached by a different route is a
+    /// divergence. See [`burrow_core::Stage`].
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn stage(&self) -> String {
+        self.stage.clone()
     }
 
     /// What was requested, for a `LimitExceeded` result.
@@ -274,6 +290,7 @@ impl Reply {
             message: String::new(),
             pages,
             limit: String::new(),
+            stage: String::new(),
             requested: 0,
             allowed: 0,
             recycle: false,
@@ -304,13 +321,19 @@ impl Reply {
     }
 
     fn failure(error: &Error) -> Self {
-        let (limit, requested, allowed) = match error {
+        let (limit, stage, requested, allowed) = match error {
             Error::LimitExceeded {
                 limit,
+                stage,
                 requested,
                 allowed,
-            } => ((*limit).to_owned(), *requested, *allowed),
-            _ => (String::new(), 0, 0),
+            } => (
+                (*limit).to_owned(),
+                stage.as_str().to_owned(),
+                *requested,
+                *allowed,
+            ),
+            _ => (String::new(), String::new(), 0, 0),
         };
         Self {
             ok: false,
@@ -319,6 +342,7 @@ impl Reply {
             message: error.to_string(),
             pages: 0,
             limit,
+            stage,
             requested,
             allowed,
             recycle: false,
@@ -363,6 +387,41 @@ impl WebLimits {
             max_pages,
             max_pixels,
         }
+    }
+
+    /// The largest accepted input, in bytes.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn max_input_bytes(&self) -> u64 {
+        self.max_input_bytes
+    }
+
+    /// The peak working memory an operation may use, in bytes.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn max_memory_bytes(&self) -> u64 {
+        self.max_memory_bytes
+    }
+
+    /// The wall-clock ceiling for one operation, in milliseconds.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn max_duration_ms(&self) -> u64 {
+        self.max_duration_ms
+    }
+
+    /// The largest accepted page count.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn max_pages(&self) -> u64 {
+        self.max_pages
+    }
+
+    /// The largest accepted decoded raster, in pixels.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn max_pixels(&self) -> u64 {
+        self.max_pixels
     }
 
     /// The core's defaults, so a page that has no opinion still gets every limit enforced.
@@ -451,6 +510,39 @@ pub fn structure_check(
     .with_lifecycle(&limits)
 }
 
+/// `Limits::DEFAULT`, as the page sees it.
+///
+/// The conformance harness needs this: `expectations.json` says an omitted `limits` block means
+/// `Limits::DEFAULT`, the native side honours that literally, and the web side would otherwise
+/// merge the case's overrides onto whatever the *page* happened to default to. A differential
+/// harness whose two sides run under different ceilings is not comparing what it says it is.
+///
+/// Carried from Rust rather than restated in JavaScript, for the same reason
+/// [`min_converging_memory_bytes`] is.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_limits() -> WebLimits {
+    WebLimits::defaults()
+}
+
+/// The smallest `max_memory_bytes` at which worker recycling converges.
+///
+/// Below this a worker is recycled after **every** operation: the recycling threshold falls
+/// under the heap a working engine already occupies, so the first operation on a fresh worker
+/// exceeds it and the heap never gets back under the line. Nothing clamps it — silently
+/// ignoring a ceiling the caller set would be worse — so a page choosing limits for a
+/// constrained device needs the number.
+///
+/// Exposed rather than copied into the page. It is derived from what the Emscripten modules
+/// declare as their initial memory, and a JavaScript literal of the same value would be a
+/// second definition free to drift from the one that actually decides.
+/// `apps/web/e2e/measure.spec.ts` asserts the measured baselines against it.
+#[wasm_bindgen]
+#[must_use]
+pub fn min_converging_memory_bytes() -> u64 {
+    burrow_core::engines::web::MIN_CONVERGING_MEMORY_BYTES
+}
+
 /// The version of this build of burrow, for the web app's footer.
 #[wasm_bindgen]
 #[must_use]
@@ -467,6 +559,10 @@ pub fn available_operations() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Only the tests name a `Stage` directly: `Reply::failure` reads one off an error rather
+    // than choosing one, which is the whole point -- the binding classifies nothing.
+    use burrow_core::Stage;
 
     #[test]
     fn version_is_reported_to_the_web_app() {
@@ -489,6 +585,7 @@ mod tests {
             (
                 Error::LimitExceeded {
                     limit: "max_pages",
+                    stage: Stage::PageCount,
                     requested: 2,
                     allowed: 1,
                 },
@@ -524,6 +621,7 @@ mod tests {
             Error::PasswordRequired,
             Error::LimitExceeded {
                 limit: "max_pages",
+                stage: Stage::PageCount,
                 requested: 1,
                 allowed: 0,
             },
@@ -554,11 +652,14 @@ mod tests {
     fn a_limit_failure_carries_the_limit_and_both_numbers() {
         let reply = Reply::failure(&Error::LimitExceeded {
             limit: "max_input_bytes",
+            stage: Stage::InputSize,
             requested: 900,
             allowed: 100,
         });
         assert_eq!(reply.kind(), "LimitExceeded");
         assert_eq!(reply.limit(), "max_input_bytes");
+        // The route, not just the ceiling. The differential harness compares it.
+        assert_eq!(reply.stage(), "input_size");
         assert_eq!(reply.requested(), 900);
         assert_eq!(reply.allowed(), 100);
         assert!(!reply.fatal());

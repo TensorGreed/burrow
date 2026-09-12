@@ -41,7 +41,7 @@
 mod lengths;
 mod xref;
 
-use burrow_types::{Error, Limits, Result};
+use burrow_types::{Error, Limits, Result, Stage};
 
 /// How far back from the end of the file to look for `startxref`.
 ///
@@ -164,6 +164,7 @@ pub fn check(bytes: &[u8], limits: &Limits) -> Result<Declared> {
     // The cross-reference table an engine would have to materialise. This is the check
     // that stops the declared-size bomb, and it is the whole reason this module exists.
     Limits::check(
+        Stage::Prescan,
         "max_memory_bytes",
         declared.estimated_xref_bytes(),
         limits.max_memory_bytes,

@@ -121,6 +121,13 @@ Breaking changes get a `!` and a `BREAKING CHANGE:` footer.
 **Dependencies.** Adding one is a decision, not a detail. Follow the `add-dependency`
 skill and get a `license-auditor` pass before merging.
 
+**Reviews run before the first push, not after.** `security-reviewer` and `code-reviewer` go
+over the change while it is still local. In M1 PR 4a-ii they ran after the branch was pushed
+and found two things that had already reached a commit: a reachable bug that took a page
+offline after three long operations, and a regression that silently disabled two CSP tests by
+turning an assertion into a tautology. Both would have been caught before anyone else could
+pull them. A review that happens after the push is a review of history.
+
 ## Definition of done
 
 A change is done when all of these hold:
@@ -152,3 +159,5 @@ A change is done when all of these hold:
   Stop the previous monitor before starting the next.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
+- **Run `security-reviewer` and `code-reviewer` before the first push.** See *Conventions*;
+  this is the working-agreement half of the same rule.

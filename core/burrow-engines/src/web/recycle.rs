@@ -74,9 +74,18 @@ pub fn threshold_bytes(limits: &Limits) -> u64 {
 /// The smallest `max_memory_bytes` at which recycling still converges.
 ///
 /// **A caller below this thrashes**, and the arithmetic says so plainly: a worker that has done
-/// any real work sits at about 18 MiB per engine (ADR 0015 §6), so a threshold under that —
-/// i.e. a `max_memory_bytes` under about 36 MiB — is exceeded by the *first* operation on a
-/// fresh worker. Every operation then costs a respawn and the heap never gets below the line.
+/// any real work sits at about 18 MiB per engine, so a threshold under that — i.e. a
+/// `max_memory_bytes` under about 36 MiB — is exceeded by the *first* operation on a fresh
+/// worker. Every operation then costs a respawn and the heap never gets below the line.
+///
+/// **This number is chosen, not derived.** 64 MiB is a round figure comfortably above twice the
+/// baseline, and nothing computes it. What makes it more than a guess is that the baseline is
+/// not an empirical accident either: the Emscripten modules declare 17 MiB and 16 MiB of
+/// *initial memory* in their own memory sections, so it is a property of the pinned artifacts.
+/// `apps/web/e2e/measure.spec.ts` reads this constant through
+/// `burrow_wasm::min_converging_memory_bytes` and asserts the measured baselines still sit
+/// below the recycling threshold at it — so a pinned-engine bump that moved the baseline lands
+/// there rather than going unnoticed. ADR 0016 Finding 4.
 ///
 /// It is **not clamped**, and that is deliberate: silently ignoring a ceiling the caller set
 /// would be worse than honouring one they will notice. This constant exists to be quotable —

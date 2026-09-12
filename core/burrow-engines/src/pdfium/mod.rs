@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use core::ffi::{c_char, c_int, c_void};
 
-use burrow_types::{Clock, Deadline, Error, Limits, Result};
+use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
 use crate::{DocumentEngine, OpenOptions};
 
@@ -118,7 +118,12 @@ impl DocumentEngine for Pdfium {
         // 1. Input size, before the buffer goes anywhere near the engine.
         let input_len = u64::try_from(bytes.len())
             .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check("max_input_bytes", input_len, limits.max_input_bytes)?;
+        Limits::check(
+            Stage::InputSize,
+            "max_input_bytes",
+            input_len,
+            limits.max_input_bytes,
+        )?;
 
         // 2. The size-based memory pre-check. A floor, not a ceiling -- see `estimate`'s
         //    docs, and step (e) below for the half that catches what a byte count cannot.
@@ -203,7 +208,7 @@ impl DocumentEngine for Pdfium {
                 }
 
                 // d. The page limit, on a number the engine produced.
-                Limits::check("max_pages", pages, limits.max_pages)?;
+                Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
 
                 // e. What the open actually cost. Step 2's estimate is blind to anything
                 //    the file *declares*, and a small file declaring an enormous structure

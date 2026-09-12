@@ -93,6 +93,7 @@ function internalFailure(id, message) {
     message,
     pages: 0,
     limit: "",
+    stage: "",
     requested: 0,
     allowed: 0,
     // A worker that failed this way is being discarded anyway, so there is nothing to
@@ -101,6 +102,28 @@ function internalFailure(id, message) {
     pdfiumHeapBytes: "0",
     qpdfHeapBytes: "0",
   };
+}
+
+/**
+ * Flatten a `WebLimits` for `postMessage`, then release it.
+ *
+ * Owned when it comes back from `default_limits()`, unlike the one built for an operation --
+ * that one is consumed by the call it is passed to. See the note in the message handler.
+ *
+ * @param {ReturnType<typeof wasm_bindgen.default_limits>} limits
+ */
+function drainLimits(limits) {
+  try {
+    return {
+      maxInputBytes: Number(limits.max_input_bytes),
+      maxMemoryBytes: Number(limits.max_memory_bytes),
+      maxDurationMs: Number(limits.max_duration_ms),
+      maxPages: Number(limits.max_pages),
+      maxPixels: Number(limits.max_pixels),
+    };
+  } finally {
+    limits.free();
+  }
 }
 
 /**
@@ -120,6 +143,10 @@ function drainReply(id, reply) {
       message: reply.message,
       pages: Number(reply.pages),
       limit: reply.limit,
+      // WHICH CHECK FIRED, not just which ceiling. Three different mechanisms enforce
+      // `max_memory_bytes`, and ROADMAP item 12's harness compares this across the native and
+      // web paths -- the same error kind reached by a different route is a divergence.
+      stage: reply.stage,
       // Strings, not Numbers: these are `u64` and `estimated_open_bytes` saturates, so a
       // value above 2^53 is reachable and `Number()` would round it. The page is showing a
       // user which ceiling they hit; a wrong number there is a small lie with no upside.
@@ -167,7 +194,19 @@ self.onmessage = async (event) => {
   if (request.type === "init") {
     try {
       await ensureReady();
-      self.postMessage({ id: request.id, ready: true });
+      self.postMessage({
+        id: request.id,
+        ready: true,
+        // Reported here rather than exported as a JS constant: it is a Rust number derived
+        // from what the engine modules declare, and a copy on this side would be free to
+        // drift from the one that actually decides whether a worker is recycled.
+        minConvergingMemoryBytes: wasm_bindgen.min_converging_memory_bytes().toString(),
+        // The core's own ceilings. The conformance harness merges a case's overrides onto
+        // THESE, because `expectations.json` says an omitted `limits` block means
+        // `Limits::DEFAULT` and the native side honours that literally -- a differential
+        // harness whose two sides run under different defaults is not comparing what it says.
+        defaultLimits: drainLimits(wasm_bindgen.default_limits()),
+      });
     } catch {
       // Not readable, not reported. A worker that cannot initialise is not usable, so the
       // page discards it.
@@ -195,6 +234,7 @@ self.onmessage = async (event) => {
         message: "unknown operation",
         pages: 0,
         limit: "",
+        stage: "",
         requested: "0",
         allowed: "0",
         recycle: false,

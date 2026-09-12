@@ -4,7 +4,17 @@ Date: 2026-09-10
 
 ## Status
 
-Accepted. The native half landed in M1 PR 2: `burrow_types::Clock`, `ManualClock` and
+Accepted, and **amended by [ADR 0016](0016-differential-conformance.md)**.
+
+> **The web half of the `max_memory_bytes` decision below was never built, and this ADR's
+> description of it is wrong.** It says the WASM instance is created with a `maximum` derived
+> from `max_memory_bytes`, making the web "the best-protected platform here". Measured in M1 PR
+> 4b out of the compiled modules' own memory sections: both declare a fixed 2 GiB maximum at
+> build time, and burrow hands Emscripten an already-compiled module, so no per-operation
+> maximum is applied anywhere. See ADR 0016 Finding 2 and issue #25. The decision text below is
+> unchanged, because ADR 0001 makes it append-only; read it with this correction.
+
+The native half landed in M1 PR 2: `burrow_types::Clock`, `ManualClock` and
 `Deadline` are the injectable clock; `burrow-engines`' `pdfium::estimate` is the
 estimate-based memory pre-check; and `Limits`' rustdoc says what each field actually
 guarantees.

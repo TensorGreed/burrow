@@ -18,7 +18,7 @@
 
 mod support;
 
-use burrow_types::{Error, Limits};
+use burrow_types::{Error, Limits, Stage};
 use proptest::prelude::*;
 use support::{minimal_pdf, open, open_with, page_count};
 
@@ -180,8 +180,9 @@ proptest! {
 
         // One byte under: rejected, naming the limit and both numbers.
         match open_with(bytes, Limits::with(|l| l.max_input_bytes = len - 1)) {
-            Err(Error::LimitExceeded { limit, requested, allowed }) => {
+            Err(Error::LimitExceeded { limit, stage, requested, allowed }) => {
                 prop_assert_eq!(limit, "max_input_bytes");
+                prop_assert_eq!(stage, Stage::InputSize);
                 prop_assert_eq!(requested, len);
                 prop_assert_eq!(allowed, len - 1);
             }
@@ -204,8 +205,9 @@ proptest! {
             minimal_pdf::pdf_with_pages(pages),
             Limits::with(|l| l.max_pages = n - 1),
         ) {
-            Err(Error::LimitExceeded { limit, requested, allowed }) => {
+            Err(Error::LimitExceeded { limit, stage, requested, allowed }) => {
                 prop_assert_eq!(limit, "max_pages");
+                prop_assert_eq!(stage, Stage::PageCount);
                 prop_assert_eq!(requested, n);
                 prop_assert_eq!(allowed, n - 1);
             }
