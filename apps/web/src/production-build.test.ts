@@ -7,46 +7,17 @@
 // The claim being checked is not "we intended not to ship the harness". It is "it is not
 // there", which is the only version a deploy depends on.
 
-import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const webApp = resolve(here, "..");
-const outDir = join(webApp, "dist-production-check");
+import { HARNESS_DIR, PRODUCTION_DIR as outDir, walk } from "./build-output.js";
 
-/** Every file under `dir`, as paths relative to it. */
-function walk(dir: string, prefix = ""): string[] {
-  return readdirSync(dir).flatMap((entry) => {
-    const full = join(dir, entry);
-    const rel = prefix ? `${prefix}/${entry}` : entry;
-    return statSync(full).isDirectory() ? walk(full, rel) : [rel];
-  });
-}
-
+// Both builds are produced once by `vitest.global-setup.ts`, not here: three test files now
+// read them, and a `beforeAll` per file would mean one Astro build per file.
 describe("the production build", () => {
-  let files: string[] = [];
-
-  beforeAll(() => {
-    rmSync(outDir, { recursive: true, force: true });
-    // No BURROW_HARNESS in the environment: this is what a deploy runs.
-    const env = { ...process.env };
-    delete env.BURROW_HARNESS;
-    execFileSync("node", [resolve(webApp, "../../tools/stage-web-engines.mjs")], {
-      cwd: webApp,
-      env,
-      stdio: "pipe",
-    });
-    execFileSync("pnpm", ["exec", "astro", "build", "--outDir", outDir], {
-      cwd: webApp,
-      env,
-      stdio: "pipe",
-    });
-    files = walk(outDir);
-  }, 300_000);
+  const files: string[] = walk(outDir);
 
   it("does not contain the engine harness or the main-thread host", () => {
     const testOnly = files.filter((f) => f.includes("harness") || f.startsWith("host/"));
@@ -86,6 +57,12 @@ describe("the production build", () => {
         `nothing matched ${pattern}`,
       ).toBe(true);
     }
+
+    // The credits page is the other thing that is not test-only and must never be swept up
+    // by an exclusion. It is a licence obligation (ADR 0008), so its absence is a violation
+    // rather than a missing feature -- src/credits.test.ts checks its *contents*; this
+    // checks that the exclusion above did not take it with the harness.
+    expect(files, "the credits page must ship").toContain("credits/index.html");
   });
 
   it("ships the worker as ONE bundle, with no glue loose beside it", () => {
@@ -192,14 +169,7 @@ describe("the production build", () => {
   it("has the harness when it is asked for, so the exclusion is doing the work", () => {
     // The control. Without it, an integration that deleted the route unconditionally --- or
     // a build that never produced it --- would pass every assertion above.
-    const withHarness = join(webApp, "dist-harness-check");
-    rmSync(withHarness, { recursive: true, force: true });
-    execFileSync("pnpm", ["exec", "astro", "build", "--outDir", withHarness], {
-      cwd: webApp,
-      env: { ...process.env, BURROW_HARNESS: "1" },
-      stdio: "pipe",
-    });
-    const built = walk(withHarness);
+    const built = walk(HARNESS_DIR);
     expect(built.some((f) => f.includes("harness"))).toBe(true);
     // Both halves of the control: the page AND the host it loads. Asserting only the page
     // would let an exclusion that deleted `host/` unconditionally pass, which would leave the
@@ -208,6 +178,5 @@ describe("the production build", () => {
       "host/harness-driver.js",
     );
     expect(built).toContain("host/worker-host.js");
-    rmSync(withHarness, { recursive: true, force: true });
-  }, 300_000);
+  });
 });

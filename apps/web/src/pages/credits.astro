@@ -1,0 +1,187 @@
+---
+// The open-source credits page. THIS PAGE IS A LICENCE OBLIGATION, NOT A COURTESY.
+//
+// ADR 0008 and ADR 0010 admit three licences that impose affirmative notice obligations
+// binding executable-only distribution -- which is what a wasm bundle is. All three say
+// *documentation accompanying the distribution*, so a file in the repository does not
+// discharge them for a website: the reader has to be able to get here. ADR 0008 names four
+// surfaces; this is the second. The Android (M3) and iOS (M4) licence screens remain.
+//
+// A release that ships the engines without this page is a licence violation, not an
+// oversight. See issue #16.
+//
+// FTL SECTION 3 -- READ BEFORE ADDING ANYTHING TO THIS PAGE OR THE SITE:
+// the FreeType name must not be used to promote burrow. A "powered by FreeType" badge, a
+// marketing line naming it, or a logo would violate that clause. Reproducing the required
+// credit line here is not promotion; making it a selling point is.
+//
+// EVERY WORD OF THE NOTICES IS GENERATED, from engines/licenses.toml via
+// tools/generate-credits.mjs, which runs as `prebuild`. Nothing on this page is typed out by
+// hand, because a hand-written notice passes review once and then rots while the manifest
+// moves on. Add a component to the manifest and this page carries it on the next build; fail
+// to, and src/credits.test.ts fails against dist/.
+//
+// Note the FreeType wording. FTL section 2 literally says "based in part OF the work" -- not
+// "on". That is upstream's text, reproduced verbatim rather than corrected, which is what a
+// verbatim notice obligation means.
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { CREDITS } from "../generated/credits.js";
+
+const notices = CREDITS.components.filter((c) => c.noticeRequired !== null);
+const withText = CREDITS.components.filter((c) => c.licenseText !== null);
+
+/** A stable id for a component, so the roster can link into the licence texts below. */
+const slug = (name: string) =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+---
+
+<BaseLayout
+  title="Credits and open-source licences — burrow"
+  description="The open-source components burrow is built from, their licences, and the notices those licences require."
+>
+  <h1>Credits and open-source licences</h1>
+
+  <p>
+    burrow is free and open source under <code>MIT OR Apache-2.0</code>. It is built on other
+    people's work, and the notices below are required by the licences that work is under — not
+    supplied as a courtesy.
+  </p>
+
+  <p>
+    This page is generated at build time from the same licence manifest our CI licence check reads,
+    so it cannot fall behind what we actually ship. Audit of record:
+    <strong>{CREDITS.lastAudited}</strong>.
+  </p>
+
+  <h2 id="required-notices">Required notices</h2>
+
+  <p>
+    {notices.length} components impose notice obligations that bind distribution of compiled code. These
+    are reproduced verbatim.
+  </p>
+
+  {
+    notices.map((component) => (
+      <section>
+        <h3>
+          {component.name}
+          {component.version ? ` ${component.version}` : ""}
+        </h3>
+        <p>
+          <code>{component.license}</code> — {component.noticeRequired}
+        </p>
+        <blockquote>
+          <pre>{component.licenseText}</pre>
+        </blockquote>
+      </section>
+    ))
+  }
+
+  <h2 id="components">Every bundled component</h2>
+
+  <p>
+    {CREDITS.components.length} components ship inside burrow's engine artifacts.
+    <em>Linked</em> means its code was confirmed present in a shipped binary by symbol inspection; a component
+    that is not linked still travels in the package we distribute.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Component</th>
+        <th scope="col">Version</th>
+        <th scope="col">Licence</th>
+        <th scope="col">Linked</th>
+      </tr>
+    </thead>
+    <tbody>
+      {
+        CREDITS.components.map((component) => (
+          <tr>
+            <th scope="row">
+              {component.licenseText ? (
+                <a href={`#licence-${slug(component.name)}`}>{component.name}</a>
+              ) : (
+                component.name
+              )}
+            </th>
+            <td>{component.version ?? "—"}</td>
+            <td>
+              <code>{component.license}</code>
+            </td>
+            <td>{component.linked ? "yes" : "no"}</td>
+          </tr>
+        ))
+      }
+    </tbody>
+  </table>
+
+  <h2 id="licence-texts">Full licence texts</h2>
+
+  {
+    withText.map((component) => (
+      <section id={`licence-${slug(component.name)}`}>
+        <h3>
+          {component.name}
+          {component.version ? ` ${component.version}` : ""}
+        </h3>
+        <p>
+          <code>{component.license}</code>
+        </p>
+        <pre>{component.licenseText}</pre>
+      </section>
+    ))
+  }
+
+  <h2 id="burrow">burrow itself</h2>
+
+  <p>
+    burrow is licensed under either of <code>Apache-2.0</code> or <code>MIT</code>, at your option.
+    Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+    burrow shall be dual licensed as above, without any additional terms or conditions.
+  </p>
+
+  <p>
+    Source: <a href="https://github.com/TensorGreed/burrow">github.com/TensorGreed/burrow</a>. The
+    machine-readable manifest behind this page is <code>engines/licenses.toml</code>, and the full
+    repository notices are in <code>THIRD_PARTY_NOTICES.md</code>.
+  </p>
+</BaseLayout>
+
+<style>
+  /* Licence texts are fixed-width originals; let them wrap rather than scroll the page. */
+  pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    overflow-x: auto;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.9rem;
+  }
+
+  th,
+  td {
+    border-bottom: 1px solid currentColor;
+    padding: 0.3rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  blockquote {
+    margin-inline: 0;
+    padding-inline-start: 1rem;
+    border-inline-start: 3px solid currentColor;
+  }
+
+  section {
+    margin-block: 2rem;
+  }
+</style>

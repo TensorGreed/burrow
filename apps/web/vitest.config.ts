@@ -10,7 +10,10 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     exclude: ["e2e/**", "node_modules/**", "dist/**", "dist-*/**"],
-    // The production-build test runs two real Astro builds.
+    // Two real Astro builds, produced ONCE for every test file that reads build output --
+    // production-build, credits, and size-budget. vitest runs test files in separate
+    // workers, so a per-file `beforeAll` would build once per file and share nothing.
+    globalSetup: ["./vitest.global-setup.ts"],
     testTimeout: 300_000,
     hookTimeout: 300_000,
   },

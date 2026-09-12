@@ -18,6 +18,43 @@ Two errors in this ADR's record, found when M1 PR 1 audited the native artifacts
 
 The decision and reasoning below stand as written.
 
+### Amendment, 2026-09-12 (M1 PR 4c): two of four surfaces now exist
+
+*Notice obligations, and how we meet them* below lists four surfaces and says all four must
+exist before a build containing these components is distributed. **The second now does.**
+
+| Where | Status |
+|---|---|
+| `THIRD_PARTY_NOTICES.md` | ✅ since M1 PR 1 |
+| The website credits page, reachable from the footer | ✅ **this amendment** — `/credits`, generated at build time from `engines/licenses.toml` |
+| Android open-source licences screen | ⬜ M3 |
+| iOS open-source licences screen | ⬜ M4 |
+
+Still **no build containing these engines has been distributed**, so nothing has been in
+violation at any point. Two of four remains short of the bar this ADR sets for distribution;
+that bar has not moved.
+
+Three things about the page are load-bearing rather than incidental, and a future change that
+drops any of them re-opens the obligation:
+
+- **It is generated, not written.** A hand-written notice page passes review once and then
+  rots while the manifest moves on. `tools/generate-credits.mjs` derives it from the same
+  `engines/licenses.toml` that `tools/check-engine-licences.py` gates in CI, so the page and
+  the licence check cannot disagree about what we ship.
+- **Reachability is part of the obligation, not a usability nicety.** All three notices say
+  *documentation accompanying the distribution*. `apps/web/src/credits.test.ts` resolves the
+  footer link against the built output and fails on a link that does not land on the page —
+  a dangling href would pass any string match and 404 for every user.
+- **It is asserted against `dist/`, not source**, and it reproduces FTL §2's actual wording,
+  *"based in part **of** the work"*. That reads like a typo and is not ours to correct.
+
+**This amendment adds a requirement to the engine bump procedure.** The `license_text` field
+this PR adds to each component points at a committed copy under `engines/licences/`, because
+`license_file` points into the gitignored `engines/vendor/` and the site must build from a
+clean checkout. The checker compares the two byte for byte whenever the vendor tree is
+present. An engine bump must therefore re-copy the texts, not only re-audit the identifiers —
+recorded in `engines/pins.toml`'s *Bumping an engine pin* section.
+
 ## Context
 
 [ADR 0003](0003-permissive-licensing.md) set a permissive-only licence allowlist and made
