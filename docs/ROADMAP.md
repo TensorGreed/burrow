@@ -59,7 +59,7 @@ Agreed sequence. Each PR is squash-merged with CI green before the next starts.
 | **4a-i** ✅ | **Web path, part 1**: the real qpdf Emscripten module, the `DocumentEngine`/`StructureEngine` web implementations over a bridge trait seam, the wasm binding, the classic worker, the generated CSP, and the engines loading end to end in a browser | 9 (part) |
 | **4a-ii** ✅ | Worker recovery per ADR 0009 as an explicit state machine, the main-thread watchdog (clock starting at the worker's ack), a crash-counting circuit breaker, heap-growth recycling with a measured threshold, and the console-silence and zero-requests-after-init tests. [ADR 0015](adr/0015-web-worker-lifecycle.md) | 10 |
 | **4b** ✅ | The **differential conformance harness** and the Chromium/Firefox/WebKit matrix. `Stage` on `LimitExceeded`, expectations schema 2, the adversarial corpus, and two measured findings. [ADR 0016](adr/0016-differential-conformance.md) | 12 |
-| **4c** | Credits page (#16), the wasm size budget, and a CI check generating qpdf's `trap_errors` set from source | 11 |
+| **4c** ✅ | **Closes foundations.** The `max_memory_bytes` claims corrected everywhere in one pass (#25); the credits page, generated from the licence manifest and reachable from the footer (#16, ADR 0008's second of four surfaces); the first-load size budget, on the total rather than per file; qpdf's `trap_errors` set generated from source and checked against both bindings (ADR 0013 §1); and a ceiling, a milestone and an issue on every `known_gap` | 2, 11 |
 | **5+** | Operations, one at a time, starting with `merge` | — |
 
 The linking strategy is **settled** by [spike 0001](spikes/0001-wasm-engines.md):

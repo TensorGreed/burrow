@@ -13,6 +13,53 @@
 # Provenance is recorded honestly per artifact. `tofu` means trust-on-first-use: a hash we
 # captured on first download because upstream publishes nothing to check against. It
 # detects a later change; it cannot detect that the original download was already wrong.
+#
+# =================================================================================
+# BUMPING AN ENGINE PIN
+# =================================================================================
+#
+# Editing a version and a checksum here is the start of the procedure, not the whole of it.
+# Three things elsewhere in the repository are DERIVED from the artifacts this file names,
+# and each is only as current as the last time somebody regenerated it. All three are
+# checked in CI, so skipping one fails the build rather than shipping quietly -- but knowing
+# that in advance is cheaper than finding out from a red run.
+#
+#   1. Update the version and every checksum here, then run `engines/fetch.sh`. It fails
+#      closed on a mismatch and on a `TBD` pin. Then `engines/build-native.sh` and/or
+#      `engines/build-wasm.sh`.
+#
+#   2. **qpdf only -- regenerate the trapped-function set.**
+#
+#          python3 tools/check-qpdf-trapped.py --generate   # rewrite the list
+#          python3 tools/check-qpdf-trapped.py              # verify declarations
+#
+#      `engines/qpdf-trapped-functions.txt` records which qpdf C functions route through
+#      `trap_errors`, read out of that version's `libqpdf/qpdf-c.cc`. Only those are safe to
+#      call: a function outside the set can let a C++ exception cross the FFI boundary and
+#      abort the process, which `qpdf_is_linearized` did on an ordinary 356-byte PDF
+#      (ADR 0013 §1). **Upstream can move a function out of the trapped set without changing
+#      its signature**, so nothing else -- not the headers, not a compile, not the export
+#      table check in build-wasm.sh -- would notice. A bump is the only time to look.
+#
+#      Re-read `engines/qpdf-untrapped-accepted.toml` in the same pass. Its entries are
+#      arguments about a specific version's implementation, and its `qpdf_version` field
+#      says which one they were checked against.
+#
+#   3. **Re-audit the licence surface.** `pdfium-binaries` derives each platform's
+#      licences/ directory from that platform's build.ninja, so a new release can bundle
+#      components the old one did not -- which is how HarfBuzz and ICU went undeclared
+#      through a whole ADR cycle. Update `engines/licenses.toml`, re-copy the licence texts
+#      into `engines/licences/` (the checker compares them byte for byte against the vendor
+#      originals whenever the vendor tree is present), and run:
+#
+#          python3 tools/check-engine-licences.py
+#          python3 tools/detect-engine-components.py
+#
+#      A licence that is not on ADR 0008's allowlist needs a new ADR, not an entry.
+#
+#   4. Re-measure the web size budget. `apps/web/size-budget.json` records the measurement
+#      each budget was set from; an engine bump is the expected reason for it to move.
+#      `node tools/report-size-budget.mjs apps/web/dist` prints the table.
 
 [meta]
 version = 1

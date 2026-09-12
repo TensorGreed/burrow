@@ -219,6 +219,25 @@ jobs:
           python3 tools/detect-engine-components.py
           tools/test-detect-engine-components.sh
 
+      # The OTHER half of the qpdf exception audit. engines/build-wasm.sh already checks
+      # the built module's export table against ffi.rs; this checks ffi.rs against qpdf's
+      # OWN SOURCE -- the set of functions actually routed through `trap_errors`.
+      #
+      # Here because engines/vendor/ is gitignored and this job has already fetched it.
+      # Regenerating and diffing, rather than trusting the committed list: upstream can
+      # stop routing a function through the helper without changing its signature, and a
+      # committed list nobody re-derives would keep saying it was safe. A stale list is a
+      # failure, not a warning.
+      - name: qpdf trapped-function list is current (ADR 0013 §1)
+        run: |
+          cp engines/qpdf-trapped-functions.txt "$RUNNER_TEMP/committed.txt"
+          python3 tools/check-qpdf-trapped.py --generate
+          diff -u "$RUNNER_TEMP/committed.txt" engines/qpdf-trapped-functions.txt || {
+            echo "::error::engines/qpdf-trapped-functions.txt is stale. Regenerate it with" \
+                 "python3 tools/check-qpdf-trapped.py --generate and commit the result." >&2
+            exit 1
+          }
+
       - name: doc tests and rustdoc warnings
         run: cargo doc --workspace --no-deps
         env:
@@ -391,6 +410,16 @@ jobs:
       # ADR 0008's allowlist. Same job on purpose: one gate for the whole graph.
       - name: engine licences (ADR 0008)
         run: python3 tools/check-engine-licences.py
+
+      # Every qpdf C function burrow declares -- natively and on the web -- must be on the
+      # generated trapped list or in the justified exemption list. An untrapped call lets a
+      # C++ exception cross the FFI boundary, which aborts the process: `qpdf_is_linearized`
+      # did exactly that on an ordinary 356-byte PDF. ADR 0013 §1.
+      #
+      # Here rather than in `test` because it reads only committed files, so it runs on a
+      # clean checkout with no engine fetch. The `test` job checks the list is not stale.
+      - name: qpdf declarations are all trapped or accepted (ADR 0013 §1)
+        run: python3 tools/check-qpdf-trapped.py
 
   audit:
     name: cargo-audit
