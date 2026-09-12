@@ -70,6 +70,35 @@ Delegate to the `test-engineer` agent, or follow the same standard. See
 - **Limits** — an oversized input returns `LimitExceeded`, not a crash or an OOM. Test
   the boundary and one past it.
 
+### If the operation brings its own CHECK, it ships with probes
+
+An operation that adds a validator, a detector, a linter or any rule-driven gate — anything
+with a list of patterns, a symbol sweep, a name allowlist — must give each rule **its own
+positive fixture and a near-miss**, verified on **every run** rather than only when a
+self-test happens to run.
+
+This is not a style preference. Every rule-driven check in this repository has, at some
+point, contained a rule that matched nothing while the output reported a healthy count:
+
+| | |
+|---|---|
+| `check-no-generated-files.sh` | 15 of 16 patterns truncated to `(^` and inert; output said "16 pattern(s)" |
+| `detect-engine-components.py` | the ICU fingerprint rejected `ubidi_setPara_78` — the example in its own comment |
+| `check-engine-licences.py` | 4 of 15 licence texts compared in CI; identical output to all 15 |
+
+**A rule that matches nothing passes everything. A rule that matches everything fails
+everything.** Neither is a check, and neither is visible from a green run.
+
+So, per `CLAUDE.md`'s definition of done:
+
+- each rule matches its own fixture and rejects a near-miss, asserted on every invocation;
+- the check reports what it examined, and gates on the expected count where that count is
+  derivable — `git ls-files`, a manifest, a workspace member list — not merely on non-zero;
+- the probe gate itself has a test: break a rule in a **copy** of the checker and assert it
+  refuses, **naming the reason**. Keep the copy beside the original; one in a temp directory
+  resolves its own paths wrongly and exits non-zero for the wrong reason, which an
+  exit-code-only assertion reports as a pass.
+
 ## 6. Fuzz target — `fuzz/fuzz_targets/`
 
 Required for **every new parser entry point**. Not optional, not deferred.

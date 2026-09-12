@@ -165,6 +165,81 @@ check_comment() {
 }
 check_comment
 
+# --- the workspace-member coverage assertion must exist ---------------------------------
+#
+# The script asserts the crate graph contains this workspace's own members, because a bare
+# crate count gates nothing -- `cargo tree` returning three crates would print "3 distinct
+# crates" and check every ban against a graph that was not the graph.
+#
+# That assertion only fires when the graph is wrong, so deleting it left every case above
+# green. This breaks it in a COPY, by expecting a member that does not exist, and asserts the
+# copy refuses. The mutation is verified to have applied first: a sed that matched nothing
+# would leave the copy identical and "it failed" would be measuring the wrong thing.
+check_member_coverage() {
+  # BESIDE THE ORIGINAL, not in a temp dir: the script resolves `repo` from its own location,
+  # so a copy in /tmp fails with "deny.toml not found" -- a non-zero exit for the wrong
+  # reason, which an exit-code-only assertion reports as a pass. The message is asserted too.
+  local copy="$here/.member-coverage-fixture.sh"
+  # Inject a crate that cannot be in any graph, into the DERIVED expectation. The gate must
+  # then fire. (This fixture previously targeted a hardcoded member list; when that list
+  # became derived, the `cmp` guard below caught the sed matching nothing rather than letting
+  # the case report a pass it had not earned.)
+  sed 's/print(" ".join(names))/print(" ".join(names + ["burrow-no-such-crate"]))/' \
+    "$here/check-no-network-deps.sh" >"$copy"
+  chmod +x "$copy"
+  if cmp -s "$copy" "$here/check-no-network-deps.sh"; then
+    echo "  FAIL  fixture: the mutation did not apply, so this case would prove nothing"
+    fail=$((fail + 1))
+    return
+  fi
+  local got
+  if got="$("$copy" 2>&1)"; then
+    echo "  FAIL  a graph missing an expected workspace member did not fail the check"
+    fail=$((fail + 1))
+  elif grep -qF "missing workspace member" <<<"$got"; then
+    echo "  ok    a graph missing an expected workspace member fails the check"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL  it failed, but not for the stated reason"
+    sed 's/^/          /' <<<"$got" | head -4
+    fail=$((fail + 1))
+  fi
+  rm -f "$copy"
+}
+check_member_coverage
+
+# --- the per-run probe gate must exist --------------------------------------------------
+#
+# The script verifies every ban against a positive fixture and a near-miss on each run. That
+# gate only fires when the matcher is wrong, so deleting it left every case above green.
+# Breaking the matcher in a COPY must make it refuse. Beside the original, and the message
+# asserted, for the reason given on check_member_coverage.
+check_probe_gate() {
+  local copy="$here/.probe-gate-fixture.sh"
+  sed 's@grep -qxF "$1"@grep -qF "$1"@' "$here/check-no-network-deps.sh" >"$copy"
+  chmod +x "$copy"
+  if cmp -s "$copy" "$here/check-no-network-deps.sh"; then
+    echo "  FAIL  fixture: the mutation did not apply, so this case would prove nothing"
+    fail=$((fail + 1))
+    rm -f "$copy"
+    return
+  fi
+  local got
+  if got="$("$copy" 2>&1)"; then
+    echo "  FAIL  a matcher that catches near-misses does not stop the check"
+    fail=$((fail + 1))
+  elif grep -qF "catches a near-miss" <<<"$got"; then
+    echo "  ok    a matcher that catches near-misses stops the check"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL  it failed, but not for the stated reason"
+    sed 's/^/          /' <<<"$got" | head -4
+    fail=$((fail + 1))
+  fi
+  rm -f "$copy"
+}
+check_probe_gate
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ] || exit 1

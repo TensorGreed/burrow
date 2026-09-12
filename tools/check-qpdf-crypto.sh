@@ -67,6 +67,59 @@ FORBIDDEN_PROVIDERS=("QPDFCrypto_gnutls" "QPDFCrypto_openssl")
 # violation. Verified to produce zero hits across every current artifact.
 FORBIDDEN_SYMBOL_RE='gnutls_|_gnutls|EVP_CipherInit|EVP_DigestInit|SSL_CTX_new|OPENSSL_init'
 
+# PROBES. Every rule below must catch its own fixture and reject a near-miss, on EVERY run.
+#
+# tools/test-check-qpdf-crypto.sh already covers these adversarially -- but it runs in CI, and
+# these run wherever the checker runs, including a developer's machine with no self-test in
+# sight. The distinction earned its keep elsewhere in this repository: a pattern set that
+# reported "16 patterns" while 15 were inert, and an ICU fingerprint whose own documented
+# example did not match it. Both were found by fixtures, not by reading.
+probe_problems=0
+probe() {
+  local name="$1" text="$2" regex="$3" want="$4"
+  if grep -qE "$regex" <<<"$text"; then
+    [ "$want" = "match" ] || { echo "::error::$name matches text it must reject: $text" >&2; probe_problems=$((probe_problems + 1)); }
+  else
+    [ "$want" = "reject" ] || { echo "::error::$name does not match its own fixture: $text" >&2; probe_problems=$((probe_problems + 1)); }
+  fi
+}
+
+# ONE DEFINITION, used by the probe AND by the loop below.
+#
+# The first version of these probes inlined a COPY of this regex. Mutating the loop's own
+# `present_re` then left every probe green -- a probe testing a copy of the rule passes while
+# the real rule is broken, which is the precise failure probes exist to prevent. Found by a
+# mutation sweep, not by reading.
+ARCHIVE_PRESENCE_RE="^[0-9a-fA-F]+ +[A-Za-z] .*$REQUIRED_PROVIDER"
+
+# The archive presence rule: a DEFINING symbol line, which carries a hex address. An
+# undefined reference carries none, and must not count as "linked".
+probe "the archive presence rule" \
+  "0000000000000000 W _ZN17QPDFCrypto_nativeD2Ev" "$ARCHIVE_PRESENCE_RE" match
+probe "the archive presence rule" \
+  "                 U _ZN17QPDFCrypto_native6MD5_initEv" "$ARCHIVE_PRESENCE_RE" reject
+probe "the archive presence rule" \
+  "QPDFCrypto_native.cc.o:" "$ARCHIVE_PRESENCE_RE" reject
+
+# The forbidden-provider rule, deliberately unanchored: a member header alone is a finding.
+for p in "${FORBIDDEN_PROVIDERS[@]}"; do
+  probe "the $p rule" "0000000000000000 T _ZN18${p}6MD5_initEv" "$p" match
+  probe "the $p rule" "QPDFCrypto_native.cc.o:" "$p" reject
+done
+
+# The TLS symbol sweep, which must fire on an UNDEFINED reference -- the only form these
+# symbols can take in a static archive.
+probe "the TLS symbol sweep" "                 U gnutls_hash_init" "$FORBIDDEN_SYMBOL_RE" match
+probe "the TLS symbol sweep" "0000000000000000 T EVP_CipherInit_ex" "$FORBIDDEN_SYMBOL_RE" match
+probe "the TLS symbol sweep" "0000000000000000 T _ZN17QPDFCrypto_native6MD5_initEv" "$FORBIDDEN_SYMBOL_RE" reject
+
+if [ "$probe_problems" -ne 0 ]; then
+  echo "check-qpdf-crypto: $probe_problems rule(s) do not behave as declared; refusing to run." >&2
+  echo "  A rule that matches nothing passes every artifact. A rule that matches everything" >&2
+  echo "  fails every artifact. Neither is a check." >&2
+  exit 1
+fi
+
 targets=("$@")
 if [ ${#targets[@]} -eq 0 ]; then
   # The STAGED prefixes only -- what is linked into something we ship or fuzz.
@@ -172,7 +225,7 @@ for target in "${targets[@]}"; do
     # as `                 U name` with no address, so `^[0-9a-fA-F]* *[A-Za-z] ` would match
     # a mere *reference* to the provider and the comment below would be false. Measured: the
     # address form matches 35 defining lines and 0 undefined ones.
-    present_re="^[0-9a-fA-F]+ +[A-Za-z] .*$REQUIRED_PROVIDER"
+    present_re="$ARCHIVE_PRESENCE_RE"
   else
     present_re="$REQUIRED_PROVIDER"
   fi
@@ -222,4 +275,5 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 
-echo "OK -- $examined qpdf artifact(s) carry native crypto only."
+echo "OK -- $examined qpdf artifact(s) carry native crypto only"
+echo "     (3 rules, each verified against a fixture and a near-miss)"
