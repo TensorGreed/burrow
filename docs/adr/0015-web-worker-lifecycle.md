@@ -13,6 +13,20 @@ Written as a separate record rather than an edit, because
 decision is unchanged; what changes is that its web half now exists, and that one of its
 statements about *whose* time is being measured needed making precise.
 
+### Amendment, 2026-09-12 (M1 PR 4c): one citation in *Consequences* is to a retracted claim
+
+*Consequences* says the web's stronger duration guarantee "matches ADR 0007's note that the web
+is the best-protected platform for memory". **That note is wrong and has been retracted** — see
+ADR 0007's 2026-09-12 amendment and [ADR 0016](0016-differential-conformance.md) Finding 2.
+`max_memory_bytes` bounds nothing on either platform; the web's only real bound is the engine
+modules' fixed 2 GiB build-time maximum, which no caller can influence.
+
+The duration claim itself is unaffected and stands on its own measurement: a worker can be
+killed and a thread mid-C++-call cannot. Only the analogy was borrowed from a false premise. §5's
+recycling threshold is also unaffected — it derives a *recycling* threshold from
+`max_memory_bytes`, which is a decision about accumulation across operations and never claimed to
+bound one.
+
 ## Context
 
 [M1 PR 4a-i](https://github.com/TensorGreed/burrow/pull/20) landed the web path's loading

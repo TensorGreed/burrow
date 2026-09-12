@@ -14,6 +14,44 @@ Accepted, and **amended by [ADR 0016](0016-differential-conformance.md)**.
 > maximum is applied anywhere. See ADR 0016 Finding 2 and issue #25. The decision text below is
 > unchanged, because ADR 0001 makes it append-only; read it with this correction.
 
+### Amendment, 2026-09-12 (M1 PR 4c): what `max_memory_bytes` does on each path
+
+The 4b amendment above corrects the web claim. It does not go far enough, because the
+sentence it retracts was comparative — "the web is the best-protected platform here" — and
+retracting one side of a comparison leaves the other side reading as a cap. It is not one
+either. This amendment states the whole picture in one place, so no two documents disagree.
+
+**Nothing bounds memory during an operation on either path.** Every mechanism below runs
+before the engine sees the file, or after it is finished with it.
+
+| | native | web |
+|---|---|---|
+| structural pre-scan — reads **declarations only**, never decompresses | before open | before open |
+| length-based size estimate, `estimate::check_open_memory` | `pdfium/mod.rs` only; **not** called on the qpdf path (issue #26) | `web/pdfium.rs` only; same gap, so this is an engine difference and not a platform divergence |
+| measured check, `estimate::check_measured_memory` | **after** the open: process resident set before vs after, so a peak that occurs during and is released is invisible | **after** the operation: the engine module's heap size, which never shrinks, so it *does* see the peak |
+| worker recycling on heap growth | — | **after** the result is delivered (ADR 0015 §5) |
+| anything that actually bounds an allocation | **none** | the engine modules' build-time 2 GiB maximum, which no caller can influence and which is not this limit |
+
+The words are chosen and should be kept: these mechanisms **detect** an overrun. The only
+thing here that **bounds** one is the fixed 2 GiB module maximum, and `max_memory_bytes` is
+not it.
+
+Two consequences the original decision text does not admit:
+
+- **"An estimate-based pre-check" is not what the native path does.** It is *two* checks, and
+  only one of them runs before the allocation — on one of the two engines. `qpdf`'s path has
+  the pre-scan and the measured check and no size estimate at all.
+- **`max_memory_bytes` cannot be relied on to keep a process alive.** An engine that hits its
+  own out-of-memory path calls `abort()`, which is not a panic and not interceptable. The
+  measured check reports the overrun *if the process survives to run it*.
+
+What the limit honestly means, on every target: *you will be told, and the result discarded,
+if an operation cost more than this*. Not: *an operation cannot cost more than this*.
+
+Making it a real per-operation ceiling on the web needs the engine modules relinked with
+imported memory, which is an engine-pin change with its own audit — issue #25, and
+[ADR 0006](0006-wasm-linking-strategy.md)'s pre-M2 gate, are the same decision.
+
 The native half landed in M1 PR 2: `burrow_types::Clock`, `ManualClock` and
 `Deadline` are the injectable clock; `burrow-engines`' `pdfium::estimate` is the
 estimate-based memory pre-check; and `Limits`' rustdoc says what each field actually

@@ -203,7 +203,7 @@ what later PRs can assume:
   limits (all the decompression ones default to *unlimited*) and its discarding logger are
   set once behind a `OnceLock`.
 - **qpdf's global limits cannot be per-operation.** They take no `qpdf_data`, so a caller's
-  `Limits` are enforced in Rust and qpdf's globals are a fixed floor under everything.
+  `Limits` are applied in Rust and qpdf's globals are a fixed floor under everything.
 - **`fuzz/libqpdf.a` is now in `BUILD_MANIFEST.sha256`.** It was linked into fuzz binaries
   and checksummed by nothing.
 - **Two findings from security review, both fixed, both guarded.**

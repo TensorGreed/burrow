@@ -17,49 +17,67 @@
 /// qpdf takes. A file crafted to make a single engine call run for a minute is not
 /// stopped by this limit.
 ///
-/// `max_memory_bytes` is **not a cap on any platform**, and the two enforcement halves below
-/// are what it actually means everywhere.
+/// `max_memory_bytes` **bounds nothing, on any platform.** Everything below *detects* an
+/// overrun; nothing prevents one. The two words are used deliberately throughout this
+/// documentation and are worth keeping straight.
 ///
-/// An earlier version of this paragraph said the web was different — that the value became
-/// the WASM instance's maximum memory and was therefore "a genuine hard ceiling". It is not,
-/// and never was: the engine modules declare their own maximum (2 GiB) in their memory
-/// sections at build time, and burrow hands Emscripten an already-compiled module rather than
-/// creating the memory, so there is no point at which a per-operation maximum could be
-/// applied. Measured and corrected in M1 PR 4b; see issue #25 and ADR 0016.
+/// The reason is not an implementation shortcut. The allocations that dominate are made by
+/// C++ inside the engines, through their own allocators. Rust's allocator never sees them,
+/// so nothing here can observe — let alone cap — them.
 ///
-/// What the web does have is a 2 GiB per-module sandbox ceiling no caller can influence, at
-/// which an allocation fails cleanly rather than taking the process down. That is worth
-/// having and it is not this limit.
+/// Three mechanisms consult this value. Every one of them runs *before* the engine is given
+/// the file, or *after* it has finished with it:
 ///
-/// So on **every** target it is enforced in two weaker halves, neither of which is a cap. The allocations that dominate are made by C++ inside the engines, through their
-///   own allocators, and Rust cannot observe or bound them.
-///   1. A *size-based pre-check* before the input reaches the engine. It predicts cost
-///      from the input's **length**, so it is blind to anything the file *declares* — a
-///      small file declaring an enormous structure sails through it. That is a real gap,
-///      not a rounding error: a 330 KB PDF can drive an engine to allocate 1.2 GB.
-///   2. A *measured check* after the operation, comparing the process's resident set
-///      before and after. This catches what (1) cannot, but only after the memory has
-///      already been allocated. What it buys is that the operation fails instead of
-///      returning a handle that is already over budget.
+/// 1. A **structural pre-scan**, before either engine sees the bytes. It reads what the file
+///    *declares* — cross-reference size, `/Length`s, the `/Prev` chain — and never
+///    decompresses or resolves a reference. It refuses a declared-size bomb before anything
+///    is allocated, which makes it the only check that prevents rather than reports. Its
+///    honest limit is that it sees declarations, not truth: a small file that inflates a
+///    compressed object stream passes it (issue #24).
+/// 2. A **length-based size estimate**, predicting cost from the input's byte count. Blind to
+///    anything declared, so a 330 KB PDF that drives an engine to 1.2 GB sails through it.
+///    It also runs on the **PDFium path only**, and on neither qpdf path — its constants are
+///    PDFium measurements, and applying them to qpdf would predict the wrong number
+///    (issue #26). So a structure check gets two of these three mechanisms, not three.
+/// 3. A **measured check**, after the operation, comparing a counter before and after. The
+///    memory is allocated by the time it fires. What it buys is that the operation fails
+///    instead of returning a handle that is already over budget.
 ///
 /// So `max_memory_bytes` means "you will be told, and the result discarded, if an operation
-/// costs more than this" — **not** "an operation cannot cost more than this". A sufficiently
-/// adversarial file can still get the process killed by the OS before either check runs,
-/// because an engine's own out-of-memory abort is not something Rust can intercept.
+/// cost more than this" — **not** "an operation cannot cost more than this". A sufficiently
+/// adversarial file can still get the process killed before any of them reports, because an
+/// engine's own out-of-memory `abort()` is not a panic and is not interceptable.
 ///
-/// Two further honest limits, both measured in M1 PR 4b:
+/// # Per-platform differences, and the one that used to be claimed
 ///
-/// - The measured check compares a counter **before and after**, so a peak that occurs
-///   *during* and is released before the second reading is invisible to it. On native that
-///   counter is the process resident set; on the web it is the engine module's heap size,
-///   which never shrinks and therefore does see the peak.
-/// - The pre-scan reads declarations, so a small file that inflates a compressed stream
-///   passes it. Issue #24.
+/// An earlier version of these docs said the web was different — that the value became the
+/// WASM instance's maximum memory and was therefore "a genuine hard ceiling", making the web
+/// the best-protected platform. It is not, and never was: the engine modules declare their
+/// own maximum (2 GiB) in their memory sections at build time, and burrow hands Emscripten an
+/// already-compiled module rather than creating the memory, so there is no point at which a
+/// per-operation maximum could be applied. Measured and corrected in M1 PR 4b; see issue #25.
+///
+/// What genuinely differs:
+///
+/// - **The measured check's counter.** On native it is the process resident set, so a peak
+///   that occurs *during* the operation and is released before the second reading is
+///   invisible. On the web it is the engine module's heap size, and a WASM heap never
+///   shrinks — so the web reading *does* include the peak. The real asymmetry runs the
+///   opposite way from the one that was claimed, and it is a difference in what is detected,
+///   not in what is bounded.
+/// - **Worker recycling**, on the web only: a worker whose engine heap has grown past a
+///   threshold derived from this value is discarded *after* its result is delivered. That
+///   bounds accumulation across operations. It does not bound any single one.
+/// - **A 2 GiB per-module ceiling**, on the web only, fixed at build time and not derived
+///   from anything a caller sets. It is the one real bound in this whole picture, an
+///   allocation past it fails cleanly rather than taking the tab down, and it is **not this
+///   limit**.
 ///
 /// Set it conservatively on constrained devices rather than relying on it to save you.
 ///
-/// See `docs/adr/0007-limit-enforcement-per-platform.md` for why, and for what would
-/// have to change to make these uniform.
+/// See `docs/adr/0007-limit-enforcement-per-platform.md` — in particular its 2026-09-12
+/// amendment, which is the per-path table this section summarises — for why, and for what
+/// would have to change to make any of it a bound.
 ///
 /// The defaults are deliberately conservative; callers on constrained devices should
 /// lower them rather than relying on these.
@@ -70,9 +88,10 @@ pub struct Limits {
     pub max_input_bytes: u64,
     /// Peak working memory an operation may use, in bytes.
     ///
-    /// **Not a cap on any platform.** A declaration-based pre-scan and a size estimate before
-    /// the engine, and a measured check after it. See the type-level docs — this is the
-    /// weakest limit here, and the one most likely to be trusted too far.
+    /// **Bounds nothing, on any platform.** A declaration-based pre-scan and a length-based
+    /// size estimate before the engine, and a measured check after it: an overrun is
+    /// *detected*, not prevented. See the type-level docs — this is the weakest limit here,
+    /// and the one most likely to be trusted too far.
     pub max_memory_bytes: u64,
     /// Wall-clock ceiling for one operation, in milliseconds.
     ///

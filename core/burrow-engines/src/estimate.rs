@@ -51,14 +51,37 @@
 //! already-compiled module so there is no point at which a per-operation maximum could be
 //! applied. See [ADR 0016] and issue #25.
 //!
-//! So both checks below are what `max_memory_bytes` means on **every** target. The web's only
-//! extra is a 2 GiB per-module sandbox ceiling no caller can influence, at which an allocation
-//! fails cleanly instead of taking the process down.
-//!
 //! One real asymmetry survives, in the opposite direction from the old claim: the counter
 //! [`check_measured_memory`] reads is the process resident set on native and the module's heap
 //! size on the web, and a WASM heap never shrinks — so the web reading includes a peak that the
 //! native one can miss entirely.
+//!
+//! # Which of these actually runs, per path
+//!
+//! Neither half is called uniformly, and saying "both checks are what `max_memory_bytes` means
+//! on every target" — as this module used to — reads as uniform enforcement that does not
+//! exist. Alongside these two there is the structural pre-scan in [`crate::prescan`], which is
+//! the only mechanism of the three that runs *before* an allocation it could prevent.
+//!
+//! | | pre-scan | [`check_open_memory`] | [`check_measured_memory`] |
+//! |---|---|---|---|
+//! | native PDFium (`pdfium::Pdfium`) | yes | **yes** | yes, on process RSS |
+//! | native qpdf (`qpdf::Qpdf`) | yes | **no** | yes, on process RSS |
+//! | web PDFium (`web::WebPdfium`) | yes | **yes** | yes, on module heap |
+//! | web qpdf (`web::WebQpdf`) | yes | **no** | yes, on module heap |
+//!
+//! [`check_open_memory`]'s constants are both PDFium measurements, so applying them to qpdf
+//! would predict the wrong number. The gap is consistent across native and web — an engine
+//! difference, not a platform divergence — and it is pinned by a conformance case rather than
+//! asserted here. Issue #26 records the three honest options and why none was taken in 4b.
+//!
+//! # Detect, not bound
+//!
+//! Nothing in this module bounds anything. The pre-scan can refuse a file before an engine
+//! allocates; these two report an overrun that has already happened, or predict one from a
+//! number that is blind to what the file declares. `max_memory_bytes` means "you will be told,
+//! and the result discarded" — never "this cannot be exceeded". The words *detect* and *bound*
+//! are used deliberately here and in [`burrow_types::Limits`]; keep them apart.
 //!
 //! [ADR 0007]: ../../../../docs/adr/0007-limit-enforcement-per-platform.md
 //! [ADR 0016]: ../../../../docs/adr/0016-differential-conformance.md

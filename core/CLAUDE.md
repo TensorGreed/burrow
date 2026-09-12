@@ -71,9 +71,17 @@ capable of one. This is the project's entire guarantee, and this is where it is 
 site — restructure the code. If you genuinely need a panic-free unwrap, handle the `None`
 case with a typed error.
 
-**Every operation takes `Limits` and enforces them.** Use `Limits::check` so the error
-names the limit and both numbers. An unbounded loop or allocation is a denial-of-service
-bug, not a missing nicety.
+**Every operation takes `Limits` and applies every ceiling in it.** Use `Limits::check` so the
+error names the limit, the stage, and both numbers. An unbounded loop or allocation is a
+denial-of-service bug, not a missing nicety.
+
+**`max_memory_bytes` is the exception, and it must not be described as a cap.** It bounds
+nothing on any platform: the structural pre-scan reads declarations only, the length-based
+estimate is blind to them *and* runs on the PDFium paths alone (issue #26), and the measured
+check fires after the allocation. Those **detect** an overrun. The only real bound anywhere is
+the web engine modules' fixed 2 GiB maximum, which no caller can influence and which is not
+this limit. `burrow_types::Limits`, `burrow_engines::estimate` and ADR 0007's 2026-09-12
+amendment all say this; keep them agreeing.
 
 **Casts are denied.** `cast_possible_truncation`, `cast_sign_loss`, and
 `cast_possible_wrap` are `deny`: silent numeric truncation on an attacker-controlled size
