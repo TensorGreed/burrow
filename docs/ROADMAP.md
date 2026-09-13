@@ -456,11 +456,12 @@ route — two instances of one engine with the bridge rebound between them. PDFi
 one heap and emits output from the other is still "a redaction pass that inspects one heap and
 edits another" — the failure mode this milestone exists to prevent. It is latent (no operation
 spans both engines today) and it is not a reason to reopen the gate, because option 2 would not
-obviously fix it either. It is a design requirement, recorded as R10 in the amendment:
-**verification runs on the exact bytes that are emitted, in the heap they are emitted from.**
-Two further conditions come with the decision — R8 (output is one value returned from one call,
-never streamed in pieces) and R9 (nothing written outside the wasm heap before verification
-passes). Those three are what make "`catch_unwind` is not required" true.
+obviously fix it either. It is a design requirement, R10 below.
+
+**Three requirements come with this decision — R8, R9 and R10 — and they are what make
+"`catch_unwind` is not required" true.** They are listed with the rest of M2's work below,
+each with the check that has to exist, rather than left as prose in a gate section nobody
+reads twice.
 
 **Two named triggers would reopen it**, and nothing else: a true per-operation memory bound
 becoming a requirement ([#25](https://github.com/TensorGreed/burrow/issues/25)), or
@@ -470,6 +471,26 @@ option 1 rests on, tracked as a supply-chain risk with no action now ([#44](http
 Neither the memory ceiling nor #25 is resolved by this. [Spike 0002](spikes/0002-wasm-memory-ceiling.md)
 remains unadopted, and its ceiling is per *worker*, so a caller's own `max_memory_bytes` still
 bounds nothing.
+
+### Requirements carried in from the linking gate
+
+Conditions of ADR 0006's decision, not advice. Each is **unsatisfied until its check exists and
+has been shown to fail without the property** — a requirement with no check is exactly the kind
+of claim that reads as coverage. See the ADR's 2026-09-12 amendment for why each one exists.
+
+| | requirement | check that must exist |
+|---|---|---|
+| **R8** | Redaction output is a single value returned from one Rust call, posted only after that call returns success. Progress may report *position*; it may not emit *content*. | `redaction-emission.spec.ts` — record every `postMessage`; assert no message before the final reply carries bytes, and exactly one carries output |
+| **R9** | Nothing is written outside the wasm heap before verification passes — no OPFS, no File System Access, no `blob:` URL handed to the page. | `redaction-no-side-channel.spec.ts` — stub `getDirectory`, `showSaveFilePicker`, `createObjectURL`; assert none is called before the verified reply |
+| **R10** | Verification runs on the exact byte sequence that is emitted, in the heap it is emitted from — never a sibling heap's copy. | `redact_verify_same_bytes` in `core/burrow-ops`, plus a conformance case for a both-engine path |
+
+Under an unwind, violating R8 or R9 is recoverable: Rust returns `Err`, the buffer drops, a
+`Drop` impl deletes the file. Under a trap — which is what the web has — they are not. R10 is
+the one that has nothing to do with panics: it exists because PDFium and qpdf have separate
+linear memories, so "verified" against one heap's copy says nothing about the bytes leaving the
+other.
+
+### The work
 
 - Redaction of text, images, annotations, and vector content by region
 - **Removal, not concealment** — a black rectangle over text is not redaction

@@ -157,7 +157,7 @@ option 1 stands and no re-evaluation is scheduled.
    a wasm build possible lives there and not upstream. Tracked as a supply-chain risk with no
    action now: [issue #44](https://github.com/TensorGreed/burrow/issues/44).
 
-#### Two conditions this decision carries, and they are requirements rather than hopes
+#### Three conditions this decision carries, and they are requirements rather than hopes
 
 Reason 4(a) — "no output is emitted unless verification passed" — is a claim about code M2 has
 not written. A security review of this amendment pointed out that it is **stronger** than
@@ -165,7 +165,13 @@ non-negotiable 4 as CLAUDE.md states it ("redaction output is verified automatic
 every run" permits output to exist and then be checked; the argument above requires emission to
 be *gated* on the check), and that under a trap the difference is real in exactly two cases M2
 has genuine pressure to introduce. So they are written down as conditions, because a
-requirement can be tested and an argument cannot:
+requirement can be tested and an argument cannot.
+
+**Each names the check that has to exist**, because a condition with no check is the thing this
+project keeps finding: a claim that reads as coverage. R10 is stated under *What this does not
+decide* below, with the hazard it comes from; all three are collected in `docs/ROADMAP.md`'s M2
+section so they are planned rather than only recorded here. **None of the three is satisfied
+until its named check exists and has been shown to fail without the property.**
 
 - **R8. Redaction output is a single value returned from one Rust call, and is posted only
   after that call returns success.** No chunked or progressive emission of partial output.
@@ -174,10 +180,21 @@ requirement can be tested and an argument cannot:
   heap — but a trap mid-stream leaves partially redacted, unverified bytes already in the
   page's possession, and terminating the worker does not un-send them. Progress may report
   *position*; it may not emit *content*.
+
+  **Check: `redaction-emission.spec.ts`** — drive a redaction through the worker and record
+  every `postMessage` it sends. Assert that no message before the final reply carries bytes,
+  and that the operation produces **exactly one** message containing output. Shown to fail by
+  emitting a chunk mid-operation in a copy of the worker and asserting the spec goes red.
 - **R9. Nothing is written outside the wasm heap before verification passes.** No OPFS or File
   System Access write, and no `blob:` URL handed to the page, until the verifier has run.
   `worker.terminate()` reclaims linear memory; it does not reclaim a file handle the page
   already holds.
+
+  **Check: `redaction-no-side-channel.spec.ts`** — stub `navigator.storage.getDirectory`,
+  `showSaveFilePicker` and `URL.createObjectURL` in the worker scope before the operation runs,
+  and assert none is called until after the reply carrying verified output. The same shape as
+  `e2e/zero-requests.spec.ts`, which already asserts a negative about what an operation does.
+  Shown to fail by calling `URL.createObjectURL` before verification in a copy.
 
 Under an unwind both cases are recoverable — Rust returns `Err`, the buffer drops, a `Drop`
 impl deletes the file. Under a trap they are not. **These two conditions are what make reason
@@ -202,6 +219,13 @@ design requirement:
 
 - **R10. Redaction verification runs on the exact byte sequence that is emitted**, in the heap
   it is emitted from — never on a sibling heap's copy of it.
+
+  **Check: a `redact_verify_same_bytes` unit test in `core/burrow-ops`**, asserting the
+  verifier is handed the identical buffer the operation returns — by pointer or by hash of the
+  emitted bytes, not by re-reading the source. Plus a **conformance divergence case**: a
+  document redacted through a path that spans both engines must produce the same verdict
+  natively and on the web, which is what `tests/conformance/` exists to catch. Shown to fail by
+  verifying a copy taken before the final write.
 
 Nothing about the memory ceiling. Spike 0002 is still unadopted, issue #25 is still *mitigated,
 not resolved*, and [ADR 0007](0007-limit-enforcement-per-platform.md)'s 2026-09-12 amendment is
