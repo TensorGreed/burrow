@@ -204,6 +204,113 @@ console — and it fires for files that parse _successfully_, not just failures.
 **Never send file content anywhere**, including in logs and error messages. If an
 operation fails, report the typed error from the core, not the input.
 
+## Design
+
+The visual language every tool page inherits. It landed in M1 PR A, before any tool page
+existed, so that the five tools would share one system rather than five.
+
+**The principle, and everything else follows from it: the interface reports, it does not
+reassure.** This is a site whose entire claim is that your files do not leave your computer.
+A design that argues that with warmth and adjectives is asking to be trusted; this one is
+built to be checked. Every number shown is one we measured. Where we cannot measure
+something, the page says what the limit is instead — which is the interface form of the rule
+the root `CLAUDE.md` states for doc comments, where an overclaim is a bug rather than a
+wording preference.
+
+### The tokens
+
+`src/styles/tokens.css` is the whole palette and scale; `src/styles/base.css` applies it.
+Both are imported by `BaseLayout.astro`, so a page gets them by using the layout.
+
+Six colour values, and the two coloured ones are **reserved**:
+
+| token         | for                                                                            |
+| ------------- | ------------------------------------------------------------------------------ |
+| `--paper`     | the ground                                                                     |
+| `--ink`       | text; never a background                                                       |
+| `--ink-quiet` | secondary text                                                                 |
+| `--rule`      | a hairline that separates. Decorative; never outlines a control                |
+| `--edge`      | a boundary you can act on — a drop zone, an input, a button. >= 3:1            |
+| `--signal`    | **machine state only**: a count we measured, a "done", a live readout          |
+| `--refuse`    | **refusals and limits only**: a file we would not open, a ceiling that was hit |
+
+**Links and buttons are ink, not `--signal`.** This is the costliest rule in the system and
+the point of it. The moment a button is the signal colour, the colour means "interactive" as
+well as "measured", and the one number that was actually measured stops standing out. Links
+are underlined; controls have an `--edge`.
+
+`--refuse` is its own value rather than a tint of `--signal` because the two say opposite
+things, and a wrong colour on an error is a correctness bug here, not a styling one.
+
+**Contrast is asserted, not eyeballed.** `src/styles/tokens.test.ts` parses `tokens.css`,
+computes WCAG contrast for every classified token against its own theme's ground in **both**
+themes, and gates on the **number of comparisons made** as well as on nothing failing — a
+ratio check that compared nothing would otherwise look exactly like one that compared
+everything. Every rule in it is also run against a fixture it must accept and a near-miss it
+must reject, on every run. Adding a colour token means classifying it as text, boundary, or
+decorative-with-a-reason; an unclassified one fails.
+
+### Type
+
+One family: **Atkinson Hyperlegible Next**, self-hosted, weight axis 400-700, Latin subset.
+It was drawn so that characters cannot be mistaken for one another, which is the argument
+this site makes about its own claims — and it is not a face anyone reaches for by default.
+`apps/web/fonts.toml` records where it came from, pinned to an upstream commit, what was
+done to it and with which tool version, and the digest of what ships. `src/fonts.test.ts`
+holds that record to the file.
+
+**A new face needs a `<link rel="preload">` in `BaseLayout.astro`, in the same commit.**
+`tools/first-load.mjs` derives the first-load payload from the built markup and states that
+it does **not** follow `url(...)` inside CSS. A font referenced only from `@font-face` is
+therefore a real download the size budget cannot see, and one that can be requested after
+`e2e/zero-requests.spec.ts` starts asserting silence. `tokens.test.ts` fails if any
+`@font-face` has no matching preload.
+
+Numerals are tabular everywhere, set once on `body`. A measurement that changes width while
+it updates looks unreliable.
+
+### Layout
+
+Two tracks, left-aligned throughout. `.read` carries prose and stops at `--track-read`
+(58ch); evidence — a diagram, a file list, a state line — runs to `--track-readout` and is
+not constrained to a reading measure. They stack below `--bp-stack`.
+
+### Things this design does not do
+
+Not preferences. Each is a specific thing that makes a page look generated rather than
+designed, and they are listed so nobody has to rediscover the list:
+
+- **No cards.** Content chopped into identical rounded boxes with one radius on everything
+  and the same soft grey shadow under each. There is one `--radius` and it is 2px.
+- **No ALL-CAPS eyebrow labels** above headings.
+- **No meta strings joined with middle dots** (`A · B · C`).
+- **No `WORD — fragment` labels** with a spaced em dash.
+- **No monospace face for small data labels.** `<code>` is for code.
+- **No `→` appended to link or button text.** A button says what it does.
+- **No numbered markers** (`01 / 02 / 03`) unless the content genuinely is a sequence. The
+  merge page's file list is one, because merge order is the whole point of the tool; a list
+  of features is not.
+- **No accenting a single word in a headline** in a different colour or weight.
+- **No entrance animations and no hover transitions on everything.** Motion answers an
+  action — a disclosure opening, a state changing — or it does not happen. The
+  `prefers-reduced-motion` block in `base.css` governs whatever is added later.
+
+### Working on it
+
+- **No inline `style` attributes, and no injected `<style>` tags.** `style-src 'self'`
+  carries no `'unsafe-inline'` and no nonce (ADR 0014). Astro compiles `<style>` blocks to an
+  external stylesheet, which is why the design system is imported rather than inlined.
+- **`img-src 'self'` admits no `data:` URI.** A same-origin image is fine; a data-URI
+  background is refused, silently.
+- **Anything a page adds is part of the first load, or it fails `zero-requests.spec.ts`.**
+  That test's `isPinnedArtifact` is an exact-match allowlist.
+- **Any `console.log` left in an island fails `console-silence.spec.ts`**, which asserts the
+  page console is empty, not merely free of file content.
+- **Screenshot what you build, at 390px as well as on a desktop.** The landing page's
+  diagram was an inline `<svg>` until a screenshot showed it rendering at about six points
+  on a phone — text inside an SVG scales with the drawing. It is markup now, and it reflows.
+  Nothing in `pnpm check`, `pnpm lint` or `pnpm test` would have caught that.
+
 ## Layout
 
 ```

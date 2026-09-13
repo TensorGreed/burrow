@@ -21,6 +21,12 @@
 // read one.
 import { CSP } from "../generated/engines.js";
 
+// The design system. Imported here rather than linked, so Astro emits one external
+// stylesheet — `style-src 'self'` refuses an injected <style> tag, and there are no inline
+// `style` attributes anywhere on this site. See apps/web/CLAUDE.md, "Design".
+import "../styles/tokens.css";
+import "../styles/base.css";
+
 interface Props {
   title: string;
   description: string;
@@ -36,52 +42,85 @@ const { title, description } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    {
+      /*
+      NO REFERRER, IN THE MARKUP RATHER THAN ONLY IN A HEADER. `public/_headers` already
+      sends `Referrer-Policy: no-referrer`, but the whole reason the CSP is duplicated into
+      a <meta> tag (ADR 0014 §5) is that a static host may ignore that file — and this
+      layout now puts an outbound github.com link in the masthead of EVERY page, including
+      tool pages. On a host that ignores `_headers`, clicking it would send the tool page's
+      URL to github.com. Not file content, and user-initiated, but the defence should not
+      be weaker than the one beside it. Found by security review of M1 PR A.
+    */
+    }
+    <meta name="referrer" content="no-referrer" />
     <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site ?? "http://localhost")} />
+    {
+      /*
+      THE FONT PRELOAD IS LOAD-BEARING IN TWO WAYS THAT HAVE NOTHING TO DO WITH SPEED. Do
+      not remove it, and if you add a second face, add its preload in the same commit —
+      `src/styles/tokens.test.ts` fails if any @font-face src in the stylesheets has no match
+      here.
+
+      1. `tools/first-load.mjs` derives the first-load payload by scanning the built HTML
+         for `href`/`src`. Its own comment says it does NOT follow `url(...)` inside CSS —
+         "one honest limit". A font referenced only from @font-face is therefore a real
+         download that the size budget cannot see, which is the "a check that silently
+         examines nothing" failure CLAUDE.md names. The preload puts it in the markup, so
+         the budget counts it.
+
+      2. `e2e/zero-requests.spec.ts` asserts that once the engines have loaded, NOTHING is
+         requested — against an exact-match allowlist of pinned artifacts. A font fetched
+         lazily, when the first text using it is laid out, can land after that marker and
+         fail the test. The preload moves it into the initial load, where it belongs.
+
+      `crossorigin` is required even same-origin: font fetches are CORS-mode by spec, and
+      without it the browser makes a second, uncredited request and the preload is wasted.
+    */
+    }
+    <link
+      rel="preload"
+      href="/fonts/atkinson-hyperlegible-next-v2.001-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
   </head>
   <body>
-    <header>
-      <a href="/">burrow</a>
-      <p>Private file tools. Your files never leave your device.</p>
-    </header>
-    <main>
-      <slot />
-    </main>
-    <footer>
-      <p>
-        Free and open source, <code>MIT OR Apache-2.0</code>. No accounts, no uploads, no tracking.
-      </p>
-      {
-        /*
-        THE CREDITS LINK IS PART OF A LICENCE OBLIGATION. Do not remove it.
+    <div class="page">
+      <header class="masthead">
+        <a class="masthead__name" href="/">burrow</a>
+        <nav class="masthead__nav" aria-label="Site">
+          <a href="/credits">Credits</a>
+          <a href="https://github.com/TensorGreed/burrow">Source</a>
+        </nav>
+      </header>
+      <main>
+        <slot />
+      </main>
+      <footer class="colophon">
+        <p>
+          Free and open source, <code>MIT OR Apache-2.0</code>. No accounts, no uploads, no
+          tracking.
+        </p>
+        {
+          /*
+          THE CREDITS LINK IS PART OF A LICENCE OBLIGATION. Do not remove it.
 
-        ADR 0008's FTL, IJG and MIT-Modern-Variant notices bind "documentation accompanying
-        the distribution". A notices page nobody can navigate to does not discharge that, so
-        the page and the route to it are one requirement, not two. It lives in the layout
-        rather than on one page so every page carries it.
+          ADR 0008's FTL, IJG and MIT-Modern-Variant notices bind "documentation accompanying
+          the distribution". A notices page nobody can navigate to does not discharge that, so
+          the page and the route to it are one requirement, not two. It lives in the layout
+          rather than on one page so every page carries it.
 
-        `src/credits.test.ts` resolves this href against the built output and fails if it
-        does not land on the credits page.
-      */
-      }
-      <p><a href="/credits">Credits and open-source licences</a></p>
-    </footer>
+          `src/credits.test.ts` resolves this href against the built output and fails if it
+          does not land on the credits page. It is ALSO in the masthead above; both are
+          deliberate — the test asserts a reachable route, and a footer link is the one a
+          reader looks for. Removing either alone leaves the obligation discharged; removing
+          both does not, and the test is what notices.
+        */
+        }
+        <p><a href="/credits">Credits and open-source licences</a></p>
+      </footer>
+    </div>
   </body>
 </html>
-
-<style is:global>
-  :root {
-    color-scheme: light dark;
-    font-family:
-      system-ui,
-      -apple-system,
-      "Segoe UI",
-      sans-serif;
-    line-height: 1.6;
-  }
-
-  body {
-    margin: 0 auto;
-    max-width: 46rem;
-    padding: 2rem 1rem;
-  }
-</style>

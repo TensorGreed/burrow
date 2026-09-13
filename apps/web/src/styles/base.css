@@ -1,0 +1,243 @@
+/*
+ * Element defaults and the page skeleton, on the tokens in `tokens.css`.
+ *
+ * This file styles ELEMENTS and a small number of layout classes. Component-specific rules
+ * belong with their component. Keep that boundary: a selector here that only one page uses
+ * is a rule the next person has to read and rule out.
+ *
+ * SPECIFICITY IS FLAT AND DELIBERATELY SO. At most one class, optionally with one element
+ * (`.colophon p` is the only such selector); no ids; and `!important` only in the
+ * reduced-motion override below, where it has to win. Two rules that cancel each other out
+ * -- a `.section` padding and a `.cta` padding, say -- are the commonest way a stylesheet
+ * like this rots, and the cheapest defence is to keep selectors weighing nearly the same,
+ * so source order is what resolves them.
+ *
+ * NO INLINE STYLES, ANYWHERE, AND THAT IS A SECURITY PROPERTY. `style-src 'self'` carries
+ * no `'unsafe-inline'` and no nonce (ADR 0014), so a runtime-injected <style> is refused by
+ * the browser. Astro compiles these files to an external stylesheet, which is why they are
+ * imported rather than written into a page.
+ */
+
+/*
+ * The font is the site's only self-hosted binary asset. `apps/web/fonts.toml` records where
+ * it came from, what was done to it and its digest; `src/fonts.test.ts` asserts the shipped
+ * bytes still match.
+ *
+ * `font-display: swap` is deliberate. The alternative, `block`, hides text for up to three
+ * seconds on a slow connection -- on a page whose first job is to tell someone their files
+ * are not being uploaded. A brief reflow is the cheaper failure.
+ *
+ * THE PRELOAD IS NOT AN OPTIMISATION AND MUST NOT BE REMOVED. `tools/first-load.mjs` scans
+ * the built HTML for `href`/`src` and says so explicitly: it does not follow `url(...)`
+ * inside CSS. Without the <link rel="preload"> in BaseLayout this file would be a first-load
+ * cost the size budget cannot see, AND it would be fetched after the point where
+ * `e2e/zero-requests.spec.ts` starts asserting that nothing is requested at all.
+ * `src/styles/tokens.test.ts` fails if any @font-face src here has no matching preload.
+ */
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("/fonts/atkinson-hyperlegible-next-v2.001-latin.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* A `font-size` in px rather than a percentage of the reader's setting would override it;
+     the scale in tokens.css is in rem precisely so a reader who has set 20px gets 20px. */
+  background: var(--paper);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-body);
+  /* Every number on this site is a measurement, and a measurement that changes width while
+     it updates looks unreliable. Tabular figures everywhere is cheaper than remembering to
+     ask for them at each readout. */
+  font-variant-numeric: tabular-nums;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ------------------------------------------------------------------ headings */
+
+h1,
+h2,
+h3 {
+  margin: 0 0 var(--space-4);
+  line-height: var(--leading-tight);
+  font-weight: var(--weight-strong);
+  /* Tight rather than default tracking at display sizes: this face is wide by design, and
+     a 40px heading set loose reads as a banner rather than as a sentence. */
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--step-4);
+}
+
+h2 {
+  font-size: var(--step-2);
+  margin-top: var(--space-7);
+}
+
+h3 {
+  font-size: var(--step-1);
+  margin-top: var(--space-6);
+}
+
+p {
+  margin: 0 0 var(--space-4);
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------------------ links */
+
+/*
+ * Underlined, and ink. NOT `--signal`: that value means "the machine measured this", and a
+ * page of coloured links would drown the one number that was actually measured. See
+ * tokens.css.
+ */
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/* ------------------------------------------------------------------ focus */
+
+/*
+ * One visible focus style for everything, on the element's own outline rather than a shadow,
+ * so it survives forced-colours and high-contrast modes. `:focus-visible` alone would leave
+ * nothing for a browser that does not support it, so the `:focus` fallback is removed only
+ * where `:focus-visible` is understood.
+ */
+:focus {
+  outline: var(--focus-width) solid var(--ink);
+  outline-offset: var(--focus-offset);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+:focus-visible {
+  outline: var(--focus-width) solid var(--ink);
+  outline-offset: var(--focus-offset);
+}
+
+/* ------------------------------------------------------------------ motion */
+
+/*
+ * There is no non-user-triggered motion on this site: no entrance animations, no scroll
+ * reveals, no hover transitions on everything. This block is here for the motion a tool page
+ * legitimately adds later -- a disclosure opening, a state changing -- so that it is already
+ * governed the first time someone writes one.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ------------------------------------------------------------------ skeleton */
+
+.page {
+  /* The gutter lives in exactly one place. `padding-block` rather than a `padding`
+     shorthand so a future vertical change cannot silently zero the side gutter. */
+  max-width: calc(var(--track-readout) + 2 * var(--space-5));
+  margin: 0 auto;
+  padding-inline: var(--space-5);
+  padding-block: var(--space-5) var(--space-8);
+}
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-block-end: var(--space-4);
+  /* One of the two rules on the landing page. It separates the site's chrome from its
+     content -- which is information, not decoration. */
+  border-block-end: 1px solid var(--rule);
+}
+
+.masthead__name {
+  font-size: var(--step-1);
+  font-weight: var(--weight-strong);
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+
+.masthead__name:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+
+.masthead__nav {
+  display: flex;
+  gap: var(--space-4);
+  font-size: var(--step--1);
+}
+
+/* The reading track. Prose stops at a measure; evidence does not. */
+.read {
+  max-width: var(--track-read);
+}
+
+.colophon {
+  margin-block-start: var(--space-8);
+  padding-block-start: var(--space-4);
+  border-block-start: 1px solid var(--rule);
+  color: var(--ink-quiet);
+  font-size: var(--step--1);
+}
+
+.colophon p {
+  margin-block-end: var(--space-2);
+}
+
+code {
+  font-size: 0.9em;
+}
+
+/* ------------------------------------------------------------------ readouts */
+
+/*
+ * A number the machine measured. The one place `--signal` is allowed in static markup; a
+ * tool island may also use it for live state. See tokens.css for why the reservation is
+ * absolute.
+ */
+.measure {
+  color: var(--signal);
+  font-weight: var(--weight-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A refusal, a ceiling, a file we will not open. Never a tint of `.measure`. */
+.refusal {
+  color: var(--refuse);
+}

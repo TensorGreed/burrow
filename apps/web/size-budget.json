@@ -20,9 +20,19 @@
     "",
     "TO CHANGE A BUDGET: re-measure, update `measured_brotli` AND `budget_brotli`, and say",
     "why in the commit. An engine pin bump is the expected reason. Raising a budget to make",
-    "CI pass without knowing what grew is the thing this file exists to prevent."
+    "CI pass without knowing what grew is the thing this file exists to prevent.",
+    "",
+    "M1 PR A RE-MEASURED EVERY LINE, and found one that had gone stale without failing.",
+    "`engines/burrow-worker.js` was recorded at 255,535 raw / 45,052 brotli and measured",
+    "256,255 / 45,288 on an unchanged checkout -- 236 brotli bytes, from a differently-built",
+    "`bindings/burrow-wasm/pkg/`, which is gitignored. Nothing caught it: the tests gate live",
+    "sizes against `budget_brotli` and check the recorded lines are self-consistent, so a",
+    "recorded `measured_*` can drift from reality as long as it drifts consistently. The",
+    "worker bundle's size is therefore only as reproducible as the local wasm-pack build, and",
+    "that is a property of the build rather than of this file. Recorded here so the next",
+    "person meets it as a known limit rather than as a puzzle."
   ],
-  "measured_on": "2026-09-12, apps/web production build (no BURROW_HARNESS), linux-aarch64",
+  "measured_on": "2026-09-13, apps/web production build (no BURROW_HARNESS), linux-aarch64",
   "headroom": {
     "per_artifact": 0.1,
     "page": "absolute",
@@ -52,8 +62,8 @@
       "why": "Built from source at the pinned version against our vendored zlib and libjpeg-turbo, so it moves with a pin bump or a build-flag change."
     },
     "engines/burrow-worker.js": {
-      "measured_raw": 255535,
-      "measured_brotli": 45052,
+      "measured_raw": 256255,
+      "measured_brotli": 45288,
       "budget_brotli": 49558,
       "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR."
     },
@@ -70,16 +80,16 @@
       "why": "A fixed 78-byte literal fetched at init to prove an allowlisted request succeeds (ADR 0014). It has no reason to change; if it does, that is worth a question."
     },
     "page": {
-      "measured_raw": 2271,
-      "measured_brotli": 881,
+      "measured_raw": 29570,
+      "measured_brotli": 21652,
       "budget_brotli": 51200,
-      "why": "The entry page and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage: 10% of 881 bytes is 89 bytes of headroom, which a paragraph of prose would blow, and failing CI on editorial work teaches people to raise budgets without reading them. 50 KiB still catches the failure that matters -- a page accidentally shipping a large script -- and anything smaller than that is caught by the total."
+      "why": "The entry page and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of it is one file: the self-hosted typeface, 18,524 of it. That is a deliberate payload decision, not drift -- apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. The absolute budget still has 29 KiB of room, which is what it is for: failing CI on editorial work teaches people to raise budgets without reading them."
     }
   },
   "total": {
-    "measured_raw": 6816078,
-    "measured_brotli": 2232811,
+    "measured_raw": 6844097,
+    "measured_brotli": 2253818,
     "budget_brotli": 2299796,
-    "why": "The binding gate. Everything a user downloads before their first operation runs."
+    "why": "The binding gate. Everything a user downloads before their first operation runs. M1 PR A spent 20,771 brotli bytes of the headroom on the design system and its typeface; a further 236 is the `burrow-worker.js` re-measurement described above, which predates this change and is not part of it. `budget_brotli` is deliberately UNCHANGED: the payload grew for a reason that is written down, and raising the ceiling to match would convert a gate into a record of whatever happened."
   }
 }

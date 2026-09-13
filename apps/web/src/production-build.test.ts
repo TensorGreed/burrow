@@ -179,4 +179,27 @@ describe("the production build", () => {
     );
     expect(built).toContain("host/worker-host.js");
   });
+
+  it("ships no inline <style>, because the CSP would refuse it", () => {
+    // `style-src 'self'` carries no `'unsafe-inline'` and no nonce (ADR 0014), so an
+    // inline <style> is refused by the browser and the page renders unstyled. Nothing in
+    // the source asks for one — it would arrive as a side effect of Astro's
+    // `build.inlineStylesheets: "auto"`, which reads `vite.build.assetsInlineLimit`
+    // (0 in astro.config.mjs) and inlines any stylesheet under it. Raise that number for a
+    // payload reason and the whole site loses its CSS. Found by security review of M1 PR A.
+    const pages = walk(outDir).filter((f) => f.endsWith(".html"));
+    expect(pages.length, "no HTML in the build, so this would check nothing").toBeGreaterThan(0);
+
+    const withInlineStyle = pages.filter((f) =>
+      readFileSync(join(outDir, f), "utf8").includes("<style"),
+    );
+    expect(withInlineStyle).toEqual([]);
+
+    // The near-miss: these pages do carry stylesheets, as external links. Without this, a
+    // build that shipped no CSS at all would satisfy the assertion above.
+    const withLinkedStyle = pages.filter((f) =>
+      /<link[^>]+rel="stylesheet"/.test(readFileSync(join(outDir, f), "utf8")),
+    );
+    expect(withLinkedStyle).toEqual(pages);
+  });
 });
