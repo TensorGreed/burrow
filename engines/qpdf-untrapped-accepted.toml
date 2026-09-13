@@ -180,3 +180,50 @@ nothing to parse. Declared in `core/burrow-engines/src/link_check.rs`'s `extern 
 to prove libqpdf is actually linked, and gated on `#[cfg(test)]`, so it never ships. It was \
 invisible to this check until M1 PR 4c's security review found the fourth declaration \
 site."""
+
+# ---------------------------------------------------------------------------------
+# The write path, added in M1 PR B for `merge` (ADR 0017).
+#
+# ONE SHARED PRECONDITION, AND IT IS NOT A FORMALITY. All three dereference
+# `qpdf->qpdf_writer`, which `qpdf_init_write_memory` creates. That function sets
+# `qpdf->write_memory = true` UNCONDITIONALLY, after a `trap_errors` call that may have
+# failed -- so a caller that ignores its status and calls these anyway can reach a null
+# `shared_ptr` deref. `qpdf/write.rs` therefore calls none of them unless
+# `qpdf_init_write_memory` returned success AND the subsequent `qpdf_write` did too, and a
+# unit test pins that ordering. The hazard is upstream's; the discipline is ours.
+# ---------------------------------------------------------------------------------
+
+[[function]]
+name = "qpdf_get_buffer_length"
+reason = """\
+Returns `qpdf->output_buffer->getSize()`, which is `return m->size` -- a field read on a \
+Buffer qpdf has already produced (Buffer.cc:72-75). It reaches that through \
+`qpdf_get_buffer_internal`, whose only work is `qpdf_writer->getBufferSharedPointer()`: a \
+pointer swap (QPDFWriter.cc:542-554) wrapped in a `shared_ptr`. NON-PARSING in the sense \
+the preamble requires -- it never touches the PDF's bytes, never resolves an object, never \
+converts a file-derived number. The document has already been written by the time it is \
+called. Its only failure mode is allocating the shared_ptr control block, which throws \
+`std::bad_alloc` rather than returning null, accepted as a defined abort per the preamble. \
+See the shared precondition above for the null-writer hazard."""
+
+[[function]]
+name = "qpdf_get_buffer"
+reason = """\
+As `qpdf_get_buffer_length`, returning `m->buf` instead of `m->size` (Buffer.cc:77-81). \
+Same internal call, same non-parsing argument, same allocation-only failure mode, same \
+precondition. Note it returns a `const unsigned char*` owned by the `qpdf_data`, valid \
+until the next `qpdf_init_write*` or `qpdf_cleanup`: `qpdf/write.rs` copies out of it \
+immediately and never stores it."""
+
+[[function]]
+name = "qpdf_set_deterministic_ID"
+reason = """\
+`qpdf->qpdf_writer->setDeterministicID(value != QPDF_FALSE)` (qpdf-c.cc:578-583) -- \
+assigns a bool on the writer. Parses nothing, reads nothing from the document. Called so \
+merge output is a function of its inputs rather than of the clock and the random pool, \
+which is what makes a golden test possible at all; without it every run produces a \
+different `/ID` and the committed expectation could only ever be a page count. \
+Must be called AFTER `qpdf_init_write_memory` -- qpdf-c.h says the write parameters are \
+set between `qpdf_init_write*` and `qpdf_write`, and calling it first dereferences a writer \
+that does not exist yet and takes the process down. Measured during ADR 0017's engine \
+comparison, by core dump."""

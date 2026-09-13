@@ -89,8 +89,24 @@ pub(super) type QpdfLoggerHandle = *mut core::ffi::c_void;
 /// `typedef int QPDF_BOOL` — `qpdf-c.h:141`.
 pub(super) type QpdfBool = c_int;
 
+/// Opaque stand-in for `qpdf_oh` — `qpdf-c.h:585`, an `unsigned int` index into the
+/// owning `qpdf_data`'s handle table.
+///
+/// A distinct alias rather than a bare `c_uint` so a handle cannot be passed where a count
+/// or a status is expected. Handles are **per-document**: one from document A means
+/// something else entirely in document B, which is why `qpdf_add_page` takes the source
+/// `qpdf_data` alongside the handle rather than inferring it.
+pub(super) type QpdfObjectHandle = c_uint;
+
 /// `#define QPDF_TRUE 1` — `qpdf-c.h:142`.
 pub(super) const QPDF_TRUE: QpdfBool = 1;
+
+/// `#define QPDF_FALSE 0` — `qpdf-c.h:141`.
+///
+/// Spelled out rather than written as a literal `0` at the call site: `qpdf_add_page`'s
+/// last parameter is `first`, and `0` there reads as an index to anyone skimming when it
+/// is in fact "append rather than prepend".
+pub(super) const QPDF_FALSE: QpdfBool = 0;
 
 // `QPDF_ERROR_CODE`, the `QPDF_ERRORS` bit and the `has_errors` test live in
 // `crate::codes::qpdf` so the bitmask trap is pinned down once for both paths.
@@ -193,6 +209,81 @@ unsafe extern "C" {
     // destroy the handle rather than the underlying object in any case. An FFI declaration
     // nothing calls is pure risk: it is one more signature that could be wrong and one
     // more thing a future reader might reach for.
+
+    // ---------------------------------------------------------------- the write path
+    //
+    // Added in M1 PR B for `merge`. ADR 0017 records why qpdf does the merging rather than
+    // PDFium: it is the only one of the two that preserves an outline, an attachment or a
+    // working form field, and PDFium's failure on the last of those is silent -- it keeps
+    // the widget annotation and drops the `/AcroForm`, so the merged document shows a form
+    // field that no longer is one.
+
+    /// `qpdf_oh qpdf_get_page_n(qpdf_data qpdf, size_t n)` — `qpdf-c.h:977`.
+    ///
+    /// Routes through `trap_errors`. Returns an object handle belonging to **this**
+    /// `qpdf_data`; handles are per-document and are not interchangeable, which is why
+    /// `qpdf_add_page` takes the source document alongside the handle.
+    pub(super) fn qpdf_get_page_n(qpdf: QpdfData, n: usize) -> QpdfObjectHandle;
+
+    /// ```c
+    /// QPDF_ERROR_CODE qpdf_add_page(qpdf_data qpdf, qpdf_data newpage_qpdf,
+    ///     qpdf_oh newpage, QPDF_BOOL first);
+    /// ```
+    /// `qpdf-c.h:996-997`. Routes through `trap_errors`.
+    ///
+    /// **The source document must outlive the write, not just this call.** qpdf resolves
+    /// the foreign page's indirect objects lazily, so cleaning the source up early yields a
+    /// truncated output rather than an error — a silent short document, which is precisely
+    /// the failure ADR 0017 §2 refuses. `write.rs` holds every source open until
+    /// `qpdf_write` has returned.
+    pub(super) fn qpdf_add_page(
+        qpdf: QpdfData,
+        newpage_qpdf: QpdfData,
+        newpage: QpdfObjectHandle,
+        first: QpdfBool,
+    ) -> QpdfErrorCode;
+
+    /// `QPDF_ERROR_CODE qpdf_init_write_memory(qpdf_data qpdf)` — `qpdf-c.h:424`.
+    ///
+    /// Routes through `trap_errors` (`qpdf-c.cc:483-490`). **Its status must be checked.**
+    /// It sets `qpdf->write_memory = true` unconditionally, after the trapped call that
+    /// creates the writer — so ignoring a failure here leaves a caller able to dereference
+    /// a null writer through the three untrapped functions below.
+    pub(super) fn qpdf_init_write_memory(qpdf: QpdfData) -> QpdfErrorCode;
+
+    /// `void qpdf_set_deterministic_ID(qpdf_data qpdf, QPDF_BOOL value)` — `qpdf-c.h:576`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`: it assigns a
+    /// bool on the writer and parses nothing.
+    ///
+    /// **Called after `qpdf_init_write_memory`, never before.** The header is explicit that
+    /// write parameters are set between `qpdf_init_write*` and `qpdf_write`; calling this
+    /// first dereferences a writer that does not exist and aborts the process. Found by
+    /// core dump during ADR 0017's measurement.
+    ///
+    /// Without it the output `/ID` is drawn from the clock and the random pool, and a
+    /// golden test could only ever assert a page count.
+    pub(super) fn qpdf_set_deterministic_ID(qpdf: QpdfData, value: QpdfBool);
+
+    /// `QPDF_ERROR_CODE qpdf_write(qpdf_data qpdf)` — `qpdf-c.h:436`.
+    ///
+    /// Routes through `trap_errors`. Returns the status **bitmask**, like every
+    /// `QPDF_ERROR_CODE` here — see `has_errors`.
+    pub(super) fn qpdf_write(qpdf: QpdfData) -> QpdfErrorCode;
+
+    /// `size_t qpdf_get_buffer_length(qpdf_data qpdf)` — `qpdf-c.h:430`.
+    ///
+    /// **Untrapped**, argued in `engines/qpdf-untrapped-accepted.toml`. A field read on a
+    /// buffer qpdf has already produced.
+    pub(super) fn qpdf_get_buffer_length(qpdf: QpdfData) -> usize;
+
+    /// `unsigned char const* qpdf_get_buffer(qpdf_data qpdf)` — `qpdf-c.h:432`.
+    ///
+    /// **Untrapped**, argued in `engines/qpdf-untrapped-accepted.toml`.
+    ///
+    /// The pointer is owned by the `qpdf_data` and dies on the next `qpdf_init_write*` or
+    /// `qpdf_cleanup` (`qpdf-c.h:426-428`). Copy out of it immediately; never store it.
+    pub(super) fn qpdf_get_buffer(qpdf: QpdfData) -> *const u8;
 
     /// `void qpdflogger_set_info(qpdflogger_handle, enum qpdf_log_dest_e, qpdf_log_fn_t,
     /// void*)` — `qpdflogger-c.h:70`.

@@ -355,15 +355,37 @@ jobs:
       # x86-64. If this step fails to link here, that is the answer to the open question,
       # and the target moves to the self-hosted arm64 runner with the decision recorded
       # rather than worked around. See fuzz/README.md.
-      - name: fuzz qpdf_check for 60s, against the instrumented archive
+      - name: fuzz qpdf_check and merge for 60s each, against the instrumented archive
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          cargo +nightly fuzz run qpdf_check -- \
-            -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+          for target in qpdf_check merge; do
+            cargo +nightly fuzz run "$target" -- \
+              -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+          done
+
+      # EVERY TARGET IN fuzz/Cargo.toml MUST BE NAMED IN A STEP ABOVE, and nothing enforced
+      # that until M1 PR B added one. The steps list targets explicitly -- which is right,
+      # because they need different RUSTFLAGS -- so a new `[[bin]]` runs nowhere and the job
+      # still passes. A fuzz target that never runs is the "silently examines nothing" shape
+      # the root CLAUDE.md names, in the suite whose whole job is to find what tests do not.
+      - name: Every fuzz target is actually run by this job
+        working-directory: fuzz
+        run: |
+          declared=$(cargo +nightly fuzz list | sort)
+          run=$(grep -oE 'for target in [a-z_ ]+' ../.github/workflows/ci.yml \
+                | sed 's/for target in //' | tr ' ' '\n' | grep -v '^$' | sort -u)
+          echo "declared: $(echo "$declared" | tr '\n' ' ')"
+          echo "run:      $(echo "$run" | tr '\n' ' ')"
+          missing=$(comm -23 <(echo "$declared") <(echo "$run"))
+          if [ -n "$missing" ]; then
+            echo "::error::fuzz targets declared but never run: $missing"
+            exit 1
+          fi
+          echo "OK -- all $(echo "$declared" | wc -l) declared target(s) are run."
 
   wasm:
     name: wasm build

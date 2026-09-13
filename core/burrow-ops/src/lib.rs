@@ -28,11 +28,15 @@
 /// than the one hop it costs.
 pub use burrow_engines as engines;
 
+pub mod merge;
+
+pub use merge::{Input, merge};
+
 /// Operations available in this build, in stable order.
 ///
-/// Empty until M1. Exists so the bindings and the web app have something to enumerate
-/// rather than hard-coding a list that drifts.
-pub const AVAILABLE: &[&str] = &[];
+/// Exists so the bindings and the web app have something to enumerate rather than
+/// hard-coding a list that drifts.
+pub const AVAILABLE: &[&str] = &["merge"];
 
 #[cfg(test)]
 mod tests {

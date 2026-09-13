@@ -28,6 +28,7 @@
 //! `qpdf-c.h:113-115` calls a leaked exception a bug to be reported. The declarations
 //! live in this module's private `ffi` submodule, and ADR 0013 §1 has the full argument.
 
+mod assemble;
 mod ffi;
 mod limits;
 
@@ -72,8 +73,8 @@ const DESCRIPTION: &[u8] = b"input\0";
 /// dropped.
 ///
 /// Holds a raw pointer, so it is `!Send`. It never leaves the function that made it.
-struct Document {
-    data: ffi::QpdfData,
+pub(super) struct Document {
+    pub(super) data: ffi::QpdfData,
     /// Read by qpdf for as long as `data` lives. Never touched from Rust after the read.
     _bytes: Box<[u8]>,
 }
@@ -125,7 +126,7 @@ impl Document {
     /// functions that do not return a code report errors only this way, and even those
     /// that do are documented as safe to check like this. Trusting return values alone
     /// would miss half the failure modes.
-    fn take_error(&self) -> Option<Error> {
+    pub(super) fn take_error(&self) -> Option<Error> {
         // SAFETY: `self.data` is a live handle owned by this struct.
         if unsafe { ffi::qpdf_has_error(self.data) } == 0 {
             return None;
@@ -139,6 +140,127 @@ impl Document {
             ffi::qpdf_get_error_code(self.data, error)
         };
         Some(crate::codes::qpdf::map_code(code))
+    }
+}
+
+impl Document {
+    /// Open a document: validate the input, install the suppression, and read.
+    ///
+    /// **One implementation of an ordering that is load-bearing.** Extracted in M1 PR B,
+    /// when `merge` became the second caller — the alternative was two copies of a
+    /// sequence in which every step is placed for a reason:
+    ///
+    /// 1. **Empty first.** A zero-length buffer has no valid pointer to hand qpdf.
+    /// 2. **`Stage::InputSize` before anything allocates**, per non-negotiable #3.
+    /// 3. **The structural pre-scan before the engine**, because it is the only defence
+    ///    that runs before a C++ parser sees the bytes (ADR 0013).
+    /// 4. **The password is copied before the handle exists**, so the copy is wiped by its
+    ///    own `Drop` on every path including an early return.
+    /// 5. **Suppression installed before the read**, because `qpdf_read_memory` is one of
+    ///    the calls that warns — and its warnings carry byte offsets from the file.
+    /// 6. **Failure established by the ERROR bit, never `!= 0`.**
+    ///
+    /// Step 6 is the one that bites. `QPDF_WARNINGS` is bit 0 and `QPDF_ERRORS` is bit 1;
+    /// every damaged file in the conformance corpus reads with warnings, so `!= 0` reports
+    /// qpdf refusing files it does not refuse. ADR 0017's measurement harness reproduced
+    /// that bug even though this module already had it right, which is most of the reason
+    /// the sequence now lives in one place.
+    ///
+    /// The caller supplies the deadline and the aggregate ceilings: those differ between a
+    /// single-document check and a multi-input merge, and nothing here should pretend
+    /// otherwise.
+    fn open(
+        bytes: Box<[u8]>,
+        password: Option<&burrow_types::Password>,
+        attempt_recovery: bool,
+    ) -> Result<Self> {
+        if bytes.is_empty() {
+            return Err(Error::Malformed("input is empty".to_owned()));
+        }
+
+        let password = crate::password::nul_terminated(password, "qpdf")?;
+        let size = c_ulonglong::try_from(bytes.len())
+            .map_err(|_| Error::Internal("input length does not fit in size_t".to_owned()))?;
+
+        // Process-global setup: resource limits and the discarding logger, once.
+        let logger = limits::install();
+
+        // SAFETY: `qpdf_init` returns an owned handle or null; null is checked below.
+        let data = unsafe { ffi::qpdf_init() };
+        if data.is_null() {
+            return Err(Error::Internal("qpdf could not be initialised".to_owned()));
+        }
+
+        // Take ownership immediately, so every path from here frees the handle -- including
+        // an unwind. Nothing between `qpdf_init` and this line can fail.
+        let document = Self {
+            data,
+            _bytes: bytes,
+        };
+
+        // SAFETY: `document.data` is live. `logger` is the process-wide discarding logger
+        // from `limits::install`, which outlives every document. All four calls only set
+        // flags or store a pointer.
+        unsafe {
+            ffi::qpdf_silence_errors(document.data);
+            ffi::qpdf_set_suppress_warnings(document.data, ffi::QPDF_TRUE);
+            if !logger.is_null() {
+                ffi::qpdf_set_logger(document.data, logger);
+            }
+            ffi::qpdf_set_attempt_recovery(document.data, i32::from(attempt_recovery));
+        }
+
+        let password_ptr = password
+            .as_ref()
+            .map_or(core::ptr::null(), |p| p.as_ptr().cast::<c_char>());
+
+        // SAFETY: the buffer pointer addresses `document._bytes`, which this struct owns
+        // and which outlives `document.data` by construction. `size` is its length.
+        // `DESCRIPTION` is a NUL-terminated literal. `password_ptr` is null or a
+        // NUL-terminated buffer alive for the whole call. qpdf does not copy the buffer
+        // (`QPDF.hh:88-90`), which is exactly why the two live in one struct.
+        let read = unsafe {
+            ffi::qpdf_read_memory(
+                document.data,
+                DESCRIPTION.as_ptr().cast::<c_char>(),
+                document._bytes.as_ptr().cast::<c_char>(),
+                size,
+                password_ptr,
+            )
+        };
+        drop(password);
+
+        // Failure is established by the return value's ERROR bit -- never by `!= 0`, which
+        // would treat a warnings-only read as a failure. See `ffi::has_errors`.
+        if ffi::has_errors(read) {
+            return Err(document.take_error().unwrap_or_else(|| {
+                Error::Malformed("qpdf: the document could not be read".to_owned())
+            }));
+        }
+
+        Ok(document)
+    }
+
+    /// The document's page count, with qpdf's `-1` sentinel turned into the typed error it
+    /// stands for.
+    ///
+    /// Shared for the same reason `open` is: `-1` is reported out of band, and a caller
+    /// that treated it as a count would produce a `u64` of 18 quintillion.
+    pub(super) fn page_count(&self) -> Result<u64> {
+        // SAFETY: `self.data` is a live handle whose document read successfully.
+        // `qpdf_get_num_pages` routes through qpdf's `trap_errors` (`qpdf-c.cc:1801`), so
+        // a C++ exception inside it becomes -1 plus a recorded error rather than an unwind
+        // into Rust. That is verified per function -- see `ffi`'s module docs.
+        let pages = unsafe { ffi::qpdf_get_num_pages(self.data) };
+
+        if pages < 0 {
+            return Err(self.take_error().unwrap_or_else(|| {
+                Error::Malformed("qpdf: the page structure is unusable".to_owned())
+            }));
+        }
+        u64::try_from(pages).map_err(|_| {
+            Error::Internal("qpdf reported a page count that is not a count".to_owned())
+        })
     }
 }
 
@@ -174,93 +296,10 @@ impl StructureEngine for Qpdf {
         let deadline = Deadline::start(clock.as_ref(), &limits);
         deadline.checkpoint(clock.as_ref())?;
 
-        let password = crate::password::nul_terminated(options.password, "qpdf")?;
-        let size = c_ulonglong::try_from(bytes.len())
-            .map_err(|_| Error::Internal("input length does not fit in size_t".to_owned()))?;
-
-        // Process-global setup: resource limits and the discarding logger, once.
-        let logger = limits::install();
-
-        // SAFETY: `qpdf_init` returns an owned handle or null; null is checked below.
-        let data = unsafe { ffi::qpdf_init() };
-        if data.is_null() {
-            return Err(Error::Internal("qpdf could not be initialised".to_owned()));
-        }
-
-        // Take ownership immediately, so every path from here frees the handle -- including
-        // an unwind. Nothing between `qpdf_init` and this line can fail.
-        let document = Document {
-            data,
-            _bytes: bytes,
-        };
-
-        // Silence qpdf before it is given anything to complain about. Order matters: a
-        // file is read below, and `qpdf_read_memory` is one of the calls that warns.
-        //
-        // SAFETY: `document.data` is live. `logger` is the process-wide discarding logger
-        // from `limits::install`, which outlives every document. All three calls only set
-        // flags or store a pointer.
-        unsafe {
-            ffi::qpdf_silence_errors(document.data);
-            ffi::qpdf_set_suppress_warnings(document.data, ffi::QPDF_TRUE);
-            if !logger.is_null() {
-                ffi::qpdf_set_logger(document.data, logger);
-            }
-            // `QPDF.hh:233-235`: with recovery off qpdf reports the first problem it finds
-            // instead of reconstructing. Off by default because a structural check that
-            // silently repairs what it is checking is not a check -- and because repair is
-            // where a damaged file makes qpdf expensive. The caller can ask for the other
-            // question; see `CheckOptions::attempt_recovery`.
-            ffi::qpdf_set_attempt_recovery(document.data, i32::from(options.attempt_recovery));
-        }
-
-        let password_ptr = password
-            .as_ref()
-            .map_or(core::ptr::null(), |p| p.as_ptr().cast::<c_char>());
-
         let before = crate::rss::resident_bytes();
+        let document = Document::open(bytes, options.password, options.attempt_recovery)?;
 
-        // SAFETY: the buffer pointer addresses `document._bytes`, which this function owns
-        // and which outlives `document.data` by construction. `size` is its length.
-        // `DESCRIPTION` is a NUL-terminated literal. `password_ptr` is null or a
-        // NUL-terminated buffer alive for the whole call. qpdf does not copy the buffer
-        // (`QPDF.hh:88-90`), which is exactly why the two live in one struct.
-        let read = unsafe {
-            ffi::qpdf_read_memory(
-                document.data,
-                DESCRIPTION.as_ptr().cast::<c_char>(),
-                document._bytes.as_ptr().cast::<c_char>(),
-                size,
-                password_ptr,
-            )
-        };
-        drop(password);
-
-        // Failure is established by the return value's ERROR bit -- never by `!= 0`, which
-        // would treat a warnings-only read as a failure. See `ffi::has_errors`.
-        if ffi::has_errors(read) {
-            return Err(document.take_error().unwrap_or_else(|| {
-                Error::Malformed("qpdf: the document could not be read".to_owned())
-            }));
-        }
-
-        // SAFETY: the document read successfully, so the handle is usable.
-        // `qpdf_get_num_pages` routes through qpdf's `trap_errors` (`qpdf-c.cc:1801`), so
-        // a C++ exception inside it becomes -1 plus a recorded error rather than an
-        // unwind into Rust. That is verified per function -- see `ffi`'s module docs for
-        // why the header's blanket claim is not enough, and for the two functions this
-        // crate consequently does not call.
-        let pages = unsafe { ffi::qpdf_get_num_pages(document.data) };
-
-        // `qpdf_get_num_pages` returns -1 on error and records it out of band.
-        if pages < 0 {
-            return Err(document.take_error().unwrap_or_else(|| {
-                Error::Malformed("qpdf: the page structure is unusable".to_owned())
-            }));
-        }
-        let pages = u64::try_from(pages).map_err(|_| {
-            Error::Internal("qpdf reported a page count that is not a count".to_owned())
-        })?;
+        let pages = document.page_count()?;
 
         // An error can be pending even when nothing above returned a failure -- that is the
         // whole point of `qpdf_has_error`. Check before reporting success.

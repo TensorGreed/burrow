@@ -12,5 +12,24 @@ authors.workspace = true
 burrow-types.workspace = true
 burrow-engines.workspace = true
 
+[features]
+default = []
+# Forwards to `burrow-engines/native-engines`, so `tests/merge.rs` can drive the real qpdf
+# assembler.
+#
+# THE TESTS LIVE HERE RATHER THAN IN `burrow-engines`, and the direction of the dependency
+# is why: `merge` is an operation, operations live in this crate, and a `burrow-engines`
+# test that reached back for `burrow-ops` would be a dependency cycle dressed up as a
+# dev-dependency. `core/CLAUDE.md` draws that arrow deliberately.
+#
+# Same shape as the flag it forwards to: off by default, so the rest of the workspace
+# builds with no engines present, and `build.rs` FAILS rather than skipping when it is on
+# and they are missing.
+native-engines = ["burrow-engines/native-engines"]
+
+[dev-dependencies]
+# Property tests. Required by the definition of done, not optional per operation.
+proptest = { version = "1", default-features = false, features = ["std"] }
+
 [lints]
 workspace = true

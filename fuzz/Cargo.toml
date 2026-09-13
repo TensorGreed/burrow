@@ -24,6 +24,9 @@ libfuzzer-sys = "0.4"
 # the target's docs and ADR 0004).
 burrow-engines = { path = "../core/burrow-engines", features = ["native-engines", "fuzzing"] }
 burrow-types = { path = "../core/burrow-types" }
+# The merge target drives the operation, not the engine seam directly: the multi-document
+# path it explores is `burrow-ops`'s loop plus qpdf's writer, and only this crate has both.
+burrow-ops = { path = "../core/burrow-ops", features = ["native-engines"] }
 
 [[bin]]
 name = "document_open"
@@ -43,6 +46,13 @@ bench = false
 
 # Built against the INSTRUMENTED qpdf archive via a RUSTFLAGS override; see the target's
 # docs. qpdf is built from source, so unlike PDFium it can be instrumented.
+[[bin]]
+name = "merge"
+path = "fuzz_targets/merge.rs"
+test = false
+doc = false
+bench = false
+
 [[bin]]
 name = "qpdf_check"
 path = "fuzz_targets/qpdf_check.rs"
