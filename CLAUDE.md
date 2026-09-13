@@ -288,6 +288,34 @@ those at full candour is working and is not what "summarise" is asking you to sh
   does not apply is indistinguishable from a defence that holds. `assert old in s` before
   writing, and check the file actually changed — the assertion costs one line and is the
   only thing separating a real mutation sweep from a ritual.
+- **A background shell is stopped when the work that started it ends, and the count of live
+  shells is reported in every summary.** Standing requirement, asked for three times before it
+  was written down.
+
+  The failure is not theoretical. One session accumulated **seventeen** waiter shells, the
+  oldest alive for six hours, every one of them the same bug:
+
+  ```bash
+  # WRONG. The waiting shell's own command line contains "playwright test", so `pgrep -f`
+  # matches the waiter itself, the condition is never false, and the loop runs forever.
+  until ! pgrep -f "playwright test" >/dev/null; do sleep 20; done
+  ```
+
+  `pgrep -f` matches against the full command line of every process **including the one that
+  is doing the waiting**. A self-matching poll loop cannot terminate. It was diagnosed once,
+  and then written a further fifteen times in the same session, which is why it is a rule here
+  rather than a note in someone's memory.
+
+  So:
+
+  - **Prefer no waiter at all.** A backgrounded command notifies on completion by itself;
+    polling for it is redundant as well as risky.
+  - If a poll loop is genuinely needed, match on something that cannot describe the waiter —
+    a marker line in the output file (`until grep -q DONE out; do sleep 5; done`), a pid, or a
+    lock file. Never `pgrep -f` a string that appears in the loop itself.
+  - **Every summary states how many background shells are live.** Zero is the expected answer,
+    and saying "zero" is what makes a non-zero answer visible. Enumerate them with their
+    parent command, not just a count, when the answer is not zero.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
 - **Run `security-reviewer` and `code-reviewer` before the first push.** See *Conventions*;

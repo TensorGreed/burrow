@@ -9,7 +9,7 @@ Dates are deliberately absent. The order is the commitment.
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅ |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `split` **held** (#54), `rotate`/`reorder`/`compress` proceeding |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started |
 | [M4](#m4--ios) | iOS app | not started |
@@ -370,6 +370,29 @@ what later PRs can assume:
 
 ### Operations
 
+**`split` is held, and the remaining three are not blocked by it.** This is on the record
+because the reason is not obvious from a status line.
+
+[ADR 0019](adr/0019-how-split-builds-its-outputs.md) §2 states a property that applies to any
+operation whose output is a **subset** of its input: the emitted bytes may carry nothing derived
+from the excluded content. `split` does not yet meet it — six measured channels, issue #54 —
+and shipping it would mean shipping a tool that puts data from pages you did not include into
+files you did.
+
+**`rotate`, `reorder` and `compress` are not subsetting operations.** Every input page appears
+in the output of each: rotate changes a page's `/Rotate`, reorder permutes the page tree,
+compress re-encodes. Nothing is excluded, so there is no excluded content for an output to carry
+and the property is vacuous for them. They are not waiting on the pruning work, and M1 is not
+blocked on it.
+
+They do inherit the *harness*, and they call a **different entry point on it**:
+`assert_nothing_lost`, which names the objects that must be there, rather than `assert_closed`,
+which asks whether anything trespassed. That distinction is not pedantry — `assert_closed` with
+every page included is mathematically vacuous, and an earlier draft of this paragraph claimed
+the opposite. Measured: it accepted a one-page output while being told all five pages were
+included. An operation that must lose nothing needs an assertion that fails when something is
+lost, which is a different question from whether something extra came along.
+
 Each of `merge`, `split`, `rotate`, `reorder`, `compress` ships with:
 
 - core implementation in `burrow-ops`, taking and enforcing `Limits`
@@ -387,7 +410,7 @@ assert:
 | Operation | Invariant |
 |---|---|
 | `merge` ✅ | Output page count equals the sum of inputs; page order is preserved; merging one document is the identity |
-| `split` | Splitting then merging round-trips to the original page sequence; every input page appears exactly once across outputs |
+| `split` | Splitting then merging round-trips to the original page sequence; every input page appears exactly once across outputs. **Both hold; the subsetting rule in ADR 0019 §2 does not yet — see #54.** |
 | `rotate` | Four 90° rotations return to the original; rotation is recorded, not re-rasterised |
 | `reorder` | Output is a permutation of the input — no page lost, added, or duplicated; the identity permutation is a no-op |
 | `compress` | Output is never larger than the input; page count and page dimensions are unchanged; text remains extractable |

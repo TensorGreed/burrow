@@ -243,6 +243,19 @@ unsafe extern "C" {
         first: QpdfBool,
     ) -> QpdfErrorCode;
 
+    /// Remove a page from a document — `qpdf-c.h:1004`.
+    ///
+    /// **Trapped** (`qpdf-c.cc`), so a C++ exception inside it becomes a status plus a
+    /// recorded error rather than an unwind into Rust. Verified against
+    /// `engines/qpdf-trapped-functions.txt` rather than assumed; `qpdf-c.h`'s blanket
+    /// promise is not true per function (ADR 0013 §1).
+    ///
+    /// `split` uses it for exactly one thing: removing the blank page its destination had to
+    /// start with. qpdf refuses to open a document with no pages — the corpus records
+    /// `no-pages.pdf` as `Malformed` — so the empty destination `extract` builds into cannot
+    /// actually be empty, and the blank is taken back out once the wanted pages are in.
+    pub(super) fn qpdf_remove_page(qpdf: QpdfData, page: QpdfObjectHandle) -> QpdfErrorCode;
+
     /// `QPDF_ERROR_CODE qpdf_init_write_memory(qpdf_data qpdf)` — `qpdf-c.h:424`.
     ///
     /// Routes through `trap_errors` (`qpdf-c.cc:483-490`). **Its status must be checked.**

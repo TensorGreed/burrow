@@ -47,6 +47,13 @@ bench = false
 # Built against the INSTRUMENTED qpdf archive via a RUSTFLAGS override; see the target's
 # docs. qpdf is built from source, so unlike PDFium it can be instrumented.
 [[bin]]
+name = "split"
+path = "fuzz_targets/split.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "merge"
 path = "fuzz_targets/merge.rs"
 test = false
