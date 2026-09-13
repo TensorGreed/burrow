@@ -91,6 +91,18 @@ jobs:
           path: engines/vendor
           key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
 
+      # The `qpdf` CLI, which two leak tests need to decompress output before scanning it.
+      # NOT assumed present: `secret_leak.rs` has depended on it implicitly, and a scan that
+      # cannot decompress reports silence rather than failing -- the exact shape ADR 0019's
+      # third correction was about. Installed and then asserted, so "it was on the image" is
+      # never the reason a leak test passed.
+      - name: Install the qpdf CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf
+          command -v qpdf || { echo "::error::qpdf is not on PATH after install" >&2; exit 1; }
+          echo "qpdf: $(qpdf --version | head -1)"
+
       - name: Fetch and build engines
         if: steps.engines-cache.outputs.cache-hit != 'true'
         run: |
@@ -219,7 +231,7 @@ jobs:
             done
           }
           engines_suites="parallelism limits properties structure secret_leak prescan"
-          ops_suites="conformance merge"
+          ops_suites="conformance merge split split_no_leak subset_closure"
           run_suites burrow-engines $engines_suites
           run_suites burrow-ops $ops_suites
 
@@ -238,6 +250,41 @@ jobs:
             exit 1
           fi
           echo "OK -- every integration suite on disk is named and ran"
+
+      # The two tests that are `#[ignore]`d BECAUSE THEY FAIL, run on purpose and required to
+      # fail. Without this, "the gap is visible in the suite" is a claim about a doc comment:
+      # `cargo test` never runs an ignored test, so they would be comments containing
+      # `assert!`. ADR 0019 SS2a records six channels through which `split` still carries data
+      # from excluded pages; these are the assertions that say so, and the day issue #54
+      # accidentally lands, THIS step is what notices -- by going green where it must be red.
+      #
+      # Same shape as tools/test-check-qpdf-crypto.sh: a check whose subject is a failure.
+      - name: The known-unmet subsetting rule is still unmet, and says so
+        run: |
+          set -u
+          expected="split_no_leak::no_output_carries_anything_from_a_page_it_excluded_even_when_objects_are_shared
+          subset_closure::every_surviving_object_belongs_to_a_page_the_output_contains"
+          failed=0
+          for suite_test in $expected; do
+            suite=${suite_test%%::*}
+            name=${suite_test##*::}
+            echo "--- $suite::$name (expected to FAIL)"
+            if cargo test -p burrow-ops --all-features --test "$suite" -- --ignored --exact "$name" >/tmp/ignored.log 2>&1; then
+              echo "::error::$suite::$name PASSED. Either issue #54 is fixed -- in which case remove the #[ignore], delete the companion 'the gap still exists' test and amend ADR 0019 SS2a -- or the test has stopped measuring anything." >&2
+              tail -20 /tmp/ignored.log >&2
+              exit 1
+            fi
+            # It must fail for the RIGHT reason: a compile error or a missing fixture fails too.
+            grep -q "belonging only to pages it excluded\|carries data derived from excluded pages" /tmp/ignored.log || {
+              echo "::error::$suite::$name failed for a reason other than the leak it exists to record." >&2
+              tail -20 /tmp/ignored.log >&2
+              exit 1
+            }
+            failed=$((failed + 1))
+            echo "    failed as required"
+          done
+          [ "$failed" -eq 2 ] || { echo "::error::expected 2 known-unmet tests, ran $failed" >&2; exit 1; }
+          echo "OK -- $failed known-unmet test(s) failed as required; the gap is measured, not asserted"
 
       # Asks the question check-engine-licences.py cannot: is every component we can
       # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared
@@ -390,7 +437,7 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in qpdf_check merge; do
+          for target in qpdf_check merge split; do
             cargo +nightly fuzz run "$target" -- \
               -max_total_time=60 -timeout=10 -rss_limit_mb=2048
           done

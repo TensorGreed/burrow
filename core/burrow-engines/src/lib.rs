@@ -377,6 +377,78 @@ pub trait PageAssembler {
     fn finish(&self, assembly: Self::Assembly) -> Result<Vec<u8>>;
 }
 
+/// An engine that can emit a document containing a chosen run of another document's pages.
+///
+/// The seam `split` is written against. It is deliberately **not** [`PageAssembler`] with an
+/// extra method: the two operations differ in shape (many sources into one output, against one
+/// source into many outputs) and in what they are allowed to keep, and giving them one trait
+/// would mean a `begin` that sometimes wants a destination document and sometimes does not.
+///
+/// # What an extracted document may contain
+///
+/// **Only what travels with a page**, and nothing derived from the pages that were left
+/// behind. This is a correctness requirement, not a fidelity preference:
+/// [ADR 0019](../../../docs/adr/0019-how-split-builds-its-outputs.md) §2 measured an
+/// implementation that kept the source's catalog and found a two-page output carrying the
+/// outline titles of all five source pages — so somebody extracting pages 2-3 to send onward
+/// would have been sending the titles of pages 4 and 5 with them.
+///
+/// It is the same property redaction depends on, stated for redaction in
+/// [ADR 0006](../../../docs/adr/0006-wasm-linking-strategy.md)'s R8-R10: what matters is the
+/// bytes that are **emitted**, never what the operation meant to emit.
+///
+/// So an implementation **builds** an output rather than carving one — start from nothing and
+/// copy in what belongs, rather than starting from everything and removing what does not. The
+/// first is an allowlist by construction; the second is a denylist over a structure whose
+/// design permits keys nobody enumerated.
+pub trait PageExtractor {
+    /// A source document, opened once and read from for every output.
+    ///
+    /// **Opened once on purpose.** The alternative — reopening the source per output — parses
+    /// it N times, and more importantly is the shape that invites carving, because a freshly
+    /// opened source already has everything and only needs pages taken away.
+    ///
+    /// No `Send` bound, for the reason [`PageAssembler::Assembly`] gives.
+    type Source;
+
+    /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Open the document the outputs are drawn from.
+    ///
+    /// Takes the bytes by value for the same reason [`DocumentEngine::open`] does: qpdf's
+    /// in-memory read does not copy its input.
+    ///
+    /// # Errors
+    ///
+    /// The same set [`StructureEngine::check`] documents: the input is opened and its
+    /// structure walked before anything is extracted from it.
+    fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Source>;
+
+    /// How many pages the source has.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that is not a count.
+    fn pages(&self, source: &Self::Source) -> Result<u64>;
+
+    /// A document containing `count` pages of `source`, starting at zero-based `first`.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — the run is not inside the source.
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a page could not be copied.
+    /// - [`Error::Io`](burrow_types::Error::Io) — the output could not be written.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling in `options.limits` was reached.
+    fn extract(
+        &self,
+        source: &Self::Source,
+        first: u64,
+        count: u64,
+        options: &OpenOptions<'_>,
+    ) -> Result<Vec<u8>>;
+}
+
 /// A paged document engine: opens a document and reports its shape.
 ///
 /// Implementors wrap an untrusted parser, so every method is fallible and every operation

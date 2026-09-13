@@ -334,6 +334,13 @@ re-decide. Each was a decision with a reason, not a shape that happened.
   to do next.
 - **A wrapper error is unwrapped once, in that function**, not in the component. `InputFailed`
   says which input failed and never what was wrong with it.
+- **A page that drops something says so, and says why.** `/merge-pdf` has _"What is kept, and
+  what is not"_; every tool page owes the same paragraph for whatever it does not carry over.
+  For a subsetting operation the reason is not a limitation, it is the rule in
+  [ADR 0019](../../docs/adr/0019-how-split-builds-its-outputs.md) §2 — an output may carry
+  nothing derived from what it excluded — and the page should say that in a person's words
+  rather than leaving them to think it is a missing feature. ADR 0019 §4 has the wording
+  `/split-pdf` is held to.
 - **The page does not re-implement a ceiling.** It sends the files and reports what the core
   refuses, so the prose and the code can be caught disagreeing. Say what happens to a large
   file in the page's own words rather than letting someone discover it.

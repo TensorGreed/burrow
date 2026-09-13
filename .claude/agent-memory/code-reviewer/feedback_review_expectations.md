@@ -33,3 +33,10 @@ challenge point is the part of the review they will notice is missing.
   `node_modules`, leaves the repo untouched). Report the exact mutations that survived.
   Native `cargo test -p burrow-engines --all-features` runs locally — the engines are
   already built in `engines/` on this machine.
+- The leak/closure test harnesses shell out to a `qpdf` CLI that is **not installed on this
+  machine**. The engine build leaves one at
+  `engines/vendor/src/build-qpdf-plain-<arch>/qpdf/qpdf`; symlink it into a scratchpad `bin`
+  and prepend that to `PATH`, or `split_no_leak.rs` and `subset_closure.rs` panic on
+  `Command::new("qpdf")`.
+- `#[ignore]`d tests are the repo's way of pinning a known-unmet rule. Run them with
+  `-- --ignored` to check they still fail, and for the reason claimed.

@@ -69,6 +69,102 @@ Two things that were learnt the hard way and are cheap to avoid:
   `apps/web/src/conformance/compare.ts` renders both for comparison. Expected outcomes stay
   hand-written, never recorded from what the engine currently returns.
 
+## 2b. If the output is a SUBSET of the input, it may carry nothing derived from the rest
+
+**Split, extract, redact — anything that emits part of what it was given.**
+
+> The emitted bytes must contain **no data derived from the excluded content**. Not the content,
+> and not anything computed from it: titles, names, destinations, counts, thumbnails, or index
+> entries that describe what was taken away.
+
+This is not a style rule and it is not obvious from a green test. `split`'s first implementation
+route passed every check anyone would think to write — the right pages were present, the file
+opened, the page count was correct — and a two-page output carried the outline titles of all
+five source pages, because it kept the source's catalog whole. Somebody splitting pages 2-3 out
+of a document to send to another person would have been sending the titles of pages 4 and 5 with
+them. [ADR 0019](../../../docs/adr/0019-how-split-builds-its-outputs.md) §2.
+
+**It is the property redaction depends on**, and it is already written down for redaction:
+[ADR 0006](../../../docs/adr/0006-wasm-linking-strategy.md)'s R8, R9 and R10 are three
+statements about one thing — what matters is the bytes that are **emitted**, not what the
+operation meant to emit. R10 in particular requires verification to run on the exact byte
+sequence emitted, never on a sibling copy. Split is the same disagreement between intent and
+output, arriving without a verifier to catch it.
+
+**Prefer building an output to carving one — and know that building is not sufficient.** Start
+from nothing and copy in what belongs, rather than starting from everything and removing what
+does not. Carving is a denylist over a structure whose design permits keys nobody enumerated.
+
+But "build" is an allowlist over the **container's keys**, not over **objects**. `split` was
+written on that assumption and it was wrong: the engine's copy is a *reachability closure*, so
+anything an included item points at comes too — a resource dictionary inherited from a parent
+node, a form field whose siblings live on excluded pages, a shared annotation array. ADR 0019
+§2a lists six measured channels, including a form field's typed **value** arriving in an output
+that does not contain the page it was typed on.
+
+So: build, and then ask separately what the copy dragged along. The two questions are not the
+same one.
+
+### The fixture has to make the leak POSSIBLE
+
+The first `split` fixture gave every page its own annotations, its own resources and its own
+everything. Under that structure the leak class **cannot occur**, so twenty canaries confirmed
+a case that was never at risk and the test passed for a year's worth of confidence in an hour.
+
+A subsetting fixture must therefore contain **shared** structure: an object referenced from both
+a kept and an excluded item, a parent node carrying inherited attributes, a container listing
+children on both sides of the cut. If no two parts of the fixture share an indirect object, the
+fixture cannot fail the test.
+
+**Enumerate by mechanism, not by feature.** "Outline, field, annotation, attachment" is a list
+of things you thought of. "Everything reachable from a kept object" is the property. Where you
+can, assert the property structurally — plant a unique marker in *every* source object and
+assert the output's marker set is a subset of the closure of what was kept — because that
+version fails for categories nobody named, and a canary list never will.
+
+### The required test
+
+Not a principle. A test, and one that has been shown to fail:
+
+- **Marker-bearing fixtures where every excluded item is a unique canary.** Each page's outline
+  title, field name, annotation text and attachment name names its own page, so "did something
+  from page 4 come along" is a search rather than a structural walk.
+- **Scan the emitted bytes, decompressed.** `qpdf --qdf --object-streams=disable`. A canary inside a compressed stream
+  is invisible to a naive search, and a scan that finds nothing reports the same green whether
+  it is working or broken.
+- **A control that deliberately leaks.** Run the identical assertion against an implementation
+  known to carry excluded data, and require it to FAIL. Without the control, the scan is a claim.
+- **Both encodings.** A real outline title or field name is often a UTF-16BE text string, which
+  a byte-literal ASCII search will not find. Plant at least one canary per category in UTF-16BE
+  and search for both, or the scan is blind to how producers actually write strings.
+
+**What this test can and cannot say.** It confirms the enumeration it was given and nothing
+more. `qpdf --qdf` does not decode `/DCTDecode`, `/JPXDecode` or `/JBIG2Decode`, so data that
+exists only in transformed form — a font subset still carrying glyphs for removed characters,
+an image's pixels — is outside its reach. For redaction that transformed form *is* the leak,
+so M2 needs more than this test, and should not inherit it as though it were sufficient.
+
+## 2c. A fidelity fixture that cannot fail the test is not a fixture
+
+Two of these in one milestone, each producing a confident table that measured nothing:
+
+| | what was wrong | what it reported |
+|---|---|---|
+| `split`'s first fidelity run | the **merge** fixtures are one page each, so a one-page split is the **identity** | both candidate routes perfect |
+| `merge`'s first browser order test | every conformance fixture has the same empty page, so **any order produces identical bytes** | order preserved |
+
+So, before trusting a fixture set:
+
+- **Make the operation non-identity.** If the output can equal the input, the fixture cannot
+  distinguish an implementation from a no-op. A split fixture needs more pages than the split
+  takes; a rotate fixture needs a page that is not square.
+- **Make the inputs distinguishable.** A set whose members are interchangeable cannot test
+  ORDER or SELECTION — the two things most operations are mostly about. Give each page, or each
+  input, something unique and cheap to find: a different `/MediaBox`, a numbered marker.
+- **Check that a passing result is not the trivial one.** Ask what the test would report if the
+  operation were replaced by "return the input unchanged". If that is a pass, the fixture is the
+  problem.
+
 ## 3. Typed errors — `core/burrow-types/src/error.rs`
 
 - Add variants for failure modes that are genuinely new. Reuse existing variants where

@@ -29,6 +29,7 @@
 //! live in this module's private `ffi` submodule, and ADR 0013 §1 has the full argument.
 
 mod assemble;
+mod extract;
 mod ffi;
 mod limits;
 
