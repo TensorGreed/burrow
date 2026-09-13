@@ -279,6 +279,18 @@ FFI_CASES: tuple[tuple[str, str | None, str], ...] = (
     ("    /// `qpdf_is_linearized` is deliberately absent", None, "prose naming a function"),
     ("    pub fn qpdf_is_linearized(", None, "`pub fn` without `(super)`"),
     ("    pub(super) fn pdfium_load(", None, "a non-qpdf function"),
+    # A CAPITAL LETTER IN THE NAME. The character class here was `[a-z_0-9]*` until M1 PR B,
+    # so every one of these parsers was blind to the four qpdf C functions that have one --
+    # `qpdf_set_deterministic_ID`, `qpdf_set_static_ID`, `qpdf_set_static_aes_IV` and
+    # `qpdf_set_suppress_original_object_IDs`. All four are UNTRAPPED and all four
+    # dereference the writer, so declaring one would have passed this gate in silence:
+    # `declared_functions()` would not have seen it, and a name nobody sees is a name nobody
+    # can refuse. The generated trapped list was never blind to them (`DEFINITION` already
+    # allowed capitals), which is what made the asymmetry invisible from the output.
+    ("    pub(super) fn qpdf_set_deterministic_ID(", "qpdf_set_deterministic_ID",
+     "a name with a capital letter, which this parser used to miss entirely"),
+    ("    pub(super) fn qpdf_set_static_aes_IV(", "qpdf_set_static_aes_IV",
+     "a capital letter after an underscore, not at the end"),
 )
 
 JS_CASES: tuple[tuple[str, str | None, str], ...] = (
@@ -290,17 +302,19 @@ JS_CASES: tuple[tuple[str, str | None, str], ...] = (
     ("self.__burrow_qpdf_copy_in = (b) => copyInto(qpdf(), b);", None,
      "a bridge helper that never enters qpdf's C API"),
     ("pdfium()._FPDF_LoadMemDocument64(x);", None, "a PDFium call"),
+    ("  qpdf()._qpdf_set_deterministic_ID(d, 1);", "qpdf_set_deterministic_ID",
+     "a name with a capital letter -- see the FFI cases for why this is here"),
 )
 
 
 def parse_ffi(text: str) -> list[str]:
     """Declarations in `qpdf/ffi.rs`'s `extern \"C\"` block."""
-    return re.findall(r"^\s*pub\(super\) fn (qpdf[a-z_0-9]*)\s*\(", text, re.MULTILINE)
+    return re.findall(r"^\s*pub\(super\) fn (qpdf[A-Za-z_0-9]*)\s*\(", text, re.MULTILINE)
 
 
 def parse_js_bridge(text: str) -> list[str]:
     """qpdf C exports the JS bridge calls into the Emscripten module."""
-    return re.findall(r"\._(qpdf[a-z_0-9]*)\s*\(", text)
+    return re.findall(r"\._(qpdf[A-Za-z_0-9]*)\s*\(", text)
 
 
 def check_parser_fixtures() -> list[str]:
@@ -400,14 +414,14 @@ def declared_functions() -> dict[str, list[str]]:
     for name in parse_js_bridge(WEB_BRIDGE_JS.read_text()):
         record(name, "worker/bridge.js")
 
-    for name in re.findall(r"^\s*/// `(qpdf[a-z_0-9]*)`\.", WEB_TRAIT.read_text(), re.MULTILINE):
+    for name in re.findall(r"^\s*/// `(qpdf[A-Za-z_0-9]*)`\.", WEB_TRAIT.read_text(), re.MULTILINE):
         record(name, "web/bridge.rs (doc)")
 
     # Scoped to the `extern "C"` block. A bare `fn qpdf…` regex over the whole file also
     # matches Rust test functions -- `qpdf_links_and_reports_the_pinned_version` -- which are
     # not C symbols and would demand nonsense exemptions.
     for block in re.findall(r'unsafe extern "C" \{(.*?)\n\}', LINK_CHECK.read_text(), re.S):
-        for name in re.findall(r"^\s*fn (qpdf[a-z_0-9]*)\s*\(", block, re.MULTILINE):
+        for name in re.findall(r"^\s*fn (qpdf[A-Za-z_0-9]*)\s*\(", block, re.MULTILINE):
             record(name, "link_check.rs")
 
     # PER-SOURCE GUARD. Merging sources means one can fall silent without the total reaching

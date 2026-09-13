@@ -52,6 +52,30 @@ pub enum Error {
     /// A bug in burrow, or a panic caught at an FFI boundary. Should never be seen.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// One input of a multi-input operation failed, and the operation produced nothing.
+    ///
+    /// **The index is the whole point.** A merge of five documents that says only
+    /// "malformed" leaves a person to find the bad one by bisection; this says which.
+    ///
+    /// It wraps rather than replaces: `source` is the error that input actually produced,
+    /// so a caller can still distinguish "needs a password" from "is not a PDF" and say
+    /// something useful about *this* file.
+    ///
+    /// # Why there is no partial-success variant beside it
+    ///
+    /// [ADR 0017](../../../docs/adr/0017-merge-engine-and-failure-semantics.md) §2: a
+    /// merged document that silently omits an input looks complete. Nothing in it says a
+    /// page is missing, and the person finds out when they need those pages. Refusing the
+    /// whole operation is the only outcome that cannot be mistaken for success.
+    #[error("input {index}: {source}")]
+    InputFailed {
+        /// Zero-based position of the failing input, in the order the caller gave them.
+        index: usize,
+        /// What that input produced. Never contains file content.
+        #[source]
+        source: Box<Error>,
+    },
 }
 
 #[cfg(test)]

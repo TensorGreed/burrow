@@ -271,6 +271,112 @@ pub trait StructureEngine {
     fn check(&self, bytes: Box<[u8]>, options: &CheckOptions<'_>) -> Result<StructureReport>;
 }
 
+/// An engine that assembles one document out of the pages of several.
+///
+/// **The first capability in this crate that produces bytes.** Everything else here reads:
+/// [`DocumentEngine`] opens and counts, [`StructureEngine`] inspects. That asymmetry is why
+/// this is a third trait rather than a method on either of them —
+/// [ADR 0017](../../../docs/adr/0017-merge-engine-and-failure-semantics.md) records that
+/// the engine best at reading a damaged file is **not** the one that should write, and a
+/// method on `DocumentEngine` would have forced one answer for both questions.
+///
+/// # The loop belongs to the caller, and that is deliberate
+///
+/// This trait deliberately does **not** offer `merge(inputs) -> bytes`. It exposes begin,
+/// append and finish, so the operation in `burrow-ops` runs the loop, checks the deadline
+/// between inputs, and applies the aggregate ceilings that no single call can see.
+///
+/// That costs a round trip per input on the web path, and
+/// [ADR 0009](../../../docs/adr/0009-web-panic-contract-and-binding-boundary.md) §2 is
+/// explicit that paying it is the point: moving the loop across the boundary would put a
+/// decision in the one place `cargo test` cannot reach and iOS and Android cannot reuse.
+///
+/// # Implementors must not panic
+///
+/// On `wasm32-unknown-unknown` a panic is an uncatchable trap that poisons the whole
+/// instance ([ADR 0009]). Return a typed error instead.
+///
+/// [ADR 0009]: ../../../docs/adr/0009-web-panic-contract-and-binding-boundary.md
+pub trait PageAssembler {
+    /// An assembly in progress: the destination document, plus every source document
+    /// whose pages have been appended to it.
+    ///
+    /// **It owns the sources, and that is a correctness requirement rather than
+    /// convenience.** qpdf resolves a foreign page's indirect objects lazily, when the
+    /// destination is written — so releasing a source early produces a *truncated output
+    /// rather than an error*. A silently short document is exactly the failure
+    /// [ADR 0017](../../../docs/adr/0017-merge-engine-and-failure-semantics.md) §2 refuses,
+    /// and the type system is a better place to prevent it than a comment.
+    ///
+    /// **No `Send` bound, deliberately.** `qpdf_data` may be used from distinct threads —
+    /// only *sharing one between them* is forbidden (`qpdf-c.h:43-45`) — so a `Send` bound
+    /// would be defensible. It is left off because nothing needs it: `burrow-ops` runs the
+    /// assembly on the caller's thread and the web path runs it in the worker. Adding it
+    /// would mean an `unsafe impl Send` justified by a rule the type system currently
+    /// enforces for free, which is a worse trade than it looks.
+    type Assembly;
+
+    /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Begin an assembly from the first input, which becomes the destination document.
+    ///
+    /// **The output inherits this document's catalog** — its outline, `/AcroForm` and
+    /// `/Names` are the ones that survive; later inputs contribute pages and not much
+    /// else. ADR 0017 states that rather than leaving it to be discovered.
+    ///
+    /// Takes the bytes by value for the same reason [`DocumentEngine::open`] does: qpdf's
+    /// in-memory read does not copy its input (`QPDF.hh:88-90`).
+    ///
+    /// # Errors
+    ///
+    /// The same set [`StructureEngine::check`] documents, for the same reasons: the input
+    /// is opened and its structure walked before anything is appended to it.
+    fn begin(&self, first: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Assembly>;
+
+    /// How many pages the assembly currently holds.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`](burrow_types::Error::Internal) if the engine cannot answer —
+    /// which, for an assembly it built itself, means the engine is in a state no input
+    /// can explain.
+    fn pages(&self, assembly: &Self::Assembly) -> Result<u64>;
+
+    /// Append every page of `next`, in order, after the pages already present.
+    ///
+    /// Returns the number of pages appended, so the caller can apply an aggregate ceiling
+    /// without asking the engine to count twice.
+    ///
+    /// # Errors
+    ///
+    /// The set [`StructureEngine::check`] documents. Note that an input the engine can
+    /// *read* is not necessarily one it can append: ADR 0017 measured qpdf counting three
+    /// pages in a trailer-less file and then failing to extract the first, so a
+    /// [`Error::Malformed`](burrow_types::Error::Malformed) here is a normal outcome and
+    /// not an engine fault.
+    fn append(
+        &self,
+        assembly: &mut Self::Assembly,
+        next: Box<[u8]>,
+        options: &OpenOptions<'_>,
+    ) -> Result<u64>;
+
+    /// Serialise the assembly and return the bytes.
+    ///
+    /// Consumes the assembly: the sources are released here, once, after the write that
+    /// needed them.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — the assembled document
+    ///   could not be written, which in practice means an input was worse than it looked.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling in
+    ///   `options.limits`.
+    /// - [`Error::Io`](burrow_types::Error::Io) — an allocation or engine failure.
+    fn finish(&self, assembly: Self::Assembly) -> Result<Vec<u8>>;
+}
+
 /// A paged document engine: opens a document and reports its shape.
 ///
 /// Implementors wrap an untrusted parser, so every method is fallible and every operation
