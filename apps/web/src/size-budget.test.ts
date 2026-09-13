@@ -331,6 +331,25 @@ describe("the recording describes the build it claims to", () => {
       .map(([key, kind]) => `${key}=${kind}`)
       .sort()
       .join(" ");
+
+    // PER FILE, FOR THE POOLED LINES, because a pooled digest that disagrees says only that
+    // one of six files moved. Twice now a `page` disagreement has cost a round trip to CI to
+    // find out which -- and the answer was a file nobody would have guessed both times. The
+    // group digests are the gate; this is the log line that makes a red one actionable.
+    for (const [key, group] of Object.entries(groups)) {
+      if (group.files.length < 2) continue;
+      const perFile = [...group.files]
+        .sort()
+        .map((path) => {
+          const normalisedBytes = normaliseEngineHashes(
+            readFileSync(join(PRODUCTION_DIR, path)),
+            path,
+          );
+          return `${path}=${createHash("sha256").update(normalisedBytes).digest("hex").slice(0, 12)}`;
+        })
+        .join("\n    ");
+      console.log(`  ${key}, file by file:\n    ${perFile}`);
+    }
     expect(Object.keys(cases)).toHaveLength(Object.keys(budget.artifacts).length);
     expect(
       Object.values(cases).filter((c) => c === "no-digest" || c === "absent"),
