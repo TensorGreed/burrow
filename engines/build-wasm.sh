@@ -261,6 +261,8 @@ qpdf_exports='"_malloc","_free",
   "_qpdf_set_logger","_qpdf_set_attempt_recovery","_qpdf_read_memory",
   "_qpdf_has_error","_qpdf_get_error","_qpdf_get_error_code","_qpdf_get_num_pages",
   "_qpdf_global_set_uint32","_qpdf_get_qpdf_version",
+  "_qpdf_get_page_n","_qpdf_add_page","_qpdf_init_write_memory",
+  "_qpdf_set_deterministic_ID","_qpdf_write","_qpdf_get_buffer_length","_qpdf_get_buffer",
   "_qpdflogger_create","_qpdflogger_set_info","_qpdflogger_set_warn","_qpdflogger_set_error"'
 
 # A translation unit that references the C API, so wasm-ld keeps the archive members. The
@@ -321,10 +323,21 @@ ffi_rs="$here/../core/burrow-engines/src/qpdf/ffi.rs"
 # NOTHING; it cannot catch one that matches the wrong thing -- a looser expression that also
 # picked up a commented-out declaration would quietly widen the allowlist this check exists to
 # narrow. So the expression is run against fixtures first, positive and negative.
-parse_decls() { sed -n 's/^\s*pub(super) fn \(qpdf[a-z_0-9]*\)\s*(.*/\1/p'; }
+# THE CHARACTER CLASS INCLUDES CAPITALS, AND IT DID NOT UNTIL M1 PR B2. Four qpdf C
+# functions have one -- qpdf_set_deterministic_ID, qpdf_set_static_ID, qpdf_set_static_aes_IV,
+# qpdf_set_suppress_original_object_IDs -- and with `[a-z_0-9]*` this parse could see none of
+# them. Here it fails CLOSED rather than silently: the allowlist is DERIVED from this parse,
+# so an export the parse cannot see is one the module gets refused for having. Noisy beats
+# silent, but it is still wrong -- and it is the same blindness tools/check-qpdf-trapped.py
+# carried. Two files, one bug; the cross-check added there does not reach this one.
+parse_decls() { sed -n 's/^\s*pub(super) fn \(qpdf[A-Za-z_0-9]*\)\s*(.*/\1/p'; }
 probe_fail=0
 [ "$(printf '    pub(super) fn qpdf_read_memory(\n' | parse_decls)" = "qpdf_read_memory" ] \
   || { echo "build-wasm: the ffi.rs parse does not match its own fixture" >&2; probe_fail=1; }
+# A name with a capital. Without this fixture nothing holds the widened class open, and the
+# next person tidying the expression narrows it again.
+[ "$(printf '    pub(super) fn qpdf_set_deterministic_ID(\n' | parse_decls)" = "qpdf_set_deterministic_ID" ] \
+  || { echo "build-wasm: the ffi.rs parse cannot see a name with a capital letter" >&2; probe_fail=1; }
 for bad in '    // pub(super) fn qpdf_is_linearized(' \
            '    /// `qpdf_is_linearized` is deliberately absent' \
            '    pub fn qpdf_is_linearized(' \

@@ -84,6 +84,24 @@ extern "C" {
     fn qpdf_get_num_pages(data: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_global_set_uint32)]
     fn qpdf_global_set_uint32(param: i32, value: u32) -> i32;
+    // The write path, M1 PR B2. `copy_out` is the only one whose SHAPE is new: it is the
+    // first import that carries bytes back out of an engine heap.
+    #[wasm_bindgen(js_name = __burrow_qpdf_get_page_n)]
+    fn qpdf_get_page_n(data: u32, n: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_add_page)]
+    fn qpdf_add_page(data: u32, source: u32, page: u32, first: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_init_write_memory)]
+    fn qpdf_init_write_memory(data: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_set_deterministic_id)]
+    fn qpdf_set_deterministic_id(data: u32, value: u32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_write)]
+    fn qpdf_write(data: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_get_buffer_length)]
+    fn qpdf_get_buffer_length(data: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_get_buffer)]
+    fn qpdf_get_buffer(data: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_copy_out)]
+    fn qpdf_copy_out(ptr: u32, len: u32) -> Vec<u8>;
     #[wasm_bindgen(js_name = __burrow_qpdflogger_create)]
     fn qpdflogger_create() -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdflogger_discard_all)]
@@ -235,6 +253,41 @@ impl QpdfBridge for JsQpdf {
 
     fn logger_discard_all(&self, logger: QpdfPtr, destination: i32) {
         qpdflogger_discard_all(logger.0, destination);
+    }
+
+    fn get_page_n(&self, data: QpdfPtr, n: u32) -> u32 {
+        qpdf_get_page_n(data.0, n)
+    }
+
+    fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32 {
+        // `u32::from(bool)` rather than a JS boolean: every other import in this block
+        // passes numbers, and QPDF_BOOL is an int on the other side. One representation
+        // across the boundary is one fewer thing to get wrong.
+        qpdf_add_page(data.0, source.0, page, u32::from(first))
+    }
+
+    fn init_write_memory(&self, data: QpdfPtr) -> i32 {
+        qpdf_init_write_memory(data.0)
+    }
+
+    fn set_deterministic_id(&self, data: QpdfPtr, value: bool) {
+        qpdf_set_deterministic_id(data.0, u32::from(value));
+    }
+
+    fn write(&self, data: QpdfPtr) -> i32 {
+        qpdf_write(data.0)
+    }
+
+    fn get_buffer_length(&self, data: QpdfPtr) -> u32 {
+        qpdf_get_buffer_length(data.0)
+    }
+
+    fn get_buffer(&self, data: QpdfPtr) -> QpdfPtr {
+        QpdfPtr(qpdf_get_buffer(data.0))
+    }
+
+    fn copy_out(&self, ptr: QpdfPtr, len: u32) -> Vec<u8> {
+        qpdf_copy_out(ptr.0, len)
     }
 
     fn heap_bytes(&self) -> u64 {

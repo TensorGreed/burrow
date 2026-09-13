@@ -1,12 +1,16 @@
 {
-  "schema": 2,
+  "schema": 3,
   "generated_by": "cargo run -p burrow-engines --example make-conformance-fixtures",
   "current_milestone": "M1",
   "cases": [
     {
       "name": "blank-1page",
-      "file": "fixtures/blank-1page.pdf",
-      "sha256": "bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0",
+      "inputs": [
+        {
+          "file": "fixtures/blank-1page.pdf",
+          "sha256": "bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -24,8 +28,12 @@
     },
     {
       "name": "pages-10",
-      "file": "fixtures/pages-10.pdf",
-      "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -43,8 +51,12 @@
     },
     {
       "name": "pages-137",
-      "file": "fixtures/pages-137.pdf",
-      "sha256": "257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da",
+      "inputs": [
+        {
+          "file": "fixtures/pages-137.pdf",
+          "sha256": "257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -62,8 +74,12 @@
     },
     {
       "name": "truncated",
-      "file": "fixtures/truncated.pdf",
-      "sha256": "46b5adcc2e35004d92b1323d49ec8fa325d78e82a2605c477b6c4cf14a8714d4",
+      "inputs": [
+        {
+          "file": "fixtures/truncated.pdf",
+          "sha256": "46b5adcc2e35004d92b1323d49ec8fa325d78e82a2605c477b6c4cf14a8714d4"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -81,8 +97,12 @@
     },
     {
       "name": "not-a-pdf",
-      "file": "fixtures/not-a-pdf.bin",
-      "sha256": "66338f6baf4dd76fee3be07a4306744495073f0124f74d357fcf040971513a0d",
+      "inputs": [
+        {
+          "file": "fixtures/not-a-pdf.bin",
+          "sha256": "66338f6baf4dd76fee3be07a4306744495073f0124f74d357fcf040971513a0d"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -100,8 +120,12 @@
     },
     {
       "name": "no-pages",
-      "file": "fixtures/no-pages.pdf",
-      "sha256": "375c75084e670596af448c3c48c0c048c0197baf97ab4256624929021483fbe4",
+      "inputs": [
+        {
+          "file": "fixtures/no-pages.pdf",
+          "sha256": "375c75084e670596af448c3c48c0c048c0197baf97ab4256624929021483fbe4"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -119,8 +143,12 @@
     },
     {
       "name": "encrypted-no-password",
-      "file": "fixtures/encrypted.pdf",
-      "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74",
+      "inputs": [
+        {
+          "file": "fixtures/encrypted.pdf",
+          "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -138,8 +166,12 @@
     },
     {
       "name": "encrypted-wrong-password",
-      "file": "fixtures/encrypted.pdf",
-      "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74",
+      "inputs": [
+        {
+          "file": "fixtures/encrypted.pdf",
+          "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74"
+        }
+      ],
       "password": "not the password",
       "attempt_recovery": false,
       "expect": {
@@ -157,8 +189,12 @@
     },
     {
       "name": "xref-bomb",
-      "file": "fixtures/xref-bomb.pdf",
-      "sha256": "ae2f916b2e0867f69a4cae984094a78ac44403ebcec4ffd080d234351adc5f4b",
+      "inputs": [
+        {
+          "file": "fixtures/xref-bomb.pdf",
+          "sha256": "ae2f916b2e0867f69a4cae984094a78ac44403ebcec4ffd080d234351adc5f4b"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -184,8 +220,12 @@
     },
     {
       "name": "bomb-hidden-by-decoy-key",
-      "file": "fixtures/bomb-hidden-decoy-key.pdf",
-      "sha256": "db9cb3d636c34fa287d5451f2f4717294148d5ad246d4dfaeb6b14dce88ae139",
+      "inputs": [
+        {
+          "file": "fixtures/bomb-hidden-decoy-key.pdf",
+          "sha256": "db9cb3d636c34fa287d5451f2f4717294148d5ad246d4dfaeb6b14dce88ae139"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -211,8 +251,12 @@
     },
     {
       "name": "bomb-hidden-by-dictionary-padding",
-      "file": "fixtures/bomb-hidden-padded-dictionary.pdf",
-      "sha256": "be9ae2de6767d19a5d51e6f2f58f4fe650aa25778762327b2a22dc18d7ef249f",
+      "inputs": [
+        {
+          "file": "fixtures/bomb-hidden-padded-dictionary.pdf",
+          "sha256": "be9ae2de6767d19a5d51e6f2f58f4fe650aa25778762327b2a22dc18d7ef249f"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -238,8 +282,12 @@
     },
     {
       "name": "bomb-hidden-by-trailing-junk",
-      "file": "fixtures/bomb-hidden-trailing-junk.pdf",
-      "sha256": "595f25bf02c6b882d9b9e29b3fb2397c39f17c28fab96b7143f812dd4ce82a86",
+      "inputs": [
+        {
+          "file": "fixtures/bomb-hidden-trailing-junk.pdf",
+          "sha256": "595f25bf02c6b882d9b9e29b3fb2397c39f17c28fab96b7143f812dd4ce82a86"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -265,8 +313,12 @@
     },
     {
       "name": "size-estimate-refuses-an-ordinary-file",
-      "file": "fixtures/pages-10.pdf",
-      "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
       "password": null,
       "limits": {
         "max_memory_bytes": 8388608
@@ -296,8 +348,12 @@
     },
     {
       "name": "objstm-bomb-default-limits",
-      "file": "fixtures/objstm-bomb.pdf",
-      "sha256": "54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b",
+      "inputs": [
+        {
+          "file": "fixtures/objstm-bomb.pdf",
+          "sha256": "54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -320,8 +376,12 @@
     },
     {
       "name": "objstm-bomb-tight-ceiling",
-      "file": "fixtures/objstm-bomb.pdf",
-      "sha256": "54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b",
+      "inputs": [
+        {
+          "file": "fixtures/objstm-bomb.pdf",
+          "sha256": "54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b"
+        }
+      ],
       "password": null,
       "limits": {
         "max_memory_bytes": 100663296
@@ -360,8 +420,12 @@
     },
     {
       "name": "object-number-above-int-max",
-      "file": "fixtures/object-number-above-int-max.pdf",
-      "sha256": "1457829ea5d5092a0f03e0cf82e5f6a570855a551b7d03ec476d0dd910472f4d",
+      "inputs": [
+        {
+          "file": "fixtures/object-number-above-int-max.pdf",
+          "sha256": "1457829ea5d5092a0f03e0cf82e5f6a570855a551b7d03ec476d0dd910472f4d"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -379,8 +443,12 @@
     },
     {
       "name": "truncated-mid-object",
-      "file": "fixtures/truncated-mid-object.pdf",
-      "sha256": "f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75",
+      "inputs": [
+        {
+          "file": "fixtures/truncated-mid-object.pdf",
+          "sha256": "f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -398,8 +466,12 @@
     },
     {
       "name": "truncated-mid-object-recovered",
-      "file": "fixtures/truncated-mid-object.pdf",
-      "sha256": "f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75",
+      "inputs": [
+        {
+          "file": "fixtures/truncated-mid-object.pdf",
+          "sha256": "f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75"
+        }
+      ],
       "password": null,
       "attempt_recovery": true,
       "expect": {
@@ -417,8 +489,12 @@
     },
     {
       "name": "trailer-removed",
-      "file": "fixtures/trailer-removed.pdf",
-      "sha256": "338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5",
+      "inputs": [
+        {
+          "file": "fixtures/trailer-removed.pdf",
+          "sha256": "338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -436,8 +512,12 @@
     },
     {
       "name": "trailer-removed-recovered",
-      "file": "fixtures/trailer-removed.pdf",
-      "sha256": "338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5",
+      "inputs": [
+        {
+          "file": "fixtures/trailer-removed.pdf",
+          "sha256": "338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5"
+        }
+      ],
       "password": null,
       "attempt_recovery": true,
       "expect": {
@@ -455,8 +535,12 @@
     },
     {
       "name": "canary",
-      "file": "fixtures/canary.pdf",
-      "sha256": "0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d",
+      "inputs": [
+        {
+          "file": "fixtures/canary.pdf",
+          "sha256": "0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d"
+        }
+      ],
       "password": null,
       "attempt_recovery": false,
       "expect": {
@@ -474,8 +558,12 @@
     },
     {
       "name": "canary-recovered",
-      "file": "fixtures/canary.pdf",
-      "sha256": "0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d",
+      "inputs": [
+        {
+          "file": "fixtures/canary.pdf",
+          "sha256": "0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d"
+        }
+      ],
       "password": null,
       "attempt_recovery": true,
       "expect": {
@@ -487,6 +575,138 @@
         "structure_check": {
           "ok": {
             "page_count": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-two-ordinary",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        },
+        {
+          "file": "fixtures/pages-137.pdf",
+          "sha256": "257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "ok": {
+            "page_count": 147
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-one-document-is-the-identity",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "ok": {
+            "page_count": 10
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-three-including-a-single-page",
+      "inputs": [
+        {
+          "file": "fixtures/blank-1page.pdf",
+          "sha256": "bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0"
+        },
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        },
+        {
+          "file": "fixtures/blank-1page.pdf",
+          "sha256": "bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "ok": {
+            "page_count": 12
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-refuses-when-any-input-is-malformed",
+      "inputs": [
+        {
+          "file": "fixtures/not-a-pdf.bin",
+          "sha256": "66338f6baf4dd76fee3be07a4306744495073f0124f74d357fcf040971513a0d"
+        },
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "err": {
+            "kind": "InputFailed"
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-refuses-an-encrypted-input",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        },
+        {
+          "file": "fixtures/encrypted.pdf",
+          "sha256": "12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "err": {
+            "kind": "InputFailed"
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-refuses-a-trailerless-input-qpdf-can-count",
+      "inputs": [
+        {
+          "file": "fixtures/trailer-removed.pdf",
+          "sha256": "338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5"
+        },
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "err": {
+            "kind": "InputFailed"
           }
         }
       }

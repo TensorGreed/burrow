@@ -22,6 +22,11 @@
     "why in the commit. An engine pin bump is the expected reason. Raising a budget to make",
     "CI pass without knowing what grew is the thing this file exists to prevent.",
     "",
+    "RAISED ONCE SO FAR, in M1 PR B2, for merge's write path. Per-artifact budgets are",
+    "recomputed only for lines that MOVED -- raising one that did not would be a silent",
+    "widening nobody asked for -- and `page` keeps its absolute budget rather than a",
+    "percentage.",
+    "",
     "HOW A RECORDING IS HELD TO THE BUILD IT DESCRIBES.",
     "",
     "Each artifact records `measured_sha256` beside its sizes, and src/size-budget-drift.ts",
@@ -97,28 +102,28 @@
       "measured_sha256_normalised": "cbaff19140954ba076d3f32d6431c9d55867443e7cb04969d7bc1493d462e271"
     },
     "engines/qpdf.wasm": {
-      "measured_raw": 1199200,
-      "measured_brotli": 265985,
-      "budget_brotli": 292584,
-      "why": "Built from source at the pinned version against our vendored zlib and libjpeg-turbo, so it moves with a pin bump or a build-flag change.",
-      "measured_sha256": "37e20b4683cf834a9442034c51a2f7b90129c42305f9bc8726fcd2fc3597c8b2",
-      "measured_sha256_normalised": "37e20b4683cf834a9442034c51a2f7b90129c42305f9bc8726fcd2fc3597c8b2"
+      "measured_raw": 1444871,
+      "measured_brotli": 319441,
+      "budget_brotli": 351386,
+      "why": "Built from source at the pinned version against our vendored zlib and libjpeg-turbo, so it moves with a pin bump or a build-flag change. M1 PR B2 MOVED IT BY +53,456 BROTLI (265,985 -> 319,441), and that is the single largest deliberate increase this payload has taken. The cause is qpdf's QPDFWriter and its dependencies, pulled in by adding seven entry points to EXPORTED_FUNCTIONS so merge can produce bytes on the web. ADR 0017 chose qpdf over PDFium for fidelity -- PDFium loses outlines, attachments and the /AcroForm, and the last of those silently leaves a form field that is no longer a field. PDFium already exports everything a merge needs, so choosing it would have cost ZERO bytes. This line is the price of that decision, and it is recorded here so the trade stays visible rather than becoming a number nobody can explain.",
+      "measured_sha256": "83e19277aea18df391d5af854cc1a7f1211dcc60931ac9f9d1f09f67ea03af60",
+      "measured_sha256_normalised": "83e19277aea18df391d5af854cc1a7f1211dcc60931ac9f9d1f09f67ea03af60"
     },
     "engines/burrow-worker.js": {
-      "measured_raw": 256255,
-      "measured_brotli": 45288,
-      "budget_brotli": 49558,
-      "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR.",
-      "measured_sha256": "4d46c43b77005ce2b61a487e87f22d9485db779f26e31e68c82fff9c1f509fc6",
-      "measured_sha256_normalised": "0446ab604dd056438f97f907cf9e28d08dcf7b6e42ae934a6a9eda57ecd7ac00"
+      "measured_raw": 269941,
+      "measured_brotli": 48092,
+      "budget_brotli": 52708,
+      "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR. M1 PR B2 added +2,628 -- the write path's nine bridge functions and the wasm-bindgen glue for the merge entry point.",
+      "measured_sha256": "f042538feb6609146ba5b1adab56185459fcf093e217d73c6fb3aa208779a43c",
+      "measured_sha256_normalised": "dedb355219b9c47a711cc2e8f168fbdf092da30f1cb2fa2195b05c2ce37ef551"
     },
     "engines/burrow_wasm_bg.wasm": {
-      "measured_raw": 43072,
-      "measured_brotli": 16018,
-      "budget_brotli": 17620,
-      "why": "The Rust binding. Grows as operations land, which is expected -- a merge implementation should move this line and nothing else.",
-      "measured_sha256": "3d19c0d8256c0a19c7e93919228c747edef995872838875711d5629838b8841d",
-      "measured_sha256_normalised": "3d19c0d8256c0a19c7e93919228c747edef995872838875711d5629838b8841d"
+      "measured_raw": 56032,
+      "measured_brotli": 20180,
+      "budget_brotli": 22069,
+      "why": "The Rust binding. Grows as operations land, which is expected -- and M1 PR B2 is the first test of the ROADMAP's prediction that \"a merge implementation should move this line and nothing else\". It moved this line by +4,044. It did NOT move only this line: engines/qpdf.wasm took +53,456 and engines/burrow-worker.js +2,628. The prediction was reasonable and wrong, because it assumed the engine already had what an operation needed.",
+      "measured_sha256": "8e594caab6bfe907b39ad4290b5219c1c1b28bb2c887f5a0b28f72153bf384f1",
+      "measured_sha256_normalised": "8e594caab6bfe907b39ad4290b5219c1c1b28bb2c887f5a0b28f72153bf384f1"
     },
     "engines/control.txt": {
       "measured_raw": 78,
@@ -130,18 +135,18 @@
     },
     "page": {
       "measured_raw": 29570,
-      "measured_brotli": 21652,
+      "measured_brotli": 21650,
       "budget_brotli": 51200,
       "why": "The entry page and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of it is one file: the self-hosted typeface, 18,524 of it. That is a deliberate payload decision, not drift -- apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. The absolute budget still has 29 KiB of room, which is what it is for: failing CI on editorial work teaches people to raise budgets without reading them.",
-      "measured_sha256": "f7690331e7a44cdd1193b50e764359778dee83b95c4ec582b12062844223d8cd",
+      "measured_sha256": "8ed9a46bd503527f0bfbba93dff6ebab2cab96cdf9b2ff167c7ccccc4e6a1b53",
       "measured_sha256_normalised": "6db98d57be2afe8b2fdc468ba8a665992d662b319ab0aa9497ed8ad655ae221c"
     }
   },
   "total": {
-    "measured_raw": 6844097,
-    "measured_brotli": 2253818,
-    "budget_brotli": 2299796,
-    "why": "The binding gate. Everything a user downloads before their first operation runs. M1 PR A spent 20,771 brotli bytes of the headroom on the design system and its typeface; a further 236 is the `burrow-worker.js` re-measurement described above, which predates this change and is not part of it. `budget_brotli` is deliberately UNCHANGED: the payload grew for a reason that is written down, and raising the ceiling to match would convert a gate into a record of whatever happened."
+    "measured_raw": 7116414,
+    "measured_brotli": 2314238,
+    "budget_brotli": 2383361,
+    "why": "The binding gate. Everything a user downloads before their first operation runs. RAISED IN M1 PR B2, from 2,299,796 to 2,383,361, and this is the first raise. The payload grew 60,124 brotli bytes because merge needs an engine that can WRITE: qpdf's QPDFWriter (+53,456), the Rust entry point (+4,044) and the bridge (+2,628). The raise restores the recorded 3% headroom rather than inventing a new margin, and the alternative was measured rather than assumed -- PDFium can merge with zero added bytes and loses outlines, attachments and working form fields (ADR 0017). A budget raised without knowing what grew has stopped being a budget; this one names every line that moved and why."
   },
   "not_byte_reproducible": {
     "engines/burrow_wasm_bg.wasm": "wasm-pack output. bindings/burrow-wasm/pkg/ is gitignored and rebuilt per machine, so the bytes depend on the local Rust and wasm-bindgen versions rather than on anything committed.",

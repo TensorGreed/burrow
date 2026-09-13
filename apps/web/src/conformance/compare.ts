@@ -45,7 +45,7 @@ export interface Failure {
 
 export type Outcome = { ok: { page_count: number } } | { err: Failure };
 
-export type Operation = "page_count" | "structure_check";
+export type Operation = "page_count" | "structure_check" | "merge";
 export type Platform = "native" | "web";
 
 export interface PlatformExpectation {
@@ -81,14 +81,28 @@ export interface CaseLimits {
   max_pages?: number;
 }
 
-export interface Case {
-  name: string;
+/** One fixture in a case's input list. Schema 3. */
+export interface CaseInput {
   file: string;
   sha256: string;
+}
+
+export interface Case {
+  name: string;
+  /**
+   * The fixtures this case runs, in order.
+   *
+   * A list since schema 3: `merge` takes several documents and the order is the operation's
+   * whole meaning. Single-input cases carry a one-element list rather than keeping a
+   * shorthand -- two ways of saying the same thing is two code paths in every reader, and
+   * the readers are the part that must not drift.
+   */
+  inputs: CaseInput[];
   password: string | null;
   limits?: CaseLimits;
   attempt_recovery?: boolean;
-  expect: { page_count: Outcome; structure_check: Outcome };
+  /** Keyed by operation name. A case declares only the operations it is about. */
+  expect: Partial<Record<Operation, Outcome>>;
   platform_expectations?: PlatformExpectation[];
   known_gap?: KnownGap;
 }
@@ -136,7 +150,7 @@ export interface Verdict {
 }
 
 /** The schema this comparator understands. A newer file must fail, not be guessed at. */
-export const SUPPORTED_SCHEMA = 2;
+export const SUPPORTED_SCHEMA = 3;
 
 /**
  * Render an outcome for a failure message.
@@ -184,16 +198,28 @@ function sameOutcome(a: Outcome | undefined, b: Outcome | undefined): boolean {
   return canonical(a) === canonical(b);
 }
 
+/** A case's fixtures and digests, for a failure message. Never their contents. */
+function fixtureOf(c: Case): string {
+  return c.inputs.map((i) => `${i.file} sha256 ${i.sha256}`).join(", ");
+}
+
 function key(caseName: string, operation: Operation): string {
   return `${caseName}::${operation}`;
 }
 
-const OPERATIONS: Operation[] = ["page_count", "structure_check"];
+/**
+ * Every operation the corpus can describe.
+ *
+ * Kept in step with `Operation::ALL` on the Rust side. It is no longer the list a case is
+ * RUN through -- schema 3 lets a case declare only the operations it is about -- but the
+ * comparator still needs the full set, to reject a record naming something outside it.
+ */
+const OPERATIONS: Operation[] = ["page_count", "structure_check", "merge"];
 
 /**
  * What a case expects of one platform, honouring any recorded by-design difference.
  *
- * Mirrors `expected_for` in `core/burrow-engines/tests/conformance.rs`. Two implementations of
+ * Mirrors `expected_for` in `core/burrow-ops/tests/conformance.rs`. Two implementations of
  * one rule, which is what `expectations.json` exists to avoid — but this one cannot be shared,
  * because the two halves of the harness are in different languages. It is four lines, it is
  * tested on both sides, and the alternative is the web side not honouring recorded differences
@@ -204,7 +230,15 @@ export function expectedFor(c: Case, platform: Platform, operation: Operation): 
     (p) => p.platform === platform && p.operation === operation,
   );
   if (recorded) return recorded.expect;
-  return operation === "page_count" ? c.expect.page_count : c.expect.structure_check;
+  const declared = c.expect[operation];
+  if (declared === undefined) {
+    throw new Error(
+      `${c.name}: no expectation for ${operation}. Since schema 3 a case declares the ` +
+        `operations it is about, so asking for one it does not declare is a bug in the ` +
+        `caller rather than a missing entry.`,
+    );
+  }
+  return declared;
 }
 
 /**
@@ -292,7 +326,10 @@ export function compare(
       gaps.push(`${c.name}: ${c.known_gap.issue} (due by ${c.known_gap.milestone})`);
     }
 
-    for (const operation of OPERATIONS) {
+    // ONLY the operations this case declares, since schema 3. Iterating all of them would
+    // demand a result for one the case never described, and both records would correctly
+    // be missing it.
+    for (const operation of Object.keys(c.expect) as Operation[]) {
       const k = key(c.name, operation);
       const n = nativeBy.get(k);
       const w = webBy.get(k);
@@ -317,14 +354,13 @@ export function compare(
       if (!sameOutcome(n, expectedNative)) {
         failures.push(
           `${k}: native did not match the corpus\n    expected ${render(expectedNative)}\n` +
-            `    actual   ${render(n)}\n    fixture  ${c.file} sha256 ${c.sha256}`,
+            `    actual   ${render(n)}\n    fixture  ${fixtureOf(c)}`,
         );
       }
       if (!sameOutcome(w, expectedWeb)) {
         failures.push(
           `${k}: web (${web.runner}) did not match the corpus\n    expected ` +
-            `${render(expectedWeb)}\n    actual   ${render(w)}\n    fixture  ${c.file} ` +
-            `sha256 ${c.sha256}`,
+            `${render(expectedWeb)}\n    actual   ${render(w)}\n    fixture  ${fixtureOf(c)}`,
         );
       }
 
@@ -365,7 +401,7 @@ export function compare(
 
       failures.push(
         `${k}: the two implementations disagree\n    native ${render(n)}\n` +
-          `    web (${web.runner}) ${render(w)}\n    fixture ${c.file} sha256 ${c.sha256}`,
+          `    web (${web.runner}) ${render(w)}\n    fixture ${fixtureOf(c)}`,
       );
     }
   }
@@ -393,7 +429,13 @@ export function compare(
 
   // THE COUNT, last, so it reflects what actually happened. Zero comparisons is the failure
   // mode this whole file is shaped around: it looks exactly like success.
-  const expected = expectations.cases.length * OPERATIONS.length;
+  // DERIVED FROM WHAT THE CORPUS DECLARES, not from `cases * OPERATIONS`. Under schema 2
+  // every case ran every operation and the product was right; schema 3 lets a case be about
+  // one operation, so the product would demand comparisons nobody described. Summing the
+  // declarations keeps this a measurement of the corpus rather than an assumption about its
+  // shape -- and it still cannot pass vacuously, because a corpus that declared nothing
+  // fails the emptiness check above.
+  const expected = expectations.cases.reduce((n, c) => n + Object.keys(c.expect).length, 0);
   if (comparisons === 0) {
     failures.push("no comparisons were made at all");
   } else if (comparisons < expected) {
@@ -458,7 +500,7 @@ export function parseAllowlist(text: string): { entries: Divergence[]; errors: s
       continue;
     }
     const [, field, value] = match;
-    if (field === "operation" && value !== "page_count" && value !== "structure_check") {
+    if (field === "operation" && !OPERATIONS.includes(value as Operation)) {
       errors.push(`line ${line}: ${value} is not an operation`);
       continue;
     }

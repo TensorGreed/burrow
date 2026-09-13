@@ -63,6 +63,9 @@ dependencies = [
  "burrow-engines",
  "burrow-types",
  "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

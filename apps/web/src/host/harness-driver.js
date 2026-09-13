@@ -231,6 +231,26 @@ function buildPrologue({ captureConsole = false, logCanary = null, poison = null
 
 // --- the API the Playwright tests drive ------------------------------------------------
 
+/**
+ * A reply Playwright can carry back out of the page.
+ *
+ * `reply.output` is a **Blob**, which `page.evaluate` cannot structured-clone to Node: it
+ * would arrive as `{}` and every assertion about it would be vacuously true. The harness
+ * reports its LENGTH instead, which is all a conformance run needs -- the outcome it
+ * records is the page count, and the bytes themselves are B3's business.
+ *
+ * The Blob is dropped here rather than held, so the page is not keeping a merged document
+ * alive for the rest of the run.
+ */
+/**
+ * @param {import("./harness-api.js").Reply & { output?: Blob | null }} reply
+ * @returns {import("./harness-api.js").Reply}
+ */
+function serialisable(reply) {
+  const { output, ...rest } = reply;
+  return { ...rest, outputBytes: output ? output.size : 0 };
+}
+
 /** @type {import("./harness-api.js").BurrowHarness} */
 const harness = {
   async ready() {
@@ -320,16 +340,31 @@ const harness = {
       bytes[i] = binary.charCodeAt(i);
     }
     const password = options.password ? new TextEncoder().encode(options.password).buffer : null;
-    return host.run(
+    // MERGE TAKES A LIST. `base64` is one document for every other operation; for merge the
+    // caller passes `options.extra`, the remaining documents in order, and this assembles
+    // the list. Kept as a separate field rather than always sending a list, so a
+    // single-input operation's message shape is unchanged -- `run()`'s contract is per
+    // operation, and widening it for every caller to suit one would be the silent kind of
+    // change.
+    const extra = (options.extra ?? []).map((b64) => {
+      const raw = atob(b64);
+      const out = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+      return new Blob([out], { type: "application/pdf" });
+    });
+    const blob = new Blob([bytes], { type: "application/pdf" });
+    const reply = await host.run(
       {
         op,
-        blob: new Blob([bytes], { type: "application/pdf" }),
+        blob,
+        blobs: op === "merge" ? [blob, ...extra] : undefined,
         password,
         limits,
         attemptRecovery: options.attemptRecovery ?? false,
       },
       { maxDurationMs: limits.maxDurationMs },
     );
+    return serialisable(reply);
   },
 
   /** How many workers have been spawned. The recovery tests read this. */

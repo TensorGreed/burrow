@@ -28,11 +28,13 @@
 //!
 //! [ADR 0006]: https://github.com/TensorGreed/burrow/blob/main/docs/adr/0006-wasm-linking-strategy.md
 
+mod assemble;
 pub mod bridge;
 mod pdfium;
 mod qpdf;
 pub mod recycle;
 
+pub use self::assemble::WebAssembly;
 pub use self::bridge::{LoadOutcome, PdfiumBridge, PdfiumPtr, QpdfBridge, QpdfPtr};
 pub use self::pdfium::{WebDocument, WebPdfium};
 pub use self::qpdf::WebQpdf;

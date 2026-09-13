@@ -200,16 +200,44 @@ jobs:
       # take the most important guarantees with them: that the serialisation holds, that
       # the roadmap's named limits are enforced, and that the shared conformance corpus is
       # actually exercised.
-      - name: Assert the engine integration tests actually ran
+      - name: Assert the integration tests actually ran
         run: |
-          for suite in parallelism limits conformance properties structure secret_leak prescan; do
-            list=$(cargo test -p burrow-engines --all-features --test "$suite" -- --list)
-            printf '%s' "$list" | grep -q ': test$' || {
-              echo "::error::the $suite suite discovered no tests. Is native-engines taking effect?" >&2
-              exit 1
-            }
-            echo "$suite: $(printf '%s' "$list" | grep -c ': test$') tests"
-          done
+          # PER CRATE, because the suites live in two of them since M1 PR B2: `conformance`
+          # moved to burrow-ops when the corpus grew an OPERATION, and `merge` was born
+          # there. Naming a suite under the wrong crate is an immediate hard failure --
+          # "no test target named `conformance` in `burrow-engines`" -- which is how this
+          # step found out.
+          run_suites() {
+            crate="$1"; shift
+            for suite in "$@"; do
+              list=$(cargo test -p "$crate" --all-features --test "$suite" -- --list)
+              printf '%s' "$list" | grep -q ': test$' || {
+                echo "::error::$crate's $suite suite discovered no tests. Is native-engines taking effect?" >&2
+                exit 1
+              }
+              echo "$crate/$suite: $(printf '%s' "$list" | grep -c ': test$') tests"
+            done
+          }
+          engines_suites="parallelism limits properties structure secret_leak prescan"
+          ops_suites="conformance merge"
+          run_suites burrow-engines $engines_suites
+          run_suites burrow-ops $ops_suites
+
+          # AND THE LIST ITSELF IS CHECKED, because it is hand-maintained and this step
+          # exists precisely to stop a suite going unrun. A new `tests/*.rs` that nobody
+          # added above would be covered by nothing -- the same shape as a fuzz target
+          # declared and never run, which this workflow now also guards.
+          named=$(printf '%s %s' "$engines_suites" "$ops_suites" | tr ' ' '\n' | grep -v '^$' | sort -u)
+          on_disk=$(find core/*/tests -maxdepth 1 -name '*.rs' -printf '%f\n' \
+                    | sed 's/\.rs$//' | sort -u)
+          echo "named:   $(printf '%s' "$named" | tr '\n' ' ')"
+          echo "on disk: $(printf '%s' "$on_disk" | tr '\n' ' ')"
+          missing=$(comm -13 <(printf '%s\n' "$named") <(printf '%s\n' "$on_disk"))
+          if [ -n "$missing" ]; then
+            echo "::error::integration suites on disk but not named in this step: $missing" >&2
+            exit 1
+          fi
+          echo "OK -- every integration suite on disk is named and ran"
 
       # Asks the question check-engine-licences.py cannot: is every component we can
       # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared

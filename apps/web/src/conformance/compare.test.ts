@@ -20,6 +20,7 @@ import {
   type Case,
   type Divergence,
   type Expectations,
+  type Operation,
   type Outcome,
   type OutcomeRecord,
 } from "./compare.js";
@@ -47,13 +48,12 @@ const MEASURED: Outcome = {
 
 function corpus(cases: Partial<Case>[]): Expectations {
   return {
-    schema: 2,
+    schema: 3,
     generated_by: "test",
     current_milestone: "M1",
     cases: cases.map((c, i) => ({
       name: c.name ?? `case-${i}`,
-      file: c.file ?? `fixtures/case-${i}.pdf`,
-      sha256: c.sha256 ?? "0".repeat(64),
+      inputs: c.inputs ?? [{ file: `fixtures/case-${i}.pdf`, sha256: "0".repeat(64) }],
       password: c.password ?? null,
       expect: c.expect ?? { page_count: OK, structure_check: OK },
       ...c,
@@ -71,24 +71,21 @@ function agreeing(
     platform,
     runner,
     expectations_sha256: "digest",
-    results: expectations.cases.flatMap((c) => [
-      {
+    // Only the operations each case DECLARES, since schema 3. Answering for operations a
+    // case does not declare would make an agreeing record disagree with the corpus about
+    // what was even run.
+    results: expectations.cases.flatMap((c) =>
+      (Object.keys(c.expect) as Operation[]).map((operation) => ({
         case: c.name,
-        operation: "page_count" as const,
+        operation,
         outcome:
           (c.platform_expectations ?? []).find(
-            (p) => p.platform === platform && p.operation === "page_count",
-          )?.expect ?? c.expect.page_count,
-      },
-      {
-        case: c.name,
-        operation: "structure_check" as const,
-        outcome:
-          (c.platform_expectations ?? []).find(
-            (p) => p.platform === platform && p.operation === "structure_check",
-          )?.expect ?? c.expect.structure_check,
-      },
-    ]),
+            (p) => p.platform === platform && p.operation === operation,
+          )?.expect ??
+          c.expect[operation] ??
+          OK,
+      })),
+    ),
   };
 }
 
@@ -451,7 +448,7 @@ describe("failure output", () => {
     // somebody pastes output into an issue, and a fixture is a user's file in every way that
     // matters to this rule.
     const expectations = corpus([
-      { name: "canary", file: "fixtures/canary.pdf", sha256: "abc123" },
+      { name: "canary", inputs: [{ file: "fixtures/canary.pdf", sha256: "abc123" }] },
     ]);
     const verdict = run(expectations, (_native, web) => {
       web.results[0].outcome = MALFORMED;

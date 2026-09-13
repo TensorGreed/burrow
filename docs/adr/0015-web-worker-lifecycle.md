@@ -335,6 +335,24 @@ happening. The schema version bumps when 4b lands the first such fixture, and bo
 `apps/web/e2e/engines.spec.ts` and `core/burrow-engines/tests/conformance.rs` — change together.
 No fixture and no schema change in this PR.
 
+### Amendment, 2026-09-13 (M1 PR B2): one reader moved crate
+
+§10 names the two readers that must change together as `apps/web/e2e/engines.spec.ts` and
+`core/burrow-engines/tests/conformance.rs`. The substance is unchanged — there are still
+exactly two, and they still change together — but the second is now
+**`core/burrow-ops/tests/conformance.rs`**, and the web-side reader is
+`apps/web/e2e/conformance.spec.ts` (`engines.spec.ts` handed the corpus loop over in 4b and
+kept only its four smoke tests).
+
+It moved because schema 3 put an **operation** in the corpus. Comparing what the two
+platforms produce for `merge` means calling `burrow_ops::merge`, and `burrow-engines` cannot
+depend on `burrow-ops` — `core/CLAUDE.md` draws that arrow deliberately, and a
+dev-dependency pointing back would be the same cycle wearing a different hat.
+
+Recorded here rather than by editing the sentence above, because
+[ADR 0001](0001-record-architecture-decisions.md) makes accepted ADRs append-only. A pointer
+that has quietly gone wrong is worse than one that is visibly amended.
+
 ### 11. `fatal` is false for `EngineUnavailable`
 
 `fatal` means "this result poisons the engine instance". For a refusal there is no instance and

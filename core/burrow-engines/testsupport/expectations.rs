@@ -71,14 +71,17 @@ pub struct Expectations {
 pub struct Case {
     /// Short identifier, for test output. Unique across the file.
     pub name: String,
-    /// Path to the fixture, relative to the directory holding this file.
+    /// The fixtures this case runs, in order.
+    ///
+    /// **A list since schema 3.** `merge` takes several documents and the order is the
+    /// operation's entire meaning, so a single `file` could not express a case at all.
+    /// Single-input cases carry a one-element list rather than keeping a shorthand: two
+    /// ways of saying the same thing is two code paths in every reader, and the readers are
+    /// the part that must not drift.
     ///
     /// Several cases may name the same file: `encrypted.pdf` appears with and without a
     /// password, and `objstm-bomb.pdf` appears under two different ceilings.
-    pub file: String,
-    /// sha256 of the fixture, so an edited file fails instead of quietly changing what is
-    /// asserted.
-    pub sha256: String,
+    pub inputs: Vec<CaseInput>,
     /// Password to open with, or `null` for none.
     ///
     /// A string, not bytes: every fixture's password is ASCII, and a JSON string is what the
@@ -106,6 +109,16 @@ pub struct Case {
     /// A defect this case documents rather than asserts as correct.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub known_gap: Option<KnownGap>,
+}
+
+/// One fixture in a case's input list.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CaseInput {
+    /// Path to the fixture, relative to the directory holding `expectations.json`.
+    pub file: String,
+    /// sha256 of the fixture, so an edited file fails instead of quietly changing what is
+    /// asserted.
+    pub sha256: String,
 }
 
 /// Ceilings for one case. Every field optional; omitted means `Limits::DEFAULT`.
@@ -146,15 +159,23 @@ impl CaseLimits {
     }
 }
 
-/// The operations a case is run through. Both are required: a case that exercised only one
-/// engine would leave the other implementation's behaviour on that file unrecorded.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Outcomes {
-    /// `DocumentEngine::open` + `pages_at_open`, i.e. PDFium.
-    pub page_count: Outcome,
-    /// `StructureEngine::check`, i.e. qpdf.
-    pub structure_check: Outcome,
-}
+/// The operations a case is run through, and what each must produce.
+///
+/// **A map since schema 3, and it had to become one.** Schema 2 was a struct with one field
+/// per operation, which said "every case runs every operation" in the type — true while the
+/// two operations both took a single document and answered with a page count. `merge` takes
+/// SEVERAL documents, so requiring every case to declare a merge outcome would have meant
+/// inventing one for twenty-one single-document fixtures, and `split` and `reorder` produce
+/// several outputs and will not fit the old shape either.
+///
+/// A case now declares the operations it is about. Two rules keep that from becoming a way
+/// to quietly stop testing something, and the harness asserts both:
+///
+/// - every case declares at least one operation, so a fixture cannot sit in the corpus
+///   asserting nothing;
+/// - every operation in [`Operation::ALL`] appears in at least one case, so an operation
+///   cannot fall out of the corpus entirely and leave a green run behind.
+pub type Outcomes = std::collections::BTreeMap<Operation, Outcome>;
 
 /// Which operation an outcome belongs to.
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
@@ -164,11 +185,13 @@ pub enum Operation {
     PageCount,
     /// qpdf.
     StructureCheck,
+    /// `burrow_ops::merge`, over qpdf's assembler. Takes every input in order.
+    Merge,
 }
 
 impl Operation {
     /// Every operation, in a stable order.
-    pub const ALL: [Self; 2] = [Self::PageCount, Self::StructureCheck];
+    pub const ALL: [Self; 3] = [Self::PageCount, Self::StructureCheck, Self::Merge];
 
     /// The name used in the JSON and in the harness's records.
     #[must_use]
@@ -176,6 +199,7 @@ impl Operation {
         match self {
             Self::PageCount => "page_count",
             Self::StructureCheck => "structure_check",
+            Self::Merge => "merge",
         }
     }
 }
@@ -328,6 +352,13 @@ pub enum ErrorKind {
     Io,
     /// [`Error::Internal`](burrow_types::Error::Internal).
     Internal,
+    /// [`Error::InputFailed`](burrow_types::Error::InputFailed).
+    ///
+    /// Multi-input operations only. The INDEX is deliberately not recorded: it is in the
+    /// error a caller sees, and putting it here would make the corpus assert which input
+    /// the engine happened to reach first rather than that the operation refused. ADR 0017
+    /// §2 is about the refusal.
+    InputFailed,
 }
 
 impl ErrorKind {
@@ -346,6 +377,7 @@ impl ErrorKind {
             E::InvalidArgument(_) => Self::InvalidArgument,
             E::Io(_) => Self::Io,
             E::Internal(_) => Self::Internal,
+            E::InputFailed { .. } => Self::InputFailed,
             _ => return None,
         })
     }

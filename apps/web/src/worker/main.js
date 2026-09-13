@@ -169,6 +169,23 @@ function drainReply(id, reply) {
       // Strings for the same reason `requested` is: these are `u64`.
       pdfiumHeapBytes: reply.pdfium_heap_bytes.toString(),
       qpdfHeapBytes: reply.qpdf_heap_bytes.toString(),
+      // WHICH input failed, as a number rather than something to parse out of `message`.
+      // -1 when the failure is not about a particular input.
+      failedInput: reply.failedInput,
+      // What is wrong with that input, so a page need not unwrap anything itself.
+      innerKind: reply.innerKind,
+      // THE DOCUMENT, AS A BLOB, AND THE BLOB IS THE POINT.
+      //
+      // `takeOutput()` MOVES the bytes out of the Rust reply -- a getter would copy them,
+      // and this is the largest thing the boundary carries. Wrapping them in a Blob here
+      // rather than posting the Uint8Array means structured clone passes them to the page
+      // BY REFERENCE, exactly as the page passes inputs in: the main thread never holds a
+      // merged document in its own heap, it holds a handle it can turn into a download.
+      //
+      // `outputLength` is read first because both "no document" and "already taken" come
+      // back as an empty array, and only the length can tell them apart.
+      output:
+        reply.outputLength > 0 ? new Blob([reply.takeOutput()], { type: "application/pdf" }) : null,
     };
   } finally {
     // A wasm-bindgen object is a boxed Rust value in the burrow module's heap, and wasm
@@ -228,7 +245,7 @@ self.onmessage = async (event) => {
   try {
     await ensureReady();
 
-    if (request.op !== "page_count" && request.op !== "structure_check") {
+    if (request.op !== "page_count" && request.op !== "structure_check" && request.op !== "merge") {
       // BEFORE `limits` is constructed, deliberately. An unknown op is a bug in the page, not
       // a poisoned engine, so it is reported without costing a worker — but returning after
       // building a `WebLimits` would leak it: nothing consumes it on this path, and a
@@ -278,7 +295,20 @@ self.onmessage = async (event) => {
     // Reading a Blob is a memory read. It issues no request, so no CSP directive is
     // consulted -- asserted rather than assumed by `e2e/zero-requests.spec.ts`, which
     // delivers the whole corpus this way and watches the server's own log.
-    const bytes = new Uint8Array(await request.blob.arrayBuffer());
+    // ONE BLOB OR MANY. `merge` is the first operation with more than one input, and the
+    // Blob discipline above applies to each of them: the page holds a list of `File`s and
+    // hands them over by reference, so it never materialises any of the bytes and still
+    // holds every handle after a worker is killed.
+    //
+    // `blobs` and `blob` are kept distinct rather than unified into a one-element list,
+    // because `run()`'s contract is per-operation and a single-input op that suddenly took
+    // a list would be a silent change to every existing caller.
+    const inputs = request.op === "merge" ? request.blobs : [request.blob];
+    const buffers = [];
+    for (const blob of inputs) {
+      buffers.push(new Uint8Array(await blob.arrayBuffer()));
+    }
+    const bytes = buffers[0];
     const password = request.password ? new Uint8Array(request.password) : undefined;
     // NOT freed here, and that is not an oversight. wasm-bindgen passes a struct argument
     // BY VALUE: the generated glue calls `limits.__destroy_into_raw()` and hands the raw
@@ -295,7 +325,27 @@ self.onmessage = async (event) => {
       BigInt(request.limits.maxPixels),
     );
 
-    if (request.op === "page_count") {
+    if (request.op === "merge") {
+      // ONE FLAT BUFFER PLUS A LENGTH TABLE, not an array of arrays. wasm-bindgen can
+      // marshal `Vec<Vec<u8>>` and doing so copies every document twice. A merge is the
+      // largest thing this boundary carries, and the page's whole Blob discipline exists so
+      // the bytes live in as few places as possible; undoing that at the last step would be
+      // perverse. Rust validates the table against the buffer rather than trusting it.
+      let total = 0;
+      for (const b of buffers) total += b.length;
+      const flat = new Uint8Array(total);
+      const lengths = new Uint32Array(buffers.length);
+      let at = 0;
+      for (let i = 0; i < buffers.length; i += 1) {
+        flat.set(buffers[i], at);
+        lengths[i] = buffers[i].length;
+        at += buffers[i].length;
+      }
+      // Drop the per-input copies before the call, so the peak is the flat buffer plus the
+      // engine heap rather than both plus the originals.
+      buffers.length = 0;
+      reply = wasm_bindgen.merge(flat, lengths, limits);
+    } else if (request.op === "page_count") {
       reply = wasm_bindgen.page_count(bytes, password, limits);
     } else {
       reply = wasm_bindgen.structure_check(

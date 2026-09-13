@@ -44,6 +44,14 @@ pub(super) enum Call {
     GlobalSet(i32, u32),
     LoggerCreate,
     LoggerDiscardAll(i32),
+    GetPageN(u32),
+    AddPage { page: u32, first: bool },
+    InitWriteMemory,
+    SetDeterministicId(bool),
+    Write,
+    GetBufferLength,
+    GetBuffer,
+    CopyOut(u32),
 }
 
 /// A stand-in for an Emscripten module's linear memory.
@@ -61,7 +69,7 @@ struct Heap {
     /// Held apart from `live` so `assert_empty` can stay strict about everything else. The
     /// interesting property is not "is it freed" but **"is there exactly one"**: one is the
     /// design, one per operation is the unbounded leak this split exists to catch.
-    retained: Vec<u32>,
+    retained: Vec<(u32, Vec<u8>)>,
     bytes_grown: u64,
     /// When set, the next `copy_in` returns null — an allocation failure.
     fail_next_alloc: bool,
@@ -93,11 +101,36 @@ impl Heap {
     /// Allocate something that deliberately outlives the operation. See `retained`.
     fn alloc_retained(&mut self, bytes: &[u8]) -> u32 {
         let at = self.alloc(bytes);
-        if at != 0 {
-            self.live.retain(|(a, _)| *a != at);
-            self.retained.push(at);
+        if at != 0
+            && let Some(pos) = self.live.iter().position(|(a, _)| *a == at)
+        {
+            let entry = self.live.remove(pos);
+            self.retained.push(entry);
         }
         at
+    }
+
+    /// The bytes at `ptr`, from either list.
+    ///
+    /// **Panics on an address it does not know**, which is the point: addresses are never
+    /// reused, so reading a freed or invented pointer is a use-after-free rather than a
+    /// plausible-looking success. A fake that returned zeroes here would let exactly the
+    /// bug it exists to catch pass as an empty document.
+    fn read(&self, ptr: u32, len: usize) -> Vec<u8> {
+        let found = self
+            .live
+            .iter()
+            .chain(self.retained.iter())
+            .find(|(at, _)| *at == ptr);
+        let (_, bytes) = found.unwrap_or_else(|| {
+            panic!("read {ptr:#x}, which is not a live or retained allocation -- a stray or freed pointer")
+        });
+        assert!(
+            len <= bytes.len(),
+            "read {len} bytes from a {}-byte allocation at {ptr:#x} -- an out-of-bounds read",
+            bytes.len()
+        );
+        bytes[..len].to_vec()
     }
 
     fn free(&mut self, ptr: u32) {
@@ -280,7 +313,12 @@ impl PdfiumBridge for FakePdfium {
 }
 
 /// What the fake qpdf should do when asked.
-#[derive(Debug, Clone, Copy)]
+///
+/// `Clone` but not `Copy` since M1 PR B2: `output` is a real payload rather than a length,
+/// so a test can assert the bytes that reach Rust are the bytes the engine produced. A
+/// `copy_out` that returned the right LENGTH of the wrong memory satisfies a size
+/// assertion, which is why the fake carries content at all.
+#[derive(Debug, Clone)]
 pub(super) struct QpdfScript {
     /// The raw `QPDF_ERROR_CODE` bitmask `qpdf_read_memory` returns.
     pub(super) read_status: i32,
@@ -299,6 +337,25 @@ pub(super) struct QpdfScript {
     /// runs, and therefore the only way to exercise the drain loop there. Re-arming once
     /// rather than forever also pins that the loop terminates.
     pub(super) error_reappears_once: Option<i32>,
+    /// The bitmask `qpdf_add_page` returns.
+    pub(super) add_page_status: i32,
+    /// The bitmask `qpdf_init_write_memory` returns.
+    pub(super) init_write_status: i32,
+    /// The bitmask `qpdf_write` returns.
+    pub(super) write_status: i32,
+    /// The document `qpdf_get_buffer` hands back.
+    ///
+    /// A real payload rather than a length, so a test can assert the bytes that reach Rust
+    /// are the bytes the engine produced -- a `copy_out` that returned the right LENGTH of
+    /// the wrong memory would satisfy a size assertion.
+    pub(super) output: Vec<u8>,
+    /// Make `qpdf_get_buffer` return null while `get_buffer_length` still reports a length.
+    ///
+    /// The shape upstream can actually produce: `qpdf_get_buffer` returns null when the
+    /// writer has no buffer, and the length accessor independently returns 0 -- but a
+    /// caller that checked only one of them would read from a null pointer. Scripting them
+    /// apart is how that gets tested.
+    pub(super) buffer_is_null: bool,
 }
 
 impl Default for QpdfScript {
@@ -307,6 +364,11 @@ impl Default for QpdfScript {
             read_status: 0,
             pending_error: None,
             page_count: 1,
+            add_page_status: 0,
+            init_write_status: 0,
+            write_status: 0,
+            output: b"%PDF-1.7\nmerged\n".to_vec(),
+            buffer_is_null: false,
             init_succeeds: true,
             read_grows_heap_by: 0,
             error_reappears_once: None,
@@ -321,17 +383,24 @@ pub(super) struct FakeQpdf {
     script: QpdfScript,
     /// Drained by `get_error`, exactly as qpdf's slot is.
     pending: Mutex<Option<i32>>,
+    /// Output buffers handed out by `get_buffer`, keyed by the document that owns them.
+    ///
+    /// Freed by `cleanup`, because that is when qpdf frees them.
+    buffers: Mutex<Vec<(u32, u32)>>,
     /// Whether the one-shot re-arm above is still available.
     rearm: Mutex<Option<i32>>,
 }
 
 impl FakeQpdf {
     pub(super) fn new(state: Arc<FakeHeap>, script: QpdfScript) -> Self {
+        let pending = Mutex::new(script.pending_error);
+        let rearm = Mutex::new(script.error_reappears_once);
         Self {
             state,
             script,
-            pending: Mutex::new(script.pending_error),
-            rearm: Mutex::new(script.error_reappears_once),
+            pending,
+            rearm,
+            buffers: Mutex::new(Vec::new()),
         }
     }
 }
@@ -366,7 +435,7 @@ impl QpdfBridge for FakeQpdf {
         }
     }
 
-    fn cleanup(&self, _data: QpdfPtr) {
+    fn cleanup(&self, data: QpdfPtr) {
         // Real qpdf does not fail here -- it writes
         //
         //   WARNING: application did not handle error: <text>
@@ -385,6 +454,22 @@ impl QpdfBridge for FakeQpdf {
              default logger, which the per-document logger does not cover"
         );
         self.state.record(Call::Cleanup);
+
+        // The output buffer dies with the document, as it does in qpdf -- `qpdf-c.h` says
+        // the pointer is owned by the `qpdf_data`, so the orchestration never frees it and
+        // must not. Modelled here rather than exempted from the leak detector: an exemption
+        // is a place a genuine per-operation leak could hide.
+        let mut buffers = self.buffers.lock().expect("not poisoned");
+        let mine: Vec<u32> = buffers
+            .iter()
+            .filter(|(d, _)| *d == data.0)
+            .map(|(_, at)| *at)
+            .collect();
+        buffers.retain(|(d, _)| *d != data.0);
+        drop(buffers);
+        for at in mine {
+            self.state.heap.lock().expect("not poisoned").free(at);
+        }
     }
 
     fn silence_errors(&self, _data: QpdfPtr) {
@@ -476,6 +561,74 @@ impl QpdfBridge for FakeQpdf {
 
     fn logger_discard_all(&self, _logger: QpdfPtr, destination: i32) {
         self.state.record(Call::LoggerDiscardAll(destination));
+    }
+
+    fn get_page_n(&self, _data: QpdfPtr, n: u32) -> u32 {
+        self.state.record(Call::GetPageN(n));
+        // Handles are 1-based in qpdf and never zero for a valid page, so returning `n + 1`
+        // keeps a real handle distinguishable from a default-initialised one.
+        n + 1
+    }
+
+    fn add_page(&self, _data: QpdfPtr, _source: QpdfPtr, page: u32, first: bool) -> i32 {
+        self.state.record(Call::AddPage { page, first });
+        self.script.add_page_status
+    }
+
+    fn init_write_memory(&self, _data: QpdfPtr) -> i32 {
+        self.state.record(Call::InitWriteMemory);
+        self.script.init_write_status
+    }
+
+    fn set_deterministic_id(&self, _data: QpdfPtr, value: bool) {
+        self.state.record(Call::SetDeterministicId(value));
+    }
+
+    fn write(&self, _data: QpdfPtr) -> i32 {
+        self.state.record(Call::Write);
+        self.script.write_status
+    }
+
+    fn get_buffer_length(&self, _data: QpdfPtr) -> u32 {
+        self.state.record(Call::GetBufferLength);
+        u32::try_from(self.script.output.len()).unwrap_or(u32::MAX)
+    }
+
+    fn get_buffer(&self, data: QpdfPtr) -> QpdfPtr {
+        self.state.record(Call::GetBuffer);
+        if self.script.buffer_is_null {
+            return QpdfPtr::NULL;
+        }
+        // A REAL ALLOCATION IN THE TRACKED HEAP, not a made-up address.
+        //
+        // LIVE, not retained, and that was got wrong first. qpdf frees this buffer with
+        // `qpdf_cleanup`; it does not outlive the document. Modelling it as retained made
+        // `retained()` report two where the design says one, and would have left a genuine
+        // per-operation leak hiding behind the logger's exemption.
+        let at = self
+            .state
+            .heap
+            .lock()
+            .expect("not poisoned")
+            .alloc(&self.script.output);
+        self.buffers
+            .lock()
+            .expect("not poisoned")
+            .push((data.0, at));
+        QpdfPtr(at)
+    }
+
+    fn copy_out(&self, ptr: QpdfPtr, len: u32) -> Vec<u8> {
+        self.state.record(Call::CopyOut(len));
+        // READ THROUGH THE HEAP, never straight from the script. A fake that returned
+        // `script.output` regardless of the pointer would pass a caller that copied from
+        // the wrong address, or from a buffer it had already freed -- which is the class of
+        // bug this whole fake exists to make visible.
+        self.state
+            .heap
+            .lock()
+            .expect("not poisoned")
+            .read(ptr.0, len as usize)
     }
 
     fn heap_bytes(&self) -> u64 {

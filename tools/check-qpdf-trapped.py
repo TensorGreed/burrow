@@ -678,8 +678,12 @@ def wasm_binding_is_covered() -> list[str]:
     code, and the per-source guard in `declared_functions()` catches it falling silent.
     """
     js = WEB_BRIDGE_JS.read_text()
-    defined = set(re.findall(r"self\.__burrow_(qpdf[a-z_0-9]*)\s*=", js))
-    imported = set(re.findall(r"\b__burrow_(qpdf[a-z_0-9]*)\b", WASM_BINDING.read_text()))
+    # Capitals included, like every other declaration pattern here. These names are ours
+    # rather than qpdf's, so none has one today -- but the failure mode if one did is the
+    # silent half: an import the check cannot see is reported as covered, and the worker
+    # traps on `undefined` at runtime instead.
+    defined = set(re.findall(r"self\.__burrow_(qpdf[A-Za-z_0-9]*)\s*=", js))
+    imported = set(re.findall(r"\b__burrow_(qpdf[A-Za-z_0-9]*)\b", WASM_BINDING.read_text()))
 
     if not imported:
         return [

@@ -153,7 +153,7 @@ M2 — but it is a trade that gets easier to make every time it is made. Left un
 `known_gap` becomes where an inconvenient failure goes, and a corpus of documented gaps stays
 green while asserting nothing.
 
-So, enforced by `core/burrow-engines/tests/conformance.rs`:
+So, enforced by `core/burrow-ops/tests/conformance.rs`:
 
 | Rule | Where |
 |---|---|
