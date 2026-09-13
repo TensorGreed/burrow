@@ -99,6 +99,15 @@ export const DEFAULT_INIT_TIMEOUT_MS = 60_000;
 /** Respawns within {@link DEFAULT_BREAKER_WINDOW_MS} before the breaker opens. */
 export const DEFAULT_BREAKER_RESPAWNS = 3;
 
+/**
+ * The kind a queued request carries when the page cancelled before it started.
+ *
+ * Its own kind, like `ENGINE_UNAVAILABLE`, and for the same reason: it is a HOST verdict
+ * rather than an `Error` variant, and it is not fatal -- nothing ran, so no instance was
+ * poisoned.
+ */
+export const CANCELLED = "Cancelled";
+
 /** The circuit breaker's sliding window. */
 export const DEFAULT_BREAKER_WINDOW_MS = 60_000;
 
@@ -121,7 +130,7 @@ function hostFailure(kind, message, detail = {}) {
     // where the point is that there is no instance and none will be made. Saying `true`
     // there was not merely imprecise: it made a test that expected a crash pass on a refusal,
     // because both looked fatal.
-    fatal: kind !== ENGINE_UNAVAILABLE,
+    fatal: kind !== ENGINE_UNAVAILABLE && kind !== CANCELLED,
     failedInput: -1,
     innerKind: "",
     // Explicitly null, not absent. A caller that reads `reply.output` on a failure should
@@ -260,6 +269,22 @@ export function createWorkerHost(options) {
    * @type {Promise<unknown>}
    */
   let queue = Promise.resolve();
+
+  /**
+   * How many times the page has cancelled.
+   *
+   * `discard()` settles the requests that are IN FLIGHT. It does not reach the ones still in
+   * `queue` — they have not been posted, so there is nothing to settle — and without this
+   * counter each of them went on to run after the cancel: `ensureWorker()` found the state
+   * `dead`, the breaker permitted a spawn because a page-initiated discard is not a crash,
+   * and a fresh worker compiled 6.5 MB of engines to finish an operation the person had
+   * already stopped. The UI had returned to idle and said "Stopped."; the work had not.
+   *
+   * So a request records the count when it is ENQUEUED, and abandons itself if the count has
+   * moved by the time the queue reaches it. That is the difference between stopping the work
+   * and stopping the reporting of it.
+   */
+  let cancellations = 0;
 
   /**
    * Timestamps of recent **crashes**, pruned to the breaker's window.
@@ -721,7 +746,16 @@ export function createWorkerHost(options) {
      * @returns {Promise<HostReply>}
      */
     run(message, options = {}) {
-      const mine = queue.then(() => runOne(message, options));
+      const enqueuedAt = cancellations;
+      const mine = queue.then(() =>
+        cancellations === enqueuedAt
+          ? runOne(message, options)
+          : // NOT `Internal`. `Internal` means "this result poisons the engine instance", and
+            // a caller acting on it would discard a worker that is perfectly healthy -- or
+            // spawn one to be told about an operation nobody is waiting for. Nothing went
+            // wrong here; the person changed their mind before this request started.
+            hostFailure(CANCELLED, "cancelled before it started"),
+      );
       // The chain must survive a rejection, or one failed operation would wedge every later
       // one. `runOne` never rejects — every outcome is a `HostReply` — but a bug there would
       // otherwise be silent and permanent.
@@ -752,6 +786,8 @@ export function createWorkerHost(options) {
      * retried — the same rule every other teardown follows.
      */
     discardWorker() {
+      // BEFORE the discard, so a request enqueued during it is still counted as cancelled.
+      cancellations += 1;
       discard("Internal", "worker discarded by the page");
     },
 

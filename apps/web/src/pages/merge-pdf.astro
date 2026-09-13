@@ -1,0 +1,120 @@
+---
+// The first tool page. One URL, indexable, its own title and prose — people arrive here
+// from a search for "merge pdf", not from the landing page.
+//
+// The interactive part is one island. Everything above and below it is static, so the page
+// is readable and its claim is checkable with JavaScript switched off.
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="Merge PDF — combine PDFs on your own computer | burrow"
+  description="Combine several PDFs into one, in the order you choose. The files are merged in your browser and never uploaded, because there is no server to upload them to."
+>
+  <div class="read">
+    <h1>Merge PDF</h1>
+
+    <p>
+      Combine several PDFs into one file, in whatever order you put them. The merging happens in
+      this browser, on this computer — the files are not uploaded, because burrow has no server that
+      could receive them.
+    </p>
+  </div>
+
+  {
+    /*
+    NO `client:*` DIRECTIVE, AND THAT IS NOT A STYLE CHOICE.
+
+    Astro's hydration directives bootstrap an island with an INLINE script, and
+    `script-src 'self'` carries no `'unsafe-inline'` and no nonce (ADR 0014). Measured, on
+    this page: the browser refuses the bootstrap, the island never hydrates, and the tool
+    renders as dead markup — no error anyone would see except a CSP line in the console.
+
+    That is the same wall the engine harness hit, and apps/web/CLAUDE.md records the same
+    answer: move to an external file rather than loosen the policy. So the component is
+    mounted by the module below, which Astro bundles to `_astro/*.js` and references with a
+    `src` — an ordinary same-origin script the policy already permits.
+
+    The ENGINES are still not loaded here. The tool starts a worker the first time a file is
+    chosen, which is what "load the wasm module lazily, when the user engages with the tool"
+    means. Mounting the component is a few kilobytes; starting the engines is 6.5 MB.
+  */
+  }
+  <div id="merge-tool"></div>
+
+  <script>
+    import { type Component, mount } from "svelte";
+
+    import MergeTool from "../components/MergeTool.svelte";
+
+    const target = document.getElementById("merge-tool");
+    if (target) {
+      // The cast is Astro's type, not ours. `@astrojs/svelte` declares a `.svelte` default
+      // export as an ASTRO component -- one that takes client directives -- because that is
+      // what `<MergeTool client:load />` would need. Mounting it by hand is the same module
+      // reached through Svelte's own API instead, and the two declarations do not overlap.
+      // `mount` is the only correct call here (see the comment above on `client:*`), so the
+      // cast goes where the mismatch is rather than the mount going where the types are.
+      mount(MergeTool as unknown as Component, { target });
+    }
+  </script>
+
+  <noscript>
+    <div class="read no-js">
+      <h2>This tool needs JavaScript</h2>
+      <p>
+        The merging is done by code running in your browser, so with JavaScript switched off there
+        is nothing to do the work. There is no server-side version to fall back to — that is the
+        whole design, not a missing feature.
+      </p>
+      <p>
+        With JavaScript on, this page lets you choose several PDFs, put them in the order you want,
+        and download the combined file. Nothing is sent anywhere.
+      </p>
+    </div>
+  </noscript>
+
+  <div class="read">
+    <h2>What happens to large files</h2>
+
+    <p>
+      Everything is held in this browser tab's memory, so the practical limit is what your device
+      can spare rather than an upload size. burrow refuses a set of files totalling more than 512 MB
+      before it opens any of them, and refuses an output of more than 10,000 pages before it writes
+      any of them — so an oversized job is refused rather than failing part way through and leaving
+      you with something incomplete.
+    </p>
+
+    <p>
+      Two things those limits do not save you from, said here rather than discovered. A set far over
+      the size limit has to be handed to the engine before the engine can refuse it, so a selection
+      several times over the ceiling can exhaust the tab first; what you would see is burrow
+      reporting that something inside it failed, not the clear refusal. And a very large merge that
+      is under both limits can still make the tab slow while it runs, and on a phone the browser may
+      stop the tab entirely. That second one is the device's memory ceiling, reached inside the PDF
+      engine where nothing can intervene.
+    </p>
+
+    <h2>What is kept, and what is not</h2>
+
+    <p>
+      Pages, their contents and their sizes come across unchanged. Bookmarks, attachments and form
+      fields are kept from the <strong>first</strong> file — later files contribute their pages. Merging
+      outlines from several documents has no obviously right answer, so burrow does not guess at one.
+    </p>
+
+    <p>
+      A file that is encrypted, damaged, or not a PDF stops the whole merge. burrow will not quietly
+      leave a file out: a combined document that is missing pages looks complete, and you would find
+      out when you needed them.
+    </p>
+  </div>
+</BaseLayout>
+
+<style>
+  /* The no-JS block is ordinary content, but it only ever appears in place of the tool, so
+     it gets the same top margin the tool has. */
+  .no-js {
+    margin-block-start: var(--space-6);
+  }
+</style>

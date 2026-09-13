@@ -30,65 +30,23 @@
 // is the thing being counted.
 
 import { readFileSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
 
 import { openHarness } from "./harness";
-import { LOG_PATH } from "./server.mjs";
+import { isPinnedArtifact, mark, since } from "./request-log";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const conformance = resolve(here, "../../../tests/conformance");
 
-interface LogEntry {
-  origin: string;
-  method: string;
-  url: string;
-  at: number;
-  agent: string;
-  marker?: string;
-}
-
-function readLog(): LogEntry[] {
-  return readFileSync(LOG_PATH, "utf8")
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as LogEntry);
-}
-
-/** Write a marker straight into the log. No request, so nothing is counted by writing it. */
-async function mark(marker: string): Promise<void> {
-  await appendFile(LOG_PATH, `${JSON.stringify({ marker, at: Date.now() })}\n`);
-}
-
-/** Everything logged after the last occurrence of `marker`. */
-function since(marker: string): LogEntry[] {
-  const entries = readLog();
-  const at = entries.map((e) => e.marker).lastIndexOf(marker);
-  expect(at, `the marker ${marker} was never written`).toBeGreaterThanOrEqual(0);
-  return entries.slice(at + 1).filter((entry) => entry.marker === undefined);
-}
+// `readLog`, `mark`, `since` and `isPinnedArtifact` live in `e2e/request-log.ts`. They moved
+// there when `e2e/merge-pdf.spec.ts` needed the same log and the same marker discipline against
+// the real tool page; the reasoning for each of them moved with it.
 
 function fixture(name: string): number[] {
   return Array.from(readFileSync(join(conformance, "fixtures", name)));
-}
-
-/**
- * Requests a **respawn** legitimately makes: the four pinned artifacts, and nothing else.
- *
- * A fresh worker re-fetches the engine modules and the bundle. That is not a leak and must not
- * be asserted away — but it must be recognised by EXACT path, so a request that merely looks
- * engine-ish, or an engine URL carrying a query string, is still caught. The query string is
- * the entire point of this file.
- */
-function isPinnedArtifact(url: string): boolean {
-  return (
-    /^\/engines\/(pdfium|qpdf|burrow_wasm_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
-    /^\/engines\/burrow-worker\.[0-9a-f]{16}\.js$/.test(url) ||
-    /^\/engines\/control\.[0-9a-f]{16}\.txt$/.test(url)
-  );
 }
 
 test("no request of any kind is made while files are processed", async ({ page }, testInfo) => {

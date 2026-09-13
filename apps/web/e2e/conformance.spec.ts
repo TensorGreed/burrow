@@ -91,10 +91,26 @@ function outcomeOf(reply: Reply): Outcome {
   if (reply.ok) {
     return { ok: { page_count: reply.pages } };
   }
-  if (reply.kind === "LimitExceeded") {
+  // THE LIMIT NAME SAYS THERE IS DETAIL, NOT THE OUTER KIND.
+  //
+  // `Reply::failure` looks through `Error::InputFailed` for the limit fields, for the same
+  // reason `is_fatal` and `inner_kind` look through it: the wrapper names WHICH input failed
+  // and never WHAT was wrong with it. So a per-input ceiling arrives as
+  // `kind: "InputFailed"` with `limit`, `stage` and both numbers filled in.
+  //
+  // Gating on `kind === "LimitExceeded"` recorded a bare `InputFailed` here while the native
+  // reader recorded the full detail, and the corpus reported it as a divergence — which is
+  // precisely what it is for. The kind is still whatever the reply says, never rewritten.
+  //
+  // The KIND is checked too, so this says the same thing as
+  // `the_schema_records_a_route_for_every_limit_failure`: those two are the only kinds that
+  // may carry limit detail. `worker-host.js`'s watchdog produces `Internal` WITH a
+  // `max_duration_ms` limit name, and an expectation recording that would be rejected by the
+  // Rust rule — so recording it here would be writing something the corpus cannot hold.
+  if (reply.limit !== "" && (reply.kind === "LimitExceeded" || reply.kind === "InputFailed")) {
     return {
       err: {
-        kind: "LimitExceeded",
+        kind: reply.kind as ErrorKind,
         limit: reply.limit,
         stage: reply.stage,
         ...(reply.stage === "measured" ? {} : { requested: exact(reply.requested) }),

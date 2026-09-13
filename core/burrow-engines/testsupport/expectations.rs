@@ -405,7 +405,16 @@ pub fn outcome_of(result: &burrow_types::Result<u64>) -> Outcome {
                      ErrorKind and decide what both implementations must report."
                 )
             });
-            match error {
+            // THROUGH `InputFailed`, which names WHICH input and never WHAT. A per-input
+            // ceiling arrives wrapped, so matching only the outer variant recorded a bare
+            // `InputFailed` and threw away the limit, the stage and both numbers -- the exact
+            // detail this schema exists to hold the two implementations to. The KIND stays the
+            // wrapper on both sides (see `kind_of`'s note); only the detail is unwrapped.
+            let detail = match error {
+                burrow_types::Error::InputFailed { source, .. } => source.as_ref(),
+                other => other,
+            };
+            match detail {
                 burrow_types::Error::LimitExceeded {
                     limit,
                     stage,

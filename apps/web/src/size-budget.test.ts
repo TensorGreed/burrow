@@ -23,7 +23,8 @@
 // The build comes from `vitest.global-setup.ts`, with no `BURROW_HARNESS` set. Measuring a
 // harness build would count `host/` and the harness route, which no deploy ships.
 
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,7 +33,7 @@ import { describe, expect, it } from "vitest";
 import {
   byBudgetKey,
   digestsByBudgetKey,
-  firstLoad,
+  heaviestFirstLoad,
   normaliseEngineHashes,
 } from "../../../tools/first-load.mjs";
 import {
@@ -47,6 +48,7 @@ import { PRODUCTION_DIR } from "./build-output.js";
 const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 interface Line {
+  measured_route?: string;
   measured_raw: number;
   measured_brotli: number;
   measured_sha256?: string;
@@ -62,7 +64,13 @@ const budget: {
   drift_tolerance: number;
 } = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));
 
-const measurement = firstLoad(PRODUCTION_DIR);
+// THE HEAVIEST LANDING ROUTE, not `index.html`. People arrive from a search for "merge pdf"
+// and land on `/merge-pdf`, which carries an island bundle the home page does not; budgeting
+// the home page would budget the lightest route and leave the heaviest one unwatched. Which
+// route won is recorded in the budget file and asserted below, so the substitution can never
+// be silent.
+const heaviest = heaviestFirstLoad(PRODUCTION_DIR);
+const measurement = heaviest.measurement;
 const groups = byBudgetKey(measurement);
 const digests = digestsByBudgetKey(PRODUCTION_DIR, groups);
 
@@ -81,6 +89,78 @@ const live: Record<string, Live> = Object.fromEntries(
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KiB`;
 
 describe("the first-load size budget", () => {
+  it("weighs every route in the build, by name", () => {
+    // NAMES, NOT A COUNT, and not a comparison against the same reduce that produced the
+    // answer. The first version of this asserted that the chosen route was the largest of
+    // `considered` — both sides computed by `heaviestFirstLoad`, from the same array, with
+    // the same tie-break. It could only fail if six lines of one function disagreed with
+    // themselves, and it could NOT fail for the thing that would actually go wrong:
+    // `landingPages()` quietly dropping a route, which is how a tool page would end up
+    // unbudgeted. Code review caught it; it is the tautology shape the working agreements
+    // already record from M1 PR 4a-ii.
+    //
+    // The expected set is derivable, so it is derived: one route per page source, minus
+    // `credits` (deliberately out of scope — see `tools/first-load.mjs`) and minus the
+    // harness, which no production build contains.
+    const routes = readdirSync(join(webApp, "src", "pages"))
+      .filter((name) => name.endsWith(".astro"))
+      .map((name) => name.replace(/\.astro$/, ""))
+      .filter((name) => name !== "credits")
+      .map((name) => (name === "index" ? "index.html" : `${name}/index.html`))
+      .sort();
+
+    expect(
+      heaviest.considered.map((c) => c.page).sort(),
+      "the routes weighed are not the routes this app has pages for",
+    ).toEqual(routes);
+    expect(routes.length, "a single-route build makes 'the heaviest' mean nothing").toBeGreaterThan(
+      1,
+    );
+  });
+
+  it("budgets the route the build says is heaviest", () => {
+    expect(
+      budget.artifacts.page.measured_route,
+      `the budget records ${budget.artifacts.page.measured_route ?? "no route"} but the ` +
+        `heaviest route in this build is ${heaviest.page}. A route overtaking the recorded ` +
+        `one is a finding: re-measure and say so, do not let the line change what it means`,
+    ).toBe(heaviest.page);
+  });
+
+  it("states the page's ceilings once, and the page's prose repeats them", () => {
+    // `apps/web/CLAUDE.md`: "It sends the files and reports what the core refuses, so the
+    // prose and the code can be caught disagreeing." That was true of the page ceiling --
+    // `e2e/merge-pdf.spec.ts` drives a real refusal past it -- and NOT true of the byte
+    // ceiling, which appears in the island and in the page's prose with nothing comparing
+    // them. Code review found it; this is the comparison.
+    const island = readFileSync(join(webApp, "src", "components", "MergeTool.svelte"), "utf8");
+    // Whitespace-normalised: the prose is wrapped at 100 columns, so "512 MB" is really
+    // "512\n      MB" in the source and a naive search would report a disagreement that is
+    // only a line break.
+    const prose = readFileSync(join(webApp, "src", "pages", "merge-pdf.astro"), "utf8").replace(
+      /\s+/g,
+      " ",
+    );
+
+    const bytes = /maxInputBytes:\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(island);
+    const pages = /maxPages:\s*([\d_]+)/.exec(island);
+    expect(
+      bytes,
+      "maxInputBytes is no longer written as N * 1024 * 1024; update this rule",
+    ).not.toBeNull();
+    expect(pages, "maxPages is not where this rule looks; update it").not.toBeNull();
+
+    const mb = Number(bytes?.[1]);
+    const maxPages = Number(pages?.[1].replace(/_/g, ""));
+    expect(prose, `the island refuses at ${mb} MB and the page's prose does not say so`).toContain(
+      `${mb} MB`,
+    );
+    expect(
+      prose,
+      `the island refuses at ${maxPages} pages and the page's prose does not say so`,
+    ).toContain(maxPages.toLocaleString("en-GB"));
+  });
+
   it("stays within the total budget", () => {
     // THE GATE. Everything else in this file is diagnosis.
     expect(
@@ -251,6 +331,22 @@ describe("the recording describes the build it claims to", () => {
       .map(([key, kind]) => `${key}=${kind}`)
       .sort()
       .join(" ");
+
+    // PER FILE, FOR THE POOLED LINES, because a pooled digest that disagrees says only that
+    // one of six files moved. Learning WHICH cost three round trips to CI, and the answer was
+    // not one anybody would have guessed. The group digests are the gate; this is the log
+    // line that makes a red one actionable without a push.
+    for (const [key, group] of Object.entries(groups)) {
+      if (group.files.length < 2) continue;
+      const perFile = [...group.files]
+        .sort()
+        .map((path) => {
+          const bytes = normaliseEngineHashes(readFileSync(join(PRODUCTION_DIR, path)), path);
+          return `${path}=${createHash("sha256").update(bytes).digest("hex").slice(0, 12)}`;
+        })
+        .join("\n    ");
+      console.log(`  ${key}, file by file:\n    ${perFile}`);
+    }
     expect(Object.keys(cases)).toHaveLength(Object.keys(budget.artifacts).length);
     expect(
       Object.values(cases).filter((c) => c === "no-digest" || c === "absent"),

@@ -8,3 +8,4 @@
 - [M1 web worker lifecycle](m1_web_worker_lifecycle.md) — where the ack, the pre-ack timer and the breaker actually bind; measured with the fake worker and a virtual clock.
 - [M1 differential harness](m1_differential_harness.md) — measured cost of the committed bombs, and what compare.ts's freshness check actually binds.
 - [CI artifact-check vacuity](m1_ci_check_vacuity.md) — measured ways a symbol-table check passes while reading nothing, and emsdk/llvm-nm absence in the web job.
+- [M1 web fonts and toml.mjs](m1_web_fonts_and_toml.md) — how to audit a woff2 offline with node, what the e2e font timing rests on, and the toml.mjs `[__proto__]` repro.

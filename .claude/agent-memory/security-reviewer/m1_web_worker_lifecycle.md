@@ -42,4 +42,20 @@ the `startsWith` check defeats `..`, `%2e%2e%2f` and `..%2f` (all 404, verified)
 `decodeURIComponent` sits *outside* the `try` inside a `void`ed promise chain, so one
 malformed escape is an unhandled rejection and Node exits 1 — the whole e2e run dies.
 
+**`discardWorker()` does not empty the queue, and that is what makes "cancel" partial.**
+Verified 2026-09-13 against `apps/web/src/host/worker-host.js` while reviewing
+`feat/merge-pdf-page`. `discard()` touches `worker`, `pending`, `generation` and `state`
+only; `queue` is a promise chain and survives. A `run()` still waiting its turn therefore
+reaches `runOne` *after* the cancel, finds `state === "dead"`, and — since `discardWorker`
+passes no `crash: true`, so the breaker still allows it — spawns a **fresh worker** and runs
+the operation the user cancelled, to completion. A page whose cancel is `discardWorker()`
+plus a generation guard on the reply ignores the answer; it does not stop the work. Nothing
+in the host's API cancels a queued request.
+
+**The breaker's `EngineUnavailable` can arrive on a path a page has no gesture for.** It is
+returned from `runOne` like any other reply, so a caller that maps replies per-file (a page
+counting each input) shows it as a per-file problem, and the "deliberate gesture" that calls
+`reset()` is usually wired to a page-level notice. Three fatal `Internal` replies — three
+crafted files — are enough to reach that state from file content alone.
+
 Related: [[m1-web-engine-path]], [[m1-limits-real-strength]].

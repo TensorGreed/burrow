@@ -56,6 +56,44 @@ function generateCanary() {
   writeFileSync(CANARY_PATH, JSON.stringify({ mark, bytes: Array.from(bytes) }));
 }
 
+/** Where the two distinguishable merge fixtures land. Read by `e2e/merge-pdf.spec.ts`. */
+export const ORDER_FIXTURE_DIR = join(webApp, "test-results", "order-fixtures");
+
+/**
+ * Two PDFs whose pages can be told apart, for the merge-order test.
+ *
+ * `tests/conformance/fixtures/` cannot answer that question: every file in it has the same
+ * empty page at the same size, so merging any two of them in either order produces
+ * BYTE-IDENTICAL output. Measured, by writing the test first and watching it fail against
+ * `pages-10.pdf` + `blank-1page.pdf` -- 1,603 bytes and the same digest both ways. The
+ * premise was wrong, not the page.
+ *
+ * `plain2.pdf` and `plain3.pdf` carry a content stream naming their own page and file, which
+ * is what makes the two orders distinguishable. They come from the SAME generator ADR 0017's
+ * comparison used (`tools/make-merge-fidelity-fixtures.py`) rather than from a second
+ * hand-rolled PDF writer in TypeScript, for the reason the canary above gives: a
+ * reimplementation would be the copy that drifts.
+ */
+function generateOrderFixtures() {
+  mkdirSync(ORDER_FIXTURE_DIR, { recursive: true });
+  try {
+    execFileSync(
+      "python3",
+      [join(repo, "tools", "make-merge-fidelity-fixtures.py"), ORDER_FIXTURE_DIR],
+      {
+        stdio: "pipe",
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      "could not generate the merge-order fixtures with " +
+        "`python3 tools/make-merge-fidelity-fixtures.py`, which the e2e suite needs. " +
+        "Original error: " +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}
+
 export default async function globalSetup() {
   const port = Number(process.env.BURROW_TEST_PORT ?? 4321);
   const foreignPort = Number(process.env.BURROW_FOREIGN_PORT ?? 4322);
@@ -72,6 +110,7 @@ export default async function globalSetup() {
   }
 
   generateCanary();
+  generateOrderFixtures();
 
   const servers = await startServers({ port, foreignPort, root: join(webApp, "dist") });
 

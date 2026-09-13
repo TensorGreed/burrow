@@ -646,6 +646,35 @@
       }
     },
     {
+      "name": "merge-refuses-when-the-total-passes-max-pages",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        },
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "limits": {
+        "max_pages": 11
+      },
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "err": {
+            "kind": "InputFailed",
+            "limit": "max_pages",
+            "stage": "page_count",
+            "requested": 20,
+            "allowed": 11
+          }
+        }
+      }
+    },
+    {
       "name": "merge-refuses-when-any-input-is-malformed",
       "inputs": [
         {

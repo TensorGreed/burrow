@@ -18,7 +18,12 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createFakeClock, createFakeWorkerFactory, workerReply } from "./fake-worker.js";
-import { createWorkerHost, ENGINE_UNAVAILABLE, WATCHDOG_GRACE_MS } from "./worker-host.js";
+import {
+  CANCELLED,
+  createWorkerHost,
+  ENGINE_UNAVAILABLE,
+  WATCHDOG_GRACE_MS,
+} from "./worker-host.js";
 
 type Factory = ReturnType<typeof createFakeWorkerFactory>;
 type Clock = ReturnType<typeof createFakeClock>;
@@ -513,6 +518,63 @@ describe("respawning", () => {
 // =====================================================================================
 
 describe("serialisation", () => {
+  test("a cancel abandons what is queued, instead of spawning a worker to finish it", async () => {
+    // THE BUG THIS PINS, found by security review.
+    //
+    // `discard()` settles the requests that are IN FLIGHT. A queued one has not been posted,
+    // so there is nothing to settle -- and it used to go on and run: `ensureWorker()` found
+    // the state `dead`, the breaker permitted a spawn (a page-initiated discard is not a
+    // crash, deliberately), and a fresh worker compiled the engines to finish an operation the
+    // person had already stopped. The page had returned to idle and said "Stopped."
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const running = host.run(operation, { maxDurationMs: INIT_TIMEOUT_MS * 5 });
+    const queued = host.run(operation, { maxDurationMs: INIT_TIMEOUT_MS * 5 });
+    await settle();
+    expect(factory.instances().length, "one worker before the cancel").toBe(1);
+
+    host.discardWorker();
+    await settle();
+
+    // BOTH answer, and neither is fatal in a way that would cost another worker.
+    expect((await running).ok).toBe(false);
+    const abandoned = await queued;
+    expect(abandoned.ok).toBe(false);
+    expect(abandoned.kind, "a cancelled request is not an engine failure").toBe(CANCELLED);
+    expect(abandoned.fatal, "nothing ran, so nothing was poisoned").toBe(false);
+
+    // THE MEASUREMENT. Without the counter this is 2: the queued request spawned its own.
+    expect(
+      factory.instances().length,
+      "a cancelled request spawned a worker to finish work nobody was waiting for",
+    ).toBe(1);
+    expect(host.breakerOpen(), "a cancel is not a crash").toBe(false);
+  });
+
+  test("a cancel abandons only what was already queued, not what comes after", async () => {
+    // The near-miss. A latch instead of a counter would refuse every later operation too, and
+    // the test above would pass identically -- so the page would be dead after one Stop.
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const queued = host.run(operation, { maxDurationMs: INIT_TIMEOUT_MS * 5 });
+    host.discardWorker();
+    expect((await queued).kind).toBe(CANCELLED);
+
+    const after = host.run(operation, { maxDurationMs: INIT_TIMEOUT_MS * 5 });
+    await settle();
+    const worker = factory.latest();
+    const posted = worker.received.filter(
+      (m) => typeof m === "object" && m !== null && !("type" in m),
+    );
+    expect(posted, "the operation after a cancel must actually be posted").toHaveLength(1);
+    const id = (posted.at(-1) as { id: number }).id;
+    worker.reply({ id, ack: true });
+    worker.reply(workerReply(id, { pages: 7 }));
+    expect((await after).pages).toBe(7);
+  });
+
   test("a queued operation cannot kill the one that is running", async () => {
     // THE BUG THIS PINS, found by security review and reproduced exactly here.
     //

@@ -54,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 
 import { CANARY_PATH } from "./global-setup.mjs";
+import { isBrowserPolicyReport } from "./console-noise";
 import { openHarness } from "./harness";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -81,51 +82,9 @@ function fixture(name: string): number[] {
   return Array.from(readFileSync(join(conformance, "fixtures", name)));
 }
 
-/**
- * The one thing the browser emits that is not ours, and cannot be suppressed.
- *
- * **Firefox reports the fail-closed guard's own probe to the page console**, once per worker
- * spawn, measured in M1 PR 4a-ii:
- *
- *     Content-Security-Policy: The page's settings blocked the loading of a resource
- *     (connect-src) at http://localhost:4321/__csp-probe because it violates the following
- *     directive: "connect-src …"
- *
- * **WebKit does the same, in different words** — measured in the same run:
- *
- *     Refused to connect to http://localhost:4321/__csp-probe because it does not appear in
- *     the connect-src directive of the Content Security Policy.
- *
- * Note the unhyphenated spelling. The first version of this filter matched only Firefox's
- * "Content-Security-Policy" and WebKit failed, which is a reminder that the recognisable part
- * of these messages is the **probe path**, not the prose. Chromium does not surface either
- * from a worker; WebKit separately does not dispatch the `securitypolicyviolation` *event*
- * (ADR 0014 §1b), which is a different thing from not logging.
- *
- * There is no way to avoid any of it: the guard establishes that a policy is in force by
- * making a request the policy MUST refuse, and a browser logs refusals.
- *
- * It is excluded here, and the exclusion is deliberately narrow rather than a category:
- *
- *   * it is written by the browser, not by burrow, not by an engine, and not by wasm;
- *   * it names the probe path and the policy's own directive — both build constants, both
- *     already public in the page's `<meta>` tag;
- *   * it contains nothing derived from any file, which the canary assertion below re-checks
- *     against the excluded lines specifically rather than trusting this reasoning.
- *
- * ADR 0014 §5 rejected putting `frame-ancestors` in the meta tag because a per-page-load CSP
- * console error "would be noise that teaches a reader to ignore CSP console errors". This is
- * the same noise arriving from a different direction, and the trade is different: the guard is
- * what stops an unpoliced worker touching a file, which is worth one line in a console Firefox
- * users will see on every spawn. Recorded in ADR 0015 as an accepted cost, not overlooked.
- */
-function isBrowserPolicyReport(line: string): boolean {
-  // The PROBE PATH is what identifies it, and it is matched exactly. The prose differs per
-  // browser and is matched loosely enough to cover both spellings, but a message that does not
-  // name the guard's own probe URL is not one of these and is not excluded — which keeps the
-  // exclusion from becoming "anything mentioning CSP".
-  return /content.security.policy/i.test(line) && line.includes("/__csp-probe");
-}
+// The browser's own policy report — the one line here that is not ours — is recognised by
+// `e2e/console-noise.ts`. It moved there when `e2e/merge-pdf.spec.ts` needed the same filter
+// against the real tool page; the reasoning for every word of it moved with it.
 
 /** Everything that could carry a byte out of the page, watched at once. */
 function watchEverything(page: Page) {

@@ -281,8 +281,8 @@ fn is_fatal(error: &Error) -> bool {
     // malformed` failed the "no corpus file may cost a worker" assertion in all three
     // browsers. The wrapper had inherited the `#[non_exhaustive]` default below, which is
     // the right default and the wrong answer here.
-    if let Error::InputFailed { source, .. } = error {
-        return is_fatal(source);
+    if let Error::InputFailed { .. } = error {
+        return is_fatal(innermost(error));
     }
 
     !matches!(
@@ -293,6 +293,19 @@ fn is_fatal(error: &Error) -> bool {
             | Error::LimitExceeded { .. }
             | Error::InvalidArgument(_)
     )
+}
+
+/// What an [`Error::InputFailed`] is *about*.
+///
+/// One definition, used by everything that looks through the wrapper. `is_fatal` recursed,
+/// `failure` unwrapped one level and `inner_kind` read the source directly — three sites that
+/// agreed only because [`burrow_ops::merge`]'s `at()` never re-wraps, and that agreed for
+/// three different reasons. That is a drift surface with nothing holding it shut.
+fn innermost(error: &Error) -> &Error {
+    match error {
+        Error::InputFailed { source, .. } => innermost(source),
+        other => other,
+    }
 }
 
 /// The variant's name, as a stable string for the page.
@@ -378,7 +391,13 @@ impl Reply {
     }
 
     fn failure(error: &Error) -> Self {
-        let (limit, stage, requested, allowed) = match error {
+        // THROUGH THE WRAPPER, for the same reason `is_fatal` and `inner_kind` look through
+        // it: `InputFailed` says WHICH input, never WHAT. A per-input ceiling arrives here
+        // wrapped, so reading only the outer variant dropped the limit name and both numbers
+        // -- and the page then rendered its "more than burrow will take on" fallback for a
+        // failure it could have quoted exactly. Measured on `/merge-pdf` with 74 files: the
+        // core said `max_pages`, 10138 of 10000, and the page said none of it.
+        let (limit, stage, requested, allowed) = match innermost(error) {
             Error::LimitExceeded {
                 limit,
                 stage,
@@ -406,7 +425,7 @@ impl Reply {
             pdfium_heap_bytes: 0,
             qpdf_heap_bytes: 0,
             inner_kind: match error {
-                Error::InputFailed { source, .. } => kind_of(source).to_owned(),
+                Error::InputFailed { .. } => kind_of(innermost(error)).to_owned(),
                 _ => String::new(),
             },
             failed_input: match error {
