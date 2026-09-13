@@ -231,7 +231,7 @@ jobs:
             done
           }
           engines_suites="parallelism limits properties structure secret_leak prescan"
-          ops_suites="conformance merge split split_no_leak subset_closure"
+          ops_suites="conformance merge rotate rotate_keeps_everything split split_no_leak subset_closure"
           run_suites burrow-engines $engines_suites
           run_suites burrow-ops $ops_suites
 
@@ -339,10 +339,22 @@ jobs:
       - name: qpdf trapped-function list is current (ADR 0013 §1)
         run: |
           cp engines/qpdf-trapped-functions.txt "$RUNNER_TEMP/committed.txt"
+          cp engines/qpdf-proven-helpers.toml "$RUNNER_TEMP/committed-helpers.toml"
+          # NO --accept-helper-changes here, ever. --generate REFUSES when a proven helper's
+          # body has moved, and that refusal IS the check: a qpdf bump that restructures
+          # `trap_oh_errors` or `do_with_oh` has to be re-read by a person before the trapped
+          # set can be rebuilt on it. Passing the flag in CI would automate away the one step
+          # that is deliberately manual.
           python3 tools/check-qpdf-trapped.py --generate
           diff -u "$RUNNER_TEMP/committed.txt" engines/qpdf-trapped-functions.txt || {
             echo "::error::engines/qpdf-trapped-functions.txt is stale. Regenerate it with" \
                  "python3 tools/check-qpdf-trapped.py --generate and commit the result." >&2
+            exit 1
+          }
+          diff -u "$RUNNER_TEMP/committed-helpers.toml" engines/qpdf-proven-helpers.toml || {
+            echo "::error::engines/qpdf-proven-helpers.toml is stale. See 'Bumping an engine" \
+                 "pin' in engines/pins.toml -- the helper bodies the proof was read against" \
+                 "have moved." >&2
             exit 1
           }
 
@@ -437,7 +449,7 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in qpdf_check merge split; do
+          for target in qpdf_check merge split rotate; do
             cargo +nightly fuzz run "$target" -- \
               -max_total_time=60 -timeout=10 -rss_limit_mb=2048
           done

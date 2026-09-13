@@ -74,6 +74,55 @@ breaks_it "a trapped-set parser that blesses everything is caught" \
   'if True:' \
   "reports an UNTRAPPED function as trapped"
 
+# THE WRAPPER PROOF, which is the one place this tool trusts a function other than the one it
+# is judging. Following a helper is what makes the 58 `qpdf_oh_*` functions callable at all,
+# so a proof that admits the wrong helper blesses 58 calls able to abort the process. Two
+# directions, because they fail differently: admitting a helper that never traps, and
+# admitting one that traps and then calls its callback again outside the trap.
+breaks_it "a wrapper proof that skips the trap requirement is caught" \
+  'if not traps:' \
+  'if not traps and False:' \
+  "proves a helper that never calls trap_errors"
+
+breaks_it "a wrapper proof blind to a callback used outside the trap is caught" \
+  'if takes_data:' \
+  'if False:' \
+  "calls its qpdf_data callback OUTSIDE the trap"
+
+# RULE 2, which had a rule in the tool, a sentence in the ADR, and no probe and no mutation
+# until code review counted them. Mutating it changed nothing observable, which is the same
+# shape as a pattern that matches nothing.
+breaks_it "a wrapper proof blind to an early exit before the trap is caught" \
+  'if befores:' \
+  'if False and befores:' \
+  "early exit that skips the trap"
+
+# AND THE CALLER'"'"'S OWN BODY. A helper'"'"'s proof says nothing about a caller that throws on
+# the way to it. This was a real hole: the route walk matched the helper name ANYWHERE in the
+# body, so a function doing untrapped work and then forwarding was listed as safe to call.
+# Security review measured 20 of 71 indirect entries carrying such code at qpdf 12.4.1.
+breaks_it "a route walk that ignores what the caller does before forwarding is caught" \
+  'if forwards_purely_to(body, helper):' \
+  'if re.search(rf"\\b{re.escape(helper)}\\s*\[<(\]", body):' \
+  "after doing untrapped work of its own"
+
+# AND THE HELPER'"'"'S PROOF MUST BE LOAD-BEARING, not decorative. If `trapped_routes` reported
+# a function as trapped whichever helper it went through, the proofs above could all pass and
+# mean nothing. The mutation probe inside the tool asserts that removing `trap_errors` from
+# the helper turns its callers red; this asserts that probe is not itself inert.
+breaks_it "a route walk that follows any helper at all is caught" \
+  'for helper in wrappers:' \
+  'for helper in list(wrappers) + ["helper_that_does_not_trap"]:' \
+  "is reported as trapped"
+
+# THE FINGERPRINT GATE, which is what stops a restructured helper being re-proved silently at
+# a version bump. Its own probes run on every invocation; this is the case that proves those
+# probes are load-bearing rather than decorative.
+breaks_it "a fingerprint gate blind to a changed body is caught" \
+  'elif recorded\[name\]\[1\] != sha:' \
+  'elif False:' \
+  "does not notice a helper body changing"
+
 # AND THE GATE ITSELF. Deleting it alone changes nothing observable -- the parsers still
 # work, so the tool still passes. The case has to break a parser AND delete the gate, which
 # is what a real regression would look like: somebody "fixes" a failing fixture by removing
