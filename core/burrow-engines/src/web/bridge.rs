@@ -254,6 +254,72 @@ pub trait QpdfBridge: Send + Sync {
     /// with nothing tying them together.
     fn logger_discard_all(&self, logger: QpdfPtr, destination: i32);
 
+    // ------------------------------------------------------------ the write path
+    //
+    // Added in M1 PR B2 so `merge` works on the web. These are the first bridge methods
+    // that produce a document rather than read one, and the audit question for each is the
+    // same as for the rest: does it decide anything? None of them does. `copy_out` is the
+    // only genuinely new SHAPE -- until now nothing carried bytes out of an engine heap --
+    // and ADR 0009 §2 names "copy bytes in and out" as something a binding may do.
+
+    /// `qpdf_get_page_n`. The handle belongs to **this** `data`, not to any other.
+    fn get_page_n(&self, data: QpdfPtr, n: u32) -> u32;
+
+    /// `qpdf_add_page`. Returns the raw `QPDF_ERROR_CODE`, which is a **bitmask**.
+    ///
+    /// Passed through unexamined, like [`read_memory`](QpdfBridge::read_memory), and for
+    /// the same reason: `!= QPDF_SUCCESS` would treat a warning as a failure.
+    ///
+    /// `page` must be a handle obtained from `source`, and `source` must stay alive until
+    /// after [`write`](QpdfBridge::write) -- qpdf resolves foreign pages lazily, so
+    /// releasing it early yields a truncated document rather than an error. Neither
+    /// condition is checkable here; both are the caller's, and `web/qpdf.rs` is where they
+    /// are established.
+    fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32;
+
+    /// `qpdf_init_write_memory`. Returns the bitmask.
+    ///
+    /// **Its status must be checked by the caller before anything below is called.** qpdf
+    /// sets its own `write_memory` flag unconditionally, after the trapped call that
+    /// creates the writer, so ignoring a failure here leaves the three following methods
+    /// dereferencing a null writer.
+    fn init_write_memory(&self, data: QpdfPtr) -> i32;
+
+    /// `qpdf_set_deterministic_ID`. **After `init_write_memory`, never before.**
+    ///
+    /// Without it the output `/ID` comes from the clock and the random pool, so two merges
+    /// of the same inputs differ and a golden test can only assert a page count.
+    fn set_deterministic_id(&self, data: QpdfPtr, value: bool);
+
+    /// `qpdf_write`. Returns the bitmask.
+    fn write(&self, data: QpdfPtr) -> i32;
+
+    /// `qpdf_get_buffer_length`.
+    ///
+    /// `u32` rather than `usize`: the module is built with a 2 GiB maximum
+    /// (`-sMAXIMUM_MEMORY=2GB`), so no length it can report exceeds `u32`, and a wider type
+    /// here would imply a range the engine cannot produce.
+    fn get_buffer_length(&self, data: QpdfPtr) -> u32;
+
+    /// `qpdf_get_buffer`. A pointer into the module's heap, owned by `data`.
+    ///
+    /// Dies on the next `qpdf_init_write*` or `qpdf_cleanup`, so the caller copies out of
+    /// it immediately via [`copy_out`](QpdfBridge::copy_out) and never stores it.
+    fn get_buffer(&self, data: QpdfPtr) -> QpdfPtr;
+
+    /// Copy `len` bytes out of the module's heap.
+    ///
+    /// **The first method in this trait that carries bytes OUT.** Everything before it
+    /// either sends bytes in or returns a number, which is why the direction is worth
+    /// naming: this is how a merged document reaches Rust.
+    ///
+    /// It decides nothing -- no length is computed here, no pointer is validated here, and
+    /// nothing about the bytes is examined. `len` comes from
+    /// [`get_buffer_length`](QpdfBridge::get_buffer_length) and `ptr` from
+    /// [`get_buffer`](QpdfBridge::get_buffer), both of them qpdf's own answers, passed
+    /// straight back.
+    fn copy_out(&self, ptr: QpdfPtr, len: u32) -> Vec<u8>;
+
     /// The module's current heap size. See [`PdfiumBridge::heap_bytes`].
     fn heap_bytes(&self) -> u64;
 }

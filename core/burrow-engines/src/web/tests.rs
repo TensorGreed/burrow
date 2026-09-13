@@ -12,7 +12,7 @@ use burrow_types::{Clock, Error, Limits, ManualClock, Password, Stage};
 
 use super::fake::{Call, FakeHeap, FakePdfium, FakeQpdf, PdfiumScript, QpdfScript};
 use super::{WebPdfium, WebQpdf};
-use crate::{CheckOptions, DocumentEngine, OpenOptions, StructureEngine};
+use crate::{CheckOptions, DocumentEngine, OpenOptions, PageAssembler, StructureEngine};
 
 /// A stopped clock, so nothing here depends on how busy the machine is.
 fn stopped() -> Arc<dyn Clock> {
@@ -44,7 +44,11 @@ fn the_engines_name_themselves_distinctly_from_the_native_ones() {
     let (pdfium, _) = document_engine(PdfiumScript::default());
     let (qpdf, _) = structure_engine(QpdfScript::default());
     assert_eq!(pdfium.name(), "pdfium-wasm");
-    assert_eq!(qpdf.name(), "qpdf-wasm");
+    // Spelled out because `WebQpdf` implements TWO traits that both offer `name`, since
+    // M1 PR B2 added `PageAssembler`. The differential harness keys outcomes by engine
+    // name, so the two must agree -- `assemble.rs` asserts that directly, and this asserts
+    // the value.
+    assert_eq!(StructureEngine::name(&qpdf), "qpdf-wasm");
 }
 
 #[test]
@@ -838,5 +842,333 @@ fn a_check_inside_its_budget_is_not_stopped() {
         )
         .expect("a generous budget must not fire");
     assert_eq!(report.pages, 4);
+    state.assert_empty();
+}
+
+// ---------------------------------------------------------------- the assembler
+//
+// M1 PR B2. These cover what Playwright cannot see from outside a worker: the ORDER of the
+// bridge calls, when each engine-heap buffer is released, and which of qpdf's two ways of
+// reporting "no output" the code actually checks.
+
+fn merge_options(limits: Limits) -> OpenOptions<'static> {
+    OpenOptions::new(limits, stopped())
+}
+
+#[test]
+fn the_assembler_writes_after_it_prepares_and_copies_out_once() {
+    // THE ORDERING THAT COST A CORE DUMP ON THE NATIVE PATH, asserted here rather than
+    // described: `set_deterministic_id` must come AFTER `init_write_memory`, because the
+    // writer does not exist until then.
+    let (engine, state) = structure_engine(QpdfScript::default());
+    let mut assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("begin");
+    engine
+        .append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("append");
+    let out = engine.finish(assembly).expect("finish");
+
+    assert_eq!(
+        out, b"%PDF-1.7\nmerged\n",
+        "the bytes qpdf produced did not reach Rust"
+    );
+
+    let calls = state.calls();
+    let write_path: Vec<&Call> = calls
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                Call::InitWriteMemory
+                    | Call::SetDeterministicId(_)
+                    | Call::Write
+                    | Call::GetBufferLength
+                    | Call::GetBuffer
+                    | Call::CopyOut(_)
+            )
+        })
+        .collect();
+    assert_eq!(
+        write_path,
+        vec![
+            &Call::InitWriteMemory,
+            &Call::SetDeterministicId(true),
+            &Call::Write,
+            &Call::GetBufferLength,
+            &Call::GetBuffer,
+            &Call::CopyOut(16),
+        ],
+        "the write path ran out of order: {calls:?}"
+    );
+}
+
+#[test]
+fn every_page_of_every_source_is_appended_in_order() {
+    let (engine, state) = structure_engine(QpdfScript {
+        page_count: 3,
+        ..QpdfScript::default()
+    });
+    let mut assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("begin");
+    let appended = engine
+        .append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("append");
+    assert_eq!(appended, 3);
+
+    let calls = state.calls();
+    let pages: Vec<&Call> = calls
+        .iter()
+        .filter(|c| matches!(c, Call::GetPageN(_) | Call::AddPage { .. }))
+        .collect();
+    assert_eq!(
+        pages,
+        vec![
+            &Call::GetPageN(0),
+            &Call::AddPage {
+                page: 1,
+                first: false
+            },
+            &Call::GetPageN(1),
+            &Call::AddPage {
+                page: 2,
+                first: false
+            },
+            &Call::GetPageN(2),
+            &Call::AddPage {
+                page: 3,
+                first: false
+            },
+        ],
+        "pages were appended out of order, or a handle was not the one just fetched"
+    );
+    let _ = engine.finish(assembly);
+}
+
+#[test]
+fn nothing_is_prepended() {
+    // `first: true` would silently reverse the document. The fake records the flag so this
+    // is assertable rather than a matter of reading the call site.
+    let (engine, state) = structure_engine(QpdfScript::default());
+    let mut assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("begin");
+    engine
+        .append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("append");
+    assert!(
+        !state
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::AddPage { first: true, .. })),
+        "a page was prepended, which reverses the merge"
+    );
+    let _ = engine.finish(assembly);
+}
+
+#[test]
+fn a_warning_from_add_page_is_not_a_failure() {
+    // QPDF_WARNINGS is bit 0. `!= 0` here would reject every damaged-but-readable input.
+    let (engine, _state) = structure_engine(QpdfScript {
+        add_page_status: 1,
+        ..QpdfScript::default()
+    });
+    let mut assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("begin");
+    engine
+        .append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("a warnings-only add_page must not fail");
+    let _ = engine.finish(assembly);
+}
+
+#[test]
+fn an_error_from_add_page_is_a_failure() {
+    // The control for the test above: bit 1 is QPDF_ERRORS and must fail.
+    let (engine, _state) = structure_engine(QpdfScript {
+        add_page_status: 2,
+        ..QpdfScript::default()
+    });
+    let mut assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("begin");
+    let err = engine
+        .append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect_err("an error bit must fail");
+    assert!(matches!(err, Error::Malformed(_)), "got {err:?}");
+    let _ = engine.finish(assembly);
+}
+
+#[test]
+fn a_null_buffer_is_refused_even_when_a_length_is_reported() {
+    // qpdf reports the buffer and its length through SEPARATE accessors, so they can
+    // disagree. A caller that trusted only the length would read from null.
+    let (engine, _state) = structure_engine(QpdfScript {
+        buffer_is_null: true,
+        ..QpdfScript::default()
+    });
+    let assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("begin");
+    let err = engine
+        .finish(assembly)
+        .expect_err("a null buffer must fail");
+    assert!(matches!(err, Error::Io(_)), "got {err:?}");
+}
+
+#[test]
+fn an_empty_output_is_refused() {
+    let (engine, _state) = structure_engine(QpdfScript {
+        output: Vec::new(),
+        ..QpdfScript::default()
+    });
+    let assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("begin");
+    let err = engine.finish(assembly).expect_err("zero bytes must fail");
+    assert!(matches!(err, Error::Io(_)), "got {err:?}");
+}
+
+#[test]
+fn the_page_ceiling_is_on_the_output_total() {
+    // Two sources of three pages each against a five-page ceiling. Per-input checking would
+    // pass both.
+    let (engine, state) = structure_engine(QpdfScript {
+        page_count: 3,
+        ..QpdfScript::default()
+    });
+    let limits = Limits::with(|l| l.max_pages = 5);
+    let mut assembly = engine
+        .begin(ordinary_pdf().into_boxed_slice(), &merge_options(limits))
+        .expect("begin");
+    let err = engine
+        .append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(limits),
+        )
+        .expect_err("6 pages against a 5-page ceiling must fail");
+
+    match err {
+        Error::LimitExceeded {
+            limit,
+            stage,
+            requested,
+            allowed,
+        } => {
+            assert_eq!(limit, "max_pages");
+            assert_eq!(stage, Stage::PageCount);
+            assert_eq!(requested, 6, "the output total, not one input");
+            assert_eq!(allowed, 5);
+        }
+        other => panic!("expected LimitExceeded, got {other:?}"),
+    }
+    assert!(
+        !state
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::AddPage { .. })),
+        "pages were copied before the ceiling was checked"
+    );
+    let _ = engine.finish(assembly);
+}
+
+#[test]
+fn every_engine_heap_allocation_is_released_when_the_merge_finishes() {
+    // THE PROPERTY PLAYWRIGHT CANNOT SEE. Each source holds its input buffer in the engine
+    // heap until `finish`, which is required for correctness -- qpdf reads them during the
+    // write -- so the thing to assert is that they are all gone AFTERWARDS.
+    let state = {
+        let (engine, state) = structure_engine(QpdfScript::default());
+        let mut assembly = engine
+            .begin(
+                ordinary_pdf().into_boxed_slice(),
+                &merge_options(Limits::default()),
+            )
+            .expect("begin");
+        for _ in 0..3 {
+            engine
+                .append(
+                    &mut assembly,
+                    ordinary_pdf().into_boxed_slice(),
+                    &merge_options(Limits::default()),
+                )
+                .expect("append");
+        }
+        engine.finish(assembly).expect("finish");
+        state
+    };
+    state.assert_empty();
+    assert_eq!(
+        state.retained(),
+        1,
+        "there must be exactly one retained allocation -- the shared discarding logger -- \
+         however many documents the merge opened"
+    );
+}
+
+#[test]
+fn a_failed_append_still_releases_what_it_allocated() {
+    let state = {
+        let (engine, state) = structure_engine(QpdfScript {
+            add_page_status: 2,
+            ..QpdfScript::default()
+        });
+        let mut assembly = engine
+            .begin(
+                ordinary_pdf().into_boxed_slice(),
+                &merge_options(Limits::default()),
+            )
+            .expect("begin");
+        let _ = engine.append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        );
+        drop(assembly);
+        state
+    };
     state.assert_empty();
 }

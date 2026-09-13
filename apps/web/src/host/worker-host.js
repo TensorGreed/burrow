@@ -59,6 +59,12 @@
  * @property {boolean} recycle
  * @property {string} pdfiumHeapBytes
  * @property {string} qpdfHeapBytes
+ * @property {Blob | null} [output] The document an operation produced, or null.
+ *
+ *   A Blob rather than bytes, for the same reason the INPUT is one (ADR 0015 §4):
+ *   structured clone passes it by reference, so the main thread never materialises a
+ *   merged document in its own heap. It holds a handle it can turn into a download and
+ *   then release.
  */
 
 /**
@@ -114,6 +120,10 @@ function hostFailure(kind, message, detail = {}) {
     // there was not merely imprecise: it made a test that expected a crash pass on a refusal,
     // because both looked fatal.
     fatal: kind !== ENGINE_UNAVAILABLE,
+    // Explicitly null, not absent. A caller that reads `reply.output` on a failure should
+    // get the same shape it gets from the worker -- "no document" -- rather than
+    // `undefined`, which reads as "this reply does not have that concept".
+    output: null,
     message,
     pages: 0,
     limit: detail.limit ?? "",

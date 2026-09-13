@@ -78,6 +78,16 @@ interface EmscriptenModule extends EmscriptenConfig {
   _qpdf_get_error(data: number): number;
   _qpdf_get_error_code(data: number, error: number): number;
   _qpdf_get_num_pages(data: number): number;
+  // The write path, M1 PR B2. Every one matches an entry in `build-wasm.sh`'s
+  // EXPORTED_FUNCTIONS allowlist -- a symbol not on that list is not in the module at all.
+  _qpdf_get_page_n(data: number, n: number): number;
+  _qpdf_add_page(data: number, source: number, page: number, first: number): number;
+  _qpdf_init_write_memory(data: number): number;
+  /** Note the upstream spelling: `ID` is capitalised in qpdf's C API. */
+  _qpdf_set_deterministic_ID(data: number, value: number): void;
+  _qpdf_write(data: number): number;
+  _qpdf_get_buffer_length(data: number): number;
+  _qpdf_get_buffer(data: number): number;
   _qpdf_global_set_uint32(param: number, value: number): number;
   _qpdflogger_create(): number;
   _qpdflogger_set_info(logger: number, dest: number, a: number, b: number): void;
@@ -159,6 +169,13 @@ declare const wasm_bindgen: {
     attemptRecovery: boolean,
     limits: WebLimits,
   ): Reply;
+  /**
+   * Merge several documents, given as one flat buffer plus a table of their lengths.
+   *
+   * Not an array of arrays: wasm-bindgen would copy every document twice, and a merge is
+   * the largest thing this boundary carries. Rust validates the table against the buffer.
+   */
+  merge(inputs: Uint8Array, lengths: Uint32Array, limits: WebLimits): Reply;
 };
 
 /** Consumed by the call it is passed to — see the note in `main.js`. Never `.free()`d. */
@@ -182,6 +199,16 @@ interface Reply {
   readonly recycle: boolean;
   readonly pdfium_heap_bytes: bigint;
   readonly qpdf_heap_bytes: bigint;
+  /** Bytes in the produced document, without taking it. Zero if there is none. */
+  readonly outputLength: number;
+  /**
+   * Take the produced document, leaving the reply empty.
+   *
+   * MOVES rather than copies, which is why it is a method and not a getter: a merged PDF is
+   * the largest thing this boundary carries, and reading it twice would double the peak. A
+   * second call returns an empty array, which is why `outputLength` is read first.
+   */
+  takeOutput(): Uint8Array<ArrayBuffer>;
   free(): void;
 }
 
@@ -231,6 +258,15 @@ interface WorkerGlobalScope {
   __burrow_qpdf_get_error(data: number): number;
   __burrow_qpdf_get_error_code(data: number, error: number): number;
   __burrow_qpdf_get_num_pages(data: number): number;
+  __burrow_qpdf_get_page_n(data: number, n: number): number;
+  __burrow_qpdf_add_page(data: number, source: number, page: number, first: number): number;
+  __burrow_qpdf_init_write_memory(data: number): number;
+  __burrow_qpdf_set_deterministic_id(data: number, value: number): void;
+  __burrow_qpdf_write(data: number): number;
+  __burrow_qpdf_get_buffer_length(data: number): number;
+  __burrow_qpdf_get_buffer(data: number): number;
+  /** The only bridge function that carries bytes OUT of an engine heap. */
+  __burrow_qpdf_copy_out(ptr: number, len: number): Uint8Array;
   __burrow_qpdf_global_set_uint32(param: number, value: number): number;
   __burrow_qpdflogger_create(): number;
   __burrow_qpdflogger_discard_all(logger: number, destination: number): void;

@@ -110,6 +110,11 @@ pub struct Reply {
     recycle: bool,
     pdfium_heap_bytes: u64,
     qpdf_heap_bytes: u64,
+    /// The document an operation produced, or empty for one that produces none.
+    ///
+    /// **The first thing a `Reply` carries that is not a scalar.** Held as `Vec<u8>` and
+    /// handed over by the getter below, which MOVES it: see `take_output`.
+    output: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -296,7 +301,19 @@ impl Reply {
             recycle: false,
             pdfium_heap_bytes: 0,
             qpdf_heap_bytes: 0,
+            output: Vec::new(),
         }
+    }
+
+    /// A success that carries a document.
+    ///
+    /// `pages` is still reported, because the page count of a merged document is the one
+    /// number a UI wants without re-opening it -- and re-opening it to find out would mean
+    /// a second parse of bytes we just wrote.
+    fn produced(pages: u64, output: Vec<u8>) -> Self {
+        let mut reply = Self::success(pages);
+        reply.output = output;
+        reply
     }
 
     /// Attach the worker-lifecycle verdict: both engine heap sizes, and whether the page
@@ -348,7 +365,42 @@ impl Reply {
             recycle: false,
             pdfium_heap_bytes: 0,
             qpdf_heap_bytes: 0,
+            // A FAILURE CARRIES NO BYTES, ever. ADR 0017 §2 refuses partial success, so
+            // there is nothing a failed merge could honestly put here -- and a half-written
+            // document reaching the page is exactly the silent data loss that decision
+            // exists to prevent.
+            output: Vec::new(),
         }
+    }
+}
+
+#[wasm_bindgen]
+impl Reply {
+    /// Take the produced document, leaving the reply empty.
+    ///
+    /// **It moves rather than copies, and the name says so.** A `&[u8]` getter would make
+    /// wasm-bindgen copy the whole document into a fresh `Uint8Array` on every access, and
+    /// a merged PDF is the largest thing this boundary ever carries -- reading it twice
+    /// would double the peak for no reason. Taking it also means the bytes stop existing on
+    /// the Rust side at the moment the worker has them, which is the shorter lifetime and
+    /// the right one for file content.
+    ///
+    /// Returns an empty array for an operation that produces no document, and for a second
+    /// call. The worker calls it once, inside `drainReply`.
+    #[wasm_bindgen(js_name = takeOutput)]
+    #[must_use]
+    pub fn take_output(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.output)
+    }
+
+    /// How many bytes the produced document has, without taking it.
+    ///
+    /// So a caller can tell "no document" from "a document I have already taken" -- which
+    /// `take_output` alone cannot, since both come back empty.
+    #[wasm_bindgen(getter, js_name = outputLength)]
+    #[must_use]
+    pub fn output_length(&self) -> usize {
+        self.output.len()
     }
 }
 
@@ -484,6 +536,109 @@ pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimi
         Err(error) => Reply::failure(&error),
     }
     .with_lifecycle(&limits)
+}
+
+/// Merge several documents into one, in the order given.
+///
+/// # The inputs arrive as one flat buffer, not an array of arrays
+///
+/// `inputs` is every document's bytes end to end, and `lengths` says how long each one is.
+/// wasm-bindgen can marshal a `Vec<Vec<u8>>`, and doing so copies each document twice --
+/// once into a JS array of `Uint8Array`s and once back out. A merge is the largest thing
+/// this boundary carries, and the whole point of the `Blob` discipline on the page
+/// (ADR 0015 §4) is that the bytes exist in as few places as possible. One buffer plus a
+/// length table is the shape that keeps that true.
+///
+/// The lengths are validated against the buffer here rather than trusted: they come from
+/// JavaScript, and a table that overran would be a read past the end of the input.
+///
+/// # Passwords are deliberately absent
+///
+/// The core takes one per input and is tested with them; this entry point does not, because
+/// the page has no password UI yet and an API that accepted them would suggest it did.
+/// Adding them later is additive.
+///
+/// # Errors
+///
+/// Never panics. Everything arrives as a [`Reply`], including a `lengths` table that does
+/// not describe `inputs`, which is [`Error::InvalidArgument`] -- a bug in the caller rather
+/// than in any document.
+#[wasm_bindgen]
+#[must_use]
+pub fn merge(inputs: Box<[u8]>, lengths: Box<[u32]>, limits: WebLimits) -> Reply {
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let options = OpenOptions::new(limits, clock);
+
+    let mut documents: Vec<burrow_core::ops::Input<'static>> = Vec::with_capacity(lengths.len());
+    let mut at: usize = 0;
+    for len in &lengths {
+        let len = *len as usize;
+        // Checked, not trusted. `inputs` and `lengths` cross the boundary separately, so
+        // nothing but this stops a table that claims more than the buffer holds.
+        let Some(end) = at.checked_add(len) else {
+            return Reply::failure(&Error::InvalidArgument(
+                "the input lengths overflow".to_owned(),
+            ))
+            .with_lifecycle(&limits);
+        };
+        let Some(slice) = inputs.get(at..end) else {
+            return Reply::failure(&Error::InvalidArgument(
+                "the input lengths do not describe the input buffer".to_owned(),
+            ))
+            .with_lifecycle(&limits);
+        };
+        documents.push(burrow_core::ops::Input::new(
+            slice.to_vec().into_boxed_slice(),
+        ));
+        at = end;
+    }
+    if at != inputs.len() {
+        // A table that describes LESS than the buffer is as wrong as one that describes
+        // more: it means a document was silently dropped before the operation began, which
+        // is the failure ADR 0017 §2 refuses, arriving one layer earlier than it expects.
+        return Reply::failure(&Error::InvalidArgument(
+            "the input lengths do not account for the whole input buffer".to_owned(),
+        ))
+        .with_lifecycle(&limits);
+    }
+    drop(inputs);
+
+    match burrow_core::ops::merge(&qpdf(), documents, &options) {
+        Ok(output) => {
+            // The page count of what was produced, so a UI does not have to re-open the
+            // document to show it. Counted from the lengths table's sum? No -- from the
+            // assembler, which is the only thing that knows what actually went in.
+            let pages = output_page_count(&output);
+            Reply::produced(pages, output)
+        }
+        Err(error) => Reply::failure(&error),
+    }
+    .with_lifecycle(&limits)
+}
+
+/// The page count of a document burrow just produced.
+///
+/// Re-opens the output through the assembler. That is a second parse of bytes we wrote
+/// ourselves, which is worth it: the alternative is summing the inputs' page counts, and a
+/// sum is a claim about what the engine did rather than a reading of what it produced. If
+/// they ever disagree, the reading is the true one.
+///
+/// A failure here is reported as zero rather than as an error: the merge succeeded, and a
+/// page count nobody could read is a display problem, not a reason to throw away a document
+/// the person asked for.
+fn output_page_count(output: &[u8]) -> u64 {
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let options = OpenOptions::new(Limits::DEFAULT, clock);
+    let engine = qpdf();
+    match burrow_core::engines::PageAssembler::begin(
+        &engine,
+        output.to_vec().into_boxed_slice(),
+        &options,
+    ) {
+        Ok(assembly) => burrow_core::engines::PageAssembler::pages(&engine, &assembly).unwrap_or(0),
+        Err(_) => 0,
+    }
 }
 
 /// Check a document's structure with qpdf.

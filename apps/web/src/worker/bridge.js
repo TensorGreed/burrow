@@ -195,6 +195,45 @@ self.__burrow_qpdf_get_num_pages = (data) => qpdf()._qpdf_get_num_pages(data);
 self.__burrow_qpdf_global_set_uint32 = (param, value) =>
   qpdf()._qpdf_global_set_uint32(param, value);
 
+// --- qpdf: the write path (M1 PR B2) ---------------------------------------------------
+//
+// Every one of these forwards a single call and returns whatever the module returns. None
+// of them branches on the result -- `add_page` and the write functions return qpdf's status
+// BITMASK, and deciding whether a bitmask means failure is a decision, so it happens in
+// Rust (`codes::qpdf::has_errors`). ADR 0009 §2.
+
+self.__burrow_qpdf_get_page_n = (data, n) => u32(qpdf()._qpdf_get_page_n(data, n));
+
+self.__burrow_qpdf_add_page = (data, source, page, first) =>
+  qpdf()._qpdf_add_page(data, source, page, first);
+
+self.__burrow_qpdf_init_write_memory = (data) => qpdf()._qpdf_init_write_memory(data);
+
+self.__burrow_qpdf_set_deterministic_id = (data, value) =>
+  qpdf()._qpdf_set_deterministic_ID(data, value);
+
+self.__burrow_qpdf_write = (data) => qpdf()._qpdf_write(data);
+
+self.__burrow_qpdf_get_buffer_length = (data) => u32(qpdf()._qpdf_get_buffer_length(data));
+
+self.__burrow_qpdf_get_buffer = (data) => u32(qpdf()._qpdf_get_buffer(data));
+
+// THE ONLY BRIDGE FUNCTION THAT CARRIES BYTES OUT.
+//
+// `slice`, not `subarray`: a subarray is a VIEW into the module's heap, and the heap moves
+// whenever the module grows it (`ALLOW_MEMORY_GROWTH=1` detaches the old buffer). Handing
+// wasm-bindgen a view would mean the bytes are read at some later moment, possibly out of a
+// detached buffer or out of memory qpdf has since reused. A copy is the whole point.
+//
+// It decides nothing: `ptr` and `len` are qpdf's own answers, passed straight back from
+// Rust, and nothing here looks at what the bytes are.
+/**
+ * @param {number} ptr
+ * @param {number} len
+ * @returns {Uint8Array}
+ */
+self.__burrow_qpdf_copy_out = (ptr, len) => qpdf().HEAPU8.slice(ptr, ptr + len);
+
 self.__burrow_qpdflogger_create = () => u32(qpdf()._qpdflogger_create());
 
 self.__burrow_qpdflogger_discard_all = (logger, destination) => {

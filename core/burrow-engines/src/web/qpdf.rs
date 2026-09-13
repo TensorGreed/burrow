@@ -66,6 +66,20 @@ impl WebQpdf {
     /// See [`super::WebPdfium::heap_bytes`]: absolute, not a delta, because the question the
     /// page is asking is how far this worker has grown over its whole life.
     #[must_use]
+    /// The bridge this engine talks through.
+    ///
+    /// `pub(super)` so `assemble.rs` can drive the write path. Not public: the bridge is an
+    /// audit surface (ADR 0009 §2), and widening who can call it widens what has to be
+    /// argued about.
+    pub(super) fn bridge(&self) -> &Arc<dyn QpdfBridge> {
+        &self.bridge
+    }
+
+    /// The module's current heap size, for the page's recycling decision.
+    ///
+    /// See [`super::WebPdfium::heap_bytes`]: absolute, not a delta, because the question the
+    /// page is asking is how far this worker has grown over its whole life.
+    #[must_use]
     pub fn heap_bytes(&self) -> u64 {
         self.bridge.heap_bytes()
     }
@@ -108,7 +122,7 @@ impl core::fmt::Debug for WebQpdf {
 /// handle. One struct owning both, with a [`Drop`] that releases the handle *before* it
 /// frees the buffer, is the same structural answer the native path uses — and here it also
 /// guarantees the ordering across a JS boundary where no borrow could have expressed it.
-struct Session {
+pub(super) struct Session {
     data: QpdfPtr,
     buffer: QpdfPtr,
     bridge: Arc<dyn QpdfBridge>,
@@ -145,19 +159,175 @@ impl Drop for Session {
 }
 
 impl Session {
+    /// The live `qpdf_data` handle.
+    ///
+    /// An accessor rather than a public field so the handle cannot be stored past the
+    /// session that owns it -- the buffer qpdf reads from is freed by `Drop`, and a handle
+    /// outliving that is a use-after-free across the bridge.
+    pub(super) fn data(&self) -> QpdfPtr {
+        self.data
+    }
+
+    /// The document's page count, with qpdf's `-1` sentinel turned into the typed error it
+    /// stands for.
+    ///
+    /// Shared by the structure check and the assembler for the same reason the native one
+    /// is: `-1` is reported out of band, and a caller that treated it as a count would
+    /// produce a `u64` of eighteen quintillion.
+    pub(super) fn page_count(&self) -> Result<u64> {
+        let pages = self.bridge.get_num_pages(self.data);
+        if pages < 0 {
+            return Err(self.take_error().unwrap_or_else(|| {
+                Error::Malformed("qpdf: the page structure is unusable".to_owned())
+            }));
+        }
+        u64::try_from(pages).map_err(|_| {
+            Error::Internal("qpdf reported a page count that is not a count".to_owned())
+        })
+    }
+
     /// Whether qpdf is holding an error, and what it is.
     ///
     /// Called after **every** bridge call, whatever that call returned. `qpdf-c.h:70-73`:
     /// functions that do not return a code report errors only this way. Only the *code* is
     /// read — never text, filename or byte offset, none of which the bridge can even
     /// obtain, because the module's `EXPORTED_FUNCTIONS` allowlist does not include them.
-    fn take_error(&self) -> Option<Error> {
+    pub(super) fn take_error(&self) -> Option<Error> {
         if !self.bridge.has_error(self.data) {
             return None;
         }
         let error = self.bridge.get_error(self.data);
         let code = self.bridge.get_error_code(self.data, error);
         Some(crate::codes::qpdf::map_code(code))
+    }
+}
+
+impl Session {
+    /// Open a document in the engine module: validate, install the suppression, and read.
+    ///
+    /// **One implementation of an ordering that is load-bearing**, extracted in M1 PR B2
+    /// when `merge` became the second caller. The native path factored the same sequence
+    /// for the same reason, and the two are meant to be read side by side -- `qpdf/mod.rs`'s
+    /// `Document::open` lists why each step sits where it does.
+    ///
+    /// Two differences from native, both real rather than incidental:
+    ///
+    /// - it takes `&[u8]` rather than `Box<[u8]>`, because the bytes are COPIED into the
+    ///   engine's heap and the Rust-side buffer is not what qpdf reads. Native hands qpdf a
+    ///   pointer into Rust memory, which is why that side must own it;
+    /// - the password, the description and the input are separate engine-heap allocations,
+    ///   each with its own failure path, and the password copy is wiped explicitly because
+    ///   `Zeroizing` cannot reach across the boundary.
+    ///
+    /// The caller reads `heap_bytes` BEFORE calling this, so the measured-memory check
+    /// covers the `copy_in` as well as the read. That is a slightly wider window than the
+    /// native path measures and the wider one is the honest one: the copy is real memory
+    /// the operation caused.
+    pub(super) fn open(
+        engine: &WebQpdf,
+        bytes: &[u8],
+        password: Option<&burrow_types::Password>,
+        attempt_recovery: bool,
+    ) -> Result<Self> {
+        let input_len = u64::try_from(bytes.len())
+            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
+        let password = crate::password::nul_terminated(password, "qpdf")?;
+
+        // Process-global setup: the resource limits and the discarding logger, once per
+        // worker. Before any `qpdf_data` exists, as on native.
+        let logger = engine.install();
+
+        let data = engine.bridge.init();
+        if data.is_null() {
+            return Err(Error::Internal("qpdf could not be initialised".to_owned()));
+        }
+
+        // Take ownership immediately, so every path from here cleans up. Nothing between
+        // `init` and this line can fail.
+        let mut session = Session {
+            data,
+            buffer: QpdfPtr::NULL,
+            bridge: Arc::clone(&engine.bridge),
+        };
+
+        // Silence qpdf before it is given anything to complain about.
+        engine.bridge.silence_errors(session.data);
+        engine.bridge.set_suppress_warnings(session.data, true);
+        if !logger.is_null() {
+            engine.bridge.set_logger(session.data, logger);
+        }
+        // `QPDF.hh:233-235`: with recovery off qpdf reports the first problem it finds
+        // instead of reconstructing. Off by default because a structural check that
+        // silently repairs what it is checking is not a check.
+        engine
+            .bridge
+            .set_attempt_recovery(session.data, attempt_recovery);
+
+        // The input and the description into the engine heap. The description is freed
+        // before returning; the input cannot be, and belongs to the session.
+        let buffer = engine.bridge.copy_in(bytes);
+        if buffer.is_null() {
+            return Err(Error::Io(
+                "the qpdf module could not allocate for the input".to_owned(),
+            ));
+        }
+        session.buffer = buffer;
+
+        let description = engine.bridge.copy_in(DESCRIPTION);
+        if description.is_null() {
+            return Err(Error::Io("the qpdf module could not allocate".to_owned()));
+        }
+
+        // Narrowed before the copy, not at the wipe. See the note on the PDFium path: the
+        // failure path otherwise returned with the password already in the engine heap,
+        // unwiped, and the description buffer unfreed.
+        let password_len = password.as_ref().map_or(0, |p| p.len());
+        let Ok(password_len_u32) = u32::try_from(password_len) else {
+            engine.bridge.free(description);
+            return Err(Error::InvalidArgument(
+                "password is too large for the engine's address space".to_owned(),
+            ));
+        };
+
+        let password_ptr = match password.as_ref() {
+            None => QpdfPtr::NULL,
+            Some(p) => {
+                let ptr = engine.bridge.copy_in(p);
+                if ptr.is_null() {
+                    engine.bridge.free(description);
+                    return Err(Error::Io(
+                        "the qpdf module could not allocate for the password".to_owned(),
+                    ));
+                }
+                ptr
+            }
+        };
+
+        let read = engine.bridge.read_memory(
+            session.data,
+            description,
+            session.buffer,
+            input_len,
+            password_ptr,
+        );
+
+        // The password copy in the engine heap is outside Rust's allocator, so `Zeroizing`
+        // cannot reach it. Wipe it explicitly, as soon as qpdf has read it.
+        if !password_ptr.is_null() {
+            engine.bridge.wipe_and_free(password_ptr, password_len_u32);
+        }
+        drop(password);
+        engine.bridge.free(description);
+
+        // Failure is established by the ERROR *bit* — never by `!= 0`, which would treat a
+        // warnings-only read as a failure. See `crate::codes::qpdf::has_errors`.
+        if crate::codes::qpdf::has_errors(read) {
+            return Err(session.take_error().unwrap_or_else(|| {
+                Error::Malformed("qpdf: the document could not be read".to_owned())
+            }));
+        }
+
+        Ok(session)
     }
 }
 
@@ -194,101 +364,8 @@ impl StructureEngine for WebQpdf {
         let deadline = Deadline::start(clock.as_ref(), &limits);
         deadline.checkpoint(clock.as_ref())?;
 
-        let password = crate::password::nul_terminated(options.password, "qpdf")?;
-
-        // Process-global setup: the resource limits and the discarding logger, once per
-        // worker. Before any `qpdf_data` exists, as on native.
-        let logger = self.install();
-
-        let data = self.bridge.init();
-        if data.is_null() {
-            return Err(Error::Internal("qpdf could not be initialised".to_owned()));
-        }
-
-        // Take ownership immediately, so every path from here cleans up. Nothing between
-        // `init` and this line can fail.
-        let mut session = Session {
-            data,
-            buffer: QpdfPtr::NULL,
-            bridge: Arc::clone(&self.bridge),
-        };
-
-        // Silence qpdf before it is given anything to complain about.
-        self.bridge.silence_errors(session.data);
-        self.bridge.set_suppress_warnings(session.data, true);
-        if !logger.is_null() {
-            self.bridge.set_logger(session.data, logger);
-        }
-        // `QPDF.hh:233-235`: with recovery off qpdf reports the first problem it finds
-        // instead of reconstructing. Off by default because a structural check that
-        // silently repairs what it is checking is not a check.
-        self.bridge
-            .set_attempt_recovery(session.data, options.attempt_recovery);
-
-        // The input and the description into the engine heap. The description is freed
-        // before returning; the input cannot be, and belongs to the session.
-        let buffer = self.bridge.copy_in(&bytes);
-        if buffer.is_null() {
-            return Err(Error::Io(
-                "the qpdf module could not allocate for the input".to_owned(),
-            ));
-        }
-        session.buffer = buffer;
-
-        let description = self.bridge.copy_in(DESCRIPTION);
-        if description.is_null() {
-            return Err(Error::Io("the qpdf module could not allocate".to_owned()));
-        }
-
-        // Narrowed before the copy, not at the wipe. See the note on the PDFium path: the
-        // failure path otherwise returned with the password already in the engine heap,
-        // unwiped, and the description buffer unfreed.
-        let password_len = password.as_ref().map_or(0, |p| p.len());
-        let Ok(password_len_u32) = u32::try_from(password_len) else {
-            self.bridge.free(description);
-            return Err(Error::InvalidArgument(
-                "password is too large for the engine's address space".to_owned(),
-            ));
-        };
-
-        let password_ptr = match password.as_ref() {
-            None => QpdfPtr::NULL,
-            Some(p) => {
-                let ptr = self.bridge.copy_in(p);
-                if ptr.is_null() {
-                    self.bridge.free(description);
-                    return Err(Error::Io(
-                        "the qpdf module could not allocate for the password".to_owned(),
-                    ));
-                }
-                ptr
-            }
-        };
-
         let before = self.bridge.heap_bytes();
-        let read = self.bridge.read_memory(
-            session.data,
-            description,
-            session.buffer,
-            input_len,
-            password_ptr,
-        );
-
-        // The password copy in the engine heap is outside Rust's allocator, so `Zeroizing`
-        // cannot reach it. Wipe it explicitly, as soon as qpdf has read it.
-        if !password_ptr.is_null() {
-            self.bridge.wipe_and_free(password_ptr, password_len_u32);
-        }
-        drop(password);
-        self.bridge.free(description);
-
-        // Failure is established by the ERROR *bit* — never by `!= 0`, which would treat a
-        // warnings-only read as a failure. See `crate::codes::qpdf::has_errors`.
-        if crate::codes::qpdf::has_errors(read) {
-            return Err(session.take_error().unwrap_or_else(|| {
-                Error::Malformed("qpdf: the document could not be read".to_owned())
-            }));
-        }
+        let session = Session::open(self, &bytes, options.password, options.attempt_recovery)?;
 
         let pages = self.bridge.get_num_pages(session.data);
         if pages < 0 {
