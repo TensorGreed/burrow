@@ -34,6 +34,8 @@
 // a user's connection actually carries. `zlib.brotliCompressSync` at maximum quality: no
 // dependency, and deterministic, which a budget has to be.
 
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { brotliCompressSync, constants } from "node:zlib";
@@ -150,6 +152,76 @@ export function budgetKey(path) {
  * @param {{ entries: { path: string, raw: number, brotli: number }[] }} measurement
  * @returns {Record<string, { raw: number, brotli: number, files: string[] }>}
  */
+/**
+ * The sha256 of each budget group's bytes, over its files in a stable order.
+ *
+ * Paired with the sizes in `size-budget.json` so a recording can be held to the build it
+ * claims to describe: identical bytes with different recorded numbers is a false record,
+ * not drift. See `apps/web/src/size-budget-drift.ts` for the rule and the 236 bytes that
+ * went unnoticed without it.
+ *
+ * Sorted by path rather than taken in `entries` order, because the digest has to be a
+ * function of the payload and not of how the walk happened to enumerate it.
+ *
+ * TWO DIGESTS PER ARTIFACT, and the second exists because of a mistake worth recording.
+ *
+ * The page's CSP names every engine by its content-hashed URL (ADR 0014), so ANY engine
+ * rebuild rewrites `index.html` -- measured in CI, where `qpdf.wasm` is built from source
+ * and its hash differs. `normalised` replaces those generated hashes with a fixed token, so
+ * "did the page's own content change" is answerable without exempting `page` from checking
+ * altogether. `page` is where the design system lives; exempting it for a cause belonging
+ * to another artifact would be losing the wrong thing.
+ *
+ * THE FIRST VERSION RECORDED ONLY THE NORMALISED DIGEST, AND THAT WAS WRONG. Sizes are
+ * measured over the REAL bytes, so a normalised match let the check assert exact size
+ * equality for files that genuinely differ -- and CI duly reported `page: the bytes are
+ * IDENTICAL to the recording, but measured_brotli says 21652 and the build is 21650`. The
+ * bytes were not identical; two engine hashes compress differently, and the message was
+ * the part that was false.
+ *
+ * So both are recorded and the three cases are distinguished rather than collapsed:
+ * identical raw bytes take the exact check, a normalised-only match takes a tight
+ * hash-coupling bound, and a normalised difference is a real change.
+ *
+ * Deliberately narrow: `.<16 lowercase hex>.` between dots, which is exactly the shape
+ * `tools/stage-web-engines.mjs` emits. Vite's own asset hashes are a different length and
+ * alphabet, so they are untouched and a CSS change is still a digest change.
+ *
+ * @param {string} dir
+ * @param {Record<string, { files: string[] }>} groups
+ * @returns {Record<string, { raw: string, normalised: string }>}
+ */
+export function digestsByBudgetKey(dir, groups) {
+  /** @type {Record<string, { raw: string, normalised: string }>} */
+  const digests = {};
+  for (const [key, group] of Object.entries(groups)) {
+    const raw = createHash("sha256");
+    const normalised = createHash("sha256");
+    for (const path of [...group.files].sort()) {
+      const bytes = readFileSync(join(dir, path));
+      raw.update(bytes);
+      normalised.update(normaliseEngineHashes(bytes, path));
+    }
+    digests[key] = { raw: raw.digest("hex"), normalised: normalised.digest("hex") };
+  }
+  return digests;
+}
+
+/** Files whose bytes may quote a generated engine URL. Binaries never do. */
+const TEXT_ASSET = /\.(html|css|js|mjs|json|txt|xml|svg)$/;
+
+/**
+ * Replace `stage-web-engines.mjs`'s content hashes with a fixed token, in text files only.
+ *
+ * @param {Buffer} bytes
+ * @param {string} path
+ * @returns {Buffer}
+ */
+export function normaliseEngineHashes(bytes, path) {
+  if (!TEXT_ASSET.test(path)) return bytes;
+  return Buffer.from(bytes.toString("utf8").replace(/\.[0-9a-f]{16}\./g, ".<enginehash>."));
+}
+
 export function byBudgetKey(measurement) {
   /** @type {Record<string, { raw: number, brotli: number, files: string[] }>} */
   const groups = {};
