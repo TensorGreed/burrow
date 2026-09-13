@@ -34,9 +34,13 @@ use crate::{OpenOptions, PageAssembler};
 /// a truncated document rather than an error — the silent data loss
 /// [ADR 0017](../../../../docs/adr/0017-merge-engine-and-failure-semantics.md) §2 refuses.
 ///
-/// Here that also means the engine-heap buffers stay allocated, because a [`Session`] owns
-/// its input buffer and frees it on drop. So the peak heap for a merge is the sum of every
-/// input, and the recycling threshold in [`super::recycle`] is what notices.
+/// Here that also means the engine-heap buffers stay allocated: each open document owns its
+/// input buffer inside the module's heap and frees it on drop. So the peak heap for a merge
+/// is the sum of every input, and the recycling threshold in [`super::recycle`] is what
+/// notices.
+///
+/// (The type holding each one is private to this module's sibling, so it is described rather
+/// than linked -- a public item cannot link to it.)
 pub struct WebAssembly {
     dest: Session,
     /// Held, not used. Dropping one before `finish` truncates the output.
