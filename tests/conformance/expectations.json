@@ -312,6 +312,86 @@
       }
     },
     {
+      "name": "rotate-a-flat-document",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "rotate": {
+          "ok": {
+            "page_count": 10,
+            "rotations": [
+              90,
+              90,
+              90,
+              90,
+              90,
+              90,
+              90,
+              90,
+              90,
+              90
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "rotate-a-document-that-inherits",
+      "inputs": [
+        {
+          "file": "fixtures/inherited-rotation-6page.pdf",
+          "sha256": "b2ff342838862039149d19c789b681323063dfd36f8fb66a2a0bb10632ae061a"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "rotate": {
+          "ok": {
+            "page_count": 6,
+            "rotations": [
+              180,
+              180,
+              180,
+              180,
+              180,
+              180
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "rotate-a-document-where-one-page-differs",
+      "inputs": [
+        {
+          "file": "fixtures/mixed-rotation-4page.pdf",
+          "sha256": "e92646bf92fc661b197d6dd7ff61ac5634ea3132b86cfae947ddd0ad94da5261"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "rotate": {
+          "ok": {
+            "page_count": 4,
+            "rotations": [
+              0,
+              180,
+              180,
+              180
+            ]
+          }
+        }
+      }
+    },
+    {
       "name": "size-estimate-refuses-an-ordinary-file",
       "inputs": [
         {
@@ -646,64 +726,6 @@
       }
     },
     {
-      "name": "merge-refuses-when-the-total-passes-max-input-bytes",
-      "inputs": [
-        {
-          "file": "fixtures/pages-10.pdf",
-          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
-        },
-        {
-          "file": "fixtures/pages-10.pdf",
-          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
-        }
-      ],
-      "password": null,
-      "limits": {
-        "max_input_bytes": 2000
-      },
-      "attempt_recovery": false,
-      "expect": {
-        "merge": {
-          "err": {
-            "kind": "LimitExceeded",
-            "limit": "max_input_bytes",
-            "stage": "input_size",
-            "requested": 2776,
-            "allowed": 2000
-          }
-        }
-      }
-    },
-    {
-      "name": "merge-refuses-when-the-total-passes-max-pages",
-      "inputs": [
-        {
-          "file": "fixtures/pages-10.pdf",
-          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
-        },
-        {
-          "file": "fixtures/pages-10.pdf",
-          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
-        }
-      ],
-      "password": null,
-      "limits": {
-        "max_pages": 11
-      },
-      "attempt_recovery": false,
-      "expect": {
-        "merge": {
-          "err": {
-            "kind": "InputFailed",
-            "limit": "max_pages",
-            "stage": "page_count",
-            "requested": 20,
-            "allowed": 11
-          }
-        }
-      }
-    },
-    {
       "name": "merge-refuses-when-any-input-is-malformed",
       "inputs": [
         {
@@ -765,6 +787,64 @@
         "merge": {
           "err": {
             "kind": "InputFailed"
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-refuses-when-the-total-passes-max-input-bytes",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        },
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "limits": {
+        "max_input_bytes": 2000
+      },
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_input_bytes",
+            "stage": "input_size",
+            "requested": 2776,
+            "allowed": 2000
+          }
+        }
+      }
+    },
+    {
+      "name": "merge-refuses-when-the-total-passes-max-pages",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        },
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "limits": {
+        "max_pages": 11
+      },
+      "attempt_recovery": false,
+      "expect": {
+        "merge": {
+          "err": {
+            "kind": "InputFailed",
+            "limit": "max_pages",
+            "stage": "page_count",
+            "requested": 20,
+            "allowed": 11
           }
         }
       }

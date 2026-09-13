@@ -45,7 +45,7 @@ use burrow_engines::{CheckOptions, DocumentEngine, OpenOptions, StructureEngine}
 use burrow_types::{Limits, ManualClock, Password};
 use expectations::{
     Case, Expectations, MILESTONES, Operation, Outcome, OutcomeRecord, Platform, RecordedOutcome,
-    conformance_dir, milestone_index, outcome_of, sha256_hex,
+    conformance_dir, milestone_index, outcome_of, outcome_with_rotations, sha256_hex,
 };
 
 /// The schema version this test understands. A newer file must fail, not be guessed at.
@@ -101,6 +101,55 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
             .into_boxed_slice()
     };
 
+    // ROTATE RECORDS MORE THAN A COUNT, so it returns early rather than joining the
+    // page-count path below. A rotation cannot change the page count -- that is one of its
+    // invariants -- so a case asserting only `page_count` would pass against an
+    // implementation that did nothing at all.
+    if operation == Operation::Rotate {
+        let mut options = OpenOptions::new(limits, clock);
+        options.password = password.as_ref();
+
+        let engine = Qpdf::new();
+        let outcome = burrow_engines::PageRotator::open(&engine, first(), &options)
+            .and_then(|source| {
+                let total = burrow_engines::PageRotator::pages(&engine, &source)?;
+                // EVERY PAGE, BY 90. Fixed, as `Operation::Rotate` records: the corpus asks
+                // whether the two implementations agree, and every-page-by-90 asks that as
+                // well as any other selection.
+                let numbers: Vec<u64> = (1..=total).collect();
+                drop(source);
+                burrow_ops::rotate(
+                    &engine,
+                    first(),
+                    burrow_ops::Pages::numbered(&numbers),
+                    90,
+                    &options,
+                )
+            })
+            .and_then(|out| {
+                // READ BACK OUT OF THE EMITTED BYTES, never from what the operation meant to
+                // do. The rotations are the readout that tells a real rotation from a no-op.
+                let options = OpenOptions::new(limits, Arc::new(ManualClock::new(0)));
+                let engine = Qpdf::new();
+                let source =
+                    burrow_engines::PageRotator::open(&engine, out.into_boxed_slice(), &options)?;
+                let total = burrow_engines::PageRotator::pages(&engine, &source)?;
+                let mut rotations = Vec::with_capacity(usize::try_from(total).unwrap_or(0));
+                for page in 0..total {
+                    rotations.push(
+                        burrow_engines::PageRotator::effective_rotation(&engine, &source, page)?
+                            .degrees(),
+                    );
+                }
+                Ok((total, rotations))
+            });
+
+        return match outcome {
+            Ok((total, rotations)) => outcome_with_rotations(&Ok(total), Some(rotations)),
+            Err(error) => outcome_of(&Err(error)),
+        };
+    }
+
     let result = match operation {
         Operation::PageCount => {
             let mut options = OpenOptions::new(limits, clock);
@@ -140,6 +189,11 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
                 burrow_engines::PageAssembler::pages(&engine, &assembly)
             })
         }
+        // Handled above: rotate records rotations as well as a count, so it returns early
+        // rather than joining this path. Matched explicitly rather than with `_` so adding an
+        // operation still fails to compile here -- which is how `Operation::Rotate` was
+        // caught needing a runner at all.
+        Operation::Rotate => unreachable!("rotate returns before this match"),
     };
     outcome_of(&result)
 }
@@ -253,6 +307,45 @@ fn the_expectations_file_describes_a_real_corpus() {
 ///
 /// Both directions. An orphaned fixture is a file nothing runs; an orphaned case is an
 /// expectation about nothing. Either one means the corpus is smaller than it looks.
+#[test]
+fn the_corpus_is_not_shrinking() {
+    // A CORPUS THAT GETS SMALLER IS INDISTINGUISHABLE FROM ONE THAT DID NOT, and that is not
+    // hypothetical: `merge-refuses-when-the-total-passes-max-input-bytes` and
+    // `…-max-pages` were hand-written into `expectations.json` and never added to
+    // `make-conformance-fixtures.rs`, so the first regeneration -- rotate's, adding two cases
+    // -- deleted them. The count stayed at 29 and every test still passed. Found by code
+    // review, and it is exactly `CLAUDE.md`'s "a check that silently examines nothing is worse
+    // than no check": the suite reported OK on a corpus two cases poorer.
+    //
+    // A FLOOR RATHER THAN AN EXACT COUNT. Adding a case must not need this line edited --
+    // that would make the gate an obstacle and it would be widened or deleted. Removing one
+    // deliberately does, which is the point: a deletion should be a decision somebody wrote
+    // down, not a side effect of regenerating a file.
+    const FEWEST_CASES: usize = 33;
+    const FEWEST_COMPARISONS: usize = 55;
+
+    let expectations = load();
+    let comparisons: usize = expectations.cases.iter().map(|c| c.expect.len()).sum();
+
+    assert!(
+        expectations.cases.len() >= FEWEST_CASES,
+        "the corpus has {} cases, fewer than the {FEWEST_CASES} recorded here. If a case was \
+         removed on purpose, lower the floor in the same commit and say why; if it was not, \
+         something deleted it -- check make-conformance-fixtures.rs against expectations.json.",
+        expectations.cases.len()
+    );
+    assert!(
+        comparisons >= FEWEST_COMPARISONS,
+        "the corpus declares {comparisons} case x operation pairs, fewer than the \
+         {FEWEST_COMPARISONS} recorded here. A case can lose an operation without losing \
+         itself, which the case count alone would not see."
+    );
+    println!(
+        "  corpus: {} cases, {comparisons} comparisons",
+        expectations.cases.len()
+    );
+}
+
 #[test]
 fn the_corpus_and_the_expectations_cover_each_other() {
     let dir = conformance_dir();

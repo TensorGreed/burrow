@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use burrow_core::engines::web::{WebPdfium, WebQpdf};
 use burrow_core::engines::{CheckOptions, DocumentEngine, OpenOptions, StructureEngine};
-use burrow_core::{Clock, Error, Limits, Password};
+use burrow_core::{Clock, Deadline, Error, Limits, Password};
 use wasm_bindgen::prelude::wasm_bindgen;
 
 #[wasm_bindgen]
@@ -122,6 +122,17 @@ pub struct Reply {
     /// read "input 2: ..." out of prose would be parsing an error string, which is the one
     /// thing this boundary is careful never to make anyone do.
     failed_input: i32,
+    /// Every page's effective rotation, in page order, or empty.
+    ///
+    /// **This is a reply shape change, and it was not in the plan.** Rotate itself needed
+    /// none -- one document in, one out, and `merge` had already made `Reply` carry bytes.
+    /// The differential conformance harness is what needed it: a rotate case that compared
+    /// only a page count would pass against an implementation that did nothing, because a
+    /// rotation cannot change the page count. The rotations are the readout that tells a real
+    /// rotation from a no-op, and comparing them across the two implementations is the one
+    /// thing the corpus is for -- the inheritance walk is where native and web would most
+    /// plausibly diverge.
+    rotations: Vec<i64>,
     /// The document an operation produced, or empty for one that produces none.
     ///
     /// **The first thing a `Reply` carries that is not a scalar.** Held as `Vec<u8>` and
@@ -355,6 +366,7 @@ impl Reply {
             inner_kind: String::new(),
             failed_input: -1,
             output: Vec::new(),
+            rotations: Vec::new(),
         }
     }
 
@@ -366,6 +378,13 @@ impl Reply {
     fn produced(pages: u64, output: Vec<u8>) -> Self {
         let mut reply = Self::success(pages);
         reply.output = output;
+        reply
+    }
+
+    /// A success carrying every page's effective rotation.
+    fn with_rotations(pages: u64, rotations: Vec<i64>) -> Self {
+        let mut reply = Self::success(pages);
+        reply.rotations = rotations;
         reply
     }
 
@@ -437,6 +456,7 @@ impl Reply {
             // document reaching the page is exactly the silent data loss that decision
             // exists to prevent.
             output: Vec::new(),
+            rotations: Vec::new(),
         }
     }
 }
@@ -458,6 +478,18 @@ impl Reply {
     #[must_use]
     pub fn take_output(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.output)
+    }
+
+    /// Every page's effective rotation, in page order.
+    ///
+    /// Empty for every operation but [`page_rotations`]. Crosses as a `BigInt64Array`: a
+    /// rotation is one of four small numbers, but `/Rotate` is an integer in the file and the
+    /// type that reads it is `i64`, so narrowing here would be this boundary inventing a
+    /// range the engine does not have.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn rotations(&self) -> Vec<i64> {
+        self.rotations.clone()
     }
 
     /// What was wrong with the failing input, or an empty string.
@@ -796,6 +828,136 @@ pub fn merge(inputs: Box<[u8]>, lengths: Box<[u32]>, limits: WebLimits) -> Reply
             let pages = output_page_count(&output);
             Reply::produced(pages, output)
         }
+        Err(error) => Reply::failure(&error),
+    }
+    .with_lifecycle(&limits)
+}
+
+/// Turn chosen pages of a document and return the result.
+///
+/// `pages` is **one-based**, because that is how a person names a page and this boundary is
+/// where a person's request arrives. `degrees` is any multiple of 90, negative or over 360;
+/// [`burrow_core::Rotation`] reduces it and refuses anything else **before the document is
+/// opened**, so a bad argument costs no parse of an untrusted file.
+///
+/// # This changes no shape
+///
+/// `merge` made [`Reply`] carry bytes, and rotate needs nothing more: one document in, one
+/// document out. That is the whole saving of doing merge's bridge work first — the protocol
+/// and the reply were the expensive parts and they are already paid for.
+///
+/// # Why the page list crosses as `u32`
+///
+/// A page number is bounded by `max_pages`, which is 10,000 by default and could not
+/// plausibly be raised past `u32`. The array arrives as a `Uint32Array` from the worker,
+/// which is what a JS caller naturally has, and widening here would imply a range the
+/// operation cannot accept.
+///
+/// # Errors
+///
+/// Never panics. Everything arrives as a [`Reply`]: `InvalidArgument` for a rotation that is
+/// not a quarter turn, an empty page list, a page number of zero or one past the end, or a
+/// page named twice; and the ordinary document errors for an input that cannot be read.
+#[wasm_bindgen]
+#[must_use]
+pub fn rotate(
+    bytes: Box<[u8]>,
+    // `&[u32]` rather than `Box<[u32]>`: the list is read and never owned, and wasm-bindgen
+    // marshals a `Uint32Array` into a borrowed slice without the extra allocation. `merge`
+    // takes its length table by value because it consumes the buffer alongside it.
+    pages: &[u32],
+    degrees: i32,
+    password: Option<Box<[u8]>>,
+    limits: WebLimits,
+) -> Reply {
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let password = password.map(|p| Password::new(&p));
+
+    let mut options = OpenOptions::new(limits, clock);
+    options.password = password.as_ref();
+
+    let numbers: Vec<u64> = pages.iter().map(|n| u64::from(*n)).collect();
+
+    match burrow_core::ops::rotate(
+        &qpdf(),
+        bytes,
+        burrow_core::ops::Pages::numbered(&numbers),
+        i64::from(degrees),
+        &options,
+    ) {
+        Ok(output) => {
+            // The page count of what was produced. A rotation cannot change it -- that is one
+            // of the operation's invariants -- so this is a readout the page can show without
+            // re-opening the document, and a cheap cross-check that the invariant held.
+            let pages = output_page_count(&output);
+            Reply::produced(pages, output)
+        }
+        Err(error) => Reply::failure(&error),
+    }
+    .with_lifecycle(&limits)
+}
+
+/// Every page's effective rotation, in page order.
+///
+/// # Why this exists
+///
+/// **For the differential conformance harness**, and it is honest surface rather than a test
+/// hook: it opens a document and reports an attribute of it, exactly as [`page_count`] does.
+/// Nothing about it is test-only, and a tool page that wanted to show a page's current
+/// rotation would use this.
+///
+/// It exists because a rotate conformance case comparing only a page count would be vacuous
+/// -- a rotation cannot change the page count, so an implementation that did nothing would
+/// pass. The effective rotation is the nearest `/Rotate` up the page tree, which the native
+/// and web paths walk separately on purpose; this is what lets the corpus catch them
+/// disagreeing.
+///
+/// # Errors
+///
+/// Never panics. A document that cannot be read, or whose `/Rotate` is not an integer
+/// multiple of 90, arrives as the typed failure in the [`Reply`].
+#[wasm_bindgen]
+#[must_use]
+pub fn page_rotations(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let password = password.map(|p| Password::new(&p));
+
+    let mut options = OpenOptions::new(limits, clock);
+    options.password = password.as_ref();
+
+    let engine = qpdf();
+    let read =
+        burrow_core::engines::PageRotator::open(&engine, bytes, &options).and_then(|source| {
+            let pages = burrow_core::engines::PageRotator::pages(&engine, &source)?;
+
+            // THE DEADLINE, CHECKED PER PAGE. Without it this loop is `max_pages` (10,000 by
+            // default) inheritance walks of up to 64 ancestors each -- roughly 3.2 M engine
+            // calls between the entry point and its return, with `max_duration_ms` never
+            // consulted, while `Limits`' own rustdoc promises a check at page boundaries. The
+            // same defect the native `rotate` had and fixed, reintroduced at a new entry
+            // point; both reviewers found it here independently.
+            //
+            // This is also the only entry point that drives an engine trait directly rather
+            // than through `burrow-ops`, so it does not inherit the checkpoints
+            // `burrow_ops::rotate` puts around its engine call.
+            let clock: Arc<dyn Clock> = Arc::new(WebClock);
+            let deadline = Deadline::start(clock.as_ref(), &limits);
+
+            let mut rotations = Vec::with_capacity(usize::try_from(pages).unwrap_or(0));
+            for page in 0..pages {
+                deadline.checkpoint(clock.as_ref())?;
+                rotations.push(
+                    burrow_core::engines::PageRotator::effective_rotation(&engine, &source, page)?
+                        .degrees(),
+                );
+            }
+            Ok((pages, rotations))
+        });
+
+    match read {
+        Ok((pages, rotations)) => Reply::with_rotations(pages, rotations),
         Err(error) => Reply::failure(&error),
     }
     .with_lifecycle(&limits)

@@ -251,6 +251,56 @@ function serialisable(reply) {
   return { ...rest, outputBytes: output ? output.size : 0 };
 }
 
+/**
+ * Run one operation over a `Blob`, returning the RAW reply.
+ *
+ * Extracted from `runBase64` when `rotateEveryPage` needed the reply's `output` Blob to feed
+ * into a second call: `serialisable` replaces `output` with its size, which is right for
+ * crossing back into a Playwright test and useless for chaining inside the driver.
+ *
+ * @param {string} op
+ * @param {Blob} blob
+ * @param {{ password?: string | null, limits?: Record<string, number>, extra?: string[],
+ *           attemptRecovery?: boolean, pages?: number[], degrees?: number }} options
+ */
+async function runOnBlob(op, blob, options = {}) {
+  sourceForSpawn = await ensureSource();
+  // ON THE CORE'S DEFAULTS, not the page's. `expectations.json` says an omitted `limits`
+  // block means `Limits::DEFAULT`, and the native side honours that literally -- so merging
+  // a case's overrides onto `DEFAULT_LIMITS` (100 MiB of `maxInputBytes` against the core's
+  // 512 MiB) would mean the two sides of the differential harness ran under different
+  // ceilings. No fixture is large enough for it to bite today, which is exactly why it would
+  // have gone unnoticed.
+  const base = host.coreDefaultLimits() ?? DEFAULT_LIMITS;
+  const limits = { ...base, ...(options.limits ?? {}) };
+  const password = options.password ? new TextEncoder().encode(options.password).buffer : null;
+  // MERGE TAKES A LIST. `blob` is one document for every other operation; for merge the
+  // caller passes `options.extra`, the remaining documents in order, and this assembles the
+  // list. Kept as a separate field rather than always sending a list, so a single-input
+  // operation's message shape is unchanged.
+  const extra = (options.extra ?? []).map((b64) => {
+    const raw = atob(b64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+    return new Blob([out], { type: "application/pdf" });
+  });
+  return host.run(
+    {
+      op,
+      blob,
+      blobs: op === "merge" ? [blob, ...extra] : undefined,
+      // `rotate` only. One-based page numbers and a quarter turn, both chosen by the caller
+      // and neither derived from the document.
+      pages: options.pages,
+      degrees: options.degrees,
+      password,
+      limits,
+      attemptRecovery: options.attemptRecovery ?? false,
+    },
+    { maxDurationMs: limits.maxDurationMs },
+  );
+}
+
 /** @type {import("./harness-api.js").BurrowHarness} */
 const harness = {
   async ready() {
@@ -325,46 +375,49 @@ const harness = {
    * every other spec is more readable that way and their fixtures are tiny.
    */
   async runBase64(op, base64, options = {}) {
-    sourceForSpawn = await ensureSource();
-    // ON THE CORE'S DEFAULTS, not the page's. `expectations.json` says an omitted `limits`
-    // block means `Limits::DEFAULT`, and the native side honours that literally -- so merging
-    // a case's overrides onto `DEFAULT_LIMITS` (100 MiB of `maxInputBytes` against the core's
-    // 512 MiB) would mean the two sides of the differential harness ran under different
-    // ceilings. No fixture is large enough for it to bite today, which is exactly why it would
-    // have gone unnoticed.
-    const base = host.coreDefaultLimits() ?? DEFAULT_LIMITS;
-    const limits = { ...base, ...(options.limits ?? {}) };
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i += 1) {
       bytes[i] = binary.charCodeAt(i);
     }
-    const password = options.password ? new TextEncoder().encode(options.password).buffer : null;
-    // MERGE TAKES A LIST. `base64` is one document for every other operation; for merge the
-    // caller passes `options.extra`, the remaining documents in order, and this assembles
-    // the list. Kept as a separate field rather than always sending a list, so a
-    // single-input operation's message shape is unchanged -- `run()`'s contract is per
-    // operation, and widening it for every caller to suit one would be the silent kind of
-    // change.
-    const extra = (options.extra ?? []).map((b64) => {
-      const raw = atob(b64);
-      const out = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
-      return new Blob([out], { type: "application/pdf" });
-    });
     const blob = new Blob([bytes], { type: "application/pdf" });
-    const reply = await host.run(
-      {
-        op,
-        blob,
-        blobs: op === "merge" ? [blob, ...extra] : undefined,
-        password,
-        limits,
-        attemptRecovery: options.attemptRecovery ?? false,
-      },
-      { maxDurationMs: limits.maxDurationMs },
-    );
-    return serialisable(reply);
+    return serialisable(await runOnBlob(op, blob, options));
+  },
+
+  /**
+   * Rotate every page by 90 and report the rotations of the result.
+   *
+   * THREE OPERATIONS, MIRRORING `core/burrow-ops/tests/conformance.rs`. The corpus fixes
+   * rotate at "every page, by 90", and neither side can name every page without first
+   * knowing how many there are — so both read the count, rotate `1..=count`, and read the
+   * rotations back out of the EMITTED bytes rather than from what the operation meant to do.
+   *
+   * The composition is the TEST's, not the binding's. `burrow-wasm` exposes `rotate` and
+   * `page_rotations`; deciding to call them in this order with this selection is a harness
+   * decision, and it is made here rather than as a convenience entry point in the shipped
+   * binding, which would be shipping a feature to serve a test.
+   *
+   * @param {string} base64
+   * @param {{ password?: string | null, limits?: Record<string, number> }} [options]
+   */
+  async rotateEveryPage(base64, options = {}) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "application/pdf" });
+
+    const counted = await runOnBlob("page_rotations", blob, options);
+    if (!counted.ok) return serialisable(counted);
+
+    const pages = Array.from({ length: counted.pages }, (_, i) => i + 1);
+    const turned = await runOnBlob("rotate", blob, { ...options, pages, degrees: 90 });
+    if (!turned.ok || !turned.output) return serialisable(turned);
+
+    // READ BACK OUT OF THE OUTPUT. A rotation cannot change the page count, so the rotations
+    // are the only thing that tells a real rotation from a no-op.
+    return serialisable(await runOnBlob("page_rotations", turned.output, options));
   },
 
   /** How many workers have been spawned. The recovery tests read this. */

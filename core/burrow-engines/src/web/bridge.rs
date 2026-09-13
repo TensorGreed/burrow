@@ -320,6 +320,62 @@ pub trait QpdfBridge: Send + Sync {
     /// straight back.
     fn copy_out(&self, ptr: QpdfPtr, len: u32) -> Vec<u8>;
 
+    // ---- the object-handle API -------------------------------------------------------
+    //
+    // Added so `rotate` works on the web. These are the first bridge methods that read and
+    // write a document's OBJECTS rather than its pages, and the audit question is the same
+    // one: does any of them decide anything? None does. Each is one qpdf call with its
+    // arguments passed through and its answer returned unexamined -- the type check that
+    // decides whether a `/Rotate` is usable happens in `web/rotate.rs`, in Rust, exactly as
+    // it does on the native path in `qpdf/rotate.rs`.
+    //
+    // **Handles are per-document and they accumulate.** qpdf's handle cache only grows;
+    // nothing in the C API reports how many are live. Every handle these produce must reach
+    // [`oh_release`](QpdfBridge::oh_release), and on the web that is the caller's discipline
+    // rather than a type's — `web/rotate.rs` owns it, and the native path's `ObjectHandle`
+    // is the model.
+
+    /// `qpdf_oh_get_key`. Resolves an indirect object, so this is the parser running on
+    /// file-controlled bytes.
+    ///
+    /// `key` is a pointer to a NUL-terminated string **in the module's heap**, copied in by
+    /// the caller. It is never built from document content: the only keys burrow asks for
+    /// are `/Rotate` and `/Parent`, both constants in Rust.
+    ///
+    /// Returns a new handle, which the caller must release.
+    fn oh_get_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr) -> u32;
+
+    /// `qpdf_oh_get_type_code`. The `enum qpdf_object_type_e` ordinal, passed through.
+    ///
+    /// **Read before any value is read.** qpdf's accessors return a default rather than
+    /// raising on a type mismatch, so this is the only thing separating "the key is an
+    /// integer" from "the key is a name and the integer accessor said 0". The comparison
+    /// itself is in Rust; this method only fetches the number.
+    fn oh_get_type_code(&self, data: QpdfPtr, oh: u32) -> i32;
+
+    /// `qpdf_oh_get_int_value`. Meaningful only once the type code has said it is an
+    /// integer, which is the caller's business and not this method's.
+    fn oh_get_int_value(&self, data: QpdfPtr, oh: u32) -> i64;
+
+    /// `qpdf_oh_new_integer`. Builds an integer object from a number **Rust** chose.
+    ///
+    /// Returns a new handle, which the caller must release.
+    fn oh_new_integer(&self, data: QpdfPtr, value: i64) -> u32;
+
+    /// `qpdf_oh_replace_key`. Sets `key` on the dictionary `oh` to the object `item`.
+    ///
+    /// The only write burrow makes into a document qpdf parsed, rather than into a
+    /// destination it built. `key` is a heap pointer, as in
+    /// [`oh_get_key`](QpdfBridge::oh_get_key).
+    fn oh_replace_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr, item: u32);
+
+    /// `qpdf_oh_release`. Drops one handle from qpdf's cache.
+    ///
+    /// Without it the cache grows for the life of the document, which `max_memory_bytes`
+    /// cannot see: it **detects rather than bounds** (ADR 0007) and samples at operation
+    /// boundaries, while this is steady growth under every ceiling there is.
+    fn oh_release(&self, data: QpdfPtr, oh: u32);
+
     /// The module's current heap size. See [`PdfiumBridge::heap_bytes`].
     fn heap_bytes(&self) -> u64;
 }

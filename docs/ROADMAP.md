@@ -418,7 +418,11 @@ assert:
 ### Web app
 
 - One indexable page per tool: title, description, structured data, no client-side routing
-- Drag-and-drop, page thumbnails, drag-to-reorder, progress, cancel
+- Drag-and-drop, drag-to-reorder, progress, cancel
+- **Page thumbnails are deferred to #57**, with the render capability, the bridge method and
+  the memory ceiling they need as its scope. ADR 0020 is the decision: `rotate` v1 selects by
+  page number and range instead, and `/split-pdf` will want thumbnails too, so they are built
+  once for both rather than bolted onto whichever page reaches for them first.
 - Strict Content-Security-Policy; no third-party scripts, fonts, or analytics on any page
   that touches file content
 - Playwright tests for each tool, plus one asserting **no network request carries file

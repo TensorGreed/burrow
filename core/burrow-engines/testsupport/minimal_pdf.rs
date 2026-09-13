@@ -471,6 +471,14 @@ pub enum RotationPlacement {
     OnTheSecondBranch(i64),
     /// On each page itself.
     OnEveryPage(i64),
+    /// On the root, **and** a different value on the first page only.
+    ///
+    /// The shape that can tell a per-page write from an ancestor write. With every page
+    /// inheriting the same value, writing `/Rotate` to the shared `/Pages` node produces
+    /// exactly the vector a correct implementation produces -- so a fixture where all pages
+    /// are alike cannot catch the failure both rotate modules name as their worst one.
+    /// Here page 1 starts somewhere else, so the two implementations disagree on it.
+    OnTheRootAndTheFirstPage { root: i64, first_page: i64 },
 }
 
 /// How the fixture's page tree is wired, for the hostile cases.
@@ -542,6 +550,9 @@ pub fn pdf_with_page_tree_shaped(
         match placement {
             RotationPlacement::Absent => String::new(),
             RotationPlacement::OnTheRoot(d) if wanted == "root" => format!(" /Rotate {d}"),
+            RotationPlacement::OnTheRootAndTheFirstPage { root, .. } if wanted == "root" => {
+                format!(" /Rotate {root}")
+            }
             RotationPlacement::OnTheSecondBranch(d) if wanted == "second" => {
                 format!(" /Rotate {d}")
             }
@@ -624,7 +635,14 @@ pub fn pdf_with_page_tree_shaped(
                  /Resources << >> /Contents {} 0 R{} >>\nendobj\n",
                 page_obj(i),
                 stream_obj(i),
-                rotate_on("page")
+                match placement {
+                    // ONLY THE FIRST PAGE, which is what makes this fixture able to tell a
+                    // per-page write from an ancestor write.
+                    RotationPlacement::OnTheRootAndTheFirstPage { first_page, .. } if i == 0 => {
+                        format!(" /Rotate {first_page}")
+                    }
+                    _ => rotate_on("page"),
+                }
             )
             .as_bytes(),
         );

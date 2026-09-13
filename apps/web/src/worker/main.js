@@ -169,6 +169,12 @@ function drainReply(id, reply) {
       // Strings for the same reason `requested` is: these are `u64`.
       pdfiumHeapBytes: reply.pdfium_heap_bytes.toString(),
       qpdfHeapBytes: reply.qpdf_heap_bytes.toString(),
+      // EVERY PAGE'S ROTATION, for `page_rotations`. Numbers rather than the strings
+      // `requested` and `allowed` use: a rotation is 0, 90, 180 or 270, so there is no `u64`
+      // here to round. The getter hands back a BigInt64Array because `/Rotate` is an integer
+      // in the file and the type that reads it is `i64`; the conversion is the only
+      // arithmetic on this line and it cannot lose a quarter turn.
+      rotations: Array.from(reply.rotations, (n) => Number(n)),
       // WHICH input failed, as a number rather than something to parse out of `message`.
       // -1 when the failure is not about a particular input.
       failedInput: reply.failedInput,
@@ -245,7 +251,13 @@ self.onmessage = async (event) => {
   try {
     await ensureReady();
 
-    if (request.op !== "page_count" && request.op !== "structure_check" && request.op !== "merge") {
+    if (
+      request.op !== "page_count" &&
+      request.op !== "structure_check" &&
+      request.op !== "merge" &&
+      request.op !== "rotate" &&
+      request.op !== "page_rotations"
+    ) {
       // BEFORE `limits` is constructed, deliberately. An unknown op is a bug in the page, not
       // a poisoned engine, so it is reported without costing a worker — but returning after
       // building a `WebLimits` would leak it: nothing consumes it on this path, and a
@@ -376,6 +388,54 @@ self.onmessage = async (event) => {
       // engine heap rather than both plus the originals.
       buffers.length = 0;
       reply = wasm_bindgen.merge(flat, lengths, limits);
+    } else if (request.op === "rotate") {
+      // ONE INPUT, ONE OUTPUT, and no new reply shape: `merge` made `Reply` carry bytes and
+      // rotate needs nothing more. The page list and the angle are the only additions, and
+      // both are numbers the page chose -- nothing here is derived from the document.
+      //
+      // `Uint32Array` rather than an array of numbers, for the same reason merge sends a
+      // flat buffer: wasm-bindgen marshals a typed array as one copy.
+      // REFUSED, NOT COERCED. `Uint32Array.from` wraps a number above 2^32 and floors a
+      // fractional one, so a malformed request would rotate a DIFFERENT page and report
+      // success -- upstream of the core's careful refusal of page 0 ("a caller that is off by
+      // one should hear about it"). These are caller arguments rather than file content, so
+      // this is not the attacker-controlled-size rule; it is the same principle one layer out.
+      // Found by code review.
+      const pages = request.pages ?? [];
+      const usable = pages.every(
+        /** @param {unknown} n */
+        (n) => typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 0xffff_ffff,
+      );
+      if (!usable) {
+        self.postMessage({
+          id: request.id,
+          ok: false,
+          kind: "InvalidArgument",
+          fatal: false,
+          message: "a page number is not a whole number in range",
+          pages: 0,
+          limit: "",
+          stage: "",
+          requested: "0",
+          allowed: "0",
+          recycle: false,
+          pdfiumHeapBytes: "0",
+          qpdfHeapBytes: "0",
+          rotations: [],
+          failedInput: -1,
+          innerKind: "",
+        });
+        return;
+      }
+      reply = wasm_bindgen.rotate(
+        bytes,
+        Uint32Array.from(pages),
+        request.degrees ?? 0,
+        password,
+        limits,
+      );
+    } else if (request.op === "page_rotations") {
+      reply = wasm_bindgen.page_rotations(bytes, password, limits);
     } else if (request.op === "page_count") {
       reply = wasm_bindgen.page_count(bytes, password, limits);
     } else {

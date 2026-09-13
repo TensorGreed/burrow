@@ -88,6 +88,16 @@ interface EmscriptenModule extends EmscriptenConfig {
   _qpdf_write(data: number): number;
   _qpdf_get_buffer_length(data: number): number;
   _qpdf_get_buffer(data: number): number;
+  // The object-handle API, added for `rotate`. `key` is a POINTER to a NUL-terminated
+  // string in the module's heap, not a JS string: Rust copies the key in and passes the
+  // address, so nothing on this side builds or chooses a key.
+  _qpdf_oh_get_key(data: number, oh: number, key: number): number;
+  _qpdf_oh_get_type_code(data: number, oh: number): number;
+  /** `long long` on the C side; the module is built -sWASM_BIGINT=1, so this is a BigInt. */
+  _qpdf_oh_get_int_value(data: number, oh: number): bigint;
+  _qpdf_oh_new_integer(data: number, value: bigint): number;
+  _qpdf_oh_replace_key(data: number, oh: number, key: number, item: number): void;
+  _qpdf_oh_release(data: number, oh: number): void;
   _qpdf_global_set_uint32(param: number, value: number): number;
   _qpdflogger_create(): number;
   _qpdflogger_set_info(logger: number, dest: number, a: number, b: number): void;
@@ -163,6 +173,15 @@ declare const wasm_bindgen: {
     readonly max_pixels: bigint;
   };
   page_count(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
+  /**
+   * Every page's effective rotation, in page order.
+   *
+   * Exists for the differential conformance harness, and is honest surface rather than a test
+   * hook: it opens a document and reports an attribute, exactly as `page_count` does. A
+   * rotate case comparing only a page count would be vacuous, because a rotation cannot
+   * change it.
+   */
+  page_rotations(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
   structure_check(
     bytes: Uint8Array,
     password: Uint8Array | undefined,
@@ -185,6 +204,20 @@ declare const wasm_bindgen: {
    * `burrow_core::ops::check_total_input_bytes`, the same function `merge` calls.
    */
   check_input_budget(sizes: Float64Array, limits: WebLimits): Reply;
+  /**
+   * Turn chosen pages of a document and return the result.
+   *
+   * `pages` is ONE-BASED, because that is how a person names a page. `degrees` is any
+   * multiple of 90, negative or over 360; Rust reduces it and refuses anything else before
+   * the document is opened, so a bad argument costs no parse.
+   */
+  rotate(
+    bytes: Uint8Array,
+    pages: Uint32Array,
+    degrees: number,
+    password: Uint8Array | undefined,
+    limits: WebLimits,
+  ): Reply;
 };
 
 /** Consumed by the call it is passed to — see the note in `main.js`. Never `.free()`d. */
@@ -210,6 +243,8 @@ interface Reply {
   readonly qpdf_heap_bytes: bigint;
   /** Which input failed, or -1. Lets a page mark a file without parsing prose. */
   readonly failedInput: number;
+  /** Every page's effective rotation, in page order. `page_rotations` only. */
+  readonly rotations: BigInt64Array;
   /** What was wrong with that input, or empty. */
   readonly innerKind: string;
   /** Bytes in the produced document, without taking it. Zero if there is none. */
@@ -278,6 +313,12 @@ interface WorkerGlobalScope {
   __burrow_qpdf_write(data: number): number;
   __burrow_qpdf_get_buffer_length(data: number): number;
   __burrow_qpdf_get_buffer(data: number): number;
+  __burrow_qpdf_oh_get_key(data: number, oh: number, key: number): number;
+  __burrow_qpdf_oh_get_type_code(data: number, oh: number): number;
+  __burrow_qpdf_oh_get_int_value(data: number, oh: number): bigint;
+  __burrow_qpdf_oh_new_integer(data: number, value: bigint): number;
+  __burrow_qpdf_oh_replace_key(data: number, oh: number, key: number, item: number): void;
+  __burrow_qpdf_oh_release(data: number, oh: number): void;
   /** The only bridge function that carries bytes OUT of an engine heap. */
   __burrow_qpdf_copy_out(ptr: number, len: number): Uint8Array;
   __burrow_qpdf_global_set_uint32(param: number, value: number): number;

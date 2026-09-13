@@ -52,6 +52,12 @@ pub(super) enum Call {
     GetBufferLength,
     GetBuffer,
     CopyOut(u32),
+    OhGetKey { oh: u32, key: String },
+    OhGetTypeCode(u32),
+    OhGetIntValue(u32),
+    OhNewInteger(i64),
+    OhReplaceKey { oh: u32, key: String, item: u32 },
+    OhRelease(u32),
 }
 
 /// A stand-in for an Emscripten module's linear memory.
@@ -116,6 +122,23 @@ impl Heap {
     /// reused, so reading a freed or invented pointer is a use-after-free rather than a
     /// plausible-looking success. A fake that returned zeroes here would let exactly the
     /// bug it exists to catch pass as an empty document.
+    /// The whole allocation at `ptr`.
+    ///
+    /// For a NUL-terminated string, where the caller does not know the length in advance.
+    /// Same base-address rule as [`read`](Self::read): an address this heap did not hand out
+    /// is a stray pointer and panics.
+    fn read_all(&self, ptr: u32) -> Vec<u8> {
+        let found = self
+            .live
+            .iter()
+            .chain(self.retained.iter())
+            .find(|(at, _)| *at == ptr);
+        let (_, bytes) = found.unwrap_or_else(|| {
+            panic!("read {ptr:#x}, which is not a live or retained allocation -- a stray or freed pointer")
+        });
+        bytes.clone()
+    }
+
     fn read(&self, ptr: u32, len: usize) -> Vec<u8> {
         let found = self
             .live
@@ -356,6 +379,24 @@ pub(super) struct QpdfScript {
     /// caller that checked only one of them would read from a null pointer. Scripting them
     /// apart is how that gets tested.
     pub(super) buffer_is_null: bool,
+    /// The type code `qpdf_oh_get_type_code` reports, by key.
+    ///
+    /// Keyed rather than a single value, because rotate's walk asks about `/Rotate` and
+    /// `/Parent` in turn and a fake that answered the same for both could not model a page
+    /// whose rotation is absent but whose parent is a dictionary -- which is every page in
+    /// a document that inherits.
+    pub(super) oh_type_codes: std::collections::BTreeMap<String, i32>,
+    /// The integer `qpdf_oh_get_int_value` reports.
+    pub(super) oh_int_value: i64,
+    /// How many handles the fake has issued and not seen released.
+    ///
+    /// The web path has no `ObjectHandle` to make release automatic, so it is discipline
+    /// rather than a type -- and discipline needs a measurement. `web/tests.rs` asserts this
+    /// is zero after a rotation, after a refusal, and after the depth-exhausted walk.
+    ///
+    /// It said the same thing while nothing read it -- three writes, no readers -- which is a
+    /// counter that reports "no leak" for every input. Both reviewers found it.
+    pub(super) live_handles: Arc<Mutex<i64>>,
 }
 
 impl Default for QpdfScript {
@@ -372,6 +413,14 @@ impl Default for QpdfScript {
             init_succeeds: true,
             read_grows_heap_by: 0,
             error_reappears_once: None,
+            // A page tree that INHERITS: no `/Rotate` on the page (null), and a `/Parent`
+            // that is a dictionary. The default models the case a naive implementation gets
+            // wrong, rather than the case it gets right by accident.
+            oh_type_codes: [("/Rotate".to_owned(), 2), ("/Parent".to_owned(), 9)]
+                .into_iter()
+                .collect(),
+            oh_int_value: 0,
+            live_handles: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -389,15 +438,61 @@ pub(super) struct FakeQpdf {
     buffers: Mutex<Vec<(u32, u32)>>,
     /// Whether the one-shot re-arm above is still available.
     rearm: Mutex<Option<i32>>,
+    /// Which key produced each handle, so `oh_get_type_code` can answer per key.
+    ///
+    /// A real qpdf handle is an index into a cache of objects; the fake needs only enough of
+    /// that to tell `/Rotate` from `/Parent`, because rotate's walk asks about both and a
+    /// fake that answered the same for each could not model a page that inherits.
+    handle_keys: Mutex<std::collections::BTreeMap<u32, String>>,
+    /// The next handle id. Monotonic and never reused, exactly as qpdf's `next_oh` is.
+    next_handle: Mutex<u32>,
 }
 
 impl FakeQpdf {
+    /// A NUL-terminated string read back out of the fake heap.
+    ///
+    /// Read rather than assumed: a caller that copied in the wrong bytes, or a pointer to
+    /// memory it had already freed, must be distinguishable from a correct one.
+    fn read_c_string(&self, ptr: QpdfPtr) -> String {
+        // THE WHOLE ALLOCATION, then up to the NUL. Reading byte by byte was wrong and was
+        // never exercised: `Heap::read` looks an allocation up by its EXACT base address on
+        // purpose, so `read(ptr + 1, 1)` panics with "not a live or retained allocation" --
+        // which meant `oh_get_key` aborted the moment anything called it. Nothing did, which
+        // is how it survived. Found by code review, which wrote the missing test and hit it.
+        let bytes = self
+            .state
+            .heap
+            .lock()
+            .expect("not poisoned")
+            .read_all(ptr.0);
+        let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[..end]).into_owned()
+    }
+
+    /// Issue a handle, remembering which key produced it.
+    ///
+    /// Monotonic and never reused, as qpdf's `next_oh` is -- so a test that released a
+    /// handle and saw the id come back would be seeing a fake that models the cache wrongly.
+    fn issue_handle(&self, key: &str) -> u32 {
+        let mut next = self.next_handle.lock().expect("not poisoned");
+        *next += 1;
+        let handle = *next;
+        self.handle_keys
+            .lock()
+            .expect("not poisoned")
+            .insert(handle, key.to_owned());
+        *self.script.live_handles.lock().expect("not poisoned") += 1;
+        handle
+    }
+
     pub(super) fn new(state: Arc<FakeHeap>, script: QpdfScript) -> Self {
         let pending = Mutex::new(script.pending_error);
         let rearm = Mutex::new(script.error_reappears_once);
         Self {
             state,
             script,
+            handle_keys: Mutex::new(std::collections::BTreeMap::new()),
+            next_handle: Mutex::new(0),
             pending,
             rearm,
             buffers: Mutex::new(Vec::new()),
@@ -565,9 +660,12 @@ impl QpdfBridge for FakeQpdf {
 
     fn get_page_n(&self, _data: QpdfPtr, n: u32) -> u32 {
         self.state.record(Call::GetPageN(n));
-        // Handles are 1-based in qpdf and never zero for a valid page, so returning `n + 1`
-        // keeps a real handle distinguishable from a default-initialised one.
-        n + 1
+        // THROUGH `issue_handle`, like every other handle the fake hands out. Returning `n + 1`
+        // directly meant a page handle was never counted as live and never registered against a
+        // key -- so a caller that released it drove `live_handles` NEGATIVE, cancelling out a
+        // genuine leak, and `n + 1` collided with the first issued id so `oh_get_type_code`
+        // answered for the wrong object. Found by code review.
+        self.issue_handle(&format!("<page {n}>"))
     }
 
     fn add_page(&self, _data: QpdfPtr, _source: QpdfPtr, page: u32, first: bool) -> i32 {
@@ -629,6 +727,71 @@ impl QpdfBridge for FakeQpdf {
             .lock()
             .expect("not poisoned")
             .read(ptr.0, len as usize)
+    }
+
+    fn oh_get_key(&self, _data: QpdfPtr, oh: u32, key: QpdfPtr) -> u32 {
+        // THE KEY IS READ BACK OUT OF THE HEAP, not taken from the script. A caller that
+        // copied in the wrong string, or a pointer to memory it had already freed, would
+        // otherwise be indistinguishable from a correct one -- the same reason `copy_out`
+        // reads through the heap rather than returning `script.output` directly.
+        let key = self.read_c_string(key);
+        self.state.record(Call::OhGetKey {
+            oh,
+            key: key.clone(),
+        });
+        self.issue_handle(&key)
+    }
+
+    fn oh_get_type_code(&self, _data: QpdfPtr, oh: u32) -> i32 {
+        self.state.record(Call::OhGetTypeCode(oh));
+        // The handle remembers which key produced it, so the fake can answer differently for
+        // `/Rotate` and `/Parent` -- see `oh_type_codes`.
+        let name = self
+            .handle_keys
+            .lock()
+            .expect("not poisoned")
+            .get(&oh)
+            .cloned()
+            .unwrap_or_default();
+        // `ot_null` (2) by default: an unknown key is an absent key, which is what qpdf
+        // reports for one.
+        self.script.oh_type_codes.get(&name).copied().unwrap_or(2)
+    }
+
+    fn oh_get_int_value(&self, _data: QpdfPtr, oh: u32) -> i64 {
+        self.state.record(Call::OhGetIntValue(oh));
+        self.script.oh_int_value
+    }
+
+    fn oh_new_integer(&self, _data: QpdfPtr, value: i64) -> u32 {
+        self.state.record(Call::OhNewInteger(value));
+        self.issue_handle("<integer>")
+    }
+
+    fn oh_replace_key(&self, _data: QpdfPtr, oh: u32, key: QpdfPtr, item: u32) {
+        let key = self.read_c_string(key);
+        self.state.record(Call::OhReplaceKey { oh, key, item });
+    }
+
+    fn oh_release(&self, _data: QpdfPtr, oh: u32) {
+        self.state.record(Call::OhRelease(oh));
+        // ASSERTED, NOT ASSUMED. Decrementing blindly let a double release drive the count
+        // negative and cancel out a real leak, which would make the `== 0` assertion in the
+        // tests pass for a document that leaked one handle and released another twice. qpdf
+        // itself tolerates a stray release -- `oh_cache.erase` on a missing key is a no-op --
+        // so this is stricter than the engine on purpose: the fake is where a caller's
+        // bookkeeping is meant to be caught.
+        let known = self
+            .handle_keys
+            .lock()
+            .expect("not poisoned")
+            .remove(&oh)
+            .is_some();
+        assert!(
+            known,
+            "released handle {oh}, which this document never issued (or already released)"
+        );
+        *self.script.live_handles.lock().expect("not poisoned") -= 1;
     }
 
     fn heap_bytes(&self) -> u64 {

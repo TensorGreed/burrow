@@ -44,6 +44,12 @@ export function replyShape(): Record<string, unknown> {
     output_length: 0,
     pdfium_heap_bytes: 0n,
     qpdf_heap_bytes: 0n,
+    // EVERY FIELD `drainReply` READS, or the stub is stale in exactly the way a rebuilt-Rust
+    // module would be -- `Array.from(undefined)` throws, the reply arrives as `Internal`, and
+    // the test fails somewhere unrelated to what it was testing. That is what happened when
+    // `rotations` was added: two suites went red on "expected LimitExceeded, got Internal".
+    // The guard around `drainReply` is what turned it into a failure rather than a crash.
+    rotations: new BigInt64Array(0),
     take_output: () => null,
     free: () => {},
   };

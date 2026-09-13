@@ -187,11 +187,24 @@ pub enum Operation {
     StructureCheck,
     /// `burrow_ops::merge`, over qpdf's assembler. Takes every input in order.
     Merge,
+    /// `burrow_ops::rotate`, over qpdf. **Every page, by 90 degrees.**
+    ///
+    /// Fixed rather than declared per case: a case shape that carried a page list and an
+    /// angle would be a second thing to keep in step across three readers, and the one
+    /// question this corpus exists to answer is whether the two implementations agree --
+    /// which every-page-by-90 asks as well as any other selection, on a fixture whose pages
+    /// start at different rotations.
+    Rotate,
 }
 
 impl Operation {
     /// Every operation, in a stable order.
-    pub const ALL: [Self; 3] = [Self::PageCount, Self::StructureCheck, Self::Merge];
+    pub const ALL: [Self; 4] = [
+        Self::PageCount,
+        Self::StructureCheck,
+        Self::Merge,
+        Self::Rotate,
+    ];
 
     /// The name used in the JSON and in the harness's records.
     #[must_use]
@@ -200,6 +213,7 @@ impl Operation {
             Self::PageCount => "page_count",
             Self::StructureCheck => "structure_check",
             Self::Merge => "merge",
+            Self::Rotate => "rotate",
         }
     }
 }
@@ -222,6 +236,20 @@ pub enum Outcome {
     Ok {
         /// Pages the engine must report.
         page_count: u64,
+        /// Every page's effective rotation, in page order. `rotate` cases only.
+        ///
+        /// **Because a page count cannot fail for a rotation.** Rotate does not change how
+        /// many pages there are -- that is one of its invariants -- so a case that asserted
+        /// only `page_count` would pass against an implementation that did nothing at all.
+        /// The rotations are the readout that distinguishes a rotation from a no-op, and
+        /// they are comparable across implementations because they are what both paths
+        /// compute from the emitted bytes.
+        ///
+        /// They also carry the part most likely to DIVERGE between native and web: the
+        /// effective rotation is the nearest `/Rotate` up the page tree, and the two
+        /// implementations walk that tree separately, on purpose.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotations: Option<Vec<i64>>,
     },
     /// The operation fails, exactly this way.
     Err(Failure),
@@ -392,8 +420,34 @@ impl ErrorKind {
 /// here rather than at the comparison is deliberate: the recorded outcome should not contain
 /// a number that is not a fact about the file, or someone will eventually compare it.
 pub fn outcome_of(result: &burrow_types::Result<u64>) -> Outcome {
+    outcome_with_rotations(result, None)
+}
+
+/// The same, carrying the rotations a `rotate` case compares.
+///
+/// Separate entry point rather than a fourth argument everywhere: three of the four
+/// operations have no rotations to report, and a `None` at every call site would read as an
+/// omission rather than as "this operation does not have them".
+#[must_use]
+pub fn outcome_with_rotations(
+    result: &burrow_types::Result<u64>,
+    rotations: Option<Vec<i64>>,
+) -> Outcome {
+    if let Ok(pages) = result {
+        return Outcome::Ok {
+            page_count: *pages,
+            rotations,
+        };
+    }
+    outcome_of_failure(result)
+}
+
+fn outcome_of_failure(result: &burrow_types::Result<u64>) -> Outcome {
     match result {
-        Ok(pages) => Outcome::Ok { page_count: *pages },
+        Ok(pages) => Outcome::Ok {
+            page_count: *pages,
+            rotations: None,
+        },
         Err(error) => {
             let kind = ErrorKind::of(error).unwrap_or_else(|| {
                 // NOT `{error:?}`. Several variants carry a `String` payload, and on a damaged

@@ -95,7 +95,10 @@ fn password_required() -> Outcome {
 }
 
 fn opens(page_count: u64) -> Outcome {
-    Outcome::Ok { page_count }
+    Outcome::Ok {
+        page_count,
+        rotations: None,
+    }
 }
 
 /// Both single-document engines produce the same outcome.
@@ -121,6 +124,22 @@ fn differ(page_count: Outcome, structure_check: Outcome) -> Outcomes {
 /// A case that is only about merging.
 fn merges(outcome: Outcome) -> Outcomes {
     Outcomes::from([(Operation::Merge, outcome)])
+}
+
+/// A rotate case: the page count, and every page's rotation after the operation.
+///
+/// **The rotations are the assertion.** A rotation cannot change the page count, so a case
+/// declaring only that would pass against an implementation that did nothing — the failure
+/// this corpus exists to catch is the two paths disagreeing, and the inheritance walk is
+/// where they most plausibly would.
+fn rotates(page_count: u64, rotations: Vec<i64>) -> Outcomes {
+    Outcomes::from([(
+        Operation::Rotate,
+        Outcome::Ok {
+            page_count,
+            rotations: Some(rotations),
+        },
+    )])
 }
 
 fn main() {
@@ -272,6 +291,73 @@ fn main() {
             limits: None,
             attempt_recovery: false,
             expect: both(refused_by_prescan()),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        // ---- rotate ------------------------------------------------------------------
+        //
+        // Every page turned 90 degrees, which is what `Operation::Rotate` fixes. Two cases,
+        // because they ask different questions.
+        Fixture {
+            // A flat page tree with no `/Rotate` anywhere: every page ends at 90. This is
+            // the case a no-op fails -- it would report ten zeroes.
+            name: "rotate-a-flat-document",
+            filename: "pages-10.pdf",
+            bytes: Some(minimal_pdf::pdf_with_pages(10)),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: rotates(10, vec![90; 10]),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // A TWO-LEVEL page tree whose root carries `/Rotate 90`, so no page has one of
+            // its own and every page inherits. Turning each by 90 must give 180 -- an
+            // implementation that read the page dictionary and stopped would see nothing,
+            // write 90, and silently UNDO the inherited quarter turn, reporting six 90s.
+            //
+            // This is the case the differential harness is really for. The two paths walk
+            // `/Parent` separately, on purpose, and this is where they would diverge.
+            name: "rotate-a-document-that-inherits",
+            filename: "inherited-rotation-6page.pdf",
+            bytes: Some(minimal_pdf::pdf_with_page_tree(
+                6,
+                minimal_pdf::RotationPlacement::OnTheRoot(90),
+            )),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: rotates(6, vec![180; 6]),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // THE CASE THAT CAN TELL A PER-PAGE WRITE FROM AN ANCESTOR WRITE, and the reason
+            // the two cases above cannot.
+            //
+            // `Operation::Rotate` turns EVERY page, so on a document where all pages inherit
+            // the same value, writing `/Rotate` to the shared `/Pages` root produces exactly
+            // the vector a correct implementation produces. That is hazard #2 in both rotate
+            // modules -- the one that turns a whole document while reporting success on the
+            // page that was asked for -- and the corpus was blind to it until this fixture.
+            // Found by security review.
+            //
+            // Here page 1 starts at 270 and the rest inherit 90. Turning every page by 90
+            // gives [0, 180, 180, 180]; an ancestor write gives [180, 180, 180, 180].
+            name: "rotate-a-document-where-one-page-differs",
+            filename: "mixed-rotation-4page.pdf",
+            bytes: Some(minimal_pdf::pdf_with_page_tree(
+                4,
+                minimal_pdf::RotationPlacement::OnTheRootAndTheFirstPage {
+                    root: 90,
+                    first_page: 270,
+                },
+            )),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: rotates(4, vec![0, 180, 180, 180]),
             platform_expectations: Vec::new(),
             known_gap: None,
         },
@@ -613,6 +699,60 @@ fn main() {
             limits: None,
             attempt_recovery: false,
             expect,
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        });
+    }
+
+    // THE AGGREGATE CEILINGS, which are the whole reason `merge` checks a limit twice.
+    //
+    // These two were hand-written into `expectations.json` and never added here -- so the
+    // first regeneration deleted them, and nothing failed: the corpus simply got smaller and
+    // the run still printed OK. Found by code review on rotate's branch, and it is the shape
+    // `CLAUDE.md` names as worse than no check at all. `the_corpus_is_not_shrinking` is the
+    // gate that makes it impossible to repeat; this is the fix for the loss itself.
+    for (name, limits, expect) in [
+        (
+            "merge-refuses-when-the-total-passes-max-input-bytes",
+            CaseLimits {
+                max_input_bytes: Some(2000),
+                ..CaseLimits::default()
+            },
+            // Per input both are under the ceiling; together they are not. The point of the
+            // aggregate check: a hundred inputs each just under it is a hundred times over.
+            Outcome::Err(Failure {
+                kind: ErrorKind::LimitExceeded,
+                limit: Some("max_input_bytes".to_owned()),
+                stage: Some("input_size".to_owned()),
+                requested: Some(2776),
+                allowed: Some(2000),
+            }),
+        ),
+        (
+            "merge-refuses-when-the-total-passes-max-pages",
+            CaseLimits {
+                max_pages: Some(11),
+                ..CaseLimits::default()
+            },
+            // `InputFailed`, not a bare `LimitExceeded`: the ceiling is reached while opening
+            // an input, so it arrives wrapped -- and the wrapper carries the detail, which is
+            // what ADR 0017's correction was about.
+            Outcome::Err(Failure {
+                kind: ErrorKind::InputFailed,
+                limit: Some("max_pages".to_owned()),
+                stage: Some("page_count".to_owned()),
+                requested: Some(20),
+                allowed: Some(11),
+            }),
+        ),
+    ] {
+        cases.push(Case {
+            name: name.to_owned(),
+            inputs: vec![merge_input("pages-10.pdf"), merge_input("pages-10.pdf")],
+            password: None,
+            limits: Some(limits),
+            attempt_recovery: false,
+            expect: merges(expect),
             platform_expectations: Vec::new(),
             known_gap: None,
         });

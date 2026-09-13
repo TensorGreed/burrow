@@ -43,9 +43,25 @@ export interface Failure {
   allowed?: number;
 }
 
-export type Outcome = { ok: { page_count: number } } | { err: Failure };
+export type Outcome =
+  | {
+      ok: {
+        page_count: number;
+        /**
+         * Every page's effective rotation, in page order. `rotate` cases only.
+         *
+         * A rotation cannot change the page count, so a case asserting only that would pass
+         * against an implementation that did nothing. These are what tell a real rotation
+         * from a no-op — and they carry the part most likely to diverge between native and
+         * web, since the effective rotation is the nearest `/Rotate` up the page tree and
+         * the two implementations walk it separately.
+         */
+        rotations?: number[];
+      };
+    }
+  | { err: Failure };
 
-export type Operation = "page_count" | "structure_check" | "merge";
+export type Operation = "page_count" | "structure_check" | "merge" | "rotate";
 export type Platform = "native" | "web";
 
 export interface PlatformExpectation {
@@ -162,7 +178,11 @@ export const SUPPORTED_SCHEMA = 3;
  */
 export function render(outcome: Outcome | undefined): string {
   if (outcome === undefined) return "<no result>";
-  if ("ok" in outcome) return `ok(${outcome.ok.page_count} pages)`;
+  if ("ok" in outcome) {
+    const rotations =
+      outcome.ok.rotations === undefined ? "" : ` rotations=[${outcome.ok.rotations.join(",")}]`;
+    return `ok(${outcome.ok.page_count} pages${rotations})`;
+  }
   const f = outcome.err;
   const detail = [
     f.limit === undefined ? null : `limit=${f.limit}`,
@@ -214,7 +234,7 @@ function key(caseName: string, operation: Operation): string {
  * RUN through -- schema 3 lets a case declare only the operations it is about -- but the
  * comparator still needs the full set, to reject a record naming something outside it.
  */
-const OPERATIONS: Operation[] = ["page_count", "structure_check", "merge"];
+const OPERATIONS: Operation[] = ["page_count", "structure_check", "merge", "rotate"];
 
 /**
  * What a case expects of one platform, honouring any recorded by-design difference.
