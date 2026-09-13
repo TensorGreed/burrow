@@ -163,17 +163,25 @@ export function budgetKey(path) {
  * Sorted by path rather than taken in `entries` order, because the digest has to be a
  * function of the payload and not of how the walk happened to enumerate it.
  *
- * GENERATED ENGINE CONTENT HASHES ARE NORMALISED OUT OF TEXT FILES FIRST, and that is not a
- * convenience. The page's CSP names every engine by its content-hashed URL
- * (`connect-src …/qpdf.<16 hex>.wasm`, ADR 0014), so ANY engine rebuild changes
- * `index.html` — measured in CI, where `qpdf.wasm` is built from source and its hash
- * differs from the recording, which made the page differ too.
+ * TWO DIGESTS PER ARTIFACT, and the second exists because of a mistake worth recording.
  *
- * Without this, the only way to keep CI green would be to exempt `page` from the exact
- * check — and `page` is where the design system lives, so that is precisely the line worth
- * checking exactly. Exempting it for a cause that belongs to another artifact would be
- * losing the wrong thing. Nothing is hidden by the normalisation: each engine has its own
- * digest line, so an engine changing is still caught, on the line it belongs to.
+ * The page's CSP names every engine by its content-hashed URL (ADR 0014), so ANY engine
+ * rebuild rewrites `index.html` -- measured in CI, where `qpdf.wasm` is built from source
+ * and its hash differs. `normalised` replaces those generated hashes with a fixed token, so
+ * "did the page's own content change" is answerable without exempting `page` from checking
+ * altogether. `page` is where the design system lives; exempting it for a cause belonging
+ * to another artifact would be losing the wrong thing.
+ *
+ * THE FIRST VERSION RECORDED ONLY THE NORMALISED DIGEST, AND THAT WAS WRONG. Sizes are
+ * measured over the REAL bytes, so a normalised match let the check assert exact size
+ * equality for files that genuinely differ -- and CI duly reported `page: the bytes are
+ * IDENTICAL to the recording, but measured_brotli says 21652 and the build is 21650`. The
+ * bytes were not identical; two engine hashes compress differently, and the message was
+ * the part that was false.
+ *
+ * So both are recorded and the three cases are distinguished rather than collapsed:
+ * identical raw bytes take the exact check, a normalised-only match takes a tight
+ * hash-coupling bound, and a normalised difference is a real change.
  *
  * Deliberately narrow: `.<16 lowercase hex>.` between dots, which is exactly the shape
  * `tools/stage-web-engines.mjs` emits. Vite's own asset hashes are a different length and
@@ -181,17 +189,20 @@ export function budgetKey(path) {
  *
  * @param {string} dir
  * @param {Record<string, { files: string[] }>} groups
- * @returns {Record<string, string>}
+ * @returns {Record<string, { raw: string, normalised: string }>}
  */
 export function digestsByBudgetKey(dir, groups) {
-  /** @type {Record<string, string>} */
+  /** @type {Record<string, { raw: string, normalised: string }>} */
   const digests = {};
   for (const [key, group] of Object.entries(groups)) {
-    const hash = createHash("sha256");
+    const raw = createHash("sha256");
+    const normalised = createHash("sha256");
     for (const path of [...group.files].sort()) {
-      hash.update(normaliseEngineHashes(readFileSync(join(dir, path)), path));
+      const bytes = readFileSync(join(dir, path));
+      raw.update(bytes);
+      normalised.update(normaliseEngineHashes(bytes, path));
     }
-    digests[key] = hash.digest("hex");
+    digests[key] = { raw: raw.digest("hex"), normalised: normalised.digest("hex") };
   }
   return digests;
 }

@@ -35,7 +35,7 @@ import {
   firstLoad,
   normaliseEngineHashes,
 } from "../../../tools/first-load.mjs";
-import { type Live, driftFindings, explain } from "./size-budget-drift.js";
+import { HASH_COUPLING_BYTES, type Live, driftFindings, explain } from "./size-budget-drift.js";
 import { PRODUCTION_DIR } from "./build-output.js";
 
 const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,6 +44,7 @@ interface Line {
   measured_raw: number;
   measured_brotli: number;
   measured_sha256?: string;
+  measured_sha256_normalised?: string;
   budget_brotli: number;
   why?: string;
 }
@@ -62,7 +63,12 @@ const digests = digestsByBudgetKey(PRODUCTION_DIR, groups);
 const live: Record<string, Live> = Object.fromEntries(
   Object.entries(groups).map(([key, group]) => [
     key,
-    { raw: group.raw, brotli: group.brotli, sha256: digests[key] },
+    {
+      raw: group.raw,
+      brotli: group.brotli,
+      sha256: digests[key].raw,
+      sha256Normalised: digests[key].normalised,
+    },
   ]),
 );
 
@@ -225,7 +231,7 @@ describe("the recording describes the build it claims to", () => {
     // A missing digest makes every rule above vacuous for that line, which is the easiest
     // way to switch this check off by accident.
     const missing = Object.entries(budget.artifacts)
-      .filter(([, line]) => !line.measured_sha256)
+      .filter(([, line]) => !line.measured_sha256 || !line.measured_sha256_normalised)
       .map(([key]) => key);
     expect(missing).toEqual([]);
   });
@@ -291,14 +297,21 @@ describe("the drift probe itself", () => {
   // Every rule, against planted input, on every run. Without this the block above is only
   // ever exercised against a recording that matches — which is to say, never exercised.
 
-  const bytes = { raw: 100, brotli: 50, sha256: "aaaa" };
+  const bytes = { raw: 100, brotli: 50, sha256: "aaaa", sha256Normalised: "nnnn" };
   const base = { notByteReproducible: {}, tolerance: 0.02 };
 
   it("passes a recording that matches the build", () => {
     expect(
       driftFindings({
         ...base,
-        recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "aaaa" } },
+        recorded: {
+          a: {
+            measured_raw: 100,
+            measured_brotli: 50,
+            measured_sha256: "aaaa",
+            measured_sha256_normalised: "nnnn",
+          },
+        },
         live: { a: bytes },
       }),
     ).toEqual([]);
@@ -309,7 +322,14 @@ describe("the drift probe itself", () => {
     // them, last time, and every other test passed.
     const findings = driftFindings({
       ...base,
-      recorded: { a: { measured_raw: 100, measured_brotli: 49, measured_sha256: "aaaa" } },
+      recorded: {
+        a: {
+          measured_raw: 100,
+          measured_brotli: 49,
+          measured_sha256: "aaaa",
+          measured_sha256_normalised: "nnnn",
+        },
+      },
       live: { a: bytes },
     });
     expect(findings).toHaveLength(1);
@@ -320,7 +340,14 @@ describe("the drift probe itself", () => {
   it("catches a one-byte drift, because there is no tolerance when nothing changed", () => {
     const findings = driftFindings({
       ...base,
-      recorded: { a: { measured_raw: 99, measured_brotli: 50, measured_sha256: "aaaa" } },
+      recorded: {
+        a: {
+          measured_raw: 99,
+          measured_brotli: 50,
+          measured_sha256: "aaaa",
+          measured_sha256_normalised: "nnnn",
+        },
+      },
       live: { a: bytes },
     });
     expect(findings.map((f) => f.kind)).toEqual(["false-record"]);
@@ -338,7 +365,14 @@ describe("the drift probe itself", () => {
   it("catches an artifact whose bytes changed without being declared unreproducible", () => {
     const findings = driftFindings({
       ...base,
-      recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "bbbb" } },
+      recorded: {
+        a: {
+          measured_raw: 100,
+          measured_brotli: 50,
+          measured_sha256: "bbbb",
+          measured_sha256_normalised: "mmmm",
+        },
+      },
       live: { a: bytes },
     });
     expect(findings.map((f) => f.kind)).toEqual(["undeclared-rebuild"]);
@@ -347,8 +381,15 @@ describe("the drift probe itself", () => {
   it("tolerates a declared unreproducible artifact moving a little", () => {
     expect(
       driftFindings({
-        recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "bbbb" } },
-        live: { a: { raw: 101, brotli: 51, sha256: "aaaa" } },
+        recorded: {
+          a: {
+            measured_raw: 100,
+            measured_brotli: 50,
+            measured_sha256: "bbbb",
+            measured_sha256_normalised: "mmmm",
+          },
+        },
+        live: { a: { raw: 101, brotli: 51, sha256: "aaaa", sha256Normalised: "nnnn" } },
         notByteReproducible: { a: "because" },
         tolerance: 0.02,
       }),
@@ -360,13 +401,95 @@ describe("the drift probe itself", () => {
     // reproducible" would mean "not checked", which is an open door rather than a
     // declared width.
     const findings = driftFindings({
-      recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "bbbb" } },
-      live: { a: { raw: 200, brotli: 100, sha256: "aaaa" } },
+      recorded: {
+        a: {
+          measured_raw: 100,
+          measured_brotli: 50,
+          measured_sha256: "bbbb",
+          measured_sha256_normalised: "mmmm",
+        },
+      },
+      live: { a: { raw: 200, brotli: 100, sha256: "aaaa", sha256Normalised: "nnnn" } },
       notByteReproducible: { a: "because" },
       tolerance: 0.02,
     });
     expect(findings.map((f) => f.kind)).toEqual(["drift"]);
     expect(explain(findings[0])).toContain("tolerance");
+  });
+
+  it("tolerates a size wobble when only the engine hashes differ", () => {
+    // THE CASE CI TAUGHT. A normalised match is NOT identical bytes: the page's CSP quotes
+    // every engine's content hash, and two hashes do not compress identically. Asserting
+    // exact equality here reported `the bytes are IDENTICAL ... 21652 vs 21650`, which was
+    // false in its first four words.
+    expect(
+      driftFindings({
+        ...base,
+        recorded: {
+          a: {
+            measured_raw: 100,
+            measured_brotli: 50,
+            measured_sha256: "aaaa",
+            measured_sha256_normalised: "nnnn",
+          },
+        },
+        live: { a: { raw: 102, brotli: 52, sha256: "DIFFERENT", sha256Normalised: "nnnn" } },
+      }),
+    ).toEqual([]);
+  });
+
+  it("still catches a real change hiding behind an engine-hash difference", () => {
+    // The near-miss for the case above. If the bound were a percentage, or absent, an edit
+    // to the page could ride along with an engine rebuild unnoticed -- and an engine
+    // rebuild happens on every CI run, so that would be a permanent blind spot.
+    const findings = driftFindings({
+      ...base,
+      recorded: {
+        a: {
+          measured_raw: 100,
+          measured_brotli: 50,
+          measured_sha256: "aaaa",
+          measured_sha256_normalised: "nnnn",
+        },
+      },
+      live: {
+        a: {
+          raw: 900,
+          brotli: 50 + HASH_COUPLING_BYTES + 1,
+          sha256: "x",
+          sha256Normalised: "nnnn",
+        },
+      },
+    });
+    expect(findings.map((f) => f.kind)).toEqual(["hash-coupled-drift"]);
+    expect(explain(findings[0])).toContain("Something else changed too");
+  });
+
+  it("treats a changed normalised digest as a real change, not a hash wobble", () => {
+    // An edit to the page's own markup moves the normalised digest, so it can never be
+    // explained away as substitution noise however small it is.
+    const findings = driftFindings({
+      ...base,
+      recorded: {
+        a: {
+          measured_raw: 100,
+          measured_brotli: 50,
+          measured_sha256: "aaaa",
+          measured_sha256_normalised: "nnnn",
+        },
+      },
+      live: { a: { raw: 100, brotli: 50, sha256: "x", sha256Normalised: "CHANGED" } },
+    });
+    expect(findings.map((f) => f.kind)).toEqual(["undeclared-rebuild"]);
+  });
+
+  it("catches a recording missing only the normalised digest", () => {
+    const findings = driftFindings({
+      ...base,
+      recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "aaaa" } },
+      live: { a: bytes },
+    });
+    expect(findings.map((f) => f.kind)).toEqual(["no-digest"]);
   });
 
   it("says nothing about an artifact the build no longer contains", () => {
@@ -375,7 +498,14 @@ describe("the drift probe itself", () => {
     expect(
       driftFindings({
         ...base,
-        recorded: { gone: { measured_raw: 1, measured_brotli: 1, measured_sha256: "aaaa" } },
+        recorded: {
+          gone: {
+            measured_raw: 1,
+            measured_brotli: 1,
+            measured_sha256: "aaaa",
+            measured_sha256_normalised: "nnnn",
+          },
+        },
         live: {},
       }),
     ).toEqual([]);
