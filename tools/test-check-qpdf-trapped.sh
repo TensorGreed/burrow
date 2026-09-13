@@ -54,18 +54,18 @@ echo "check-qpdf-trapped.py: the parser-fixture gate must exist"
 # fixtures in PR #40; this tool did not, and its per-source floor of 10 would pass with 15 of
 # 16 functions parsed. A tightened regex NARROWS the set required to be trapped, silently.
 breaks_it "a tightened ffi.rs parser is caught" \
-  'pub\\(super\\) fn (qpdf\[a-z_0-9\]\*)\\s\*\\(' \
-  'pub\\(super\\) fn (qpdf[a-z_0-9]*)\\s+\\(' \
+  'pub\\(super\\) fn (qpdf\[A-Za-z_0-9\]\*)\\s\*\\(' \
+  'pub\\(super\\) fn (qpdf[A-Za-z_0-9]*)\\s+\\(' \
   "does not find an ordinary declaration"
 
 breaks_it "a loosened ffi.rs parser is caught" \
-  'r"\^\\s\*pub\\(super\\) fn (qpdf\[a-z_0-9\]\*)\\s\*\\("' \
-  'r"(qpdf[a-z_0-9]*)\\s*\\("' \
+  'r"\^\\s\*pub\\(super\\) fn (qpdf\[A-Za-z_0-9\]\*)\\s\*\\("' \
+  'r"(qpdf[A-Za-z_0-9]*)\\s*\\("' \
   "matches a commented-out declaration"
 
 breaks_it "a silent JS bridge parser is caught" \
-  'r"\\\._(qpdf\[a-z_0-9\]\*)\\s\*\\("' \
-  'r"\\._ZZZ(qpdf[a-z_0-9]*)\\s*\\("' \
+  'r"\\\._(qpdf\[A-Za-z_0-9\]\*)\\s\*\\("' \
+  'r"\\._ZZZ(qpdf[A-Za-z_0-9]*)\\s*\\("' \
   "does not find an ordinary bridge call"
 
 # The direction that would bless a call able to abort the process.
@@ -80,7 +80,7 @@ breaks_it "a trapped-set parser that blesses everything is caught" \
 # the check instead of the cause.
 gate_removal_is_caught() {
   local copy="$here/.qpdf-trapped-gate-fixture.py"
-  sed -e 's|r"\^\\s\*pub\\(super\\) fn (qpdf\[a-z_0-9\]\*)\\s\*\\("|r"ZZZNOMATCH"|' \
+  sed -e 's|r"\^\\s\*pub\\(super\\) fn (qpdf\[A-Za-z_0-9\]\*)\\s\*\\("|r"ZZZNOMATCH"|' \
       -e 's|    if fixture_problems:|    if False and fixture_problems:|' \
       "$tool" >"$copy"
   local applied=0
@@ -97,9 +97,14 @@ gate_removal_is_caught() {
     fail=$((fail + 1))
   else
     # It must fail -- but NOT via the fixture gate, which is deleted. The point of the case
-    # is that something else has to notice, and it does: the per-source floor.
-    if grep -qE "parsed only|Traceback" <<<"$got"; then
-      echo "  ok   with the gate gone, the per-source floor still catches a dead parser"
+    # is that something ELSE has to notice, and two things now do.
+    #
+    # It used to be the per-source floor. Since M1 PR B the independent token walk gets
+    # there first and says more: it names every function the dead pattern stopped seeing,
+    # rather than reporting a count below a threshold. Either is a pass here -- the case is
+    # about the gate not being the only thing standing, not about which backstop wins.
+    if grep -qE "parsed only|token walk|Traceback" <<<"$got"; then
+      echo "  ok   with the gate gone, a backstop still catches a dead parser"
       pass=$((pass + 1))
     else
       echo "  FAIL deleting the fixture gate is caught: it failed for an unrecognised reason"
@@ -111,6 +116,57 @@ gate_removal_is_caught() {
   rm -rf "$here/__pycache__"
 }
 gate_removal_is_caught
+
+# THE CASE FOR THE SECOND ROUTE, and it has to defeat the fixtures to prove anything.
+#
+# The fixtures now know about capitals, so narrowing the character class alone is caught by
+# them -- which is good, and says nothing about whether the token walk works. Fixtures can
+# only cover a class of name somebody thought of; the walk is what covers the class nobody
+# has. So this case narrows the pattern AND deletes the two capital-letter fixtures, leaving
+# the walk as the only thing that can notice. If it ever stops noticing, this fails.
+only_the_token_walk_is_left() {
+  local copy="$here/.qpdf-trapped-crosscheck-fixture.py"
+  sed -e 's|r"\^\\s\*pub\\(super\\) fn (qpdf\[A-Za-z_0-9\]\*)\\s\*\\("|r"^\\s*pub\\(super\\) fn (qpdf[a-z_0-9]*)\\s*\\("|' \
+      -e '/a name with a capital letter, which this parser used to miss entirely/d' \
+      -e '/pub(super) fn qpdf_set_deterministic_ID(", "qpdf_set_deterministic_ID"/d' \
+      -e '/a capital letter after an underscore, not at the end/d' \
+      -e '/pub(super) fn qpdf_set_static_aes_IV(", "qpdf_set_static_aes_IV"/d' \
+      "$tool" >"$copy"
+  local applied=0
+  grep -q 'qpdf\[a-z_0-9\]' "$copy" \
+    && ! grep -q 'qpdf_set_deterministic_ID", "qpdf_set_deterministic_ID' "$copy" \
+    && applied=1
+  if [ "$applied" != 1 ]; then
+    echo "  FAIL only the token walk is left: the mutations did not apply, so this proves nothing"
+    fail=$((fail + 1))
+    rm -f "$copy"
+    return
+  fi
+  local got
+  if got="$(python3 "$copy" 2>&1)"; then
+    echo "  FAIL only the token walk is left: a pattern blind to capitals ran anyway"
+    fail=$((fail + 1))
+  elif grep -qF "token walk" <<<"$got" && grep -qF "qpdf_set_deterministic_ID" <<<"$got"; then
+    echo "  ok   with the capital-letter fixtures gone, the token walk still names the missed function"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL only the token walk is left: it failed, but not via the token walk"
+    sed 's/^/        /' <<<"$got" | head -4
+    fail=$((fail + 1))
+  fi
+  rm -f "$copy"
+  rm -rf "$here/__pycache__"
+}
+only_the_token_walk_is_left
+
+# AND THE WALK MUST NOT INVENT FUNCTIONS. A cross-check that reports names nobody can find
+# is worse than none: every run fails and the failure teaches people to ignore it. The
+# first version of `externs_by_token` did exactly this -- it read `fn_like_name(` as a
+# declaration because it checked the character before `fn` and not the one after.
+breaks_it "a token walk that matches inside a word is caught" \
+  'if before.isalnum() or before == "_" or after.isalnum() or after == "_":' \
+  'if before.isalnum() or before == "_":' \
+  "treats \`fn_like_name(\` as a declaration"
 
 echo
 if [ "$fail" -ne 0 ]; then

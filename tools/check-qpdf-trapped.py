@@ -258,6 +258,114 @@ def brace_body(source: str, start: int) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------------
+# THE SECOND ROUTE.
+#
+# Every parser above is a PATTERN, and a pattern has a shape it cannot see past. M1 PR B
+# proved that is not hypothetical: the character class was `[a-z_0-9]*`, so all three
+# declaration parsers were blind to the four qpdf C functions with a capital in the name --
+# `qpdf_set_deterministic_ID`, `qpdf_set_static_ID`, `qpdf_set_static_aes_IV`,
+# `qpdf_set_suppress_original_object_IDs`. All four are untrapped. Declaring one would have
+# passed this gate in silence, and the output would have said OK while examining one fewer
+# function than existed. That is the "4 of 15" shape the root CLAUDE.md names, in the one
+# check whose whole job is to be exhaustive.
+#
+# The fixtures below now cover capitals, and fixtures are the wrong instrument for this on
+# their own: they can only cover a class of name somebody thought of. What catches the
+# class nobody thought of is a SECOND ROUTE that does not share the first one's blind spot.
+#
+# So: tokenise instead of matching. `externs_by_token` walks the `extern "C"` block, finds
+# each `fn`, skips whitespace, and takes the identifier that follows using Rust's own
+# definition of an identifier. There is no qpdf-shaped pattern in it at all, so there is no
+# qpdf-shaped pattern to get wrong. If the two routes disagree, the narrow one is blind and
+# the check FAILS rather than quietly reporting the smaller number.
+#
+# The same argument applies to the JS bridge, where the token is whatever follows `._`.
+# ---------------------------------------------------------------------------------
+
+RUST_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def externs_by_token(block: str) -> set[str]:
+    """Every `fn NAME` in an extern block, found by walking rather than by matching.
+
+    Deliberately NOT a regex over the whole declaration. The point is to share no pattern
+    with `parse_ffi`, so that a class of names the pattern cannot see is still seen here.
+    The only character class is Rust's own definition of an identifier, which is a fact
+    about the language rather than a guess about qpdf's naming.
+    """
+    names: set[str] = set()
+    i = 0
+    while True:
+        at = block.find("fn", i)
+        if at == -1:
+            return names
+        i = at + 2
+        # `fn` must be a WORD OF ITS OWN, checked on BOTH sides. Checking only the left
+        # side was the first version and the fixture below caught it: `fn_like_name(` has a
+        # space before the `fn`, so it passed, and the walk then read `_like_name` as a
+        # declared symbol. A cross-check that invents functions is worse than no
+        # cross-check, because every run would fail with a name nobody can find.
+        before = block[at - 1] if at > 0 else " "
+        after = block[i] if i < len(block) else " "
+        if before.isalnum() or before == "_" or after.isalnum() or after == "_":
+            continue
+        rest = block[i:]
+        stripped = rest.lstrip()
+        match = RUST_IDENT.match(stripped)
+        if match is None:
+            continue
+        # A declaration, not a use: the identifier is followed by `(` or a generic.
+        tail = stripped[match.end() :].lstrip()
+        if tail.startswith(("(", "<")):
+            names.add(match.group(0))
+
+
+def js_exports_by_token(text: str) -> set[str]:
+    """Every `._NAME(` in the JS bridge, found by walking rather than by matching."""
+    names: set[str] = set()
+    i = 0
+    while True:
+        at = text.find("._", i)
+        if at == -1:
+            return names
+        i = at + 2
+        match = RUST_IDENT.match(text[i:])
+        if match is None:
+            continue
+        if text[i + match.end() :].lstrip().startswith("("):
+            names.add(match.group(0))
+
+
+def strip_rust_comments(text: str) -> str:
+    """Line and block comments removed, so a name in prose is not read as a declaration.
+
+    `parse_ffi` achieves the same thing by requiring `pub(super) fn` at the start of a
+    line. The two routes get there differently on purpose.
+    """
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def cross_check(narrow: set[str], tokenised: set[str], where: str, prefix: str) -> list[str]:
+    """Fail when the pattern route sees less than the token route.
+
+    Only the qpdf-prefixed names are compared: an `extern "C"` block may legitimately hold
+    other symbols, and this check is about qpdf's C API. The prefix is a contract, not a
+    guess -- these are C symbol names, so they are exactly what qpdf exports.
+    """
+    tokenised = {n for n in tokenised if n.startswith(prefix)}
+    missed = sorted(tokenised - narrow)
+    if not missed:
+        return []
+    return [
+        f"{where}: the declaration pattern missed {len(missed)} function(s) that a "
+        f"token walk over the same text found: {', '.join(missed)}. The pattern is blind "
+        f"to a class of names, so this check was examining fewer functions than exist -- "
+        f"which reads as OK. Widen it and add a fixture for the class."
+    ]
+
+
 # PARSER FIXTURES.
 #
 # THE SHARP CASE FOR THIS FILE: `engines/build-wasm.sh` parses the SAME `ffi.rs` with the
@@ -375,6 +483,75 @@ qpdf_static_helper(qpdf_data qpdf)
     if "qpdf_static_helper" in trapped:
         problems.append("trapped_functions includes a `static` helper, which is not C API")
 
+    problems += check_cross_check_fixtures()
+
+    return problems
+
+
+def check_cross_check_fixtures() -> list[str]:
+    """The second route must find what the first cannot, and must not cry wolf.
+
+    THE FIXTURES ABOVE ARE NOT ENOUGH ON THEIR OWN, and that is the whole reason this
+    function exists. They can only cover a class of name somebody thought of -- capitals
+    are in there now because M1 PR B was bitten by them, which is to say they were added
+    after the fact. The token walk is what covers the class nobody has thought of yet, and
+    a defence nobody has seen fail is one nobody knows works. So it is exercised here, on
+    every run, against planted input rather than only against the real files where both
+    routes agree.
+    """
+    problems: list[str] = []
+
+    block = """
+        pub(super) fn qpdf_read_memory(a: A) -> B;
+        pub(super) fn qpdf_set_deterministic_ID(a: A);
+        pub(super) fn pdfium_load(a: A);
+    """
+
+    found = externs_by_token(block)
+    for expected in ("qpdf_read_memory", "qpdf_set_deterministic_ID", "pdfium_load"):
+        if expected not in found:
+            problems.append(f"externs_by_token misses {expected}: {sorted(found)}")
+
+    # The near-miss: a use is not a declaration.
+    if externs_by_token("    let x = fn_like_name(3);"):
+        problems.append("externs_by_token treats `fn_like_name(` as a declaration")
+    if "fnord" in externs_by_token("    fnord(x);"):
+        problems.append("externs_by_token matched `fn` inside a longer word")
+
+    # Comment stripping, so prose naming a function is not read as declaring it.
+    stripped = strip_rust_comments("    /// `qpdf_is_linearized` is absent\n    pub(super) fn qpdf_init();")
+    if "qpdf_is_linearized" in externs_by_token(stripped):
+        problems.append("strip_rust_comments left a name in prose visible to the token walk")
+    if "qpdf_init" not in externs_by_token(stripped):
+        problems.append("strip_rust_comments removed a real declaration")
+
+    # THE CROSS-CHECK ITSELF. A narrow set missing what the walk found must be reported,
+    # and the message must name the function -- a complaint that does not say which
+    # function is one nobody can act on.
+    narrow = {"qpdf_read_memory"}
+    tokenised = {"qpdf_read_memory", "qpdf_set_deterministic_ID", "pdfium_load"}
+    reported = cross_check(narrow, tokenised, "fixture", "qpdf")
+    if not reported:
+        problems.append(
+            "cross_check passed a narrow set that is missing qpdf_set_deterministic_ID -- "
+            "it would not have caught the M1 PR B blindness it exists for"
+        )
+    elif "qpdf_set_deterministic_ID" not in reported[0]:
+        problems.append(f"cross_check does not name the missed function: {reported[0]}")
+    elif "pdfium_load" in reported[0]:
+        problems.append("cross_check complained about a non-qpdf extern, which is not its business")
+
+    # And it must be silent when the two agree, or it is noise rather than a check.
+    if cross_check({"qpdf_a", "qpdf_b"}, {"qpdf_a", "qpdf_b"}, "fixture", "qpdf"):
+        problems.append("cross_check reports a difference when the two routes agree")
+
+    # The JS walk, both directions.
+    js = "self.x = () => qpdf()._qpdf_set_static_ID(d);"
+    if "qpdf_set_static_ID" not in js_exports_by_token(js):
+        problems.append("js_exports_by_token misses a capitalised export")
+    if js_exports_by_token("const a = b._c;"):
+        problems.append("js_exports_by_token matched a property access that is not a call")
+
     return problems
 
 
@@ -408,11 +585,44 @@ def declared_functions() -> dict[str, list[str]]:
     def record(name: str, where: str) -> None:
         out.setdefault(name, []).append(where)
 
-    for name in parse_ffi(NATIVE_FFI.read_text()):
+    ffi_text = NATIVE_FFI.read_text()
+    bridge_text = WEB_BRIDGE_JS.read_text()
+
+    for name in parse_ffi(ffi_text):
         record(name, "qpdf/ffi.rs")
 
-    for name in parse_js_bridge(WEB_BRIDGE_JS.read_text()):
+    for name in parse_js_bridge(bridge_text):
         record(name, "worker/bridge.js")
+
+    # THE SECOND ROUTE, run against the same text. See its section above: a pattern has a
+    # shape it cannot see past, and this walk has no qpdf-shaped pattern in it. A
+    # disagreement means the pattern is blind and the count above is an under-report, so it
+    # is raised here rather than left to look like a clean run.
+    cross: list[str] = []
+    cross += cross_check(
+        set(parse_ffi(ffi_text)),
+        externs_by_token(strip_rust_comments(ffi_text)),
+        "qpdf/ffi.rs",
+        "qpdf",
+    )
+    cross += cross_check(
+        set(parse_js_bridge(bridge_text)),
+        js_exports_by_token(bridge_text),
+        "worker/bridge.js",
+        "qpdf",
+    )
+    for block in re.findall(r'unsafe extern "C" \{(.*?)\n\}', LINK_CHECK.read_text(), re.S):
+        cross += cross_check(
+            set(re.findall(r"^\s*fn (qpdf[A-Za-z_0-9]*)\s*\(", block, re.MULTILINE)),
+            externs_by_token(strip_rust_comments(block)),
+            "link_check.rs",
+            "qpdf",
+        )
+    if cross:
+        raise SystemExit(
+            "FAILED — the declaration patterns and an independent token walk disagree:\n  - "
+            + "\n  - ".join(cross)
+        )
 
     for name in re.findall(r"^\s*/// `(qpdf[A-Za-z_0-9]*)`\.", WEB_TRAIT.read_text(), re.MULTILINE):
         record(name, "web/bridge.rs (doc)")
