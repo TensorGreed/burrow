@@ -115,9 +115,24 @@ test.
 sources live in `src/` so vitest can import them; `tsc -p src/host/tsconfig.json` type-checks
 them and runs as part of `pnpm check`.
 
+**Engines load on first use, and the start-up bound times SILENCE rather than duration.**
+See [ADR 0018](../../docs/adr/0018-when-the-engines-load.md), which settles it for every tool
+page. Two things there are easy to get wrong again:
+
+- **A start-up bound cannot be a fixed duration.** It was 60 s for the whole of start-up, with
+  a comment calling that "comfortably above any measured cold load" — and on Chrome's "Slow 3G"
+  profile the engines take over two minutes, so the first file a person chose was refused with
+  "Something inside burrow failed" and the worker discarded _as a crash_. Three tries would
+  have latched the breaker. The worker now posts `{ starting: true }` as each module lands and
+  the timer restarts; what is bounded is a worker that has gone quiet.
+- **`integrity` means one progress message per module, and no more is possible.** SRI makes the
+  browser verify a whole response before releasing any of it, so a module's body arrives in one
+  read — measured: the same file without integrity arrives in 3,545 chunks. Three finer designs
+  were built and all reported two events across a 130-second download. Do not try a fourth.
+
 **The watchdog's clock starts when the worker takes the operation, not when the page asks.**
 The worker posts `{ id, ack: true }` before it begins; the page's timer starts on that ack.
-Engine start-up has its own bound (`initTimeoutMs`), because a cold 6.5 MB compile must never
+Engine start-up has its own bound (`initTimeoutMs`), because a cold 6.8 MB compile must never
 be charged to the file — that is the web form of the queue-time bug PR 2 fixed natively. A
 start-up failure is `Internal`, **never** `LimitExceeded`.
 
@@ -311,7 +326,7 @@ re-decide. Each was a decision with a reason, not a shape that happened.
   means Vite bundles the lifecycle into the island's chunk, so no `/host/` URL ships and the
   deletion stays correct.
 - **The engines start when a file is chosen, never on page load.** Mounting the component is a
-  few kilobytes; starting the engines is 6.5 MB.
+  few kilobytes; starting the engines is 6.8 MB.
 - **Every typed error becomes a sentence in a pure function**, beside the component and tested
   without a browser (`src/components/merge-messages.ts`). The input is a `kind`, an index and
   a limit name — all computed in Rust — so there is no field through which an engine's prose
@@ -322,6 +337,14 @@ re-decide. Each was a decision with a reason, not a shape that happened.
 - **The page does not re-implement a ceiling.** It sends the files and reports what the core
   refuses, so the prose and the code can be caught disagreeing. Say what happens to a large
   file in the page's own words rather than letting someone discover it.
+- **The page says what it is doing while the engines load.** The first file waits for 6.8 MB —
+  7 seconds on Fast 4G, 145 on Slow 3G, both measured. "counting…" for two and a half minutes
+  with no explanation is the page being silent about the one thing the person wants to know.
+- **A size ceiling is applied before the bytes are read.** The worker calls
+  `check_input_budget` with each `Blob`'s `size`, which is the same
+  `burrow_core::ops::check_total_input_bytes` that `merge` calls — not a mirror of it. Checking
+  after the read is no earlier than the core, and the transport materialises roughly four times
+  the payload on the way (issue #51).
 - **Cancel is `discardWorker()`, and a cancelled operation's reply is ignored rather than
   shown.** The host fails an in-flight request with `Internal` when the worker is discarded,
   which is correct from its point of view — but a person who pressed Stop did not have

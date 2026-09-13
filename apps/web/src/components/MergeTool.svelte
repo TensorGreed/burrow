@@ -155,6 +155,14 @@
       );
       // `ENGINE_UNAVAILABLE` and `CANCELLED` are HOST verdicts, not `Error` variants, so the
       // kind is normalised here exactly as `merge()` does it rather than in two dialects.
+      // ASK THE HOST, do not infer it from a reply. "A reply of any kind means start-up
+      // finished" was the first version and it is false: `worker-host.js` answers `Internal`
+      // when `ensureWorker()` fails and `EngineUnavailable` when the breaker has latched,
+      // both without a worker ever existing. So one failed init would have hidden this line
+      // for the rest of the page -- and the next file really would download 6.8 MB in
+      // silence, which is the case ADR 0018 exists to end. Found by code review.
+      engineStarted = h.hasWorker();
+
       // A count the page cancelled says nothing about the file. Leave the row as it was.
       if (!raw.ok && raw.kind === CANCELLED) return;
       const reply = raw.ok ? raw : { ...raw, kind: hostKind(raw.kind) };
@@ -241,6 +249,22 @@
    * arrived a moment late.
    */
   let currentMerge = 0;
+
+  /**
+   * Whether the engines have ever finished starting on this page.
+   *
+   * ENGINES LOAD ON FIRST USE, NOT ON PAGE LOAD, and that decision is recorded in ADR 0018.
+   * The cost of it lands here: the first file a person chooses waits for 6.8 MB, which is
+   * 7 seconds on Chrome's "Fast 4G" profile and 145 seconds on its "Slow 3G" one -- measured,
+   * both. Showing "counting…" for two and a half minutes with no explanation is the page
+   * being silent about the one thing the person would want to know.
+   *
+   * So it says so, once, while it happens. The size is stated because it is knowable and
+   * because the whole argument for loading on first use is that nobody should spend it
+   * without meaning to.
+   */
+  let engineStarted = $state(false);
+  const preparing = $derived(!engineStarted && entries.some((e) => e.pages === null));
 
   async function merge() {
     if (!canMerge) return;
@@ -475,6 +499,13 @@
       {/each}
     </ol>
 
+    {#if preparing}
+      <p class="preparing" role="status">
+        Getting the PDF engine ready. It is about 7 MB and it is fetched once per visit, so this
+        first file takes longer than the rest.
+      </p>
+    {/if}
+
     <p class="total">
       {#if totalPages !== null}
         <span class="measure">{totalPages}</span>
@@ -620,6 +651,14 @@
   .file__actions {
     display: flex;
     gap: var(--space-2);
+  }
+
+  /* Not `--refuse` and not `--signal`: nothing has gone wrong and nothing has been measured.
+     This is the interface saying what it is doing. */
+  .preparing {
+    margin: var(--space-3) 0 0;
+    color: var(--ink-quiet);
+    font-size: var(--step--1);
   }
 
   .file__problem {

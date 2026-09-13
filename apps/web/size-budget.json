@@ -22,6 +22,21 @@
     "why in the commit. An engine pin bump is the expected reason. Raising a budget to make",
     "CI pass without knowing what grew is the thing this file exists to prevent.",
     "",
+    "WHEN THE TOTAL IS RE-RAISED TO 3%, because this file now contains two decisions that look",
+    "opposite. M1 PR B3 refused a raise at 2.6% headroom -- \"raising a budget that is not",
+    "binding would spend margin nobody needed\" -- and the consolidation batch took one at 2.0%.",
+    "The discriminator is not the number: it is whether the PAYLOAD grew or the MEASUREMENT",
+    "changed. Growth eats the recorded headroom and is supposed to; that is what the margin is",
+    "for, and raising it back would be refunding the thing being measured. A measurement that",
+    "stops being blind is different -- the payload was always that size, the file was simply",
+    "wrong about it -- and leaving the total there would mean this file claiming 3% while",
+    "enforcing 2.0%, which is the quiet disagreement it exists to prevent.",
+    "",
+    "The residual cost is stated rather than glossed: the raise hands out 67 KB of room at the",
+    "moment the measurement got sharper, which is the moment a gate is most useful tight. What",
+    "makes that acceptable is that nothing is unwatched -- every artifact line keeps its own 10%",
+    "headroom, and the newly-visible bytes landed on `page-js`, which has one.",
+    "",
     "RAISED ONCE SO FAR, in M1 PR B2, for merge's write path. Per-artifact budgets are",
     "recomputed only for lines that MOVED -- raising one that did not would be a silent",
     "widening nobody asked for -- and `page` keeps its absolute budget rather than a",
@@ -115,20 +130,20 @@
       "measured_sha256_normalised": "83e19277aea18df391d5af854cc1a7f1211dcc60931ac9f9d1f09f67ea03af60"
     },
     "engines/burrow-worker.js": {
-      "measured_raw": 269941,
-      "measured_brotli": 48079,
-      "budget_brotli": 52886,
-      "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR. M1 PR B2 added +2,628 -- the write path's nine bridge functions and the wasm-bindgen glue for the merge entry point. M1 PR B3 took it DOWN by 13 (48,092 -> 48,079): unwrapping `InputFailed` for the reply's limit detail added code, and one `innermost` helper replacing three ad-hoc unwraps took back slightly more than it cost.",
-      "measured_sha256": "cf67aea48dafe39cad0eb8f1bbf017f76aaf4ca38fa599ceb2126c33ea61cd6b",
-      "measured_sha256_normalised": "a87392bce3529bd37ab7eec115122a14b0c558bc44d148a62740dcc044e01746"
+      "measured_raw": 276655,
+      "measured_brotli": 49839,
+      "budget_brotli": 54822,
+      "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR. M1 PR B2 added +2,628 -- the write path's nine bridge functions and the wasm-bindgen glue for the merge entry point. M1 PR B3 took it DOWN by 13 (48,092 -> 48,079): unwrapping `InputFailed` for the reply's limit detail added code, and one `innermost` helper replacing three ad-hoc unwraps took back slightly more than it cost. M1's consolidation batch added +1,125 for the pre-flight budget call and the Reply it drains. And +635 for the start-up progress message the stall bound reads (ADR 0018).",
+      "measured_sha256": "292197a61cff105df6f562b5a6b0065bf5ecf9d86a26e5cb3a619b828483d720",
+      "measured_sha256_normalised": "4a5c6a5960f74e5e2efbf18496c58b58fd21612570e6ef1c1b9a9657f935ebfa"
     },
     "engines/burrow_wasm_bg.wasm": {
-      "measured_raw": 56058,
-      "measured_brotli": 20140,
-      "budget_brotli": 22154,
-      "why": "The Rust binding. Grows as operations land, which is expected -- and M1 PR B2 is the first test of the ROADMAP's prediction that \"a merge implementation should move this line and nothing else\". It moved this line by +4,044. It did NOT move only this line: engines/qpdf.wasm took +53,456 and engines/burrow-worker.js +2,628. The prediction was reasonable and wrong, because it assumed the engine already had what an operation needed. M1 PR B3 took it DOWN by 40 (20,180 -> 20,140) while adding code, which is a compression effect rather than a saving and is recorded so nobody reads it as one.",
-      "measured_sha256": "f9a485ed9ad8ec5204c51101b5d508a096e0a06d263cb460a479ed7c4fda4283",
-      "measured_sha256_normalised": "f9a485ed9ad8ec5204c51101b5d508a096e0a06d263cb460a479ed7c4fda4283"
+      "measured_raw": 58452,
+      "measured_brotli": 21145,
+      "budget_brotli": 23259,
+      "why": "The Rust binding. Grows as operations land, which is expected -- and M1 PR B2 is the first test of the ROADMAP's prediction that \"a merge implementation should move this line and nothing else\". It moved this line by +4,044. It did NOT move only this line: engines/qpdf.wasm took +53,456 and engines/burrow-worker.js +2,628. The prediction was reasonable and wrong, because it assumed the engine already had what an operation needed. M1 PR B3 took it DOWN by 40 (20,180 -> 20,140) while adding code, which is a compression effect rather than a saving and is recorded so nobody reads it as one. M1's consolidation batch added +1,005 for `check_input_budget` and the `check_total_input_bytes` it shares with `merge` (issue #51).",
+      "measured_sha256": "121faa25c54144a421d99645aae1a01d1ee8aa643b2dc4aef5fc7549b4697d74",
+      "measured_sha256_normalised": "121faa25c54144a421d99645aae1a01d1ee8aa643b2dc4aef5fc7549b4697d74"
     },
     "engines/control.txt": {
       "measured_raw": 78,
@@ -139,26 +154,34 @@
       "measured_sha256_normalised": "ad9d8021d8ae20c52a99717073dee047fc55bcbf1b9c7821ee0b5b5375bd673b"
     },
     "page": {
-      "measured_raw": 50488,
-      "measured_brotli": 29909,
+      "measured_raw": 29161,
+      "measured_brotli": 21904,
       "budget_brotli": 51200,
-      "why": "The heaviest landing route and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage. M1 PR B3 MOVED THE ROUTE, not just the number: this line measured `index.html` until the first tool page existed, and people arrive from a search for \"merge pdf\" and land on `/merge-pdf`. Budgeting the home page would have budgeted the lightest route while the heaviest one grew unwatched, so `heaviestFirstLoad` now weighs every route and budgets the largest; `measured_route` records which one that was and the test fails if the build disagrees. The move cost 8,259 brotli: the island bundle that mounts the merge tool, plus the page's own markup and CSS. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of that is one file: the self-hosted typeface, 18,524 of it. apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. The absolute budget still has 20 KiB of room, which is what it is for: failing CI on editorial work teaches people to raise budgets without reading them.",
-      "measured_sha256": "d3ee8ee49d3a791e03b2f9d25537d4198c33c40c397503f2fd1fd490b560bd0a",
-      "measured_sha256_normalised": "e31c7afbd4e44d77247f16f5b8b631ce3648275abab0aeb5590fa613abaad225",
+      "why": "The heaviest landing route's markup, stylesheets and fonts, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. SCRIPTS ARE NOT ON THIS LINE ANY MORE; they are on `page-js`, for the reason recorded there and in tools/first-load.mjs. That split is what lets this line keep the EXACT digest check: it was briefly on not_byte_reproducible with a 2% bound, about 600 bytes, which is enough to hide a CSS regression -- and the thing it was tolerating belonged entirely to the JavaScript. An ABSOLUTE budget (50 KiB), not a percentage. The route is the heaviest one, not the home page: people arrive from a search for \"merge pdf\" and land on /merge-pdf. `measured_route` records which one that was, and the test fails if the build disagrees. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of that is one file: the self-hosted typeface, 18,524 of it. apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload.",
+      "measured_sha256": "11a1ddf6b7625590c1b56cbe777be7d84e63e6e17c4e2aa41a072c8ff977c192",
+      "measured_sha256_normalised": "83e00c5df5628a919af47345619b264b63b58941063eec9ce969e02824cf7677",
       "measured_route": "merge-pdf/index.html"
+    },
+    "page-js": {
+      "measured_raw": 52951,
+      "measured_brotli": 19178,
+      "budget_brotli": 21095,
+      "why": "Every bundled script the heaviest landing route needs: the island that mounts the merge tool, and the Svelte runtime it imports. IT IS ITS OWN LINE BECAUSE IT IS THE ONLY PART OF THE PAGE THAT IS NOT BYTE-REPRODUCIBLE. Measured, not assumed: M1's consolidation batch pushed a per-file digest breakdown to CI, and against this aarch64 recording the x86_64 build reported identical digests for the markup, both stylesheets and the font, and a different one for the island chunk alone -- the bundler's native binary mangles identifiers differently. Pooled with the rest, that cost the whole page line its exact check. THE RUNTIME CHUNK WAS INVISIBLE UNTIL NOW, and it is 31 KB raw of the 52 KB here. `firstLoad` derived the payload from the markup alone and did not follow a script's own `import`s, so a third of the page's real JavaScript was a download nothing watched -- found while splitting this line, not by anything failing. The budget is the usual 10% per-artifact headroom on a fresh measurement. M1's consolidation batch added +192 for the \"getting the engine ready\" line the page now shows while the engines load (ADR 0018).",
+      "measured_sha256": "f0a4ff7a458e8999610f095b50693ccc576f1640c0a209d4272380c836ffde20",
+      "measured_sha256_normalised": "47696689d36128650a64398d732ab5ffd39a65863e97a2e02d27d57c269ab28b"
     }
   },
   "total": {
-    "measured_raw": 7137358,
-    "measured_brotli": 2322444,
-    "budget_brotli": 2383361,
-    "why": "The binding gate. Everything a user downloads before their first operation runs. RAISED IN M1 PR B2, from 2,299,796 to 2,383,361, and this is the first raise. The payload grew 60,124 brotli bytes because merge needs an engine that can WRITE: qpdf's QPDFWriter (+53,456), the Rust entry point (+4,044) and the bridge (+2,628). The raise restores the recorded 3% headroom rather than inventing a new margin, and the alternative was measured rather than assumed -- PDFium can merge with zero added bytes and loses outlines, attachments and working form fields (ADR 0017). A budget raised without knowing what grew has stopped being a budget; this one names every line that moved and why. M1 PR B3 moved it +8,206, to 2,322,444, and NOT by shipping more engine: the page line changed which route it measures, from the home page to /merge-pdf, which is the heaviest route and the one people actually land on. The budget is NOT raised for it -- 2,383,361 still leaves 2.6% of headroom against the recorded 3%, and raising a budget that is not binding would spend margin nobody needed."
+    "measured_raw": 7178090,
+    "measured_brotli": 2336382,
+    "budget_brotli": 2403482,
+    "why": "The binding gate. Everything a user downloads before their first operation runs. RAISED IN M1 PR B2, from 2,299,796 to 2,383,361, and this is the first raise. The payload grew 60,124 brotli bytes because merge needs an engine that can WRITE: qpdf's QPDFWriter (+53,456), the Rust entry point (+4,044) and the bridge (+2,628). The raise restores the recorded 3% headroom rather than inventing a new margin, and the alternative was measured rather than assumed -- PDFium can merge with zero added bytes and loses outlines, attachments and working form fields (ADR 0017). A budget raised without knowing what grew has stopped being a budget; this one names every line that moved and why. M1 PR B3 moved it +8,206, to 2,322,444, and NOT by shipping more engine: the page line changed which route it measures, from the home page to /merge-pdf, which is the heaviest route and the one people actually land on. The budget is NOT raised for it -- 2,383,361 still leaves 2.6% of headroom against the recorded 3%, and raising a budget that is not binding would spend margin nobody needed. RAISED AGAIN IN M1's CONSOLIDATION BATCH, from 2,383,361 to 2,403,482, and this raise is unlike the last one: THE PAYLOAD DID NOT GROW. The measurement stopped being blind. `firstLoad` never followed a script's own `import`s, so the Svelte runtime the island pulls in -- 31,063 raw, 11,034 brotli -- was a real download no budget line could see. Counting it moved the total by exactly that. The raise restores the recorded 3% headroom rather than inventing a margin; refusing to raise it would have left the file claiming 3% and enforcing 2.1%, which is the kind of quiet disagreement this file exists to prevent. The pre-flight budget check (#51) added 2,130 on top of that: 1,005 in the Rust module and 1,125 in the worker bundle. Within the budget above; not raised for it."
   },
   "not_byte_reproducible": {
     "engines/burrow_wasm_bg.wasm": "wasm-pack output. bindings/burrow-wasm/pkg/ is gitignored and rebuilt per machine, so the bytes depend on the local Rust and wasm-bindgen versions rather than on anything committed.",
     "engines/burrow-worker.js": "Concatenates pkg/burrow_wasm.js, so it inherits the line above. THIS IS THE ONE THAT DRIFTED: recorded at 45,052 brotli and measuring 45,288 on an unchanged checkout, 236 bytes from a differently-built pkg/, with nothing failing.",
     "engines/qpdf.wasm": "Built from source by engines/build-wasm.sh rather than fetched, and OBSERVED to differ between a local build and CI -- which is how it got onto this list: the check failed and named it. The cause is not established. emsdk is pinned (ADR 0004), so a reproducible Emscripten build is plausible and the usual culprit is absolute paths baked in by the compiler; nobody has looked. Until someone does, this is a bound rather than a claim. pdfium.wasm is NOT here: it is a prebuilt vendored artifact and its bytes match.",
-    "page": "The island's minified output differs between architectures. Measured: `page` disagreed with a recording made minutes earlier, three CI runs in a row, while two builds on the SAME machine were byte-identical -- and the per-file diagnostic named the cause as the island chunk itself, with no engine hash or integrity digest left in it. CI is x86_64 (`ubuntu-latest`) and this recording is aarch64, and the bundler's native binary assigns mangled identifiers differently: `f as Ie` here, `f as xe` there. THIS IS A REAL LOSS AND IT IS NOT BEING GLOSSED. Until M1 PR B3 the `page` line took the exact check, and the header above argues at length for keeping it there. It now takes the 2% bound instead, which is about 600 bytes -- enough to hide a CSS regression. Two normalisations were tried first and both are in the history rather than the code: the worker's sha384 integrity digest, which the island embeds, and Vite's chunk hash in the markup, which is derived from the island's content. Each removed one coupling and neither reached this one, because this one is the island's own bytes. What would restore the exact check is a reproducible bundle, which means either pinning the bundler's output across architectures or recording the measurement on the architecture CI uses. Neither has been attempted."
+    "page-js": "The bundler's minified output differs between architectures. Measured three times in CI against this recording: two builds on the SAME machine are byte-identical, and the x86_64 build assigns mangled identifiers differently from this aarch64 one -- `f as Ie` here, `f as xe` there. This is the whole reason scripts have their own budget line: pooled with the markup and stylesheets it took THOSE off the exact check too. Restoring an exact check here needs a reproducible bundle, which means pinning the bundler's output across architectures or recording on the architecture CI uses. Neither has been attempted."
   },
   "drift_tolerance": 0.02
 }

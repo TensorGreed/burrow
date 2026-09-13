@@ -119,6 +119,56 @@ export function firstLoad(dir, entryPage = "index.html") {
     throw new Error(`${dir}: no engines/ artifacts; the payload cannot be right`);
   }
 
+  // AND WHAT THOSE SCRIPTS IMPORT, transitively.
+  //
+  // A bundled island does not arrive alone: Astro's chunk `import`s the Svelte runtime from a
+  // second file, and the browser must have both before anything runs. Scanning only the markup
+  // counted the island (21 KB raw) and missed the runtime beside it (31 KB) -- a third of the
+  // page's real payload, invisible to the line that exists to watch it, found while splitting
+  // the page budget in M1's consolidation batch.
+  //
+  // Specifiers are RELATIVE to the importing file and are resolved against its directory,
+  // because that is what the browser does. Only same-origin relative and root-relative ones
+  // are followed; there is nothing else to follow, since no third-party request is permitted
+  // on any page.
+  const followed = new Set();
+  const queue = [...referenced].filter((path) => /\.m?js$/.test(path));
+  while (queue.length > 0) {
+    const from = queue.pop();
+    if (from === undefined || followed.has(from)) continue;
+    followed.add(from);
+    const source = readFileSync(join(dir, from), "utf8");
+    const base = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
+    // Three shapes, because a bundled chunk uses all three and a single clever pattern was
+    // already wrong once: the first version bounded the distance between `import` and the
+    // specifier at 64 characters, and a minified island's destructured import list is
+    // hundreds. It matched nothing and reported a complete payload.
+    const specifiers = [
+      ...source.matchAll(/\bfrom\s*["']([^"']+)["']/g),
+      ...source.matchAll(/(?:^|[\s;}])import\s*["']([^"']+)["']/g),
+      ...source.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g),
+    ];
+    for (const [, specifier] of specifiers) {
+      if (
+        !specifier.startsWith("./") &&
+        !specifier.startsWith("../") &&
+        !specifier.startsWith("/")
+      ) {
+        continue;
+      }
+      const resolved = specifier.startsWith("/")
+        ? specifier.slice(1)
+        : normalisePath(base, specifier);
+      if (!files.includes(resolved)) {
+        throw new Error(`${from} imports ${specifier}, which is not in the build`);
+      }
+      if (!referenced.has(resolved)) {
+        referenced.add(resolved);
+        queue.push(resolved);
+      }
+    }
+  }
+
   const paths = [entryPage, ...referenced, ...engines].sort();
   const entries = paths.map((path) => {
     const bytes = readFileSync(join(dir, path));
@@ -132,6 +182,27 @@ export function firstLoad(dir, entryPage = "index.html") {
       brotli: entries.reduce((n, e) => n + e.brotli, 0),
     },
   };
+}
+
+/**
+ * Resolve a relative module specifier against the directory of the file that imported it.
+ *
+ * Deliberately tiny and deliberately not `node:path`: these are POSIX-ish build paths with
+ * `/` separators regardless of platform, and `path.resolve` would anchor them to the process's
+ * working directory.
+ *
+ * @param {string} base
+ * @param {string} specifier
+ * @returns {string}
+ */
+function normalisePath(base, specifier) {
+  const parts = base.length > 0 ? base.split("/") : [];
+  for (const segment of specifier.split("/")) {
+    if (segment === "." || segment === "") continue;
+    if (segment === "..") parts.pop();
+    else parts.push(segment);
+  }
+  return parts.join("/");
 }
 
 /**
@@ -188,15 +259,36 @@ export function heaviestFirstLoad(dir) {
  * chunk on, so adding a route can rename the home page's CSS without changing a byte of it.
  *
  * So engine artifacts are keyed on their unhashed name, which is stable and meaningful, and
- * everything else -- the entry page and the assets it pulls in -- is pooled into one `page`
- * line. Pooling is right for the page anyway: its files are small, they split and merge at
- * Vite's discretion, and what matters is the shell's total cost, not which chunk holds it.
+ * everything else -- the entry page and the assets it pulls in -- is pooled. Pooling is right
+ * for the page anyway: its files are small, they split and merge at Vite's discretion, and
+ * what matters is the shell's total cost, not which chunk holds it.
+ *
+ * TWO POOLS, NOT ONE, AND THE SPLIT IS BY KIND RATHER THAN BY NAME.
+ *
+ * `page-js` is every bundled script; `page` is the markup, the stylesheets and the fonts.
+ * They are separated because they differ in one property that the drift check depends on:
+ * **a bundled script is not byte-reproducible across architectures and the rest of the page
+ * is.** That is measured rather than assumed -- M1 PR B3 pushed a per-file digest breakdown
+ * to CI, and against an aarch64 recording the x86_64 build reported identical digests for
+ * the markup, both stylesheets and the font, and a different one for the island chunk alone.
+ * The bundler's native binary assigns mangled identifiers differently (`f as Ie` here,
+ * `f as xe` there).
+ *
+ * Pooling them together cost the whole line its exact check: `page` went onto
+ * `not_byte_reproducible` and a CSS regression of up to 2% could have hidden behind a
+ * difference belonging entirely to the JavaScript. Split, the stylesheets and the markup keep
+ * the exact check and only the scripts take the bound.
+ *
+ * The rule is BY KIND so it classifies what does not exist yet. A new stylesheet joins the
+ * exact line automatically; a new script joins the bounded one. Naming the island's chunk
+ * would have been a list to keep up to date, and this project has already watched one of
+ * those rot.
  *
  * @param {string} path
  * @returns {string}
  */
 export function budgetKey(path) {
-  if (!path.startsWith("engines/")) return "page";
+  if (!path.startsWith("engines/")) return /\.m?js$/.test(path) ? "page-js" : "page";
   return path.replace(/\.[0-9a-f]{16}(\.[A-Za-z0-9]+)$/, "$1");
 }
 
@@ -238,8 +330,23 @@ export function budgetKey(path) {
  * hash-coupling bound, and a normalised difference is a real change.
  *
  * Deliberately narrow: `.<16 lowercase hex>.` between dots, which is exactly the shape
- * `tools/stage-web-engines.mjs` emits. Vite's own asset hashes are a different length and
- * alphabet, so they are untouched and a CSS change is still a digest change.
+ * `tools/stage-web-engines.mjs` emits.
+ *
+ * AND, IN MARKUP ONLY, Vite's own `.<8 chars>.` asset hash. This is the second thing the page
+ * quotes that is not its own: a script chunk's name is a hash of that chunk's CONTENT, and a
+ * bundled script is not byte-reproducible across architectures. Without this the markup
+ * inherits the JavaScript's unreproducibility through a filename.
+ *
+ * It is safe HERE and would not be anywhere else, and the reason is the split in `budgetKey`:
+ * the scripts live on their own budget line, with their own digest, so a real island change
+ * shows up there. A stylesheet's name is likewise backed by its own bytes in this same group.
+ * What is given up is exactly one thing -- a pure rename with identical content -- and what
+ * is bought is the `page` line keeping its exact check instead of the whole line taking a 2%
+ * bound because of something belonging to the JavaScript.
+ *
+ * This was tried and reverted once before the split existed, with a commit saying it bought
+ * nothing. That was true then and is not now: on its own it removed one coupling of three.
+ * Outside markup the hashes are left alone, and there is a near-miss for it.
  *
  * @param {string} dir
  * @param {Record<string, { files: string[] }>} groups
@@ -273,7 +380,11 @@ const TEXT_ASSET = /\.(html|css|js|mjs|json|txt|xml|svg)$/;
  */
 export function normaliseEngineHashes(bytes, path) {
   if (!TEXT_ASSET.test(path)) return bytes;
-  return Buffer.from(bytes.toString("utf8").replace(/\.[0-9a-f]{16}\./g, ".<enginehash>."));
+  const text = bytes.toString("utf8").replace(/\.[0-9a-f]{16}\./g, ".<enginehash>.");
+  if (!/\.html$/.test(path)) return Buffer.from(text);
+  return Buffer.from(
+    text.replace(/\.[A-Za-z0-9_-]{8}\.(js|css|woff2?|svg|png)\b/g, ".<vitehash>.$1"),
+  );
 }
 
 export function byBudgetKey(measurement) {

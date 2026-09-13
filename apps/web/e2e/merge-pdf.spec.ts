@@ -219,6 +219,40 @@ test("a second merge works without emptying the list first", async ({ page }) =>
   await expect(page.locator(".total")).toContainText("148");
 });
 
+test("it says the engine is loading, and stops saying it once it has", async ({ page }) => {
+  // The one part of ADR 0018 a person actually sees, and it had no test of any kind — found
+  // by code review. The decision it exists to justify is that engines load on first use
+  // rather than on page load: the cost of that lands on the first file, which is 7 seconds on
+  // Fast 4G and 145 on Slow 3G, and "counting…" for two and a half minutes with no
+  // explanation is the page being silent about the one thing the person wants to know.
+  //
+  // Not throttled here, so the line is brief. What is asserted is that it appears before the
+  // first count and is gone after it — not how long it lasts, which is the network's business.
+  await page.goto("/merge-pdf");
+
+  const preparing = page.locator(".preparing");
+  await expect(preparing).toHaveCount(0);
+
+  await page.locator("input[type=file]").setInputFiles(fixture("pages-10.pdf"));
+  await expect(
+    preparing,
+    "the page never said it was fetching the engine, so the first file's wait is unexplained",
+  ).toBeVisible();
+  await expect(preparing).toContainText("once per visit");
+
+  await expect(page.locator(".total")).toContainText("10", { timeout: 45_000 });
+  await expect(
+    preparing,
+    "the line stayed up after the engine was ready, so it says nothing about what is happening",
+  ).toHaveCount(0);
+
+  // AND NOT AGAIN. The engines are up for the life of the page; a second file that re-showed
+  // "getting the engine ready" would be telling a person something untrue.
+  await page.locator("input[type=file]").setInputFiles(fixture("blank-1page.pdf"));
+  await expect(page.locator("li.file")).toHaveCount(2);
+  await expect(preparing).toHaveCount(0);
+});
+
 test("an encrypted input is refused by name, and blocks the merge", async ({ page }) => {
   await page.goto("/merge-pdf");
   await choose(page, ["pages-10.pdf", "encrypted.pdf"]);

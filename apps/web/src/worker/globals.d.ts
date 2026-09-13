@@ -176,6 +176,15 @@ declare const wasm_bindgen: {
    * the largest thing this boundary carries. Rust validates the table against the buffer.
    */
   merge(inputs: Uint8Array, lengths: Uint32Array, limits: WebLimits): Reply;
+
+  /**
+   * Whether a set of inputs is small enough in total, by size alone.
+   *
+   * Called before a single `Blob` is read, so the transport cannot exhaust the tab on the way
+   * to a ceiling the core would have applied anyway (issue #51). The comparison itself is
+   * `burrow_core::ops::check_total_input_bytes`, the same function `merge` calls.
+   */
+  check_input_budget(sizes: Float64Array, limits: WebLimits): Reply;
 };
 
 /** Consumed by the call it is passed to — see the note in `main.js`. Never `.free()`d. */

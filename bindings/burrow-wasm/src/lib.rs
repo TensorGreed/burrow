@@ -619,6 +619,109 @@ pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimi
     .with_lifecycle(&limits)
 }
 
+/// Whether a set of inputs is small enough in total, **before any of them is read**.
+///
+/// # Why this exists
+///
+/// The aggregate `max_input_bytes` check in [`merge`] happens before a single document is
+/// opened, which is the right place in the core and is too late on the web. The transport
+/// gets there first: the worker reads every `Blob`, copies them into one flat buffer, and
+/// wasm-bindgen copies that into linear memory -- roughly four times the payload before Rust
+/// is consulted at all. A selection several times over the ceiling can exhaust the tab on the
+/// way in, and what the person sees is "something inside burrow failed" rather than the
+/// refusal the ceiling exists to give them. Measured and recorded as issue #51.
+///
+/// So the worker calls this with each `Blob`'s `size` -- a number it already has, without
+/// reading anything -- and refuses there if this refuses.
+///
+/// # This does not move the decision into JavaScript
+///
+/// [ADR 0009](../../../docs/adr/0009-web-panic-contract-and-binding-boundary.md) §2 forbids a
+/// binding enforcing any part of `Limits`, and comparing sizes in the worker would be exactly
+/// that. The comparison is [`burrow_core::ops::check_total_input_bytes`], and it is **the same
+/// function [`merge`] calls** -- not a mirror of it. The two cannot disagree about the
+/// ceiling, because there is only one of them.
+///
+/// # Sizes cross as `f64`
+///
+/// A `Blob`'s `size` is a JavaScript number. `f64` is what that is, and converting in Rust
+/// means the rejection of a negative, fractional or non-finite one is a typed error rather
+/// than a silent `as` cast -- the truncation class `core/CLAUDE.md` denies casts for, arriving
+/// from the one direction where the value is entirely caller-controlled.
+///
+/// # Errors
+///
+/// Never panics. `LimitExceeded` when the total is over the ceiling, carrying the same limit
+/// name, stage and numbers [`merge`] would have produced; `InvalidArgument` for a size that is
+/// not a whole non-negative number.
+#[wasm_bindgen]
+#[must_use]
+pub fn check_input_budget(sizes: Box<[f64]>, limits: WebLimits) -> Reply {
+    let limits = limits.to_core();
+    input_budget_reply(&sizes, &limits).with_lifecycle(&limits)
+}
+
+/// The verdict itself, without the lifecycle fields.
+///
+/// Split out **so it can be tested at all**: `with_lifecycle` reads the engine heaps through
+/// wasm-bindgen imports, which panic on a native target, so every native test of the entry
+/// point above died at `bridge.rs` before reaching an assertion. Code review found the whole
+/// function untested — the web test stubs it out and the conformance case exercises `merge` —
+/// and this is the seam that makes the branches reachable from `cargo test`.
+fn input_budget_reply(sizes: &[f64], limits: &Limits) -> Reply {
+    let mut exact: Vec<u64> = Vec::with_capacity(sizes.len());
+    for size in sizes {
+        // Rejected rather than rounded. A size that is not a whole non-negative number did
+        // not come from a `Blob`, and guessing what was meant is how a ceiling gets skipped.
+        let Some(whole) = whole_bytes(*size) else {
+            return Reply::failure(&Error::InvalidArgument(
+                "an input size is not a whole number of bytes".to_owned(),
+            ));
+        };
+        exact.push(whole);
+    }
+
+    match burrow_core::ops::check_total_input_bytes(exact, limits) {
+        // Zero pages: nothing was opened, and claiming a page count from a size check would
+        // be inventing a number. The caller wants the verdict, not a measurement.
+        Ok(_) => Reply::success(0),
+        Err(error) => Reply::failure(&error),
+    }
+}
+
+/// A `f64` as a byte count, or `None` if it is not one.
+///
+/// **Every condition the `as` below relies on is checked HERE**, rather than by the caller.
+/// Security review found the first version stating this contract and not holding it: the
+/// guards lived at the call site, so `whole_bytes(f64::NAN)` and `whole_bytes(-5.0)` each
+/// returned `Some(0)` -- and zero is the one value that makes a ceiling pass. The comment at
+/// the call site even claimed the fallible shape existed "so a future edit to the guard cannot
+/// silently truncate", which was exactly backwards: deleting the guard turned a hostile size
+/// into a passing one. A function whose invariant depends on being called correctly is not an
+/// invariant.
+fn whole_bytes(size: f64) -> Option<u64> {
+    // NaN and both infinities.
+    if !size.is_finite() {
+        return None;
+    }
+    // Negative, or a fraction. `-0.0` passes both and converts to 0, which is the right
+    // answer for it rather than a hole: an empty `Blob` is empty.
+    if size < 0.0 || size.fract() != 0.0 {
+        return None;
+    }
+    // 2^53 is where an f64 stops representing consecutive integers, so anything above it is
+    // not a byte count anyone can rely on -- and it is nine petabytes, far past any ceiling.
+    if size > 9_007_199_254_740_992.0 {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "guarded above: finite, non-negative, integral, and below 2^53"
+    )]
+    Some(size as u64)
+}
+
 /// Merge several documents into one, in the order given.
 ///
 /// # The inputs arrive as one flat buffer, not an array of arrays
@@ -939,5 +1042,121 @@ mod tests {
         assert_eq!(reply.pages(), 42);
         assert!(reply.kind().is_empty());
         assert!(reply.message().is_empty());
+    }
+
+    // ---------------------------------------------------------------- check_input_budget
+
+    // Code review: the pre-flight had no Rust test at all. The web test stubs this function
+    // out, and the conformance case exercises `merge`, so nothing in CI executed it.
+
+    fn limits(max_input_bytes: u64) -> Limits {
+        Limits::with(|l| l.max_input_bytes = max_input_bytes)
+    }
+
+    fn budget(sizes: &[f64], max_input_bytes: u64) -> Reply {
+        input_budget_reply(sizes, &limits(max_input_bytes))
+    }
+
+    #[test]
+    fn a_set_within_the_ceiling_is_allowed() {
+        let reply = budget(&[1_000.0, 1_000.0], 2_000);
+        assert!(reply.ok(), "{}", reply.kind());
+        // Nothing was opened, so there is no page count to report and none is invented.
+        assert_eq!(reply.pages(), 0);
+    }
+
+    #[test]
+    fn a_set_over_the_ceiling_is_refused_with_both_numbers() {
+        let reply = budget(&[1_000.0, 1_001.0], 2_000);
+        assert!(!reply.ok());
+        assert_eq!(reply.kind(), "LimitExceeded");
+        assert_eq!(reply.limit(), "max_input_bytes");
+        assert_eq!(reply.stage(), "input_size");
+        assert_eq!(reply.requested(), 2001);
+        assert_eq!(reply.allowed(), 2000);
+        // A ceiling is an ordinary outcome. Reporting it as fatal would cost a worker, and
+        // three would latch the circuit breaker (ADR 0015 §3).
+        assert!(
+            !reply.fatal(),
+            "a ceiling must not poison the engine instance"
+        );
+    }
+
+    #[test]
+    fn exactly_the_ceiling_is_allowed() {
+        // The boundary, in the direction that matters: a tool that refused the largest set it
+        // documents would be refusing what its own prose promises.
+        assert!(budget(&[2_000.0], 2_000).ok());
+    }
+
+    #[test]
+    fn a_size_that_is_not_a_byte_count_refuses_the_whole_set() {
+        for bad in [-1.0, 0.5, f64::NAN, f64::INFINITY, 9_007_199_254_740_994.0] {
+            // Paired with a legitimate size, so the case is "one bad entry among good ones"
+            // rather than "a single strange argument".
+            let reply = budget(&[10.0, bad], u64::MAX);
+            assert!(!reply.ok(), "{bad} was accepted");
+            assert_eq!(reply.kind(), "InvalidArgument", "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_empty_set_is_allowed_rather_than_refused() {
+        // `merge` refuses an empty list separately, with `InvalidArgument`. The pre-flight
+        // must not answer a different question: nothing is not too big.
+        assert!(budget(&[], 0).ok());
+    }
+
+    // ---------------------------------------------------------------- whole_bytes
+
+    // Security review found the first version of this function stating a contract it did not
+    // hold: the guards were at the call site, so called directly it turned NaN and -5.0 into
+    // `Some(0)`. Zero is the one value that makes a size ceiling pass, so these are the cases
+    // that matter, and they are asserted against the function rather than against the caller.
+
+    #[test]
+    fn a_size_that_is_not_a_byte_count_is_refused() {
+        for size in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            -5.0,
+            1.5,
+            f64::MIN_POSITIVE,
+            // Exactly representable, and nine petabytes past any ceiling.
+            9_007_199_254_740_994.0,
+            f64::MAX,
+        ] {
+            assert_eq!(
+                whole_bytes(size),
+                None,
+                "{size} was accepted as a byte count"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_size_survives_exactly() {
+        for size in [0.0, 1.0, 1_388.0, 536_870_912.0, 9_007_199_254_740_992.0] {
+            let whole = whole_bytes(size).expect("a whole non-negative size");
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "the values above are all exactly representable; this compares back"
+            )]
+            let round_tripped = whole as f64;
+            assert!(
+                (round_tripped - size).abs() < f64::EPSILON,
+                "{size} did not survive the conversion"
+            );
+        }
+    }
+
+    #[test]
+    fn negative_zero_is_an_empty_file_rather_than_a_hole() {
+        // `-0.0 < 0.0` is false and its fractional part is `-0.0`, so it reaches the
+        // conversion. That is correct -- an empty Blob is empty -- and it is asserted rather
+        // than left as something a reader has to work out.
+        assert_eq!(whole_bytes(-0.0), Some(0));
     }
 }

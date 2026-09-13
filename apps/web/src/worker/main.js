@@ -273,7 +273,7 @@ self.onmessage = async (event) => {
     // THE ACK, AND WHY IT IS HERE RATHER THAN AT THE TOP OF THIS HANDLER.
     //
     // The page's watchdog starts its clock on this message, not on its own `postMessage`.
-    // Everything above this line -- the policy guard, and a cold 6.5 MB engine compile that
+    // Everything above this line -- the policy guard, and a cold 6.8 MB engine compile that
     // `ensureReady()` may be awaiting -- is start-up, which the page bounds separately. A
     // file must never be blamed for time spent before the worker could look at it.
     //
@@ -304,6 +304,37 @@ self.onmessage = async (event) => {
     // because `run()`'s contract is per-operation and a single-input op that suddenly took
     // a list would be a silent change to every existing caller.
     const inputs = request.op === "merge" ? request.blobs : [request.blob];
+
+    // THE BUDGET IS CHECKED BEFORE A SINGLE BYTE IS READ, and that ordering is the whole
+    // point of this call.
+    //
+    // `burrow_core::ops::merge` checks the aggregate `max_input_bytes` before it opens any
+    // document, which is the right place in the core and is too late here: the loop below
+    // materialises the payload once, the flat buffer copies it again, and wasm-bindgen
+    // copies that into linear memory -- so a selection several times over the ceiling can
+    // exhaust the tab on the way in, and the person sees "something inside burrow failed"
+    // instead of the refusal the ceiling exists to give them. Issue #51.
+    //
+    // A `Blob`'s `size` is already known; nothing is read to ask this question. And the
+    // question is asked in RUST, by the same function `merge` itself calls -- ADR 0009 §2
+    // forbids a binding enforcing any part of `Limits`, and comparing these numbers here
+    // would be exactly that.
+    const budget = wasm_bindgen.check_input_budget(
+      Float64Array.from(inputs, (blob) => blob.size),
+      new wasm_bindgen.WebLimits(
+        BigInt(request.limits.maxInputBytes),
+        BigInt(request.limits.maxMemoryBytes),
+        BigInt(request.limits.maxDurationMs),
+        BigInt(request.limits.maxPages),
+        BigInt(request.limits.maxPixels),
+      ),
+    );
+    const verdict = drainReply(request.id, budget);
+    if (!verdict.ok) {
+      self.postMessage(verdict);
+      return;
+    }
+
     const buffers = [];
     for (const blob of inputs) {
       buffers.push(new Uint8Array(await blob.arrayBuffer()));

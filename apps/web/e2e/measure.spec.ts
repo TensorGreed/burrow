@@ -32,7 +32,7 @@ const MIB = 1024 * 1024;
 test("respawn cost, including compiling the engines", async ({ page }, testInfo) => {
   await openHarness(page);
 
-  // Five cold respawns. Each one re-fetches 6.5 MB of WebAssembly (from a `no-store` server,
+  // Five cold respawns. Each one re-fetches 6.8 MB of WebAssembly (from a `no-store` server,
   // so no HTTP cache is hiding the fetch) and compiles all three modules.
   const samples: number[] = [];
   for (let i = 0; i < 5; i += 1) {
