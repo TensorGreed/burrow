@@ -392,6 +392,26 @@ describe("normalising generated engine hashes out of the page digest", () => {
     expect(digest("<h1>Your files stay here</h1>")).not.toBe(digest("<h1>Upload your files</h1>"));
   });
 
+  it("hides a changed worker integrity digest", () => {
+    // The second generated value, and the one that arrived with the first tool page. The
+    // island imports `src/generated/engines.js` to fetch the worker with `integrity`, and
+    // `engines/burrow-worker.js` is not byte-reproducible — so that digest is compiled into
+    // a `_astro/*.js` file in the `page` group and differs per machine. Measured: CI
+    // reported `page` as changed against a recording made minutes earlier on an unchanged
+    // checkout.
+    const before = digest('integrity:"sha384-' + "A".repeat(64) + '"', "_astro/island.js");
+    const after = digest('integrity:"sha384-' + "B".repeat(64) + '"', "_astro/island.js");
+    expect(before).toBe(after);
+  });
+
+  it("does NOT hide a change beside an integrity digest", () => {
+    // The near-miss. A pattern that swallowed the surrounding code would hide the island
+    // itself, which is most of what the `page` line is now for.
+    expect(
+      digest('fetch(a,{integrity:"sha384-' + "A".repeat(64) + '"})', "_astro/island.js"),
+    ).not.toBe(digest('fetch(b,{integrity:"sha384-' + "A".repeat(64) + '"})', "_astro/island.js"));
+  });
+
   it("does not touch Vite's own asset hashes, which are a different shape", () => {
     // 8 characters and a different alphabet. A CSS change renames the chunk, and that
     // rename must still register as a change.

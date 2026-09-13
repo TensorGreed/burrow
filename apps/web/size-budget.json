@@ -56,9 +56,9 @@
     "have meant not checking the line the design system lives on because of something",
     "belonging to a different line.",
     "",
-    "So each artifact records TWO digests: the raw bytes, and the bytes with generated engine",
-    "hashes replaced by a fixed token. Three cases, distinguished rather than collapsed:",
-    "",
+    "So each artifact records TWO digests: the raw bytes, and the bytes with the two generated",
+    "engine values -- a content-hashed URL and the worker's sha384 integrity digest -- replaced",
+    "by fixed tokens. Three cases, distinguished rather than collapsed:",
     "  raw match              -> exact size equality. Nothing changed, so no tolerance.",
     "  normalised match only  -> only the quoted engine hashes differ. The artifact's own",
     "                            content is unchanged, but its SIZE may wobble, because two",
@@ -115,7 +115,7 @@
       "budget_brotli": 52886,
       "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR. M1 PR B2 added +2,628 -- the write path's nine bridge functions and the wasm-bindgen glue for the merge entry point. M1 PR B3 took it DOWN by 13 (48,092 -> 48,079): unwrapping `InputFailed` for the reply's limit detail added code, and one `innermost` helper replacing three ad-hoc unwraps took back slightly more than it cost.",
       "measured_sha256": "cf67aea48dafe39cad0eb8f1bbf017f76aaf4ca38fa599ceb2126c33ea61cd6b",
-      "measured_sha256_normalised": "a87392bce3529bd37ab7eec115122a14b0c558bc44d148a62740dcc044e01746"
+      "measured_sha256_normalised": "9bdfe8efd97799163c9a80475e0022a3844048e4da8be8c6d31dd80d058c640a"
     },
     "engines/burrow_wasm_bg.wasm": {
       "measured_raw": 56058,
@@ -139,7 +139,7 @@
       "budget_brotli": 51200,
       "why": "The heaviest landing route and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage. M1 PR B3 MOVED THE ROUTE, not just the number: this line measured `index.html` until the first tool page existed, and people arrive from a search for \"merge pdf\" and land on `/merge-pdf`. Budgeting the home page would have budgeted the lightest route while the heaviest one grew unwatched, so `heaviestFirstLoad` now weighs every route and budgets the largest; `measured_route` records which one that was and the test fails if the build disagrees. The move cost 8,259 brotli: the island bundle that mounts the merge tool, plus the page's own markup and CSS. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of that is one file: the self-hosted typeface, 18,524 of it. apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. The absolute budget still has 20 KiB of room, which is what it is for: failing CI on editorial work teaches people to raise budgets without reading them.",
       "measured_sha256": "d3ee8ee49d3a791e03b2f9d25537d4198c33c40c397503f2fd1fd490b560bd0a",
-      "measured_sha256_normalised": "e31c7afbd4e44d77247f16f5b8b631ce3648275abab0aeb5590fa613abaad225",
+      "measured_sha256_normalised": "ee87a9746607eca61a1090502eddcf9804780cf732af3b25aba66b9e51bdaea0",
       "measured_route": "merge-pdf/index.html"
     }
   },

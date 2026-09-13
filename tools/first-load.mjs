@@ -237,8 +237,21 @@ export function budgetKey(path) {
  * identical raw bytes take the exact check, a normalised-only match takes a tight
  * hash-coupling bound, and a normalised difference is a real change.
  *
- * Deliberately narrow: `.<16 lowercase hex>.` between dots, which is exactly the shape
- * `tools/stage-web-engines.mjs` emits. Vite's own asset hashes are a different length and
+ * TWO GENERATED VALUES ARE NORMALISED, both emitted by `tools/stage-web-engines.mjs`:
+ *
+ *   * `.<16 lowercase hex>.` between dots -- a staged engine artifact's content-hashed URL;
+ *   * `sha384-<base64>` -- the SUBRESOURCE INTEGRITY digest of the worker bundle.
+ *
+ * The second arrived with the first tool page and is the same problem wearing different
+ * clothes. `engines/burrow-worker.js` is on `not_byte_reproducible` (it concatenates a
+ * gitignored, per-machine `pkg/`), and the merge island imports `src/generated/engines.js`
+ * to fetch the worker with `integrity` -- so that unreproducible digest is compiled into a
+ * `_astro/*.js` file in the `page` group. CI duly reported the page as changed against a
+ * recording made minutes earlier on an unchanged checkout. Exempting `page` would mean not
+ * checking the line the design system and the tool page live on, because of something
+ * belonging to a different line -- the trade this function exists to avoid making.
+ *
+ * Both patterns are deliberately narrow. Vite's own asset hashes are a different length and
  * alphabet, so they are untouched and a CSS change is still a digest change.
  *
  * @param {string} dir
@@ -273,7 +286,12 @@ const TEXT_ASSET = /\.(html|css|js|mjs|json|txt|xml|svg)$/;
  */
 export function normaliseEngineHashes(bytes, path) {
   if (!TEXT_ASSET.test(path)) return bytes;
-  return Buffer.from(bytes.toString("utf8").replace(/\.[0-9a-f]{16}\./g, ".<enginehash>."));
+  return Buffer.from(
+    bytes
+      .toString("utf8")
+      .replace(/\.[0-9a-f]{16}\./g, ".<enginehash>.")
+      .replace(/sha384-[A-Za-z0-9+/]{64}={0,2}/g, "sha384-<integrity>"),
+  );
 }
 
 export function byBudgetKey(measurement) {
