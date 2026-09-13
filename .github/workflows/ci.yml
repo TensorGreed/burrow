@@ -728,6 +728,24 @@ jobs:
       - name: Re-verify engine checksums
         run: engines/fetch.sh
 
+      # ON EVERY RUN, WARM CACHE OR COLD -- which is the whole reason this step exists rather
+      # than only the call inside build-wasm.sh.
+      #
+      # The comparison lived in build-wasm.sh, which the step above runs only on a cache MISS,
+      # and the cache key is (pins.toml, fetch.sh, build-wasm.sh). `qpdf_remove_page` was
+      # declared natively for split in PR #55, never exported, and sat on main undetected
+      # because no PR since touched any of those three files. It surfaced only when rotate's
+      # branch edited a COMMENT in pins.toml and busted the cache.
+      #
+      # The comment above already says a cache is not a provenance claim. This is the same
+      # point one layer in: a check gated on a cache miss is a check that mostly does not run,
+      # and it is the second one in this repository to have hidden a real defect. It reads only
+      # committed files plus the cached qpdf.wasm, both present either way.
+      - name: qpdf.wasm exports exactly what ffi.rs declares (ADR 0013 §1)
+        run: |
+          tools/check-wasm-exports.sh
+          tools/test-check-wasm-exports.sh
+
       # ---- the Rust module --------------------------------------------------------
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:

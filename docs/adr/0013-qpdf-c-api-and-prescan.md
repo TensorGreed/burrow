@@ -152,6 +152,36 @@ object on a type mismatch rather than throwing, so a trapped call can hand back 
 maps an unexpected type to `Malformed`; a silently wrong inherited rotation is worse than a
 refusal.
 
+### Amendment, 2026-09-13 (rotate): what the web may export is a third list, and it is checked on every run
+
+§1's rule governs what burrow may *call*. `engines/build-wasm.sh` enforces a second, narrower
+thing: the web module exports exactly what `ffi.rs` declares, so JavaScript cannot reach a
+function this ADR never cleared. That invariant assumed the native and web paths implement the
+same operations, and they do not — `burrow-ops` has `split` and `rotate`, and
+`bindings/burrow-wasm` has neither, because there is no `impl PageExtractor for WebQpdf` and no
+`impl PageRotator for WebQpdf`.
+
+So a declaration may be absent from the export list, with an argued entry in
+`engines/qpdf-not-exported.toml` naming the operation it belongs to and why the web cannot use
+it. **This is narrower than the old rule, not wider**: exporting rotate's six `qpdf_oh_*`
+functions to satisfy a set comparison would make them callable from JavaScript for an operation
+that does not exist on that path. An entry is removed by the pull request that gives the web the
+matching implementation, in the same change that adds the export.
+
+**The check was invisible, and that is the part worth recording.** `qpdf_remove_page` was
+declared for `split` in PR #55, never exported, and sat on `main` undetected — the comparison
+lived inside `build-wasm.sh`, which CI runs only on a wasm cache miss, and the cache key is
+`hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh')`. No PR since
+touched any of those. It surfaced only because rotate's branch edited a *comment* in
+`pins.toml`, changed the hash, and forced a rebuild.
+
+That is the second cache-gated check in this repository to hide a real defect, after the qpdf
+crypto assertion that `CLAUDE.md`'s "where a check lives in `ci.yml` is load-bearing" rule was
+written from. The comparison now lives in `tools/check-wasm-exports.sh`, reads only committed
+files plus the cached `qpdf.wasm`, and runs in the `web` job on every run. Seven adversarial
+cases in `tools/test-check-wasm-exports.sh` plant a defect per rule and require a refusal by
+name.
+
 ## Context
 
 M1 PR 1 linked qpdf; nothing used it. This decision covers how it is called, and it had to

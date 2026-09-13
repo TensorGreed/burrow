@@ -57,7 +57,11 @@
 #
 #          python3 tools/check-qpdf-trapped.py --generate --accept-helper-changes
 #
-#      Re-read `engines/qpdf-untrapped-accepted.toml` in the same pass. Its entries are
+#      Re-read `engines/qpdf-untrapped-accepted.toml` in the same pass, and
+#      `engines/qpdf-not-exported.toml`: it records the natively-declared functions the web
+#      deliberately does not export yet, and `tools/check-wasm-exports.sh` holds the two
+#      lists together. An entry there is a temporary state with an owner -- it goes when the
+#      web gains the implementation that needs it. Its entries are
 #      arguments about a specific version's implementation, and its `qpdf_version` field
 #      says which one they were checked against.
 #
