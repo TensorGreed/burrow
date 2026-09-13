@@ -237,32 +237,9 @@ export function budgetKey(path) {
  * identical raw bytes take the exact check, a normalised-only match takes a tight
  * hash-coupling bound, and a normalised difference is a real change.
  *
- * TWO GENERATED VALUES ARE NORMALISED, both emitted by `tools/stage-web-engines.mjs`:
- *
- *   * `.<16 lowercase hex>.` between dots -- a staged engine artifact's content-hashed URL;
- *   * `sha384-<base64>` -- the SUBRESOURCE INTEGRITY digest of the worker bundle.
- *
- * The second arrived with the first tool page and is the same problem wearing different
- * clothes. `engines/burrow-worker.js` is on `not_byte_reproducible` (it concatenates a
- * gitignored, per-machine `pkg/`), and the merge island imports `src/generated/engines.js`
- * to fetch the worker with `integrity` -- so that unreproducible digest is compiled into a
- * `_astro/*.js` file in the `page` group. CI duly reported the page as changed against a
- * recording made minutes earlier on an unchanged checkout. Exempting `page` would mean not
- * checking the line the design system and the tool page live on, because of something
- * belonging to a different line -- the trade this function exists to avoid making.
- *
- * A THIRD REPLACEMENT, AND ONLY INSIDE HTML: Vite's own `.<8 chars>.` asset hash. This one
- * took two goes to see. Normalising the integrity digest inside the island was not enough,
- * because Vite names the island's chunk from a hash OF ITS CONTENT -- so the unreproducible
- * digest reaches the page's markup a second time, as a filename, where no amount of
- * normalising the JS can help.
- *
- * It is safe here and would not be anywhere else, and the reason is the grouping: these
- * digests cover every file in the group, contents included. A chunk's name therefore carries
- * nothing its own bytes do not already carry -- a real CSS or island change alters that
- * file's contents, and the group digest changes through the contents rather than through the
- * name. What is given up is exactly one thing: a pure rename with identical bytes, which is
- * not a change anybody needs told about. Outside HTML the hashes are left alone.
+ * Deliberately narrow: `.<16 lowercase hex>.` between dots, which is exactly the shape
+ * `tools/stage-web-engines.mjs` emits. Vite's own asset hashes are a different length and
+ * alphabet, so they are untouched and a CSS change is still a digest change.
  *
  * @param {string} dir
  * @param {Record<string, { files: string[] }>} groups
@@ -296,23 +273,8 @@ const TEXT_ASSET = /\.(html|css|js|mjs|json|txt|xml|svg)$/;
  */
 export function normaliseEngineHashes(bytes, path) {
   if (!TEXT_ASSET.test(path)) return bytes;
-  return Buffer.from(
-    bytes
-      .toString("utf8")
-      .replace(/\.[0-9a-f]{16}\./g, ".<enginehash>.")
-      .replace(/sha384-[A-Za-z0-9+/]{64}={0,2}/g, "sha384-<integrity>")
-      .replace(
-        HTML.test(path) ? /\.[A-Za-z0-9_-]{8}\.(js|css|woff2?|svg|png)\b/g : NOTHING,
-        ".<vitehash>.$1",
-      ),
-  );
+  return Buffer.from(bytes.toString("utf8").replace(/\.[0-9a-f]{16}\./g, ".<enginehash>."));
 }
-
-/** Matches nothing, so the replacement above can be selected without branching around it. */
-const NOTHING = /(?!)/g;
-
-/** Markup, where an asset's NAME is quoted and its bytes are digested separately. */
-const HTML = /\.html$/;
 
 export function byBudgetKey(measurement) {
   /** @type {Record<string, { raw: number, brotli: number, files: string[] }>} */

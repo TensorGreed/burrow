@@ -333,19 +333,16 @@ describe("the recording describes the build it claims to", () => {
       .join(" ");
 
     // PER FILE, FOR THE POOLED LINES, because a pooled digest that disagrees says only that
-    // one of six files moved. Twice now a `page` disagreement has cost a round trip to CI to
-    // find out which -- and the answer was a file nobody would have guessed both times. The
-    // group digests are the gate; this is the log line that makes a red one actionable.
+    // one of six files moved. Learning WHICH cost three round trips to CI, and the answer was
+    // not one anybody would have guessed. The group digests are the gate; this is the log
+    // line that makes a red one actionable without a push.
     for (const [key, group] of Object.entries(groups)) {
       if (group.files.length < 2) continue;
       const perFile = [...group.files]
         .sort()
         .map((path) => {
-          const normalisedBytes = normaliseEngineHashes(
-            readFileSync(join(PRODUCTION_DIR, path)),
-            path,
-          );
-          return `${path}=${createHash("sha256").update(normalisedBytes).digest("hex").slice(0, 12)}`;
+          const bytes = normaliseEngineHashes(readFileSync(join(PRODUCTION_DIR, path)), path);
+          return `${path}=${createHash("sha256").update(bytes).digest("hex").slice(0, 12)}`;
         })
         .join("\n    ");
       console.log(`  ${key}, file by file:\n    ${perFile}`);
@@ -412,113 +409,11 @@ describe("normalising generated engine hashes out of the page digest", () => {
     expect(digest("<h1>Your files stay here</h1>")).not.toBe(digest("<h1>Upload your files</h1>"));
   });
 
-  it("hides a changed worker integrity digest", () => {
-    // The second generated value, and the one that arrived with the first tool page. The
-    // island imports `src/generated/engines.js` to fetch the worker with `integrity`, and
-    // `engines/burrow-worker.js` is not byte-reproducible — so that digest is compiled into
-    // a `_astro/*.js` file in the `page` group and differs per machine. Measured: CI
-    // reported `page` as changed against a recording made minutes earlier on an unchanged
-    // checkout.
-    const before = digest('integrity:"sha384-' + "A".repeat(64) + '"', "_astro/island.js");
-    const after = digest('integrity:"sha384-' + "B".repeat(64) + '"', "_astro/island.js");
-    expect(before).toBe(after);
-  });
-
-  it("does NOT hide a change beside an integrity digest", () => {
-    // The near-miss. A pattern that swallowed the surrounding code would hide the island
-    // itself, which is most of what the `page` line is now for.
-    expect(
-      digest('fetch(a,{integrity:"sha384-' + "A".repeat(64) + '"})', "_astro/island.js"),
-    ).not.toBe(digest('fetch(b,{integrity:"sha384-' + "A".repeat(64) + '"})', "_astro/island.js"));
-  });
-
-  it("hides a Vite asset hash quoted in MARKUP, where it is only a name", () => {
-    // THIS TEST USED TO ASSERT THE OPPOSITE, and the reason it gave — "a CSS change renames
-    // the chunk, and that rename must still register as a change" — was already covered
-    // twice over: these digests run over every file in the group, CONTENTS INCLUDED, so a
-    // CSS change registers through the CSS file's own bytes.
-    //
-    // What forced the change is that Vite names a chunk from a hash of its content, and the
-    // island's content carries the worker's unreproducible integrity digest. Normalising
-    // that digest inside the JS was not enough: it reaches the markup a second time, as a
-    // filename. Measured twice in CI, on two commits.
-    //
-    // What is given up is exactly one thing: a pure rename with identical bytes.
-    expect(digest('<link href="/_astro/index.-sYAk8S9.css">')).toBe(
+  it("does not touch Vite's own asset hashes, which are a different shape", () => {
+    // 8 characters and a different alphabet. A CSS change renames the chunk, and that
+    // rename must still register as a change.
+    expect(digest('<link href="/_astro/index.-sYAk8S9.css">')).not.toBe(
       digest('<link href="/_astro/index.BkQBePuw.css">'),
-    );
-  });
-
-  it("does NOT hide a Vite asset hash anywhere else", () => {
-    // The near-miss, and the boundary of the rule above. Inside a JS or CSS file a hashed
-    // name is part of that file's own content -- it is what the module actually imports --
-    // and hiding it there would let an import be repointed with the digest unchanged.
-    const before = digest('import"./render.Dy18q9u-.js"', "_astro/island.js");
-    const after = digest('import"./render.BkQBePuw.js"', "_astro/island.js");
-    expect(before).not.toBe(after);
-  });
-
-  it("survives the whole difference CI actually sees, on the real build", () => {
-    // THE PROBE THAT WOULD HAVE SAVED TWO RED CI RUNS. The rules above are each checked
-    // against a planted fixture; this checks them TOGETHER, against this build, on the one
-    // difference that matters: CI's `pkg/` is built there, so the worker bundle's integrity
-    // digest differs, the island that embeds it differs, and Vite therefore names its chunk
-    // differently. Both consequences at once, which is how they arrive.
-    //
-    // A local recording cannot be checked against CI without pushing. It can be checked
-    // against a simulation of CI, and that is this.
-    const group = groups.page;
-    const island = group.files.find((f) => f.includes("astro_type_script"));
-    const markup = group.files.find((f) => f.endsWith(".html"));
-    expect(
-      island,
-      "no island chunk in the page group; this probe is measuring nothing",
-    ).toBeDefined();
-    expect(markup, "no markup in the page group").toBeDefined();
-
-    const renamed = (island as string).replace(/\.[A-Za-z0-9_-]{8}\.js$/, ".ZZZZ1234.js");
-    expect(renamed, "the island's name did not look like a Vite chunk").not.toBe(island);
-
-    /** The group's normalised digest, with `substitute` applied to each file first. */
-    const digestWith = (substitute: (path: string, text: string) => string) => {
-      const hash = createHash("sha256");
-      // The SAME ORDER as `digestsByBudgetKey`, and the renamed chunk keeps the original's
-      // place: every island chunk shares a long prefix and differs only inside the hash, so
-      // a rename cannot reorder it against anything else in the group.
-      for (const path of [...group.files].sort()) {
-        const bytes = readFileSync(join(PRODUCTION_DIR, path));
-        const text = substitute(path, bytes.toString("utf8"));
-        hash.update(normaliseEngineHashes(Buffer.from(text, "utf8"), path));
-      }
-      return hash.digest("hex");
-    };
-
-    const asBuilt = digestWith((_, text) => text);
-    const asCiWouldBuildIt = digestWith((path, text) => {
-      if (path === island)
-        return text.replace(/sha384-[A-Za-z0-9+/]{64}={0,2}/, `sha384-${"Z".repeat(64)}`);
-      if (path === markup) return text.split(island as string).join(renamed);
-      return text;
-    });
-
-    expect(
-      asCiWouldBuildIt,
-      "a machine with a different `pkg/` produces a different `page` digest, so the " +
-        "recording in size-budget.json can only ever match the machine that made it",
-    ).toBe(asBuilt);
-
-    // AND THE CONTROL. If the substitution above found nothing to substitute, the two
-    // digests would agree for the least interesting reason available.
-    const changed = digestWith((path, text) =>
-      path === markup ? `${text}<!-- a real edit -->` : text,
-    );
-    expect(changed, "the probe cannot tell a real markup change from no change").not.toBe(asBuilt);
-  });
-
-  it("still notices a markup change that is not a hash", () => {
-    // And the complement: normalising names must not make the HTML itself unwatched.
-    expect(digest('<link href="/_astro/index.-sYAk8S9.css"><h1>a</h1>')).not.toBe(
-      digest('<link href="/_astro/index.-sYAk8S9.css"><h1>b</h1>'),
     );
   });
 

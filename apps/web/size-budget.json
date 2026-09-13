@@ -50,19 +50,20 @@
     "predicted; `engines/qpdf.wasm` was NOT, and got there by failing CI and naming itself,",
     "which is the check working rather than the check being wrong.",
     "",
-    "THE PAGE IS NOT ON THAT LIST, DELIBERATELY, AND IT TOOK TWO GOES. The CSP names every",
+    "THE PAGE WAS NOT ON THAT LIST, DELIBERATELY, AND IT TOOK TWO GOES -- AND IN M1 PR B3 IT",
+    "WENT ON ANYWAY. The argument below is still the right argument and it lost to a fact: the",
+    "island's minified bytes differ between architectures. The `not_byte_reproducible` entry for",
+    "`page` records what was measured, what was tried first, and what it costs. Read them",
+    "together; the paragraph below is kept rather than rewritten because the reasoning did not",
+    "stop being sound.",
     "engine by its content-hashed URL (ADR 0014), so any engine rebuild changes index.html --",
     "CI reported `qpdf.wasm` and `page` together for that one cause. Exempting `page` would",
     "have meant not checking the line the design system lives on because of something",
     "belonging to a different line.",
     "",
-    "So each artifact records TWO digests: the raw bytes, and the bytes with three generated",
-    "values replaced by fixed tokens -- a content-hashed engine URL, the worker's sha384",
-    "integrity digest, and (in markup only) Vite's own chunk hash. The last two arrived with",
-    "the first tool page and are one cause: the island fetches the worker with `integrity`,",
-    "`engines/burrow-worker.js` is not byte-reproducible, and Vite names the island's chunk",
-    "from a hash of content that therefore is not either. Three cases, distinguished rather",
-    "than collapsed:",
+    "So each artifact records TWO digests: the raw bytes, and the bytes with generated engine",
+    "hashes replaced by a fixed token. Three cases, distinguished rather than collapsed:",
+    "",
     "  raw match              -> exact size equality. Nothing changed, so no tolerance.",
     "  normalised match only  -> only the quoted engine hashes differ. The artifact's own",
     "                            content is unchanged, but its SIZE may wobble, because two",
@@ -119,7 +120,7 @@
       "budget_brotli": 52886,
       "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR. M1 PR B2 added +2,628 -- the write path's nine bridge functions and the wasm-bindgen glue for the merge entry point. M1 PR B3 took it DOWN by 13 (48,092 -> 48,079): unwrapping `InputFailed` for the reply's limit detail added code, and one `innermost` helper replacing three ad-hoc unwraps took back slightly more than it cost.",
       "measured_sha256": "cf67aea48dafe39cad0eb8f1bbf017f76aaf4ca38fa599ceb2126c33ea61cd6b",
-      "measured_sha256_normalised": "9bdfe8efd97799163c9a80475e0022a3844048e4da8be8c6d31dd80d058c640a"
+      "measured_sha256_normalised": "a87392bce3529bd37ab7eec115122a14b0c558bc44d148a62740dcc044e01746"
     },
     "engines/burrow_wasm_bg.wasm": {
       "measured_raw": 56058,
@@ -143,7 +144,7 @@
       "budget_brotli": 51200,
       "why": "The heaviest landing route and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage. M1 PR B3 MOVED THE ROUTE, not just the number: this line measured `index.html` until the first tool page existed, and people arrive from a search for \"merge pdf\" and land on `/merge-pdf`. Budgeting the home page would have budgeted the lightest route while the heaviest one grew unwatched, so `heaviestFirstLoad` now weighs every route and budgets the largest; `measured_route` records which one that was and the test fails if the build disagrees. The move cost 8,259 brotli: the island bundle that mounts the merge tool, plus the page's own markup and CSS. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of that is one file: the self-hosted typeface, 18,524 of it. apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. The absolute budget still has 20 KiB of room, which is what it is for: failing CI on editorial work teaches people to raise budgets without reading them.",
       "measured_sha256": "d3ee8ee49d3a791e03b2f9d25537d4198c33c40c397503f2fd1fd490b560bd0a",
-      "measured_sha256_normalised": "e89618a6feef185c8b403ae0bb099e46d7ecf717666f6df2b03759b935615d8d",
+      "measured_sha256_normalised": "e31c7afbd4e44d77247f16f5b8b631ce3648275abab0aeb5590fa613abaad225",
       "measured_route": "merge-pdf/index.html"
     }
   },
@@ -156,7 +157,8 @@
   "not_byte_reproducible": {
     "engines/burrow_wasm_bg.wasm": "wasm-pack output. bindings/burrow-wasm/pkg/ is gitignored and rebuilt per machine, so the bytes depend on the local Rust and wasm-bindgen versions rather than on anything committed.",
     "engines/burrow-worker.js": "Concatenates pkg/burrow_wasm.js, so it inherits the line above. THIS IS THE ONE THAT DRIFTED: recorded at 45,052 brotli and measuring 45,288 on an unchanged checkout, 236 bytes from a differently-built pkg/, with nothing failing.",
-    "engines/qpdf.wasm": "Built from source by engines/build-wasm.sh rather than fetched, and OBSERVED to differ between a local build and CI -- which is how it got onto this list: the check failed and named it. The cause is not established. emsdk is pinned (ADR 0004), so a reproducible Emscripten build is plausible and the usual culprit is absolute paths baked in by the compiler; nobody has looked. Until someone does, this is a bound rather than a claim. pdfium.wasm is NOT here: it is a prebuilt vendored artifact and its bytes match."
+    "engines/qpdf.wasm": "Built from source by engines/build-wasm.sh rather than fetched, and OBSERVED to differ between a local build and CI -- which is how it got onto this list: the check failed and named it. The cause is not established. emsdk is pinned (ADR 0004), so a reproducible Emscripten build is plausible and the usual culprit is absolute paths baked in by the compiler; nobody has looked. Until someone does, this is a bound rather than a claim. pdfium.wasm is NOT here: it is a prebuilt vendored artifact and its bytes match.",
+    "page": "The island's minified output differs between architectures. Measured: `page` disagreed with a recording made minutes earlier, three CI runs in a row, while two builds on the SAME machine were byte-identical -- and the per-file diagnostic named the cause as the island chunk itself, with no engine hash or integrity digest left in it. CI is x86_64 (`ubuntu-latest`) and this recording is aarch64, and the bundler's native binary assigns mangled identifiers differently: `f as Ie` here, `f as xe` there. THIS IS A REAL LOSS AND IT IS NOT BEING GLOSSED. Until M1 PR B3 the `page` line took the exact check, and the header above argues at length for keeping it there. It now takes the 2% bound instead, which is about 600 bytes -- enough to hide a CSS regression. Two normalisations were tried first and both are in the history rather than the code: the worker's sha384 integrity digest, which the island embeds, and Vite's chunk hash in the markup, which is derived from the island's content. Each removed one coupling and neither reached this one, because this one is the island's own bytes. What would restore the exact check is a reproducible bundle, which means either pinning the bundler's output across architectures or recording the measurement on the architecture CI uses. Neither has been attempted."
   },
   "drift_tolerance": 0.02
 }
