@@ -130,20 +130,16 @@ pub fn merge<E: PageAssembler>(
     // front, means a caller who hands us 4 GB in small pieces is refused before any of it
     // reaches a C++ parser -- which is the ordering non-negotiable #3 asks for, "checked
     // exactly, before anything is allocated".
-    let mut total_bytes: u64 = 0;
-    for input in &inputs {
-        let len = u64::try_from(input.bytes.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".into()))?;
-        total_bytes = total_bytes
-            .checked_add(len)
-            .ok_or_else(|| Error::Internal("total input length does not fit in u64".into()))?;
-    }
-    Limits::check(
-        Stage::InputSize,
-        "max_input_bytes",
-        total_bytes,
-        limits.max_input_bytes,
-    )?;
+    //
+    // The rule itself lives in `check_total_input_bytes` so a caller can apply it EARLIER
+    // than this -- see that function for why the web needs to, and why it is one function
+    // rather than two that agree.
+    let sizes = inputs
+        .iter()
+        .map(|input| u64::try_from(input.bytes.len()))
+        .collect::<core::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::Internal("input length does not fit in u64".into()))?;
+    check_total_input_bytes(sizes.iter().copied(), &limits)?;
 
     // One deadline for the whole operation, started before any engine work. The engine
     // starts its own per document -- it has to, since it is also used on its own -- but
@@ -189,6 +185,52 @@ pub fn merge<E: PageAssembler>(
     deadline.checkpoint(clock.as_ref())?;
 
     engine.finish(assembly)
+}
+
+/// Whether a set of inputs is small enough in total, by size alone.
+///
+/// **The aggregate half of `max_input_bytes`, callable before the bytes exist.** [`merge`]
+/// calls this with the lengths of the documents it was handed; a caller that has not read
+/// its inputs yet can call it with their sizes and get the same refusal, with the same
+/// limit name, stage and numbers.
+///
+/// # Why this is a public function rather than a private step
+///
+/// On the web the transport allocates before Rust is consulted: the worker reads every
+/// `Blob`, copies them into one flat buffer, and wasm-bindgen copies that into linear
+/// memory -- so a selection several times over the ceiling can exhaust the tab before
+/// [`merge`] can refuse it. What the person then sees is "something inside burrow failed",
+/// not the clear refusal the ceiling exists to give them. Issue #51.
+///
+/// The fix has to keep the decision here. [ADR 0009](../../../docs/adr/0009-web-panic-contract-and-binding-boundary.md)
+/// §2 forbids a binding enforcing any part of `Limits`, and a size comparison in JavaScript
+/// would be exactly that -- so the binding calls this, and **this is the same function
+/// [`merge`] itself calls**. The two cannot disagree about the ceiling, because there is
+/// only one of them; a pre-flight that merely mirrored the rule is the shape that drifts.
+///
+/// Returns the total, which a caller may want to report.
+///
+/// # Errors
+///
+/// - [`Error::LimitExceeded`] — the total is over `max_input_bytes`, at [`Stage::InputSize`].
+/// - [`Error::Internal`] — the total does not fit in a `u64`.
+pub fn check_total_input_bytes(
+    sizes: impl IntoIterator<Item = u64>,
+    limits: &Limits,
+) -> Result<u64> {
+    let mut total: u64 = 0;
+    for size in sizes {
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| Error::Internal("total input length does not fit in u64".into()))?;
+    }
+    Limits::check(
+        Stage::InputSize,
+        "max_input_bytes",
+        total,
+        limits.max_input_bytes,
+    )?;
+    Ok(total)
 }
 
 /// Wrap an input's failure with the position it came from.

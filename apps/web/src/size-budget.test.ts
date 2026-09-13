@@ -118,6 +118,66 @@ describe("the first-load size budget", () => {
     );
   });
 
+  it("puts every script on the bounded line and nothing else on it", () => {
+    // THE SPLIT IS THE CHECK, so it is pinned by name rather than left to a comment. `page`
+    // keeps the exact digest and `page-js` takes the bound, and that is only sound while the
+    // membership is what it claims: a stylesheet that drifted onto the bounded line would be
+    // a CSS regression with 10% of room to hide in.
+    const scripts = groups["page-js"]?.files ?? [];
+    const rest = groups.page?.files ?? [];
+
+    expect(
+      scripts.length,
+      "no scripts in the payload at all; the split is measuring nothing",
+    ).toBeGreaterThan(0);
+    for (const path of scripts) {
+      expect(path, `${path} is on the scripts line and is not a script`).toMatch(/\.m?js$/);
+    }
+    for (const path of rest) {
+      expect(path, `${path} is a script and must not be on the exact line`).not.toMatch(/\.m?js$/);
+    }
+
+    // And the exemption lists are pinned, for the reason `tokens.test.ts` pins its own:
+    // moving a line between them is how a check gets quietly weakened, and it should be a
+    // diff a reviewer sees rather than a number that changed.
+    expect(Object.keys(budget.not_byte_reproducible).sort()).toEqual([
+      "engines/burrow-worker.js",
+      "engines/burrow_wasm_bg.wasm",
+      "engines/qpdf.wasm",
+      "page-js",
+    ]);
+  });
+
+  it("follows what a script imports, by walking the imports itself", () => {
+    // AN INDEPENDENT ROUTE TO THE SAME COUNT. `firstLoad` finds these by one regex over the
+    // markup and then over each script; this re-derives them by reading the entry script and
+    // resolving its specifiers, which is the cross-check the definition of done asks for when
+    // a pattern could be blind to a class of names.
+    //
+    // It exists because that pattern WAS blind: the first version bounded the distance between
+    // `import` and the specifier at 64 characters, and a minified island's destructured import
+    // list is hundreds. It matched nothing, and the Svelte runtime -- 31 KB, a third of the
+    // page's JavaScript -- was a download no budget line could see.
+    const scripts = groups["page-js"].files;
+    const entry = scripts.find((f) => f.includes("astro_type_script"));
+    expect(entry, "no Astro page script in the payload").toBeDefined();
+
+    const source = readFileSync(join(PRODUCTION_DIR, entry as string), "utf8");
+    const imported = [...source.matchAll(/\bfrom\s*["']\.\/([^"']+)["']/g)].map((m) => m[1]);
+    expect(
+      imported.length,
+      "the entry script imports nothing, so this cross-check confirms nothing",
+    ).toBeGreaterThan(0);
+
+    for (const name of imported) {
+      expect(
+        scripts,
+        `${entry} imports ${name}, which the payload does not include — it is a real download ` +
+          `no budget line can see`,
+      ).toContain(`_astro/${name}`);
+    }
+  });
+
   it("budgets the route the build says is heaviest", () => {
     expect(
       budget.artifacts.page.measured_route,
@@ -409,11 +469,32 @@ describe("normalising generated engine hashes out of the page digest", () => {
     expect(digest("<h1>Your files stay here</h1>")).not.toBe(digest("<h1>Upload your files</h1>"));
   });
 
-  it("does not touch Vite's own asset hashes, which are a different shape", () => {
-    // 8 characters and a different alphabet. A CSS change renames the chunk, and that
-    // rename must still register as a change.
-    expect(digest('<link href="/_astro/index.-sYAk8S9.css">')).not.toBe(
+  it("hides a Vite asset hash quoted in MARKUP, where it is only a name", () => {
+    // A script chunk's name is a hash of its CONTENT, and a bundled script is not
+    // byte-reproducible across architectures — so without this the markup inherits the
+    // JavaScript's unreproducibility through a filename. Measured three times in CI.
+    //
+    // It is safe because of the split in `budgetKey`: the scripts have their own budget
+    // line and their own digest, so a real island change shows up there rather than
+    // disappearing. What is given up is a pure rename with identical content.
+    expect(digest('<link href="/_astro/index.-sYAk8S9.css">')).toBe(
       digest('<link href="/_astro/index.BkQBePuw.css">'),
+    );
+  });
+
+  it("does NOT hide a Vite asset hash outside markup", () => {
+    // The near-miss, and the boundary of the rule above. Inside a script a hashed name is
+    // what the module actually imports; hiding it there would let an import be repointed
+    // with the digest unchanged.
+    expect(digest('import"./render.Dy18q9u-.js"', "_astro/island.js")).not.toBe(
+      digest('import"./render.BkQBePuw.js"', "_astro/island.js"),
+    );
+  });
+
+  it("still notices a markup change that is not a hash", () => {
+    // And the complement: normalising names must not leave the markup itself unwatched.
+    expect(digest('<link href="/_astro/index.-sYAk8S9.css"><h1>a</h1>')).not.toBe(
+      digest('<link href="/_astro/index.-sYAk8S9.css"><h1>b</h1>'),
     );
   });
 

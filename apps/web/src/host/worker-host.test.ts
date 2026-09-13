@@ -22,6 +22,7 @@ import {
   CANCELLED,
   createWorkerHost,
   ENGINE_UNAVAILABLE,
+  EXPECTED_ENGINE_MODULES,
   WATCHDOG_GRACE_MS,
 } from "./worker-host.js";
 
@@ -37,6 +38,12 @@ vi.setConfig({ testTimeout: 2_000 });
 
 const MAX_DURATION_MS = 1_000;
 const INIT_TIMEOUT_MS = 5_000;
+// DELIBERATELY DIFFERENT FROM `INIT_TIMEOUT_MS`. The two bounds shared one constant in the
+// source until security review separated them, and a test that gave them the same value here
+// could not tell which one had fired.
+// Longer than the queue-time a case may legitimately simulate (`MAX_DURATION_MS * 3`) and
+// different from `INIT_TIMEOUT_MS`, so a firing bound is identifiable.
+const ACK_TIMEOUT_MS = 4_000;
 
 /** Everything a case needs, wired together. */
 function build(factoryOptions: Parameters<typeof createFakeWorkerFactory>[0] = {}): {
@@ -54,6 +61,7 @@ function build(factoryOptions: Parameters<typeof createFakeWorkerFactory>[0] = {
     clearTimer: clock.clearTimer,
     maxDurationMs: MAX_DURATION_MS,
     initTimeoutMs: INIT_TIMEOUT_MS,
+    ackTimeoutMs: ACK_TIMEOUT_MS,
     breakerRespawns: 3,
     breakerWindowMs: 60_000,
   });
@@ -76,7 +84,7 @@ afterEach(() => {
   //
   // 4a-i's Rust fake hid a per-operation leak because it did not account for what it handed
   // out. The same blindness here would hide a worker that is never terminated — which is not
-  // a tidiness problem: an abandoned worker keeps its 6.5 MB of compiled engines and its whole
+  // a tidiness problem: an abandoned worker keeps its 6.8 MB of compiled engines and its whole
   // linear memory for the life of the tab.
   currentHost?.dispose();
   currentFactory?.assertNoLeaks(0);
@@ -408,6 +416,121 @@ describe("the watchdog", () => {
 // =====================================================================================
 
 describe("initialisation", () => {
+  test("a slow engine download is not a hang, however long it takes", async () => {
+    // THE DEFECT THIS PINS, found by measurement rather than by review.
+    //
+    // `initTimeoutMs` bounded the WHOLE of start-up at 60 s, with a comment claiming that was
+    // "comfortably above any measured cold load". Chrome's own "Slow 3G" profile refuted it:
+    // 6.8 MB of engines at 400 kbps is 140 seconds of network before anything is compiled. The
+    // first file a person chose on a slow connection was refused at 60 s with "Something
+    // inside burrow failed", the worker was discarded AS A CRASH, and three attempts would
+    // have latched the breaker and taken the page offline. On a slow connection the engines
+    // were never going to load at all.
+    const { host, factory, clock } = track(
+      build({
+        onMessage: (instance, message) => {
+          if (message?.type === "init") {
+            // Three engine modules landing slowly, the way `prelude.js` reports them: well
+            // inside the stall bound each time, and far outside it in total.
+            for (let i = 0; i < 3; i += 1) {
+              clock.advance(INIT_TIMEOUT_MS - 1_000);
+              instance.reply({ starting: true });
+            }
+            clock.advance(INIT_TIMEOUT_MS - 1_000);
+            instance.reply({ id: message.id, ready: true, ok: true });
+          }
+        },
+      }),
+    );
+
+    expect(await host.ready(), "a transfer four times the stall bound was treated as a hang").toBe(
+      true,
+    );
+    expect(host.hasWorker()).toBe(true);
+    expect(host.breakerOpen(), "a slow network was counted as a crash").toBe(false);
+    expect(factory.latest().terminations).toBe(0);
+  });
+
+  test("a worker cannot keep itself alive by reporting progress forever", async () => {
+    // FOUND BY SECURITY REVIEW. With re-arms uncounted, a worker posting `starting` on a
+    // timer keeps the bound alive indefinitely: `finish` never runs, the breaker never
+    // latches, and the page shows "getting the engine ready" until somebody reloads -- the
+    // exact hang the bound exists to close, reached through the mechanism that closes it.
+    //
+    // The cap is the number of engine modules, which is knowable, so a fourth message is a
+    // bundle doing something this host does not model and is ignored rather than obeyed.
+    const { host, factory, clock } = track(
+      build({
+        onMessage: (instance, message) => {
+          if (message?.type === "init") {
+            // Twice as many as there are modules, spaced to keep a naive timer alive forever.
+            for (let i = 0; i < EXPECTED_ENGINE_MODULES * 2; i += 1) {
+              clock.advance(INIT_TIMEOUT_MS - 1_000);
+              instance.reply({ starting: true });
+            }
+          }
+        },
+      }),
+    );
+
+    // THE ASSERTION IS *WHEN* IT DIED, not that it did. The first version of this test sent
+    // the messages and then advanced past the bound, and an uncapped host failed at that
+    // final advance instead of during the loop -- so `ready()` was false either way and the
+    // mutation passed all 37 tests. Caught by planting it, which is the only thing that
+    // distinguishes a defence from a comment.
+    //
+    // With the cap, the message after the last permitted one cannot re-arm, so the bound
+    // expires inside the loop and the host is already dead by the time it ends.
+    const ready = host.ready();
+    // The fake delivers messages on a microtask, so the loop above has not run yet.
+    await settle();
+    expect(
+      host.state(),
+      "the host survived more progress messages than there are engine modules, so a worker " +
+        "can push its own bound out for as long as it likes",
+    ).toBe("dead");
+    expect(await ready).toBe(false);
+    expect(factory.latest().terminations).toBe(1);
+  });
+
+  test("a worker that goes quiet is still declared dead", async () => {
+    // The near-miss, and the reason the timer is a STALL timer rather than removed. Without
+    // this, "a slow download survives" would be indistinguishable from "start-up is no longer
+    // bounded at all", which is the hang the watchdog exists for.
+    const { host, factory, clock } = track(
+      build({
+        onMessage: (instance, message) => {
+          if (message?.type === "init") {
+            // Two modules land, and then nothing ever again.
+            instance.reply({ starting: true });
+            clock.advance(1_000);
+            instance.reply({ starting: true });
+          }
+        },
+      }),
+    );
+
+    const ready = host.ready();
+    clock.advance(INIT_TIMEOUT_MS + 1);
+    expect(await ready, "a silent worker was waited on forever").toBe(false);
+    expect(host.state()).toBe("dead");
+    expect(factory.latest().terminations).toBe(1);
+  });
+
+  test("progress from a settled start-up does not push anything out", async () => {
+    // A `starting` message carries no id, so nothing about it ties it to the initialisation
+    // it came from. One arriving after start-up has finished -- or from a worker that has been
+    // discarded -- must not re-arm a bound that is no longer running.
+    const { host, factory, clock } = track(build());
+    expect(await host.ready()).toBe(true);
+
+    factory.latest().reply({ starting: true });
+    clock.advance(INIT_TIMEOUT_MS * 10);
+
+    expect(host.hasWorker(), "a stray progress message disturbed a healthy worker").toBe(true);
+    expect(host.state()).toBe("idle");
+  });
+
   test("a crash during initialisation leaves the host dead and fails the caller", async () => {
     const { host, factory } = track(
       build({
@@ -573,6 +696,38 @@ describe("serialisation", () => {
     worker.reply({ id, ack: true });
     worker.reply(workerReply(id, { pages: 7 }));
     expect((await after).pages).toBe(7);
+  });
+
+  test("an operation that is never acked is bounded by the ACK bound, not the start-up one", async () => {
+    // FOUND BY SECURITY REVIEW. This window opens after `ensureWorker()` has resolved, so the
+    // engines are already compiled and nothing in it depends on anybody's network -- but it
+    // shared `initTimeoutMs`, which ADR 0018 raised 60 s -> 240 s for a 5.3 MB download. A
+    // worker that died silently after init would have left a person watching a spinner four
+    // times as long, with the crash counted four times as late.
+    const { host, factory, clock } = track(
+      build({
+        onMessage: (instance, message) => {
+          // Init answers; an operation never does.
+          if (message?.type === "init") {
+            instance.reply({ id: message.id, ready: true, ok: true });
+          }
+        },
+      }),
+    );
+    await host.ready();
+
+    const pending = host.run(operation, { maxDurationMs: MAX_DURATION_MS });
+    // The post happens on the queue's microtask, so the timer does not exist until it has run.
+    await settle();
+    clock.advance(ACK_TIMEOUT_MS + 1);
+
+    const reply = await pending;
+    expect(reply.ok, "an unacked operation was never bounded").toBe(false);
+    expect(reply.kind).toBe("Internal");
+    expect(
+      factory.latest().terminations,
+      "the worker should have been discarded at the ack bound",
+    ).toBe(1);
   });
 
   test("a queued operation cannot kill the one that is running", async () => {

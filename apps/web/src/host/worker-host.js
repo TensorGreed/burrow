@@ -29,7 +29,7 @@
 //
 // No `Worker`, no `performance`, no `setTimeout`, no DOM. That is ADR 0007's reason for an
 // injectable clock applied to the page: a watchdog test that really waits thirty seconds is a
-// test nobody runs, and a respawn test that really compiles 6.5 MB of WebAssembly is worse.
+// test nobody runs, and a respawn test that really compiles 6.8 MB of WebAssembly is worse.
 // `worker-host.test.ts` drives every state below in milliseconds against a fake worker.
 
 /**
@@ -83,18 +83,71 @@
 export const WATCHDOG_GRACE_MS = 500;
 
 /**
- * How long engine start-up may take before the worker is declared dead.
+ * How long start-up may go **without news** before the worker is declared dead.
  *
- * **Separate from `max_duration_ms`, and that is the point.** Start-up compiles 6.5 MB of
- * WebAssembly across three modules and runs the CSP guard's two probe requests. A cold load on
- * a slow device is seconds. Charging that to the file would tell a user their document took
- * too long when what was slow was the page — the web form of the queue-time bug PR 2 fixed on
- * the native path, where a caller delayed behind someone else's work was told its own deadline
- * had expired.
+ * **Separate from `max_duration_ms`, and that is the point.** Start-up fetches and compiles
+ * 6.8 MB of WebAssembly across three modules and runs the CSP guard's probe. (6,819,245 bytes,
+ * the sum of the three `.wasm` lines in `apps/web/size-budget.json` — 6.5 MiB, which is what
+ * the older comments in this repository meant when they said "6.5 MB".) Charging that to
+ * the file would tell a user their document took too long when what was slow was the page —
+ * the web form of the queue-time bug PR 2 fixed on the native path, where a caller delayed
+ * behind someone else's work was told its own deadline had expired.
  *
- * 60 s: comfortably above any measured cold load, and still a bound.
+ * # It bounds silence, not duration, and it took a measurement to learn why
+ *
+ * This was 60 s and bounded the WHOLE of start-up, with a comment claiming that was
+ * "comfortably above any measured cold load". Chrome's own "Slow 3G" profile refuted it: the
+ * engines take over two minutes there, so the first file a person chose on a slow connection
+ * was refused with "Something inside burrow failed", the worker was discarded **as a crash**,
+ * and three attempts would have latched the circuit breaker and taken the page offline. On a
+ * slow connection the engines were never going to load at all.
+ *
+ * So the worker says so as each module lands (`prelude.js`) and this timer starts again. What
+ * is bounded is a worker that has gone quiet, which is the hang the watchdog is actually for.
+ *
+ * # The number is a floor bandwidth, stated rather than guessed
+ *
+ * One message per module is the finest granularity available — `integrity` makes the browser
+ * verify a whole response before releasing any of it, so a module's body arrives in one read
+ * however long it took. The gap this must tolerate is therefore **one module's download**, and
+ * the largest is `pdfium.wasm` at 5,315,922 bytes.
+ *
+ * 240 s allows that module at about 22 KB/s, or 177 kbps — below Chrome's "Slow 3G" preset
+ * (400 kbps), on which the measured gap between modules is 55 s. A connection slower than that
+ * for four minutes together is not one this page can serve anyway.
+ *
+ * The cost of the larger number is that a genuinely hung start-up is noticed in four minutes
+ * rather than one. That is the right trade: a start-up hang is rare and recoverable, and the
+ * failure it replaces made the page unusable for everyone on a slow connection.
  */
-export const DEFAULT_INIT_TIMEOUT_MS = 60_000;
+export const DEFAULT_INIT_TIMEOUT_MS = 240_000;
+
+/**
+ * How many `starting` messages a start-up may use to push its bound out.
+ *
+ * One per engine module — `pdfium.wasm`, `qpdf.wasm` and `burrow_wasm_bg.wasm`, the three
+ * `prelude.js` fetches. It is a **cap on trust**, not a count of what must arrive: a start-up
+ * that reports fewer still succeeds, and one that reports more is ignored past this point.
+ *
+ * Stated as a constant rather than hard-coded at the call site because the day a fourth engine
+ * lands, the number that has to change is this one and the test that pins it.
+ */
+export const EXPECTED_ENGINE_MODULES = 3;
+
+/**
+ * How long a posted operation may go unacknowledged before the worker is declared dead.
+ *
+ * **Not the start-up bound, and the difference is the whole of it.** This window opens after
+ * `ensureWorker()` has resolved, so the engines are already fetched and compiled; all that is
+ * left is the worker's message loop reaching a request and posting `{ ack: true }` before it
+ * touches the file. Nothing here depends on anybody's network.
+ *
+ * It shared `DEFAULT_INIT_TIMEOUT_MS` until that number went to 240 s for a reason belonging
+ * entirely to start-up (ADR 0018). 60 s is what it was, and it is generous for a message
+ * loop: the alternative is a person watching a spinner for four minutes because a worker died
+ * silently, with the crash counted four minutes late.
+ */
+export const DEFAULT_ACK_TIMEOUT_MS = 60_000;
 
 /** Respawns within {@link DEFAULT_BREAKER_WINDOW_MS} before the breaker opens. */
 export const DEFAULT_BREAKER_RESPAWNS = 3;
@@ -194,6 +247,7 @@ export const ENGINE_UNAVAILABLE = "EngineUnavailable";
  * @param {(handle: unknown) => void} options.clearTimer
  * @param {number} [options.maxDurationMs] The operation deadline the watchdog backs up.
  * @param {number} [options.initTimeoutMs]
+ * @param {number} [options.ackTimeoutMs]
  * @param {number} [options.breakerRespawns]
  * @param {number} [options.breakerWindowMs]
  */
@@ -206,6 +260,7 @@ export function createWorkerHost(options) {
     clearTimer,
     maxDurationMs = 30_000,
     initTimeoutMs = DEFAULT_INIT_TIMEOUT_MS,
+    ackTimeoutMs = DEFAULT_ACK_TIMEOUT_MS,
     breakerRespawns = DEFAULT_BREAKER_RESPAWNS,
     breakerWindowMs = DEFAULT_BREAKER_WINDOW_MS,
   } = options;
@@ -232,6 +287,15 @@ export function createWorkerHost(options) {
    * have to discover that by experiment.
    */
   let generation = 0;
+
+  /**
+   * Restart the start-up stall timer, or nothing if no start-up is in flight.
+   *
+   * Reassigned by `ensureWorker` for the initialisation it is running, and reset to a no-op
+   * once that settles -- so a stray `starting` message from a worker that has finished, or
+   * from one that has been discarded, cannot push a bound out.
+   */
+  let rearmStartup = () => {};
 
   /** How many workers have ever been spawned. The recovery tests read this. */
   let spawnCount = 0;
@@ -277,7 +341,7 @@ export function createWorkerHost(options) {
    * `queue` — they have not been posted, so there is nothing to settle — and without this
    * counter each of them went on to run after the cancel: `ensureWorker()` found the state
    * `dead`, the breaker permitted a spawn because a page-initiated discard is not a crash,
-   * and a fresh worker compiled 6.5 MB of engines to finish an operation the person had
+   * and a fresh worker compiled 6.8 MB of engines to finish an operation the person had
    * already stopped. The UI had returned to idle and said "Stopped."; the work had not.
    *
    * So a request records the count when it is ENQUEUED, and abandons itself if the count has
@@ -453,13 +517,69 @@ export function createWorkerHost(options) {
         resolve(ok);
       };
 
-      const timer = setTimer(() => {
-        if (generation !== mine) return;
-        // START-UP failing is not the file's fault, so this is `Internal` and NEVER a
-        // duration limit. Reporting it as `LimitExceeded` would tell a user to shrink a
-        // document that was never looked at.
-        discard("Internal", "engine start-up timed out", { crash: true });
-      }, initTimeoutMs);
+      // A STALL TIMER, NOT A TRANSFER TIMER, and the difference is the whole point of it.
+      //
+      // It bounded the WHOLE of start-up until M1's consolidation batch, at 60 s, with a
+      // comment claiming that was "comfortably above any measured cold load". A measurement
+      // refuted it: 6.8 MB of engines at 400 kbps -- Chrome's own "Slow 3G" -- is 140
+      // seconds of network before anything is compiled, so the first file a person chose on
+      // a slow connection was refused at 60 s with "Something inside burrow failed", the
+      // worker was discarded as a crash, and three attempts would have latched the circuit
+      // breaker and taken the page offline entirely. On a slow connection the engines were
+      // never going to load at all.
+      //
+      // No fixed bound can be right here, because the thing being bounded is somebody else's
+      // network. What a watchdog can honestly ask is whether anything is still HAPPENING, so
+      // the worker says so as each engine module lands and this timer starts again. A worker
+      // that has gone quiet for `initTimeoutMs` is hung; one that is still receiving bytes is
+      // working, however slowly.
+      const armStallTimer = () =>
+        setTimer(() => {
+          if (generation !== mine) return;
+          // START-UP failing is not the file's fault, so this is `Internal` and NEVER a
+          // duration limit. Reporting it as `LimitExceeded` would tell a user to shrink a
+          // document that was never looked at.
+          discard("Internal", "engine start-up stalled", { crash: true });
+        }, initTimeoutMs);
+
+      const timer = armStallTimer();
+
+      // RE-ARMS ARE COUNTED, because an uncounted one hands the watchdog to the thing it is
+      // watching. Found by security review: with no cap, a worker posting `starting` on a
+      // timer keeps the bound alive forever, `finish` never runs, the breaker never latches,
+      // and the page shows "getting the engine ready" until someone reloads -- the exact hang
+      // the bound exists to close, reached through the mechanism that was supposed to close
+      // it. Not reachable from file content (nothing on this path has seen a file, and the
+      // bundle is integrity-pinned), but a watchdog whose limit is set by its subject is not
+      // a watchdog.
+      //
+      // The expected count is KNOWN -- one per engine module -- which is what `CLAUDE.md`
+      // asks a gate to use when the number is derivable rather than settling for "non-zero".
+      // A fourth message is a bundle doing something this host does not model, so it is
+      // ignored rather than obeyed.
+      let rearms = 0;
+
+      // Held so a progress message can find it without going through `pending`, which is
+      // keyed by request id and this is not a request.
+      rearmStartup = () => {
+        // THREE GUARDS AND EACH ONE IS LOAD-BEARING, which is worth stating because a fourth
+        // was here and was not: `finish` also reset this closure to a no-op, and deleting
+        // that line broke no test. Code review mutated it to find that out. It was
+        // unreachable behind the two below, and a defence with no failing mutation is a
+        // comment rather than a defence.
+        //
+        //   `generation` -- a message from a worker that has been superseded;
+        //   `settled`    -- a message arriving after start-up finished;
+        //   `pending`    -- `discard` swaps in a fresh map, so a discarded start-up's entry
+        //                   is gone even if the two above somehow passed.
+        if (generation !== mine || settled) return;
+        if (rearms >= EXPECTED_ENGINE_MODULES) return;
+        const entry = pending.get(id);
+        if (!entry) return;
+        rearms += 1;
+        clearTimer(entry.timer);
+        entry.timer = armStallTimer();
+      };
 
       pending.set(id, {
         timer,
@@ -517,15 +637,25 @@ export function createWorkerHost(options) {
   /**
    * One message from the current worker.
    *
-   * Three shapes arrive here and the type says so rather than reaching for `any`, which
+   * Four shapes arrive here and the type says so rather than reaching for `any`, which
    * `apps/web/CLAUDE.md` forbids: an operation reply (a full `HostReply` plus its id), an
-   * `ack`, and an init answer carrying `ready`. Everything read below is named.
+   * `ack`, an init answer carrying `ready`, and a `starting` notice from an engine module
+   * that has landed. Everything read below is named.
    *
    * @param {Partial<HostReply> & { id?: number, ack?: boolean, ready?: boolean,
+   *   starting?: boolean,
    *   minConvergingMemoryBytes?: string,
    *   defaultLimits?: Record<string, number> }} data
    */
   function handleMessage(data) {
+    // PROGRESS, which carries no id because it belongs to start-up rather than to a request.
+    // It says one thing -- an engine module has landed -- and it is the only evidence the
+    // stall timer has that a slow transfer is a transfer rather than a hang.
+    if (data.starting === true) {
+      rearmStartup();
+      return;
+    }
+
     const entry = data.id === undefined ? undefined : pending.get(data.id);
     if (!entry) {
       // A reply to a request that is no longer in flight — the watchdog fired and settled it
@@ -665,17 +795,25 @@ export function createWorkerHost(options) {
     state = "busy";
 
     return new Promise((resolve) => {
-      // Bounded from the moment it is posted, by the START-UP bound: everything between the
-      // post and the ack is the worker getting to this request, not the file being processed.
-      // Without this a worker that dies before acking leaves the caller waiting for a reply
-      // that will never come.
+      // Bounded from the moment it is posted: everything between the post and the ack is the
+      // worker getting to this request, not the file being processed. Without this a worker
+      // that dies before acking leaves the caller waiting for a reply that will never come.
       //
       // It is only ever this request's own wait, because `run` serialises — see `queue`. When
       // it was armed while another operation was still in flight, its expiry killed a healthy
       // worker and counted a crash.
+      //
+      // BY ITS OWN BOUND, not the start-up one. It shared `initTimeoutMs` until security
+      // review noticed what ADR 0018 had just done to that number: raising it 60 s -> 240 s
+      // for a 5.3 MB download silently also quadrupled this window, which contains no
+      // download at all -- it opens only after `ensureWorker()` has resolved, so the engines
+      // are already compiled. A worker that died silently after init would have left a person
+      // watching a spinner for four minutes, with the crash counted four minutes late. Two
+      // bounds sharing a constant because they once had the same value is how a justified
+      // number becomes an unjustified one.
       const timer = setTimer(() => {
         discard("Internal", "worker did not accept the operation", { crash: true });
-      }, initTimeoutMs);
+      }, ackTimeoutMs);
 
       pending.set(id, {
         settle: resolve,

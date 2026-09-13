@@ -37,7 +37,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
     The ENGINES are still not loaded here. The tool starts a worker the first time a file is
     chosen, which is what "load the wasm module lazily, when the user engages with the tool"
-    means. Mounting the component is a few kilobytes; starting the engines is 6.5 MB.
+    means. Mounting the component is a few kilobytes; starting the engines is 6.8 MB.
   */
   }
   <div id="merge-tool"></div>
@@ -86,13 +86,16 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     </p>
 
     <p>
-      Two things those limits do not save you from, said here rather than discovered. A set far over
-      the size limit has to be handed to the engine before the engine can refuse it, so a selection
-      several times over the ceiling can exhaust the tab first; what you would see is burrow
-      reporting that something inside it failed, not the clear refusal. And a very large merge that
-      is under both limits can still make the tab slow while it runs, and on a phone the browser may
-      stop the tab entirely. That second one is the device's memory ceiling, reached inside the PDF
-      engine where nothing can intervene.
+      The size limit is applied to what you chose, not to what has been loaded — burrow adds up the
+      file sizes and refuses before it opens the first one, so an oversized selection is turned away
+      immediately rather than after it has filled the tab.
+    </p>
+
+    <p>
+      What that does not save you from, said here rather than discovered: a very large merge that is
+      under both limits can still make the tab slow while it runs, and on a phone the browser may
+      stop the tab entirely. That is the device's memory ceiling, reached inside the PDF engine
+      where nothing can intervene.
     </p>
 
     <h2>What is kept, and what is not</h2>

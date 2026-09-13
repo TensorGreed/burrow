@@ -30,7 +30,7 @@ pub use burrow_engines as engines;
 
 pub mod merge;
 
-pub use merge::{Input, merge};
+pub use merge::{Input, check_total_input_bytes, merge};
 
 /// Operations available in this build, in stable order.
 ///

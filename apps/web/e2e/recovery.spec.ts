@@ -163,7 +163,7 @@ test("the circuit breaker stops a respawn loop, and only reset() restarts it", a
   await openHarness(page);
 
   // A file that crashes every worker it touches. Without a breaker this is an unbounded
-  // respawn loop: each crash costs a 6.5 MB engine compile, and the tab does nothing else.
+  // respawn loop: each crash costs a 6.8 MB engine compile, and the tab does nothing else.
   //
   // THREE crashes, not four, and each one asserted to be a CRASH rather than merely fatal.
   // A fourth iteration would already be past the breaker and would return

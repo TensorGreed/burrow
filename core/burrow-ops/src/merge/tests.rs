@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use burrow_engines::{OpenOptions, PageAssembler};
 use burrow_types::{Clock, Error, Limits, ManualClock, Password, Stage};
 
-use super::{Input, merge};
+use super::{Input, check_total_input_bytes, merge};
 
 /// What the fake was asked to do, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,4 +416,119 @@ fn the_debug_of_an_input_carries_no_bytes() {
     assert!(!rendered.contains("secret"), "{rendered}");
     assert!(!rendered.contains("hunter2"), "{rendered}");
     assert!(rendered.contains("has_password: true"), "{rendered}");
+}
+
+// ---------------------------------------------------------------- the pre-flight
+
+// `check_total_input_bytes` is the aggregate half of `max_input_bytes`, pulled out so a
+// caller can apply it before the bytes exist (issue #51). What has to hold is not that it
+// is correct in isolation -- it is four lines -- but that it and `merge` cannot disagree.
+
+#[test]
+fn the_preflight_refuses_exactly_what_merge_refuses() {
+    // THE PROPERTY, exercised across the boundary rather than asserted once. For each set of
+    // sizes, the pre-flight's verdict and the real operation's verdict must match, including
+    // the numbers: a pre-flight that refused something `merge` would accept is a tool that
+    // turns away work it can do, and one that accepted something `merge` refuses puts the
+    // failure back where it was.
+    let ceiling = 1_000u64;
+    let limits = Limits::with(|l| l.max_input_bytes = ceiling);
+
+    // Both sides of the boundary, and the boundary itself.
+    for sizes in [
+        vec![1usize],
+        vec![500, 499],
+        vec![500, 500],
+        vec![500, 501],
+        vec![400, 400, 400],
+        vec![1000],
+        vec![1001],
+    ] {
+        let (fake, _calls) = Fake::new(Script {
+            pages_each: 1,
+            ..Script::default()
+        });
+        let (opts, _clock) = options(limits);
+
+        let preflight = check_total_input_bytes(
+            sizes.iter().map(|n| u64::try_from(*n).expect("size fits")),
+            &limits,
+        );
+        let operation = merge(&fake, sizes.iter().map(|n| input(*n)).collect(), &opts);
+
+        match (&preflight, &operation) {
+            (Ok(total), Ok(_)) => {
+                let expected: u64 = sizes
+                    .iter()
+                    .map(|n| u64::try_from(*n).expect("size fits"))
+                    .sum();
+                assert_eq!(
+                    *total, expected,
+                    "{sizes:?}: the pre-flight's total is wrong"
+                );
+            }
+            (
+                Err(Error::LimitExceeded {
+                    limit: a,
+                    stage: sa,
+                    requested: ra,
+                    allowed: aa,
+                }),
+                Err(Error::LimitExceeded {
+                    limit: b,
+                    stage: sb,
+                    requested: rb,
+                    allowed: ab,
+                }),
+            ) => {
+                assert_eq!(
+                    (a, sa, ra, aa),
+                    (b, sb, rb, ab),
+                    "{sizes:?}: different refusals"
+                );
+            }
+            (p, o) => panic!(
+                "{sizes:?}: the pre-flight and the operation disagree -- pre-flight {p:?}, \
+                 operation {o:?}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn the_preflight_refuses_before_anything_is_opened() {
+    // The point of it. An over-ceiling set must be refused without the engine being touched
+    // -- on the web that is the difference between a typed refusal and a tab that ran out of
+    // memory inside the transport.
+    let limits = Limits::with(|l| l.max_input_bytes = 10);
+    let (fake, calls) = Fake::new(Script::default());
+    let (opts, _clock) = options(limits);
+
+    let err = merge(&fake, vec![input(6), input(6)], &opts).expect_err("must refuse");
+    assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
+    assert!(
+        calls.lock().expect("calls").is_empty(),
+        "the engine was called for a set that was already over the ceiling"
+    );
+}
+
+#[test]
+fn an_empty_set_totals_zero_rather_than_failing() {
+    // `merge` refuses an empty list separately, with `InvalidArgument`, and it should stay
+    // that way -- so the pre-flight must not invent a different answer for the same input.
+    // A caller asking "is nothing too big" gets `no`.
+    let total = check_total_input_bytes([], &Limits::DEFAULT).expect("empty is not over a limit");
+    assert_eq!(total, 0);
+}
+
+#[test]
+fn a_total_that_overflows_is_internal_rather_than_a_limit() {
+    // Sizes arrive from a caller. Two near-maximum ones must not wrap around into a small
+    // total that passes the ceiling -- the silent-truncation class `core/CLAUDE.md` denies
+    // casts for, arriving as arithmetic instead.
+    let err = check_total_input_bytes([u64::MAX, 1], &Limits::DEFAULT).expect_err("must fail");
+    assert!(
+        matches!(err, Error::Internal(_)),
+        "an overflowing total must not be reported as a limit: {err:?}"
+    );
 }

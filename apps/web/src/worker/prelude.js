@@ -100,8 +100,48 @@ for (const id of /** @type {const} */ (["pdfiumWasm", "qpdfWasm", "burrowWasm"])
     if (!response.ok) {
       throw new Error("engine fetch failed");
     }
-    return WebAssembly.compileStreaming(response);
+    return WebAssembly.compileStreaming(response).then(landed);
   });
+}
+
+/**
+ * The same module, telling the page that one more engine has landed.
+ *
+ * # Why the page needs to hear this
+ *
+ * Its start-up bound is a **stall** timer rather than a transfer timer, because the thing
+ * being bounded is somebody else's network: 6.8 MB of engines at 400 kbps -- Chrome's own
+ * "Slow 3G" -- is over two minutes, and no fixed bound is right for that. A stall timer needs
+ * evidence that something is still happening, and this is the only place that evidence exists.
+ *
+ * # ONE MESSAGE PER MODULE IS THE FINEST GRANULARITY AVAILABLE, and that is not a choice
+ *
+ * Three finer designs were built and measured before this one, and each reported exactly TWO
+ * events across a 130-second download of three modules: observing the body through a
+ * `TransformStream`, `tee()`ing it, and reading it with a reader. The host's own timeline
+ * showed reads 55 seconds apart.
+ *
+ * The cause is `integrity`. **Subresource Integrity makes the browser verify the whole
+ * response before it releases any of it**, so the body arrives in a single read however many
+ * TCP segments carried it -- on the same connection, the same file fetched WITHOUT integrity
+ * arrives in 3,545 chunks with a 32 ms maximum gap. Finer progress is available only by giving
+ * up the pinning, which ADR 0014 exists to keep, so it is not available.
+ *
+ * What follows is that the page's bound has to tolerate a gap the size of one module's
+ * download -- see `DEFAULT_INIT_TIMEOUT_MS`, which says what floor bandwidth it assumes.
+ *
+ * # What this carries
+ *
+ * **Nothing but the fact.** No URL, no byte count, no timing. It is the one thing on this path
+ * sent unconditionally, and it must not become a channel for anything derived from a file --
+ * nothing here has seen a file yet, and this is where that stays true.
+ *
+ * @param {WebAssembly.Module} module
+ * @returns {WebAssembly.Module}
+ */
+function landed(module) {
+  self.postMessage({ starting: true });
+  return module;
 }
 
 /**
