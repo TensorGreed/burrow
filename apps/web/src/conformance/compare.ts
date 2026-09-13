@@ -219,7 +219,7 @@ const OPERATIONS: Operation[] = ["page_count", "structure_check", "merge"];
 /**
  * What a case expects of one platform, honouring any recorded by-design difference.
  *
- * Mirrors `expected_for` in `core/burrow-engines/tests/conformance.rs`. Two implementations of
+ * Mirrors `expected_for` in `core/burrow-ops/tests/conformance.rs`. Two implementations of
  * one rule, which is what `expectations.json` exists to avoid — but this one cannot be shared,
  * because the two halves of the harness are in different languages. It is four lines, it is
  * tested on both sides, and the alternative is the web side not honouring recorded differences
