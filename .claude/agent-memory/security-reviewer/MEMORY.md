@@ -10,3 +10,4 @@
 - [CI artifact-check vacuity](m1_ci_check_vacuity.md) — measured ways a symbol-table check passes while reading nothing, and emsdk/llvm-nm absence in the web job.
 - [M1 web fonts and toml.mjs](m1_web_fonts_and_toml.md) — how to audit a woff2 offline with node, what the e2e font timing rests on, and the toml.mjs `[__proto__]` repro.
 - [Split copy semantics](m1_split_copy_semantics.md) — what qpdf's page copy really carries across, the sharing-based leak class, and the 190x output amplification.
+- [M1 web rotate bridge](m1_web_rotate_bridge.md) — why both rotate conformance cases pass under the ancestor-write bug, and the two real handle-leak holes.

@@ -42,12 +42,14 @@ pub use split::{Cuts, split};
 /// hard-coding a list that drifts.
 ///
 /// **This is the list of operations the CORE implements, not the list any one binding exposes.**
-/// `split` and `rotate` are here and `bindings/burrow-wasm` has an entry point for neither —
-/// there is no `impl PageExtractor for WebQpdf` and no `impl PageRotator for WebQpdf`, so the
-/// web cannot perform either at all. Code review flagged the divergence for `split`; it is
-/// recorded rather than hidden, because the alternative is a constant that means something
-/// different depending on which crate reads it. A caller that needs to know what a *binding*
-/// can do must ask the binding.
+/// `split` is here and `bindings/burrow-wasm` has no entry point for it: there is no
+/// `impl PageExtractor for WebQpdf`, so the web cannot split at all. `rotate` was in the same
+/// position until its bridge landed and now has both an `impl PageRotator for WebQpdf` and a
+/// `rotate` entry point — this sentence said otherwise for one commit, which is why it names
+/// the two operations separately rather than as a pair. Code review flagged the original
+/// divergence; it is recorded rather than hidden, because the alternative is a constant that
+/// means something different depending on which crate reads it. A caller that needs to know
+/// what a *binding* can do must ask the binding.
 pub const AVAILABLE: &[&str] = &["merge", "rotate", "split"];
 
 #[cfg(test)]

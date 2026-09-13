@@ -8,11 +8,13 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Error, Limits, ManualClock, Password, Stage};
+use burrow_types::{Clock, Error, Limits, ManualClock, Password, Rotation, Stage};
 
 use super::fake::{Call, FakeHeap, FakePdfium, FakeQpdf, PdfiumScript, QpdfScript};
 use super::{WebPdfium, WebQpdf};
-use crate::{CheckOptions, DocumentEngine, OpenOptions, PageAssembler, StructureEngine};
+use crate::{
+    CheckOptions, DocumentEngine, OpenOptions, PageAssembler, PageRotator, StructureEngine,
+};
 
 /// A stopped clock, so nothing here depends on how busy the machine is.
 fn stopped() -> Arc<dyn Clock> {
@@ -1171,4 +1173,236 @@ fn a_failed_append_still_releases_what_it_allocated() {
         state
     };
     state.assert_empty();
+}
+
+// ---------------------------------------------------------------------------------------
+// rotate, over the fake bridge
+//
+// THESE ARE THE TESTS `web/rotate.rs`'s HEADER ALREADY CLAIMED EXISTED. It said "`web/tests.rs`
+// counts" while nothing counted, and `QpdfScript::live_handles` was written by three call
+// sites and read by none -- a counter that reports "no leak" for every input. Both reviewers
+// found it; the security reviewer also found that the fake could not have run these at all,
+// because `read_c_string` walked the heap byte by byte and `Heap::read` panics on anything but
+// an exact base address.
+//
+// What they catch that the conformance corpus cannot: the corpus fixes rotate at "every page,
+// by 90", so writing `/Rotate` to the shared `/Pages` ancestor instead of to each page produces
+// exactly the expected vector. That is hazard #2 in both module headers -- the one that rotates
+// a whole document while reporting success on one page -- and only an assertion about WHICH
+// handle was written can see it.
+
+/// A script whose page tree inherits: no `/Rotate` on the page, a dictionary `/Parent` above.
+fn inheriting_script() -> QpdfScript {
+    QpdfScript {
+        page_count: 3,
+        oh_type_codes: [
+            ("/Rotate".to_owned(), 2), // ot_null -- absent on the page
+            ("/Parent".to_owned(), 9), // ot_dictionary
+            ("<page 0>".to_owned(), 9),
+            ("<page 1>".to_owned(), 9),
+            ("<page 2>".to_owned(), 9),
+        ]
+        .into_iter()
+        .collect(),
+        ..QpdfScript::default()
+    }
+}
+
+fn rotate_options() -> OpenOptions<'static> {
+    OpenOptions::new(Limits::DEFAULT, stopped())
+}
+
+#[test]
+fn the_rotation_is_written_to_the_page_and_never_to_an_ancestor() {
+    // THE ASSERTION THE CORPUS STRUCTURALLY CANNOT MAKE. Every page is selected there, so an
+    // ancestor write is observationally identical to a per-page write; here the recorded call
+    // names the handle, and the page's handle is not the one the `/Parent` walk produced.
+    let (engine, state) = structure_engine(QpdfScript {
+        // A `/Rotate` on the ancestor, absent on the page -- so the walk climbs, finds 90, and
+        // the write has an ancestor handle sitting right there to be aimed at by mistake.
+        oh_int_value: 90,
+        oh_type_codes: [
+            ("/Rotate".to_owned(), 4), // ot_integer, found on whichever node is asked
+            ("/Parent".to_owned(), 9),
+        ]
+        .into_iter()
+        .collect(),
+        page_count: 3,
+        ..QpdfScript::default()
+    });
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    let _ = engine.rotate(&source, &[0], Rotation::Clockwise90, &rotate_options());
+
+    let calls = state.calls();
+    let page_handle = calls.iter().find_map(|c| match c {
+        Call::GetPageN(0) => Some(()),
+        _ => None,
+    });
+    assert!(page_handle.is_some(), "the page was never fetched");
+
+    // The handle `get_page_n` issued is the first one the fake hands out for this document.
+    let replaced: Vec<u32> = calls
+        .iter()
+        .filter_map(|c| match c {
+            Call::OhReplaceKey { oh, key, .. } if key == "/Rotate" => Some(*oh),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replaced.len(), 1, "exactly one /Rotate write, on one page");
+
+    // The write went to the handle `get_page_n` produced, which is handle 1 -- the first the
+    // fake issues. An ancestor write would name a later one.
+    // MEASURED, not assumed: aiming the write at the handle the `/Parent` lookup produces
+    // makes this fail with `left: 4, right: 1`. Without that check this assertion is a
+    // constant compared against a constant.
+    assert_eq!(
+        replaced[0], 1,
+        "/Rotate was written to an ancestor handle, not to the page: this rotates every page \
+         under that node and reports success"
+    );
+}
+
+#[test]
+fn every_object_handle_the_web_rotation_takes_is_released() {
+    // The count the module header promised. `live_handles` is decremented by `oh_release` and
+    // incremented by every handle the fake issues, and `oh_release` now refuses a handle it
+    // never issued -- so a double release cannot cancel out a leak and leave this at zero.
+    let script = inheriting_script();
+    let live = Arc::clone(&script.live_handles);
+    let (engine, _state) = structure_engine(script);
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+
+    let _ = engine.rotate(
+        &source,
+        &[0, 1, 2],
+        Rotation::Clockwise90,
+        &rotate_options(),
+    );
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the rotation left object handles alive in qpdf's cache"
+    );
+}
+
+#[test]
+fn a_refused_rotation_releases_its_handles_too() {
+    // THE ERROR PATHS, which is where a hand-written release is actually lost -- `?` returns
+    // past it and nothing complains. The refusal here is a page past the end, raised after the
+    // walk has already taken handles for the pages before it.
+    let script = inheriting_script();
+    let live = Arc::clone(&script.live_handles);
+    let (engine, _state) = structure_engine(script);
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+
+    let refused = engine.rotate(&source, &[0, 9], Rotation::Clockwise90, &rotate_options());
+    assert!(matches!(refused, Err(Error::InvalidArgument(_))));
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "a refused rotation left object handles alive"
+    );
+}
+
+#[test]
+fn a_parent_that_never_ends_is_refused_rather_than_walked_forever() {
+    // The fake's `/Parent` is a dictionary for ever, which is a `/Parent` cycle by another
+    // name: the walk can never reach the top. It must exhaust `MAX_PAGE_TREE_DEPTH` and refuse
+    // rather than spin -- and release every handle it took on the way.
+    let script = inheriting_script();
+    let live = Arc::clone(&script.live_handles);
+    let (engine, _state) = structure_engine(script);
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+
+    assert!(matches!(
+        engine.effective_rotation(&source, 0),
+        Err(Error::Malformed(_))
+    ));
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the depth-exhausted walk left handles alive"
+    );
+}
+
+#[test]
+fn a_rotate_that_is_not_an_integer_is_malformed_on_the_web_too() {
+    // TRAPPING ANSWERS CRASHES, NOT WRONG ANSWERS -- the same rule as the native path, asserted
+    // separately because the two implementations are separate on purpose. No corpus fixture has
+    // a `/Rotate` of the wrong type.
+    let (engine, _state) = structure_engine(QpdfScript {
+        oh_type_codes: [
+            ("/Rotate".to_owned(), 7), // ot_name
+            ("/Parent".to_owned(), 9),
+        ]
+        .into_iter()
+        .collect(),
+        ..QpdfScript::default()
+    });
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    assert!(matches!(
+        engine.effective_rotation(&source, 0),
+        Err(Error::Malformed(_))
+    ));
+}
+
+#[test]
+fn a_rotation_is_relative_to_the_page_s_own_value_on_the_web_too() {
+    // `/Rotate 90` on the page plus a 90 turn writes 180. The case where `oh_int_value` is
+    // actually read, and where a version that ignored the current value would write 90.
+    let (engine, state) = structure_engine(QpdfScript {
+        oh_int_value: 90,
+        oh_type_codes: [("/Rotate".to_owned(), 4), ("/Parent".to_owned(), 9)]
+            .into_iter()
+            .collect(),
+        ..QpdfScript::default()
+    });
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    let _ = engine.rotate(&source, &[0], Rotation::Clockwise90, &rotate_options());
+
+    let written: Vec<i64> = state
+        .calls()
+        .iter()
+        .filter_map(|c| match c {
+            Call::OhNewInteger(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(written, vec![180], "90 inherited plus a 90 turn is 180");
 }

@@ -214,6 +214,34 @@ self.__burrow_qpdf_set_deterministic_id = (data, value) =>
 
 self.__burrow_qpdf_write = (data) => qpdf()._qpdf_write(data);
 
+// ---- the object-handle API, added for `rotate` -------------------------------------
+//
+// Each is one call with its arguments passed through. Nothing here decides anything: the
+// type code is fetched and returned unexamined, and whether a `/Rotate` is usable is
+// decided in Rust (`web/rotate.rs`), exactly as it is on the native path. ADR 0009 §2.
+//
+// `key` is a POINTER into the module's heap, not a string. Rust copies the key in and
+// passes the address, so no string is built here and nothing on this side can choose which
+// key is asked for -- the only two burrow asks for are `/Rotate` and `/Parent`, both
+// constants in Rust.
+
+self.__burrow_qpdf_oh_get_key = (data, oh, key) => u32(qpdf()._qpdf_oh_get_key(data, oh, key));
+
+self.__burrow_qpdf_oh_get_type_code = (data, oh) => qpdf()._qpdf_oh_get_type_code(data, oh);
+
+// `long long` on the C side, so it crosses as a BigInt -- the module is built with
+// -sWASM_BIGINT=1 for exactly this reason, and `qpdf_read_memory`'s size argument is the
+// other case. Converting here rather than splitting into (lo, hi) keeps 64-bit arithmetic
+// out of the binding layer.
+self.__burrow_qpdf_oh_get_int_value = (data, oh) => BigInt(qpdf()._qpdf_oh_get_int_value(data, oh));
+
+self.__burrow_qpdf_oh_new_integer = (data, value) => u32(qpdf()._qpdf_oh_new_integer(data, value));
+
+self.__burrow_qpdf_oh_replace_key = (data, oh, key, item) =>
+  qpdf()._qpdf_oh_replace_key(data, oh, key, item);
+
+self.__burrow_qpdf_oh_release = (data, oh) => qpdf()._qpdf_oh_release(data, oh);
+
 self.__burrow_qpdf_get_buffer_length = (data) => u32(qpdf()._qpdf_get_buffer_length(data));
 
 self.__burrow_qpdf_get_buffer = (data) => u32(qpdf()._qpdf_get_buffer(data));

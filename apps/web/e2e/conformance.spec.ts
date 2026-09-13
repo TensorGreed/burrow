@@ -89,7 +89,12 @@ function exact(value: string): number {
 
 function outcomeOf(reply: Reply): Outcome {
   if (reply.ok) {
-    return { ok: { page_count: reply.pages } };
+    // `rotations` only for rotate cases, where a page count alone would be vacuous: a
+    // rotation cannot change it. Omitted rather than sent empty, so the recorded shape
+    // matches the native side's `Option<Vec<i64>>` exactly.
+    return reply.rotations === undefined || reply.rotations.length === 0
+      ? { ok: { page_count: reply.pages } }
+      : { ok: { page_count: reply.pages, rotations: reply.rotations } };
   }
   // THE LIMIT NAME SAYS THERE IS DETAIL, NOT THE OUTER KIND.
   //
@@ -168,6 +173,30 @@ test("every corpus file produces the same typed outcome as the native path", asy
       // whatever it is, and only the delta counts. Discarding here buys the same independence
       // for about 80 ms a case (ADR 0015 §6).
       await page.evaluate(() => window.burrowHarness.discardWorker());
+
+      // ROTATE IS THREE OPERATIONS, mirroring the native runner: read the count, rotate
+      // `1..=count`, read the rotations back out of the emitted bytes. The driver composes
+      // them; see `rotateEveryPage`.
+      if (operation === "rotate") {
+        const rotated = await page.evaluate(
+          ([bytes, password, limits]) =>
+            window.burrowHarness.rotateEveryPage(bytes as string, {
+              password: password as string | null,
+              limits: limits as Record<string, number>,
+            }),
+          [
+            base64,
+            testCase.password,
+            { maxDurationMs: 600_000, ...camelCaseLimits(testCase.limits) },
+          ] as const,
+        );
+        expect(
+          rotated.fatal,
+          `${testCase.name} (rotate): a corpus file must not poison the instance`,
+        ).toBe(false);
+        results.push({ case: testCase.name, operation, outcome: outcomeOf(rotated) });
+        continue;
+      }
 
       const reply = await page.evaluate(
         ([op, bytes, password, attemptRecovery, limits, more]) =>

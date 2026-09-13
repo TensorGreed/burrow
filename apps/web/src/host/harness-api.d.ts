@@ -25,6 +25,13 @@ export interface Reply {
   recycle: boolean;
   pdfiumHeapBytes: string;
   qpdfHeapBytes: string;
+  /**
+   * Every page's effective rotation, in page order. `page_rotations` only.
+   *
+   * Numbers rather than strings, unlike `requested` and `allowed`: a rotation is 0, 90, 180
+   * or 270, so there is no `u64` here to lose precision on.
+   */
+  rotations?: number[];
 }
 
 /** What a CSP probe inside a worker observed. */
@@ -80,7 +87,7 @@ export interface BurrowHarness {
    * arrives in the form `expectations.json` records it.
    */
   runBase64(
-    op: "page_count" | "structure_check" | "merge",
+    op: "page_count" | "structure_check" | "merge" | "rotate" | "page_rotations",
     base64: string,
     options?: {
       password?: string | null;
@@ -93,6 +100,24 @@ export interface BurrowHarness {
        * single-input operation sends is unchanged.
        */
       extra?: string[];
+      /** One-based page numbers. `rotate` only. */
+      pages?: number[];
+      /** A multiple of 90, negative or over 360. `rotate` only. */
+      degrees?: number;
+    },
+  ): Promise<Reply>;
+  /**
+   * Rotate every page by 90 and report the rotations of the result.
+   *
+   * Three operations, mirroring `core/burrow-ops/tests/conformance.rs`: read the count,
+   * rotate `1..=count`, read the rotations back out of the emitted bytes. The composition is
+   * the harness's rather than the binding's — see the implementation.
+   */
+  rotateEveryPage(
+    base64: string,
+    options?: {
+      password?: string | null;
+      limits?: Partial<HarnessLimits>;
     },
   ): Promise<Reply>;
   /** Keep one `File` in page scope, so an operation can run against the same object twice. */

@@ -94,6 +94,21 @@ extern "C" {
     fn qpdf_init_write_memory(data: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_set_deterministic_id)]
     fn qpdf_set_deterministic_id(data: u32, value: u32);
+    // The object-handle API, added for `rotate`. `key` is a pointer to a NUL-terminated
+    // string already in the module's heap: the caller copies it in, so no string crosses
+    // this boundary and nothing on the JS side builds one.
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_key)]
+    fn qpdf_oh_get_key(data: u32, oh: u32, key: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_type_code)]
+    fn qpdf_oh_get_type_code(data: u32, oh: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_int_value)]
+    fn qpdf_oh_get_int_value(data: u32, oh: u32) -> i64;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_new_integer)]
+    fn qpdf_oh_new_integer(data: u32, value: i64) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_replace_key)]
+    fn qpdf_oh_replace_key(data: u32, oh: u32, key: u32, item: u32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_release)]
+    fn qpdf_oh_release(data: u32, oh: u32);
     #[wasm_bindgen(js_name = __burrow_qpdf_write)]
     fn qpdf_write(data: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_get_buffer_length)]
@@ -288,6 +303,30 @@ impl QpdfBridge for JsQpdf {
 
     fn copy_out(&self, ptr: QpdfPtr, len: u32) -> Vec<u8> {
         qpdf_copy_out(ptr.0, len)
+    }
+
+    fn oh_get_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr) -> u32 {
+        qpdf_oh_get_key(data.0, oh, key.0)
+    }
+
+    fn oh_get_type_code(&self, data: QpdfPtr, oh: u32) -> i32 {
+        qpdf_oh_get_type_code(data.0, oh)
+    }
+
+    fn oh_get_int_value(&self, data: QpdfPtr, oh: u32) -> i64 {
+        qpdf_oh_get_int_value(data.0, oh)
+    }
+
+    fn oh_new_integer(&self, data: QpdfPtr, value: i64) -> u32 {
+        qpdf_oh_new_integer(data.0, value)
+    }
+
+    fn oh_replace_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr, item: u32) {
+        qpdf_oh_replace_key(data.0, oh, key.0, item);
+    }
+
+    fn oh_release(&self, data: QpdfPtr, oh: u32) {
+        qpdf_oh_release(data.0, oh);
     }
 
     fn heap_bytes(&self) -> u64 {
