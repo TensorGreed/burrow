@@ -34,6 +34,7 @@
 // a user's connection actually carries. `zlib.brotliCompressSync` at maximum quality: no
 // dependency, and deterministic, which a budget has to be.
 
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -162,6 +163,22 @@ export function budgetKey(path) {
  * Sorted by path rather than taken in `entries` order, because the digest has to be a
  * function of the payload and not of how the walk happened to enumerate it.
  *
+ * GENERATED ENGINE CONTENT HASHES ARE NORMALISED OUT OF TEXT FILES FIRST, and that is not a
+ * convenience. The page's CSP names every engine by its content-hashed URL
+ * (`connect-src …/qpdf.<16 hex>.wasm`, ADR 0014), so ANY engine rebuild changes
+ * `index.html` — measured in CI, where `qpdf.wasm` is built from source and its hash
+ * differs from the recording, which made the page differ too.
+ *
+ * Without this, the only way to keep CI green would be to exempt `page` from the exact
+ * check — and `page` is where the design system lives, so that is precisely the line worth
+ * checking exactly. Exempting it for a cause that belongs to another artifact would be
+ * losing the wrong thing. Nothing is hidden by the normalisation: each engine has its own
+ * digest line, so an engine changing is still caught, on the line it belongs to.
+ *
+ * Deliberately narrow: `.<16 lowercase hex>.` between dots, which is exactly the shape
+ * `tools/stage-web-engines.mjs` emits. Vite's own asset hashes are a different length and
+ * alphabet, so they are untouched and a CSS change is still a digest change.
+ *
  * @param {string} dir
  * @param {Record<string, { files: string[] }>} groups
  * @returns {Record<string, string>}
@@ -172,11 +189,26 @@ export function digestsByBudgetKey(dir, groups) {
   for (const [key, group] of Object.entries(groups)) {
     const hash = createHash("sha256");
     for (const path of [...group.files].sort()) {
-      hash.update(readFileSync(join(dir, path)));
+      hash.update(normaliseEngineHashes(readFileSync(join(dir, path)), path));
     }
     digests[key] = hash.digest("hex");
   }
   return digests;
+}
+
+/** Files whose bytes may quote a generated engine URL. Binaries never do. */
+const TEXT_ASSET = /\.(html|css|js|mjs|json|txt|xml|svg)$/;
+
+/**
+ * Replace `stage-web-engines.mjs`'s content hashes with a fixed token, in text files only.
+ *
+ * @param {Buffer} bytes
+ * @param {string} path
+ * @returns {Buffer}
+ */
+export function normaliseEngineHashes(bytes, path) {
+  if (!TEXT_ASSET.test(path)) return bytes;
+  return Buffer.from(bytes.toString("utf8").replace(/\.[0-9a-f]{16}\./g, ".<enginehash>."));
 }
 
 export function byBudgetKey(measurement) {

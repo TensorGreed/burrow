@@ -29,7 +29,12 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { byBudgetKey, digestsByBudgetKey, firstLoad } from "../../../tools/first-load.mjs";
+import {
+  byBudgetKey,
+  digestsByBudgetKey,
+  firstLoad,
+  normaliseEngineHashes,
+} from "../../../tools/first-load.mjs";
 import { type Live, driftFindings, explain } from "./size-budget-drift.js";
 import { PRODUCTION_DIR } from "./build-output.js";
 
@@ -235,6 +240,50 @@ describe("the recording describes the build it claims to", () => {
       ).toBeGreaterThan(40);
       expect(budget.artifacts, `${key} is exempt but is not an artifact`).toHaveProperty(key);
     }
+  });
+});
+
+describe("normalising generated engine hashes out of the page digest", () => {
+  // WHY THIS EXISTS: the page's CSP names every engine by its content-hashed URL, so ANY
+  // engine rebuild changes index.html. CI proved it — `qpdf.wasm` is built from source,
+  // its hash differs there, and the check reported BOTH `qpdf.wasm` and `page` as changed.
+  //
+  // The alternative was exempting `page` from the exact check, which would have meant not
+  // checking the line the design system lives on because of a cause belonging to a
+  // different line. Normalising keeps the page exact for everything that is actually the
+  // page's.
+  //
+  // It has to hide the right thing and only the right thing, so both directions are here.
+
+  const asBuffer = (text: string) => Buffer.from(text, "utf8");
+  const digest = (text: string, path = "index.html") =>
+    normaliseEngineHashes(asBuffer(text), path).toString("utf8");
+
+  it("hides a changed engine hash", () => {
+    const before = digest("connect-src /engines/qpdf.37e20b4683cf834a.wasm");
+    const after = digest("connect-src /engines/qpdf.0123456789abcdef.wasm");
+    expect(before).toBe(after);
+  });
+
+  it("does NOT hide a change to the page's own content", () => {
+    // The near-miss. A normalisation that swallowed real edits would make the exact check
+    // vacuous for the one artifact it is being kept exact for.
+    expect(digest("<h1>Your files stay here</h1>")).not.toBe(digest("<h1>Upload your files</h1>"));
+  });
+
+  it("does not touch Vite's own asset hashes, which are a different shape", () => {
+    // 8 characters and a different alphabet. A CSS change renames the chunk, and that
+    // rename must still register as a change.
+    expect(digest('<link href="/_astro/index.-sYAk8S9.css">')).not.toBe(
+      digest('<link href="/_astro/index.BkQBePuw.css">'),
+    );
+  });
+
+  it("leaves binaries alone", () => {
+    // A .wasm could contain sixteen hex bytes by coincidence, and rewriting them would
+    // corrupt the one digest that is supposed to be exact.
+    const bytes = Buffer.from(".0123456789abcdef.", "utf8");
+    expect(normaliseEngineHashes(bytes, "engines/pdfium.wasm")).toEqual(bytes);
   });
 });
 

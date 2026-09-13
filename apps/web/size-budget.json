@@ -41,7 +41,18 @@
     "rather than implied: those artifacts legitimately differ per machine, so they get a",
     "`drift_tolerance` bound instead of an equality. Every entry needs a reason. An artifact",
     "whose bytes change WITHOUT being on that list fails -- an engine moving underneath us",
-    "should not be waved through as 'probably the toolchain'.",
+    "should not be waved through as 'probably the toolchain'. Two of the three entries were",
+    "predicted; `engines/qpdf.wasm` was NOT, and got there by failing CI and naming itself,",
+    "which is the check working rather than the check being wrong.",
+    "",
+    "THE PAGE IS NOT ON THAT LIST, DELIBERATELY, AND IT TOOK WORK NOT TO PUT IT THERE. The",
+    "CSP names every engine by its content-hashed URL (ADR 0014), so any engine rebuild",
+    "changes index.html -- CI reported `qpdf.wasm` and `page` together for that one cause.",
+    "Exempting `page` would have meant not checking the line the design system lives on",
+    "because of something belonging to a different line, so `digestsByBudgetKey` normalises",
+    "those generated hashes out of text files instead. Nothing is hidden: each engine keeps",
+    "its own digest line, and the normalisation is probed in both directions -- it must hide",
+    "a changed engine hash and must NOT hide an edit to the page.",
     "",
     "Shortening that list is the real fix and it means making `pkg/` reproducible, which is a",
     "build change nobody has made yet."
@@ -82,7 +93,7 @@
       "measured_brotli": 45288,
       "budget_brotli": 49558,
       "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR.",
-      "measured_sha256": "4d46c43b77005ce2b61a487e87f22d9485db779f26e31e68c82fff9c1f509fc6"
+      "measured_sha256": "0446ab604dd056438f97f907cf9e28d08dcf7b6e42ae934a6a9eda57ecd7ac00"
     },
     "engines/burrow_wasm_bg.wasm": {
       "measured_raw": 43072,
@@ -103,7 +114,7 @@
       "measured_brotli": 21652,
       "budget_brotli": 51200,
       "why": "The entry page and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of it is one file: the self-hosted typeface, 18,524 of it. That is a deliberate payload decision, not drift -- apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. The absolute budget still has 29 KiB of room, which is what it is for: failing CI on editorial work teaches people to raise budgets without reading them.",
-      "measured_sha256": "f7690331e7a44cdd1193b50e764359778dee83b95c4ec582b12062844223d8cd"
+      "measured_sha256": "6db98d57be2afe8b2fdc468ba8a665992d662b319ab0aa9497ed8ad655ae221c"
     }
   },
   "total": {
@@ -114,7 +125,8 @@
   },
   "not_byte_reproducible": {
     "engines/burrow_wasm_bg.wasm": "wasm-pack output. bindings/burrow-wasm/pkg/ is gitignored and rebuilt per machine, so the bytes depend on the local Rust and wasm-bindgen versions rather than on anything committed.",
-    "engines/burrow-worker.js": "Concatenates pkg/burrow_wasm.js, so it inherits the line above. THIS IS THE ONE THAT DRIFTED: recorded at 45,052 brotli and measuring 45,288 on an unchanged checkout, 236 bytes from a differently-built pkg/, with nothing failing."
+    "engines/burrow-worker.js": "Concatenates pkg/burrow_wasm.js, so it inherits the line above. THIS IS THE ONE THAT DRIFTED: recorded at 45,052 brotli and measuring 45,288 on an unchanged checkout, 236 bytes from a differently-built pkg/, with nothing failing.",
+    "engines/qpdf.wasm": "Built from source by engines/build-wasm.sh rather than fetched, and OBSERVED to differ between a local build and CI -- which is how it got onto this list: the check failed and named it. The cause is not established. emsdk is pinned (ADR 0004), so a reproducible Emscripten build is plausible and the usual culprit is absolute paths baked in by the compiler; nobody has looked. Until someone does, this is a bound rather than a claim. pdfium.wasm is NOT here: it is a prebuilt vendored artifact and its bytes match."
   },
   "drift_tolerance": 0.02
 }
