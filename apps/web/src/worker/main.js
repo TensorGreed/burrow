@@ -74,6 +74,15 @@ async function init() {
 
 function ensureReady() {
   // `??=` assigns the promise, not its result, and only when there is not one already.
+  //
+  // IT MEMOISES REJECTION TOO, DELIBERATELY. If `init()` throws -- a trap in
+  // `_FPDF_InitLibrary()`, a failed engine fetch -- `ready` stays a rejected promise for the
+  // worker's life and every later operation fails `Internal`/fatal. That is fail-closed and
+  // it is the intended behaviour. Do not "fix" it by clearing `ready` on failure: a retry
+  // would call `createQpdfModule()` a second time and rebind the bridge's module while an
+  // in-flight call still held the first instance, which is spike 0001's HIGH finding
+  // reintroduced. `init-memoisation.test.ts` would NOT catch that edit -- its mutation is the
+  // boolean-flag revert -- so this comment is the only thing standing in front of it.
   ready ??= init();
   return ready;
 }

@@ -423,32 +423,74 @@ Moved here from M0, because both depend on the native engines existing.
 The highest-risk feature in the project. A bug here leaks the secret the user was
 removing, so the verifier is part of the feature, not a test of it.
 
-### Gate: re-evaluate option 2 before M2 starts
+### Gate: CLOSED, 2026-09-12. M2 is planned against option 1.
 
-**This is a gate, not a maybe.** [ADR 0006](adr/0006-wasm-linking-strategy.md) chose
-option 1 for M1, and redaction is precisely where option 1's two weaknesses bite hardest:
-the shared-glue-globals hazard (a parse against the wrong linear memory returns
-confidently wrong data) and trap-versus-unwind semantics. A redaction pass that inspects
-one heap and edits another is the failure mode this milestone exists to prevent.
+**This was a gate, not a maybe, and it is now decided.** [Spike 0003](spikes/0003-pdfium-source-build.md)
+answered the two inputs it was waiting on, and [ADR 0006](adr/0006-wasm-linking-strategy.md)'s
+2026-09-12 amendment records the resolution: **option 1 is settled, not deferred again.** No
+from-source PDFium build is scheduled. Redaction can be planned and built on the current
+linking strategy.
 
-Option 2's measured advantages: `catch_unwind` **works** on `wasm32-unknown-emscripten`,
-so ADR 0002's guard rule holds on the web — it cannot under option 1. One heap, so no
-cross-heap copy. Slightly smaller.
+The four reasons, in brief — the amendment carries them in full:
 
-Its cost is a from-source PDFium `gn`/`ninja` build, and the **open question for this
-gate** is whether that build works on a `linux-aarch64` host or has to run on x86-64 CI
-runners. The dev and corpus machine is aarch64, so the answer determines whether the build
-is reproducible where the regression runs happen.
+1. **Upstream PDFium has no WASM target.** One grep hit across the whole tree, in
+   `third_party/harfbuzz/BUILD.gn`, and it is HarfBuzz's own shaper filenames; `DEPS` mentions
+   Emscripten zero times. Option 2 is therefore a **fork of `pdfium-binaries`' patch set**
+   carried across every bump, not a build.
+2. **The aarch64 question is answered, and it was the wrong question.** `depot_tools` and `gn`
+   both work here; the "Platform linux-arm64 is not supported" error was a relative-path
+   resolution bug. Recorded in the ADR because a false blocker would have been an input to an
+   architectural decision.
+3. **The shared-glue-globals hazard is closed on both engines** — structurally for PDFium (one
+   bundle, one evaluation per worker scope), and for qpdf by the memoised init promise plus
+   `apps/web/src/worker/init-memoisation.test.ts`, which reverts the line to a boolean flag in a
+   copy and asserts the invariant goes red.
+4. **`catch_unwind` on the web is not required for M2.** Redaction safety rests on never
+   emitting output unless verification passed, and panic payloads are discarded by policy
+   anyway (ADR 0009), so unwinding would carry nothing we keep. Trap → instance fatal →
+   fresh worker is implemented, tested in three browsers, and measured at 73–102 ms.
 
-**One question came off this gate.** [Spike 0002](spikes/0002-wasm-memory-ceiling.md) showed
-that the engines can be given a real memory ceiling **without relinking PDFium** — a 1–2 byte
-patch to the declared maximum in the prebuilt module's memory section, with no size change and
-no new dependency. So [#25](https://github.com/TensorGreed/burrow/issues/25) no longer makes
-"bound engine memory" an option-2-sized decision, and this gate is back to the single question
-above. See ADR 0006's 2026-09-12 amendment. The spike mitigates #25 rather than resolving it:
-the ceiling is per *worker*, so a caller's own `max_memory_bytes` still bounds nothing.
+**One hazard is NOT closed by this, and M2 has to carry it.** Reason 3 closes the *same-engine*
+route — two instances of one engine with the bridge rebound between them. PDFium and qpdf remain
+**separate modules with separate linear memories**, so a redaction pass that inspects content in
+one heap and emits output from the other is still "a redaction pass that inspects one heap and
+edits another" — the failure mode this milestone exists to prevent. It is latent (no operation
+spans both engines today) and it is not a reason to reopen the gate, because option 2 would not
+obviously fix it either. It is a design requirement, R10 below.
 
-Decide, record the outcome in an ADR, and only then start redaction.
+**Three requirements come with this decision — R8, R9 and R10 — and they are what make
+"`catch_unwind` is not required" true.** They are listed with the rest of M2's work below,
+each with the check that has to exist, rather than left as prose in a gate section nobody
+reads twice.
+
+**Two named triggers would reopen it**, and nothing else: a true per-operation memory bound
+becoming a requirement ([#25](https://github.com/TensorGreed/burrow/issues/25)), or
+`pdfium-binaries` ceasing to publish at a version we need — the single external dependency
+option 1 rests on, tracked as a supply-chain risk with no action now ([#44](https://github.com/TensorGreed/burrow/issues/44)).
+
+Neither the memory ceiling nor #25 is resolved by this. [Spike 0002](spikes/0002-wasm-memory-ceiling.md)
+remains unadopted, and its ceiling is per *worker*, so a caller's own `max_memory_bytes` still
+bounds nothing.
+
+### Requirements carried in from the linking gate
+
+Conditions of ADR 0006's decision, not advice. Each is **unsatisfied until its check exists and
+has been shown to fail without the property** — a requirement with no check is exactly the kind
+of claim that reads as coverage. See the ADR's 2026-09-12 amendment for why each one exists.
+
+| | requirement | check that must exist |
+|---|---|---|
+| **R8** | Redaction output is a single value returned from one Rust call, posted only after that call returns success. Progress may report *position*; it may not emit *content*. | `redaction-emission.spec.ts` — record every `postMessage`; assert no message before the final reply carries bytes, and exactly one carries output |
+| **R9** | Nothing is written outside the wasm heap before verification passes — no OPFS, no File System Access, no `blob:` URL handed to the page. | `redaction-no-side-channel.spec.ts` — stub `getDirectory`, `showSaveFilePicker`, `createObjectURL`; assert none is called before the verified reply |
+| **R10** | Verification runs on the exact byte sequence that is emitted, in the heap it is emitted from — never a sibling heap's copy. | `redact_verify_same_bytes` in `core/burrow-ops`, plus a conformance case for a both-engine path |
+
+Under an unwind, violating R8 or R9 is recoverable: Rust returns `Err`, the buffer drops, a
+`Drop` impl deletes the file. Under a trap — which is what the web has — they are not. R10 is
+the one that has nothing to do with panics: it exists because PDFium and qpdf have separate
+linear memories, so "verified" against one heap's copy says nothing about the bytes leaving the
+other.
+
+### The work
 
 - Redaction of text, images, annotations, and vector content by region
 - **Removal, not concealment** — a black rectangle over text is not redaction
