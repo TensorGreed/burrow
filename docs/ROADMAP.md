@@ -9,7 +9,7 @@ Dates are deliberately absent. The order is the commitment.
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅ |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started |
 | [M4](#m4--ios) | iOS app | not started |
@@ -60,7 +60,11 @@ Agreed sequence. Each PR is squash-merged with CI green before the next starts.
 | **4a-ii** ✅ | Worker recovery per ADR 0009 as an explicit state machine, the main-thread watchdog (clock starting at the worker's ack), a crash-counting circuit breaker, heap-growth recycling with a measured threshold, and the console-silence and zero-requests-after-init tests. [ADR 0015](adr/0015-web-worker-lifecycle.md) | 10 |
 | **4b** ✅ | The **differential conformance harness** and the Chromium/Firefox/WebKit matrix. `Stage` on `LimitExceeded`, expectations schema 2, the adversarial corpus, and two measured findings. [ADR 0016](adr/0016-differential-conformance.md) | 12 |
 | **4c** ✅ | **Closes foundations.** The `max_memory_bytes` claims corrected everywhere in one pass (#25); the credits page, generated from the licence manifest and reachable from the footer (#16, ADR 0008's second of four surfaces); the first-load size budget, on the total rather than per file; qpdf's `trap_errors` set generated from source and checked against both bindings (ADR 0013 §1); and a ceiling, a milestone and an issue on every `known_gap` | 2, 11 |
-| **5+** | Operations, one at a time, starting with `merge` | — |
+| **A** ✅ | **The design system the five tool pages share**, established before any tool page existed: six reserved colour tokens with contrast asserted in both themes, one self-hosted OFL face with its provenance pinned, two layout tracks, and the banned-chrome list — written into `apps/web/CLAUDE.md` so the tool pages inherit it | — |
+| **B** ✅ | **`merge` in the core**, on the engine a measurement chose rather than a guess. [ADR 0017](adr/0017-merge-engine-and-failure-semantics.md): qpdf, all-or-nothing on any failing input, and limits per input *and* on the total | — |
+| **B2** ✅ | **`merge` across the bridge**: the write path on the web engine, a reply that carries bytes, the multi-input worker protocol, seven new qpdf wasm exports and the rebuild, and conformance **schema 3** — operations as a map, cases with an ordered input list | — |
+| **B3** ✅ | **`/merge-pdf`**, the first tool page: pick, reorder, remove, merge, download, cancel; every typed error as a sentence for a person; and the Playwright matrix, with console-silence and zero-requests asserted against the page rather than only the harness | — |
+| **5+** | The remaining operations, one at a time | — |
 
 The linking strategy is **settled** by [spike 0001](spikes/0001-wasm-engines.md):
 option 1, Emscripten engine modules bridged through JS, with Rust on
@@ -382,7 +386,7 @@ assert:
 
 | Operation | Invariant |
 |---|---|
-| `merge` | Output page count equals the sum of inputs; page order is preserved; merging one document is the identity |
+| `merge` ✅ | Output page count equals the sum of inputs; page order is preserved; merging one document is the identity |
 | `split` | Splitting then merging round-trips to the original page sequence; every input page appears exactly once across outputs |
 | `rotate` | Four 90° rotations return to the original; rotation is recorded, not re-rasterised |
 | `reorder` | Output is a permutation of the input — no page lost, added, or duplicated; the identity permutation is a no-op |

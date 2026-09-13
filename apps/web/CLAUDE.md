@@ -295,6 +295,68 @@ designed, and they are listed so nobody has to rediscover the list:
   action — a disclosure opening, a state changing — or it does not happen. The
   `prefers-reduced-motion` block in `base.css` governs whatever is added later.
 
+### What a tool page is made of
+
+`/merge-pdf` is the first one, and these are the parts the next four inherit rather than
+re-decide. Each was a decision with a reason, not a shape that happened.
+
+- **No `client:*` directive.** Astro's hydration directives bootstrap an island with an
+  **inline** script, and `script-src 'self'` carries no `'unsafe-inline'` and no nonce, so the
+  browser refuses it, the island never hydrates, and the tool renders as dead markup — no
+  error anyone would see except a CSP line in the console. Mount the component from a plain
+  Astro `<script>` block, which Astro bundles to an external `_astro/*.js`. The cast that
+  needs is explained at the call site.
+- **The island imports `createWorkerHost`; it does not fetch `/host/`.** The same file is also
+  staged to `public/host/` for the harness and deleted from production builds. Importing it
+  means Vite bundles the lifecycle into the island's chunk, so no `/host/` URL ships and the
+  deletion stays correct.
+- **The engines start when a file is chosen, never on page load.** Mounting the component is a
+  few kilobytes; starting the engines is 6.5 MB.
+- **Every typed error becomes a sentence in a pure function**, beside the component and tested
+  without a browser (`src/components/merge-messages.ts`). The input is a `kind`, an index and
+  a limit name — all computed in Rust — so there is no field through which an engine's prose
+  could arrive. Errors do not apologise and are never vague: each says what happened and what
+  to do next.
+- **A wrapper error is unwrapped once, in that function**, not in the component. `InputFailed`
+  says which input failed and never what was wrong with it.
+- **The page does not re-implement a ceiling.** It sends the files and reports what the core
+  refuses, so the prose and the code can be caught disagreeing. Say what happens to a large
+  file in the page's own words rather than letting someone discover it.
+- **Cancel is `discardWorker()`, and a cancelled operation's reply is ignored rather than
+  shown.** The host fails an in-flight request with `Internal` when the worker is discarded,
+  which is correct from its point of view — but a person who pressed Stop did not have
+  anything go wrong, and "something inside burrow failed" is the interface lying about its own
+  state. Ignore the stale reply by generation; do not suppress the failure branch, or a
+  genuine failure arriving a moment late disappears with it.
+- **No progress bar where there is nothing to report.** The merge is one engine call per page
+  inside a worker and reports nothing until it finishes. Say so.
+- **The result is a link the person activates**, not a download that starts itself. A tool that
+  writes to someone's disk without being asked is doing something they did not request.
+- **`EngineUnavailable` gets a deliberate gesture**, not a retry: the breaker latches on
+  purpose (ADR 0015 §3).
+- **The page is the subject of the safety tests, not only `/harness`.** `/harness` is deleted
+  from production builds, so a console-silence or zero-requests assertion that runs only there
+  says nothing about a route a person can visit. `e2e/merge-pdf.spec.ts` runs both against the
+  page that ships, using the helpers in `e2e/request-log.ts` and `e2e/console-noise.ts`.
+- **Serve the build on the port the CSP names** (4321). `connect-src` carries absolute engine
+  URLs, so the same `dist/` on another port refuses every engine fetch — which looks exactly
+  like a broken page, and cost an hour before it was recognised.
+
+### The size budget measures the heaviest route, not the home page
+
+`tools/first-load.mjs` weighs every landing route and budgets the largest, and
+`size-budget.json` records which one that was. People arrive from a search for "merge pdf"
+and land on `/merge-pdf`, which carries an island bundle the home page does not — budgeting
+the home page would have budgeted the lightest route while the heaviest grew unwatched. A
+route overtaking the recorded one fails the test rather than silently replacing it.
+
+**`vitest.global-setup.ts` sets `NODE_ENV=production` explicitly**, and that is load-bearing:
+vitest sets `NODE_ENV=test`, the builds inherit it, and Svelte resolves its client runtime by
+export condition — so every build-output test was asserting against a build carrying the
+**development** runtime, 10 KB larger than what deploys. It was invisible until the first
+island shipped, because a build with no Svelte component pulls in no Svelte runtime to be
+wrong about.
+
 ### Working on it
 
 - **No inline `style` attributes, and no injected `<style>` tags.** `style-src 'self'`

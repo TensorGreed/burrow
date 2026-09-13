@@ -24,10 +24,19 @@
 //   * all three .wasm modules -- pdfium, qpdf, and the Rust binding;
 //   * the CSP control file, fetched at init to prove an allowlisted request succeeds.
 //
-// NOT counted: `_headers` (host configuration, never a request), and pages other than the
-// entry page. The credits page is large -- it carries eighteen full licence texts -- and is
-// deliberately out of scope: nobody loads it on the way to processing a file, and shrinking
-// it would mean shipping less of a licence than we are obliged to.
+// NOT counted: `_headers` (host configuration, never a request). The credits page is large --
+// it carries eighteen full licence texts -- and is deliberately out of scope: nobody loads it
+// on the way to processing a file, and shrinking it would mean shipping less of a licence than
+// we are obliged to.
+//
+// WHICH PAGE IS MEASURED, and it is no longer `index.html`. That changed when the first tool
+// page landed. People arrive from a search for "merge pdf" and land on `/merge-pdf`, which
+// carries an island bundle the home page does not -- so budgeting the home page would have
+// budgeted the lightest route while the heaviest one grew unwatched. `heaviestFirstLoad`
+// measures EVERY landing route and budgets the largest, and returns the ones it weighed so the
+// choice is visible rather than assumed. A route overtaking the recorded one is a finding, not
+// a silent substitution: `size-budget.json` records which route was measured, and the test
+// fails when the build disagrees.
 //
 // BROTLI, BECAUSE THAT IS WHAT A HOST SERVES. Raw bytes are recorded too, since they are what
 // the browser compiles and what the spike measured, but the budget is on the compressed size
@@ -122,6 +131,51 @@ export function firstLoad(dir, entryPage = "index.html") {
       raw: entries.reduce((n, e) => n + e.raw, 0),
       brotli: entries.reduce((n, e) => n + e.brotli, 0),
     },
+  };
+}
+
+/**
+ * Pages a person can land on, as paths relative to `dir`.
+ *
+ * Every route except `credits/`, which is out of scope for the reason in the header.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+export function landingPages(dir) {
+  return walk(dir)
+    .filter((path) => path === "index.html" || path.endsWith("/index.html"))
+    .filter((path) => path !== "credits/index.html")
+    .sort();
+}
+
+/**
+ * The heaviest landing route's first-load payload, and every route that was weighed.
+ *
+ * The budget goes on the worst route a person can arrive at, not on whichever one happens to
+ * be the site root. `considered` is returned so a report can print what was compared -- a
+ * measurement that silently picked one of several is the shape this project treats as no
+ * measurement at all.
+ *
+ * @param {string} dir
+ * @returns {{ page: string,
+ *             measurement: { entries: { path: string, raw: number, brotli: number }[],
+ *                            total: { raw: number, brotli: number } },
+ *             considered: { page: string, brotli: number }[] }}
+ */
+export function heaviestFirstLoad(dir) {
+  const pages = landingPages(dir);
+  if (pages.length === 0) {
+    throw new Error(`${dir}: no landing pages; nothing to measure`);
+  }
+  const weighed = pages.map((page) => ({ page, measurement: firstLoad(dir, page) }));
+  const heaviest = weighed.reduce((a, b) =>
+    b.measurement.total.brotli > a.measurement.total.brotli ? b : a,
+  );
+  return {
+    page: heaviest.page,
+    measurement: heaviest.measurement,
+    considered: weighed.map((w) => ({ page: w.page, brotli: w.measurement.total.brotli })),
   };
 }
 

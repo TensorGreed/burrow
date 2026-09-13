@@ -326,10 +326,35 @@ fn the_schema_records_a_route_for_every_limit_failure() {
             let Outcome::Err(failure) = outcome else {
                 continue;
             };
-            if failure.kind != expectations::ErrorKind::LimitExceeded {
+            // `InputFailed` CAN carry limit detail, and only `InputFailed`. The wrapper names
+            // which input failed and never what was wrong with it, so a per-input ceiling is
+            // recorded as the wrapper plus the inner limit's detail -- the alternative, which
+            // this corpus held until the merge page was built, was a bare `InputFailed` with
+            // the limit, the stage and both numbers discarded.
+            let may_carry_detail = matches!(
+                failure.kind,
+                expectations::ErrorKind::LimitExceeded | expectations::ErrorKind::InputFailed
+            );
+            if !may_carry_detail {
                 assert!(
-                    failure.stage.is_none(),
-                    "case {:?} ({operation}): a non-limit failure recorded a stage",
+                    failure.stage.is_none() && failure.limit.is_none(),
+                    "case {:?} ({operation}): a failure that cannot be a limit recorded limit \
+                     detail",
+                    case.name
+                );
+                continue;
+            }
+            // An `InputFailed` wrapping something that is not a limit has no detail to record,
+            // and that is the ordinary case -- a malformed or encrypted input. Nothing to
+            // check beyond the pairing rule below.
+            if failure.kind == expectations::ErrorKind::InputFailed
+                && failure.limit.is_none()
+                && failure.stage.is_none()
+            {
+                assert!(
+                    failure.requested.is_none() && failure.allowed.is_none(),
+                    "case {:?} ({operation}): numbers were recorded for a failure that named \
+                     no limit",
                     case.name
                 );
                 continue;

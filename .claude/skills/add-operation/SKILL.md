@@ -38,6 +38,37 @@ function signature.
 - Never put file content in an error message, log, or debug output.
 - rustdoc on every public item, including an `# Errors` section.
 
+## 2a. If the operation needs a capability no engine has yet
+
+**Check before you plan the operation, not while you are writing it.** Every engine capability
+in the repo before M1 PR B was read-only — `DocumentEngine` was `{ open, page_count }` and
+`StructureEngine` was `{ check }`, and neither bridge could return bytes *out* of an engine
+heap. `merge` could not be built inside `burrow-ops` at all until that existed, and the work
+crossed **six individually-gated artifacts** that no other step in this checklist mentions:
+
+| | where | the gate |
+|---|---|---|
+| a new trait method | `core/burrow-engines/src/lib.rs` | the native and web impls are separate on purpose, so the differential corpus can catch them diverging |
+| new `unsafe extern "C"` declarations | `…/<engine>/ffi.rs` | every one needs a `// SAFETY:` comment, and for qpdf an entry on `engines/qpdf-trapped-functions.txt` or an argued one in `engines/qpdf-untrapped-accepted.toml` (ADR 0013) |
+| a new bridge method | `…/web/bridge.rs`, `apps/web/src/worker/bridge.js`, `…/web/fake.rs` | ADR 0009 §2: the bridge method list **is** the audit surface, and no branch on engine state may live in JS |
+| the wasm export list | `engines/build-wasm.sh` | an allowlist mirroring `ffi.rs`. A missing export fails at run time in the browser and nowhere else |
+| an engine rebuild | `engines/build-wasm.sh` | new content hashes, a regenerated CSP, and a **size-budget re-measure** |
+| the reply shape | `bindings/burrow-wasm/src/lib.rs` | a reply that carries bytes, or an index, or an inner kind, is a shape change every reader has to follow |
+
+Two things that were learnt the hard way and are cheap to avoid:
+
+- **A wrapper error must be unwrapped everywhere its detail is read, not only where its kind
+  is read.** `Error::InputFailed` names *which* input and never *what*, so `is_fatal` and the
+  reported kind looked through it while the limit name, the stage and both numbers did not —
+  and a real ceiling reached the page as a vague sentence. Fix it on **both** sides at once, or
+  the corpus records the divergence as agreement.
+- **A multi-input or byte-returning operation changes the conformance schema**, not just the
+  expectations. **Three readers move together**, and it is easy to find two of them and stop:
+  `core/burrow-engines/testsupport/expectations.rs` builds the native outcome,
+  `apps/web/e2e/conformance.spec.ts`'s `outcomeOf` builds the web one, and
+  `apps/web/src/conformance/compare.ts` renders both for comparison. Expected outcomes stay
+  hand-written, never recorded from what the engine currently returns.
+
 ## 3. Typed errors — `core/burrow-types/src/error.rs`
 
 - Add variants for failure modes that are genuinely new. Reuse existing variants where
@@ -48,8 +79,16 @@ function signature.
 
 ## 4. Limits
 
-- Use `Limits::check(name, requested, allowed)` so the error names the limit and both
-  numbers.
+- Use `Limits::check(Stage::…, name, requested, allowed)` so the error names the limit, the
+  **stage**, and both numbers. The stage has been the first argument since M1 PR 4b and it is
+  not decoration: three different checks produce `LimitExceeded { limit: "max_memory_bytes" }`,
+  and without the stage a rejection can move between the pre-scan and the measured check with
+  nothing noticing.
+- **Decide whether a ceiling applies per input or to the total, and say which in the rustdoc.**
+  For a multi-input operation, per-input alone is a hole — a hundred inputs each just under
+  `max_input_bytes` is a hundred times the ceiling. `merge` checks input size per input *and*
+  against the sum, and `max_pages` against the **output** total; ADR 0017 §3 is the worked
+  example.
 - Check **before** allocating, not after.
 - Consider aggregate cost, not just per-item: a thousand small pages can exceed what one
   large page would. Watch for amplification — page count times page size, multiplied
@@ -109,7 +148,14 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     // Errors are expected. Panics, hangs, and OOMs are bugs.
-    let _ = burrow_core::ops::<operation>(data, &burrow_core::Limits::default());
+    //
+    // The real signature, not `burrow_core::ops::<operation>(data, &Limits)` -- no operation
+    // has ever had that shape, and this snippet claimed it until M1 PR B. An operation is
+    // called on an ENGINE, with `OpenOptions` carrying the limits and the injected clock, so
+    // a target has to construct one. `fuzz/fuzz_targets/merge.rs` is the multi-input
+    // example, including how it splits one buffer into several inputs.
+    let engine = /* the engine the operation runs on */;
+    let _ = burrow_ops::<operation>(&engine, /* inputs derived from `data` */, &options);
 });
 ```
 
@@ -144,7 +190,21 @@ Read `apps/web/CLAUDE.md`.
 - No third-party requests. Self-host every asset.
 - Report the typed error from the core; never echo file content.
 - Keyboard usable, and the drop zone has a file-input fallback.
-- A Playwright test drives it with a real file, and the no-network assertion still passes.
+- A Playwright test drives it with a real file, and the no-network assertion still passes —
+  **against the tool page, not only against `/harness`**. The harness is deleted from
+  production builds, so a console-silence or zero-requests assertion that only runs there says
+  nothing about a route a person can visit.
+- **Do not use an Astro `client:*` directive.** Hydration bootstraps the island with an
+  *inline* script, and `script-src 'self'` carries no `'unsafe-inline'` and no nonce (ADR
+  0014), so the browser refuses it and the tool renders as dead markup — with no error anyone
+  would see except a CSP line in the console. Mount the component from a plain Astro
+  `<script>` block, which Astro bundles to an external `_astro/*.js`.
+- **Serve the build on the port the CSP was generated against** (4321 by default). `connect-src`
+  names absolute engine URLs, so the same `dist/` on another port refuses every engine fetch —
+  which looks exactly like a broken page. An hour went into this one in M1 PR B3.
+- Say what happens to a file over the limit in the page's own prose, rather than letting
+  someone discover it. And do not re-implement the ceiling in the island: send the files, and
+  report what the core refuses, so the prose and the code can be caught disagreeing.
 
 ## 9. Docs
 

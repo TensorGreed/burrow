@@ -36,7 +36,18 @@ export const HARNESS_DIR = resolve(webApp, "dist-harness-check");
 export default function setup() {
   // No BURROW_HARNESS: prebuild does not read it, but a stray value in the developer's
   // shell must not reach the production build below.
-  const clean = { ...process.env };
+  //
+  // NODE_ENV=production, EXPLICITLY, because vitest sets `NODE_ENV=test` in this process and
+  // it is inherited by the builds below. That is not cosmetic: Svelte publishes its client
+  // runtime under an export condition, so a build that is not `production` resolves the
+  // DEVELOPMENT runtime -- 41,744 bytes against 31,063, plus a differently-named chunk. Every
+  // build-output test would then be asserting against something no deploy produces, and the
+  // size budget would be recording a payload 10 KB larger than the real one.
+  //
+  // It was invisible until the first island shipped, because a build with no Svelte component
+  // in it pulls in no Svelte runtime to be wrong about. Measured in M1 PR B3, by the budget's
+  // own drift probe refusing to match a build made minutes earlier by `pnpm build`.
+  const clean: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "production" };
   delete clean.BURROW_HARNESS;
 
   execFileSync("pnpm", ["run", "prebuild"], { cwd: webApp, env: clean, stdio: "pipe" });
