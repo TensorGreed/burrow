@@ -34,8 +34,8 @@ mod expectations;
 mod minimal_pdf;
 
 use expectations::{
-    Case, CaseLimits, ErrorKind, Expectations, Failure, KnownGap, Operation, Outcome, Outcomes,
-    Platform, PlatformExpectation, conformance_dir, sha256_hex,
+    Case, CaseInput, CaseLimits, ErrorKind, Expectations, Failure, KnownGap, Operation, Outcome,
+    Outcomes, Platform, PlatformExpectation, conformance_dir, sha256_hex,
 };
 
 /// One fixture to write, and what every operation on it must produce.
@@ -98,20 +98,29 @@ fn opens(page_count: u64) -> Outcome {
     Outcome::Ok { page_count }
 }
 
-/// Both engines produce the same outcome.
+/// Both single-document engines produce the same outcome.
+///
+/// **Does NOT include `merge`.** A single-document fixture says nothing about merging, and
+/// schema 3 lets a case declare only the operations it is about rather than inventing an
+/// expectation for every one. The merge cases are built separately, below.
 fn both(outcome: Outcome) -> Outcomes {
-    Outcomes {
-        page_count: outcome.clone(),
-        structure_check: outcome,
-    }
+    Outcomes::from([
+        (Operation::PageCount, outcome.clone()),
+        (Operation::StructureCheck, outcome),
+    ])
 }
 
 /// The engines disagree, which several fixtures exist to pin.
 fn differ(page_count: Outcome, structure_check: Outcome) -> Outcomes {
-    Outcomes {
-        page_count,
-        structure_check,
-    }
+    Outcomes::from([
+        (Operation::PageCount, page_count),
+        (Operation::StructureCheck, structure_check),
+    ])
+}
+
+/// A case that is only about merging.
+fn merges(outcome: Outcome) -> Outcomes {
+    Outcomes::from([(Operation::Merge, outcome)])
 }
 
 fn main() {
@@ -530,8 +539,10 @@ fn main() {
         };
         cases.push(Case {
             name: fixture.name.to_owned(),
-            file: format!("fixtures/{}", fixture.filename),
-            sha256: sha256_hex(&bytes),
+            inputs: vec![CaseInput {
+                file: format!("fixtures/{}", fixture.filename),
+                sha256: sha256_hex(&bytes),
+            }],
             password: fixture.password.map(str::to_owned),
             limits: fixture.limits,
             attempt_recovery: fixture.attempt_recovery,
@@ -541,8 +552,74 @@ fn main() {
         });
     }
 
+    // MERGE CASES, added with schema 3. Built here rather than in the `files` table because
+    // they name fixtures that table has already written, in combinations -- a merge case has
+    // no fixture of its own, which is exactly why the schema needed an input LIST.
+    //
+    // Expected page counts are written by hand, like every other outcome in this file. The
+    // module docs are emphatic about it and merge is the case where the temptation is
+    // strongest: summing the inputs' counts would be recording what the engine does rather
+    // than what anyone decided it should do.
+    let digest_of = |name: &str| {
+        let path = fixtures.join(name);
+        sha256_hex(&std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+    };
+    let merge_input = |name: &str| CaseInput {
+        file: format!("fixtures/{name}"),
+        sha256: digest_of(name),
+    };
+
+    for (name, files, expect) in [
+        (
+            "merge-two-ordinary",
+            vec!["pages-10.pdf", "pages-137.pdf"],
+            merges(opens(147)),
+        ),
+        (
+            "merge-one-document-is-the-identity",
+            vec!["pages-10.pdf"],
+            merges(opens(10)),
+        ),
+        (
+            "merge-three-including-a-single-page",
+            vec!["blank-1page.pdf", "pages-10.pdf", "blank-1page.pdf"],
+            merges(opens(12)),
+        ),
+        (
+            // ALL-OR-NOTHING, in the corpus rather than only in a unit test. The second
+            // input is fine; the first is not, and the whole operation fails. ADR 0017 §2.
+            "merge-refuses-when-any-input-is-malformed",
+            vec!["not-a-pdf.bin", "pages-10.pdf"],
+            merges(Outcome::Err(Failure::of(ErrorKind::InputFailed))),
+        ),
+        (
+            // An encrypted input with no password fails the whole merge, naming its index.
+            "merge-refuses-an-encrypted-input",
+            vec!["pages-10.pdf", "encrypted.pdf"],
+            merges(Outcome::Err(Failure::of(ErrorKind::InputFailed))),
+        ),
+        (
+            // ADR 0017's correction to ADR 0013: qpdf COUNTS three pages in this file and
+            // cannot extract the first. Reading a damaged file is not merging it.
+            "merge-refuses-a-trailerless-input-qpdf-can-count",
+            vec!["trailer-removed.pdf", "pages-10.pdf"],
+            merges(Outcome::Err(Failure::of(ErrorKind::InputFailed))),
+        ),
+    ] {
+        cases.push(Case {
+            name: name.to_owned(),
+            inputs: files.iter().map(|f| merge_input(f)).collect(),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect,
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        });
+    }
+
     let expectations = Expectations {
-        schema: 2,
+        schema: 3,
         generated_by: GENERATED_BY.to_owned(),
         current_milestone: CURRENT_MILESTONE.to_owned(),
         cases,

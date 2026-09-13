@@ -169,6 +169,11 @@ function drainReply(id, reply) {
       // Strings for the same reason `requested` is: these are `u64`.
       pdfiumHeapBytes: reply.pdfium_heap_bytes.toString(),
       qpdfHeapBytes: reply.qpdf_heap_bytes.toString(),
+      // WHICH input failed, as a number rather than something to parse out of `message`.
+      // -1 when the failure is not about a particular input.
+      failedInput: reply.failedInput,
+      // What is wrong with that input, so a page need not unwrap anything itself.
+      innerKind: reply.innerKind,
       // THE DOCUMENT, AS A BLOB, AND THE BLOB IS THE POINT.
       //
       // `takeOutput()` MOVES the bytes out of the Rust reply -- a getter would copy them,

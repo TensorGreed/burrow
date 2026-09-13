@@ -59,6 +59,8 @@
  * @property {boolean} recycle
  * @property {string} pdfiumHeapBytes
  * @property {string} qpdfHeapBytes
+ * @property {number} [failedInput] Which input failed, or -1.
+ * @property {string} [innerKind] What was wrong with that input, or empty.
  * @property {Blob | null} [output] The document an operation produced, or null.
  *
  *   A Blob rather than bytes, for the same reason the INPUT is one (ADR 0015 §4):
@@ -120,6 +122,8 @@ function hostFailure(kind, message, detail = {}) {
     // there was not merely imprecise: it made a test that expected a crash pass on a refusal,
     // because both looked fatal.
     fatal: kind !== ENGINE_UNAVAILABLE,
+    failedInput: -1,
+    innerKind: "",
     // Explicitly null, not absent. A caller that reads `reply.output` on a failure should
     // get the same shape it gets from the worker -- "no document" -- rather than
     // `undefined`, which reads as "this reply does not have that concept".

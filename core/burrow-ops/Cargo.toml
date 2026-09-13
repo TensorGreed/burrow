@@ -30,6 +30,17 @@ native-engines = ["burrow-engines/native-engines"]
 [dev-dependencies]
 # Property tests. Required by the definition of done, not optional per operation.
 proptest = { version = "1", default-features = false, features = ["std"] }
+# The differential conformance corpus moved here in M1 PR B2, from `burrow-engines`.
+#
+# IT HAD TO MOVE. The corpus now covers `merge`, which is an OPERATION -- so the harness has
+# to call `burrow_ops::merge` to compare what the two platforms produce, and `burrow-engines`
+# cannot see this crate. A dev-dependency pointing back would be the dependency cycle
+# `core/CLAUDE.md` draws an arrow to prevent, wearing a different hat. The file reads
+# `burrow-engines`' `testsupport/expectations.rs` by `#[path]`, so there is still exactly one
+# definition of the schema.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = { version = "0.10", default-features = false }
 
 [lints]
 workspace = true

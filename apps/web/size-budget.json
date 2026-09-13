@@ -110,20 +110,20 @@
       "measured_sha256_normalised": "83e19277aea18df391d5af854cc1a7f1211dcc60931ac9f9d1f09f67ea03af60"
     },
     "engines/burrow-worker.js": {
-      "measured_raw": 268823,
-      "measured_brotli": 47916,
+      "measured_raw": 269941,
+      "measured_brotli": 48092,
       "budget_brotli": 52708,
       "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR. M1 PR B2 added +2,628 -- the write path's nine bridge functions and the wasm-bindgen glue for the merge entry point.",
-      "measured_sha256": "93ac5186e04f088a47db6a6d6384e38339942b367d1b7b0d5a106005f99e7f02",
-      "measured_sha256_normalised": "43e5ecd40b819b0c79de1c17f533e7365ac346b944a0c363bcc504dc2132afaa"
+      "measured_sha256": "f042538feb6609146ba5b1adab56185459fcf093e217d73c6fb3aa208779a43c",
+      "measured_sha256_normalised": "dedb355219b9c47a711cc2e8f168fbdf092da30f1cb2fa2195b05c2ce37ef551"
     },
     "engines/burrow_wasm_bg.wasm": {
-      "measured_raw": 55567,
-      "measured_brotli": 20062,
+      "measured_raw": 56032,
+      "measured_brotli": 20180,
       "budget_brotli": 22069,
       "why": "The Rust binding. Grows as operations land, which is expected -- and M1 PR B2 is the first test of the ROADMAP's prediction that \"a merge implementation should move this line and nothing else\". It moved this line by +4,044. It did NOT move only this line: engines/qpdf.wasm took +53,456 and engines/burrow-worker.js +2,628. The prediction was reasonable and wrong, because it assumed the engine already had what an operation needed.",
-      "measured_sha256": "81be6fed0ee62153e9f855386cb83ea9b7702777f60d1073eb8b87527e9b2310",
-      "measured_sha256_normalised": "81be6fed0ee62153e9f855386cb83ea9b7702777f60d1073eb8b87527e9b2310"
+      "measured_sha256": "8e594caab6bfe907b39ad4290b5219c1c1b28bb2c887f5a0b28f72153bf384f1",
+      "measured_sha256_normalised": "8e594caab6bfe907b39ad4290b5219c1c1b28bb2c887f5a0b28f72153bf384f1"
     },
     "engines/control.txt": {
       "measured_raw": 78,
@@ -135,16 +135,16 @@
     },
     "page": {
       "measured_raw": 29570,
-      "measured_brotli": 21648,
+      "measured_brotli": 21650,
       "budget_brotli": 51200,
       "why": "The entry page and every same-origin asset it references, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. An ABSOLUTE budget (50 KiB), not a percentage. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of it is one file: the self-hosted typeface, 18,524 of it. That is a deliberate payload decision, not drift -- apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. The absolute budget still has 29 KiB of room, which is what it is for: failing CI on editorial work teaches people to raise budgets without reading them.",
-      "measured_sha256": "8fc12f9d037f7eb616135a43b77ad39bae9edbc66b6753a6dae4c6dbae1849d2",
+      "measured_sha256": "8ed9a46bd503527f0bfbba93dff6ebab2cab96cdf9b2ff167c7ccccc4e6a1b53",
       "measured_sha256_normalised": "6db98d57be2afe8b2fdc468ba8a665992d662b319ab0aa9497ed8ad655ae221c"
     }
   },
   "total": {
-    "measured_raw": 7114831,
-    "measured_brotli": 2313942,
+    "measured_raw": 7116414,
+    "measured_brotli": 2314238,
     "budget_brotli": 2383361,
     "why": "The binding gate. Everything a user downloads before their first operation runs. RAISED IN M1 PR B2, from 2,299,796 to 2,383,361, and this is the first raise. The payload grew 60,124 brotli bytes because merge needs an engine that can WRITE: qpdf's QPDFWriter (+53,456), the Rust entry point (+4,044) and the bridge (+2,628). The raise restores the recorded 3% headroom rather than inventing a new margin, and the alternative was measured rather than assumed -- PDFium can merge with zero added bytes and loses outlines, attachments and working form fields (ADR 0017). A budget raised without knowing what grew has stopped being a budget; this one names every line that moved and why."
   },

@@ -199,6 +199,10 @@ interface Reply {
   readonly recycle: boolean;
   readonly pdfium_heap_bytes: bigint;
   readonly qpdf_heap_bytes: bigint;
+  /** Which input failed, or -1. Lets a page mark a file without parsing prose. */
+  readonly failedInput: number;
+  /** What was wrong with that input, or empty. */
+  readonly innerKind: string;
   /** Bytes in the produced document, without taking it. Zero if there is none. */
   readonly outputLength: number;
   /**

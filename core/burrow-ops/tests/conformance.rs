@@ -22,7 +22,10 @@
 //! transitive — if native matches and web matches then native matches web — but only as
 //! complete as the schema. The direct diff has no such limit.
 
-#![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+// Gated on THIS crate's `native-engines`, which forwards to the engine crate's. The
+// `burrow_native_engines` cfg is set by `burrow-engines`' build script and is not visible
+// here; the feature is the gate.
+#![cfg(all(feature = "native-engines", target_os = "linux"))]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -30,10 +33,8 @@
     clippy::indexing_slicing
 )]
 
-#[path = "../testsupport/expectations.rs"]
+#[path = "../../burrow-engines/testsupport/expectations.rs"]
 mod expectations;
-
-mod support;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -48,7 +49,7 @@ use expectations::{
 };
 
 /// The schema version this test understands. A newer file must fail, not be guessed at.
-const SUPPORTED_SCHEMA: u32 = 2;
+const SUPPORTED_SCHEMA: u32 = 3;
 
 /// Where this run's answers are written, for the web side to diff against.
 ///
@@ -83,17 +84,29 @@ fn load() -> Expectations {
 /// **A `ManualClock` that never advances.** Nothing here may produce a duration failure: a
 /// conformance outcome that depended on how fast the machine was would be a different answer
 /// on every runner, and a differential harness that is not reproducible gets ignored.
-fn run(case: &Case, operation: Operation, bytes: Vec<u8>) -> Outcome {
+fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
     let limits = case.limits.map_or_else(Limits::default, |l| l.to_limits());
     let clock = Arc::new(ManualClock::new(0));
     let password = case.password.as_ref().map(|p| Password::new(p.as_bytes()));
+
+    // The single-document operations take the FIRST input. A multi-input case that also
+    // declared `page_count` would be asserting something about only one of its files, which
+    // is why no case does -- and why this reads `first` explicitly rather than assuming
+    // there is exactly one.
+    let first = || {
+        inputs
+            .first()
+            .unwrap_or_else(|| panic!("case {:?}: no inputs", case.name))
+            .clone()
+            .into_boxed_slice()
+    };
 
     let result = match operation {
         Operation::PageCount => {
             let mut options = OpenOptions::new(limits, clock);
             options.password = password.as_ref();
             Pdfium::new()
-                .open(bytes.into_boxed_slice(), &options)
+                .open(first(), &options)
                 .map(|document| document.pages_at_open())
         }
         Operation::StructureCheck => {
@@ -101,8 +114,31 @@ fn run(case: &Case, operation: Operation, bytes: Vec<u8>) -> Outcome {
             options.password = password.as_ref();
             options.attempt_recovery = case.attempt_recovery;
             Qpdf::new()
-                .check(bytes.into_boxed_slice(), &options)
+                .check(first(), &options)
                 .map(|report| report.pages)
+        }
+        Operation::Merge => {
+            let mut options = OpenOptions::new(limits, clock);
+            options.password = password.as_ref();
+            let documents = inputs
+                .iter()
+                .map(|b| burrow_ops::Input::new(b.clone().into_boxed_slice()))
+                .collect();
+            // The RECORDED outcome is the merged document's page count, read back through
+            // the assembler rather than summed from the inputs. A sum is a claim about what
+            // the engine did; reading the output is what it actually produced, and if the
+            // two ever disagree the reading is the true one.
+            burrow_ops::merge(&Qpdf::new(), documents, &options).and_then(|out| {
+                let clock = Arc::new(ManualClock::new(0));
+                let options = OpenOptions::new(limits, clock);
+                let engine = Qpdf::new();
+                let assembly = burrow_engines::PageAssembler::begin(
+                    &engine,
+                    out.into_boxed_slice(),
+                    &options,
+                )?;
+                burrow_engines::PageAssembler::pages(&engine, &assembly)
+            })
         }
     };
     outcome_of(&result)
@@ -117,10 +153,15 @@ fn expected_for(case: &Case, platform: Platform, operation: Operation) -> &Outco
     {
         return &recorded.expect;
     }
-    match operation {
-        Operation::PageCount => &case.expect.page_count,
-        Operation::StructureCheck => &case.expect.structure_check,
-    }
+    case.expect.get(&operation).unwrap_or_else(|| {
+        panic!(
+            "{}: no expectation for {}. Since schema 3 a case declares the operations it is \
+             about, so asking for one it does not declare is a bug in the caller rather than \
+             a missing entry.",
+            case.name,
+            operation.as_str()
+        )
+    })
 }
 
 // =====================================================================================
@@ -142,7 +183,7 @@ fn the_expectations_file_describes_a_real_corpus() {
     let mut saw_limit = false;
     let mut saw_disagreement = false;
     for case in &expectations.cases {
-        for outcome in [&case.expect.page_count, &case.expect.structure_check] {
+        for outcome in case.expect.values() {
             match outcome {
                 Outcome::Ok { .. } => saw_ok = true,
                 Outcome::Err(failure) => {
@@ -153,7 +194,15 @@ fn the_expectations_file_describes_a_real_corpus() {
                 }
             }
         }
-        if case.expect.page_count != case.expect.structure_check {
+        // A disagreement between the two single-document engines. Read from the map rather
+        // than from two fields, and `and_then` rather than indexing: a case that declares
+        // only one of them has no disagreement to report, which is different from having
+        // none.
+        if let (Some(p), Some(q)) = (
+            case.expect.get(&Operation::PageCount),
+            case.expect.get(&Operation::StructureCheck),
+        ) && p != q
+        {
             saw_disagreement = true;
         }
     }
@@ -163,7 +212,11 @@ fn the_expectations_file_describes_a_real_corpus() {
     // with its case passes the coverage test too -- so "the corpus contains what we think it
     // does" was a property nothing held. ADR 0016 claims every adversarial file this project
     // has found runs on every PR; this is what makes that a check rather than a sentence.
-    let named: BTreeSet<&str> = expectations.cases.iter().map(|c| c.file.as_str()).collect();
+    let named: BTreeSet<&str> = expectations
+        .cases
+        .iter()
+        .flat_map(|c| c.inputs.iter().map(|i| i.file.as_str()))
+        .collect();
     for required in [
         "fixtures/xref-bomb.pdf",
         "fixtures/bomb-hidden-decoy-key.pdf",
@@ -208,7 +261,11 @@ fn the_corpus_and_the_expectations_cover_each_other() {
     let named: BTreeSet<String> = expectations
         .cases
         .iter()
-        .map(|c| c.file.trim_start_matches("fixtures/").to_owned())
+        .flat_map(|c| {
+            c.inputs
+                .iter()
+                .map(|i| i.file.trim_start_matches("fixtures/").to_owned())
+        })
         .collect();
 
     let mut on_disk = BTreeSet::new();
@@ -260,12 +317,11 @@ fn the_schema_records_a_route_for_every_limit_failure() {
             .platform_expectations
             .iter()
             .map(|p| (p.operation.as_str(), &p.expect));
-        for (operation, outcome) in [
-            ("page_count", &case.expect.page_count),
-            ("structure_check", &case.expect.structure_check),
-        ]
-        .into_iter()
-        .chain(platform_outcomes)
+        for (operation, outcome) in case
+            .expect
+            .iter()
+            .map(|(op, outcome)| (op.as_str(), outcome))
+            .chain(platform_outcomes)
         {
             let Outcome::Err(failure) = outcome else {
                 continue;
@@ -403,18 +459,21 @@ fn every_platform_expectation_gives_a_reason() {
 fn every_fixture_matches_its_recorded_digest() {
     let dir = conformance_dir();
     for case in load().cases {
-        let path = dir.join(&case.file);
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("case {:?}: reading {}: {e}", case.name, path.display()));
-        assert_eq!(
-            sha256_hex(&bytes),
-            case.sha256,
-            "case {:?}: {} does not match its recorded digest. If the change was intended, \
-             regenerate with `cargo run -p burrow-engines --example \
-             make-conformance-fixtures` and review the expectations alongside it.",
-            case.name,
-            path.display()
-        );
+        for input in &case.inputs {
+            let path = dir.join(&input.file);
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!("case {:?}: reading {}: {e}", case.name, path.display())
+            });
+            assert_eq!(
+                sha256_hex(&bytes),
+                input.sha256,
+                "case {:?}: {} does not match its recorded digest. If the change was \
+                 intended, regenerate with `cargo run -p burrow-engines --example \
+                 make-conformance-fixtures` and review the expectations alongside it.",
+                case.name,
+                path.display()
+            );
+        }
     }
 }
 
@@ -431,11 +490,20 @@ fn every_fixture_produces_the_outcome_the_corpus_records() {
     let mut gaps = Vec::new();
 
     for case in &expectations.cases {
-        let bytes = std::fs::read(dir.join(&case.file))
-            .unwrap_or_else(|e| panic!("case {:?}: {e}", case.name));
+        let inputs: Vec<Vec<u8>> = case
+            .inputs
+            .iter()
+            .map(|i| {
+                std::fs::read(dir.join(&i.file))
+                    .unwrap_or_else(|e| panic!("case {:?}: {e}", case.name))
+            })
+            .collect();
 
-        for operation in Operation::ALL {
-            let actual = run(case, operation, bytes.clone());
+        // ONLY the operations this case declares. Schema 3 lets a case be about one
+        // operation, so running all of them would demand an expectation nobody wrote --
+        // and inventing one is how a corpus stops describing what anyone decided.
+        for operation in case.expect.keys().copied() {
+            let actual = run(case, operation, &inputs);
             let expected = expected_for(case, Platform::Native, operation);
 
             // The failure message carries the case name, the digest and the two TYPED
@@ -449,8 +517,16 @@ fn every_fixture_produces_the_outcome_the_corpus_records() {
                  expected: {expected:?}\n  actual:   {actual:?}",
                 case.name,
                 operation.as_str(),
-                case.file,
-                case.sha256,
+                case.inputs
+                    .iter()
+                    .map(|i| i.file.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                case.inputs
+                    .iter()
+                    .map(|i| i.sha256.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             );
 
             results.push(RecordedOutcome {
@@ -469,12 +545,42 @@ fn every_fixture_produces_the_outcome_the_corpus_records() {
     // THE COUNT. A harness that ran nothing would satisfy every assertion above, because
     // there would be no assertion left to fail. This is the one check that cannot pass
     // vacuously by construction.
-    let expected_count = expectations.cases.len() * Operation::ALL.len();
+    //
+    // DERIVED FROM WHAT THE CORPUS DECLARES, not from `cases * ALL`. Under schema 2 every
+    // case ran every operation and the product was right; schema 3 lets a case be about one
+    // operation, and keeping the product would have demanded 84 comparisons from a corpus
+    // that describes 50. Summing the declarations keeps this a measurement of the corpus
+    // rather than an assumption about its shape.
+    let expected_count: usize = expectations.cases.iter().map(|c| c.expect.len()).sum();
     assert_eq!(
         compared, expected_count,
         "the harness made {compared} comparisons and the corpus describes {expected_count}"
     );
     assert!(compared > 0, "no comparisons were made");
+
+    // AND EVERY OPERATION MUST APPEAR SOMEWHERE. The sum above is satisfied by a corpus
+    // that quietly stopped declaring one -- delete every `merge` key and both sides fall to
+    // 44 together. This is what stops an operation dropping out of the corpus entirely.
+    for operation in Operation::ALL {
+        assert!(
+            expectations
+                .cases
+                .iter()
+                .any(|c| c.expect.contains_key(&operation)),
+            "no case declares {}, so that operation is not in the corpus at all",
+            operation.as_str()
+        );
+    }
+
+    // And no case may declare nothing: a fixture asserting no outcome is a fixture in the
+    // corpus for decoration.
+    for case in &expectations.cases {
+        assert!(
+            !case.expect.is_empty(),
+            "case {:?} declares no operations",
+            case.name
+        );
+    }
 
     if !gaps.is_empty() {
         // Printed, not hidden. A known gap is green CI and an open defect at the same time,

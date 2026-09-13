@@ -54,7 +54,16 @@ if (expectations.schema !== SUPPORTED_SCHEMA) {
   throw new Error(`unsupported expectations schema ${expectations.schema}`);
 }
 
-const OPERATIONS: Operation[] = ["page_count", "structure_check"];
+/**
+ * How many comparisons the corpus describes.
+ *
+ * Summed from what each case DECLARES, not `cases * operations`. Schema 3 lets a case be
+ * about one operation -- every merge case is -- so the product would demand 56 comparisons
+ * from a corpus that describes 50, which is exactly what it did before this changed.
+ */
+function declaredComparisons(): number {
+  return expectations.cases.reduce((n, c) => n + Object.keys(c.expect).length, 0);
+}
 
 /**
  * Turn a reply into the shape the schema records.
@@ -107,17 +116,27 @@ test("every corpus file produces the same typed outcome as the native path", asy
   const results: RecordedOutcome[] = [];
 
   for (const testCase of expectations.cases) {
-    const bytes = readFileSync(join(conformance, testCase.file));
-    // The digest is CHECKED, not just printed. Failure messages quote `case.sha256` as though
-    // it described what ran; the native side verifies that and the web side did not, so the
-    // line was a claim this half had not established. Same-commit checkouts make it moot in
-    // CI, which is exactly when an unverified claim survives longest.
-    expect(
-      createHash("sha256").update(bytes).digest("hex"),
-      `${testCase.file} does not match the digest recorded for it`,
-    ).toBe(testCase.sha256);
-    const base64 = bytes.toString("base64");
-    for (const operation of OPERATIONS) {
+    // EVERY input, in order. Schema 3: a case is a list, because merge's whole meaning is
+    // the order its documents arrive in.
+    const inputs = testCase.inputs.map((input) => {
+      const bytes = readFileSync(join(conformance, input.file));
+      // The digest is CHECKED, not just printed. Failure messages quote it as though it
+      // described what ran; the native side verifies that and the web side did not, so the
+      // line was a claim this half had not established. Same-commit checkouts make it moot
+      // in CI, which is exactly when an unverified claim survives longest.
+      expect(
+        createHash("sha256").update(bytes).digest("hex"),
+        `${input.file} does not match the digest recorded for it`,
+      ).toBe(input.sha256);
+      return bytes.toString("base64");
+    });
+    const base64 = inputs[0];
+    const extra = inputs.slice(1);
+
+    // ONLY the operations this case declares. Running all of them would demand an
+    // expectation nobody wrote, and inventing one is how a corpus stops describing what
+    // anyone decided.
+    for (const operation of Object.keys(testCase.expect) as Operation[]) {
       // A FRESH WORKER FOR EVERY CASE, and it is a correctness requirement rather than
       // hygiene.
       //
@@ -135,12 +154,17 @@ test("every corpus file produces the same typed outcome as the native path", asy
       await page.evaluate(() => window.burrowHarness.discardWorker());
 
       const reply = await page.evaluate(
-        ([op, bytes, password, attemptRecovery, limits]) =>
-          window.burrowHarness.runBase64(op as "page_count" | "structure_check", bytes as string, {
-            password: password as string | null,
-            attemptRecovery: attemptRecovery as boolean,
-            limits: limits as Record<string, number>,
-          }),
+        ([op, bytes, password, attemptRecovery, limits, more]) =>
+          window.burrowHarness.runBase64(
+            op as "page_count" | "structure_check" | "merge",
+            bytes as string,
+            {
+              password: password as string | null,
+              attemptRecovery: attemptRecovery as boolean,
+              limits: limits as Record<string, number>,
+              extra: more as string[],
+            },
+          ),
         [
           operation,
           base64,
@@ -152,6 +176,7 @@ test("every corpus file produces the same typed outcome as the native path", asy
           // timing-derived. Nothing in this corpus is meant to hit a duration limit, and a
           // slow CI runner must not invent one.
           { maxDurationMs: 600_000, ...camelCaseLimits(testCase.limits) },
+          extra,
         ] as const,
       );
       // NO CORPUS FILE MAY COST A WORKER. `engines.spec.ts`'s old loop asserted this and
@@ -227,9 +252,7 @@ test("every corpus file produces the same typed outcome as the native path", asy
     verdict.stale.join("\n\n"),
     "a recorded difference no longer happens, so the record is stale",
   ).toBe("");
-  expect(verdict.comparisons, "the harness compared nothing").toBe(
-    expectations.cases.length * OPERATIONS.length,
-  );
+  expect(verdict.comparisons, "the harness compared nothing").toBe(declaredComparisons());
 });
 
 /** `expectations.json` uses `snake_case`; `HarnessLimits` is `camelCase`. */

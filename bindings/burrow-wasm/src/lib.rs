@@ -110,6 +110,18 @@ pub struct Reply {
     recycle: bool,
     pdfium_heap_bytes: u64,
     qpdf_heap_bytes: u64,
+    /// What was wrong with the failing input, or empty.
+    ///
+    /// The `kind` of the wrapped error, so a page can say "that one needs a password"
+    /// without unwrapping anything itself -- and without `kind` having to mean two
+    /// different things depending on the operation.
+    inner_kind: String,
+    /// Which input failed, or `-1`.
+    ///
+    /// So a page can mark the offending file without parsing the message. A UI that had to
+    /// read "input 2: ..." out of prose would be parsing an error string, which is the one
+    /// thing this boundary is careful never to make anyone do.
+    failed_input: i32,
     /// The document an operation produced, or empty for one that produces none.
     ///
     /// **The first thing a `Reply` carries that is not a scalar.** Held as `Vec<u8>` and
@@ -260,6 +272,19 @@ fn is_fatal(error: &Error) -> bool {
     // call site as `|| kind_of(error) == "Unknown"` — so the contract this function claims to
     // be the single definition of was actually decided in two places, one of them by
     // comparing strings.
+    // `InputFailed` IS ITS SOURCE. A merge that refused because one document is malformed is
+    // as ordinary an outcome as opening that document alone would have been -- and treating
+    // it as fatal cost a worker per bad file, so three files a person picked by mistake
+    // would latch the circuit breaker and take the page offline (ADR 0015 §3).
+    //
+    // Found by the conformance harness, not by review: `merge-refuses-when-any-input-is-
+    // malformed` failed the "no corpus file may cost a worker" assertion in all three
+    // browsers. The wrapper had inherited the `#[non_exhaustive]` default below, which is
+    // the right default and the wrong answer here.
+    if let Error::InputFailed { source, .. } = error {
+        return is_fatal(source);
+    }
+
     !matches!(
         error,
         Error::Malformed(_)
@@ -278,6 +303,19 @@ fn kind_of(error: &Error) -> &'static str {
         Error::PasswordRequired => "PasswordRequired",
         Error::LimitExceeded { .. } => "LimitExceeded",
         Error::InvalidArgument(_) => "InvalidArgument",
+        // `InputFailed`, NOT the inner kind, and that was the second answer.
+        //
+        // Reporting the inner kind first looked kinder to a UI -- "needs a password" is what
+        // a person has to be told -- and it made the web and native paths disagree about the
+        // typed outcome of the same file. The conformance harness caught it in all three
+        // browsers: native recorded `InputFailed` and the web recorded `Malformed`. The two
+        // implementations must produce the SAME typed outcome; that is the property ADR 0016
+        // exists to hold, and at M2 a divergence like this would be a redaction bug.
+        //
+        // So the wrapper is reported, and what a UI needs comes from `failedInput` and
+        // `innerKind` alongside -- structured fields rather than a kind that means two
+        // things depending on the operation.
+        Error::InputFailed { .. } => "InputFailed",
         Error::Io(_) => "Io",
         Error::Internal(_) => "Internal",
         // `Error` is `#[non_exhaustive]`. A variant added later must arrive as something
@@ -301,6 +339,8 @@ impl Reply {
             recycle: false,
             pdfium_heap_bytes: 0,
             qpdf_heap_bytes: 0,
+            inner_kind: String::new(),
+            failed_input: -1,
             output: Vec::new(),
         }
     }
@@ -365,6 +405,14 @@ impl Reply {
             recycle: false,
             pdfium_heap_bytes: 0,
             qpdf_heap_bytes: 0,
+            inner_kind: match error {
+                Error::InputFailed { source, .. } => kind_of(source).to_owned(),
+                _ => String::new(),
+            },
+            failed_input: match error {
+                Error::InputFailed { index, .. } => i32::try_from(*index).unwrap_or(-1),
+                _ => -1,
+            },
             // A FAILURE CARRIES NO BYTES, ever. ADR 0017 §2 refuses partial success, so
             // there is nothing a failed merge could honestly put here -- and a half-written
             // document reaching the page is exactly the silent data loss that decision
@@ -391,6 +439,20 @@ impl Reply {
     #[must_use]
     pub fn take_output(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.output)
+    }
+
+    /// What was wrong with the failing input, or an empty string.
+    #[wasm_bindgen(getter, js_name = innerKind)]
+    #[must_use]
+    pub fn inner_kind(&self) -> String {
+        self.inner_kind.clone()
+    }
+
+    /// Which input failed, or `-1` for a failure that is not about a particular input.
+    #[wasm_bindgen(getter, js_name = failedInput)]
+    #[must_use]
+    pub fn failed_input(&self) -> i32 {
+        self.failed_input
     }
 
     /// How many bytes the produced document has, without taking it.

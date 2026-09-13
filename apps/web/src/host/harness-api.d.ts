@@ -7,6 +7,8 @@
 
 /** One operation's outcome, as it reaches the page. */
 export interface Reply {
+  /** Bytes of the document an operation produced, or 0. The harness does not return it. */
+  outputBytes?: number;
   ok: boolean;
   kind: string;
   /** Computed in Rust, not derived from `kind`. ADR 0009. */
@@ -78,12 +80,19 @@ export interface BurrowHarness {
    * arrives in the form `expectations.json` records it.
    */
   runBase64(
-    op: "page_count" | "structure_check",
+    op: "page_count" | "structure_check" | "merge",
     base64: string,
     options?: {
       password?: string | null;
       attemptRecovery?: boolean;
       limits?: Partial<HarnessLimits>;
+      /**
+       * Further documents, base64, in order. `merge` only.
+       *
+       * Separate from `base64` rather than replacing it with a list, so the shape a
+       * single-input operation sends is unchanged.
+       */
+      extra?: string[];
     },
   ): Promise<Reply>;
   /** Keep one `File` in page scope, so an operation can run against the same object twice. */
