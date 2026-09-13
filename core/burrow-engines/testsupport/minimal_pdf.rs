@@ -452,3 +452,225 @@ mod generator_tests {
         assert!(!pdf.ends_with(b"%%EOF\n"));
     }
 }
+
+/// Where a `/Rotate` sits in a fixture's page tree.
+#[derive(Clone, Copy, Debug)]
+pub enum RotationPlacement {
+    /// No `/Rotate` anywhere. Every page displays at 0 because nothing says otherwise.
+    Absent,
+    /// On the **root** `/Pages` node, so every page inherits it and no page carries it.
+    ///
+    /// This is the shape a batch scanner writes, and the one that breaks an implementation
+    /// that reads the page dictionary and stops: every page reports 0, "rotate by 90" writes
+    /// 90, and an inherited quarter turn is silently undone.
+    OnTheRoot(i64),
+    /// On the **intermediate** `/Pages` node that holds the second half of the pages.
+    ///
+    /// Two pages inheriting from different ancestors is what makes "rotating one page leaves
+    /// every other page alone" a real question rather than a tautology.
+    OnTheSecondBranch(i64),
+    /// On each page itself.
+    OnEveryPage(i64),
+}
+
+/// How the fixture's page tree is wired, for the hostile cases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeShape {
+    /// Two levels: root, two intermediate nodes, pages under them.
+    Ordinary,
+    /// The first intermediate node's `/Parent` points at a page beneath it.
+    ///
+    /// A two-line edit to any PDF, and a walk up `/Parent` that does not bound its depth spins
+    /// on it forever. The guard for this was argued at length in `rotate.rs` and reached by no
+    /// test until code review counted them.
+    ParentCycle,
+    /// A chain of `/Pages` nodes deeper than the walk will follow.
+    ///
+    /// `depth` nodes between the root and the pages, so the effective rotation of a page is
+    /// `depth + 2` levels up. Used to reach the depth ceiling from the legitimate direction as
+    /// well as the cyclic one.
+    DeepChain(usize),
+}
+
+/// A PDF whose page tree has two levels, with content streams and an optional `/Rotate`.
+///
+/// # Why the tree has a middle layer
+///
+/// A flat tree cannot test inheritance properly: with one `/Pages` node, "read the page's
+/// rotation" and "read the root's rotation" are the same walk, and writing to the wrong one
+/// is indistinguishable from writing to the right one when there is only one candidate.
+/// Here pages 1-2 hang off one intermediate node and pages 3-4 off another, both under the
+/// root, so a write aimed at an ancestor rotates a *subset* and the difference shows.
+///
+/// # Why every page has a content stream
+///
+/// Rotation changes an attribute. It must not re-encode page content — a rotate that quietly
+/// recompressed somebody's scan would pass every page-count and rotation assertion there is.
+/// The streams are distinct per page so a test can tell them apart, and uncompressed so a
+/// comparison does not depend on a filter round-tripping identically.
+///
+/// Object numbering: 1 catalogue, 2 root `/Pages`, 3 and 4 the intermediate nodes, then the
+/// pages and their content streams in pairs.
+pub fn pdf_with_page_tree(pages: usize, placement: RotationPlacement) -> Vec<u8> {
+    pdf_with_page_tree_shaped(pages, placement, TreeShape::Ordinary)
+}
+
+/// The same, with the page tree deliberately misshapen.
+///
+/// Separate entry point rather than a fourth argument on every call site: the ordinary shape
+/// is what nearly every test wants, and a hostile tree should have to be asked for by name.
+pub fn pdf_with_page_tree_shaped(
+    pages: usize,
+    placement: RotationPlacement,
+    shape: TreeShape,
+) -> Vec<u8> {
+    assert!(pages >= 2, "a two-level tree needs at least two pages");
+    let mut out: Vec<u8> = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+
+    // Pages are numbered 5, 7, 9, ... and their content streams 6, 8, 10, ...
+    let page_obj = |i: usize| 5 + i * 2;
+    let stream_obj = |i: usize| 6 + i * 2;
+
+    let split = pages / 2;
+    let first_branch: Vec<usize> = (0..split).collect();
+    let second_branch: Vec<usize> = (split..pages).collect();
+
+    let rotate_on = |wanted: &str| -> String {
+        match placement {
+            RotationPlacement::Absent => String::new(),
+            RotationPlacement::OnTheRoot(d) if wanted == "root" => format!(" /Rotate {d}"),
+            RotationPlacement::OnTheSecondBranch(d) if wanted == "second" => {
+                format!(" /Rotate {d}")
+            }
+            RotationPlacement::OnEveryPage(d) if wanted == "page" => format!(" /Rotate {d}"),
+            _ => String::new(),
+        }
+    };
+
+    offsets.push(out.len());
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    // A CHAIN OF `/Pages` NODES, when one is asked for. They are numbered after everything
+    // else -- the objects below are written in ascending order and `offsets[i]` must hold
+    // object `i + 1`, so the chain goes at the end of the file and takes the highest numbers.
+    let chain_depth = match shape {
+        TreeShape::DeepChain(depth) => depth,
+        _ => 0,
+    };
+    let first_chain_obj = 5 + pages * 2;
+    let last_chain_obj = first_chain_obj + chain_depth - usize::from(chain_depth > 0);
+
+    // The root points at the chain if there is one, and at the two branches otherwise.
+    let root_kids = if chain_depth > 0 {
+        format!("{first_chain_obj} 0 R")
+    } else {
+        "3 0 R 4 0 R".to_owned()
+    };
+    // And the branches hang off the chain's last link rather than off the root.
+    let branch_parent = if chain_depth > 0 {
+        format!("{last_chain_obj} 0 R")
+    } else {
+        "2 0 R".to_owned()
+    };
+
+    offsets.push(out.len());
+    out.extend_from_slice(
+        format!(
+            "2 0 obj\n<< /Type /Pages /Kids [{root_kids}] /Count {pages}{} >>\nendobj\n",
+            rotate_on("root")
+        )
+        .as_bytes(),
+    );
+
+    for (node, branch, which) in [(3, &first_branch, "first"), (4, &second_branch, "second")] {
+        let kids: String = branch
+            .iter()
+            .map(|&i| format!("{} 0 R ", page_obj(i)))
+            .collect();
+        // THE CYCLE, on the first branch only: its `/Parent` points at the first page BELOW
+        // it, so a walk from that page reaches node 3, then node 3's parent -- the page it
+        // started from -- and round again. The second branch is left well-formed so the same
+        // fixture still has pages whose walk terminates normally.
+        let parent = if shape == TreeShape::ParentCycle && node == 3 {
+            format!("{} 0 R", page_obj(0))
+        } else {
+            branch_parent.clone()
+        };
+        offsets.push(out.len());
+        out.extend_from_slice(
+            format!(
+                "{node} 0 obj\n<< /Type /Pages /Parent {parent} /Kids [{}] /Count {}{} >>\nendobj\n",
+                kids.trim_end(),
+                branch.len(),
+                rotate_on(which)
+            )
+            .as_bytes(),
+        );
+    }
+
+    for i in 0..pages {
+        let parent = if i < split { 3 } else { 4 };
+        // The content stream is distinct per page, so a byte-identity comparison can say
+        // WHICH page's content changed rather than only that something did.
+        let content = format!("BT /F1 12 Tf 72 720 Td (page {}) Tj ET\n", i + 1);
+
+        offsets.push(out.len());
+        out.extend_from_slice(
+            format!(
+                "{} 0 obj\n<< /Type /Page /Parent {parent} 0 R /MediaBox [0 0 612 792] \
+                 /Resources << >> /Contents {} 0 R{} >>\nendobj\n",
+                page_obj(i),
+                stream_obj(i),
+                rotate_on("page")
+            )
+            .as_bytes(),
+        );
+
+        offsets.push(out.len());
+        out.extend_from_slice(
+            format!(
+                "{} 0 obj\n<< /Length {} >>\nstream\n{content}endstream\nendobj\n",
+                stream_obj(i),
+                content.len()
+            )
+            .as_bytes(),
+        );
+    }
+
+    for link in 0..chain_depth {
+        let obj = first_chain_obj + link;
+        let parent = if link == 0 {
+            "2 0 R".to_owned()
+        } else {
+            format!("{} 0 R", obj - 1)
+        };
+        let kids = if link + 1 == chain_depth {
+            "3 0 R 4 0 R".to_owned()
+        } else {
+            format!("{} 0 R", obj + 1)
+        };
+        offsets.push(out.len());
+        out.extend_from_slice(
+            format!(
+                "{obj} 0 obj\n<< /Type /Pages /Parent {parent} /Kids [{kids}] \
+                 /Count {pages} >>\nendobj\n"
+            )
+            .as_bytes(),
+        );
+    }
+
+    let startxref = out.len();
+    let size = offsets.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\n").as_bytes());
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+
+    out
+}

@@ -1,0 +1,118 @@
+# qpdf C functions burrow declares NATIVELY but deliberately does not export to wasm.
+#
+# =================================================================================
+# WHY THIS FILE EXISTS
+# =================================================================================
+#
+# `engines/build-wasm.sh` asserts that the functions declared in
+# `core/burrow-engines/src/qpdf/ffi.rs` and the functions exported from `qpdf.wasm` are the
+# same set. That invariant is the reason the web module cannot call anything ADR 0013 has not
+# cleared: the export list is derived from ffi.rs rather than written by hand, so adding an
+# export means adding a native declaration, where the trapped-function check applies.
+#
+# The invariant is right in one direction and too strong in the other. An export that is not
+# declared natively is always wrong -- nothing cleared it. A declaration that is not exported
+# is usually a mistake and is sometimes deliberate: the native and web paths do not implement
+# the same operations at the same time. `burrow-ops` has `split` and `rotate`; `bindings/burrow-wasm`
+# has neither, because there is no `impl PageExtractor for WebQpdf` and no `impl PageRotator
+# for WebQpdf`. Exporting their C API today would make seven more functions callable from
+# JavaScript for operations that do not exist on that path -- widening the worker's reachable
+# surface with no caller, which is the opposite of what the export allowlist is for.
+#
+# So a declaration may be absent from the export list ONLY with an entry here, saying which
+# operation it belongs to and why the web cannot use it yet. An entry is a temporary state
+# with an owner, not an exemption: it is removed by the pull request that gives the web the
+# matching implementation, in the same change that adds the export.
+#
+# Two directions of staleness fail, as in `qpdf-untrapped-accepted.toml`:
+#
+#   * an entry for a function nobody declares natively -- dead weight that reads as coverage;
+#   * an entry for a function that IS exported -- a warning about a hazard that is not there,
+#     which teaches people to stop reading the file.
+#
+# =================================================================================
+# HOW THIS CAME TO BE NEEDED, WHICH IS THE PART WORTH REMEMBERING
+# =================================================================================
+#
+# `qpdf_remove_page` was declared for `split` in PR #55 and never exported. The check above
+# would have caught it on the commit that introduced it -- except that it lived inside
+# `build-wasm.sh`, which CI runs only on a wasm cache MISS, and the cache key is
+# `hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh')`. Every PR
+# since touched none of those, so the check did not run, and the drift sat on `main`.
+#
+# It surfaced only because rotate's branch edited a COMMENT in `pins.toml`, which changed the
+# hash, which busted the cache, which rebuilt the engines, which ran the check -- and it then
+# reported split's drift and rotate's together.
+#
+# That is the second cache-gated check in this repository to have hidden a real defect; the
+# first was the qpdf crypto assertion, and `CLAUDE.md`'s rule about where a check lives in
+# `ci.yml` was written from it. The comparison now lives in `tools/check-wasm-exports.sh`
+# and runs in the `web` job on every run, warm cache or cold, because it reads only committed
+# files and the cached `qpdf.wasm` -- both present either way.
+
+[meta]
+version = 1
+# The ADR that governs which qpdf functions may be called at all.
+trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
+
+[[function]]
+name = "qpdf_remove_page"
+operation = "split"
+reason = """\
+Declared for split's build route, which opens a one-page blank destination, copies the wanted \
+pages in, and removes the blank (ADR 0019 §1). The web has no `impl PageExtractor for \
+WebQpdf`, so `bindings/burrow-wasm` exposes no split entry point and nothing on that path \
+could call this. Exporting it would let JavaScript remove a page from a document through an \
+operation the web cannot perform. Drifted onto main in PR #55 and undetected until rotate's \
+branch busted the wasm cache -- it is recorded here rather than quietly exported, because the \
+honest state is "declared, not yet reachable from the web", not "cleared for the web"."""
+
+[[function]]
+name = "qpdf_oh_get_key"
+operation = "rotate"
+reason = """\
+Rotate reads an inherited /Rotate by walking up /Parent, which means resolving an indirect \
+object by name -- the parser, on file-controlled bytes. Trapped (via do_with_oh), so calling \
+it natively is cleared; not exported because the web has no `impl PageRotator for WebQpdf` \
+and therefore no caller. This is the one of the six a future reviewer should look hardest at \
+before exporting: it is the only one that runs the parser."""
+
+[[function]]
+name = "qpdf_oh_get_type_code"
+operation = "rotate"
+reason = """\
+Asserts an object's type before any value is read from it, because qpdf's accessors return \
+defaults rather than raising on a mismatch. Not exported for the same reason as the rest of \
+the rotate family: no web implementation exists, so there is no caller to serve."""
+
+[[function]]
+name = "qpdf_oh_get_int_value"
+operation = "rotate"
+reason = """\
+Reads the /Rotate integer once the type code has confirmed it is one. Not exported: no `impl \
+PageRotator for WebQpdf`, so the web path has no rotation to perform and no use for it."""
+
+[[function]]
+name = "qpdf_oh_replace_key"
+operation = "rotate"
+reason = """\
+Writes /Rotate onto the page dictionary. This is the only write burrow makes into a document \
+qpdf parsed, rather than into a destination it built, so exporting it gives JavaScript a way \
+to modify a parsed document directly. Not exported until the web can actually rotate."""
+
+[[function]]
+name = "qpdf_oh_new_integer"
+operation = "rotate"
+reason = """\
+Builds the integer object written to /Rotate. Untrapped and argued in \
+qpdf-untrapped-accepted.toml on the grounds that it never touches the document -- which makes \
+it the least dangerous of the six, and still pointless to export while nothing on the web \
+path calls it."""
+
+[[function]]
+name = "qpdf_oh_release"
+operation = "rotate"
+reason = """\
+Releases an object handle; without it qpdf's handle cache grows for the life of the document. \
+Meaningless to export on its own, since the web has no way to obtain a handle to release: \
+the functions that produce one are the five above."""

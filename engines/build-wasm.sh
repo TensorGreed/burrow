@@ -302,96 +302,19 @@ echo "   qpdf.wasm $(stat -c%s "$prefix/lib/qpdf.wasm") bytes"
 
 # ---------------------------------------------------------------------------------
 say "qpdf wasm: the export surface must match the native FFI declarations"
-# THE EXPECTED SET IS DERIVED FROM core/burrow-engines/src/qpdf/ffi.rs, NOT FROM THE
-# EXPORTED_FUNCTIONS ABOVE.
+# THE COMPARISON ITSELF LIVES IN tools/check-wasm-exports.sh, AND THAT MOVE IS THE POINT.
 #
-# A first version compared the built module against the same `$qpdf_exports` variable used
-# to build it, so adding a function put it on both sides and the check always passed. It
-# could only ever catch emcc silently dropping a symbol -- never the failure that matters,
-# which is a human exporting something ADR 0013 never cleared. Verified by exporting
-# _qpdf_is_linearized: the old check reported "20 exports, exactly the declared set".
+# It used to be written out here, which meant it ran only when this script ran -- and CI runs
+# this script only on a wasm cache MISS. `qpdf_remove_page` was declared natively for split in
+# PR #55, never exported, and sat on main undetected until rotate's branch edited a COMMENT in
+# pins.toml, changed the cache key, and forced a rebuild. The check worked; nothing ran it.
 #
-# So the two tables are cross-checked instead. ffi.rs is the file ADR 0013 governs -- every
-# function in it was verified to route through qpdf's `trap_errors` by reading qpdf-c.cc --
-# and the web module may export exactly those, plus the allocator and the version string.
-# Adding _qpdf_is_linearized here now fails unless it is also declared natively, where the
-# ADR applies. (M1 PR 4c closes the other end: generating the trapped set from qpdf's own
-# source and checking ffi.rs against it.)
-ffi_rs="$here/../core/burrow-engines/src/qpdf/ffi.rs"
-[ -f "$ffi_rs" ] || { echo "build-wasm: cannot find $ffi_rs to derive the allowlist from" >&2; exit 1; }
-# PROBE THE PARSE BEFORE TRUSTING IT. The `-n` guard below catches a sed that matches
-# NOTHING; it cannot catch one that matches the wrong thing -- a looser expression that also
-# picked up a commented-out declaration would quietly widen the allowlist this check exists to
-# narrow. So the expression is run against fixtures first, positive and negative.
-# THE CHARACTER CLASS INCLUDES CAPITALS, AND IT DID NOT UNTIL M1 PR B2. Four qpdf C
-# functions have one -- qpdf_set_deterministic_ID, qpdf_set_static_ID, qpdf_set_static_aes_IV,
-# qpdf_set_suppress_original_object_IDs -- and with `[a-z_0-9]*` this parse could see none of
-# them. Here it fails CLOSED rather than silently: the allowlist is DERIVED from this parse,
-# so an export the parse cannot see is one the module gets refused for having. Noisy beats
-# silent, but it is still wrong -- and it is the same blindness tools/check-qpdf-trapped.py
-# carried. Two files, one bug; the cross-check added there does not reach this one.
-parse_decls() { sed -n 's/^\s*pub(super) fn \(qpdf[A-Za-z_0-9]*\)\s*(.*/\1/p'; }
-probe_fail=0
-[ "$(printf '    pub(super) fn qpdf_read_memory(\n' | parse_decls)" = "qpdf_read_memory" ] \
-  || { echo "build-wasm: the ffi.rs parse does not match its own fixture" >&2; probe_fail=1; }
-# A name with a capital. Without this fixture nothing holds the widened class open, and the
-# next person tidying the expression narrows it again.
-[ "$(printf '    pub(super) fn qpdf_set_deterministic_ID(\n' | parse_decls)" = "qpdf_set_deterministic_ID" ] \
-  || { echo "build-wasm: the ffi.rs parse cannot see a name with a capital letter" >&2; probe_fail=1; }
-for bad in '    // pub(super) fn qpdf_is_linearized(' \
-           '    /// `qpdf_is_linearized` is deliberately absent' \
-           '    pub fn qpdf_is_linearized(' \
-           '    pub(super) fn pdfium_load(' ; do
-  [ -z "$(printf '%s\n' "$bad" | parse_decls)" ] \
-    || { echo "build-wasm: the ffi.rs parse matches a near-miss it must reject: $bad" >&2; probe_fail=1; }
-done
-[ "$probe_fail" = 0 ] || { echo "build-wasm: refusing to derive an allowlist from a parse that does not behave as declared" >&2; exit 1; }
-
-declared="$(parse_decls <"$ffi_rs" | sort -u)"
-[ -n "$declared" ] || { echo "build-wasm: parsed ZERO functions out of ffi.rs -- the check would be vacuous" >&2; exit 1; }
-echo "   ffi.rs declares $(printf '%s\n' "$declared" | wc -l) qpdf functions (parse verified against 1 fixture and 4 near-misses)"
-
-# malloc/free are the allocator the bridge needs; qpdf_get_qpdf_version is the probe below.
-# Neither parses a PDF, so neither is an ADR 0013 concern.
-allowed="$(printf '%s\nmalloc\nfree\nqpdf_get_qpdf_version\n' "$declared" | sort -u)"
-
-node -e '
-const fs = require("fs");
-const m = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
-const allowed = new Set(fs.readFileSync(process.argv[2], "utf8").split("\n").filter(Boolean));
-// Every export is examined. A prefix filter was used here first, which meant 12 exports --
-// the Emscripten and C++ ABI runtime symbols -- were never looked at at all, in a check
-// whose whole purpose is to notice an unexpected export. They are benign, so they are
-// allowlisted by name rather than skipped by pattern.
-const RUNTIME = new Set([
-  "__cxa_can_catch", "__cxa_decrement_exception_refcount", "__cxa_get_exception_ptr",
-  "__cxa_increment_exception_refcount", "__indirect_function_table", "__wasm_call_ctors",
-  "_emscripten_stack_alloc", "_emscripten_stack_restore", "_emscripten_tempret_set",
-  "emscripten_stack_get_current", "emscripten_stack_init", "emscripten_stack_get_free",
-  "emscripten_stack_get_base", "emscripten_stack_get_end", "memory", "setThrew",
-  "__errno_location", "__get_temp_ret", "__set_temp_ret", "stackSave", "stackRestore",
-  "stackAlloc",
-]);
-const got = WebAssembly.Module.exports(m)
-  .map((e) => e.name)
-  .filter((n) => !RUNTIME.has(n))
-  .sort();
-const extra = got.filter((n) => !allowed.has(n));
-const missing = [...allowed].filter((n) => !got.includes(n)).sort();
-if (extra.length) {
-  console.error("  EXPORTED BUT NOT DECLARED NATIVELY (so not cleared by ADR 0013): " + extra.join(", "));
-}
-if (missing.length) {
-  console.error("  DECLARED NATIVELY BUT NOT EXPORTED (the web path cannot call it): " + missing.join(", "));
-}
-if (extra.length || missing.length) process.exit(1);
-console.log("   " + got.length + " exports, matching ffi.rs exactly");
-' "$prefix/lib/qpdf.wasm" <(printf '%s\n' "$allowed") || {
-  echo "build-wasm: qpdf.wasm's exports and the native FFI declarations disagree." >&2
-  echo "  These must be the same set: the native and web paths call the same C API, and" >&2
-  echo "  ADR 0013 cleared exactly that set for crossing back into Rust without unwinding." >&2
-  exit 1
-}
+# That is the second cache-gated check in this repository to have hidden a real defect, after
+# the qpdf crypto assertion that CLAUDE.md's "where a check lives in ci.yml is load-bearing"
+# rule was written from. So the comparison now reads only committed files plus the built
+# `qpdf.wasm`, both of which are present on a warm cache too, and the `web` job runs it as its
+# own step on every run. This call stays so a local `build-wasm.sh` still fails fast.
+"$here/../tools/check-wasm-exports.sh" "$prefix/lib/qpdf.wasm" || exit 1
 
 # NEITHER module may have an async or threaded runtime: the bridge calls every Emscripten
 # export synchronously from Rust, and Asyncify or JSPI would make each one return a Promise,

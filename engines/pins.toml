@@ -41,7 +41,27 @@
 #      its signature**, so nothing else -- not the headers, not a compile, not the export
 #      table check in build-wasm.sh -- would notice. A bump is the only time to look.
 #
-#      Re-read `engines/qpdf-untrapped-accepted.toml` in the same pass. Its entries are
+#      A function is on that list if it reaches `trap_errors` in its own body OR through a
+#      helper the generator has PROVEN -- `trap_oh_errors`, `do_with_oh` and `do_with_oh_void`
+#      today, which is what makes 51 of the 73 trapped functions callable, the whole
+#      `qpdf_oh_*` family among them. Those helpers are pinned by sha256 of their bodies in
+#      `engines/qpdf-proven-helpers.toml`, so a bump that restructures one makes `--generate`
+#      REFUSE:
+#
+#          REFUSED — 1 proven-helper change(s) need re-verification by a person
+#
+#      That is deliberate. The proof rules prove the bodies they were read against; a rewritten
+#      helper that still happens to satisfy them would otherwise be re-proved with nobody
+#      reading it. Re-read the helper against the four rules in ADR 0013's 2026-09-13
+#      amendment, then:
+#
+#          python3 tools/check-qpdf-trapped.py --generate --accept-helper-changes
+#
+#      Re-read `engines/qpdf-untrapped-accepted.toml` in the same pass, and
+#      `engines/qpdf-not-exported.toml`: it records the natively-declared functions the web
+#      deliberately does not export yet, and `tools/check-wasm-exports.sh` holds the two
+#      lists together. An entry there is a temporary state with an owner -- it goes when the
+#      web gains the implementation that needs it. Its entries are
 #      arguments about a specific version's implementation, and its `qpdf_version` field
 #      says which one they were checked against.
 #

@@ -31,7 +31,9 @@
 mod assemble;
 mod extract;
 mod ffi;
+mod handle;
 mod limits;
+mod rotate;
 
 #[cfg(feature = "fuzzing")]
 pub use limits::enable_fuzz_mode;
@@ -324,6 +326,82 @@ impl StructureEngine for Qpdf {
         Ok(StructureReport { pages })
     }
 }
+
+/// Open a document under `options`' ceilings, applying every one of them in order.
+///
+/// Returns the document, its page count, and the resident set measured before the open —
+/// which `max_memory_bytes` needs as a "before", since it **detects rather than bounds**
+/// (ADR 0007).
+///
+/// # Why this is shared rather than written per operation
+///
+/// `extract` and `rotate` had byte-identical copies of this sequence: the size check, the
+/// pre-scan, the deadline, recovery off, the page check, the error drain, the measured check,
+/// in that order. It is security-critical limit enforcement, and `extract`'s own comment
+/// records that one of these checks had already gone missing once and was restored by code
+/// review — from a copy that had drifted. Two copies agree until they do not, and the failure
+/// mode is a ceiling that silently stops applying on one path. Code review flagged the
+/// duplication; this is the answer.
+///
+/// The operations keep their own source structs. Only the ceiling sequence is shared.
+///
+/// # Errors
+///
+/// - [`Error::LimitExceeded`] — `max_input_bytes` at [`Stage::InputSize`], `max_pages` at
+///   [`Stage::PageCount`], `max_duration_ms`, or a measured `max_memory_bytes` overrun.
+/// - [`Error::Malformed`], [`Error::Unsupported`], [`Error::PasswordRequired`] — the input
+///   could not be read.
+pub(super) fn open_document(
+    bytes: Box<[u8]>,
+    options: &crate::OpenOptions<'_>,
+) -> Result<(Document, u64, Option<u64>)> {
+    let limits = options.limits;
+
+    let input_len = u64::try_from(bytes.len())
+        .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
+    Limits::check(
+        Stage::InputSize,
+        "max_input_bytes",
+        input_len,
+        limits.max_input_bytes,
+    )?;
+
+    // The structural pre-scan, before the engine sees the bytes. Pure Rust,
+    // `forbid(unsafe_code)`, and the only pre-emptive defence there is (ADR 0013).
+    crate::prescan::check(&bytes, &limits)?;
+
+    // ESTABLISHES THE START POINT; it does not check anything. Elapsed is zero here, so this
+    // checkpoint passes for every budget including zero. Said plainly because the line reads
+    // like a time check and is not one, and because the same pattern appears in `assemble.rs`
+    // and `extract.rs` where it reads the same way. Code review asked for the sentence.
+    let clock = Arc::clone(&options.clock);
+    let deadline = Deadline::start(clock.as_ref(), &limits);
+    deadline.checkpoint(clock.as_ref())?;
+
+    // Recovery OFF: an operation that silently reconstructs a damaged input produces a
+    // document whose relationship to what the person handed us is unclear, and they will
+    // never know.
+    let rss_before = crate::rss::resident_bytes();
+
+    let document = Document::open(bytes, options.password, false)?;
+    let pages = document.page_count()?;
+    Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
+
+    if let Some(error) = document.take_error() {
+        return Err(error);
+    }
+
+    // CHECKED HERE, not only in the operation. A document that blew past the ceiling and was
+    // then given an unusable request once returned `InvalidArgument` with no `LimitExceeded`
+    // ever reported -- the memory was spent and no ceiling said so, because the only check
+    // lived in a function that was never reached. Found by code review on `extract`.
+    crate::estimate::check_measured_memory(rss_before, crate::rss::resident_bytes(), &limits)?;
+
+    Ok((document, pages, rss_before))
+}
+
+#[cfg(test)]
+mod rotate_tests;
 
 #[cfg(test)]
 mod tests;

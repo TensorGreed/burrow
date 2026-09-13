@@ -25,7 +25,9 @@ fails rather than continuing to assert something nobody re-derived.
 
 Generating the set reproduced §1's hand audit exactly: 22 trapped functions at qpdf 12.4.1,
 `qpdf_read_memory` and `qpdf_get_num_pages` among them, `qpdf_is_encrypted` and
-`qpdf_is_linearized` not.
+`qpdf_is_linearized` not. (Those 22 are the ones that call `trap_errors` in their own body.
+The 2026-09-13 amendment below follows proven helpers as well and finds 73; `qpdf_is_encrypted`
+and `qpdf_is_linearized` are still not among them.)
 
 **The check has two buckets, because "every declared function must be trapped" is not the
 rule this ADR set.** Fourteen of burrow's sixteen declarations are the non-parsing setters,
@@ -40,6 +42,145 @@ contains no try/catch at all, so they rest on the non-parsing argument alone.
 Two directions of staleness fail too: an exemption for a function nobody declares, and an
 exemption for a function upstream *does* trap — the latter because a warning about a hazard
 that is not there teaches people to stop reading the file.
+
+### Amendment, 2026-09-13 (M1 rotate): the rule is "reaches `trap_errors`", not "calls it"
+
+Rotate has to read an **inherited** `/Rotate`, which means walking the page tree and reading
+a key off each ancestor — `qpdf_oh_get_key`, `qpdf_oh_is_dictionary`, `qpdf_oh_get_int_value`.
+The generated set had none of the `qpdf_oh_*` family in it, and that reads as "upstream does
+not trap them". It is wrong. They are trapped; the generator could not see it.
+
+`qpdf-c.cc` routes that family through two static frames: `qpdf_oh_get_key` calls
+`do_with_oh`, which calls `trap_oh_errors`, which calls `trap_errors`. The generator matched
+`trap_errors(` inside a function's own body and stopped there, so **51 functions that are
+trapped were reported as untrapped**. The honest description of the previous rule is "calls
+`trap_errors` in its own body", and that is narrower than what §1 actually requires, which is
+that no C++ exception escapes.
+
+**Indirect trapping through a proven helper is acceptable. Trusting a helper because it
+mentions `trap_errors` is not.** So the generator now proves the helper before following it,
+and records which route each function took (`engines/qpdf-trapped-functions.txt` carries
+the full chain per line — `direct`, `via trap_oh_errors`, `via do_with_oh -> trap_oh_errors`,
+`via do_with_oh_void -> do_with_oh -> trap_oh_errors` — and a per-route breakdown in its
+header). A helper is followed only if all four hold — and the **caller** must forward purely too, which
+an early version of this did not require: it matched the helper's name anywhere in the caller's
+body, so a function that threw on its way to the helper was listed as safe to call. Security
+review measured 20 of the then-71 indirect entries carrying code outside the helper call. burrow
+declared none of them, so nothing unsafe was ever called; the rule that built the list was
+wrong, and the list's own header claims everything on it is safe. The caller is now held to the
+same single-statement rule as a forwarder, which is what took the set from 93 to 73.
+
+The four rules:
+
+1. its body calls `trap_errors(`;
+2. no `return` precedes that call except the one that **is** it — no early exit skips the trap;
+3. every function-typed parameter taking a `qpdf_data` is invoked **only inside** a
+   `trap_errors(` argument list, established by parenthesis spans rather than line proximity;
+4. any function-typed parameter invoked outside the trap takes **no** `qpdf_data`, so it
+   cannot reach the document and cannot run the parser.
+
+Rule 4 is what admits `trap_oh_errors`, whose `fallback` runs on the error path after the trap
+has returned; it takes no document, so the worst it can do is allocate — the defined-abort case
+`qpdf-untrapped-accepted.toml` already reasons about.
+
+Further frames are admitted only as **pure forwarders**: a body that is one top-level
+statement — `return f(...);` or `f(...);` — calling something already proven, with nothing
+after it but the semicolon and every callback used only inside its argument list. `do_with_oh`
+qualifies: it hands `trap_oh_errors` a lambda that looks up the handle and invokes `fn`, and a
+throw from either is inside the trap.
+
+**Forwarding composes; wrapping does not, and the difference is the point.** A wrapper has
+reachable code outside the trap by construction — its `fallback` runs on the error path — so
+each additional wrapper adds a place for work to hide, and composing those proofs is a weaker
+argument than making one. A pure forwarder has *no* reachable code outside the proven call.
+Not "none that looked dangerous": none. So a chain of forwarders is resolved to a fixed point,
+with every link recorded — `via do_with_oh_void -> do_with_oh -> trap_oh_errors` — and the
+chain still terminates at exactly one wrapper.
+
+This paragraph replaces an earlier draft of this amendment that said chains stop at one
+forwarder. That was written before rotate needed `qpdf_oh_replace_key`, which reaches the trap
+through `do_with_oh_void` → `do_with_oh` and would have been reported untrapped — a function
+qpdf does protect, described by our own tool as one it does not. The fix is the argument above,
+not an exemption: `qpdf_oh_replace_key` resolves an object and calls `replaceKey` on a
+dictionary, so it could never meet the exemption bar. Ten functions moved from *unknown* to
+*trapped* with it, taking the generated set from 63 to 73.
+
+The proof is exercised both ways on **every run**, not only when it breaks, and
+`tools/test-check-qpdf-trapped.sh` mutates each rule in a copy and requires the copy to refuse
+by name:
+
+- a synthetic helper that never calls `trap_errors` must not be followed;
+- nor one that traps and then calls its callback again *outside* the trap;
+- a function reached through a trapping helper must be found;
+- and removing `trap_errors` from the helper must turn every function using it red — the
+  mutation asserted to have applied first.
+
+**The rules prove the bodies that are in the tree today, not any future ones.** That is the
+limit of a static proof and it is worth stating rather than leaving implicit: upstream could
+restructure `do_with_oh` — move the handle lookup out, add a second return, wrap it in
+something — and the rewrite might still satisfy all four rules while meaning something the
+reader of this amendment never considered. Passing is not the same as verified.
+
+So `engines/qpdf-proven-helpers.toml` records each followed helper by **sha256 of its source
+body**, with the argument for why following it is safe. `--generate` refuses when a recorded
+hash moves, names the helper, and stops; a person re-reads the body and re-runs with
+`--accept-helper-changes`. It also refuses a helper newly becoming followable, and reports a
+recorded helper that has stopped satisfying the rules — which is how a function silently stops
+being callable. Verification (which runs with no vendor tree) checks the other half: every
+route on the trapped list names a recorded helper, and every recorded helper is used. This is
+step 2 of *Bumping an engine pin*, alongside regenerating the list.
+
+**The exemption bar is unchanged**, and two entries were added under it. `qpdf-untrapped-accepted.toml`
+still means "non-parsing, never touches the PDF's bytes, never resolves an object". Widening the
+generator itself moved functions from *unknown* to *trapped* and moved nothing into the exempt
+bucket. Rotate then added `qpdf_oh_new_integer` (a constructor: `QPDFObjectHandle::newInteger`
+on a number this crate chose, plus one cache insert) and `qpdf_oh_release` (whose whole body is
+`oh_cache.erase`), taking the file from 18 entries to 20. Neither is a setter, an accessor or a
+logger call, which is what the first 18 are — both are stated here rather than left to be
+noticed, because "the bar is unchanged" and "nothing was added" are different claims and only
+the first is true.
+
+**`qpdf_oh_get_key` is specifically not exemptible.** It resolves an indirect object, which
+runs the parser on file-controlled bytes: exactly the thing the bar excludes. If a future qpdf
+stopped routing it through the trap, the answer is to stop calling it — not to write an
+argument for it. The same goes for every `qpdf_oh_*` accessor rotate uses.
+
+One thing the trap does **not** answer, recorded here because it shaped rotate's code:
+trapping catches crashes, not wrong answers. `qpdf_oh_*` accessors return a null or default
+object on a type mismatch rather than throwing, so a trapped call can hand back `0` for a
+`/Rotate` that was never an integer. Rotate asserts the object's type before reading a key and
+maps an unexpected type to `Malformed`; a silently wrong inherited rotation is worse than a
+refusal.
+
+### Amendment, 2026-09-13 (rotate): what the web may export is a third list, and it is checked on every run
+
+§1's rule governs what burrow may *call*. `engines/build-wasm.sh` enforces a second, narrower
+thing: the web module exports exactly what `ffi.rs` declares, so JavaScript cannot reach a
+function this ADR never cleared. That invariant assumed the native and web paths implement the
+same operations, and they do not — `burrow-ops` has `split` and `rotate`, and
+`bindings/burrow-wasm` has neither, because there is no `impl PageExtractor for WebQpdf` and no
+`impl PageRotator for WebQpdf`.
+
+So a declaration may be absent from the export list, with an argued entry in
+`engines/qpdf-not-exported.toml` naming the operation it belongs to and why the web cannot use
+it. **This is narrower than the old rule, not wider**: exporting rotate's six `qpdf_oh_*`
+functions to satisfy a set comparison would make them callable from JavaScript for an operation
+that does not exist on that path. An entry is removed by the pull request that gives the web the
+matching implementation, in the same change that adds the export.
+
+**The check was invisible, and that is the part worth recording.** `qpdf_remove_page` was
+declared for `split` in PR #55, never exported, and sat on `main` undetected — the comparison
+lived inside `build-wasm.sh`, which CI runs only on a wasm cache miss, and the cache key is
+`hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh')`. No PR since
+touched any of those. It surfaced only because rotate's branch edited a *comment* in
+`pins.toml`, changed the hash, and forced a rebuild.
+
+That is the second cache-gated check in this repository to hide a real defect, after the qpdf
+crypto assertion that `CLAUDE.md`'s "where a check lives in `ci.yml` is load-bearing" rule was
+written from. The comparison now lives in `tools/check-wasm-exports.sh`, reads only committed
+files plus the cached `qpdf.wasm`, and runs in the `web` job on every run. Seven adversarial
+cases in `tools/test-check-wasm-exports.sh` plant a defect per rule and require a refusal by
+name.
 
 ## Context
 

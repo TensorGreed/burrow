@@ -98,6 +98,39 @@ pub(crate) mod policy {
     pub(crate) const LOG_DEST_DISCARD: c_int = 3;
 }
 
+/// `enum qpdf_object_type_e` — `Constants.h:109-130`.
+///
+/// Only the three values this crate compares against are named. The enum is a plain C
+/// enumeration with no explicit values, so each is its ordinal position, and upstream's
+/// stability guarantee for `Constants.h` (`Constants.h:34-69`) is what makes hard-coding them
+/// safe — the same basis on which `code` below hard-codes the error codes.
+///
+/// **These exist because trapping does not answer a type mismatch.** `qpdf_oh_get_int_value`
+/// on a name returns 0 rather than raising, so `qpdf_oh_get_type_code` is the only thing
+/// standing between a malformed `/Rotate` and a confidently wrong rotation.
+///
+/// Only the native qpdf rotation reads them today, so they are `dead_code` in a build without
+/// the engines. Allowed under that cfg rather than gated with it, because the moment a web
+/// `PageRotator` exists it needs the same three values -- and this file's whole purpose is
+/// that the native and web paths share one table rather than keeping two that agree until
+/// they do not.
+#[cfg_attr(
+    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
+    allow(dead_code)
+)]
+pub(crate) mod object_type {
+    use core::ffi::c_int;
+
+    /// `ot_null` — the third member, and what an absent dictionary key reads as.
+    pub(crate) const NULL: c_int = 2;
+
+    /// `ot_integer` — the fifth member.
+    pub(crate) const INTEGER: c_int = 4;
+
+    /// `ot_dictionary` — the tenth member.
+    pub(crate) const DICTIONARY: c_int = 9;
+}
+
 /// `typedef int QPDF_ERROR_CODE` — `qpdf-c.h:136`.
 pub(crate) type QpdfErrorCode = c_int;
 

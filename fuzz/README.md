@@ -113,6 +113,13 @@ it should now produce.
 | `document_open` | `DocumentEngine::open` + `page_count`, over PDFium | no — prebuilt | M1 PR 2 |
 | `prescan` | `prescan::check`, pure Rust | **yes, fully** | M1 PR 3 |
 | `qpdf_check` | `StructureEngine::check`, over qpdf | **yes** — needs the override below | M1 PR 3 |
+| `merge` | `burrow_ops::merge`, several inputs into one document, over qpdf | **yes** — needs the override below | M1 PR B |
+| `split` | `burrow_ops::split`, one document into many, over qpdf | **yes** — needs the override below | M1 PR #55 |
+| `rotate` | `burrow_ops::rotate`, the `/Parent` walk and the page write, over qpdf | **yes** — needs the override below | M1 rotate |
+
+Three of those were missing from this table until rotate was added — it is a table that
+claims to be complete, and `ci.yml`'s fuzz job is the list that actually runs. If they
+disagree again, the workflow is the one to believe.
 
 `prescan` is the only target in this project where coverage-guided fuzzing works the way it
 is supposed to: it is pure Rust, so libFuzzer can see and steer the code under test rather

@@ -10,27 +10,88 @@
 # REGENERATING THIS FILE IS PART OF EVERY qpdf VERSION BUMP. See "Bumping an engine pin"
 # in engines/pins.toml.
 #
+# Each line is a function and the ROUTE by which it reaches `trap_errors`: "direct" if its
+# own body calls the helper, "via <helper>" if it reaches it through a wrapper proven to wrap
+# every return path in `trap_errors`, and "via <forwarder> -> <helper>" where a pure forwarder
+# stands between. ADR 0013 §1's amendment records why indirect trapping is acceptable and what
+# a helper has to prove to be followed.
+#
 # qpdf version: 12.4.1
-# functions: 22
-qpdf_add_page
-qpdf_add_page_at
-qpdf_c_wrap
-qpdf_check_pdf
-qpdf_create_from_json_data
-qpdf_create_from_json_file
-qpdf_find_page_by_id
-qpdf_get_num_pages
-qpdf_get_page_n
-qpdf_init_write
-qpdf_init_write_memory
-qpdf_oh_get_page_content_data
-qpdf_oh_get_stream_data
-qpdf_push_inherited_attributes_to_page
-qpdf_read
-qpdf_read_memory
-qpdf_remove_page
-qpdf_update_all_pages_cache
-qpdf_update_from_json_data
-qpdf_update_from_json_file
-qpdf_write
-qpdf_write_json
+# functions: 73
+# by route:
+#    22  direct
+#    41  via do_with_oh -> trap_oh_errors
+#    10  via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_add_page	direct
+qpdf_add_page_at	direct
+qpdf_c_wrap	direct
+qpdf_check_pdf	direct
+qpdf_create_from_json_data	direct
+qpdf_create_from_json_file	direct
+qpdf_find_page_by_id	direct
+qpdf_get_num_pages	direct
+qpdf_get_page_n	direct
+qpdf_init_write	direct
+qpdf_init_write_memory	direct
+qpdf_make_indirect_object	via do_with_oh -> trap_oh_errors
+qpdf_oh_append_item	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_copy_foreign_object	via do_with_oh -> trap_oh_errors
+qpdf_oh_erase_item	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_get_array_item	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_array_n_items	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_binary_string_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_binary_utf8_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_bool_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_dict	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_generation	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_int_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_int_value_as_int	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_key	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_key_if_dict	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_name	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_numeric_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_object_id	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_page_content_data	direct
+qpdf_oh_get_real_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_stream_data	direct
+qpdf_oh_get_string_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_type_code	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_type_name	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_uint_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_uint_value_as_uint	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_utf8_value	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_bool	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_int	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_longlong	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_name	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_number	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_real	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_string	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_uint	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_ulonglong	via do_with_oh -> trap_oh_errors
+qpdf_oh_get_value_as_utf8	via do_with_oh -> trap_oh_errors
+qpdf_oh_has_key	via do_with_oh -> trap_oh_errors
+qpdf_oh_insert_item	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_is_name_and_equals	via do_with_oh -> trap_oh_errors
+qpdf_oh_is_number	via do_with_oh -> trap_oh_errors
+qpdf_oh_is_or_has_name	via do_with_oh -> trap_oh_errors
+qpdf_oh_make_direct	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_remove_key	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_replace_key	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_replace_or_remove_key	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_replace_stream_data	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_set_array_item	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_oh_unparse	via do_with_oh -> trap_oh_errors
+qpdf_oh_unparse_binary	via do_with_oh -> trap_oh_errors
+qpdf_oh_unparse_resolved	via do_with_oh -> trap_oh_errors
+qpdf_oh_wrap_in_array	via do_with_oh -> trap_oh_errors
+qpdf_push_inherited_attributes_to_page	direct
+qpdf_read	direct
+qpdf_read_memory	direct
+qpdf_remove_page	direct
+qpdf_replace_object	via do_with_oh_void -> do_with_oh -> trap_oh_errors
+qpdf_update_all_pages_cache	direct
+qpdf_update_from_json_data	direct
+qpdf_update_from_json_file	direct
+qpdf_write	direct
+qpdf_write_json	direct

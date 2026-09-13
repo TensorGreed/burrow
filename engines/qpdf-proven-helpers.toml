@@ -1,0 +1,36 @@
+# The qpdf static helpers tools/check-qpdf-trapped.py is allowed to follow, recorded
+# by sha256 of their source bodies. GENERATED -- but not automatically re-accepted.
+#
+# A function reaches `trap_errors` in its own body, or through one of these helpers.
+# The proof rules (ADR 0013's 2026-09-13 amendment) are re-checked against the source
+# on every regeneration, so a helper that stops trapping stops being followed and every
+# function depending on it leaves the trapped list.
+#
+# THE RULES PROVE THESE BODIES, NOT ANY FUTURE ONES. A restructured helper that still
+# satisfies the rules would be re-proved with nobody reading it, and the argument is
+# subtle enough that passing is not the same as verified. So --generate REFUSES when a
+# recorded hash has moved, names the helper, and stops. A person re-reads it and runs
+# --generate --accept-helper-changes. Step 2 of 'Bumping an engine pin' in pins.toml.
+#
+# qpdf version: 12.4.1
+
+[meta]
+qpdf_version = "12.4.1"
+
+[[helper]]
+name = "do_with_oh"
+role = "forwarder"
+sha256 = "6090e0785851440ed53944983ac8afa7d3e0f2337871372cd04ab80673106163"
+why = "A pure forwarder: one top-level return of trap_oh_errors(...), with the handle lookup and the caller's callback both inside that call's argument list, so a throw from either is inside the trap. There is no reachable code outside it."
+
+[[helper]]
+name = "do_with_oh_void"
+role = "forwarder"
+sha256 = "959a46ef81ce4b43fc64c8a29df3d3b2cc08557a58bbe890676884c7d22df9df"
+why = "A pure forwarder to `do_with_oh`, which is itself one: its whole body is a single call, with the caller's callback used only inside that call's argument list. There is no reachable code outside the proven call, which is what makes forwarding transitive where wrapping is not."
+
+[[helper]]
+name = "trap_oh_errors"
+role = "wrapper"
+sha256 = "64382809ae827880da44015bdc80cf4361afaa7963685cd930125dbcd13dc32f"
+why = "Wraps its work in trap_errors. Its `fallback` runs outside the trap but takes no qpdf_data, so it cannot reach the document or the parser -- it can fail only by allocation, the defined-abort case qpdf-untrapped-accepted.toml already argues. Three other statements also sit outside the try, on the error path: qpdf->qpdf->getFilename(), qpdf->warnings.emplace_back(...), and a write of qpdf->error->what() to the default logger -- which would put file byte offsets on process stderr. All three are inside `if (!qpdf->silence_errors)`, and Document::open calls qpdf_silence_errors on every document, so the branch is dead in burrow. Named here because the proof rules do not know about that runtime setting: if the silencing call is ever dropped, this argument goes with it."

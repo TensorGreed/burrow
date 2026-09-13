@@ -298,6 +298,103 @@ unsafe extern "C" {
     /// `qpdf_cleanup` (`qpdf-c.h:426-428`). Copy out of it immediately; never store it.
     pub(super) fn qpdf_get_buffer(qpdf: QpdfData) -> *const u8;
 
+    // ------------------------------------------------------- the object-handle API
+    //
+    // Added in M1 for `rotate`, which has to read an INHERITED `/Rotate`: the key may sit on
+    // any ancestor in the page tree, so the page dictionary alone does not answer the
+    // question. Reading a key means resolving objects, which means the parser, which means
+    // every one of these must be trapped or have an argued exemption.
+    //
+    // Four of the six below are trapped -- not in their own bodies, which is why an earlier
+    // version of `tools/check-qpdf-trapped.py` reported them as untrapped and this module
+    // could not use them at all. `qpdf_oh_get_key` reaches `trap_errors` through
+    // `do_with_oh` -> `trap_oh_errors`; `qpdf_oh_replace_key` through `do_with_oh_void` ->
+    // `do_with_oh` -> `trap_oh_errors`. Each chain link is proven and hashed
+    // (`engines/qpdf-proven-helpers.toml`) and each route is recorded per line in
+    // `engines/qpdf-trapped-functions.txt`. ADR 0013's 2026-09-13 amendment is the argument.
+    //
+    // # Trapping answers crashes, not wrong answers
+    //
+    // These accessors do NOT throw on a type mismatch: `qpdf_oh_get_int_value` on a name
+    // returns 0, and `qpdf_oh_get_key` on a non-dictionary returns a null object. A trapped
+    // call can therefore hand back a perfectly-formed wrong answer, and a silently wrong
+    // inherited `/Rotate` is worse than a refusal -- it produces a document nobody can tell
+    // is wrong by looking at the operation that made it. So `rotate.rs` asserts the type
+    // before reading, and maps anything unexpected to `Malformed`.
+
+    /// `qpdf_oh qpdf_oh_get_key(qpdf_data qpdf, qpdf_oh oh, char const* key)` —
+    /// `qpdf-c.h:808`.
+    ///
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`. It resolves an indirect object,
+    /// which runs the parser on file-controlled bytes, so it could never earn an entry in
+    /// `engines/qpdf-untrapped-accepted.toml` — that file's bar is "non-parsing … never
+    /// resolves an object". If a future qpdf stops routing it through the trap, the answer is
+    /// to stop calling it.
+    ///
+    /// Returns a **new handle** that lives until released or the document is cleaned up.
+    pub(super) fn qpdf_oh_get_key(
+        qpdf: QpdfData,
+        oh: QpdfObjectHandle,
+        key: *const c_char,
+    ) -> QpdfObjectHandle;
+
+    // `qpdf_oh_has_key` (`qpdf-c.h:806`) is deliberately NOT declared, for the reason
+    // `qpdflogger_cleanup` is not: nothing calls it. `qpdf_oh_get_key` on an absent key
+    // returns a null object, and the type check that has to happen anyway answers "absent"
+    // and "present but not an integer" in one place. A second route to the same fact is a
+    // second signature that could be wrong, and a second thing a future reader might reach
+    // for in preference to the one that checks the type.
+
+    /// `enum qpdf_object_type_e qpdf_oh_get_type_code(qpdf_data qpdf, qpdf_oh oh)` —
+    /// `qpdf-c.h:697`. **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// The type is asked for **before** any value is read. See the note above: these
+    /// accessors return defaults rather than raising, so the type code is the only thing
+    /// standing between a malformed `/Rotate` and a confidently wrong answer.
+    pub(super) fn qpdf_oh_get_type_code(qpdf: QpdfData, oh: QpdfObjectHandle) -> c_int;
+
+    /// `long long qpdf_oh_get_int_value(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:714`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// Returns 0 for anything that is not an integer. Only called once
+    /// [`qpdf_oh_get_type_code`] has said otherwise.
+    pub(super) fn qpdf_oh_get_int_value(qpdf: QpdfData, oh: QpdfObjectHandle) -> i64;
+
+    /// `void qpdf_oh_replace_key(qpdf_data, qpdf_oh, char const* key, qpdf_oh item)` —
+    /// `qpdf-c.h:867`. **Trapped** via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// Writes to the page dictionary itself, never to a shared ancestor: `/Rotate` is
+    /// inheritable, so setting it on a `/Pages` node would silently rotate every page under
+    /// that node. `rotate.rs` writes per page for exactly that reason.
+    pub(super) fn qpdf_oh_replace_key(
+        qpdf: QpdfData,
+        oh: QpdfObjectHandle,
+        key: *const c_char,
+        item: QpdfObjectHandle,
+    );
+
+    /// `qpdf_oh qpdf_oh_new_integer(qpdf_data qpdf, long long value)` — `qpdf-c.h:823`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`. Its body is
+    /// `new_object(qpdf, QPDFObjectHandle::newInteger(value))`: it constructs an integer from
+    /// a number this crate chose and puts it in the handle cache. It never reads the
+    /// document, never resolves an object, and cannot see a byte of the input — so it meets
+    /// that file's bar exactly, and can fail only by allocation.
+    pub(super) fn qpdf_oh_new_integer(qpdf: QpdfData, value: i64) -> QpdfObjectHandle;
+
+    /// `void qpdf_oh_release(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:630`.
+    ///
+    /// **Untrapped**, argued in `engines/qpdf-untrapped-accepted.toml`. Its whole body is
+    /// `qpdf->oh_cache.erase(oh)` — a map erase, which parses nothing and resolves nothing.
+    ///
+    /// **Handles accumulate for the document's lifetime unless this is called.** The cache is
+    /// a `std::map<qpdf_oh, QPDFObjectHandle>` that only ever grows; `next_oh` is a counter
+    /// that never reuses an id. A per-page inheritance walk that allocated a handle per
+    /// ancestor and released none would leak one entry per node for as long as the document
+    /// is open — invisible to `max_memory_bytes`, which measures RSS at operation boundaries
+    /// and would see this only as slow growth. `handle.rs` makes release automatic.
+    pub(super) fn qpdf_oh_release(qpdf: QpdfData, oh: QpdfObjectHandle);
+
     /// `void qpdflogger_set_info(qpdflogger_handle, enum qpdf_log_dest_e, qpdf_log_fn_t,
     /// void*)` — `qpdflogger-c.h:70`.
     pub(super) fn qpdflogger_set_info(
