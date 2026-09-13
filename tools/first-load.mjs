@@ -34,6 +34,7 @@
 // a user's connection actually carries. `zlib.brotliCompressSync` at maximum quality: no
 // dependency, and deterministic, which a budget has to be.
 
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { brotliCompressSync, constants } from "node:zlib";
@@ -150,6 +151,34 @@ export function budgetKey(path) {
  * @param {{ entries: { path: string, raw: number, brotli: number }[] }} measurement
  * @returns {Record<string, { raw: number, brotli: number, files: string[] }>}
  */
+/**
+ * The sha256 of each budget group's bytes, over its files in a stable order.
+ *
+ * Paired with the sizes in `size-budget.json` so a recording can be held to the build it
+ * claims to describe: identical bytes with different recorded numbers is a false record,
+ * not drift. See `apps/web/src/size-budget-drift.ts` for the rule and the 236 bytes that
+ * went unnoticed without it.
+ *
+ * Sorted by path rather than taken in `entries` order, because the digest has to be a
+ * function of the payload and not of how the walk happened to enumerate it.
+ *
+ * @param {string} dir
+ * @param {Record<string, { files: string[] }>} groups
+ * @returns {Record<string, string>}
+ */
+export function digestsByBudgetKey(dir, groups) {
+  /** @type {Record<string, string>} */
+  const digests = {};
+  for (const [key, group] of Object.entries(groups)) {
+    const hash = createHash("sha256");
+    for (const path of [...group.files].sort()) {
+      hash.update(readFileSync(join(dir, path)));
+    }
+    digests[key] = hash.digest("hex");
+  }
+  return digests;
+}
+
 export function byBudgetKey(measurement) {
   /** @type {Record<string, { raw: number, brotli: number, files: string[] }>} */
   const groups = {};

@@ -29,7 +29,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { byBudgetKey, firstLoad } from "../../../tools/first-load.mjs";
+import { byBudgetKey, digestsByBudgetKey, firstLoad } from "../../../tools/first-load.mjs";
+import { type Live, driftFindings, explain } from "./size-budget-drift.js";
 import { PRODUCTION_DIR } from "./build-output.js";
 
 const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +38,7 @@ const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 interface Line {
   measured_raw: number;
   measured_brotli: number;
+  measured_sha256?: string;
   budget_brotli: number;
   why?: string;
 }
@@ -44,10 +46,20 @@ interface Line {
 const budget: {
   artifacts: Record<string, Line>;
   total: Line;
+  not_byte_reproducible: Record<string, string>;
+  drift_tolerance: number;
 } = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));
 
 const measurement = firstLoad(PRODUCTION_DIR);
 const groups = byBudgetKey(measurement);
+const digests = digestsByBudgetKey(PRODUCTION_DIR, groups);
+
+const live: Record<string, Live> = Object.fromEntries(
+  Object.entries(groups).map(([key, group]) => [
+    key,
+    { raw: group.raw, brotli: group.brotli, sha256: digests[key] },
+  ]),
+);
 
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KiB`;
 
@@ -184,5 +196,139 @@ describe("the first-load size budget", () => {
         `${kb(budget.total.measured_brotli)} to the ${kb(budget.total.budget_brotli)} budget. ` +
         `Re-measure and update size-budget.json, or find out what grew`,
     ).toBeLessThanOrEqual(halfway);
+  });
+});
+
+describe("the recording describes the build it claims to", () => {
+  // THE DRIFT PROBE. The tests above gate live sizes against budgets and the recorded lines
+  // against each other; neither compares a recorded measurement with the build. So a
+  // recording that drifts CONSISTENTLY satisfies every one of them, which is how
+  // `engines/burrow-worker.js` sat 236 brotli bytes light on an unchanged checkout with
+  // nothing failing. M1 PR A corrected the number. A corrected number is not a control.
+
+  it("finds no drift against this build", () => {
+    const findings = driftFindings({
+      recorded: budget.artifacts,
+      live,
+      notByteReproducible: budget.not_byte_reproducible,
+      tolerance: budget.drift_tolerance,
+    });
+    expect(findings.map(explain)).toEqual([]);
+  });
+
+  it("records a digest for every artifact, so no line escapes the comparison", () => {
+    // A missing digest makes every rule above vacuous for that line, which is the easiest
+    // way to switch this check off by accident.
+    const missing = Object.entries(budget.artifacts)
+      .filter(([, line]) => !line.measured_sha256)
+      .map(([key]) => key);
+    expect(missing).toEqual([]);
+  });
+
+  it("gives every not-byte-reproducible exemption a reason", () => {
+    // An exemption is the one place a recorded size is never checked exactly, so it is the
+    // one place that needs an argument rather than an entry.
+    for (const [key, reason] of Object.entries(budget.not_byte_reproducible)) {
+      expect(
+        reason.length,
+        `${key} is exempt from the exact check with no reason given`,
+      ).toBeGreaterThan(40);
+      expect(budget.artifacts, `${key} is exempt but is not an artifact`).toHaveProperty(key);
+    }
+  });
+});
+
+describe("the drift probe itself", () => {
+  // Every rule, against planted input, on every run. Without this the block above is only
+  // ever exercised against a recording that matches — which is to say, never exercised.
+
+  const bytes = { raw: 100, brotli: 50, sha256: "aaaa" };
+  const base = { notByteReproducible: {}, tolerance: 0.02 };
+
+  it("passes a recording that matches the build", () => {
+    expect(
+      driftFindings({
+        ...base,
+        recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "aaaa" } },
+        live: { a: bytes },
+      }),
+    ).toEqual([]);
+  });
+
+  it("catches a recording whose size drifted while the bytes did not", () => {
+    // THE EXACT FAILURE THIS EXISTS FOR: same bytes, a different recorded number. 236 of
+    // them, last time, and every other test passed.
+    const findings = driftFindings({
+      ...base,
+      recorded: { a: { measured_raw: 100, measured_brotli: 49, measured_sha256: "aaaa" } },
+      live: { a: bytes },
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ kind: "false-record", key: "a", field: "brotli" });
+    expect(explain(findings[0])).toContain("IDENTICAL");
+  });
+
+  it("catches a one-byte drift, because there is no tolerance when nothing changed", () => {
+    const findings = driftFindings({
+      ...base,
+      recorded: { a: { measured_raw: 99, measured_brotli: 50, measured_sha256: "aaaa" } },
+      live: { a: bytes },
+    });
+    expect(findings.map((f) => f.kind)).toEqual(["false-record"]);
+  });
+
+  it("catches a recording with no digest rather than passing it", () => {
+    const findings = driftFindings({
+      ...base,
+      recorded: { a: { measured_raw: 100, measured_brotli: 50 } },
+      live: { a: bytes },
+    });
+    expect(findings.map((f) => f.kind)).toEqual(["no-digest"]);
+  });
+
+  it("catches an artifact whose bytes changed without being declared unreproducible", () => {
+    const findings = driftFindings({
+      ...base,
+      recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "bbbb" } },
+      live: { a: bytes },
+    });
+    expect(findings.map((f) => f.kind)).toEqual(["undeclared-rebuild"]);
+  });
+
+  it("tolerates a declared unreproducible artifact moving a little", () => {
+    expect(
+      driftFindings({
+        recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "bbbb" } },
+        live: { a: { raw: 101, brotli: 51, sha256: "aaaa" } },
+        notByteReproducible: { a: "because" },
+        tolerance: 0.02,
+      }),
+    ).toEqual([]);
+  });
+
+  it("still catches a declared unreproducible artifact moving a lot", () => {
+    // The bound on the one window this check cannot close exactly. Without it, "not byte
+    // reproducible" would mean "not checked", which is an open door rather than a
+    // declared width.
+    const findings = driftFindings({
+      recorded: { a: { measured_raw: 100, measured_brotli: 50, measured_sha256: "bbbb" } },
+      live: { a: { raw: 200, brotli: 100, sha256: "aaaa" } },
+      notByteReproducible: { a: "because" },
+      tolerance: 0.02,
+    });
+    expect(findings.map((f) => f.kind)).toEqual(["drift"]);
+    expect(explain(findings[0])).toContain("tolerance");
+  });
+
+  it("says nothing about an artifact the build no longer contains", () => {
+    // That is a different test's job, in both directions, and duplicating it here would
+    // mean two places to update when the payload changes.
+    expect(
+      driftFindings({
+        ...base,
+        recorded: { gone: { measured_raw: 1, measured_brotli: 1, measured_sha256: "aaaa" } },
+        live: {},
+      }),
+    ).toEqual([]);
   });
 });
