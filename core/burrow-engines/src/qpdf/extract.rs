@@ -36,10 +36,9 @@
 //! of this comment said "no new FFI", which was false the moment the blank page needed
 //! removing.)
 
-use std::sync::Arc;
+use burrow_types::{Error, Limits, Result, Stage};
 
-use burrow_types::{Deadline, Error, Limits, Result, Stage};
-
+use super::handle::ObjectHandle;
 use super::{Document, Qpdf, ffi};
 use crate::{OpenOptions, PageExtractor};
 
@@ -120,51 +119,14 @@ impl PageExtractor for Qpdf {
     }
 
     fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Source> {
-        let limits = options.limits;
-
-        let input_len = u64::try_from(bytes.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check(
-            Stage::InputSize,
-            "max_input_bytes",
-            input_len,
-            limits.max_input_bytes,
-        )?;
-
-        // The structural pre-scan, before the engine sees the bytes. Pure Rust,
-        // `forbid(unsafe_code)`, and the only pre-emptive defence there is (ADR 0013).
-        crate::prescan::check(&bytes, &limits)?;
-
-        let clock = Arc::clone(&options.clock);
-        let deadline = Deadline::start(clock.as_ref(), &limits);
-        deadline.checkpoint(clock.as_ref())?;
-
-        // Recovery OFF, as `merge` has it and for the same reason: a split that silently
-        // reconstructs a damaged input produces outputs whose relationship to what the person
-        // handed us is unclear, and they will never know.
-        let rss_before = crate::rss::resident_bytes();
-
-        let document = Document::open(bytes, options.password, false)?;
-        let pages = document.page_count()?;
-        Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
-
-        if let Some(error) = document.take_error() {
-            return Err(error);
-        }
-
-        // CHECKED HERE TOO, not only in `extract`. `Qpdf::check` does this right after its
-        // open and this did not, so a document that blew past the ceiling and was then given
-        // an unusable cut list returned `InvalidArgument` from `runs_from` with no
-        // `LimitExceeded` ever reported -- the memory was spent and no ceiling said so,
-        // because the only check lived in a function that was never reached. Found by code
-        // review. `core/CLAUDE.md`: every operation applies every ceiling in `Limits`.
-        crate::estimate::check_measured_memory(rss_before, crate::rss::resident_bytes(), &limits)?;
-
+        // Every ceiling, in one place, shared with the other operations that open a document
+        // this way -- see `open_document` for why this is not written out here.
+        let (document, pages, rss_before) = super::open_document(bytes, options)?;
         Ok(QpdfSource {
             document,
             pages,
             rss_before,
-            limits,
+            limits: options.limits,
         })
     }
 
@@ -214,10 +176,11 @@ impl PageExtractor for Qpdf {
             let index = usize::try_from(n)
                 .map_err(|_| Error::Internal("page index does not fit in usize".to_owned()))?;
 
-            // SAFETY: `source.document.data` is a live handle whose document read
-            // successfully, and `index` is below its page count, checked above. Routes
-            // through `trap_errors`.
-            let page = unsafe { ffi::qpdf_get_page_n(source.document.data, index) };
+            // SAFETY: `index` is below the source's page count, checked above. Routes
+            // through `trap_errors`. Wrapped rather than held raw, so the handle is released
+            // at the end of this iteration instead of living until the document is dropped —
+            // see `handle.rs`.
+            let page = unsafe { ObjectHandle::page(&source.document, index) };
             if let Some(error) = source.document.take_error() {
                 return Err(error);
             }
@@ -229,7 +192,7 @@ impl PageExtractor for Qpdf {
             // SAFETY: both handles are live, and `page` was just obtained from the source.
             // Routes through `trap_errors`.
             let added = unsafe {
-                ffi::qpdf_add_page(dest.data, source.document.data, page, ffi::QPDF_FALSE)
+                ffi::qpdf_add_page(dest.data, source.document.data, page.raw(), ffi::QPDF_FALSE)
             };
             // The ERROR bit, never `!= 0`: a warning here is an ordinary outcome.
             if ffi::has_errors(added) {
@@ -250,15 +213,15 @@ impl PageExtractor for Qpdf {
         // qpdf will hold — which is the same fact that made this constant one page instead of
         // none.
         //
-        // SAFETY: `dest.data` is a live handle, and index 0 is in range: the blank page is
-        // still there and at least one more page was just added. Routes through `trap_errors`.
-        let blank = unsafe { ffi::qpdf_get_page_n(dest.data, 0) };
+        // SAFETY: index 0 is in range: the blank page is still there and at least one more
+        // page was just added. Routes through `trap_errors`.
+        let blank = unsafe { ObjectHandle::page(&dest, 0) };
         if let Some(error) = dest.take_error() {
             return Err(error);
         }
         // SAFETY: `blank` was just obtained from `dest` and handles are per-document, so it
         // belongs to the document it is being removed from. Routes through `trap_errors`.
-        let removed = unsafe { ffi::qpdf_remove_page(dest.data, blank) };
+        let removed = unsafe { ffi::qpdf_remove_page(dest.data, blank.raw()) };
         if ffi::has_errors(removed) {
             return Err(dest.take_error().unwrap_or_else(|| {
                 Error::Internal("qpdf: the blank destination page could not be removed".to_owned())
@@ -296,7 +259,12 @@ impl PageExtractor for Qpdf {
 /// lazily, when the destination is written, so releasing it first yields a *truncated document
 /// rather than an error* — the same rule `assemble.rs` records, arriving from the other
 /// direction. It is a parameter here so a caller cannot forget.
-fn write_out(dest: &Document, _source_must_outlive_this: &Document) -> Result<Vec<u8>> {
+///
+/// **`rotate` passes the same document twice, and that is correct.** It edits a page attribute
+/// in place rather than copying pages between documents, so the document that must outlive the
+/// write *is* the one being written. `write_out(&doc, &doc)` reads like a mistake and is not;
+/// the parameter states a rule, and in the in-place case the same document satisfies it.
+pub(super) fn write_out(dest: &Document, _source_must_outlive_this: &Document) -> Result<Vec<u8>> {
     // SAFETY: `dest.data` is a live handle. Routes through `trap_errors`.
     let init = unsafe { ffi::qpdf_init_write_memory(dest.data) };
     if ffi::has_errors(init) {

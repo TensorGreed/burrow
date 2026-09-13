@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Limits, Password, Result};
+use burrow_types::{Clock, Limits, Password, Result, Rotation};
 
 // Engine error codes and their mapping to typed errors. Ungated, like `prescan` below and
 // for the same reason: M1 PR 4's web path needs the SAME mapping table, and two copies of
@@ -439,12 +439,99 @@ pub trait PageExtractor {
     /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — the run is not inside the source.
     /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a page could not be copied.
     /// - [`Error::Io`](burrow_types::Error::Io) — the output could not be written.
-    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling in `options.limits` was reached.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling was reached. **The ceilings
+    ///   are the ones the source was opened under**, not `options.limits`, for the reason
+    ///   [`PageRotator::rotate`] gives.
     fn extract(
         &self,
         source: &Self::Source,
         first: u64,
         count: u64,
+        options: &OpenOptions<'_>,
+    ) -> Result<Vec<u8>>;
+}
+
+/// An engine that can change a page's rotation and emit the document.
+///
+/// The seam `rotate` is written against. Separate from [`PageExtractor`] and
+/// [`PageAssembler`] because it is a different shape again: one document in, the *same*
+/// document out, with an attribute changed. Nothing is selected and nothing is combined.
+///
+/// # It is not a subsetting operation, and that is load-bearing
+///
+/// [ADR 0019](../../../docs/adr/0019-how-split-builds-its-outputs.md) §2's rule — an output
+/// that is a subset of its input must contain no data derived from what was excluded — does
+/// not apply here, because nothing is excluded. The obligation runs the other way: **every
+/// object in the input must still be in the output**, and the shared closure harness is used
+/// in its inverted form (`assert_nothing_lost`) to say so.
+///
+/// # `/Rotate` is inheritable, which is the whole difficulty
+///
+/// A page's effective rotation is the nearest `/Rotate` on the page or any ancestor in the
+/// page tree (PDF 32000-1 §7.7.3.4 lists it among the inheritable page attributes). So:
+///
+/// - **reading** one page's rotation means walking up `/Parent`, not reading the page
+///   dictionary and concluding it has none;
+/// - **writing** one page's rotation means writing to the page dictionary, never to the
+///   ancestor the value was read from — that node may be the parent of hundreds of pages, and
+///   setting it there rotates all of them.
+///
+/// [`PageRotator::effective_rotation`] is on the trait rather than being an implementation
+/// detail precisely so that second property can be tested from outside: rotate one page, then
+/// ask every other page what its rotation is.
+pub trait PageRotator {
+    /// A document opened once and rotated in place.
+    ///
+    /// No `Send` bound, for the reason [`PageAssembler::Assembly`] gives.
+    type Source;
+
+    /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Open the document to be rotated.
+    ///
+    /// # Errors
+    ///
+    /// The same set [`StructureEngine::check`] documents.
+    fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Source>;
+
+    /// How many pages the document has.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that is not a count.
+    fn pages(&self, source: &Self::Source) -> Result<u64>;
+
+    /// The rotation page `index` displays at, following `/Rotate` up the page tree.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — `index` is past the end.
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — `/Rotate` is not an integer, the page
+    ///   tree is deeper than the engine will walk, or `/Parent` forms a cycle.
+    fn effective_rotation(&self, source: &Self::Source, index: u64) -> Result<Rotation>;
+
+    /// Turn every page in `pages` by `rotation`, and emit the document.
+    ///
+    /// The rotation is **relative**: a page already displaying at 90 that is turned another 90
+    /// ends at 180. Pages not named are untouched, including pages that inherit their
+    /// rotation from an ancestor a named page also inherits from.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — `pages` is empty, names a page
+    ///   past the end, or names the same page twice.
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a page's existing rotation could not be read.
+    /// - [`Error::Io`](burrow_types::Error::Io) — the output could not be written.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling was reached. **The ceilings
+    ///   are the ones the source was opened under**, not `options.limits`: a caller must not be
+    ///   able to loosen a limit after the document is already in memory. `options` is still read
+    ///   for the clock, which is what `max_duration_ms` is checked against between pages.
+    fn rotate(
+        &self,
+        source: &Self::Source,
+        pages: &[u64],
+        rotation: Rotation,
         options: &OpenOptions<'_>,
     ) -> Result<Vec<u8>>;
 }

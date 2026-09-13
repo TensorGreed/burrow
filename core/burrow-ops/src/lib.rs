@@ -29,9 +29,11 @@
 pub use burrow_engines as engines;
 
 pub mod merge;
+pub mod rotate;
 pub mod split;
 
 pub use merge::{Input, check_total_input_bytes, merge};
+pub use rotate::{Pages, rotate};
 pub use split::{Cuts, split};
 
 /// Operations available in this build, in stable order.
@@ -40,12 +42,13 @@ pub use split::{Cuts, split};
 /// hard-coding a list that drifts.
 ///
 /// **This is the list of operations the CORE implements, not the list any one binding exposes.**
-/// `split` is here and `bindings/burrow-wasm` has no entry point for it yet — there is no
-/// `impl PageExtractor for WebQpdf`, so the web cannot perform it at all. Code review flagged
-/// the divergence; it is recorded rather than hidden, because the alternative is a constant
-/// that means something different depending on which crate reads it. A caller that needs to
-/// know what a *binding* can do must ask the binding.
-pub const AVAILABLE: &[&str] = &["merge", "split"];
+/// `split` and `rotate` are here and `bindings/burrow-wasm` has an entry point for neither —
+/// there is no `impl PageExtractor for WebQpdf` and no `impl PageRotator for WebQpdf`, so the
+/// web cannot perform either at all. Code review flagged the divergence for `split`; it is
+/// recorded rather than hidden, because the alternative is a constant that means something
+/// different depending on which crate reads it. A caller that needs to know what a *binding*
+/// can do must ask the binding.
+pub const AVAILABLE: &[&str] = &["merge", "rotate", "split"];
 
 #[cfg(test)]
 mod tests {

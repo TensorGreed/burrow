@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
+use super::handle::ObjectHandle;
 use super::{Document, ffi};
 use crate::{OpenOptions, PageAssembler};
 
@@ -154,11 +155,15 @@ impl PageAssembler for super::Qpdf {
             let n = usize::try_from(index)
                 .map_err(|_| Error::Internal("page index does not fit in usize".to_owned()))?;
 
-            // SAFETY: `source.data` is a live handle whose document read successfully, and
-            // `n` is below the page count it just reported. `qpdf_get_page_n` routes
-            // through `trap_errors`, so a C++ exception becomes a recorded error rather
-            // than an unwind into Rust.
-            let page = unsafe { ffi::qpdf_get_page_n(source.data, n) };
+            // RELEASED AT THE END OF THIS ITERATION. Held raw, this leaked one entry in
+            // qpdf's handle cache per page for the life of the document -- bounded, but a
+            // leak, and it made `handle.rs`'s claim that every route to a handle is wrapped
+            // false. Found by code review during rotate.
+            //
+            // SAFETY: `n` is below the page count `source` just reported. `ObjectHandle::page`
+            // routes through `trap_errors`, so a C++ exception becomes a recorded error
+            // rather than an unwind into Rust.
+            let page = unsafe { ObjectHandle::page(&source, n) };
             if let Some(error) = source.take_error() {
                 return Err(error);
             }
@@ -171,7 +176,7 @@ impl PageAssembler for super::Qpdf {
             // `finish`, so the objects this call registers are still resolvable when the
             // write reads them.
             let added = unsafe {
-                ffi::qpdf_add_page(assembly.dest.data, source.data, page, ffi::QPDF_FALSE)
+                ffi::qpdf_add_page(assembly.dest.data, source.data, page.raw(), ffi::QPDF_FALSE)
             };
 
             // The ERROR bit, never `!= 0`: a warning here is ordinary.

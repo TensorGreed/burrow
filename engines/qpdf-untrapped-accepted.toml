@@ -227,3 +227,29 @@ Must be called AFTER `qpdf_init_write_memory` -- qpdf-c.h says the write paramet
 set between `qpdf_init_write*` and `qpdf_write`, and calling it first dereferences a writer \
 that does not exist yet and takes the process down. Measured during ADR 0017's engine \
 comparison, by core dump."""
+
+[[function]]
+name = "qpdf_oh_new_integer"
+reason = """\
+`new_object(qpdf, QPDFObjectHandle::newInteger(value))` (qpdf-c.cc:1487-1492) -- constructs \
+an integer object from a `long long` this crate chose and puts it in the handle cache \
+(`++next_oh`, one map insert). It never reads the document, never resolves an object and \
+cannot see a byte of the input, so it meets this file's bar exactly: non-parsing, never \
+touches the PDF's bytes. It can fail only by allocation, a defined abort since Rust 1.81. \
+Note the asymmetry with `qpdf_oh_get_key`, which is NOT exemptible on any argument -- that \
+one resolves an indirect object, which is the parser on file-controlled bytes. It is on the \
+trapped list, reached through `do_with_oh` (ADR 0013's 2026-09-13 amendment). Used by \
+`qpdf/rotate.rs` to build the `/Rotate` value it writes."""
+
+[[function]]
+name = "qpdf_oh_release"
+reason = """\
+`qpdf->oh_cache.erase(oh)` (qpdf-c.cc:847-850) -- one erase on a `std::map`, and the whole \
+body. Parses nothing, resolves nothing, reads nothing from the document; `std::map::erase` \
+by key does not allocate and does not throw for a key type that is an integer. \
+NOT calling it is the hazard rather than calling it: the cache only grows and `next_oh` \
+never reuses an id, so a per-page page-tree walk that took a handle per ancestor and \
+released none would leak one `QPDFObjectHandle` per node for as long as the document is \
+open -- growth `max_memory_bytes` cannot see, because it samples RSS at operation \
+boundaries and detects rather than bounds (ADR 0007). `qpdf/handle.rs` makes the release \
+automatic and `rotate`'s tests assert the live count returns to baseline."""
