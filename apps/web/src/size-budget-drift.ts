@@ -179,6 +179,40 @@ export function driftFindings({
   return findings;
 }
 
+/** Which of the three comparisons an artifact was subject to. */
+export type Case = "exact" | "hash-coupled" | "changed" | "no-digest" | "absent";
+
+/**
+ * Classify each recorded artifact, so a run can say what it examined.
+ *
+ * A green `driftFindings` says nothing about WHICH rule each artifact took, and the three
+ * are not equally strong: "exact" is the real check, "hash-coupled" is a 64-byte bound, and
+ * "changed" is only a percentage. An artifact that quietly moved from the first to the
+ * third would weaken the check with nothing to show for it, and a passing run would look
+ * identical. `CLAUDE.md`: every check reports what it examined.
+ */
+export function classify({
+  recorded,
+  live,
+}: Pick<Inputs, "recorded" | "live">): Record<string, Case> {
+  const cases: Record<string, Case> = {};
+  for (const [key, record] of Object.entries(recorded)) {
+    const actual = live[key];
+    if (actual === undefined) {
+      cases[key] = "absent";
+    } else if (!record.measured_sha256 || !record.measured_sha256_normalised) {
+      cases[key] = "no-digest";
+    } else if (record.measured_sha256_normalised !== actual.sha256Normalised) {
+      cases[key] = "changed";
+    } else if (record.measured_sha256 !== actual.sha256) {
+      cases[key] = "hash-coupled";
+    } else {
+      cases[key] = "exact";
+    }
+  }
+  return cases;
+}
+
 /** A finding, as a line someone can act on. */
 export function explain(finding: Finding): string {
   switch (finding.kind) {

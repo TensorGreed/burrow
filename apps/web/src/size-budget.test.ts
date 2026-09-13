@@ -35,7 +35,13 @@ import {
   firstLoad,
   normaliseEngineHashes,
 } from "../../../tools/first-load.mjs";
-import { HASH_COUPLING_BYTES, type Live, driftFindings, explain } from "./size-budget-drift.js";
+import {
+  HASH_COUPLING_BYTES,
+  type Live,
+  classify,
+  driftFindings,
+  explain,
+} from "./size-budget-drift.js";
 import { PRODUCTION_DIR } from "./build-output.js";
 
 const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -225,6 +231,36 @@ describe("the recording describes the build it claims to", () => {
       tolerance: budget.drift_tolerance,
     });
     expect(findings.map(explain)).toEqual([]);
+  });
+
+  it("says which comparison each artifact was subject to, and examines every one", () => {
+    // THE COUNT AND THE BREAKDOWN ARE THE MEASUREMENT. A green `driftFindings` does not say
+    // WHICH rule each artifact took, and the three are not equally strong: "exact" is the
+    // real check, "hash-coupled" is a 64-byte bound, "changed" is only a percentage. An
+    // artifact sliding from the first to the third weakens the check with nothing to show
+    // for it, and the run still passes.
+    //
+    // It is a breakdown rather than a fixed expectation per artifact because which case an
+    // artifact takes legitimately DIFFERS between here and CI -- `page` is exact locally
+    // and hash-coupled in CI, because CI rebuilds qpdf.wasm and the page quotes its hash.
+    // Pinning the case per artifact would fail in one place or the other for no good
+    // reason. What must hold everywhere is that every artifact was compared by something.
+    const cases = classify({ recorded: budget.artifacts, live });
+
+    const breakdown = Object.entries(cases)
+      .map(([key, kind]) => `${key}=${kind}`)
+      .sort()
+      .join(" ");
+    expect(Object.keys(cases)).toHaveLength(Object.keys(budget.artifacts).length);
+    expect(
+      Object.values(cases).filter((c) => c === "no-digest" || c === "absent"),
+      `every artifact must be compared by one of the three rules: ${breakdown}`,
+    ).toEqual([]);
+
+    // Deliberately not silent on success: the breakdown is what a reader needs to tell a
+    // strong pass from a weak one, and it is invisible unless something prints it.
+    // eslint-disable-next-line no-console -- a test reporting what it measured
+    console.log(`  drift comparison: ${breakdown}`);
   });
 
   it("records a digest for every artifact, so no line escapes the comparison", () => {
@@ -490,6 +526,51 @@ describe("the drift probe itself", () => {
       live: { a: bytes },
     });
     expect(findings.map((f) => f.kind)).toEqual(["no-digest"]);
+  });
+
+  it("classifies each of the four outcomes it can report", () => {
+    // The classifier is what makes the breakdown above trustworthy. If it reported "exact"
+    // for everything, the line would read as a strong pass forever.
+    const recorded = {
+      same: {
+        measured_raw: 1,
+        measured_brotli: 1,
+        measured_sha256: "a",
+        measured_sha256_normalised: "n",
+      },
+      coupled: {
+        measured_raw: 1,
+        measured_brotli: 1,
+        measured_sha256: "a",
+        measured_sha256_normalised: "n",
+      },
+      real: {
+        measured_raw: 1,
+        measured_brotli: 1,
+        measured_sha256: "a",
+        measured_sha256_normalised: "n",
+      },
+      bare: { measured_raw: 1, measured_brotli: 1 },
+      gone: {
+        measured_raw: 1,
+        measured_brotli: 1,
+        measured_sha256: "a",
+        measured_sha256_normalised: "n",
+      },
+    };
+    const live = {
+      same: { raw: 1, brotli: 1, sha256: "a", sha256Normalised: "n" },
+      coupled: { raw: 1, brotli: 1, sha256: "DIFFERENT", sha256Normalised: "n" },
+      real: { raw: 1, brotli: 1, sha256: "a", sha256Normalised: "DIFFERENT" },
+      bare: { raw: 1, brotli: 1, sha256: "a", sha256Normalised: "n" },
+    };
+    expect(classify({ recorded, live })).toEqual({
+      same: "exact",
+      coupled: "hash-coupled",
+      real: "changed",
+      bare: "no-digest",
+      gone: "absent",
+    });
   });
 
   it("says nothing about an artifact the build no longer contains", () => {
