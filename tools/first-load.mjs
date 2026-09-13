@@ -251,8 +251,18 @@ export function budgetKey(path) {
  * checking the line the design system and the tool page live on, because of something
  * belonging to a different line -- the trade this function exists to avoid making.
  *
- * Both patterns are deliberately narrow. Vite's own asset hashes are a different length and
- * alphabet, so they are untouched and a CSS change is still a digest change.
+ * A THIRD REPLACEMENT, AND ONLY INSIDE HTML: Vite's own `.<8 chars>.` asset hash. This one
+ * took two goes to see. Normalising the integrity digest inside the island was not enough,
+ * because Vite names the island's chunk from a hash OF ITS CONTENT -- so the unreproducible
+ * digest reaches the page's markup a second time, as a filename, where no amount of
+ * normalising the JS can help.
+ *
+ * It is safe here and would not be anywhere else, and the reason is the grouping: these
+ * digests cover every file in the group, contents included. A chunk's name therefore carries
+ * nothing its own bytes do not already carry -- a real CSS or island change alters that
+ * file's contents, and the group digest changes through the contents rather than through the
+ * name. What is given up is exactly one thing: a pure rename with identical bytes, which is
+ * not a change anybody needs told about. Outside HTML the hashes are left alone.
  *
  * @param {string} dir
  * @param {Record<string, { files: string[] }>} groups
@@ -290,9 +300,19 @@ export function normaliseEngineHashes(bytes, path) {
     bytes
       .toString("utf8")
       .replace(/\.[0-9a-f]{16}\./g, ".<enginehash>.")
-      .replace(/sha384-[A-Za-z0-9+/]{64}={0,2}/g, "sha384-<integrity>"),
+      .replace(/sha384-[A-Za-z0-9+/]{64}={0,2}/g, "sha384-<integrity>")
+      .replace(
+        HTML.test(path) ? /\.[A-Za-z0-9_-]{8}\.(js|css|woff2?|svg|png)\b/g : NOTHING,
+        ".<vitehash>.$1",
+      ),
   );
 }
+
+/** Matches nothing, so the replacement above can be selected without branching around it. */
+const NOTHING = /(?!)/g;
+
+/** Markup, where an asset's NAME is quoted and its bytes are digested separately. */
+const HTML = /\.html$/;
 
 export function byBudgetKey(measurement) {
   /** @type {Record<string, { raw: number, brotli: number, files: string[] }>} */
