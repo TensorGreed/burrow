@@ -62,3 +62,29 @@ The real backstop on the web is `engines/build-wasm.sh`'s `EXPORTED_FUNCTIONS` a
 derived from `ffi.rs` plus `{malloc, free, qpdf_get_qpdf_version}` and asserted against the
 built module's export table. No `cwrap`/`ccall` is exported, so there is no dynamic call
 surface past that allowlist.
+
+**Widened in M1 rotate (2026-09-13): `check-qpdf-trapped.py` now follows proven helpers.**
+22 direct + 71 indirect = 93. Re-derived and measured; three things worth carrying forward:
+
+- The wrapper rules (1-4) constrain only `return`s before the trap and the call sites of
+  `std::function<...>` **parameters**. Arbitrary non-callback statements outside the trap are
+  unexamined, and `_callback_parameters` matches `std::function\s*<[^>]*>` only — a helper
+  taking a template callable or a raw function pointer has zero detected callbacks, so rules
+  3+4 pass vacuously and the proof collapses to "calls trap_errors, no early return".
+- `trapped_routes` matches the helper name **anywhere** in a C API function's body; the
+  single-top-level-statement requirement applies only to *forwarders*. Measured: **20 of the
+  71** listed "via" functions have code outside the helper call. Mostly `QTC::TC`, but
+  `qpdf_oh_begin_dict_key_iter` (qpdf-c.cc:1397) assigns a `std::set<std::string>` and then
+  `qpdf->dict_iter = ...begin()` outside the trap. burrow declares none of the 20.
+- `trap_oh_errors`' error branch writes `qpdf->error->what()` to
+  `QPDFLogger::defaultLogger()->getError()` — process stderr — and calls
+  `qpdf->qpdf->getFilename()` and `warnings.emplace_back`, all outside the try. It is gated on
+  `!qpdf->silence_errors`, and `Document::open` (qpdf/mod.rs:208) calls `qpdf_silence_errors`
+  on every document, so the branch is dead in burrow. **The generator's proof does not know
+  that** — the helper is admitted on rule 4 alone.
+
+Measured against real qpdf 12.4.1 (scratch crate, release): a `/Parent` self-loop, a 70-deep
+page tree, `/Parent` to a string/integer/stream, `/Rotate` as real/string/array/dict, `/Rotate
+i64::MAX`, and `/Rotate` to a 200-deep array all return typed errors in under 1 ms. No spin,
+no abort. `MAX_PAGE_TREE_DEPTH = 64` in `qpdf/rotate.rs` is the thing that stops the cycle and
+it works — but nothing in the test suite reaches it.

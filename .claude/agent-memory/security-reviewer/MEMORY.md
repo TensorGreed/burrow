@@ -2,7 +2,7 @@
 - [Reviews happen on live files](review_in_progress_edits.md) — work is often uncommitted and edited mid-review; re-read before concluding.
 - [M1 engine supply chain](m1_engine_supply_chain.md) — what the checksum/rpath provenance guarantee really covers, and where it stops.
 - [M1 limits: real strength](m1_limits_real_strength.md) — measured gaps in max_memory_bytes and the engine-thread deadline; a 330 kB file reaches 1.2 GB.
-- [qpdf exception boundary](m1_qpdf_exception_boundary.md) — qpdf-c.h's "catches everything" contract is false; `qpdf_is_linearized` aborts the process.
+- [qpdf exception boundary](m1_qpdf_exception_boundary.md) — the "catches everything" contract is false; plus the 2026-09-13 proven-helper widening and its measured rule gaps.
 - [Pre-scan key-scan bypass](m1_prescan_key_scan_bypass.md) — one decoy `/Sizes` key defeats the whole structural pre-scan; 2.5 GB measured.
 - [M1 web engine path](m1_web_engine_path.md) — the blob: worker bundle, verified no-collision concatenation, what the CSP and the fail-closed guard really cover.
 - [M1 web worker lifecycle](m1_web_worker_lifecycle.md) — where the ack, the pre-ack timer and the breaker actually bind; measured with the fake worker and a virtual clock.
