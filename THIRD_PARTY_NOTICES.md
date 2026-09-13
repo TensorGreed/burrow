@@ -229,5 +229,35 @@ MIT.
 
 ## Fonts
 
-None bundled yet. Any bundled font must be OFL-1.1 or a permissive alternative, with its
-full license text included alongside the font file.
+Any bundled font must be OFL-1.1 or a permissive alternative, with its full license text
+included alongside the font file. `apps/web/fonts.toml` is the manifest: where each face
+came from, pinned to an upstream commit, what was done to it, and the digest of what ships.
+`apps/web/src/fonts.test.ts` holds the shipped bytes to that record.
+
+### Atkinson Hyperlegible Next 2.001 — OFL-1.1
+
+Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors
+(https://github.com/googlefonts/atkinson-hyperlegible-next)
+
+Designed by the Braille Institute, Applied Design Works, Elliott Scott, Megan Eiswerth and
+Letters From Sweden. Licensed under the SIL Open Font License, Version 1.1; the full text
+ships at `apps/web/public/fonts/OFL.txt` and is served from the site, and the copyright,
+license description and license URL are also embedded in the font file's own name table
+(name IDs 0, 13 and 14), which is how a `.woff2` carries them once it is separated from the
+directory it was downloaded in.
+
+**Modified: subsetted.** The shipped file is the upstream variable font with its weight axis
+clipped to 400-700 and its character set reduced to Latin, produced with fontTools 4.60.1
+under `SOURCE_DATE_EPOCH=0` — `apps/web/fonts.toml` records the exact commands, and without
+that variable they are not reproducible, because `varLib.instancer` stamps `head.modified`
+with the current time. OFL section 3 forbids a Modified Version from using a Reserved Font
+Name, and subsetting is modification; the upstream copyright line declares none, so the
+family name is retained lawfully. **Re-check that on any version bump** — it is a one-line
+change upstream and would otherwise pass unnoticed.
+
+It is deliberately **not** listed in `engines/licenses.toml` and does not appear on the
+website's `/credits` page. That page exists because FTL section 2, the IJG conditions and
+MIT-Modern-Variant impose affirmative acknowledgement obligations binding "documentation
+accompanying the distribution" (ADR 0008). OFL 1.1 imposes no such obligation, and adding a
+font to a page whose reason for existing is a different clause would blur why that page is
+mandatory. `apps/web/fonts.toml` gives the full reasoning.

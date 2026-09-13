@@ -33,6 +33,7 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseToml } from "./toml.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
@@ -60,140 +61,9 @@ function resolveLicenceText(name, relative) {
   return path;
 }
 
-/**
- * A deliberately small TOML reader for the subset engines/licenses.toml uses.
- *
- * Node has no TOML parser and this repository will not take an npm dependency for one --
- * every dependency is a decision (CLAUDE.md), and a licence-manifest reader pulling in a
- * third-party parser to check licences would be a poor trade. The Python half of the gate
- * (tools/check-engine-licences.py) uses tomllib on the same file, and the two readers must
- * agree about what the manifest contains, or the page and the gate are checking different
- * documents. `credits.test.ts` asserts that agreement directly: it re-reads the manifest with
- * tomllib and compares the component roster, name for name, against the generated page.
- *
- * Supports: `[table]`, `[[array-of-tables]]`, `key = "basic string"`, `key = true|false`,
- * `key = ["a", "b"]`, and `key = """multi-line"""` with trailing-backslash line joining.
- * Anything else throws rather than being silently skipped -- a licence manifest is the
- * wrong place for a parser that guesses.
- */
-function parseToml(text) {
-  const root = {};
-  const lines = text.split("\n");
-  let current = root;
-  let i = 0;
-
-  const setScalar = (target, key, value) => {
-    target[key] = value;
-  };
-
-  while (i < lines.length) {
-    let line = lines[i];
-    i += 1;
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
-
-    // A dotted table header (`[component.extra]`) nests under the preceding table in real
-    // TOML; this reader would flatten it to a root key called "component.extra" and lose the
-    // data silently. The docstring promises this parser throws rather than guesses, so it
-    // throws. Same for dotted keys below.
-    if (/^\[\[?[A-Za-z0-9_-]+\./.test(trimmed)) {
-      throw new Error(
-        `licenses.toml: dotted table header on line ${i} is not supported by this reader: ` +
-          `${trimmed}. Use a flat [[component]] entry, or teach parseToml to nest.`,
-      );
-    }
-
-    const arrayTable = /^\[\[([A-Za-z0-9_.-]+)\]\]$/.exec(trimmed);
-    if (arrayTable) {
-      const key = arrayTable[1];
-      root[key] ??= [];
-      current = {};
-      root[key].push(current);
-      continue;
-    }
-
-    const table = /^\[([A-Za-z0-9_.-]+)\]$/.exec(trimmed);
-    if (table) {
-      root[table[1]] ??= {};
-      current = root[table[1]];
-      continue;
-    }
-
-    const kv = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/.exec(trimmed);
-    if (!kv) throw new Error(`licenses.toml: cannot parse line ${i}: ${trimmed}`);
-    if (kv[1].includes(".")) {
-      throw new Error(
-        `licenses.toml: dotted key on line ${i} is not supported by this reader: ${kv[1]}. ` +
-          `It would become a flat key of that literal name rather than a nested table.`,
-      );
-    }
-    const key = kv[1];
-    let rest = kv[2];
-
-    // Multi-line basic string. Used for long `note` / `notes` fields.
-    if (rest.startsWith('"""')) {
-      let body = rest.slice(3);
-      while (!body.includes('"""')) {
-        if (i >= lines.length) throw new Error(`licenses.toml: unterminated """ for ${key}`);
-        body += "\n" + lines[i];
-        i += 1;
-      }
-      body = body.slice(0, body.indexOf('"""'));
-      // TOML trims a newline IMMEDIATELY after the opening delimiter. Without this a
-      // `notice_required` rewritten as a `"""` block would render with a blank first line.
-      body = body.replace(/^\r?\n/, "");
-      // A trailing backslash joins the line to the next, per TOML's line-ending backslash.
-      // Applied before `unescape` so the join is not mistaken for an escape sequence.
-      setScalar(current, key, unescape(body.replace(/\\\n\s*/g, "")));
-      continue;
-    }
-
-    if (rest.startsWith("[")) {
-      // Inline array, possibly spanning lines.
-      while ((rest.match(/\[/g) || []).length > (rest.match(/\]/g) || []).length) {
-        if (i >= lines.length) throw new Error(`licenses.toml: unterminated [ for ${key}`);
-        rest += " " + lines[i].trim();
-        i += 1;
-      }
-      const inner = rest.slice(rest.indexOf("[") + 1, rest.lastIndexOf("]"));
-      const items = [...inner.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => unescape(m[1]));
-      setScalar(current, key, items);
-      continue;
-    }
-
-    if (rest.startsWith('"')) {
-      const m = /^"((?:[^"\\]|\\.)*)"/.exec(rest);
-      if (!m) throw new Error(`licenses.toml: unterminated string for ${key}`);
-      setScalar(current, key, unescape(m[1]));
-      continue;
-    }
-
-    if (rest === "true" || rest === "false") {
-      setScalar(current, key, rest === "true");
-      continue;
-    }
-
-    const num = /^-?\d+$/.exec(rest);
-    if (num) {
-      setScalar(current, key, Number(rest));
-      continue;
-    }
-
-    throw new Error(`licenses.toml: unsupported value for ${key}: ${rest}`);
-  }
-
-  return root;
-}
-
-function unescape(s) {
-  return s.replace(/\\(["\\nrt])/g, (_, c) =>
-    c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c,
-  );
-}
-
 async function main() {
   const manifestPath = join(repo, "engines", "licenses.toml");
-  const manifest = parseToml(await readFile(manifestPath, "utf8"));
+  const manifest = parseToml(await readFile(manifestPath, "utf8"), "engines/licenses.toml");
 
   const components = manifest.component ?? [];
   if (components.length === 0) {

@@ -67,6 +67,15 @@ export default defineConfig({
     build: {
       // The wasm module dominates the payload, so keep JS chunking predictable, and
       // inline nothing implicitly: we want to see what actually ships.
+      //
+      // `assetsInlineLimit: 0` IS ALSO WHAT KEEPS THE SITE STYLED, and that is not
+      // obvious. Astro's `build.inlineStylesheets: "auto"` reads the same threshold, so
+      // raising or removing this makes every page ship its CSS as an inline <style> --
+      // which `style-src 'self'` refuses, with no `'unsafe-inline'` and no nonce
+      // (ADR 0014). The result is an entirely unstyled site, from a setting whose comment
+      // is about payload visibility. Both stylesheets are comfortably under the 4 kB
+      // default, so this is live, not theoretical. `src/production-build.test.ts` asserts
+      // no built HTML contains an inline <style>, which is the half that fails loudly.
       target: "es2022",
       assetsInlineLimit: 0,
     },

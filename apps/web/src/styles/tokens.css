@@ -1,0 +1,146 @@
+/*
+ * The design tokens every page and every tool island uses.
+ *
+ * READ apps/web/CLAUDE.md, "Design" BEFORE ADDING A VALUE HERE. The six principles there
+ * are what these tokens encode; a token that does not serve one of them is decoration, and
+ * decoration is what this palette is deliberately short of.
+ *
+ * THE SHORT VERSION: THE INTERFACE REPORTS, IT DOES NOT REASSURE.
+ *
+ * This is a site whose entire claim is that your files do not leave your computer. A design
+ * that argues that with warmth and adjectives is asking to be trusted. This one is built to
+ * be checked instead: prose is ink on paper and nothing else, and the two coloured values
+ * are reserved for things the machine is telling you -- a count it measured, a refusal it
+ * made. If a colour appears, something was measured. That is the whole system, and it only
+ * works while the reservation is absolute, which is why `--signal` and `--refuse` are
+ * described below in terms of what may NOT use them.
+ *
+ * WHY THERE IS NO ACCENT COLOUR FOR LINKS OR BUTTONS
+ *
+ * Because the moment a button is `--signal`, the colour means "interactive" as well as
+ * "measured", and a page full of buttons is a page where the one number that was actually
+ * measured no longer stands out. Links are underlined; buttons have an edge. Both are
+ * ink. This is the single costliest constraint in the file and it is the point of it.
+ *
+ * CONTRAST IS ASSERTED, NOT EYEBALLED. `src/styles/tokens.test.ts` parses this file and
+ * computes WCAG contrast for every text pair in BOTH themes, and 3:1 for the two values
+ * used as non-text boundaries. A value edited here without the ratio holding fails
+ * `pnpm test`. It also fails if a token is defined in one theme and not the other, which
+ * is how a dark-mode hole normally ships.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---------------------------------------------------------------- colour */
+
+  /* The ground. Cool rather than warm, and chosen partly as a negative: the warm cream
+     near #F4F1EA is the most common ground in generated design right now, and a privacy
+     tool that looks like every other landing page is making its argument worse. */
+  --paper: #f2f4f5;
+
+  /* Text. The ONLY dark value, and it is never used as a background -- see the dark theme
+     below, where the roles swap but the rule does not. */
+  --ink: #14181c;
+
+  /* Secondary text: a page count's unit, a caption, a footer. Not disabled text; there is
+     no disabled text on this site that is not also explained in words. */
+  --ink-quiet: #5a646e;
+
+  /* A hairline that SEPARATES. Decorative contrast only -- never put text on it, and never
+     use it to outline something a person can act on. That is `--edge`. */
+  --rule: #d3d9dc;
+
+  /* A boundary you can act on: the drop zone, an input, a button. >= 3:1 against the
+     ground, because a control whose edge a person cannot see is a control they cannot
+     find. The distinction from `--rule` is principle 4 in one pair of values. */
+  --edge: #767f86;
+
+  /* MACHINE STATE ONLY. A number the engine measured, a "done", a live readout.
+     NOT links. NOT buttons. NOT headings. NOT a hover state. NOT a decorative underline.
+     If you are reaching for this to make something look important, the answer is no: the
+     colour is how a reader tells a measurement from a claim, and it stops working the
+     moment prose borrows it. */
+  --signal: #0b6e5e;
+
+  /* REFUSALS AND LIMITS ONLY. A file we would not open, a ceiling that was hit, a
+     password we do not have. Its own value rather than a tint of `--signal`, because the
+     two say opposite things and a wrong colour on an error is a correctness bug here, not
+     a styling one. */
+  --refuse: #8a2b1f;
+
+  /* ------------------------------------------------------------------ type */
+
+  /* One family. `Atkinson Hyperlegible Next` was drawn so that characters cannot be
+     mistaken for one another -- the same argument this site makes about its own claims --
+     and it is not a face anyone reaches for by default. Provenance, the subset command and
+     the digest are in `apps/web/fonts.toml`; the @font-face rule is in `base.css`.
+
+     The fallback stack is not ceremonial: the font is one request, and a page whose text
+     is invisible until it lands is worse than a page in the reader's own UI font. */
+  --font-body: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* A major-third scale (1.25) from a 17px body, per Bringhurst's default guidance. Named
+     by step rather than by role, so a heading can move a step without a token lying about
+     what it is. */
+  --step--1: 0.875rem;
+  --step-0: 1.0625rem;
+  --step-1: 1.3125rem;
+  --step-2: 1.625rem;
+  --step-3: 2.0625rem;
+  --step-4: 2.5rem;
+
+  --leading-body: 1.55;
+  --leading-tight: 1.2;
+
+  --weight-body: 400;
+  --weight-strong: 700;
+
+  /* ---------------------------------------------------------------- layout */
+
+  /* Two tracks. The reading track carries prose and stops at a comfortable measure; the
+     readout track carries evidence -- a diagram, a file list, a state line -- and is wider
+     because a table of numbers squeezed to 58ch is a table nobody reads. They stack below
+     `--bp-stack`. */
+  --track-read: 58ch;
+  --track-readout: 44rem;
+  --bp-stack: 46rem;
+
+  /* A 4px grid. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* One radius, and it is small. Every surface on this site is either a sheet of paper or
+     a control; neither is a card, and a card kit is what principle 4 exists to refuse. */
+  --radius: 2px;
+
+  /* Focus. Thick and ink-coloured rather than a tinted glow -- it has to survive a
+     high-contrast mode and a reader who is navigating entirely by keyboard, which is a
+     supported way to use the merge tool, not an edge case. */
+  --focus-width: 3px;
+  --focus-offset: 2px;
+}
+
+/*
+ * The dark theme swaps the ROLES, not the rules. `--ink` is still text and still never a
+ * background; `--signal` is still measurements only. The two coloured values are lightened
+ * rather than reused, because #0b6e5e on a dark ground is 2.2:1 and unreadable -- which is
+ * exactly the kind of thing that ships when a dark theme is a filter rather than a palette.
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #12161a;
+    --ink: #e6ebee;
+    --ink-quiet: #97a3ac;
+    --rule: #2c343b;
+    --edge: #636f78;
+    --signal: #5fd3bb;
+    --refuse: #f09a88;
+  }
+}

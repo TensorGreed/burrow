@@ -3,42 +3,246 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 // Tool pages land in M1, each at its own indexable URL. Listed here as the routes that
 // will exist, so the shape of the site is visible from the start.
+//
+// DELIBERATELY NOT LINKS UNTIL THE PAGE EXISTS. An earlier draft of this page linked each
+// name to `/{slug}`. None of those routes is built yet, so every link would have been a
+// 404 — on the one page whose argument is that it tells you the truth about itself. Each
+// entry gains its link in the pull request that ships its page, starting with merge.
 const plannedTools = [
-  { slug: "merge-pdf", name: "Merge PDF", blurb: "Combine several PDFs into one." },
-  { slug: "split-pdf", name: "Split PDF", blurb: "Split a PDF into separate documents." },
-  { slug: "rotate-pdf", name: "Rotate PDF", blurb: "Rotate pages in a PDF." },
-  { slug: "reorder-pdf", name: "Reorder PDF", blurb: "Rearrange the pages of a PDF." },
-  { slug: "compress-pdf", name: "Compress PDF", blurb: "Make a PDF smaller." },
+  { name: "Merge PDF", blurb: "Combine several PDFs into one, in the order you choose." },
+  { name: "Split PDF", blurb: "Take a range of pages out into their own document." },
+  { name: "Rotate PDF", blurb: "Turn pages that were scanned the wrong way up." },
+  { name: "Reorder PDF", blurb: "Move pages around without losing any of them." },
+  { name: "Compress PDF", blurb: "Make a PDF smaller to send or store." },
 ];
 ---
 
 <BaseLayout
-  title="burrow — private file tools that run on your device"
-  description="Free, open-source PDF, image, and video tools. Your files are processed in your browser and never uploaded."
+  title="burrow — file tools that run on your own computer"
+  description="Free, open-source PDF tools that run in your browser. Your files are never uploaded, because there is no server to upload them to."
 >
-  <h1>Private file tools</h1>
+  <div class="read">
+    <h1>Your files stay on this computer.</h1>
 
-  <p>
-    burrow processes your files in your browser, using WebAssembly. Nothing is uploaded, there are
-    no accounts, and there is no tracking of what you open.
-  </p>
+    <p>
+      burrow is a set of PDF tools that run inside your browser. When you open a file here, it is
+      read by code running on your own machine. It is never sent anywhere, because there is nowhere
+      to send it: burrow is a static site with no server that could receive a file.
+    </p>
+  </div>
 
-  <p><strong>Status: pre-alpha.</strong> No tools work yet — this is the M1 milestone.</p>
+  {
+    /*
+    THE HERO IS THE BOUNDARY, DRAWN. Not an illustration standing in for evidence — it
+    names the real pieces a file passes through and the one thing that does not happen to
+    it.
 
-  <h2>Planned tools</h2>
-  <ul>
-    {
-      plannedTools.map((tool) => (
-        <li>
-          <strong>{tool.name}</strong> — {tool.blurb}
-        </li>
-      ))
-    }
-  </ul>
+    IT IS MARKUP, NOT AN SVG, AND THAT WAS A CORRECTION. The first version was an inline
+    <svg>, chosen because `img-src 'self'` admits no `data:` URI (ADR 0014) and a separate
+    .svg would be a second request. Both true, and both beside the point: text inside an
+    SVG scales with the drawing, so at 390px the whole diagram — the most important thing
+    on the page — rendered at about 6px and could not be read. Screenshotting it is how
+    that was found.
 
-  <p>
-    Source and roadmap: <a href="https://github.com/TensorGreed/burrow"
-      >github.com/TensorGreed/burrow</a
-    >
-  </p>
+    As markup it reflows: the row becomes a column, the dashed boundary moves from the side
+    to the top, and every word is real text at the reader's own font size, selectable and
+    translatable. The <ol> is deliberate — a file really does pass through these in order —
+    but the numbers are not shown, because a three-item flow does not need counting.
+  */
+  }
+  <figure class="boundary">
+    <div class="boundary__here">
+      <p class="boundary__label">this computer</p>
+      <ol class="boundary__steps" role="list">
+        <li><b>your file</b><span>stays here</span></li>
+        <li><b>burrow</b><span>WebAssembly</span></li>
+        <li><b>the result</b><span>you save it</span></li>
+      </ol>
+    </div>
+
+    <div class="boundary__elsewhere">
+      <p class="boundary__label">everywhere else</p>
+      <p class="boundary__nothing">nothing</p>
+      <p class="boundary__note">no upload, no account, no record of what you open</p>
+    </div>
+
+    <figcaption>
+      Nothing crosses the dashed line. The page itself is downloaded from a server, like any page
+      &mdash; that happens before you choose a file, and nothing is requested afterwards.
+    </figcaption>
+  </figure>
+
+  <div class="read">
+    <h2>What works today</h2>
+
+    <p>
+      Nothing yet, and this page will say so until that changes. burrow is being built in the open
+      and is at the stage where the engines run in the browser and the safety work around them is
+      done; the tools themselves are next. There is no sign-up to wait on — when a tool page is
+      here, it works.
+    </p>
+
+    <h2>The tools being built</h2>
+
+    <dl class="tools">
+      {
+        plannedTools.map((tool) => (
+          <div class="tools__row">
+            <dt>{tool.name}</dt>
+            <dd>{tool.blurb}</dd>
+          </div>
+        ))
+      }
+    </dl>
+
+    <h2>How you can check any of this</h2>
+
+    <p>
+      Open your browser's developer tools, go to the network tab, and use burrow. After the page and
+      its engines have loaded, you will see no further requests — not while a file is open, not when
+      one finishes. The same thing is asserted on every commit, in three browsers, by a test that
+      reads the web server's own log rather than the browser's report of it.
+    </p>
+
+    <p>
+      The code is <a href="https://github.com/TensorGreed/burrow">public</a>, and so is the
+      reasoning behind it: the architecture decisions are written down, including the ones that
+      turned out to be wrong.
+    </p>
+  </div>
 </BaseLayout>
+
+<style>
+  /* Page-specific layout only. Everything else is `src/styles/base.css`. */
+
+  /* The boundary diagram. A row of steps inside a bordered area, with a dashed edge
+     separating it from what is outside. Below --bp-stack the row becomes a column and the
+     dashed edge moves to the top, because a three-across diagram at 390px is six-point
+     type. */
+  .boundary {
+    margin: var(--space-7) 0;
+    display: grid;
+    gap: var(--space-5);
+    max-width: var(--track-readout);
+  }
+
+  .boundary__here {
+    padding: var(--space-4);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius);
+  }
+
+  .boundary__label {
+    margin: 0 0 var(--space-3);
+    color: var(--ink-quiet);
+    font-size: var(--step--1);
+  }
+
+  .boundary__steps {
+    display: grid;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    /* A sequence semantically, but counting to three helps nobody read it.
+       `role="list"` is on the element because WebKit strips the list role from a list whose
+       `list-style` is `none` -- so the ordering semantics, which are the whole reason this
+       is an <ol>, would be lost in exactly the assistive technology where they mattered. */
+    list-style: none;
+  }
+
+  .boundary__steps li {
+    padding: var(--space-3);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+  }
+
+  .boundary__steps b {
+    display: block;
+  }
+
+  .boundary__steps span {
+    display: block;
+    color: var(--ink-quiet);
+    font-size: var(--step--1);
+  }
+
+  .boundary__elsewhere {
+    /* The dashed edge IS the claim. Stacked, it sits above; side by side, it sits left. */
+    padding-block-start: var(--space-4);
+    border-block-start: 2px dashed var(--edge);
+  }
+
+  /* The one coloured value on the page, and it is the honest one: how much of your file
+     leaves this computer. */
+  .boundary__nothing {
+    margin: 0 0 var(--space-2);
+    color: var(--signal);
+    font-size: var(--step-2);
+    font-weight: var(--weight-strong);
+  }
+
+  .boundary__note {
+    margin: 0;
+    max-width: 22ch;
+    color: var(--ink-quiet);
+    font-size: var(--step--1);
+  }
+
+  .boundary figcaption {
+    max-width: var(--track-read);
+    color: var(--ink-quiet);
+    font-size: var(--step--1);
+  }
+
+  /* 46rem is `--bp-stack`. CSS cannot interpolate a custom property into a media query, so
+     the number is repeated here; keep the two in sync. When a second page needs this
+     breakpoint, make it a checked assertion rather than a comment. */
+  @media (min-width: 46rem) {
+    .boundary {
+      grid-template-columns: 1fr auto;
+      align-items: stretch;
+    }
+
+    .boundary figcaption {
+      grid-column: 1 / -1;
+    }
+
+    .boundary__steps {
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+    }
+
+    .boundary__elsewhere {
+      padding-block-start: 0;
+      padding-inline-start: var(--space-5);
+      border-block-start: none;
+      border-inline-start: 2px dashed var(--edge);
+    }
+  }
+
+  .tools {
+    margin: var(--space-5) 0 0;
+  }
+
+  .tools__row {
+    display: grid;
+    gap: 0 var(--space-5);
+    padding-block: var(--space-3);
+    border-block-start: 1px solid var(--rule);
+  }
+
+  .tools__row dt {
+    font-weight: var(--weight-strong);
+  }
+
+  .tools__row dd {
+    margin: 0;
+    color: var(--ink-quiet);
+  }
+
+  @media (min-width: 34rem) {
+    .tools__row {
+      grid-template-columns: 10rem 1fr;
+    }
+  }
+</style>

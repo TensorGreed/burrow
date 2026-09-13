@@ -1,0 +1,162 @@
+# Provenance for every font shipped by the website.
+#
+# WHY A MANIFEST RATHER THAN "WE DOWNLOADED IT ONCE"
+#
+# `apps/web/public/fonts/*.woff2` is a binary nobody can read in review. Without this file
+# the only honest description of it is "a font, we think, from somewhere". The engines get
+# `engines/pins.toml` for exactly this reason; a typeface that ships in the first-load
+# payload of every page deserves the same treatment, at the same standard: where it came
+# from, pinned to a commit, with a digest of what went in, the exact commands that
+# transformed it, and a digest of what came out.
+#
+# `apps/web/src/fonts.test.ts` asserts the shipped file still matches `sha256` below.
+#
+# BE PRECISE ABOUT WHAT THAT BUYS, because the obvious sentence overclaims. The test makes
+# the DIGEST a record: the bytes that ship are the bytes someone wrote down. The LINEAGE
+# stays a claim -- nothing here fetches the upstream TTF, re-runs the subset, or compares
+# the result, so `source_sha256`, `source_commit` and `build_commands` are verified only at
+# the moment a human re-vendors. That is materially weaker than `engines/fetch.sh`, which
+# verifies its checksums at build time, and the difference is recorded rather than smoothed
+# over. Closing it would mean committing the 114 KB source TTF and pinning fontTools in CI;
+# that is a real option, not taken in M1 PR A, and worth revisiting if a second font lands.
+#
+# RE-VENDORING IS A PROCEDURE, NOT A MEMORY. On any version bump, run all of these and
+# update every field below:
+#
+#   1. Fetch the source at a named commit; check `source_sha256`.
+#   2. Re-read the copyright line. If it has gained `with Reserved Font Name "..."`, the
+#      subset may NOT keep the family name -- see below. It is a one-line upstream change.
+#   3. Re-run `build_commands` with the recorded fontTools version; record the new digest.
+#   4. Confirm name IDs 0, 13 and 14 survived the instancer's name-table pruning:
+#      `python3 -c 'from fontTools.ttLib import TTFont; f=TTFont("<file>");
+#       print([f["name"].getDebugName(n) for n in (0, 13, 14)])'`
+#   5. Confirm the woff2 carries no extended-metadata or private block --- `metaLength`
+#      and `privLength` must both be 0. Those are arbitrary bytes a font engine ignores
+#      and a reviewer never sees; they are where a future font could carry a payload while
+#      every other claim here stayed true. Both are 0 in the shipped file, read out of the
+#      woff2 header during security review of M1 PR A.
+#   6. Re-measure the size budget.
+#
+# WHY THE FONT IS NOT IN engines/licenses.toml
+#
+# It is not an engine, and putting it there would break what that file means.
+# `tools/check-engine-licences.py` compares each declared `license_text` against the
+# ORIGINAL under `engines/vendor/`, and `linked`/`linked_in` record symbol-level findings
+# about built artifacts. A font has no symbols, no vendor tree, and is not linked into
+# anything. A row that satisfied the schema while none of those fields meant anything
+# would make the check report a component it had not actually examined -- the failure mode
+# CLAUDE.md's "a check that silently examines nothing is worse than no check" names.
+#
+# WHY THE FONT IS NOT ON THE /credits PAGE
+#
+# ADR 0008 requires that page because FTL section 2, the IJG conditions and
+# MIT-Modern-Variant impose AFFIRMATIVE acknowledgement obligations that bind
+# "documentation accompanying the distribution" -- so a notice in the repository does not
+# discharge them for a website.
+#
+# OFL 1.1 imposes no such obligation. Section 1 requires the copyright notice and the
+# licence to be included in all copies of the Font Software, and both are: name IDs 0, 13
+# and 14 survive in the subset file, verified with fontTools against the exact bytes whose
+# digest is recorded below, and `OFL.txt` ships beside it at a served URL. Adding the font
+# to a page whose reason for existing is a different clause would blur why that page is
+# mandatory, which is worse than leaving a courtesy credit off.
+#
+# NO RESERVED FONT NAME, AND THIS WAS CHECKED RATHER THAN ASSUMED
+#
+# OFL section 3 forbids a Modified Version from using a Reserved Font Name -- and
+# subsetting IS modification, so keeping the family name would be a violation if one were
+# declared. The OFL convention is to declare it in the copyright line, as
+# `... with Reserved Font Name "Foo"`. The copyright line here (reproduced in `copyright`
+# below, and shipped verbatim inside the file) carries no such clause, so the name is
+# retained lawfully. Re-check this on any version bump: it is a one-line change upstream.
+
+[meta]
+adr = "docs/adr/0008-widened-licence-allowlist.md"
+# OFL-1.1 is on the ADR 0008 allowlist as "OFL (fonts)". Adding a font under a licence
+# that is not on that list requires a new ADR, not a row here.
+
+[[font]]
+id = "atkinson-hyperlegible-next"
+family = "Atkinson Hyperlegible Next"
+version = "2.001"
+licence = "OFL-1.1"
+licence_file = "apps/web/public/fonts/OFL.txt"
+licence_file_sha256 = "aca6a428580965d2297d1b718042dd427c2a9443ece3b0d02d758e161e0c4030"
+copyright = "Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (https://github.com/googlefonts/atkinson-hyperlegible-next)"
+designers = "Braille Institute, Applied Design Works, Elliott Scott, Megan Eiswerth, Letters From Sweden"
+
+# WHY THIS FACE. It was drawn so that characters cannot be mistaken for one another --
+# which is the argument every page on this site is making about its own claims. It is also
+# not a default: see apps/web/CLAUDE.md, "Type".
+
+# ACQUISITION. google/fonts rather than the upstream repository, because google/fonts
+# publishes the built binaries and records which upstream commit they were built from;
+# the upstream repository publishes sources and no release artifacts.
+source_repo = "https://github.com/google/fonts"
+source_path = "ofl/atkinsonhyperlegiblenext/AtkinsonHyperlegibleNext[wght].ttf"
+source_commit = "95f4904fc8bcf26d3420fe315560c96417c6dec7"
+source_sha256 = "5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745"
+source_bytes = 114552
+# google/fonts' own upstream_info.md for this family records that these binaries match
+# googlefonts/atkinson-hyperlegible-next at commit
+# 7925f50f649b3813257faf2f4c0b381011f434f1, verified there by SHA256.
+upstream_repo = "https://github.com/googlefonts/atkinson-hyperlegible-next"
+upstream_commit = "7925f50f649b3813257faf2f4c0b381011f434f1"
+
+# WHAT SHIPS.
+file = "apps/web/public/fonts/atkinson-hyperlegible-next-v2.001-latin.woff2"
+sha256 = "799f4e33c8d04c9934ed7464fb040ae77488c96a78367b0eee48a16416b320a2"
+bytes = 18520
+axes = "wght 400-700"
+codepoints = 207
+
+# HOW IT WAS PRODUCED. fontTools is pinned because subsetters change their output across
+# versions: without the version, "re-run this and compare the digest" is not a check.
+#
+# The axis clip is the whole of the size story and is worth recording as a measurement
+# rather than a setting. All three measured under SOURCE_DATE_EPOCH=0, raw / brotli:
+#
+#   unsubsetted woff2                47,800 / 47,804
+#   Latin subset, full 200-800 axis  31,616 / 31,620
+#   Latin subset, axis clipped       18,520 / 18,524   <- what ships
+#
+# woff2 is brotli-compressed already, so re-compressing it COSTS four bytes rather than
+# saving any. That is the number the first-load budget records, because the budget measures
+# what a host serving brotli would send. Worth stating in both columns: an earlier draft of
+# this line said re-compressing "gains 3 bytes", which was true of a previous build of the
+# file and false of this one -- a stale measurement in a file whose entire argument is that
+# its numbers were measured.
+#
+# SOURCE_DATE_EPOCH=0 IS LOAD-BEARING, AND IT WAS MISSING UNTIL THE FIELD WAS TESTED.
+# `pyftsubset` is deterministic; `varLib.instancer` is NOT -- it stamps `head.modified`
+# with the current time, so two runs a second apart differ at byte 211 and produce
+# different digests. The first version of this manifest recorded commands that could not
+# reproduce the file it described, which is the exact failure mode this whole file exists
+# to prevent: a provenance record that reads as verifiable and is not. fontTools honours
+# SOURCE_DATE_EPOCH for that field, and with it set the two commands below are
+# byte-reproducible -- checked by running them twice, a second apart, and comparing.
+build_tool = "fonttools 4.60.1"
+build_commands = """
+SOURCE_DATE_EPOCH=0 fonttools varLib.instancer 'AtkinsonHyperlegibleNext[wght].ttf' wght=400:700 -o clipped.ttf
+SOURCE_DATE_EPOCH=0 pyftsubset clipped.ttf --output-file=atkinson-hyperlegible-next-v2.001-latin.woff2 --flavor=woff2 --unicodes='U+0020-007E,U+00A0-00FF,U+0131,U+0152-0153,U+2013-2014,U+2018-201A,U+201C-201E,U+2026,U+2032-2033,U+2039-203A,U+2044,U+2212,U+20AC,U+2122,U+FEFF,U+FFFD' --layout-features='kern,liga,ccmp,mark,mkmk,tnum' --name-IDs='0,1,2,3,4,5,6,13,14,16,17,25' --notdef-outline"""
+# ONE LINE PER COMMAND, AND NO SHELL CONTINUATIONS. A trailing backslash is TOML's
+# line-ending join, so a wrapped command parses as `clipped.ttf--output-file=...`, which
+# no shell can run. Doubling the backslash does not help either: the join is applied
+# before unescaping, so the newline still disappears and a stray backslash is left behind.
+# Both forms were tried and both were wrong. This field exists so someone can re-run it
+# and compare the digest, which means it has to survive being PARSED, not only being read
+# in the file.
+# name-IDs 0, 13 and 14 are the copyright, the licence description and the licence URL.
+# They are kept deliberately -- they are how a woff2 satisfies OFL section 1 once it is
+# separated from the directory it was downloaded in. `varLib.instancer` prunes the name
+# table, so this is a real hazard and it was checked: all three are present in the shipped
+# file.
+#
+# `fonts.test.ts` does NOT re-parse the font to re-assert that, and the omission is
+# deliberate rather than a gap. The digest below fixes every byte, so it already implies the
+# name records; a second, looser check over the same bytes could only add a way to pass
+# while the digest failed. Re-run the verification when the digest changes -- that is the
+# moment the finding stops applying:
+#
+#   python3 -c 'from fontTools.ttLib import TTFont; f=TTFont("<file>"); \
+#     print([f["name"].getDebugName(n) for n in (0, 13, 14)])'
