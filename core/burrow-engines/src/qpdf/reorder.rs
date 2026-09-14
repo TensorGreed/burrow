@@ -89,6 +89,40 @@ impl PageReorderer for Qpdf {
         Ok(source.pages)
     }
 
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        // THE SAME WALK `rotate` DOES, against the document this is about to permute. Reusing
+        // `rotate.rs`'s helpers rather than repeating the `/Parent` climb: the depth ceiling
+        // and the type assertion live there, and a second copy of a walk over hostile input
+        // is a second place to get them wrong.
+        let capacity = usize::try_from(source.pages)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut rotations = Vec::with_capacity(capacity);
+
+        // PER PAGE, like `rotate`'s own walk and for the same measured reason: on the default
+        // `max_pages` of 10,000 with a deep page tree this loop is millions of FFI calls, and
+        // without a checkpoint it sits outside every deadline. Security review measured it at
+        // 144 ms against 12 ms of edit-and-write on a 10,000-page document -- twelve times the
+        // work the cooperative limit was covering.
+        //
+        // THE CALLER'S DEADLINE, NOT A NEW ONE -- see the trait's docs.
+        let clock = Arc::clone(&options.clock);
+
+        for index in 0..source.pages {
+            deadline.checkpoint(clock.as_ref())?;
+            let page = page_handle(&source.document, index, source.pages)?;
+            // RECORDED, NOT JUDGED. `effective_rotation` refuses a `/Rotate` that is not a
+            // multiple of 90, and a reorder names no page to turn -- so normalising here
+            // failed a whole operation over a page it was only ever going to move.
+            rotations.push(super::rotate::declared_rotation(&source.document, &page)?.unwrap_or(0));
+        }
+        Ok(rotations)
+    }
+
     fn reorder(
         &self,
         source: &Self::Source,

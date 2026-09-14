@@ -87,7 +87,7 @@ pub struct WebRotatable {
 /// The two dictionary keys rotate reads, resident in the engine heap.
 ///
 /// Freed by [`Drop`] rather than by the code that uses them, so no path can return past them.
-struct Keys {
+pub(super) struct Keys {
     rotate: QpdfPtr,
     parent: QpdfPtr,
     bridge: Arc<dyn super::bridge::QpdfBridge>,
@@ -166,6 +166,33 @@ impl PageRotator for WebQpdf {
         let rotation = effective_rotation(self, &source.session, &source.keys, page);
         self.bridge().oh_release(source.session.data(), page);
         rotation
+    }
+
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        let capacity = usize::try_from(source.pages)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut rotations = Vec::with_capacity(capacity);
+
+        // PER PAGE, as the native sweep checkpoints and for the same measured reason -- and
+        // against the CALLER'S deadline, not a new one. See the trait's docs.
+        let clock = Arc::clone(&options.clock);
+
+        for index in 0..source.pages {
+            // BEFORE THE HANDLE IS ISSUED, so a refusal cannot leave one behind.
+            deadline.checkpoint(clock.as_ref())?;
+            let page = page_handle(self, &source.session, index, source.pages)?;
+            // EVERY PATH RELEASES: `?` inside the loop would return past the release.
+            // RECORDED, NOT JUDGED -- see the trait's docs.
+            let outcome = declared_rotation(self, &source.session, &source.keys, page);
+            self.bridge().oh_release(source.session.data(), page);
+            rotations.push(outcome?.unwrap_or(0));
+        }
+        Ok(rotations)
     }
 
     fn rotate(
@@ -307,7 +334,7 @@ impl Keys {
     ///
     /// [`Error::Internal`] if the engine heap could not allocate. Two compile-time constants,
     /// so a failure here is the module out of memory rather than anything about a document.
-    fn copy_in(engine: &WebQpdf) -> Result<Self> {
+    pub(super) fn copy_in(engine: &WebQpdf) -> Result<Self> {
         let bridge = Arc::clone(engine.bridge());
         let rotate = bridge.copy_in(ROTATE_KEY);
         if rotate.is_null() {
@@ -359,17 +386,43 @@ fn page_handle(engine: &WebQpdf, session: &Session, index: u64, pages: u64) -> R
 /// The rotation `page` displays at, following `/Rotate` up the page tree.
 ///
 /// Releases every handle it takes; `page` belongs to the caller.
-fn effective_rotation(
+///
+/// # Errors
+///
+/// [`Error::Malformed`] if the value is not an integer multiple of 90. Callers that only need
+/// to **record** what a page displays at want [`declared_rotation`] instead; the native
+/// module's copy of this pair carries the reasoning.
+pub(super) fn effective_rotation(
     engine: &WebQpdf,
     session: &Session,
     keys: &Keys,
     page: u32,
 ) -> Result<Rotation> {
+    match declared_rotation(engine, session, keys, page)? {
+        None => Ok(Rotation::None),
+        Some(degrees) => Rotation::from_degrees(degrees)
+            .map_err(|_| Error::Malformed("/Rotate is not a multiple of 90".to_owned())),
+    }
+}
+
+/// The `/Rotate` `page` inherits, **as written**, without deciding whether it is in spec.
+///
+/// `None` means no ancestor carries the key. See the native `declared_rotation` for why the
+/// witness records an out-of-spec value rather than refusing it: an ADR 0022 promise about a
+/// page nobody named must not fail the operation.
+///
+/// Releases every handle it takes; `page` belongs to the caller.
+pub(super) fn declared_rotation(
+    engine: &WebQpdf,
+    session: &Session,
+    keys: &Keys,
+    page: u32,
+) -> Result<Option<i64>> {
     let data = session.data();
 
     let own = read_rotate(engine, session, keys, page)?;
-    if let Some(rotation) = own {
-        return Ok(rotation);
+    if let Some(degrees) = own {
+        return Ok(Some(degrees));
     }
 
     let mut current = engine.bridge().oh_get_key(data, page, keys.parent);
@@ -387,7 +440,7 @@ fn effective_rotation(
         if parent_type == object_type::NULL {
             // The top of a well-formed tree: `/Parent` absent reads as a null object.
             engine.bridge().oh_release(data, current);
-            return Ok(Rotation::None);
+            return Ok(None);
         }
         if parent_type != object_type::DICTIONARY {
             // A `/Parent` pointing at something that cannot be a page-tree node. Malformed
@@ -400,9 +453,9 @@ fn effective_rotation(
         }
 
         match read_rotate(engine, session, keys, current) {
-            Ok(Some(rotation)) => {
+            Ok(Some(degrees)) => {
                 engine.bridge().oh_release(data, current);
-                return Ok(rotation);
+                return Ok(Some(degrees));
             }
             Ok(None) => {}
             Err(error) => {
@@ -428,17 +481,14 @@ fn effective_rotation(
     ))
 }
 
-/// `Some(rotation)` if `node` has a usable `/Rotate`, `None` if the key is absent.
+/// `Some(degrees)` if `node` has a readable `/Rotate`, `None` if the key is absent.
 ///
 /// **The type is asserted before the value is read.** qpdf returns 0 for every non-integer
 /// rather than raising, so without this a `/Rotate /Ninety` would read as "no rotation" and
 /// emit a page turned the wrong way. Releases the handle it takes.
-fn read_rotate(
-    engine: &WebQpdf,
-    session: &Session,
-    keys: &Keys,
-    node: u32,
-) -> Result<Option<Rotation>> {
+///
+/// Whether the number is a multiple of 90 is **not** decided here; see [`declared_rotation`].
+fn read_rotate(engine: &WebQpdf, session: &Session, keys: &Keys, node: u32) -> Result<Option<i64>> {
     let data = session.data();
     let value = engine.bridge().oh_get_key(data, node, keys.rotate);
     if let Some(error) = session.take_error() {
@@ -458,12 +508,7 @@ fn read_rotate(
             let degrees = engine.bridge().oh_get_int_value(data, value);
             match session.take_error() {
                 Some(error) => Err(error),
-                // A `/Rotate` that is an integer but not a multiple of 90 is out of spec, and
-                // is refused rather than rounded: rounding invents a rotation the file never
-                // asked for and the caller cannot tell it happened.
-                None => Rotation::from_degrees(degrees)
-                    .map(Some)
-                    .map_err(|_| Error::Malformed("/Rotate is not a multiple of 90".to_owned())),
+                None => Ok(Some(degrees)),
             }
         }
         _ => Err(Error::Malformed("/Rotate is not an integer".to_owned())),

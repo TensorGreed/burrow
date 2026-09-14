@@ -49,6 +49,23 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(String),
 
+    /// burrow produced a document and would not hand it over.
+    ///
+    /// # Why this is not `Internal`, `Malformed` or `Io`
+    ///
+    /// The sentence a person needs is new. `Malformed` blames their file, and the file was
+    /// fine. `InvalidArgument` blames their request, and the request was reasonable.
+    /// `Internal` is "a bug in burrow, should never be seen" — true, but it tells somebody
+    /// nothing about the one thing that matters here, which is that **nothing was handed
+    /// over**. The output was made, checked, found not to be what the operation promised, and
+    /// dropped.
+    ///
+    /// Raised only by `burrow_ops::verify` (ADR 0022). The string names the operation and the
+    /// numbers that disagreed; **both are counts an engine reported or this crate computed,
+    /// never bytes of the document**.
+    #[error("output rejected: {0}")]
+    OutputRejected(String),
+
     /// A bug in burrow, or a panic caught at an FFI boundary. Should never be seen.
     #[error("internal error: {0}")]
     Internal(String),

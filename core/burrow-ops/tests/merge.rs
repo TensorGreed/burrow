@@ -272,6 +272,39 @@ fn the_page_ceiling_allows_exactly_its_boundary() {
     .expect("exactly at the ceiling must be allowed");
 }
 
+#[test]
+fn a_merge_at_exactly_the_size_ceiling_is_not_refused_by_its_own_verification() {
+    // ADR 0022's read-back runs `open`, which applies `max_input_bytes` -- to bytes BURROW
+    // wrote, not to anything a caller handed in. `check_total_input_bytes` permits a total of
+    // exactly the ceiling on purpose, and qpdf's output is normally a few hundred bytes larger
+    // than the sum of its inputs, so the first version succeeded at merging and then rejected
+    // its own output with a message blaming burrow for a document that was fine. Found by
+    // security review; `verify::read_back_options` is the fix and this is what would have
+    // caught it.
+    // A COMMITTED FIXTURE, not a generated two-page document: on a tiny document qpdf's
+    // output is SMALLER than the sum of its inputs (779 bytes from 932), so the situation
+    // never arises and the test passes vacuously. Measured, which is why the assertion below
+    // exists as well.
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/fixtures/pages-137.pdf");
+    let document = std::fs::read(&fixture).expect("the committed fixture must be readable");
+    let inputs = vec![document.clone(), document];
+    let total: u64 = inputs.iter().map(|d| d.len() as u64).sum();
+
+    let merged = merge_all(inputs, Limits::with(|l| l.max_input_bytes = total))
+        .expect("a merge at exactly the input ceiling must be allowed");
+
+    // AND THE OUTPUT REALLY IS OVER THE CEILING, so the test is not passing because the
+    // situation did not arise. Without this it would go green the day qpdf started writing
+    // smaller documents than it was given.
+    assert!(
+        merged.len() as u64 > total,
+        "the output ({}) is not larger than the ceiling ({total}), so the read-back would \
+         have passed under the caller's own limits and this test proves nothing",
+        merged.len()
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 

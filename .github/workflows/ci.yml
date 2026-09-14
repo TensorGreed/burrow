@@ -309,8 +309,13 @@ jobs:
       # step goes red and says which issue needs re-measuring. An ignored test nobody runs is
       # a comment containing `assert!`, whichever direction it points in.
       #
-      # #61: a damaged-but-openable document loses a page on write, on every operation
-      # including `rotate`, which has shipped. Found by fuzzing `reorder`; not reorder's.
+      # #61: a damaged-but-openable document loses a page on write. The OPERATION now refuses
+      # that output -- ADR 0022 reads it back through a fresh engine and sees four pages where
+      # five were promised -- so no caller receives the short document, and
+      # `a_damaged_document_is_refused_rather_than_losing_a_page_silently` asserts that on
+      # every run. What stays ignored here is the defect BENEATH the refusal, at the engine
+      # seam where verification does not run: qpdf still writes four. It is pinned rather than
+      # deleted because #61's recovery-posture decision is still open.
       - name: Known-defect reproductions still reproduce
         run: |
           set -u

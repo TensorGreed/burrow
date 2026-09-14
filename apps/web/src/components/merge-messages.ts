@@ -168,6 +168,28 @@ export function messageFor(failure: Failure): Message {
         file: -1,
         retryable: true,
       };
+    case "OutputRejected":
+      return {
+        // ADR 0022. burrow produced a document, checked it against what it promised, and
+        // would not hand it over. Both halves of the generic sentence are FALSE here: the
+        // file is not fine, and trying again runs the same operation on the same bytes and
+        // refuses in the same place -- which is why this needs its own branch rather than
+        // the fallback it fell to until code review.
+        //
+        // The known cause is issue #61: a damaged-but-openable document that qpdf reads as
+        // one page count and writes as another. So the honest next step is about the
+        // DOCUMENT rather than about trying again.
+        //
+        // `retryable: true` even so, and the field's name is why that reads oddly: it does
+        // not mean "retrying would work", it means "no deliberate gesture is needed to get
+        // the page working again". `false` renders the Start again button, which clears the
+        // CIRCUIT BREAKER (ADR 0015 §3) -- and the breaker has not latched, so the button
+        // would do nothing and offering it would be the page lying about its own state.
+        title: "burrow checked the merged document and would not hand it over.",
+        next: "Nothing was sent anywhere and none of your files has been changed. Some of the pages did not survive the merge, so burrow refused the result rather than give you a document quietly missing part of one of them. A copy of each file saved again from the program that made it usually works.",
+        file: -1,
+        retryable: true,
+      };
     case "EngineUnavailable":
       return {
         // The breaker has latched. It does that ON PURPOSE (ADR 0015 §3) -- retrying on a

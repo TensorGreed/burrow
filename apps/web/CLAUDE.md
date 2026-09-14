@@ -352,6 +352,15 @@ re-decide. Each was a decision with a reason, not a shape that happened.
   `burrow_core::ops::check_total_input_bytes` that `merge` calls — not a mirror of it. Checking
   after the read is no earlier than the core, and the transport materialises roughly four times
   the payload on the way (issue #51).
+- **The output goes out through `tool-delivery.ts`, and a name is captured before the first
+  `await`.** Generations, the capture, and the object URLs are one shared path across the three
+  islands (#69). It is shared for the reason `tool-host.ts` is: it has produced two security
+  findings, both of the same class — one document's bytes offered under another document's
+  name, once because `choose()` did not invalidate an in-flight operation and the name was
+  re-derived afterwards, once because the request signature was read back after the awaits.
+  `run.hand(bytes)` takes bytes and nothing else, so re-deriving after the await is not
+  discouraged, it is unexpressible. It creates **no** URL for a stale run, because an unrevoked
+  object URL holds the bytes for the life of the page.
 - **Cancel is `discardWorker()`, and a cancelled operation's reply is ignored rather than
   shown.** The host fails an in-flight request with `Internal` when the worker is discarded,
   which is correct from its point of view — but a person who pressed Stop did not have

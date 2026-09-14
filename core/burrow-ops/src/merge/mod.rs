@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use burrow_engines::{OpenOptions, PageAssembler};
+use burrow_engines::{OpenOptions, OutputReader, PageAssembler};
+
+use crate::verify;
 use burrow_types::{Deadline, Error, Limits, Password, Result, Stage};
 
 /// One document to merge, with the password that opens it if it has one.
@@ -103,6 +105,9 @@ impl core::fmt::Debug for Input<'_> {
 /// - [`Error::Io`] — the assembled document could not be serialised.
 /// - [`Error::Internal`] — a length or count that does not fit its type. A bug here, not
 ///   in the file.
+/// - [`Error::OutputRejected`] — the document burrow produced is not the one it promised: the
+///   wrong number of pages, or an input that contributed none of them. It is returned
+///   **instead of** the output, which is dropped (ADR 0022).
 ///
 /// Note that a failure from a *later* stage still names the input it came from: an input
 /// the engine can open is not necessarily one it can append, which ADR 0017 measured.
@@ -110,7 +115,7 @@ impl core::fmt::Debug for Input<'_> {
 /// # Panics
 ///
 /// Never. Every fallible step returns a typed error.
-pub fn merge<E: PageAssembler>(
+pub fn merge<E: PageAssembler + OutputReader>(
     engine: &E,
     inputs: Vec<Input<'_>>,
     options: &OpenOptions<'_>,
@@ -159,6 +164,13 @@ pub fn merge<E: PageAssembler>(
         .begin(first.bytes, &options_for(options, first.password))
         .map_err(|source| at(first_index, source))?;
 
+    // WHAT EACH INPUT CONTRIBUTED, taken from the assembly's running total before and after
+    // each append (ADR 0022). Free -- `pages` is already a call this trait offers, and the
+    // deltas are the only record anywhere of which input supplied which pages once the bytes
+    // have been consumed.
+    let mut running = engine.pages(&assembly)?;
+    let mut contributions = vec![running];
+
     for (index, input) in inputs {
         // The deadline is checked BETWEEN inputs. That is the only granularity available:
         // the work inside `append` is one engine call per page and no engine here offers a
@@ -180,11 +192,30 @@ pub fn merge<E: PageAssembler>(
                 &options_for(options, input.password),
             )
             .map_err(|source| at(index, source))?;
+
+        let total = engine.pages(&assembly)?;
+        contributions.push(total.saturating_sub(running));
+        running = total;
     }
 
     deadline.checkpoint(clock.as_ref())?;
 
-    engine.finish(assembly)
+    let output = engine.finish(assembly)?;
+
+    // AND THE LAST THING BEFORE THE CALLER HAS IT, through a fresh engine (ADR 0022).
+    // Merge's promise is a count per input rather than a rotation vector, and
+    // `verify::Expected::Merged` records why: the vector would cost a second parse of every
+    // input, and reading it from the assembly instead would be the instance agreeing with
+    // itself.
+    verify::output(
+        engine,
+        &output,
+        &verify::Expected::Merged { contributions },
+        options,
+        &deadline,
+    )?;
+
+    Ok(output)
 }
 
 /// Whether a set of inputs is small enough in total, by size alone.

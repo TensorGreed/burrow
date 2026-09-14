@@ -119,6 +119,16 @@ pub struct Limits {
     /// of up to one engine call is possible. Requires a platform clock —
     /// `Instant::now()` panics on `wasm32-unknown-unknown`, so operations take an
     /// injected clock rather than reading time directly.
+    ///
+    /// **One budget covers producing the output *and* checking it.** Since
+    /// [ADR 0022](../../../docs/adr/0022-every-operation-verifies-its-own-output.md) an
+    /// operation reads its own output back before returning it, and that read-back spends
+    /// this same deadline rather than starting a fresh one — otherwise a document could take
+    /// `max_duration_ms` to produce and `max_duration_ms` again to verify, and the caller was
+    /// promised one. The per-page sweeps either side of the edit checkpoint **per page**, for
+    /// the same reason the write does: on a 10,000-page document with a deep page tree they
+    /// are 84% of the operation, and unchecked they sat outside every deadline. Measured;
+    /// ADR 0022's *Consequences* has the table.
     pub max_duration_ms: u64,
     /// Largest accepted page count for paged documents. Exact.
     pub max_pages: u64,

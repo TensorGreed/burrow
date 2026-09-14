@@ -32,6 +32,13 @@ pub mod merge;
 pub mod reorder;
 pub mod rotate;
 pub mod split;
+/// The shared post-operation check every operation runs (ADR 0022).
+///
+/// `pub` rather than `pub(crate)` because it is the contract the next operation has to meet,
+/// and `CLAUDE.md`'s definition of done names it by path. Its `Expected` is **not** re-exported
+/// at the crate root beside the operations: no caller outside this crate constructs one, and
+/// putting it there would read as part of the calling surface rather than of the seam.
+pub mod verify;
 
 pub use merge::{Input, check_total_input_bytes, merge};
 pub use reorder::reorder;

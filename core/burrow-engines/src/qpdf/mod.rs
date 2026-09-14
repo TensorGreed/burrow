@@ -409,3 +409,48 @@ mod rotate_tests;
 
 #[cfg(test)]
 mod tests;
+
+/// Reading a document back to check what an operation produced (ADR 0022).
+///
+/// Built on [`PageRotator`], which already opens a document and reads each page's effective
+/// rotation. Nothing new reaches qpdf through this — it is the same three calls with a
+/// different purpose, and the purpose is the part worth naming at the call site.
+impl crate::OutputReader for Qpdf {
+    // Trait paths are written out here rather than imported at the top: this block was
+    // appended and a file-wide import would move behaviour for everything above it.
+    type Read = <Self as crate::PageRotator>::Source;
+
+    fn fresh(&self) -> Self {
+        // `Qpdf` is a unit struct: the engine carries no state, and every `open` makes its own
+        // `qpdf_data`. So a fresh value plus a fresh open is a genuinely separate parse, with
+        // nothing shared but the process allocator.
+        Self::new()
+    }
+
+    fn open_output(&self, bytes: &[u8], options: &crate::OpenOptions<'_>) -> Result<Self::Read> {
+        // RECOVERY OFF, as every other open here has it. Reading our own output back with
+        // reconstruction enabled would let a document burrow wrote badly be repaired on the
+        // way in and pass — the verifier agreeing with the writer through a repair neither
+        // asked for.
+        crate::PageRotator::open(self, bytes.to_vec().into_boxed_slice(), options)
+    }
+
+    fn page_count(&self, read: &Self::Read) -> Result<u64> {
+        crate::PageRotator::pages(self, read)
+    }
+
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        options: &crate::OpenOptions<'_>,
+        deadline: &burrow_types::Deadline,
+    ) -> Result<Vec<i64>> {
+        // ONE SWEEP IMPLEMENTATION, not a second copy of it. `Read` is a rotatable source, so
+        // this is the same walk under a different name -- and the first version wrote the loop
+        // out again, which is two places for the checkpoint, the recorded-not-judged read and
+        // the handle discipline to drift apart. It drifted immediately: this copy kept
+        // `effective_rotation`, so the witness refused an out-of-spec page the promise sweep
+        // had already accepted.
+        crate::PageRotator::rotations(self, read, options, deadline)
+    }
+}

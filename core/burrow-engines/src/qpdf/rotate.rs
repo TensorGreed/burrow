@@ -96,6 +96,35 @@ impl PageRotator for Qpdf {
         effective_rotation(&source.document, &page)
     }
 
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        let capacity = usize::try_from(source.pages)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut rotations = Vec::with_capacity(capacity);
+
+        // PER PAGE. The walk is one `/Parent` climb per page, so this loop is sized by page
+        // count times tree depth -- both attacker-chosen. Measured at 147 ms against 28 ms of
+        // edit-and-write on a 10,000-page document with a 60-deep tree, which is why it is not
+        // allowed to sit outside a deadline.
+        //
+        // THE CALLER'S DEADLINE, NOT A NEW ONE -- see the trait's docs. `Deadline::start` here
+        // handed the operation a second full budget, which security review measured.
+        let clock = Arc::clone(&options.clock);
+
+        for index in 0..source.pages {
+            deadline.checkpoint(clock.as_ref())?;
+            let page = page_handle(&source.document, index, source.pages)?;
+            // RECORDED, NOT JUDGED -- see the trait's docs. `effective_rotation` would refuse
+            // an out-of-spec value on a page nobody named.
+            rotations.push(declared_rotation(&source.document, &page)?.unwrap_or(0));
+        }
+        Ok(rotations)
+    }
+
     fn rotate(
         &self,
         source: &Self::Source,
@@ -217,7 +246,42 @@ fn page_handle(document: &Document, index: u64, pages: u64) -> Result<ObjectHand
 ///
 /// Returns [`Rotation::None`] when no ancestor carries the key, which is what a PDF with no
 /// `/Rotate` anywhere means.
-fn effective_rotation<'a>(document: &'a Document, page: &ObjectHandle<'a>) -> Result<Rotation> {
+///
+/// # Errors
+///
+/// [`Error::Malformed`] if the value is not an integer multiple of 90. Callers that only need
+/// to **record** what a page displays at should use [`declared_rotation`] instead, which
+/// carries an out-of-spec value through rather than refusing it — see its docs for why the
+/// distinction is load-bearing.
+pub(super) fn effective_rotation<'a>(
+    document: &'a Document,
+    page: &ObjectHandle<'a>,
+) -> Result<Rotation> {
+    match declared_rotation(document, page)? {
+        None => Ok(Rotation::None),
+        Some(degrees) => Rotation::from_degrees(degrees)
+            .map_err(|_| Error::Malformed("/Rotate is not a multiple of 90".to_owned())),
+    }
+}
+
+/// The `/Rotate` `page` inherits, **as written**, without deciding whether it is in spec.
+///
+/// `None` means no ancestor carries the key.
+///
+/// # Why this is separate from [`effective_rotation`]
+///
+/// ADR 0022's witness needs a per-page value that is stable between the read before an
+/// operation and the read after it. An out-of-spec `/Rotate 45` is a perfectly good witness --
+/// it must still be 45 afterwards -- and normalising it is what made a page nobody named fail
+/// a whole reorder. Recorded, not fatal.
+///
+/// The type assertion stays: a `/Rotate /Ninety` is not a number that can be recorded, so it
+/// is still [`Error::Malformed`]. The distinction is between a value this engine cannot read
+/// and a value it can read and does not like.
+pub(super) fn declared_rotation<'a>(
+    document: &'a Document,
+    page: &ObjectHandle<'a>,
+) -> Result<Option<i64>> {
     // The walk owns exactly one handle at a time: `node` is replaced by its parent, and the
     // previous one is dropped — and therefore released — at that moment. A version of this
     // that collected ancestors into a `Vec` first would hold one handle per level, which is
@@ -226,8 +290,8 @@ fn effective_rotation<'a>(document: &'a Document, page: &ObjectHandle<'a>) -> Re
     // The page's own value first, then ancestors. `node` above is the *value*; the walk below
     // moves over page-tree *nodes*, so they are kept apart deliberately.
     let own = rotation_of(document, &node)?;
-    if let Some(rotation) = own {
-        return Ok(rotation);
+    if let Some(degrees) = own {
+        return Ok(Some(degrees));
     }
     drop(node);
 
@@ -250,7 +314,7 @@ fn effective_rotation<'a>(document: &'a Document, page: &ObjectHandle<'a>) -> Re
         }
         if parent_type == object_type::NULL {
             // The top of a well-formed tree: `/Parent` absent reads as a null object.
-            return Ok(Rotation::None);
+            return Ok(None);
         }
         if parent_type != object_type::DICTIONARY {
             // A `/Parent` pointing at something that cannot be a page-tree node. Malformed
@@ -266,8 +330,8 @@ fn effective_rotation<'a>(document: &'a Document, page: &ObjectHandle<'a>) -> Re
         if let Some(error) = document.take_error() {
             return Err(error);
         }
-        if let Some(rotation) = rotation_of(document, &node)? {
-            return Ok(rotation);
+        if let Some(degrees) = rotation_of(document, &node)? {
+            return Ok(Some(degrees));
         }
         drop(node);
 
@@ -285,13 +349,15 @@ fn effective_rotation<'a>(document: &'a Document, page: &ObjectHandle<'a>) -> Re
     ))
 }
 
-/// `Some(rotation)` if `value` is a usable `/Rotate`, `None` if the key was absent.
+/// `Some(degrees)` if `value` is a readable `/Rotate`, `None` if the key was absent.
 ///
 /// **The type is asserted before the value is read.** `qpdf_oh_get_int_value` returns 0 for a
 /// name, a string or a dictionary, and returns it without raising — so trapping does not help
 /// and a `/Rotate /Ninety` would read as "no rotation" and emit a page turned the wrong way.
 /// An unexpected type is [`Error::Malformed`], which is what it is.
-fn rotation_of(document: &Document, value: &ObjectHandle<'_>) -> Result<Option<Rotation>> {
+///
+/// Whether the number is a multiple of 90 is **not** decided here; see [`declared_rotation`].
+fn rotation_of(document: &Document, value: &ObjectHandle<'_>) -> Result<Option<i64>> {
     let type_code = value.type_code();
     if let Some(error) = document.take_error() {
         return Err(error);
@@ -303,12 +369,7 @@ fn rotation_of(document: &Document, value: &ObjectHandle<'_>) -> Result<Option<R
             if let Some(error) = document.take_error() {
                 return Err(error);
             }
-            // A `/Rotate` that is an integer but not a multiple of 90 is out of spec. It is
-            // mapped to `Malformed` rather than rounded: rounding invents a rotation the file
-            // never asked for, and the caller cannot tell it happened.
-            Rotation::from_degrees(degrees)
-                .map(Some)
-                .map_err(|_| Error::Malformed("/Rotate is not a multiple of 90".to_owned()))
+            Ok(Some(degrees))
         }
         // Everything else — a name, a string, an array, a stream, an unresolvable reference.
         _ => Err(Error::Malformed("/Rotate is not an integer".to_owned())),

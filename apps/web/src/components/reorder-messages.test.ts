@@ -10,6 +10,7 @@ const KINDS = [
   "LimitExceeded",
   "InvalidArgument",
   "EngineUnavailable",
+  "OutputRejected",
   "Io",
   "Internal",
 ];
@@ -40,7 +41,7 @@ describe("a reorder failure, as a sentence", () => {
   it("has a message for every kind the core can produce", () => {
     // GATED ON THE COUNT, not merely on each one being non-empty: a kind removed from this
     // list would take its assertion with it and the suite would still pass.
-    expect(KINDS).toHaveLength(8);
+    expect(KINDS).toHaveLength(9);
     for (const kind of KINDS) {
       const message = messageFor({ kind });
       expect(message.title, `${kind} has no title`).not.toBe("");

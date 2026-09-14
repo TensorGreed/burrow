@@ -462,3 +462,120 @@ fn the_deadline_is_checked_between_pages() {
         other => panic!("expected a deadline refusal, got {other:?}"),
     }
 }
+
+/// The sweep spends the deadline it is HANDED, not one of its own.
+///
+/// `Deadline::start` resets the origin and the budget, so a sweep that started its own gave
+/// the operation a second full `max_duration_ms` — measured by security review at 56 ms
+/// returned against a 50 ms ceiling, and in direct contradiction of what `verify::output` says
+/// in capitals about spending one budget.
+///
+/// An already-expired deadline is the sharpest way to ask: a sweep that honours it refuses
+/// before it reads a single page, and a sweep that starts its own reads all of them.
+#[test]
+fn the_rotation_sweep_refuses_against_an_already_spent_deadline() {
+    use burrow_types::Deadline;
+
+    let source = open(minimal_pdf::pdf_with_page_tree(
+        6,
+        RotationPlacement::OnTheRoot(90),
+    ))
+    .expect("open");
+
+    let clock = Arc::new(ManualClock::new(0));
+    let limits = Limits::with(|l| l.max_duration_ms = 10);
+    let deadline = Deadline::start(clock.as_ref(), &limits);
+    clock.advance(11);
+
+    let err = PageRotator::rotations(
+        &Qpdf::new(),
+        &source,
+        &OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>),
+        &deadline,
+    )
+    .expect_err("a spent budget must refuse the sweep");
+    assert!(
+        matches!(err, Error::LimitExceeded { limit, .. } if limit == "max_duration_ms"),
+        "got {err:?}"
+    );
+
+    // THE CONTROL: the same sweep against a deadline with budget left. Without it the
+    // assertion above is satisfied by a sweep that refuses everything.
+    let clock = Arc::new(ManualClock::new(0));
+    let deadline = Deadline::start(clock.as_ref(), &limits);
+    let rotations = PageRotator::rotations(
+        &Qpdf::new(),
+        &source,
+        &OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>),
+        &deadline,
+    )
+    .expect("a budget with room must not refuse");
+    assert_eq!(rotations, vec![90; 6]);
+}
+
+/// The sweep records an out-of-spec `/Rotate` rather than refusing it.
+///
+/// The engine half of the `/Rotate 45` regression: `effective_rotation` judges and this
+/// records, and a page nobody named is only ever recorded.
+#[test]
+fn the_rotation_sweep_records_a_value_that_is_not_a_multiple_of_ninety() {
+    use burrow_types::Deadline;
+
+    let source = open(minimal_pdf::pdf_with_page_tree(
+        4,
+        RotationPlacement::OnTheRootAndTheFirstPage {
+            root: 0,
+            first_page: 45,
+        },
+    ))
+    .expect("open");
+
+    let clock = Arc::new(ManualClock::new(0));
+    let deadline = Deadline::start(clock.as_ref(), &Limits::default());
+    let rotations = PageRotator::rotations(&Qpdf::new(), &source, &options(), &deadline)
+        .expect("an out-of-spec value is recorded, not refused");
+    assert_eq!(rotations, vec![45, 0, 0, 0]);
+
+    // AND THE JUDGING READ STILL REFUSES IT, which is what makes the pair a pair rather than a
+    // check that was deleted.
+    let err = Qpdf::new()
+        .effective_rotation(&source, 0)
+        .expect_err("the judging read must still refuse");
+    assert!(matches!(err, Error::Malformed(_)), "got {err:?}");
+}
+
+/// A sweep that fails part-way leaks no handle.
+#[test]
+fn a_refused_rotation_sweep_releases_every_handle_it_took() {
+    use burrow_types::Deadline;
+
+    let before = handle::live();
+    {
+        let source = open(minimal_pdf::pdf_with_page_tree(
+            6,
+            RotationPlacement::Absent,
+        ))
+        .expect("open");
+        let clock = Arc::new(SteppingClock::new(4)) as Arc<dyn Clock>;
+        let limits = Limits::with(|l| l.max_duration_ms = 10);
+        let deadline = Deadline::start(clock.as_ref(), &limits);
+
+        let err = PageRotator::rotations(
+            &Qpdf::new(),
+            &source,
+            &OpenOptions::new(limits, Arc::clone(&clock)),
+            &deadline,
+        )
+        .expect_err("the stepping clock must run the sweep out of time part-way");
+        assert!(
+            matches!(err, Error::LimitExceeded { limit, .. } if limit == "max_duration_ms"),
+            "got {err:?}"
+        );
+    }
+    assert_eq!(
+        handle::live(),
+        before,
+        "the refused sweep left {} handle(s) behind",
+        handle::live() - before
+    );
+}
