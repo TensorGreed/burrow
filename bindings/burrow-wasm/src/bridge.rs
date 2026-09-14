@@ -107,6 +107,14 @@ extern "C" {
     fn qpdf_oh_new_integer(data: u32, value: i64) -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_replace_key)]
     fn qpdf_oh_replace_key(data: u32, oh: u32, key: u32, item: u32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_remove_page)]
+    fn qpdf_remove_page(data: u32, page: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_add_page_at)]
+    fn qpdf_add_page_at(data: u32, source: u32, page: u32, before: u32, refpage: u32) -> i32;
+    /// `(object_number << 32) | generation`, so the two halves of an object's identity cross
+    /// in one call and cannot be used apart. See `QpdfBridge::oh_object`.
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_object)]
+    fn qpdf_oh_object(data: u32, oh: u32) -> u64;
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_release)]
     fn qpdf_oh_release(data: u32, oh: u32);
     #[wasm_bindgen(js_name = __burrow_qpdf_write)]
@@ -272,6 +280,25 @@ impl QpdfBridge for JsQpdf {
 
     fn get_page_n(&self, data: QpdfPtr, n: u32) -> u32 {
         qpdf_get_page_n(data.0, n)
+    }
+
+    fn remove_page(&self, data: QpdfPtr, page: u32) -> i32 {
+        qpdf_remove_page(data.0, page)
+    }
+
+    fn add_page_at(
+        &self,
+        data: QpdfPtr,
+        source: QpdfPtr,
+        page: u32,
+        before: bool,
+        refpage: u32,
+    ) -> i32 {
+        qpdf_add_page_at(data.0, source.0, page, u32::from(before), refpage)
+    }
+
+    fn oh_object(&self, data: QpdfPtr, oh: u32) -> u64 {
+        qpdf_oh_object(data.0, oh)
     }
 
     fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32 {

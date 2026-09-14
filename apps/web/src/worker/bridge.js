@@ -213,6 +213,11 @@ self.__burrow_qpdf_get_page_n = (data, n) => u32(qpdf()._qpdf_get_page_n(data, n
 self.__burrow_qpdf_add_page = (data, source, page, first) =>
   qpdf()._qpdf_add_page(data, source, page, first);
 
+self.__burrow_qpdf_remove_page = (data, page) => qpdf()._qpdf_remove_page(data, page);
+
+self.__burrow_qpdf_add_page_at = (data, source, page, before, refpage) =>
+  qpdf()._qpdf_add_page_at(data, source, page, before, refpage);
+
 self.__burrow_qpdf_init_write_memory = (data) => qpdf()._qpdf_init_write_memory(data);
 
 self.__burrow_qpdf_set_deterministic_id = (data, value) =>
@@ -245,6 +250,21 @@ self.__burrow_qpdf_oh_new_integer = (data, value) => u32(qpdf()._qpdf_oh_new_int
 
 self.__burrow_qpdf_oh_replace_key = (data, oh, key, item) =>
   qpdf()._qpdf_oh_replace_key(data, oh, key, item);
+
+// BOTH HALVES OF AN OBJECT'S IDENTITY, PACKED INTO ONE VALUE.
+//
+// Two objects may share an object number across generations, so a caller holding only the
+// number would call two different objects the same one. Offering the halves as separate
+// bridge methods invites exactly that; packing them means they cannot be used apart. Same
+// argument as `__burrow_pdfium_load` packing a handle with its error code.
+//
+// A `qpdf_oh` is NOT an identity -- qpdf issues a fresh one per call -- which is why this
+// exists at all. See `QpdfBridge::oh_object`.
+self.__burrow_qpdf_oh_object = (data, oh) => {
+  const id = qpdf()._qpdf_oh_get_object_id(data, oh);
+  const generation = qpdf()._qpdf_oh_get_generation(data, oh);
+  return (BigInt(u32(id)) << 32n) | BigInt(u32(generation));
+};
 
 self.__burrow_qpdf_oh_release = (data, oh) => qpdf()._qpdf_oh_release(data, oh);
 

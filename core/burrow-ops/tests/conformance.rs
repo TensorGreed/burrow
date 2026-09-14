@@ -150,6 +150,48 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         };
     }
 
+    if operation == Operation::Reorder {
+        let mut options = OpenOptions::new(limits, clock);
+        options.password = password.as_ref();
+
+        let engine = Qpdf::new();
+        let outcome = burrow_engines::PageReorderer::open(&engine, first(), &options)
+            .and_then(|source| {
+                let total = burrow_engines::PageReorderer::pages(&engine, &source)?;
+                // REVERSE EVERY PAGE. Fixed, as `Operation::Reorder` records, and the same
+                // shape as rotate's every-page-by-90: neither side can name a permutation
+                // without first knowing how many pages there are, so both read the count and
+                // reverse it.
+                let order: Vec<u64> = (1..=total).rev().collect();
+                drop(source);
+                burrow_ops::reorder(&engine, first(), &order, &options)
+            })
+            .and_then(|out| {
+                // READ BACK OUT OF THE EMITTED BYTES. The rotations vector is the observable
+                // -- see `Operation::Reorder` for why it rather than something reorder-shaped:
+                // a reversal must come back reversed, and on a fixture whose pages differ that
+                // fails for any permutation except the one asked for.
+                let options = OpenOptions::new(limits, Arc::new(ManualClock::new(0)));
+                let engine = Qpdf::new();
+                let source =
+                    burrow_engines::PageRotator::open(&engine, out.into_boxed_slice(), &options)?;
+                let total = burrow_engines::PageRotator::pages(&engine, &source)?;
+                let mut rotations = Vec::with_capacity(usize::try_from(total).unwrap_or(0));
+                for page in 0..total {
+                    rotations.push(
+                        burrow_engines::PageRotator::effective_rotation(&engine, &source, page)?
+                            .degrees(),
+                    );
+                }
+                Ok((total, rotations))
+            });
+
+        return match outcome {
+            Ok((total, rotations)) => outcome_with_rotations(&Ok(total), Some(rotations)),
+            Err(error) => outcome_of(&Err(error)),
+        };
+    }
+
     let result = match operation {
         Operation::PageCount => {
             let mut options = OpenOptions::new(limits, clock);
@@ -194,6 +236,7 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         // operation still fails to compile here -- which is how `Operation::Rotate` was
         // caught needing a runner at all.
         Operation::Rotate => unreachable!("rotate returns before this match"),
+        Operation::Reorder => unreachable!("reorder returns before this match"),
     };
     outcome_of(&result)
 }
@@ -321,8 +364,8 @@ fn the_corpus_is_not_shrinking() {
     // that would make the gate an obstacle and it would be widened or deleted. Removing one
     // deliberately does, which is the point: a deletion should be a decision somebody wrote
     // down, not a side effect of regenerating a file.
-    const FEWEST_CASES: usize = 33;
-    const FEWEST_COMPARISONS: usize = 55;
+    const FEWEST_CASES: usize = 36;
+    const FEWEST_COMPARISONS: usize = 59;
 
     let expectations = load();
     let comparisons: usize = expectations.cases.iter().map(|c| c.expect.len()).sum();

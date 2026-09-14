@@ -48,6 +48,21 @@ pub struct QpdfReorderable {
     rss_before: Option<u64>,
     /// The ceilings the document was opened under, so a later caller cannot loosen them.
     limits: Limits,
+    /// Set once a permutation has failed partway through.
+    ///
+    /// # Why a failed reorder poisons its source
+    ///
+    /// A permutation moves a page by REMOVING it and putting it back. If the removal succeeds
+    /// and the insertion fails, the document in the engine has one page fewer than it started
+    /// with — and `reorder` takes `&self` and `&Source`, so nothing in the type system stops a
+    /// caller trying again and writing out a document that is silently short a page. Losing a
+    /// page quietly is the one thing this operation's invariant forbids.
+    ///
+    /// No caller reaches it today: `burrow_ops::reorder` returns on the first error and the
+    /// wasm entry point opens once. That is an argument for the flag being cheap, not for it
+    /// being unnecessary — "no caller does this yet" is a property of today's callers, and the
+    /// trait is public. Found by security review.
+    poisoned: core::cell::Cell<bool>,
 }
 
 impl PageReorderer for Qpdf {
@@ -66,6 +81,7 @@ impl PageReorderer for Qpdf {
             pages,
             rss_before,
             limits: options.limits,
+            poisoned: core::cell::Cell::new(false),
         })
     }
 
@@ -79,6 +95,11 @@ impl PageReorderer for Qpdf {
         order: &Permutation,
         options: &OpenOptions<'_>,
     ) -> Result<Vec<u8>> {
+        // THERE IS NO `max_pages` CHECK IN THE WEB COUNTERPART EITHER, and for the same reason
+        // recorded below: it cannot fire. Said in both modules rather than only here, because the
+        // next person writing a web operation will read `web/rotate.rs` — which DOES keep its
+        // check, legitimately — and take the absence for an omission.
+        //
         // `options` carries the CLOCK; the CEILINGS come from `source.limits`, for the reason
         // `rotate` records: the ceiling that counts is the one the document was opened under,
         // and a caller passing laxer options to a later call must not be able to raise it.
@@ -114,8 +135,23 @@ impl PageReorderer for Qpdf {
         // the identity: every page is where it belongs, so every comparison matches and every
         // iteration `continue`s. This saves `n` comparisons and `n` engine calls on the common
         // case of a person dragging a page and putting it back.
+        // A FAILED PERMUTATION LEFT THE DOCUMENT SHORT. See `poisoned`: a removal that
+        // succeeded with an insertion that did not leaves a page out of the tree, and writing
+        // that out is silent loss.
+        if source.poisoned.get() {
+            return Err(Error::Internal(
+                "this document was left part-way through a failed reordering and cannot be \
+                 written; open it again"
+                    .to_owned(),
+            ));
+        }
+
         if !order.is_identity() {
-            permute(source, order, &deadline, clock.as_ref())?;
+            // POISON ON ANY FAILURE -- see the web path for the reasoning, which is identical.
+            if let Err(error) = permute(source, order, &deadline, clock.as_ref()) {
+                source.poisoned.set(true);
+                return Err(error);
+            }
         }
         // WHAT PRESERVES THE PAGE TREE IS THAT NOTHING MOVED, not this branch. An earlier
         // version of this comment said the short-circuit was the mechanism, and code review
@@ -162,6 +198,10 @@ fn permute(
     // checked before this is reached.
     let mut originals = Vec::with_capacity(order.len());
     for index in 0..source.pages {
+        // CHECKPOINTED, for the reason the web path records: this loop runs before the
+        // permutation and is `n` engine calls, so without it `max_duration_ms` is unenforced
+        // for the first part of the operation.
+        deadline.checkpoint(clock)?;
         originals.push(page_handle(document, index, source.pages)?);
     }
 

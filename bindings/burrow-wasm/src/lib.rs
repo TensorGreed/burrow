@@ -833,6 +833,59 @@ pub fn merge(inputs: Box<[u8]>, lengths: Box<[u32]>, limits: WebLimits) -> Reply
     .with_lifecycle(&limits)
 }
 
+/// Put a document's pages in a different order and return the result.
+///
+/// `order` is **one-based** and names every page exactly once, because that is what a
+/// permutation is and this boundary is where a person's request arrives.
+/// [`burrow_core::Permutation`] refuses anything else — the wrong length, a page number of
+/// zero, one past the end, or one named twice — **before the document is opened**, so a bad
+/// argument costs no parse of an untrusted file.
+///
+/// # This changes no shape either
+///
+/// `merge` made [`Reply`] carry bytes and `rotate` needed nothing more; neither does this.
+/// One document in, one document out, and the page list crosses as a `Uint32Array` exactly as
+/// rotate's does — bounded by `max_pages`, which is 10,000 by default and could not plausibly
+/// be raised past `u32`.
+///
+/// # The output's page count is a cross-check, not a readout
+///
+/// A permutation cannot change how many pages there are; that is the operation's invariant.
+/// Reporting the count of what was actually produced means the page shows a number it
+/// measured rather than one it assumed, and a reorder that lost a page shows it.
+///
+/// # Errors
+///
+/// Never panics. Everything arrives as a [`Reply`]: `InvalidArgument` for an order that is not
+/// a permutation of the document's pages, and the ordinary document errors for an input that
+/// cannot be read.
+#[wasm_bindgen]
+#[must_use]
+pub fn reorder(
+    bytes: Box<[u8]>,
+    order: &[u32],
+    password: Option<Box<[u8]>>,
+    limits: WebLimits,
+) -> Reply {
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let password = password.map(|p| Password::new(&p));
+
+    let mut options = OpenOptions::new(limits, clock);
+    options.password = password.as_ref();
+
+    let numbers: Vec<u64> = order.iter().map(|n| u64::from(*n)).collect();
+
+    match burrow_core::ops::reorder(&qpdf(), bytes, &numbers, &options) {
+        Ok(output) => {
+            let pages = output_page_count(&output);
+            Reply::produced(pages, output)
+        }
+        Err(error) => Reply::failure(&error),
+    }
+    .with_lifecycle(&limits)
+}
+
 /// Turn chosen pages of a document and return the result.
 ///
 /// `pages` is **one-based**, because that is how a person names a page and this boundary is

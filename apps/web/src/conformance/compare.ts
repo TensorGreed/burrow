@@ -48,7 +48,7 @@ export type Outcome =
       ok: {
         page_count: number;
         /**
-         * Every page's effective rotation, in page order. `rotate` cases only.
+         * Every page's effective rotation, in page order. `rotate` and `reorder` cases.
          *
          * A rotation cannot change the page count, so a case asserting only that would pass
          * against an implementation that did nothing. These are what tell a real rotation
@@ -61,7 +61,7 @@ export type Outcome =
     }
   | { err: Failure };
 
-export type Operation = "page_count" | "structure_check" | "merge" | "rotate";
+export type Operation = "page_count" | "structure_check" | "merge" | "rotate" | "reorder";
 export type Platform = "native" | "web";
 
 export interface PlatformExpectation {
@@ -234,7 +234,7 @@ function key(caseName: string, operation: Operation): string {
  * RUN through -- schema 3 lets a case declare only the operations it is about -- but the
  * comparator still needs the full set, to reject a record naming something outside it.
  */
-const OPERATIONS: Operation[] = ["page_count", "structure_check", "merge", "rotate"];
+const OPERATIONS: Operation[] = ["page_count", "structure_check", "merge", "rotate", "reorder"];
 
 /**
  * What a case expects of one platform, honouring any recorded by-design difference.

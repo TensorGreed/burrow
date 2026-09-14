@@ -92,23 +92,26 @@ plants_it "an entry for a function nobody declares is caught" \
 # RULE 4: an entry with a name and no argument. An absence with no reason is an exemption with
 # no owner.
 #
-# Built by DELETING a reason from the real file rather than by appending a new entry: a second
-# entry for a function already listed is deduplicated by `sort -u`, so the entry count and the
-# name count disagree and rule 5 fires first. The first version of this case did exactly that
-# and "passed" against the wrong message.
-python3 - "$not_exported" "$work/toml-no-reason.toml" <<'PYEOF'
-import re, sys
-text = open(sys.argv[1]).read()
-# Drop the LAST entry's reason block, leaving its name and operation. The entry count and the
-# name count still agree, so rule 5 stays quiet and rule 4 is the only one that can fire.
-head, sep, last = text.rpartition("[[function]]")
-assert sep, "the fixture file has no entries"
-stripped = re.sub(r'reason = """.*?"""\n', "", last, flags=re.S)
-assert stripped != last, "the reason block was not removed, so this case would prove nothing"
-open(sys.argv[2], "w").write(head + sep + stripped)
-PYEOF
+# SELF-CONTAINED, and it did not start that way. The first version built this fixture by
+# deleting a `reason` block from the REAL `qpdf-not-exported.toml`, guarded by
+# `assert sep, "the fixture file has no entries"`. That worked for as long as the file happened
+# to have entries -- and the moment reorder's bridge exported the last four, the assertion
+# threw, the fixture file was never written, and the case ran against a nonexistent path. The
+# checker then refused for the RIGHT reason by accident ("cannot find"), the grep for
+# "has no reason" missed, and the case reported "it refused, but not for the stated reason".
+#
+# A self-test whose fixture depends on the live repository having a particular shape is a
+# self-test that stops testing when the repository changes. This one builds both halves:
+# an ffi.rs that declares a function nothing exports, and an entry for it with no reason. The
+# entry makes it argued, so rule 1 cannot fire; the missing reason is the only thing left.
+cp "$ffi_rs" "$work/ffi-for-rule-4.rs"
+printf '    pub(super) fn qpdf_oh_get_array_item(\n' >>"$work/ffi-for-rule-4.rs"
+{
+  cat "$not_exported"
+  printf '\n[[function]]\nname = "qpdf_oh_get_array_item"\noperation = "test"\n'
+} >"$work/toml-no-reason.toml"
 plants_it "an entry with no reason is caught" \
-  "$ffi_rs" "$work/toml-no-reason.toml" \
+  "$work/ffi-for-rule-4.rs" "$work/toml-no-reason.toml" \
   "has no reason"
 
 # RULE 5: a name the entry parser cannot read. The count check is what makes a malformed entry

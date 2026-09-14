@@ -92,8 +92,24 @@ describe("the production build", () => {
     // still has the shape that control depends on: the held ops are absent from it, and the
     // ops that ARE allowed are present, so a bundle that stopped containing op names at all
     // could not pass by saying nothing.
-    const held = ["split", "reorder", "compress"];
-    const allowed = ["page_count", "structure_check", "merge", "rotate", "page_rotations"];
+    // HELD MEANS HELD FOR A REASON, not merely "not built yet", and the two were conflated
+    // here until `reorder` shipped its bridge. `split` is held because ADR 0019 §2's rule is
+    // measured as unmet (#54) -- shipping it would put part of somebody's file in a document
+    // they send on. `compress` is not written at all. Only the first is a thing this test can
+    // usefully assert about a build: the second is absent because absent code is absent.
+    //
+    // `reorder` moved to `allowed` in the pull request that gave it a bridge. There is no
+    // `/reorder-pdf` yet, so nothing routes to it -- but the worker can name it, and a list
+    // claiming otherwise would fail the moment it became true, which is what happened.
+    const held = ["split", "compress"];
+    const allowed = [
+      "page_count",
+      "structure_check",
+      "merge",
+      "rotate",
+      "reorder",
+      "page_rotations",
+    ];
 
     const scripts = files.filter((f) => /\.(js|mjs)$/.test(f));
     const sources = scripts.map((f) => readFileSync(join(outDir, f), "utf8"));

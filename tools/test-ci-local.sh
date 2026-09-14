@@ -99,8 +99,21 @@ check "a new Python checker with no local counterpart is refused" \
 
 # THE #63 MISS, EXACTLY. `reorder` was added to fuzz/Cargo.toml and to no run list; here the
 # inverse -- a target CI runs that nothing local does.
+#
+# APPENDS A STEP rather than editing an existing loop, and that was a correction. The first
+# version mutated the literal line `for target in qpdf_check rotate reorder; do` -- and when
+# seeded fuzzing moved to nightly that line gained two more targets, the mutation target
+# vanished, and this case aborted. It failed loudly, which is the behaviour the mutation
+# helper was given for exactly this; but a fixture pinned to the current spelling of a line
+# somebody else owns will keep breaking. An appended step cannot go stale.
 check "a fuzz target CI runs but nothing local does is refused" \
-  "for target in qpdf_check rotate reorder; do||for target in qpdf_check rotate reorder brandnew; do" \
+  "||
+      - name: A new fuzz target
+        run: |
+          for target in brandnew; do
+            cargo +nightly fuzz run \"\$target\"
+          done
+" \
   "fuzz:brandnew" 1
 
 # THE pnpm check MISS. A web gate CI runs and the local web job does not.

@@ -89,9 +89,11 @@ function exact(value: string): number {
 
 function outcomeOf(reply: Reply): Outcome {
   if (reply.ok) {
-    // `rotations` only for rotate cases, where a page count alone would be vacuous: a
-    // rotation cannot change it. Omitted rather than sent empty, so the recorded shape
-    // matches the native side's `Option<Vec<i64>>` exactly.
+    // `rotations` only for rotate and reorder cases, where a page count alone would be
+    // vacuous: neither a rotation nor a permutation can change how many pages there are, so
+    // a case asserting only the count would pass against an implementation that did nothing.
+    // Omitted rather than sent empty, so the recorded shape matches the native side's
+    // `Option<Vec<i64>>` exactly.
     return reply.rotations === undefined || reply.rotations.length === 0
       ? { ok: { page_count: reply.pages } }
       : { ok: { page_count: reply.pages, rotations: reply.rotations } };
@@ -195,6 +197,29 @@ test("every corpus file produces the same typed outcome as the native path", asy
           `${testCase.name} (rotate): a corpus file must not poison the instance`,
         ).toBe(false);
         results.push({ case: testCase.name, operation, outcome: outcomeOf(rotated) });
+        continue;
+      }
+
+      // REORDER IS THREE OPERATIONS TOO, and the same shape: read the count, reverse
+      // `1..=count`, read the rotations back out. See `reverseEveryPage`.
+      if (operation === "reorder") {
+        const reordered = await page.evaluate(
+          ([bytes, password, limits]) =>
+            window.burrowHarness.reverseEveryPage(bytes as string, {
+              password: password as string | null,
+              limits: limits as Record<string, number>,
+            }),
+          [
+            base64,
+            testCase.password,
+            { maxDurationMs: 600_000, ...camelCaseLimits(testCase.limits) },
+          ] as const,
+        );
+        expect(
+          reordered.fatal,
+          `${testCase.name} (reorder): a corpus file must not poison the instance`,
+        ).toBe(false);
+        results.push({ case: testCase.name, operation, outcome: outcomeOf(reordered) });
         continue;
       }
 

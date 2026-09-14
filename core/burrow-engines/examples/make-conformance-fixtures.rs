@@ -142,7 +142,36 @@ fn rotates(page_count: u64, rotations: Vec<i64>) -> Outcomes {
     )])
 }
 
+/// A `reorder` outcome: the page count and the rotations after reversing every page.
+///
+/// The rotations are the observable because a page count cannot see a permutation and neither
+/// side has another per-page readout. `Operation::Reorder` carries the argument.
+fn reorders(page_count: u64, rotations: Vec<i64>) -> Outcomes {
+    Outcomes::from([(
+        Operation::Reorder,
+        Outcome::Ok {
+            page_count,
+            rotations: Some(rotations),
+        },
+    )])
+}
+
 fn main() {
+    // `--check` WRITES NOTHING AND REPORTS DRIFT.
+    //
+    // The corpus is committed and every case records its fixture's sha256, so the corpus is
+    // self-consistent whatever this generator would produce -- and the two can therefore
+    // diverge silently in one direction: change a fixture generator, do not re-run this, and
+    // nothing anywhere notices. That is not hypothetical. `pdf_with_page_tree` gained distinct
+    // `/MediaBox` widths in the reorder core PR so that page order would be observable, and
+    // the committed `mixed-rotation-4page.pdf` and `inherited-rotation-6page.pdf` still had
+    // the old 612-wide pages until reorder's bridge regenerated them. Nothing failed in
+    // between; the corpus simply described a document this file no longer produces.
+    //
+    // So CI runs `--check`, and drift fails on the commit that introduces it rather than
+    // surfacing whenever somebody next happens to regenerate.
+    let check_only = std::env::args().any(|a| a == "--check");
+    let mut drift: Vec<String> = Vec::new();
     let dir = conformance_dir();
     let fixtures = dir.join("fixtures");
     std::fs::create_dir_all(&fixtures).expect("tests/conformance/fixtures should be creatable");
@@ -217,7 +246,18 @@ fn main() {
             // Not `Ok { page_count: 0 }`. A document with no pages is not a document that
             // opened successfully, and the whole of ADR 0006 requirement 6 is about not
             // letting "zero pages" be a success.
-            expect: both(malformed()),
+            //
+            // REORDER JOINS THE EXISTING CASE rather than getting a fixture of its own. A
+            // separate `reorder-refuses-a-document-with-no-pages` was written first and code
+            // review was right that it earned nothing: the refusal happens at open, which
+            // every operation shares, so it passed against any implementation and cost a case
+            // and a comparison to say what `page_count` already said. Declared here, it costs
+            // one comparison and still records that reorder refuses rather than, say, hanging.
+            expect: {
+                let mut expect = both(malformed());
+                expect.insert(Operation::Reorder, malformed());
+                expect
+            },
             platform_expectations: Vec::new(),
             known_gap: None,
         },
@@ -358,6 +398,67 @@ fn main() {
             limits: None,
             attempt_recovery: false,
             expect: rotates(4, vec![0, 180, 180, 180]),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        // ---- reorder -----------------------------------------------------------------
+        //
+        // Every page reversed, which is what `Operation::Reorder` fixes. THREE CASES, AND
+        // THEY ARE NOT EQUALLY STRONG -- said here rather than left to be assumed, because
+        // two of them cannot fail for a wrong permutation.
+        //
+        // The fixtures are the same three `rotate` uses, deliberately: the observable is the
+        // rotations vector, so a fixture that distinguishes pages by rotation for one
+        // operation distinguishes them for the other, and reusing them means no new bytes
+        // enter the corpus for a second operation to assert about.
+        Fixture {
+            // Every page 0, so reversing gives ten zeroes. CANNOT fail for a wrong
+            // permutation, or for a no-op -- it asserts the page count and that nothing was
+            // lost, which is worth having and is not more than that.
+            name: "reorder-a-flat-document",
+            filename: "pages-10.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: reorders(10, vec![0; 10]),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // A two-level tree whose ROOT carries `/Rotate 90`. Reversing is a real
+            // permutation, so qpdf flattens the tree and pushes the inherited value onto
+            // every page first (ADR 0021) -- and the assertion is that all six still display
+            // 90 afterwards.
+            //
+            // So this case is not the weak one the vector suggests. It cannot fail for a
+            // wrong permutation, and it CAN fail for a flattening that drops the inheritance,
+            // which is the failure that would silently unrotate a scanned document.
+            name: "reorder-a-document-that-inherits",
+            filename: "inherited-rotation-6page.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: reorders(6, vec![90; 6]),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // THE ONLY ONE OF THE THREE THAT A WRONG PERMUTATION FAILS.
+            //
+            // Page 1 starts at 270 and the rest inherit 90, so the fixture reads
+            // [270, 90, 90, 90] and a reversal must read [90, 90, 90, 270]. A no-op fails it,
+            // and so does any permutation that does not put page 1 last -- 18 of the 24.
+            // The six that do put page 1 last pass, which is the honest limit of asserting a
+            // permutation through a vector with only two distinct values in it.
+            name: "reorder-a-document-where-one-page-differs",
+            filename: "mixed-rotation-4page.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: reorders(4, vec![90, 90, 90, 270]),
             platform_expectations: Vec::new(),
             known_gap: None,
         },
@@ -595,13 +696,33 @@ fn main() {
     ];
 
     let mut cases = Vec::new();
+    let mut files_compared = 0usize;
     for fixture in files {
         let path = fixtures.join(fixture.filename);
         let bytes = match fixture.bytes {
             Some(bytes) => {
-                std::fs::write(&path, &bytes)
-                    .unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
-                println!("wrote {} ({} bytes)", path.display(), bytes.len());
+                if check_only {
+                    files_compared += 1;
+                    match std::fs::read(&path) {
+                        Ok(committed) if committed == bytes => {}
+                        // BY DIGEST, NOT BY LENGTH. The first version reported the two
+                        // lengths -- and the real drift it was written for changed
+                        // `/MediaBox [0 0 612 792]` to `[0 0 101 792]`, which is the same
+                        // number of bytes. "committed 1400 bytes, this generator produces
+                        // 1400" is a message that makes a reader doubt the tool.
+                        Ok(committed) => drift.push(format!(
+                            "{}: committed sha256 {}, this generator produces {}",
+                            fixture.filename,
+                            &sha256_hex(&committed)[..16],
+                            &sha256_hex(&bytes)[..16]
+                        )),
+                        Err(e) => drift.push(format!("{}: cannot read: {e}", fixture.filename)),
+                    }
+                } else {
+                    std::fs::write(&path, &bytes)
+                        .unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
+                    println!("wrote {} ({} bytes)", path.display(), bytes.len());
+                }
                 bytes
             }
             None => {
@@ -766,7 +887,37 @@ fn main() {
     };
     let json = serde_json::to_string_pretty(&expectations).expect("the schema should serialise");
     let out = dir.join("expectations.json");
-    std::fs::write(&out, format!("{json}\n"))
-        .unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
+    let rendered = format!("{json}\n");
+
+    if check_only {
+        match std::fs::read_to_string(&out) {
+            Ok(committed) if committed == rendered => {}
+            Ok(_) => drift.push(
+                "expectations.json: the committed file is not what this generator produces"
+                    .to_owned(),
+            ),
+            Err(e) => drift.push(format!("expectations.json: cannot read: {e}")),
+        }
+        // REPORTS WHAT IT EXAMINED, not merely a verdict. A comparison that silently stopped
+        // covering fixtures would otherwise print the same "OK" as a real one.
+        println!(
+            "--check: compared {} fixture(s) and expectations.json against this generator",
+            files_compared
+        );
+        if drift.is_empty() {
+            println!("OK -- the committed corpus is what this generator produces.");
+            return;
+        }
+        eprintln!("\nFAILED -- {} file(s) have drifted:", drift.len());
+        for item in &drift {
+            eprintln!("  - {item}");
+        }
+        eprintln!(
+            "\n  Run `cargo run -p burrow-engines --all-features \\\n    --example              make-conformance-fixtures M1` and commit the result.\n  A fixture generator              changed without the corpus being regenerated -- the corpus is self-consistent\n               either way, which is why nothing else notices."
+        );
+        std::process::exit(1);
+    }
+
+    std::fs::write(&out, rendered).unwrap_or_else(|e| panic!("writing {}: {e}", out.display()));
     println!("wrote {}", out.display());
 }

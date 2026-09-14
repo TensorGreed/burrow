@@ -87,7 +87,7 @@ export interface BurrowHarness {
    * arrives in the form `expectations.json` records it.
    */
   runBase64(
-    op: "page_count" | "structure_check" | "merge" | "rotate" | "page_rotations",
+    op: "page_count" | "structure_check" | "merge" | "rotate" | "reorder" | "page_rotations",
     base64: string,
     options?: {
       password?: string | null;
@@ -100,6 +100,8 @@ export interface BurrowHarness {
        * single-input operation sends is unchanged.
        */
       extra?: string[];
+      /** One-based page numbers, every page exactly once. `reorder` only. */
+      order?: number[];
       /** One-based page numbers. `rotate` only. */
       pages?: number[];
       /** A multiple of 90, negative or over 360. `rotate` only. */
@@ -120,6 +122,21 @@ export interface BurrowHarness {
       limits?: Partial<HarnessLimits>;
     },
   ): Promise<Reply>;
+
+  /**
+   * Reverse the document's page order and report the rotations of the result.
+   *
+   * The mirror of {@link rotateEveryPage}, and the same three-operation shape. See
+   * `Operation::Reorder` on the Rust side for why the rotations are the observable.
+   */
+  reverseEveryPage(
+    base64: string,
+    options?: {
+      password?: string | null;
+      limits?: Partial<HarnessLimits>;
+    },
+  ): Promise<Reply>;
+
   /** Keep one `File` in page scope, so an operation can run against the same object twice. */
   holdFile(bytes: number[]): void;
   runHeld(

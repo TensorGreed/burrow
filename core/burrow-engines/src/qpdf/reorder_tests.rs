@@ -10,6 +10,9 @@ use std::sync::Arc;
 use burrow_types::{Clock, Error, Limits, ManualClock, Permutation, Result};
 
 use super::Qpdf;
+// The stepping clock lives in `rotate_tests` and is `pub(super)` so both suites share one
+// definition -- a second copy would be a second thing to keep honest.
+use super::rotate_tests::SteppingClock;
 use crate::minimal_pdf::{self, RotationPlacement};
 // THE OUTPUT READER IS SHARED, and it did not start that way. This file's first version had
 // its own: it read the `(page N)` marker out of each content stream (qpdf flates those, so
@@ -263,4 +266,39 @@ fn the_deadline_is_checked_between_pages() {
         Err(Error::LimitExceeded { limit, .. }) => assert_eq!(limit, "max_duration_ms"),
         other => panic!("expected a deadline refusal, got {other:?}"),
     }
+}
+
+#[test]
+fn a_deadline_refusal_part_way_through_poisons_the_document() {
+    // A permutation moves a page by taking it OUT and putting it back. A refusal between those
+    // two -- here a deadline, which is the reachable one -- leaves the document with a page
+    // outside the tree. `reorder` takes `&self` and `&Source`, so nothing in the type system
+    // stops a caller trying again and writing out a document that is silently short a page.
+    //
+    // Found by security review on the web module; fixed and tested on both, because it is a
+    // property of the trait contract rather than of either implementation.
+    let bytes = minimal_pdf::pdf_with_page_tree(6, RotationPlacement::Absent);
+    // A clock that advances far enough on each read to blow the budget partway through.
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(400));
+    let limits = Limits::with(|l| l.max_duration_ms = 1_000);
+    let options = OpenOptions::new(limits, Arc::clone(&clock));
+
+    let source = PageReorderer::open(&Qpdf::new(), bytes.into_boxed_slice(), &options)
+        .expect("the document opens");
+    let permutation = Permutation::of(vec![5, 4, 3, 2, 1, 0], 6).expect("a valid permutation");
+
+    let first = Qpdf::new().reorder(&source, &permutation, &options);
+    assert!(
+        matches!(first, Err(Error::LimitExceeded { .. })),
+        "the stepping clock must blow the deadline partway through, got {first:?}"
+    );
+
+    // THE SECOND ATTEMPT IS THE POINT. Without the poison flag this can return `Ok` with a
+    // document that is missing whichever page was out of the tree when the deadline fired.
+    let again = Qpdf::new().reorder(&source, &permutation, &options);
+    assert!(
+        matches!(again, Err(Error::Internal(_))),
+        "a source left part-way through a failed reordering must refuse to be written, got \
+         {again:?}"
+    );
 }

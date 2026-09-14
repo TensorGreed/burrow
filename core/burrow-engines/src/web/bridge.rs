@@ -292,6 +292,35 @@ pub trait QpdfBridge: Send + Sync {
     /// are established.
     fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32;
 
+    /// `qpdf_remove_page`. Takes a page out of the document's `/Kids`. Returns the bitmask.
+    ///
+    /// **The object survives.** `QPDF::removePage` is `m->pages.erase(page)` and
+    /// `Pages::erase` does `kids.eraseItem(pos)` -- the page comes out of the tree and the
+    /// object is untouched, so a handle obtained before the removal is still usable after it.
+    /// That is what makes `reorder` possible at all; read from `libqpdf/QPDF_pages.cc`, not
+    /// assumed.
+    fn remove_page(&self, data: QpdfPtr, page: u32) -> i32;
+
+    /// `qpdf_add_page_at`. Inserts `page` next to `refpage`. Returns the bitmask.
+    ///
+    /// `before` is `true` for "immediately before `refpage`", which is the only spelling
+    /// `reorder` uses: the page lands *at* the target position rather than one past it.
+    ///
+    /// The caller's obligations are [`add_page`](QpdfBridge::add_page)'s, plus one more that
+    /// is specific to a move within one document: **remove before inserting.**
+    /// `Pages::insert` contains `if (pageobj_to_pages_pos.contains(newpage)) { newpage =
+    /// makeIndirectObject(newpage.copy()); }` -- inserting a page the document still holds
+    /// silently DUPLICATES the object instead of moving it. Removing first erases the
+    /// ObjGen, so the move is a move. Not checkable here; established in `web/reorder.rs`.
+    fn add_page_at(
+        &self,
+        data: QpdfPtr,
+        source: QpdfPtr,
+        page: u32,
+        before: bool,
+        refpage: u32,
+    ) -> i32;
+
     /// `qpdf_init_write_memory`. Returns the bitmask.
     ///
     /// **Its status must be checked by the caller before anything below is called.** qpdf
@@ -383,6 +412,34 @@ pub trait QpdfBridge: Send + Sync {
     /// destination it built. `key` is a heap pointer, as in
     /// [`oh_get_key`](QpdfBridge::oh_get_key).
     fn oh_replace_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr, item: u32);
+
+    /// `qpdf_oh_get_object_id` and `qpdf_oh_get_generation`, as one call.
+    ///
+    /// # A handle is not an identity
+    ///
+    /// `qpdf_oh oh = ++qpdf->next_oh` -- a **fresh** handle on every call that yields one, so
+    /// two handles to the same object never compare equal and there is no input for which
+    /// they do. The identity of a PDF object is its object number and generation. `reorder`
+    /// compared handles and every permutation failed, the identity included; ADR 0013's
+    /// handle-identity amendment records it, and `tools/check-handle-identity.py` refuses the
+    /// shape.
+    ///
+    /// # Both numbers in one call, and why
+    ///
+    /// Not two methods. Two objects may share a number across generations, so a caller with
+    /// only the number would call two different objects the same one -- and a bridge that
+    /// offers the halves separately invites exactly that. The same argument as
+    /// [`PdfiumBridge::load_mem_document64`] packing a
+    /// handle with its error code: what must be used together crosses together.
+    ///
+    /// Returns `(object_number << 32) | generation`, both narrowed from `c_int`.
+    ///
+    /// **It can fail, and the failure compares EQUAL.** Both are
+    /// `do_with_oh<int>(qpdf, oh, return_T<int>(0), ...)`, so a failed read returns 0 and
+    /// latches the error -- and `(0, 0) == (0, 0)` reads as "the same object", which for
+    /// every caller means *do nothing*. The caller drains the error afterwards; see
+    /// `ObjectHandle::object` on the native side for the same reasoning.
+    fn oh_object(&self, data: QpdfPtr, oh: u32) -> u64;
 
     /// `qpdf_oh_release`. Drops one handle from qpdf's cache.
     ///

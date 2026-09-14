@@ -8,12 +8,15 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Error, Limits, ManualClock, Password, Rotation, Stage};
+use burrow_types::{
+    Clock, Error, Limits, ManualClock, Password, Permutation, Result, Rotation, Stage,
+};
 
 use super::fake::{Call, FakeHeap, FakePdfium, FakeQpdf, PdfiumScript, QpdfScript};
-use super::{WebPdfium, WebQpdf};
+use super::{QpdfBridge, WebPdfium, WebQpdf};
 use crate::{
-    CheckOptions, DocumentEngine, OpenOptions, PageAssembler, PageRotator, StructureEngine,
+    CheckOptions, DocumentEngine, OpenOptions, PageAssembler, PageReorderer, PageRotator,
+    StructureEngine,
 };
 
 /// A stopped clock, so nothing here depends on how busy the machine is.
@@ -1498,4 +1501,306 @@ fn a_rotation_is_relative_to_the_page_s_own_value_on_the_web_too() {
         })
         .collect();
     assert_eq!(written, vec![180], "90 inherited plus a 90 turn is 180");
+}
+
+// --- reorder, over the bridge ------------------------------------------------------------
+
+/// The fake's engine, with `pages` pages and nothing unusual scripted.
+fn reorder_engine(pages: i32) -> (WebQpdf, Arc<FakeQpdf>) {
+    let state = FakeHeap::new();
+    let bridge = Arc::new(FakeQpdf::new(
+        state,
+        QpdfScript {
+            page_count: pages,
+            ..QpdfScript::default()
+        },
+    ));
+    (
+        WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>),
+        bridge,
+    )
+}
+
+fn reordered(engine: &WebQpdf, pages: u64, order: &[u64]) -> Result<Vec<u8>> {
+    let source = PageReorderer::open(engine, ordinary_pdf().into_boxed_slice(), &rotate_options())?;
+    let permutation = Permutation::of(order.to_vec(), pages)?;
+    engine.reorder(&source, &permutation, &rotate_options())
+}
+
+#[test]
+fn the_web_reorder_puts_the_pages_in_the_order_it_was_given() {
+    // THE ASSERTION THAT MATTERS, and it is on the resulting ORDER rather than on the calls.
+    // A reorder that made every expected bridge call and inserted each page one position off
+    // would pass a call-shape assertion and produce the wrong document.
+    //
+    // The fake models `/Kids` as a vector of object numbers: `get_page_n` hands out a fresh
+    // handle mapped to a stable object, `remove_page` takes that object out, `add_page_at`
+    // puts it back. So this reads the document's order, not a log.
+    let (engine, bridge) = reorder_engine(5);
+    reordered(&engine, 5, &[4, 0, 2, 3, 1]).expect("the fake reorders");
+    assert_eq!(
+        bridge.page_order(),
+        vec![5, 1, 3, 4, 2],
+        "the pages are not in the order the permutation named"
+    );
+}
+
+#[test]
+fn the_web_reorder_reverses_correctly() {
+    let (engine, bridge) = reorder_engine(4);
+    reordered(&engine, 4, &[3, 2, 1, 0]).expect("the fake reorders");
+    assert_eq!(bridge.page_order(), vec![4, 3, 2, 1]);
+}
+
+#[test]
+fn the_web_identity_permutation_moves_nothing() {
+    // Not merely "the order is unchanged" -- that is true of a no-op and of a reorder that
+    // moved every page and put it back. The CALLS are what separate them, so both are
+    // asserted: nothing moved, and the page machinery was never entered.
+    let (engine, bridge) = reorder_engine(4);
+    reordered(&engine, 4, &[0, 1, 2, 3]).expect("the fake reorders");
+    assert_eq!(bridge.page_order(), vec![1, 2, 3, 4]);
+    assert!(
+        !bridge
+            .state
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::RemovePage(_) | Call::AddPageAt { .. })),
+        "the identity permutation entered qpdf's page machinery, which is what flattens the \
+         page tree (ADR 0021)"
+    );
+}
+
+#[test]
+fn a_page_already_in_place_is_not_moved() {
+    // The partial reorder: only pages 1 and 2 swap, so pages 0 and 3 must be left alone. A
+    // comparison that always said "different" -- which is what comparing HANDLES does -- would
+    // move all four and still produce the right order, so this asserts the call count too.
+    let (engine, bridge) = reorder_engine(4);
+    reordered(&engine, 4, &[0, 2, 1, 3]).expect("the fake reorders");
+    assert_eq!(bridge.page_order(), vec![1, 3, 2, 4]);
+    let moves = bridge
+        .state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::RemovePage(_)))
+        .count();
+    assert_eq!(
+        moves, 1,
+        "only one page needed to move; moving more means the identity comparison is always \
+         false, which is what comparing raw handles does"
+    );
+}
+
+#[test]
+fn the_web_reorder_compares_objects_and_not_handles() {
+    // THE DEFECT, ASSERTED DIRECTLY. The fake issues a fresh handle from every `get_page_n`,
+    // exactly as qpdf does, so the handles for "the page that belongs here" and "the page
+    // that is here" are never equal even when they are the same page. If this module compared
+    // handles, the identity permutation above would move all four pages -- and it does not.
+    //
+    // This test pins the mechanism rather than the outcome: `oh_object` must be asked, twice
+    // per page, or the comparison cannot be about identity at all.
+    //
+    // NOT the identity permutation, which is what this test asked for first: it
+    // short-circuits before `permute` and makes no comparisons at all, so the assertion read
+    // `left: 0`. The test was wrong and the code was right -- and the short-circuit being
+    // observable here is itself worth having, since `the_web_identity_permutation_moves_nothing`
+    // is the test that pins it.
+    let (engine, bridge) = reorder_engine(3);
+    reordered(&engine, 3, &[1, 0, 2]).expect("the fake reorders");
+    let asked = bridge
+        .state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::OhObject(_)))
+        .count();
+    assert_eq!(
+        asked, 6,
+        "object identity must be read for both sides of every comparison"
+    );
+}
+
+#[test]
+fn every_object_handle_the_web_reorder_takes_is_released() {
+    // `reorder` holds EVERY page's handle for the whole permutation, which is the thing
+    // `rotate` does not do -- so the guard that releases them is this module's own and needs
+    // its own measurement.
+    let state = FakeHeap::new();
+    let script = QpdfScript {
+        page_count: 5,
+        ..QpdfScript::default()
+    };
+    let live = Arc::clone(&script.live_handles);
+    let bridge = Arc::new(FakeQpdf::new(state, script));
+    let engine = WebQpdf::new(bridge as Arc<dyn QpdfBridge>);
+
+    reordered(&engine, 5, &[4, 3, 2, 1, 0]).expect("the fake reorders");
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the reorder left object handles alive in qpdf's cache"
+    );
+}
+
+#[test]
+fn a_refused_web_reorder_releases_its_handles_too() {
+    // THE ERROR PATH, and the first version of this test did not reach it.
+    //
+    // It scripted `pending_error`, which `Session::open` drains before a single handle is
+    // taken -- so `live_handles == 0` because none had ever been issued, and emptying
+    // `Pages::drop` left the test green. Code review instrumented the fake's call log and
+    // found it ended at `Cleanup` with no `GetPageN` at all.
+    //
+    // The failure now lands INSIDE the permutation: `get_page_n` starts failing after three
+    // calls, so three handles are live when the error is raised and the guard is the only
+    // thing that can release them.
+    let state = FakeHeap::new();
+    let script = QpdfScript {
+        page_count: 5,
+        get_page_n_fails_after: Some(3),
+        ..QpdfScript::default()
+    };
+    let live = Arc::clone(&script.live_handles);
+    let bridge = Arc::new(FakeQpdf::new(Arc::clone(&state), script));
+    let engine = WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>);
+
+    let refused = reordered(&engine, 5, &[4, 3, 2, 1, 0]);
+    assert!(refused.is_err(), "the scripted failure must propagate");
+
+    // AND IT FAILED WHERE THE TEST SAYS IT DID. Without this the test could silently regress
+    // to the shape it had -- refusing at `open`, releasing nothing, and passing.
+    let took = state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::GetPageN(_)))
+        .count();
+    assert!(
+        took >= 3,
+        "the refusal must happen after handles were taken, or this measures nothing: {took} \
+         page handles were requested"
+    );
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "a refused reorder left object handles alive"
+    );
+}
+
+#[test]
+fn a_failed_identity_read_refuses_rather_than_skipping_the_page() {
+    // THE HAZARD THE MODULE HEADER NAMES, measured at last.
+    //
+    // `qpdf_oh_get_object_id` and `qpdf_oh_get_generation` are both
+    // `do_with_oh<int>(.., return_T<int>(0), ..)`: on failure each returns 0 and latches the
+    // error. So `(0, 0) == (0, 0)` reads as "this page is already in place" -- the answer that
+    // means DO NOTHING -- and the page is silently left where it was, in an operation whose
+    // whole invariant is that every page ends up where it was asked to be.
+    //
+    // Deleting the drain at `move_into_place` left all 198 tests green, because the fake
+    // returned 0 for an unknown handle without latching anything. It latches now, and this is
+    // the test that fails if the drain goes.
+    let state = FakeHeap::new();
+    // THE FAILURE LANDS ON THE LAST COMPARISON, and that placement is the whole test.
+    //
+    // With every `oh_object` failing, the latched error is drained by the NEXT iteration's
+    // `page_handle` and the operation refuses whatever the drain does -- so the test could not
+    // tell the two apart, which is exactly what happened: deleting the drain left it green
+    // twice over. On the last iteration there is no next `page_handle`, so the drain is the
+    // only thing between a failed identity read and a written document.
+    //
+    // Four pages, two `oh_object` calls each: the seventh call is the last page's.
+    let script = QpdfScript {
+        page_count: 4,
+        oh_object_fails_after: Some(6),
+        ..QpdfScript::default()
+    };
+    let live = Arc::clone(&script.live_handles);
+    let bridge = Arc::new(FakeQpdf::new(Arc::clone(&state), script));
+    let engine = WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>);
+
+    let refused = reordered(&engine, 4, &[3, 2, 1, 0]);
+    assert!(
+        refused.is_err(),
+        "a failed identity read compares EQUAL, so it must be refused rather than read as \
+         'already in place'"
+    );
+
+    // IT MUST FAIL AT THE COMPARISON, AND `is_err()` CANNOT SEE THAT.
+    //
+    // Deleting the drain leaves this operation failing anyway: every page compares equal,
+    // nothing moves, and the latched error surfaces at the drain after the write instead. So
+    // the first assertion passes either way -- measured, by deleting the drain and watching
+    // this test stay green.
+    //
+    // What separates the two is WHERE it stops. With the drain, the refusal happens before a
+    // single byte is written. Without it, the operation walks every page doing nothing, then
+    // writes out a document whose pages are in the ORIGINAL order and only then notices --
+    // and on any engine where that latched error did not survive to the write, that document
+    // would be returned as a success.
+    assert!(
+        !state
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::InitWriteMemory)),
+        "the reorder went on to write a document after an identity read had failed; it must \
+         refuse at the comparison, because a comparison that failed reads as 'already in \
+         place' and produces a document with its pages untouched"
+    );
+    assert_eq!(*live.lock().expect("not poisoned"), 0);
+}
+
+#[test]
+fn a_document_left_part_way_through_a_failed_reorder_will_not_be_written() {
+    // A removal that succeeds with an insertion that fails leaves the document one page
+    // short, and `reorder` takes `&Source` -- so nothing in the type system stops a caller
+    // trying again and writing out a document that is silently missing a page. Losing a page
+    // quietly is the one thing this operation's invariant forbids. Found by security review.
+    let state = FakeHeap::new();
+    let script = QpdfScript {
+        page_count: 4,
+        add_page_at_status: 2,
+        ..QpdfScript::default()
+    };
+    let bridge = Arc::new(FakeQpdf::new(Arc::clone(&state), script));
+    let engine = WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>);
+
+    let source = PageReorderer::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    let permutation = Permutation::of(vec![3, 2, 1, 0], 4).expect("a valid permutation");
+
+    let first = engine.reorder(&source, &permutation, &rotate_options());
+    assert!(
+        first.is_err(),
+        "the scripted insertion failure must propagate"
+    );
+
+    // THE SECOND ATTEMPT IS THE POINT. Without the poison flag this returns `Ok` with a
+    // document the fake's own page order shows is short.
+    let again = engine.reorder(&source, &permutation, &rotate_options());
+    assert!(
+        matches!(again, Err(Error::Internal(_))),
+        "a source left part-way through a failed reordering must refuse to be written"
+    );
+}
+
+#[test]
+fn an_order_for_a_different_document_is_refused() {
+    let (engine, _bridge) = reorder_engine(4);
+    let source = PageReorderer::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    // A valid permutation -- of three pages, for a four-page document.
+    let permutation = Permutation::of(vec![2, 0, 1], 3).expect("a valid 3-permutation");
+    assert!(matches!(
+        engine.reorder(&source, &permutation, &rotate_options()),
+        Err(Error::InvalidArgument(_))
+    ));
 }
