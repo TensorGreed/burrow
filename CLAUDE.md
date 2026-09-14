@@ -172,6 +172,8 @@ A change is done when all of these hold:
 - [ ] Public API changes are reflected in bindings (uniffi + wasm) or explicitly deferred.
 - [ ] Docs updated: rustdoc on public items, plus `docs/ROADMAP.md` or an ADR if scope
       or a decision changed.
+- [ ] `tools/ci-local.py` passes **before the first push** — it is the replication of CI,
+      and it refuses to run if CI has a gate nothing local covers.
 - [ ] Commit messages follow Conventional Commits; CI is green.
 
 ## Working agreements
@@ -226,12 +228,38 @@ those at full candour is working and is not what "summarise" is asking you to sh
   been reported as green — the precise failure the run-ID rule above exists to prevent, one
   layer further in. Read the run's conclusion, and read the per-job conclusions with
   `--json jobs` when you need to know *which* job failed and whether it is yours.
-- **Replicating CI locally means every job, and `cargo audit` is the one that gets skipped.**
-  It is in the command list above and it is easy to run twelve checks without it, because it
-  is the only Rust gate that consults something outside the repository. In M1 PR 4c the
-  branch was pushed after twelve green local checks and CI went red on the thirteenth. The
-  failure was not even ours — the audit *tool* would not build — but the point stands: a
-  local sweep that omits a job is not a replication of CI.
+- **Replicate CI with `tools/ci-local.py`, not by hand.** It reads `.github/workflows/ci.yml`,
+  extracts every gate CI actually invokes — including the ones that run as *actions* rather
+  than shell, like `cargo deny` and `cargo audit` — and **refuses to run anything** unless each
+  one is either covered locally or carries an argued exemption that it prints. Add a check to
+  CI and forget to add it there, and it fails before running a single test.
+
+  ```bash
+  tools/ci-local.py            # parity check, then run everything
+  tools/ci-local.py --check    # parity only
+  tools/ci-local.py --list     # the coverage table
+  tools/ci-local.py --only web # one job
+  ```
+
+  It exists because the rule that used to sit here did not work. That rule said *"replicating
+  CI locally means every job, and `cargo audit` is the one that gets skipped"*, written after
+  M1 PR 4c was pushed on twelve green local checks and went red on the thirteenth. It did not
+  prevent the next three:
+
+  | | missed | why it was invisible |
+  |---|---|---|
+  | M1 PR 4c | `cargo audit` | the only Rust gate that consults the network |
+  | #63 | `tools/check-wasm-exports.sh` | run on the previous PR, not on this one |
+  | #63 | the fuzz target list | `reorder` was in `Cargo.toml` and in no run list |
+  | #63 | `pnpm check` | `lint` and `test` were run; `check` was not |
+
+  **A habit that has failed four times is not a control** — the same conclusion this file
+  already reached about `git add -A`, and the same answer. Writing the rule down more firmly
+  was not going to work a fifth time.
+
+  The parity check runs in CI too, so the table cannot rot: the person adding a gate is exactly
+  the person who will not think to update the local runner. `tools/test-ci-local.sh` re-plants
+  all four misses above and requires a refusal for each.
 - **Never `git add -A` after running or building anything. Stage explicitly, or read
   `git status` first.** Twice this has put generated output on `main`:
 

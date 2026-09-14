@@ -126,6 +126,43 @@ the instruction and the measurement says it is not yet known to be cheap.
 - The exposure above is written down rather than reasoned about again next time.
 - #62 carries the disclosure record; M3 now depends on it.
 
+## 7. Correction, later the same day: `merge` is a different case
+
+§4 concluded that recycling the worker per document addressed "the smaller half". For `merge`
+that framing is wrong, and the correction matters more than the conclusion did.
+
+A second qpdf use-after-free was found in the **foreign-object copier**, reached from
+`qpdf_add_page` — the call `merge` makes once per page. `merge` copies between documents
+**inside a single operation**, so:
+
+- the document wipe (§3a) happens at *release*, after the operation, and does not touch it;
+- recycling (§4) happens *between* operations, and does not touch it either.
+
+Neither mitigation in this document applies. That is not an argument for recycling being more
+valuable; it is an argument that this class of defect is not addressed by managing what
+survives between documents at all.
+
+Measured, on all three paths rather than reasoned about:
+
+| path | outcome |
+|---|---|
+| native, ordinary release build | deterministic SIGSEGV |
+| web (wasm) | hangs; the watchdog kills it at 60 s → typed `LimitExceeded`, worker discarded |
+| `qpdf --empty --pages A B --` | completes with warnings; does not reproduce |
+
+Order decides it: the crafted document faults only when it is **not** the first source — your
+document first, the one you were sent second.
+
+**Silent corruption was not observed on any path.** What was observed is loud. The reason
+`/merge-pdf` is blocked anyway is that "not observed" is not "cannot happen": a use-after-free
+read returns whatever is in that memory, and on wasm there is no unmapped page to fault on —
+which is precisely why that path hangs instead of crashing. The outcome that would be silent is
+the one the platform is most able to produce.
+
+The discharge is #65: `merge` verifies its own output before returning it. That converts the
+only unbounded outcome — a plausible-looking wrong document — into a refusal, and leaves the
+crash and the hang bounded by the process boundary and the watchdog respectively.
+
 ## 6. What has not changed
 
 - No mitigation is claimed for §3b. The engine's own freed memory is still there.

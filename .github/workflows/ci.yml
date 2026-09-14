@@ -671,6 +671,25 @@ jobs:
           python3 tools/check-handle-identity.py
           tools/test-check-handle-identity.sh
 
+      # THE LOCAL RUNNER STILL COVERS THIS FILE.
+      #
+      # `tools/ci-local.py` runs what CI runs, and refuses to run anything unless every gate
+      # in this file is either covered locally or carries an argued exemption. That refusal is
+      # only useful if it is kept true, and the person adding a check here is exactly the
+      # person who will not think to update it -- so the parity check runs in CI as well, and a
+      # new gate with no local counterpart fails on the commit that introduces it.
+      #
+      # It exists because four CI failures across two batches were each a green local sweep
+      # that had skipped a job: `cargo audit`, `check-wasm-exports.sh`, the fuzz target list,
+      # and `pnpm check`. `CLAUDE.md` already carried the rule and it did not prevent the next
+      # three; a habit that has failed four times is not a control.
+      #
+      # `--check` only: this job fetches nothing and must not try to run a test suite.
+      - name: The local CI runner still covers every gate in this file
+        run: |
+          python3 tools/ci-local.py --check
+          tools/test-ci-local.sh
+
       # Compile every tool in tools/ with warnings promoted to errors.
       #
       # M1 PR 4c shipped a regex in a non-raw docstring, so `check-qpdf-trapped.py` printed
