@@ -1,0 +1,180 @@
+// Every typed error the reorder tool can meet, as a sentence for a person.
+//
+// A PURE FUNCTION, for the reason `merge-messages.ts` gives: every branch is tested against a
+// planted reply rather than only the ones a browser happens to produce, and the engine's own
+// words never reach this file.
+//
+// # Why a third file rather than a shared one
+//
+// The same argument `rotate-messages.ts` makes, one operation on. The sentences are the
+// product, and the overlapping kinds want different ones: rotate's `InvalidArgument` is about
+// a page number or an angle, and reorder's is about an order that is not a permutation --
+// which is the one failure this operation exists to prevent, so it gets a sentence that says
+// so rather than a generic one.
+//
+// What is genuinely identical is identical: the limit sentences are about `Limits`, not about
+// the operation, and they are the same words here as there. They are duplicated rather than
+// shared for the reason above -- a shared `messageFor` with a per-tool table would put the
+// sentences behind an indirection and make "what does this page say when a scan is damaged?"
+// a question you answer by tracing code.
+//
+// WRITING RULES, from the design brief: errors do not apologise, and are never vague about
+// what happened. Each says what went wrong and what to do next, in the interface's voice.
+
+/** The fields of a reply this module reads. Everything here is computed in Rust. */
+export interface Failure {
+  /** The typed variant's name, e.g. `Malformed`. Never engine prose. */
+  kind: string;
+  /** The ceiling that was hit, e.g. `max_pages`. */
+  limit?: string;
+  /** What was asked for, and what was allowed. Strings: these are `u64`. */
+  requested?: string;
+  allowed?: string;
+}
+
+export interface Message {
+  /** One line, said plainly. */
+  title: string;
+  /** What to do next. Empty when there is genuinely nothing to do. */
+  next: string;
+  /**
+   * Whether a person can retry by acting on the page.
+   *
+   * `EngineUnavailable` is the only one that needs a deliberate gesture, because the circuit
+   * breaker latches on purpose (ADR 0015 §3).
+   */
+  retryable: boolean;
+}
+
+/** Human numbers for a byte count, without a dependency. */
+function mb(bytes: string | undefined): string {
+  const n = Number(bytes ?? "0");
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const value = n / (1024 * 1024);
+  return value >= 10 ? `${Math.round(value)} MB` : `${value.toFixed(1)} MB`;
+}
+
+/** A plain count, or an empty string when the number is not usable. */
+function count(value: string | undefined): string {
+  const n = Number(value ?? "0");
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return n.toLocaleString("en");
+}
+
+/**
+ * Which ceiling was reached, and what a person can do about it.
+ *
+ * BOTH NUMBERS, whenever the core gave them. "Too large" without a size is a refusal a person
+ * cannot act on: they do not know whether to remove one page or ninety.
+ */
+function limitMessage(failure: Failure): Message {
+  switch (failure.limit) {
+    case "max_input_bytes": {
+      const asked = mb(failure.requested);
+      const allowed = mb(failure.allowed);
+      return {
+        title:
+          asked && allowed
+            ? `That file is ${asked}, and burrow stops at ${allowed}.`
+            : "That file is larger than burrow will open.",
+        next: "Nothing was read. A smaller file, or one split into parts first, will work.",
+        retryable: true,
+      };
+    }
+    case "max_pages": {
+      const asked = count(failure.requested);
+      const allowed = count(failure.allowed);
+      return {
+        title:
+          asked && allowed
+            ? `That document has ${asked} pages, and burrow stops at ${allowed}.`
+            : "That document has more pages than burrow will open.",
+        // NOT "nothing was read". `max_input_bytes` is checked from `Blob.size` before a byte
+        // is read, so that branch can say it; `max_pages` is enforced after the document is in
+        // the engine's memory. Telling somebody their file was never opened when it was is the
+        // same overclaim the `max_memory_bytes` branch below goes out of its way to avoid.
+        // Found by code review.
+        next: "It was opened but not reordered. Split it into smaller documents first.",
+        retryable: true,
+      };
+    }
+    case "max_duration_ms":
+      return {
+        title: "That took longer than burrow allows and was stopped.",
+        next: "Nothing was changed — the file on your computer is untouched. A document with fewer pages will finish.",
+        retryable: true,
+      };
+    case "max_memory_bytes":
+      return {
+        // DETECTED, NOT PREVENTED (ADR 0007), and the sentence says which. "burrow stopped
+        // it" would claim a bound that does not exist: the memory was already spent when
+        // this was noticed.
+        title: "That document used more memory than burrow allows, and was stopped.",
+        next: "It had already been read by then, so the tab may be slow for a moment. Nothing was changed.",
+        retryable: true,
+      };
+    default:
+      return {
+        title: "That document is past one of burrow's limits.",
+        next: "Nothing was changed. A smaller document will work.",
+        retryable: true,
+      };
+  }
+}
+
+/**
+ * The sentence for one failure.
+ *
+ * Every `kind` the core can produce on this path has a branch. The fallback exists because
+ * `burrow_types::Error` is `#[non_exhaustive]`, and a variant added upstream must arrive as
+ * something a person can act on rather than as a blank.
+ */
+export function messageFor(failure: Failure): Message {
+  switch (failure.kind) {
+    case "PasswordRequired":
+      return {
+        title: "That PDF is password-protected.",
+        next: "burrow cannot open it yet. Remove the password in the app that made it, then choose it again.",
+        retryable: true,
+      };
+    case "Malformed":
+      return {
+        title: "burrow could not read that file.",
+        next: "It may be damaged, or not a PDF at all. Try another copy of it.",
+        retryable: true,
+      };
+    case "Unsupported":
+      return {
+        title: "That PDF uses something burrow does not handle.",
+        next: "Nothing was changed. Try another copy of it.",
+        retryable: true,
+      };
+    case "LimitExceeded":
+      return limitMessage(failure);
+    case "InvalidArgument":
+      return {
+        // THE ONE FAILURE THIS OPERATION IS ABOUT: an order that is not a permutation -- the
+        // wrong length, a page named twice, or one that is not in the document. `resolveOrder`
+        // refuses all three before anything is posted, and it refuses them with the page
+        // number, so arriving here means the page and the core disagree about the document.
+        // That is a bug in the page, and saying so is more useful than blaming the file.
+        title: "burrow could not make sense of that order.",
+        next: "Every page has to appear exactly once. This looks like a bug in the page rather than a problem with your file — reloading may clear it.",
+        retryable: true,
+      };
+    case "EngineUnavailable":
+      return {
+        title: "burrow has stopped after several failures in a row.",
+        next: "Nothing is running. Choose Start again when you are ready.",
+        retryable: false,
+      };
+    case "Io":
+    case "Internal":
+    default:
+      return {
+        title: "Something inside burrow failed.",
+        next: "Your file is fine and nothing was sent anywhere. Try again.",
+        retryable: true,
+      };
+  }
+}
