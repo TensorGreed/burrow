@@ -195,15 +195,34 @@ pub enum Operation {
     /// which every-page-by-90 asks as well as any other selection, on a fixture whose pages
     /// start at different rotations.
     Rotate,
+    /// `burrow_ops::reorder`, over qpdf. **Reverse every page.**
+    ///
+    /// Fixed, like `Rotate`, and for the same reason.
+    ///
+    /// # The observable is the ROTATIONS, and that is not a workaround
+    ///
+    /// A reorder changes which page is where, and a page count cannot see it -- so a case
+    /// asserting only `page_count` would pass against an implementation that did nothing.
+    /// Neither side has a way to say "this is page 3" without a per-page readout, and the
+    /// corpus already has one: the effective rotation, which `Rotate` uses and both
+    /// implementations compute from emitted bytes by walking the page tree separately.
+    ///
+    /// So a reversal is checked by reversing the rotations vector. On a fixture whose pages
+    /// have different rotations that is a strong assertion -- it fails for any permutation
+    /// that is not the one asked for, not merely for a no-op -- and it needs no new entry
+    /// point on either side. On a fixture where every page shares a rotation it degrades to
+    /// "nothing was lost", which is worth having and is not pretended to be more.
+    Reorder,
 }
 
 impl Operation {
     /// Every operation, in a stable order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::PageCount,
         Self::StructureCheck,
         Self::Merge,
         Self::Rotate,
+        Self::Reorder,
     ];
 
     /// The name used in the JSON and in the harness's records.
@@ -214,6 +233,7 @@ impl Operation {
             Self::StructureCheck => "structure_check",
             Self::Merge => "merge",
             Self::Rotate => "rotate",
+            Self::Reorder => "reorder",
         }
     }
 }
@@ -236,7 +256,7 @@ pub enum Outcome {
     Ok {
         /// Pages the engine must report.
         page_count: u64,
-        /// Every page's effective rotation, in page order. `rotate` cases only.
+        /// Every page's effective rotation, in page order. `rotate` and `reorder` cases.
         ///
         /// **Because a page count cannot fail for a rotation.** Rotate does not change how
         /// many pages there are -- that is one of its invariants -- so a case that asserted

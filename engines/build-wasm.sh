@@ -262,8 +262,10 @@ qpdf_exports='"_malloc","_free",
   "_qpdf_has_error","_qpdf_get_error","_qpdf_get_error_code","_qpdf_get_num_pages",
   "_qpdf_global_set_uint32","_qpdf_get_qpdf_version",
   "_qpdf_get_page_n","_qpdf_add_page","_qpdf_init_write_memory",
+  "_qpdf_remove_page","_qpdf_add_page_at",
   "_qpdf_oh_get_key","_qpdf_oh_get_type_code","_qpdf_oh_get_int_value",
   "_qpdf_oh_new_integer","_qpdf_oh_replace_key","_qpdf_oh_release",
+  "_qpdf_oh_get_object_id","_qpdf_oh_get_generation",
   "_qpdf_set_deterministic_ID","_qpdf_write","_qpdf_get_buffer_length","_qpdf_get_buffer",
   "_qpdflogger_create","_qpdflogger_set_info","_qpdflogger_set_warn","_qpdflogger_set_error"'
 

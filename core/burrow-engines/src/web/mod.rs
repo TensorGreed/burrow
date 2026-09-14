@@ -33,6 +33,7 @@ pub mod bridge;
 mod pdfium;
 mod qpdf;
 pub mod recycle;
+mod reorder;
 mod rotate;
 
 pub use self::assemble::WebAssembly;
@@ -40,6 +41,7 @@ pub use self::bridge::{LoadOutcome, PdfiumBridge, PdfiumPtr, QpdfBridge, QpdfPtr
 pub use self::pdfium::{WebDocument, WebPdfium};
 pub use self::qpdf::WebQpdf;
 pub use self::recycle::{MIN_CONVERGING_MEMORY_BYTES, should_recycle, threshold_bytes};
+pub use self::reorder::WebReorderable;
 pub use self::rotate::WebRotatable;
 
 #[cfg(test)]

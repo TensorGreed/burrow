@@ -259,6 +259,21 @@ jobs:
       # accidentally lands, THIS step is what notices -- by going green where it must be red.
       #
       # Same shape as tools/test-check-qpdf-crypto.sh: a check whose subject is a failure.
+      # THE CORPUS IS WHAT ITS GENERATOR PRODUCES.
+      #
+      # Every case records its fixture's sha256, so the corpus is self-consistent whatever the
+      # generator would produce -- which means the two can diverge silently in one direction:
+      # change a fixture generator, do not re-run it, and nothing notices. Measured:
+      # `pdf_with_page_tree` gained distinct `/MediaBox` widths in reorder's core PR so page
+      # order would be observable, and two committed fixtures still had the old 612-wide pages
+      # until reorder's bridge regenerated them. Nothing failed in between.
+      #
+      # Needs the engines, so it lives in `test` rather than in the job that fetches nothing.
+      - name: The conformance corpus matches its generator
+        run: |
+          cargo run -p burrow-engines --all-features \
+            --example make-conformance-fixtures -- M1 --check
+
       - name: The known-unmet subsetting rule is still unmet, and says so
         run: |
           set -u
@@ -462,9 +477,29 @@ jobs:
       # are themselves part of the first document -- without it that target never sees two
       # real documents at all. It verifies every seed decodes back to its fixture before
       # writing, and refuses if a target's input layout has drifted from its table.
-      - name: Seed every corpus from the committed fixtures
+      # THE SEEDER IS VERIFIED HERE AND USED NIGHTLY, NOT HERE. `--check` writes nothing.
+      #
+      # Seeding was wired into this job first, and that was wrong in a way only running it
+      # showed. Seeded, a target that merely OPENS a document reproduces #62 -- the
+      # use-after-free in qpdf's page-tree caching, on the open path, disclosed upstream and
+      # not ours to fix. `merge` and `split` were quarantined for it individually; then a
+      # seeded `rotate` run found the same defect, and `qpdf_check` is the target that found
+      # it in the first place.
+      #
+      # Every target here opens a PDF. So while #62 is open, **no seeded target can gate a
+      # pull request** -- quarantining them one at a time was whack-a-mole against a defect
+      # that is upstream of all of them.
+      #
+      # The PR job therefore runs targets UNSEEDED, exactly as it did before any of this, and
+      # `fuzz-nightly.yml` runs them SEEDED for ten minutes each, where a crash is a report and
+      # the artifact upload makes it actionable. When #62 closes, seeding moves back here.
+      #
+      # What still runs here is the seeder's own gate: it must remain correct, and its
+      # self-test must still refuse a broken rule, or the nightly run is seeding from a tool
+      # nobody checked.
+      - name: The corpus seeder is correct, and its rules still refuse
         run: |
-          python3 tools/seed-fuzz-corpus.py
+          python3 tools/seed-fuzz-corpus.py --check
           tools/test-seed-fuzz-corpus.sh
 
       - name: fuzz document_open and prescan for 60s each
@@ -474,6 +509,8 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           for target in document_open prescan; do
+            rm -rf "corpus/$target"
+            mkdir -p "corpus/$target"
             cargo +nightly fuzz run "$target" -- \
               -max_total_time=60 -timeout=10 -rss_limit_mb=2048
           done
@@ -489,44 +526,14 @@ jobs:
       # x86-64. If this step fails to link here, that is the answer to the open question,
       # and the target moves to the self-hosted arm64 runner with the decision recorded
       # rather than worked around. See fuzz/README.md.
-      - name: fuzz the qpdf operations for 60s each, against the instrumented archive
+      - name: fuzz the qpdf targets for 60s each, unseeded, against the instrumented archive
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in qpdf_check rotate reorder; do
-            cargo +nightly fuzz run "$target" -- \
-              -max_total_time=60 -timeout=10 -rss_limit_mb=2048
-          done
-
-      # `merge` and `split`, QUARANTINED, and the quarantine is the honest part.
-      #
-      # Seeded with real documents, both reproduce defects that are open right now:
-      #
-      #   * `split` loses a page on a damaged-but-openable document and its own partition
-      #     assertion catches it -- #61, which is a ship blocker. Note it goes through the
-      #     BUILD route rather than the write path, so #61 is broader than it first looked.
-      #   * `merge` hits a second use-after-free in qpdf's foreign-object copier, distinct
-      #     from the open-path one and reached from `qpdf_add_page` -- #62, disclosed
-      #     privately upstream.
-      #
-      # Neither is burrow's to fix today, and neither is a reason to stop running them. What
-      # would be wrong is either extreme: gating every pull request on a known-open upstream
-      # bug, or quietly unseeding these two so the job goes green while measuring nothing.
-      #
-      # So they run UNSEEDED here -- which is what they did before, no worse -- and seeded for
-      # ten minutes in fuzz-nightly.yml, where a crash is a report rather than a blocked merge.
-      # When #61 and #62 close, these two move back into the loop above and this step goes.
-      - name: fuzz merge and split for 60s each, unseeded pending #61 and #62
-        working-directory: fuzz
-        env:
-          ASAN_OPTIONS: detect_leaks=0
-        run: |
-          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in merge split; do
+          for target in qpdf_check rotate reorder merge split; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             cargo +nightly fuzz run "$target" -- \

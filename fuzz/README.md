@@ -55,11 +55,28 @@ the copier bug sat there.
 write one that does not round-trip, and it checks its prefix table against each target's own
 source so a changed input layout fails loudly instead of silently truncating every seed.
 
-### `merge` and `split` are quarantined in CI
+### Seeded fuzzing is nightly-only while #62 is open
 
-Seeded, both reproduce #61 and #62. They run **unseeded** in the pull-request job — no worse
-than before — and **seeded** for ten minutes in `fuzz-nightly.yml`, where a crash is a report
-rather than a blocked merge. When those issues close, they move back.
+Seeding was wired into the pull-request job first, and running it showed why that was wrong.
+`merge` and `split` were quarantined individually for reproducing #62 and #61; then a seeded
+`rotate` run found #62 too — through `QPDF::processMemoryFile`, i.e. through **opening a
+document**, which every target here does. `qpdf_check` is the target that found it originally.
+
+So quarantining targets one at a time was whack-a-mole against a defect upstream of all of
+them. While #62 is open, **no seeded target can gate a pull request.**
+
+| job | corpus | a crash is |
+|---|---|---|
+| `ci.yml` fuzz smoke, 60 s each | **unseeded** (the corpus directory is cleared first) | a blocked merge |
+| `fuzz-nightly.yml`, 10 min each | **seeded** | a report, with the input uploaded |
+
+That is not a retreat to where things were: the seeder, its five adversarial cases and the
+nightly matrix are all still here and still ran. What changed is which job gates on them.
+When #62 closes, seeding moves back into the pull-request job.
+
+**Locally, clear the corpus or you are not reproducing CI.** `fuzz/corpus/` persists between
+runs, so a sweep after any seeded run is seeded whether you meant it or not —
+`tools/ci-local.py` does the `rm -rf` for exactly that reason.
 
 ## Running
 

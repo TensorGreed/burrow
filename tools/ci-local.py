@@ -84,13 +84,6 @@ EXEMPT: dict[str, str] = {
         "installs a pinned tool (cargo-audit, cargo-fuzz, wasm-pack) into the runner. "
         "Locally these are already installed; installing them is not a gate."
     ),
-    "fuzz:merge": (
-        "quarantined in CI pending #61 and #62 -- it runs unseeded there and seeded nightly. "
-        "Covered locally by the seeded sweep, which is expected to reproduce #62."
-    ),
-    "fuzz:split": (
-        "quarantined in CI pending #61 -- same shape as fuzz:merge."
-    ),
     "tools/ci-local.py": (
         "this file. CI runs the parity check to keep this table honest; running it as a local "
         "job of itself would be circular. It is covered by being the thing you are running."
@@ -128,6 +121,15 @@ JOBS: list[dict] = [
         "covers": [],
         "needs_qpdf_cli": True,
         "why": "the known-defect reproduction CI requires to keep reproducing (#61)",
+    },
+    {
+        "name": "corpus",
+        "run": (
+            "cargo run -p burrow-engines --all-features "
+            "--example make-conformance-fixtures -- M1 --check"
+        ),
+        "covers": [],
+        "why": "the committed corpus is what its generator produces",
     },
     {
         "name": "doc",
@@ -207,7 +209,7 @@ JOBS: list[dict] = [
     },
     {
         "name": "fuzz-seed",
-        "run": "python3 tools/seed-fuzz-corpus.py",
+        "run": "python3 tools/seed-fuzz-corpus.py --check",
         "covers": ["tools/seed-fuzz-corpus.py"],
     },
     {
@@ -217,7 +219,11 @@ JOBS: list[dict] = [
             'export LD_LIBRARY_PATH="$PWD/../engines/vendor/native-$(uname -m)/lib" && '
             'export RUSTFLAGS="-L native=$PWD/../engines/vendor/native-$(uname -m)/lib/fuzz" && '
             "export ASAN_OPTIONS=detect_leaks=0 && "
-            "for t in document_open prescan qpdf_check rotate reorder; do "
+            "for t in document_open prescan qpdf_check rotate reorder merge split; do "
+            # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
+            # between runs, so a local sweep would otherwise be seeded from whatever the last
+            # nightly-style run left behind and reproduce #62 while CI stayed green.
+            'rm -rf "corpus/$t" && mkdir -p "corpus/$t" && '
             'cargo +nightly fuzz run "$t" -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 '
             "|| exit 1; done"
         ),
@@ -227,6 +233,8 @@ JOBS: list[dict] = [
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",
+            "fuzz:merge",
+            "fuzz:split",
         ],
         "slow": True,
     },

@@ -256,6 +256,7 @@ self.onmessage = async (event) => {
       request.op !== "structure_check" &&
       request.op !== "merge" &&
       request.op !== "rotate" &&
+      request.op !== "reorder" &&
       request.op !== "page_rotations"
     ) {
       // BEFORE `limits` is constructed, deliberately. An unknown op is a bug in the page, not
@@ -439,6 +440,45 @@ self.onmessage = async (event) => {
         return;
       }
       reply = wasm_bindgen.rotate(bytes, Uint32Array.from(pages), degrees, password, limits);
+    } else if (request.op === "reorder") {
+      // ONE INPUT, ONE OUTPUT, and the same `Uint32Array` marshalling rotate uses. The order
+      // is the only addition and it is entirely the page's: a permutation of page numbers,
+      // nothing derived from the document.
+      //
+      // REFUSED, NOT COERCED, for the reason rotate's page list is: `Uint32Array.from` wraps
+      // a number above 2^32 and floors a fractional one, so a malformed request would produce
+      // a DIFFERENT permutation and report success. Here that is worse than for rotate --
+      // a wrapped number is still a valid page index, so the result is a correctly-formed
+      // document with its pages in an order nobody asked for.
+      const order = request.order ?? [];
+      const orderUsable =
+        Array.isArray(order) &&
+        order.every(
+          /** @param {unknown} n */
+          (n) => typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 0xffff_ffff,
+        );
+      if (!orderUsable) {
+        self.postMessage({
+          id: request.id,
+          ok: false,
+          kind: "InvalidArgument",
+          fatal: false,
+          message: "a page number is not a whole number in range",
+          pages: 0,
+          limit: "",
+          stage: "",
+          requested: "0",
+          allowed: "0",
+          recycle: false,
+          pdfiumHeapBytes: "0",
+          qpdfHeapBytes: "0",
+          rotations: [],
+          failedInput: -1,
+          innerKind: "",
+        });
+        return;
+      }
+      reply = wasm_bindgen.reorder(bytes, Uint32Array.from(order), password, limits);
     } else if (request.op === "page_rotations") {
       reply = wasm_bindgen.page_rotations(bytes, password, limits);
     } else if (request.op === "page_count") {

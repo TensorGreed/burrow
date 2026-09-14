@@ -50,53 +50,40 @@
 # and runs in the `web` job on every run, warm cache or cold, because it reads only committed
 # files and the cached `qpdf.wasm` -- both present either way.
 
+# =================================================================================
+# THE LIST IS EMPTY TODAY, AND THAT IS A STATE RATHER THAN AN ABSENCE
+# =================================================================================
+#
+# Every function `qpdf/ffi.rs` declares is now exported. The four entries that used to be here
+# went in the pull request that made each reachable from the web, which is the lifecycle this
+# file describes working correctly:
+#
+#   qpdf_remove_page      declared for split (#55), exported for reorder's bridge
+#   qpdf_add_page_at      declared and exported for reorder's bridge
+#   qpdf_oh_get_object_id  ditto -- object identity, which a handle is not (ADR 0013)
+#   qpdf_oh_get_generation ditto
+#
+# TWO THINGS THAT WOULD OTHERWISE BE LOST WITH THEM:
+#
+#   * `qpdf_remove_page` being exported does NOT lift split's hold. Split is held because
+#     ADR 0019 §2's rule is measured as unmet (issue #54): its outputs can still carry objects
+#     belonging to pages they excluded. What keeps split off the web is that there is no
+#     `impl PageExtractor for WebQpdf` and no wasm entry point -- and
+#     `apps/web/src/production-build.test.ts` asserts the shipped bundle cannot name the
+#     operation. The export is reachable only from Rust, which does not offer it.
+#
+#   * An empty list means the "argued absence" rules below have no live instance -- the
+#     `absent` set is empty, so the entry-count agreement and the reason check examine nothing
+#     in a real run. That is exactly the shape `CLAUDE.md` warns about, and it is why
+#     `tools/test-check-wasm-exports.sh` gives each rule its own fixture: the rules are kept
+#     alive by cases that plant a defect, not by the repository happening to contain one.
+#
+#     That self-test itself got caught by this. Its rule-4 fixture built an entry with no
+#     reason by DELETING one from this file, so emptying the file made the fixture throw, the
+#     case run against a nonexistent path, and the wrong message satisfy it. It builds both
+#     halves itself now.
+
 [meta]
 version = 1
 # The ADR that governs which qpdf functions may be called at all.
 trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
-
-[[function]]
-name = "qpdf_remove_page"
-operation = "split"
-reason = """\
-Declared for split's build route, which opens a one-page blank destination, copies the wanted \
-pages in, and removes the blank (ADR 0019 §1). The web has no `impl PageExtractor for \
-WebQpdf`, so `bindings/burrow-wasm` exposes no split entry point and nothing on that path \
-could call this. Exporting it would let JavaScript remove a page from a document through an \
-operation the web cannot perform. Drifted onto main in PR #55 and undetected until rotate's \
-branch busted the wasm cache -- it is recorded here rather than quietly exported, because the \
-honest state is "declared, not yet reachable from the web", not "cleared for the web"."""
-
-[[function]]
-name = "qpdf_add_page_at"
-operation = "reorder"
-reason = """\
-Inserts a page next to a reference page, which is how `reorder` puts a page back after taking \
-it out. Trapped (`direct` -- it calls trap_errors in its own body), so calling it natively is \
-cleared by ADR 0013 §1 without any helper-following argument. Not exported because the web has \
-no `impl PageReorderer for WebQpdf` yet and so has no caller; it goes in the pull request that \
-gives the web the implementation, in the same change that adds the export. \
-Note what it does beyond inserting: like `qpdf_remove_page` it routes through Pages::erase / \
-insert, which flatten the page tree and push inherited attributes down onto each page first. \
-That is a structural rewrite of the document rather than a permutation of it, measured and \
-recorded in ADR 0021 -- and it is the reason reorder's page has to say what changes."""
-
-[[function]]
-name = "qpdf_oh_get_object_id"
-operation = "reorder"
-reason = """\
-Reads an object's number, which with its generation is what object IDENTITY means in a PDF -- \
-a `qpdf_oh` handle is not one, because qpdf issues a fresh handle on every call (ADR 0013's \
-handle-identity amendment). `reorder` needs it to ask whether a page is already where it \
-belongs. Trapped via `do_with_oh -> trap_oh_errors`. Not exported because the web has no \
-`impl PageReorderer for WebQpdf` yet and so has no caller; it goes in the pull request that \
-gives the web the implementation, in the same change that adds the export."""
-
-[[function]]
-name = "qpdf_oh_get_generation"
-operation = "reorder"
-reason = """\
-The other half of a PDF object's identity, and useless apart from `qpdf_oh_get_object_id` -- \
-two objects may share a number across generations, so comparing the number alone would call \
-two different objects the same one. Same trapping route, same operation, same reason for not \
-being exported yet, and the two are added and removed together."""

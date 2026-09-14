@@ -345,7 +345,12 @@ fn page_handle(engine: &WebQpdf, session: &Session, index: u64, pages: u64) -> R
         .map_err(|_| Error::Internal("page index does not fit in u32".to_owned()))?;
     let page = engine.bridge().get_page_n(session.data(), n);
     if let Some(error) = session.take_error() {
-        engine.bridge().oh_release(session.data(), page);
+        // ONLY WHAT WAS ISSUED -- qpdf numbers handles from 1, so 0 means none was created.
+        // See `web/reorder.rs`'s `page_handle` for why releasing an unissued id is worse than
+        // a no-op. The same shape, fixed in both rather than only where it was found.
+        if page != 0 {
+            engine.bridge().oh_release(session.data(), page);
+        }
         return Err(error);
     }
     Ok(page)

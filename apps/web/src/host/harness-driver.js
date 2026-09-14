@@ -261,7 +261,8 @@ function serialisable(reply) {
  * @param {string} op
  * @param {Blob} blob
  * @param {{ password?: string | null, limits?: Record<string, number>, extra?: string[],
- *           attemptRecovery?: boolean, pages?: number[], degrees?: number }} options
+ *           attemptRecovery?: boolean, pages?: number[], degrees?: number,
+ *           order?: number[] }} options
  */
 async function runOnBlob(op, blob, options = {}) {
   sourceForSpawn = await ensureSource();
@@ -293,6 +294,8 @@ async function runOnBlob(op, blob, options = {}) {
       // and neither derived from the document.
       pages: options.pages,
       degrees: options.degrees,
+      // `reorder` only. A permutation of one-based page numbers, chosen by the caller.
+      order: options.order,
       password,
       limits,
       attemptRecovery: options.attemptRecovery ?? false,
@@ -418,6 +421,43 @@ const harness = {
     // READ BACK OUT OF THE OUTPUT. A rotation cannot change the page count, so the rotations
     // are the only thing that tells a real rotation from a no-op.
     return serialisable(await runOnBlob("page_rotations", turned.output, options));
+  },
+
+  /**
+   * Reverse the document's page order and report the rotations of the result.
+   *
+   * THREE OPERATIONS, MIRRORING `core/burrow-ops/tests/conformance.rs`, exactly as
+   * `rotateEveryPage` does. The corpus fixes reorder at "reverse every page", and neither
+   * side can name a permutation without first knowing how many pages there are — so both read
+   * the count, reverse `1..=count`, and read the rotations back out of the EMITTED bytes.
+   *
+   * The rotations are the observable rather than something reorder-shaped, and that is not a
+   * workaround: a page count cannot see a permutation, neither side has a per-page readout
+   * except this one, and on a fixture whose pages differ a reversal must come back reversed.
+   * `Operation::Reorder` carries the argument.
+   *
+   * The composition is the TEST's, not the binding's — `burrow-wasm` exposes `reorder` and
+   * `page_rotations`, and deciding to call them in this order is a harness decision.
+   *
+   * @param {string} base64
+   * @param {{ password?: string | null, limits?: Record<string, number> }} [options]
+   */
+  async reverseEveryPage(base64, options = {}) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "application/pdf" });
+
+    const counted = await runOnBlob("page_rotations", blob, options);
+    if (!counted.ok) return serialisable(counted);
+
+    const order = Array.from({ length: counted.pages }, (_, i) => counted.pages - i);
+    const reordered = await runOnBlob("reorder", blob, { ...options, order });
+    if (!reordered.ok || !reordered.output) return serialisable(reordered);
+
+    return serialisable(await runOnBlob("page_rotations", reordered.output, options));
   },
 
   /** How many workers have been spawned. The recovery tests read this. */

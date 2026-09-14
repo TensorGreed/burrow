@@ -82,6 +82,14 @@ interface EmscriptenModule extends EmscriptenConfig {
   // EXPORTED_FUNCTIONS allowlist -- a symbol not on that list is not in the module at all.
   _qpdf_get_page_n(data: number, n: number): number;
   _qpdf_add_page(data: number, source: number, page: number, first: number): number;
+  _qpdf_remove_page(data: number, page: number): number;
+  _qpdf_add_page_at(
+    data: number,
+    source: number,
+    page: number,
+    before: number,
+    refpage: number,
+  ): number;
   _qpdf_init_write_memory(data: number): number;
   /** Note the upstream spelling: `ID` is capitalised in qpdf's C API. */
   _qpdf_set_deterministic_ID(data: number, value: number): void;
@@ -97,6 +105,8 @@ interface EmscriptenModule extends EmscriptenConfig {
   _qpdf_oh_get_int_value(data: number, oh: number): bigint;
   _qpdf_oh_new_integer(data: number, value: bigint): number;
   _qpdf_oh_replace_key(data: number, oh: number, key: number, item: number): void;
+  _qpdf_oh_get_object_id(data: number, oh: number): number;
+  _qpdf_oh_get_generation(data: number, oh: number): number;
   _qpdf_oh_release(data: number, oh: number): void;
   _qpdf_global_set_uint32(param: number, value: number): number;
   _qpdflogger_create(): number;
@@ -218,6 +228,20 @@ declare const wasm_bindgen: {
     password: Uint8Array | undefined,
     limits: WebLimits,
   ): Reply;
+
+  /**
+   * Put a document's pages in a different order and return the result.
+   *
+   * `order` is ONE-BASED and names every page exactly once. Rust refuses anything else — the
+   * wrong length, a page number of zero, one past the end, or one named twice — before the
+   * document is opened, so a bad argument costs no parse.
+   */
+  reorder(
+    bytes: Uint8Array,
+    order: Uint32Array,
+    password: Uint8Array | undefined,
+    limits: WebLimits,
+  ): Reply;
 };
 
 /** Consumed by the call it is passed to — see the note in `main.js`. Never `.free()`d. */
@@ -320,6 +344,16 @@ interface WorkerGlobalScope {
   __burrow_qpdf_oh_get_int_value(data: number, oh: number): bigint;
   __burrow_qpdf_oh_new_integer(data: number, value: bigint): number;
   __burrow_qpdf_oh_replace_key(data: number, oh: number, key: number, item: number): void;
+  __burrow_qpdf_remove_page(data: number, page: number): number;
+  __burrow_qpdf_add_page_at(
+    data: number,
+    source: number,
+    page: number,
+    before: number,
+    refpage: number,
+  ): number;
+  /** `(object_number << 32) | generation` — both halves in one call. See `bridge.js`. */
+  __burrow_qpdf_oh_object(data: number, oh: number): bigint;
   __burrow_qpdf_oh_release(data: number, oh: number): void;
   /** The only bridge function that carries bytes OUT of an engine heap. */
   __burrow_qpdf_copy_out(ptr: number, len: number): Uint8Array;

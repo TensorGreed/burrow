@@ -29,6 +29,9 @@ pub(super) enum Call {
     CopyIn(usize),
     WipeAndFree(u32, u32),
     AbandonInput(u32, u32),
+    RemovePage(u32),
+    AddPageAt { page: u32, before: bool },
+    OhObject(u32),
     Load,
     PageCount,
     CloseDocument(u32, u32, u32),
@@ -367,6 +370,31 @@ pub(super) struct QpdfScript {
     pub(super) init_succeeds: bool,
     /// Extra heap growth attributed to the read, in bytes — what a decompression bomb costs.
     pub(super) read_grows_heap_by: u64,
+    /// The bitmask `qpdf_remove_page` returns.
+    pub(super) remove_page_status: i32,
+    /// Fail `get_page_n` from this call onwards, by latching an error.
+    ///
+    /// What makes an error DURING the permutation reachable. Without it the only failure a
+    /// reorder test could script was one `Session::open` drains first -- so the test that
+    /// claimed to cover the error path released zero handles because zero had been taken.
+    /// Found by code review.
+    pub(super) get_page_n_fails_after: Option<usize>,
+    /// Latch an error from `oh_object` only from this call onwards.
+    ///
+    /// Needed to put the failure on the LAST comparison. With every call failing, the latched
+    /// error is drained by the next iteration's `page_handle` and the operation refuses
+    /// anyway -- so a test could not tell the drain from its absence. On the last iteration
+    /// there is no next `page_handle`, and the drain is the only thing standing between a
+    /// failed identity read and a document written as though nothing needed moving.
+    pub(super) oh_object_fails_after: Option<usize>,
+    /// Latch an error from `oh_object`, and return 0 from it.
+    ///
+    /// The exact hazard the module header names: both halves of an object's identity return 0
+    /// on failure, so an undrained failure compares EQUAL and the page is silently not moved.
+    /// Deleting the drain left every test green until this knob existed.
+    pub(super) oh_object_fails: bool,
+    /// The bitmask `qpdf_add_page_at` returns.
+    pub(super) add_page_at_status: i32,
     /// An error that appears in the slot *again*, once, after the first drain.
     ///
     /// Models qpdf recording a further problem after the orchestration's last
@@ -420,6 +448,11 @@ impl Default for QpdfScript {
             pending_error: None,
             page_count: 1,
             add_page_status: 0,
+            remove_page_status: 0,
+            get_page_n_fails_after: None,
+            oh_object_fails: false,
+            oh_object_fails_after: None,
+            add_page_at_status: 0,
             init_write_status: 0,
             write_status: 0,
             output: b"%PDF-1.7\nmerged\n".to_vec(),
@@ -458,6 +491,22 @@ pub(super) struct FakeQpdf {
     /// that to tell `/Rotate` from `/Parent`, because rotate's walk asks about both and a
     /// fake that answered the same for each could not model a page that inherits.
     handle_keys: Mutex<std::collections::BTreeMap<u32, String>>,
+    /// The document's pages, as OBJECT NUMBERS, in their current order.
+    ///
+    /// # Why the fake models this at all
+    ///
+    /// A fake whose `oh_object` returned the handle would be useless for `reorder` in the one
+    /// way that matters: the defect the whole design guards against is treating a handle as an
+    /// identity, and such a fake agrees with the defect. So identity is modelled separately
+    /// from handles here -- `get_page_n` issues a fresh handle every call, as qpdf does, and
+    /// maps it to a stable object number.
+    ///
+    /// Modelling the order as well means a test can assert the permutation the engine
+    /// performed, not merely that it made the calls. `remove_page` and `add_page_at` move
+    /// entries in this vector exactly as qpdf moves them in `/Kids`.
+    page_objects: Mutex<Vec<u32>>,
+    /// Which object each issued handle refers to.
+    handle_objects: Mutex<std::collections::BTreeMap<u32, u32>>,
     /// The next handle id. Monotonic and never reused, exactly as qpdf's `next_oh` is.
     next_handle: Mutex<u32>,
 }
@@ -499,13 +548,36 @@ impl FakeQpdf {
         handle
     }
 
+    /// Which object a handle refers to, or `None` if it was never a page handle.
+    fn object_of(&self, handle: u32) -> Option<u32> {
+        self.handle_objects
+            .lock()
+            .expect("not poisoned")
+            .get(&handle)
+            .copied()
+    }
+
+    /// The document's pages, in their current order, as object numbers.
+    ///
+    /// What a reorder test asserts on. Without it a test could only check that the engine made
+    /// the right CALLS, which is a weaker claim than that the document ended up in the right
+    /// order -- and the difference is where an off-by-one lives.
+    pub(super) fn page_order(&self) -> Vec<u32> {
+        self.page_objects.lock().expect("not poisoned").clone()
+    }
+
     pub(super) fn new(state: Arc<FakeHeap>, script: QpdfScript) -> Self {
         let pending = Mutex::new(script.pending_error);
         let rearm = Mutex::new(script.error_reappears_once);
+        let pages = (1..=u32::try_from(script.page_count.max(0)).unwrap_or(0)).collect();
         Self {
             state,
             script,
             handle_keys: Mutex::new(std::collections::BTreeMap::new()),
+            // Object numbers start at 1 and are distinct, so an order read back out of the
+            // fake is unambiguous. Length follows the scripted page count.
+            page_objects: Mutex::new(pages),
+            handle_objects: Mutex::new(std::collections::BTreeMap::new()),
             next_handle: Mutex::new(0),
             pending,
             rearm,
@@ -679,7 +751,104 @@ impl QpdfBridge for FakeQpdf {
         // key -- so a caller that released it drove `live_handles` NEGATIVE, cancelling out a
         // genuine leak, and `n + 1` collided with the first issued id so `oh_get_type_code`
         // answered for the wrong object. Found by code review.
-        self.issue_handle(&format!("<page {n}>"))
+        if let Some(after) = self.script.get_page_n_fails_after {
+            let taken = self
+                .state
+                .calls()
+                .iter()
+                .filter(|c| matches!(c, Call::GetPageN(_)))
+                .count();
+            if taken > after {
+                *self.pending.lock().expect("not poisoned") = Some(2);
+                return 0;
+            }
+        }
+        let handle = self.issue_handle(&format!("<page {n}>"));
+        // THE HANDLE IS FRESH; THE OBJECT IS NOT. Asking twice for the same page gives two
+        // handles and one object number, which is exactly qpdf's behaviour and exactly what a
+        // caller comparing handles gets wrong.
+        let object = self
+            .page_objects
+            .lock()
+            .expect("not poisoned")
+            .get(usize::try_from(n).unwrap_or(usize::MAX))
+            .copied();
+        if let Some(object) = object {
+            self.handle_objects
+                .lock()
+                .expect("not poisoned")
+                .insert(handle, object);
+        }
+        handle
+    }
+
+    fn remove_page(&self, _data: QpdfPtr, page: u32) -> i32 {
+        self.state.record(Call::RemovePage(page));
+        if let Some(object) = self.object_of(page) {
+            self.page_objects
+                .lock()
+                .expect("not poisoned")
+                .retain(|o| *o != object);
+        }
+        self.script.remove_page_status
+    }
+
+    fn add_page_at(
+        &self,
+        _data: QpdfPtr,
+        _source: QpdfPtr,
+        page: u32,
+        before: bool,
+        refpage: u32,
+    ) -> i32 {
+        self.state.record(Call::AddPageAt { page, before });
+        let (Some(object), Some(reference)) = (self.object_of(page), self.object_of(refpage))
+        else {
+            return self.script.add_page_at_status;
+        };
+        let mut order = self.page_objects.lock().expect("not poisoned");
+        // The reference page's CURRENT position, looked up rather than remembered -- it moves
+        // as earlier pages are reordered, which is the whole reason the engine re-asks qpdf
+        // for it on every iteration instead of tracking it.
+        let at = order.iter().position(|o| *o == reference);
+        let Some(index) = at else {
+            // A REFERENCE PAGE THAT IS NOT IN THE TREE IS AN ERROR, not an append. The first
+            // version pushed the page onto the end, so a bug that lost the reference page
+            // produced a plausible-looking order here instead of a refusal -- a fake that is
+            // more forgiving than the engine it stands in for. Real qpdf raises. Found by
+            // code review.
+            *self.pending.lock().expect("not poisoned") = Some(2);
+            return 2;
+        };
+        if before {
+            order.insert(index, object);
+        } else {
+            order.insert(index + 1, object);
+        }
+        self.script.add_page_at_status
+    }
+
+    fn oh_object(&self, _data: QpdfPtr, oh: u32) -> u64 {
+        self.state.record(Call::OhObject(oh));
+        let asked = self
+            .state
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::OhObject(_)))
+            .count();
+        let late = self.script.oh_object_fails_after.is_some_and(|n| asked > n);
+        if self.script.oh_object_fails || late {
+            // EXACTLY WHAT QPDF DOES ON FAILURE: `do_with_oh<int>(.., return_T<int>(0), ..)`
+            // returns the fallback AND latches the error. Returning 0 without latching would
+            // model the harmless half and leave the dangerous half untestable -- which is
+            // what the fake did until code review measured that deleting the drain changed
+            // nothing.
+            *self.pending.lock().expect("not poisoned") = Some(2);
+            return 0;
+        }
+        // Generation 0 for every object, as a freshly written document has. The packing is
+        // the bridge's contract: `(object_number << 32) | generation`.
+        u64::from(self.object_of(oh).unwrap_or(0)) << 32
     }
 
     fn add_page(&self, _data: QpdfPtr, _source: QpdfPtr, page: u32, first: bool) -> i32 {
