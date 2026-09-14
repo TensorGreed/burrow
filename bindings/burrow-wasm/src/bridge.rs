@@ -39,7 +39,7 @@ extern "C" {
     #[wasm_bindgen(js_name = __burrow_pdfium_wipe_free)]
     fn pdfium_wipe_free(ptr: u32, len: u32);
     #[wasm_bindgen(js_name = __burrow_pdfium_free_input)]
-    fn pdfium_free_input(ptr: u32);
+    fn pdfium_free_input(ptr: u32, len: u32);
     /// Returns `(code << 32) | handle`, so the handle and `FPDF_GetLastError` cross in one
     /// call. Splitting them into two would let another PDFium call overwrite the global in
     /// between, and the code would then belong to a different operation.
@@ -48,7 +48,7 @@ extern "C" {
     #[wasm_bindgen(js_name = __burrow_pdfium_pages)]
     fn pdfium_pages(doc: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_pdfium_close)]
-    fn pdfium_close(doc: u32, data: u32);
+    fn pdfium_close(doc: u32, data: u32, len: u32);
     /// The heap size in **WASM pages**, not bytes. See `pages_to_bytes`.
     #[wasm_bindgen(js_name = __burrow_pdfium_heap_pages)]
     fn pdfium_heap_pages() -> u32;
@@ -159,8 +159,8 @@ impl PdfiumBridge for JsPdfium {
         pdfium_wipe_free(ptr.0, len);
     }
 
-    fn abandon_input(&self, ptr: PdfiumPtr) {
-        pdfium_free_input(ptr.0);
+    fn abandon_input(&self, ptr: PdfiumPtr, len: u32) {
+        pdfium_free_input(ptr.0, len);
     }
 
     fn load_mem_document64(&self, data: PdfiumPtr, len: u32, password: PdfiumPtr) -> LoadOutcome {
@@ -177,8 +177,8 @@ impl PdfiumBridge for JsPdfium {
         pdfium_pages(doc.0)
     }
 
-    fn close_document(&self, doc: PdfiumPtr, data: PdfiumPtr) {
-        pdfium_close(doc.0, data.0);
+    fn close_document(&self, doc: PdfiumPtr, data: PdfiumPtr, len: u32) {
+        pdfium_close(doc.0, data.0, len);
     }
 
     fn heap_bytes(&self) -> u64 {

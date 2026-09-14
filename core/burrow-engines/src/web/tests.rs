@@ -216,6 +216,99 @@ fn the_password_copy_in_the_engine_heap_is_wiped_and_freed() {
     state.assert_empty();
 }
 
+/// The user's DOCUMENT is wiped out of the engine heap when it is released, not merely freed.
+///
+/// # Why this matters more than the password case it was modelled on
+///
+/// One worker serves many documents in a session — the host keeps it across operations and
+/// only recycles it when a heap crosses `max_memory_bytes`. A plain `_free` hands the buffer
+/// back to the module's free list **with the user's file still in it**, where it stays until
+/// something else happens to allocate over it. So the previous document was sitting in the
+/// engine heap while the next one was being processed.
+///
+/// Passwords were wiped here from the start, on both engines, for exactly that reason. The
+/// document is the larger object and had the weaker treatment; that asymmetry is what this
+/// test closes.
+///
+/// It asserts the BYTES, not the call. "`close_document` was invoked" would pass against a
+/// bridge that ignored the length.
+#[test]
+fn the_document_is_wiped_out_of_the_engine_heap_when_it_is_released() {
+    let (engine, state) = document_engine(PdfiumScript::default());
+    let bytes = ordinary_pdf();
+    let length = bytes.len();
+
+    let doc = engine
+        .open(
+            bytes.into_boxed_slice(),
+            &OpenOptions::new(Limits::default(), stopped()),
+        )
+        .expect("an ordinary document should open");
+    drop(doc);
+
+    let closes: Vec<u32> = state
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::CloseDocument(_, _, len) => Some(len),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closes.len(), 1, "the document is released exactly once");
+    assert_eq!(
+        usize::try_from(closes[0]).unwrap(),
+        length,
+        "the wipe must cover the whole input, not a truncated length"
+    );
+
+    let wiped = state.last_wiped_contents().expect("a wipe was recorded");
+    assert!(
+        wiped.iter().all(|b| *b == 0),
+        "the user's document was still readable in the engine heap when it was released"
+    );
+    state.assert_empty();
+}
+
+/// The same, on the path where no document was ever attached.
+///
+/// A file PDFium refuses still reached the engine heap — it was copied in before the load was
+/// attempted. That is the failure path, and a wipe that covered only the success path would
+/// leave every rejected document behind.
+#[test]
+fn a_document_that_fails_to_load_is_wiped_too() {
+    let (engine, state) = document_engine(PdfiumScript {
+        load_succeeds: false,
+        load_error_code: 3,
+        ..PdfiumScript::default()
+    });
+    let bytes = ordinary_pdf();
+    let length = bytes.len();
+
+    let refused = engine.open(
+        bytes.into_boxed_slice(),
+        &OpenOptions::new(Limits::default(), stopped()),
+    );
+    assert!(refused.is_err(), "the script makes the load fail");
+
+    let abandons: Vec<u32> = state
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::AbandonInput(_, len) => Some(len),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(abandons.len(), 1, "the input is abandoned exactly once");
+    assert_eq!(usize::try_from(abandons[0]).unwrap(), length);
+
+    let wiped = state.last_wiped_contents().expect("a wipe was recorded");
+    assert!(
+        wiped.iter().all(|b| *b == 0),
+        "a REFUSED document was left readable in the engine heap"
+    );
+    state.assert_empty();
+}
+
 /// The wipe happens before the load returns, not at the end of the open.
 #[test]
 fn the_password_is_wiped_immediately_after_the_load_not_at_the_end() {

@@ -91,6 +91,9 @@ impl core::fmt::Debug for WebPdfium {
 pub struct WebDocument {
     doc: PdfiumPtr,
     data: PdfiumPtr,
+    /// How many bytes `data` holds, so [`Drop`] can wipe it. See
+    /// [`PdfiumBridge::close_document`].
+    data_len: u32,
     deadline: Deadline,
     clock: Arc<dyn Clock>,
     pages_at_open: u64,
@@ -119,14 +122,15 @@ impl core::fmt::Debug for WebDocument {
 }
 
 impl Drop for WebDocument {
-    /// Close, then free — never the other way round.
+    /// Close, then wipe and free — never the other way round.
     ///
     /// PDFium reads from the input buffer for as long as the document is open
     /// (`fpdfview.h:451`), so freeing first is a use-after-free inside the engine heap. The
     /// ordering is not enforced here by care: [`PdfiumBridge::close_document`] is a single
     /// call that does both, so there is no call site at which the order is expressible.
     fn drop(&mut self) {
-        self.bridge.close_document(self.doc, self.data);
+        self.bridge
+            .close_document(self.doc, self.data, self.data_len);
     }
 }
 
@@ -207,7 +211,7 @@ impl DocumentEngine for WebPdfium {
         //    cleanup path that runs only on success is the wrong shape whatever guards it.
         let password_len = password.as_ref().map_or(0, |p| p.len());
         let Ok(password_len_u32) = u32::try_from(password_len) else {
-            self.bridge.abandon_input(data);
+            self.bridge.abandon_input(data, engine_len);
             return Err(Error::InvalidArgument(
                 "password is too large for the engine's address space".to_owned(),
             ));
@@ -217,7 +221,7 @@ impl DocumentEngine for WebPdfium {
             Some(p) => {
                 let ptr = self.bridge.copy_in(p);
                 if ptr.is_null() {
-                    self.bridge.abandon_input(data);
+                    self.bridge.abandon_input(data, engine_len);
                     return Err(Error::Io(
                         "the pdfium module could not allocate for the password".to_owned(),
                     ));
@@ -247,7 +251,7 @@ impl DocumentEngine for WebPdfium {
         if outcome.handle.is_null() {
             // Failure is established by the null handle; the code only classifies it, and
             // it came back from the same bridge call, so it is this load's code.
-            self.bridge.abandon_input(data);
+            self.bridge.abandon_input(data, engine_len);
             return Err(crate::codes::pdfium::map_failure(outcome.code));
         }
 
@@ -257,6 +261,7 @@ impl DocumentEngine for WebPdfium {
         let mut document = WebDocument {
             doc: outcome.handle,
             data,
+            data_len: engine_len,
             deadline,
             clock,
             pages_at_open: 0,

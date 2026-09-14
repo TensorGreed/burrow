@@ -472,14 +472,14 @@ jobs:
       # x86-64. If this step fails to link here, that is the answer to the open question,
       # and the target moves to the self-hosted arm64 runner with the decision recorded
       # rather than worked around. See fuzz/README.md.
-      - name: fuzz qpdf_check and merge for 60s each, against the instrumented archive
+      - name: fuzz the qpdf operations for 60s each, against the instrumented archive
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in qpdf_check merge split rotate; do
+          for target in qpdf_check merge split rotate reorder; do
             cargo +nightly fuzz run "$target" -- \
               -max_total_time=60 -timeout=10 -rss_limit_mb=2048
           done

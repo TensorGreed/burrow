@@ -125,6 +125,12 @@ impl core::fmt::Debug for WebQpdf {
 pub(super) struct Session {
     data: QpdfPtr,
     buffer: QpdfPtr,
+    /// How many bytes `buffer` holds, so [`Drop`] can **wipe** it rather than only free it.
+    ///
+    /// Carried for that reason alone. Without it the only honest thing `Drop` could do was
+    /// `free`, which returns the user's document to the module's free list intact — see the
+    /// note there.
+    buffer_len: u32,
     bridge: Arc<dyn QpdfBridge>,
 }
 
@@ -152,8 +158,20 @@ impl Drop for Session {
         }
         // After the handle, never before: qpdf reads from this buffer for as long as the
         // handle lives.
+        //
+        // WIPED, NOT MERELY FREED, AND THAT WAS A CHANGE. This buffer holds the user's
+        // document. `free` hands it back to the module's free list with its contents intact,
+        // where it stays for the life of the WORKER -- and a worker serves many documents in
+        // one session, so the previous file's bytes were still sitting in the heap while the
+        // next one was processed. Passwords were wiped here from the start (`wipe_and_free`
+        // on both engines) precisely because "it sits in the free list, readable by whatever
+        // allocates next" is unacceptable; the document itself is the larger object and had
+        // the weaker treatment.
+        //
+        // The cost is one `HEAPU8.fill(0, ..)` per document, which is a memset over bytes
+        // that are about to be released anyway.
         if !self.buffer.is_null() {
-            self.bridge.free(self.buffer);
+            self.bridge.wipe_and_free(self.buffer, self.buffer_len);
         }
     }
 }
@@ -247,6 +265,7 @@ impl Session {
         let mut session = Session {
             data,
             buffer: QpdfPtr::NULL,
+            buffer_len: 0,
             bridge: Arc::clone(&engine.bridge),
         };
 
@@ -265,6 +284,16 @@ impl Session {
 
         // The input and the description into the engine heap. The description is freed
         // before returning; the input cannot be, and belongs to the session.
+        //
+        // THE LENGTH IS NARROWED BEFORE THE COPY, not at the wipe -- the same ordering the
+        // password below uses, and for the same reason: narrowing afterwards leaves a failure
+        // path that returns with the bytes already in the engine heap and no length with
+        // which to wipe them.
+        let Ok(buffer_len) = u32::try_from(bytes.len()) else {
+            return Err(Error::InvalidArgument(
+                "the input is too large for the engine's address space".to_owned(),
+            ));
+        };
         let buffer = engine.bridge.copy_in(bytes);
         if buffer.is_null() {
             return Err(Error::Io(
@@ -272,6 +301,7 @@ impl Session {
             ));
         }
         session.buffer = buffer;
+        session.buffer_len = buffer_len;
 
         let description = engine.bridge.copy_in(DESCRIPTION);
         if description.is_null() {

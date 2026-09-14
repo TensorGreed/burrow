@@ -116,12 +116,15 @@ pub trait PdfiumBridge: Send + Sync {
     /// this it would sit in the module's free list for the life of the worker.
     fn wipe_and_free(&self, ptr: PdfiumPtr, len: u32);
 
-    /// Free an input buffer that no document was ever attached to.
+    /// **Wipe** and free an input buffer that no document was ever attached to.
     ///
     /// Separate from [`close_document`](PdfiumBridge::close_document) rather than being the
     /// same call with a null check, because a null check in JavaScript is a branch on
     /// engine state and ADR 0009 forbids it. Two straight-line functions, and Rust picks.
-    fn abandon_input(&self, ptr: PdfiumPtr);
+    ///
+    /// `len` is what makes the wipe possible, and it is why this takes one: see
+    /// [`close_document`](PdfiumBridge::close_document).
+    fn abandon_input(&self, ptr: PdfiumPtr, len: u32);
 
     /// `FPDF_LoadMemDocument64`, returning the handle and this call's error code together.
     ///
@@ -138,12 +141,24 @@ pub trait PdfiumBridge: Send + Sync {
     /// avoided.
     fn get_page_count(&self, doc: PdfiumPtr) -> i32;
 
-    /// `FPDF_CloseDocument(doc)` and then free `data`, in that order.
+    /// `FPDF_CloseDocument(doc)`, then **wipe and free** `data`, in that order.
     ///
     /// One call, so the order cannot be got wrong at a call site. PDFium reads from the
     /// input buffer for as long as the document is open (`fpdfview.h:451`), so freeing
     /// first is a use-after-free.
-    fn close_document(&self, doc: PdfiumPtr, data: PdfiumPtr);
+    ///
+    /// # Why it takes a length
+    ///
+    /// `data` holds the user's document. It used to be plain `_free`, which returns those
+    /// bytes to the module's free list **with their contents intact**, where they stay for
+    /// the life of the worker — and one worker serves many documents in a session, so the
+    /// previous file was still in the heap while the next one was processed.
+    ///
+    /// Passwords were wiped from the start, on both engines, precisely because "it sits in
+    /// the free list, readable by whatever allocates next" is not acceptable. The document
+    /// is the larger object and had the weaker treatment. The length is the only thing the
+    /// wipe needed, so it crosses the bridge now.
+    fn close_document(&self, doc: PdfiumPtr, data: PdfiumPtr, len: u32);
 
     /// The module's current heap size, `HEAPU8.byteLength`.
     ///
