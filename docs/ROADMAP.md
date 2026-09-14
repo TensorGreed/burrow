@@ -6,13 +6,28 @@ milestone is not done until CI is green and its
 
 Dates are deliberately absent. The order is the commitment.
 
+## Ship blockers
+
+Things that must be fixed before anything reaches a user, including a pre-alpha one. This list
+is short on purpose: a blocker is not "important", it is "we do not ship with this open".
+
+| | what | why it blocks |
+|---|---|---|
+| **#61** | A damaged-but-openable document silently loses a page on write | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user — not an error, not a warning, not a count that disagrees. Someone can lose a page of a contract and find out months later. It reproduces through `rotate`, which is written and merged, so it is live on any build of `/rotate-pdf` that gets deployed. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** |
+| **#62** | Memory-unsafety in the pinned qpdf, on the open path | Blocks **M3/M4 only**, not the web. The wasm sandbox contains it (`docs/security/exposure-2026-09-14-qpdf-uaf.md` sets out why); a native Android or iOS app has no such boundary, and opening an attachment is the scenario. Disclosed upstream 2026-09-14. |
+
+Neither blocks further M1 development. They block **deployment**, which is the distinction
+worth keeping: work continues, and a build does not go in front of a person until the row is
+gone.
+
+
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` core ✅ (bridge and page next), `split` **held** (#54), `compress` next |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` core ✅ (bridge and page next), `split` **held** (#54), `compress` next. **Not shippable until #61 is fixed** — see *Ship blockers*. |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
-| [M3](#m3--android) | Android app | not started |
-| [M4](#m4--ios) | iOS app | not started |
+| [M3](#m3--android) | Android app | not started; **gated on #62** — native has no wasm sandbox |
+| [M4](#m4--ios) | iOS app | not started; **gated on #62**, as M3 |
 | [M5](#m5--office-to-pdf) | Office → PDF | not started |
 | [M6](#m6--pdf-to-docx) | PDF → DOCX | not started |
 

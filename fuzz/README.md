@@ -12,6 +12,55 @@ cargo install --locked cargo-fuzz
 cargo +nightly fuzz list
 ```
 
+## Seed the corpus first, and why every earlier result is void
+
+```bash
+python3 ../tools/seed-fuzz-corpus.py
+```
+
+**Run this before anything else.** `fuzz/corpus/` is gitignored, and until 2026-09-14 nothing
+in this repository had ever shipped a seed set — so every *"runs clean for 60 s"* recorded
+before that date, in every pull request and every definition-of-done checklist, was measured
+against a corpus libFuzzer had grown from random bytes. **Those results do not count.** They
+are not evidence of anything except that the targets do not crash on garbage.
+
+libFuzzer does not invent a valid PDF. Measured, by planting a defect in `reorder` that made
+the permutation silently do nothing:
+
+| | executions | found |
+|---|--:|---|
+| unseeded, 60 s | 577,209 | nothing |
+| one seed, from a conformance fixture | 1 | the defect |
+
+The same seeding run then found three real defects in minutes, none of which is reachable from
+random bytes:
+
+- a page silently lost on a damaged-but-openable document, through `rotate`, through a plain
+  write, **and** through `split`'s build route (#61 — a ship blocker);
+- a use-after-free in qpdf's page-tree caching, on the document-open path (#62);
+- a second, distinct use-after-free in qpdf's foreign-object copier, reached from
+  `qpdf_add_page` — found only because the seeder pairs two real documents for `merge`.
+
+### What the seeder has to do that is not obvious
+
+Every target carves its parameters off the front of the buffer differently, so the same
+fixture needs a different prefix per target and a seed with the wrong prefix is a seed of a
+truncated document. `merge` is worse than a prefix: it splits the whole buffer at an offset
+derived from its **first two bytes**, which are themselves part of the first document, so
+landing that split on a document boundary takes arithmetic. Without it, `merge` is handed two
+halves of one file and never copies a page between two valid documents at all — which is why
+the copier bug sat there.
+
+`tools/seed-fuzz-corpus.py` decodes every seed back the way the target will and refuses to
+write one that does not round-trip, and it checks its prefix table against each target's own
+source so a changed input layout fails loudly instead of silently truncating every seed.
+
+### `merge` and `split` are quarantined in CI
+
+Seeded, both reproduce #61 and #62. They run **unseeded** in the pull-request job — no worse
+than before — and **seeded** for ten minutes in `fuzz-nightly.yml`, where a crash is a report
+rather than a blocked merge. When those issues close, they move back.
+
 ## Running
 
 From `fuzz/`:

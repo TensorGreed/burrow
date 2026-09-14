@@ -28,10 +28,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # EVERY TARGET, and it used to be three of them. `merge`, `split`, `rotate` and
+        # `reorder` were added to `fuzz/Cargo.toml` over four pull requests and none of them
+        # reached this list, so the long run -- the one that is supposed to find what the
+        # 60-second smoke run cannot -- had not covered an operation since M1 PR B.
+        #
+        # `ci.yml`'s "every fuzz target is actually run by this job" guard did not catch it
+        # because it read only `ci.yml`. It reads both workflows now.
         target:
           - document_open
           - prescan
           - qpdf_check
+          - merge
+          - split
+          - rotate
+          - reorder
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Same pinned action as every other job (its `stable` branch); the `toolchain`
@@ -70,6 +81,18 @@ jobs:
       - if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --version 0.13.2 cargo-fuzz
 
+      # SEEDED, unlike the 60-second smoke run in ci.yml, and this is where the difference
+      # is meant to show. An unseeded corpus exercises the parser's rejection paths and very
+      # little else -- measured: with a defect planted in `reorder`, 577,209 unseeded
+      # executions found nothing and one seed failed on the first execution.
+      #
+      # `merge` and `split` are quarantined out of the pull-request job because seeded they
+      # reproduce #62 and #61 respectively. Here they are seeded like everything else, because
+      # a nightly crash is a report rather than a blocked merge -- and the artifact upload
+      # below is what makes it one.
+      - name: Seed every corpus from the committed fixtures
+        run: python3 tools/seed-fuzz-corpus.py
+
       # See fuzz/README.md for why each of these is required rather than tuning.
       - name: fuzz ${{ matrix.target }} for 10 minutes
         working-directory: fuzz
@@ -77,11 +100,17 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          # qpdf_check links the INSTRUMENTED archive, which is the only target that gets
-          # coverage feedback from an engine's own code rather than just our wrapper.
-          if [ "${{ matrix.target }}" = "qpdf_check" ]; then
-            export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          fi
+          # The INSTRUMENTED archive for every qpdf-backed target, so libFuzzer sees inside
+          # qpdf's own parser and writer rather than only our wrapper. It used to be
+          # `qpdf_check` alone, described as "the only target that gets coverage feedback from
+          # an engine's own code" -- true when it was written and false from the moment
+          # `merge` arrived. Both qpdf use-after-frees found on 2026-09-14 are inside qpdf,
+          # which is exactly the code this flag makes visible.
+          case "${{ matrix.target }}" in
+            qpdf_check|merge|split|rotate|reorder)
+              export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
+              ;;
+          esac
           cargo +nightly fuzz run ${{ matrix.target }} -- \
             -max_total_time=600 -timeout=10 -rss_limit_mb=2048
 

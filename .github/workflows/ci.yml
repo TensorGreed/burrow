@@ -450,6 +450,23 @@ jobs:
       # through cargo, so it does not get the deps/ path cargo adds for `cargo test`.
       # ASAN_OPTIONS because FPDF_DestroyLibrary is deliberately never called, so PDFium's
       # statics are live at exit by design. Both are explained in fuzz/README.md.
+      # SEED THE CORPORA FIRST, and this is not a nicety.
+      #
+      # `fuzz/corpus/` is gitignored and nothing here had ever shipped a seed set, so every
+      # "clean for 60 s" this project recorded was measured against a corpus libFuzzer had
+      # grown from random bytes -- and libFuzzer does not invent a valid PDF. Measured, with a
+      # defect planted in `reorder` that made the permutation do nothing: 577,209 unseeded
+      # executions found nothing, and one seed failed on the first execution.
+      #
+      # The seeder does arithmetic for `merge`, whose split offset is derived from bytes that
+      # are themselves part of the first document -- without it that target never sees two
+      # real documents at all. It verifies every seed decodes back to its fixture before
+      # writing, and refuses if a target's input layout has drifted from its table.
+      - name: Seed every corpus from the committed fixtures
+        run: |
+          python3 tools/seed-fuzz-corpus.py
+          tools/test-seed-fuzz-corpus.sh
+
       - name: fuzz document_open and prescan for 60s each
         working-directory: fuzz
         env:
@@ -479,7 +496,39 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in qpdf_check merge split rotate reorder; do
+          for target in qpdf_check rotate reorder; do
+            cargo +nightly fuzz run "$target" -- \
+              -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+          done
+
+      # `merge` and `split`, QUARANTINED, and the quarantine is the honest part.
+      #
+      # Seeded with real documents, both reproduce defects that are open right now:
+      #
+      #   * `split` loses a page on a damaged-but-openable document and its own partition
+      #     assertion catches it -- #61, which is a ship blocker. Note it goes through the
+      #     BUILD route rather than the write path, so #61 is broader than it first looked.
+      #   * `merge` hits a second use-after-free in qpdf's foreign-object copier, distinct
+      #     from the open-path one and reached from `qpdf_add_page` -- #62, disclosed
+      #     privately upstream.
+      #
+      # Neither is burrow's to fix today, and neither is a reason to stop running them. What
+      # would be wrong is either extreme: gating every pull request on a known-open upstream
+      # bug, or quietly unseeding these two so the job goes green while measuring nothing.
+      #
+      # So they run UNSEEDED here -- which is what they did before, no worse -- and seeded for
+      # ten minutes in fuzz-nightly.yml, where a crash is a report rather than a blocked merge.
+      # When #61 and #62 close, these two move back into the loop above and this step goes.
+      - name: fuzz merge and split for 60s each, unseeded pending #61 and #62
+        working-directory: fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
+          export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
+          for target in merge split; do
+            rm -rf "corpus/$target"
+            mkdir -p "corpus/$target"
             cargo +nightly fuzz run "$target" -- \
               -max_total_time=60 -timeout=10 -rss_limit_mb=2048
           done
@@ -493,16 +542,28 @@ jobs:
         working-directory: fuzz
         run: |
           declared=$(cargo +nightly fuzz list | sort)
-          run=$(grep -oE 'for target in [a-z_ ]+' ../.github/workflows/ci.yml \
+          run=$(grep -ohE 'for target in [a-z_ ]+' ../.github/workflows/ci.yml \
                 | sed 's/for target in //' | tr ' ' '\n' | grep -v '^$' | sort -u)
+          # AND THE NIGHTLY MATRIX, which this guard did not read. `merge`, `split`, `rotate`
+          # and `reorder` were all absent from fuzz-nightly.yml -- four targets the long run
+          # had never touched -- while this step reported every declared target as covered.
+          # A guard that checks one of two places is the shape it exists to prevent.
+          nightly=$(sed -n '/^        target:/,/^    steps:/p' ../.github/workflows/fuzz-nightly.yml \
+                | grep -oE '^ *- [a-z_]+$' | tr -d ' -' | sort -u)
           echo "declared: $(echo "$declared" | tr '\n' ' ')"
           echo "run:      $(echo "$run" | tr '\n' ' ')"
+          echo "nightly:  $(echo "$nightly" | tr '\n' ' ')"
           missing=$(comm -23 <(echo "$declared") <(echo "$run"))
           if [ -n "$missing" ]; then
-            echo "::error::fuzz targets declared but never run: $missing"
+            echo "::error::fuzz targets declared but never run in this job: $missing"
             exit 1
           fi
-          echo "OK -- all $(echo "$declared" | wc -l) declared target(s) are run."
+          absent=$(comm -23 <(echo "$declared") <(echo "$nightly"))
+          if [ -n "$absent" ]; then
+            echo "::error::fuzz targets missing from the nightly matrix: $absent"
+            exit 1
+          fi
+          echo "OK -- all $(echo "$declared" | wc -l) declared target(s) run here and nightly."
 
   wasm:
     name: wasm build
