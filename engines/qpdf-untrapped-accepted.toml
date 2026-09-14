@@ -253,3 +253,23 @@ released none would leak one `QPDFObjectHandle` per node for as long as the docu
 open -- growth `max_memory_bytes` cannot see, because it samples RSS at operation \
 boundaries and detects rather than bounds (ADR 0007). `qpdf/handle.rs` makes the release \
 automatic and `rotate`'s tests assert the live count returns to baseline."""
+
+[[function]]
+name = "qpdf_oh_free_buffer"
+reason = """\
+`if (bufp && *bufp) { free(*bufp); *bufp = nullptr; }` (qpdf-c.cc:1769-1776) -- the whole \
+body, plus the `QTC::TC` coverage macro. It takes no `qpdf_data` at all, so it cannot reach \
+a document, an object cache or the parser; there is no argument to it through which a PDF \
+could arrive. `free` is C and does not throw. It meets this file's bar more plainly than \
+any other entry: the bar asks that a function never touch the PDF's bytes, and this one has \
+no way to name a PDF. \
+It is required rather than optional. `qpdf_oh_get_page_content_data` and \
+`qpdf_oh_get_stream_data` return `malloc`ed buffers that are the CALLER's to free -- unlike \
+every other pointer this crate receives from qpdf, which qpdf owns and recycles. \
+`split`'s resource-name walk takes one buffer per content stream, so not freeing them would \
+leak the decompressed size of every stream on every page of every output. \
+Note that it is untrapped for a reason that is NOT this file's usual one: `QTC::TC` is a \
+top-level statement, which is what keeps it (and `qpdf_get_root`, and every `qpdf_oh_is_*` \
+predicate) off the generated list under ADR 0013's caller rule. That rule is about reachable \
+code outside a trap; here there is no trap to be outside of and nothing that could throw \
+into it."""

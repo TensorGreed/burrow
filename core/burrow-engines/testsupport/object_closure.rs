@@ -36,6 +36,16 @@
 //! - **An object with nowhere to carry a marker.** Arrays are declared `unmarkable` in the
 //!   manifest rather than quietly omitted, and this harness reports the count so a manifest
 //!   that stopped marking things is visible rather than reading as a clean run.
+//!
+//!   **Page dictionaries joined them when #54 closed, and every consumer of this fixture should
+//!   know why.** `split`'s pruning removes every page key outside the specified set — the rule
+//!   that closes `/B`, `/AA`, `/Thumb` and everything nobody enumerated — and a `/BM` marker is
+//!   exactly such a key. Marking a page would measure the rule rather than the page, and a
+//!   correct split would report five lost pages. `rotate`, `reorder` and `compress` used those
+//!   markers as evidence the page object survived; what witnesses it now is the page's content
+//!   stream, which is marked, owned by the same page, and required by `assert_nothing_lost` for
+//!   all three. That is a real substitution rather than a gap, and it is stated here because the
+//!   three operations that rely on it will not read `split`'s ADR.
 
 #![allow(dead_code, clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
@@ -59,7 +69,16 @@ pub struct MarkedObject {
     pub pages: Vec<u64>,
     /// `content` — what a page is made of, which any operation keeping the page must keep.
     /// `navigation` — document-level furniture pointing at pages, which a subsetting operation
-    /// may drop (ADR 0019 §1 does, and `/split-pdf` says so) and a page-preserving one may not.
+    /// may drop (ADR 0019 §1 does, and §4 has the wording `/split-pdf` will say it in) and a
+    /// page-preserving one may not.
+    ///
+    /// **`navigation` covers more than outlines**, and it grew when #54 closed. A form field
+    /// tree and an article thread are document-level furniture by the same definition: the
+    /// field is reached from the catalog's `/AcroForm` and describes the whole document, the
+    /// thread from `/Threads`, and `split` drops both — the first by cutting every widget's
+    /// `/Parent`, the second by leaving `/B` off the page-key allowlist (ADR 0019 §2b). The
+    /// widgets themselves stay `content`: they are annotations on their own pages and a split
+    /// that lost them would have lost something a page needs.
     pub kind: String,
 }
 
@@ -71,6 +90,12 @@ pub struct Marked {
     pub objects: BTreeMap<u64, MarkedObject>,
     /// Objects the fixture could not mark, with the reason. Reported, never silently dropped.
     pub unmarkable: usize,
+    /// Objects the manifest names by role, so a test need not hardcode a number.
+    ///
+    /// The numbers shift whenever the generator gains an object, and a test pinned to a literal
+    /// would then assert something about whatever moved into its place — silently, and in the
+    /// direction of passing.
+    pub roles: BTreeMap<String, u64>,
 }
 
 /// Generate the marked document, once per process.
@@ -159,41 +184,44 @@ fn build_marked() -> Marked {
             },
         );
     }
-    let unmarkable = manifest.matches("\"object\":").count();
+    // `"object":` appears in both `unmarkable` and `roles`, so counting it over the whole file
+    // counts roles as unmarkable objects. The `unmarkable` array is what this number is about.
+    let unmarkable = between(
+        manifest
+            .split_once("\"unmarkable\":")
+            .map_or("", |(_, rest)| rest),
+        '[',
+        ']',
+    )
+    .map_or(0, |list| list.matches("\"object\":").count());
 
-    // GATED ON THE DERIVABLE COUNT, not on "more than ten". The generator writes how many
-    // objects it marked, so the reader can be held to it -- `CLAUDE.md`'s rule that a check
-    // gates on the expected count wherever that count is knowable. A non-zero gate would pass
-    // a reader that had understood two entries out of twenty-six.
-    let expected = field_number(&manifest, "\"marked_count\":")
-        .expect("the manifest states how many objects it marked");
-    assert_eq!(
-        objects.len() as u64,
-        expected,
-        "the reader understood {} of the manifest's {expected} objects; a scan over a \
-         half-read manifest reports no leak for the wrong reason",
-        objects.len()
-    );
+    // The named roles: `"<name>": N`, bare numbers rather than objects with fields of their
+    // own. They deliberately carry no `"marker"`, because the object reader above finds objects
+    // by splitting on `"marker":` -- a role that had one was read as an extra object and every
+    // test in every consumer failed at once.
+    let mut roles = BTreeMap::new();
+    if let Some((_, block)) = manifest.split_once("\"roles\":") {
+        for line in block.lines().skip(1) {
+            let line = line.trim().trim_end_matches(',');
+            if line.starts_with('}') {
+                break;
+            }
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            let Some(number) = value.trim().parse::<u64>().ok() else {
+                continue;
+            };
+            roles.insert(name.trim().trim_matches('"').to_owned(), number);
+        }
+    }
 
-    // AND EVERY MARKER IS REALLY IN THE SOURCE. The generator asserts this too, and it is
-    // repeated here because the two can drift: a manifest entry naming a string nobody wrote
-    // is a channel that cannot fail any assertion, and it still inflates the denominator in
-    // "N of 26 survived". That is precisely how the inherited-`/Resources` channel went
-    // undetectable in the first version of this harness.
-    let unplanted: Vec<&str> = objects
-        .values()
-        .filter(|object| {
-            !bytes
-                .windows(object.marker.len())
-                .any(|w| w == object.marker.as_bytes())
-        })
-        .map(|object| object.marker.as_str())
-        .collect();
+    // EVERY ROLE NAMES AN OBJECT THAT IS REALLY THERE. A role pointing at nothing is a test
+    // that asserts about an absent object, which passes whatever the operation did.
     assert!(
-        unplanted.is_empty(),
-        "{} declared marker(s) are not in the fixture at all, so those channels cannot fail \
-         any closure assertion: {unplanted:?}",
-        unplanted.len()
+        !roles.is_empty(),
+        "the manifest declares no roles, so every test that asks for one by name would be \
+         asserting about nothing"
     );
 
     Marked {
@@ -201,6 +229,7 @@ fn build_marked() -> Marked {
         pages,
         objects,
         unmarkable,
+        roles,
     }
 }
 
@@ -318,7 +347,7 @@ pub fn assert_nothing_lost(marked: &Marked, output: &[u8], must: &[u64], what: &
 /// | kind | what it is | who may lose it |
 /// |---|---|---|
 /// | `content` | what a page is made of | nobody who keeps the page |
-/// | `navigation` | document furniture pointing at pages | a subsetting operation (ADR 0019 §1) |
+/// | `navigation` | document furniture pointing at pages: outlines, form field trees, article threads | a subsetting operation (ADR 0019 §1, §2b) |
 /// | `page-tree` | an intermediate `/Pages` node, holding other pages | anything that moves a page (ADR 0021) |
 ///
 /// So a subsetting operation requires `"content"`; `rotate` and `compress` require

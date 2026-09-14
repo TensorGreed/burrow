@@ -251,14 +251,6 @@ jobs:
           fi
           echo "OK -- every integration suite on disk is named and ran"
 
-      # The two tests that are `#[ignore]`d BECAUSE THEY FAIL, run on purpose and required to
-      # fail. Without this, "the gap is visible in the suite" is a claim about a doc comment:
-      # `cargo test` never runs an ignored test, so they would be comments containing
-      # `assert!`. ADR 0019 SS2a records six channels through which `split` still carries data
-      # from excluded pages; these are the assertions that say so, and the day issue #54
-      # accidentally lands, THIS step is what notices -- by going green where it must be red.
-      #
-      # Same shape as tools/test-check-qpdf-crypto.sh: a check whose subject is a failure.
       # THE CORPUS IS WHAT ITS GENERATOR PRODUCES.
       #
       # Every case records its fixture's sha256, so the corpus is self-consistent whatever the
@@ -274,32 +266,30 @@ jobs:
           cargo run -p burrow-engines --all-features \
             --example make-conformance-fixtures -- M1 --check
 
-      - name: The known-unmet subsetting rule is still unmet, and says so
-        run: |
-          set -u
-          expected="split_no_leak::no_output_carries_anything_from_a_page_it_excluded_even_when_objects_are_shared
-          subset_closure::every_surviving_object_belongs_to_a_page_the_output_contains"
-          failed=0
-          for suite_test in $expected; do
-            suite=${suite_test%%::*}
-            name=${suite_test##*::}
-            echo "--- $suite::$name (expected to FAIL)"
-            if cargo test -p burrow-ops --all-features --test "$suite" -- --ignored --exact "$name" >/tmp/ignored.log 2>&1; then
-              echo "::error::$suite::$name PASSED. Either issue #54 is fixed -- in which case remove the #[ignore], delete the companion 'the gap still exists' test and amend ADR 0019 SS2a -- or the test has stopped measuring anything." >&2
-              tail -20 /tmp/ignored.log >&2
-              exit 1
-            fi
-            # It must fail for the RIGHT reason: a compile error or a missing fixture fails too.
-            grep -q "belonging only to pages it excluded\|carries data derived from excluded pages" /tmp/ignored.log || {
-              echo "::error::$suite::$name failed for a reason other than the leak it exists to record." >&2
-              tail -20 /tmp/ignored.log >&2
-              exit 1
-            }
-            failed=$((failed + 1))
-            echo "    failed as required"
-          done
-          [ "$failed" -eq 2 ] || { echo "::error::expected 2 known-unmet tests, ran $failed" >&2; exit 1; }
-          echo "OK -- $failed known-unmet test(s) failed as required; the gap is measured, not asserted"
+      # THE SUBSETTING RULE IS MET, AND THE TESTS THAT SAY SO ACTUALLY RAN.
+      #
+      # This step used to require those tests to FAIL: they were `#[ignore]`d because they did,
+      # and without a gate like this "the gap is visible in the suite" was a claim about a doc
+      # comment, since `cargo test` never runs an ignored test. #54 closed the gap, and this step
+      # is how CI reported that -- by going green where it had to be red.
+      #
+      # It inverts rather than disappearing, for the same reason the two in-suite pins it guards
+      # did. The hazard has changed shape, not gone: put `#[ignore]` back on either test and
+      # `cargo test --workspace` stays green while nothing checks the property.
+      #
+      # IT LIVES IN A SCRIPT because a `run:` block is invisible to `tools/ci-local.py`'s parity
+      # extractor, which maps a bare `cargo test …` to a token the main test job already covers.
+      # This branch's first push went red here after a green local run -- the local runner had
+      # SAID it covered everything. A check both can invoke by name is what gives the parity
+      # table something to track.
+      #
+      # IT LIVES IN `test`, not `deny`, because it needs the engines. `deny` fetches nothing, and
+      # a gate that cannot run examines nothing -- which `CLAUDE.md` catalogues twice.
+      - name: The subsetting rule is met, and its tests are not ignored
+        run: tools/check-subsetting-gate.sh
+
+      - name: That gate refuses when its own rules are broken
+        run: tools/test-check-subsetting-gate.sh
 
       # The other kind of ignored test: a REPRODUCTION, required to pass.
       #
@@ -507,13 +497,13 @@ jobs:
           python3 tools/seed-fuzz-corpus.py --check
           tools/test-seed-fuzz-corpus.sh
 
-      - name: fuzz document_open and prescan for 60s each
+      - name: fuzz the pure-Rust targets for 60s each
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          for target in document_open prescan; do
+          for target in document_open prescan pdfsyntax_names pdfsyntax_dict_keys; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             cargo +nightly fuzz run "$target" -- \

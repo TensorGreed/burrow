@@ -257,6 +257,7 @@ those at full candour is working and is not what "summarise" is asking you to sh
   | #63 | `tools/check-wasm-exports.sh` | run on the previous PR, not on this one |
   | #63 | the fuzz target list | `reorder` was in `Cargo.toml` and in no run list |
   | #63 | `pnpm check` | `lint` and `test` were run; `check` was not |
+  | #54 | the subsetting gate | **the runner said it was covered** — see below |
 
   **A habit that has failed four times is not a control** — the same conclusion this file
   already reached about `git add -A`, and the same answer. Writing the rule down more firmly
@@ -264,7 +265,20 @@ those at full candour is working and is not what "summarise" is asking you to sh
 
   The parity check runs in CI too, so the table cannot rot: the person adding a gate is exactly
   the person who will not think to update the local runner. `tools/test-ci-local.sh` re-plants
-  all four misses above and requires a refusal for each.
+  every miss above and requires a refusal for each.
+
+  **It refuses what it can SEE, and the fifth row is what that qualification cost.** #54's gate
+  was a `run:` block invoking `cargo test -p burrow-ops --test split_no_leak -- --exact <name>`.
+  The extractor mapped it to `cargo:test`, which the local `test` job already covered, so parity
+  reported full coverage over a gate with no local counterpart — and the branch ran this tool
+  clean and went red on that step. The sentence above was true of every miss before it and not of
+  that one.
+
+  Two changes, because one of them is a patch and the other is the rule. `--test <suite>` is now
+  its own token, so a step naming one suite is a gate about that suite rather than a re-run of the
+  workspace. And **a gate belongs in a script**: `tools/check-*.sh` is a name both CI and this
+  runner can invoke, which is what gives the parity table something to track. A gate written
+  inline is a gate betting that the extractor happens to have a pattern for its shape.
 - **Never `git add -A` after running or building anything. Stage explicitly, or read
   `git status` first.** Twice this has put generated output on `main`:
 

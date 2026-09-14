@@ -121,10 +121,174 @@ bookmark naming them — and would pass any check that asked "are the right page
 **So it is a required test, not a principle.** See below; a rule of this kind that is not
 executed is a comment, which this repository has measured the cost of more than once.
 
-**And the rule is not yet met.** §2a records six channels through which the chosen route still
-carries data from excluded pages, all measured. This section states the standard; it does not
-claim `split` reaches it. Saying otherwise here would be the exact failure the section is
-about — an operation's intent and its output disagreeing, written down as if they agreed.
+**The rule was not met when this ADR was written, and is now.** §2a records six channels through
+which the chosen route carried data from excluded pages, all measured; for the whole of M1 this
+paragraph said so, because a section stating a standard may not claim the code reaches it —
+that would be the exact failure the section is about, an operation's intent and its output
+disagreeing, written down as if they agreed. Issue #54 closed them, and the 2026-09-14 amendment
+below records which of §2b's answers each channel took, two defects the harness caught in the fix
+itself, and what it cost. §2a and §2b are left exactly as they were: the measurement was real, and
+the repair is only legible next to what it repaired.
+
+### Amendment, 2026-09-14 (#54): the channels are closed, and what each answer cost
+
+§2a below records six channels **as they were measured before pruning existed**, and §2b the rule
+they are held to. Both are kept as written rather than edited in place: the measurement was real,
+and a reader who only sees the repaired state cannot tell which of §2b's two answers each channel
+took or why. What follows is that, plus the one constraint that decided three of them.
+
+**burrow cannot reach a destination's catalog.** `qpdf_get_root` is
+
+```c
+QTC::TC("qpdf", "qpdf-c called qpdf_get_root");
+return trap_oh_errors<qpdf_oh>(qpdf, return_uninitialized(qpdf), ...);
+```
+
+— two top-level statements, so [ADR 0013](0013-qpdf-c-api-and-prescan.md) §1's caller rule refuses
+it and it is not on `engines/qpdf-trapped-functions.txt`. Every `qpdf_oh_*` function that **is** on
+that list keeps its `QTC::TC` *inside* the lambda; that is the whole difference.
+`qpdf_get_trailer`, every `qpdf_oh_is_*` predicate and the dictionary-key iterator fail the same
+way. So no split output can be given an `/OCProperties`, an `/AcroForm` or an `/Outlines`.
+
+| channel | answer | why that one |
+|---|---|---|
+| inherited `/Resources` | **pruned** | §2b says it must be. Filtered to the names the copied content streams mention — the page's own, every kept Form XObject's, tiling pattern's, Type 3 `/CharProcs` and annotation appearance stream's, unioned to a fixpoint |
+| `/AcroForm` field tree | **dropped** | every widget's `/Parent` is cut, so the field is unreferenced and the writer never emits it. §2b's second option. The catalog constraint makes this the *only* option: a kept field would be a field with no `/AcroForm`, which is a dead field either way, so the choice was between a dead field plus a leak and neither |
+| shared `/Annots` | **pruned** | annotations whose `/P` is a page in this output are kept — and only when the array is shared with a page the output does **not** contain. See below: the first version keyed on "shared at all" and deleted every annotation from a split that excluded nothing |
+| article beads | **dropped** | `/B` is simply not on the page-key allowlist, and `/Threads` lives on the catalog the build route never copies |
+| named destinations | **dropped** | `/A` and `/Dest` are removed from every annotation. §2b's "drop the action, leaving a link that does nothing"; an explicit destination points at a page object the copier stopped at, and a named one is the leak |
+| `/OCProperties` | **refused** | neither §2b answer is reachable. Dropping the configuration alone is forbidden there; carrying a pruned one needs the catalog. So a document whose kept pages reference optional content is **not split** — a third answer, stronger than both, and §4 carries the sentence the page will say it in |
+
+**The page-key rule is an allowlist, and that is the part worth carrying to M2.** Everything not on
+a named list of page keys is removed, so `/B`, `/AA`, `/Thumb`, `/PieceInfo`, `/StructParents` and
+page-level `/Metadata` go through one rule — along with every key nobody enumerated. §2b's table
+below lists channels; the implementation does not, and the difference is the whole lesson of
+*Alternatives considered*, applied one level down from where that section applies it.
+
+Reading a dictionary's keys needs a tokeniser, because qpdf's key iterator is not callable: that is
+`core/burrow-engines/src/pdfsyntax/`, pure Rust, `forbid(unsafe_code)`, two fuzz targets. So is the
+resource-name scan, for the reason §2b gives — "this is not a dictionary filter".
+
+#### Two defects the harness caught that no amount of reading would have
+
+Both are recorded because both produced a *correct-looking* implementation.
+
+1. **Pruning per page destroys what pages share.** `qpdf_add_page` flattens the page tree and
+   pushes inherited attributes down ([ADR 0021](0021-how-reorder-permutes-a-page-tree.md)) — and it
+   pushes the **reference**: every page under a node that carried `/Resources` ends up with
+   `/Resources 11 0 R`, *the same object*. A per-page pass computed page 1's used names and deleted
+   everything else, then handed page 4 a dictionary with its font already gone. Resources are now
+   pruned once per dictionary against the union over every page in the output that shares it, and
+   the annotation filter keeps anything belonging to **any** page in the output for the same
+   reason. Caught by `a_one_way_split_loses_no_page_content` — a split excluding *nothing*.
+2. **"Shared" is not the thing that makes an annotation ambiguous.** Sharing with a page the output
+   does not contain is. The first filter keyed on the former and dropped every annotation in the
+   document on a one-way split.
+
+Neither is a subtle case. Both are what happens when the fix for a shared-object leak is itself
+written per object rather than per output, and the second layer of ADR 0019 §3's harness is what
+separated them from success.
+
+#### The fixture could not have caught them as it stood, and that is three for three
+
+`tools/make-marked-document.py` had three defects of the class `add-operation` §2c names, all
+exposed by the same run:
+
+- the resource "only page 4 draws" was **drawn by nobody**, so a filter that pruned it from every
+  output looked identical to one that pruned it correctly;
+- `widget4` was in the field's `/Kids` and in **no page's `/Annots`** — a widget no page displays,
+  which no producer emits;
+- no annotation carried `/P`, so only the conservative half of the filter was ever exercised.
+
+And one that is not a defect but a consequence: a page dictionary can no longer carry a `/BM`
+marker, because a marker *is* a key outside the specified set and removing exactly those keys is
+the rule. Page objects are now declared `unmarkable`, with that reason, and their survival is
+witnessed by their content streams.
+
+#### Cost
+
+`cargo run -p burrow-ops --features native-engines --release --example measure-pruning`, medians of
+11, five-way splits, aarch64. "Before" is `2f8e989`, the commit this branch left; the example is
+copied onto it, since there is no switch that turns pruning off and deliberately is not one.
+
+| document | before | after | pruning's share |
+|---|--:|--:|--:|
+| `pages-10.pdf` (10 pages) | 117 µs | 147 µs | **+26%** |
+| `pages-137.pdf` (137 pages) | 594 µs | 1.020 ms | **+72%** |
+| `--generated 10000` (flat tree) | 43.3 ms | 91.6 ms | **+112%** |
+| `--deep 10000 60` (60-deep tree) | 42.7 ms | 89.8 ms | **+110%** |
+
+These are the numbers **after** the walk was rewritten for the five defects security review found
+below; the first version measured +33% / +99% / +161% / +167%, and the difference is mostly the
+per-object name cache that fix 3 required.
+
+**What each row does and does not exercise**, because the two largest ones do not support the
+cause the first conclusion gives them. `pages-10.pdf` and `pages-137.pdf` are committed fixtures
+with real content streams. `--generated` and `--deep` are built by
+`core/burrow-engines/testsupport/measure_fixtures.rs`, and **their pages have no `/Contents` and no
+resources at all** — so those two rows measure per-page `unparse`, key reading and key removal with
+nothing to decode. That makes them the right rows for the depth conclusion and the wrong ones for
+attributing the growth to stream decoding; the honest reading is that the per-page structural work
+alone is already the larger part of the cost at ten thousand pages. Found by code review, which
+also measured that the +161% row has no stream in it.
+
+Two things follow, and the second is the one worth having measured.
+
+1. **Pruning costs between a third and one-and-two-thirds of the split it is attached to**, growing
+   with page count. On documents that have content it is decoding as well as reading structure —
+   which is what finding out which resources a page uses costs, and §2b's "this is not a dictionary
+   filter" is the reason there is no cheaper version. **Redaction inherits it.**
+2. **Page-tree depth costs it nothing** — 89.8 ms at depth 60 against 91.6 ms flat, a 2%
+   difference on a shape that costs ADR 0022's promise sweep **84%** of its operation. The reason
+   is structural rather than lucky: the promise sweep walks `/Parent` per page, and the prune runs
+   *after* `qpdf_add_page` has flattened the tree, so there is no chain left to walk. It was a
+   prediction before it was a measurement, and it is recorded as the latter.
+
+#### Five defects security review found in the pruning, all reproduced
+
+The first version of the walk was written to close a leak and introduced four bugs of its own, three
+of which were worse than what they fixed. They are recorded because each one is a shape the next
+subsetting operation — redaction — will have the opportunity to repeat.
+
+| | what | measured |
+|---|---|---|
+| **1** | the optional-content refusal read the **page's** `/Resources` only, so an OCG inside a Form XObject's own resources was past it | a document whose hidden layer lived one level down split happily, with the hidden text visible in the output and the layer's `/Name` still in it. §2a row 6, open, while its page-level test and near-miss both passed |
+| **2** | the walk followed anything in `/XObject` that was a stream, so it tried to **decode images** | **every document containing a JPEG was refused** — lossy filters are not decoded at `qpdf_dl_specialized`, and the walk read "not decoded" as a refusal. A flate image decoded and then failed to lex whenever its pixels held an unbalanced `(` |
+| **3** | no deadline, and the visited set and stream budget were **per page** rather than per output | a 155 kB document of 1,000 pages sharing one form: **176 seconds**, resident memory never above 65 MB — so `max_memory_bytes` never fired, and `split` consults its deadline only *between* outputs, which for a one-part split is never |
+| **4** | `/Resources` was pruned by iterating seven **categories**, so any other key survived whole | `/Stash << /Secret … >>` on an inherited `/Resources` came through untouched while `/Font` was pruned correctly — §2a row 1 leaking through a key nobody enumerated |
+| **5** | collected names were resolved against the **page's** categories only | a font drawn by a form two levels down was pruned off the page while the form still asked for it; the font object left the file entirely |
+
+**Two of these are the same mistake as the one this ADR is about, made again one level down.**
+Rows 1 and 4 are page-level thinking applied to a graph: the page-key rule is an allowlist *because*
+a dictionary may hold keys nobody enumerated, and the resource filter was written as a denylist over
+seven category names anyway. Row 5 is the same error in the other direction — a walk over the page's
+dictionary rather than over the resource graph.
+
+**Row 3 is the one worth carrying furthest.** The fix for a leak was itself an unbounded amount of
+work, hidden from both ceilings: too fast to trip `max_memory_bytes`, and inside a granularity
+`max_duration_ms` is not checked at. `prune_output` now takes the open's deadline and checkpoints per
+page and per stream, and the name set is cached per object across the whole output — which removes
+the amplification rather than merely detecting it, since a stream's names do not depend on which page
+reached it. Verified: the 100-page shape now refuses at 1.003 s against a 1,000 ms ceiling, where it
+previously ran 17.4 s with nothing consulted.
+
+Each has a fixture and a regression test: `images.pdf`, `nested-forms.pdf`, `oc-nested.pdf`, and a
+`/Stash` canary added to `shared-objects.pdf`'s inherited `/Resources` so the existing scan covers
+row 4.
+
+#### What transfers to M2, and what is `split`-only
+
+| | where | redaction reuses |
+|---|---|---|
+| the PDF tokeniser, the resource-name scan, the dictionary-key reader | `core/burrow-engines/src/pdfsyntax/` | **unchanged** — no engine in it, no notion of a page |
+| the prune driver and the six rules | `core/burrow-engines/src/qpdf/prune.rs` | **yes** — `prune_output` takes pages and a fact about each, not a page range |
+| runs, cuts, the partition | `core/burrow-ops/src/split/` | no |
+
+#### Issue #53 is not nearly free, and now for a concrete reason
+
+Subsetting the outline means writing `/Outlines` onto the destination's catalog, which the constraint
+at the top of this amendment puts out of reach. It stays a later change, and what it is blocked on is
+`qpdf_get_root` rather than effort.
 
 ### 2a. What the build route still carries, measured
 
@@ -245,45 +409,67 @@ scan over a document that contains every canary and requires it to report a leak
 `the_included_pages_canaries_do_survive` requires the kept pages' own canaries to be present —
 without which an operation emitting an empty document would satisfy the negative perfectly.
 
-**The deliberate-leak control is `the_measured_leak_channels_are_exactly_the_ones_recorded`**,
-which asserts that §2a's channels *do* fire — **two of the six by name**, and the count is
-stated rather than implied. The fixture plants four mechanisms and all four fire, but only the
-inherited-`/Resources` and `/AcroForm` canaries are required individually, so closing the
-shared-`/Annots` or article-bead channel would not fail anything. `shared-objects.pdf` plants inherited `/Resources`, the `/AcroForm` tree,
-a shared `/Annots` array and an article thread. **Named destinations (row 5) and
-`/OCProperties` (row 6) have no fixture and no test**, and row 6 is the one that matters most:
-it is not a string arriving where it should not, it is content becoming *visible*, which a byte
-scan is the wrong instrument for. Closing that needs a structural assertion of a different
-shape — an output containing an OCG dictionary must have an `/OCProperties` — and it is on
-issue #54 rather than pretended here. It is an unusual shape for a control and it is the
-honest one while the rule is unmet: it fails if a channel closes without the record being
-updated, and it fails if the scan goes blind — two things that otherwise look identical. Without it, a scan that had stopped finding anything would report the same
-green as a scan that works — and that is the failure mode the root `CLAUDE.md` catalogues
-three separate instances of.
+**The deliberate-leak control was `the_measured_leak_channels_are_exactly_the_ones_recorded`**,
+which asserted that §2a's channels *did* fire. It was an unusual shape for a control and it was the
+honest one while the rule was unmet: it failed if a channel closed without the record being updated,
+and it failed if the scan went blind — two things that otherwise look identical from a green run.
+
+**When #54 closed it, that test inverted rather than disappearing**, and so did its structural twin
+`the_closure_property_is_violated_exactly_where_the_adr_records_it`. Deleting them was the obvious
+move and the wrong one: the state they were distinguishing has not gone anywhere. A changed canary
+prefix, a fixture whose markers moved, a manifest the reader stopped understanding, an expansion
+that silently stopped decompressing — each still produces an empty leak list, and now that empty
+list reads as success rather than as failure. So each was replaced by the same assertion pointed at
+a document that definitely leaks: `the_scan_can_still_see_every_channel_it_is_the_gate_for` runs the
+identical scan over the source and requires **every** channel by name, and
+`the_closure_scan_can_still_find_a_trespasser_that_is_really_there` does the same for the structural
+harness, gated on the manifest's own object count rather than on non-zero.
+
+Two channels had no fixture and no test when this was written, and both now do.
+**Named destinations** (row 5) are a canary in a link on a *kept* page — the leak rides inside an
+object that legitimately survives, so the structural harness cannot see it by construction, which is
+the clearest example of why ADR 0019 needs both layers and why neither is sufficient.
+**`/OCProperties`** (row 6) is the one a byte scan is the wrong instrument for entirely: it is not a
+string arriving where it should not, it is content becoming *visible*. Its fixture is
+`optional-content.pdf` and its test is a **refusal** — `a_document_that_uses_layers_is_refused_rather_than_split`,
+with `a_document_without_layers_is_not_caught_by_the_layer_refusal` as the near-miss, because a
+refusal that fired on everything would close the channel perfectly and make `split` useless.
 
 ### 4. The page says what is dropped, in the voice `/merge-pdf` says what it keeps
 
 `/merge-pdf` has a section headed *"What is kept, and what is not"* which states plainly that
 bookmarks, attachments and form fields come from the first file and that merging outlines from
 several documents has no obviously right answer, so burrow does not guess at one. `/split-pdf`
-owes the same paragraph from the other direction, and it is written here so the page has
-something to match rather than something to invent:
+owes the same paragraph from the other direction, and it is written here so the page has something
+to match rather than something to invent:
 
-> **What is kept, and what is not.** Each part contains its pages exactly as they were —
-> their contents, their size, their form fields and their annotations. Bookmarks and attached
-> files are not carried over. They describe the whole document rather than any one part, and
-> copying them into every part would put the names of pages you did not include into files
-> you did — so burrow leaves them out rather than guessing which part they belong to.
+> **What is kept, and what is not.** Each part contains its pages exactly as they were — their
+> contents, their size and their annotations. Form fields keep their appearance but are no longer
+> fillable: what makes a field a field describes the whole document, and carrying it into one part
+> would carry the names and the values typed on pages that part does not contain. Bookmarks and
+> attached files are left out for the same reason — they describe the whole document rather than
+> any one part, and copying them into every part would put the names of pages you did not include
+> into files you did. Links to somewhere else in the document stop working, because where they
+> pointed is a name that describes a page your part may not have. A document that uses layers
+> cannot be split here at all: burrow cannot carry the setting that decides whether a layer is
+> hidden, and a hidden layer that arrives visible is worse than a refusal.
 
-**This wording is provisional on issue #54.** §2b offers "drop the widget too, so the output
-has no form field rather than a dead one" and "drop the array, losing the kept page's own
-annotations" as legitimate outcomes — and if #54 takes either, the sentence above stops being
-true. It is written here so the page has something to match, not so it can be pasted before the
-decision that determines whether it is accurate.
+**This version is not provisional, and the first one was.** The original said "their contents,
+their size, their form fields and their annotations", marked as provisional on issue #54 because
+§2b offered "drop the widget too, so the output has no form field rather than a dead one" as a
+legitimate outcome — and if #54 took it, the sentence stopped being true. #54 took it. The
+paragraph above is what the answers in the 2026-09-14 amendment actually are, and it says four
+things the first one did not have to: fields are not fillable, links do not work, layered documents
+are refused, and each of those has its reason attached.
 
-The last clause is the one that matters and it is not decoration: it is the measured reason,
-said to the person it affects. A page that said only "bookmarks are not kept" would be true and
-would leave somebody thinking it was a limitation rather than a choice.
+**The reasons are the load-bearing part and they are not decoration.** A page that said only
+"bookmarks are not kept" would be true and would leave somebody thinking it was a limitation rather
+than a choice. A page that said only "documents with layers cannot be split" would read as a bug.
+
+**There is no `/split-pdf` yet**, and every present-tense claim in this repository that the page
+says any of this is describing a page that does not exist. The route is kept out of the shipped
+bundle by `apps/web/src/production-build.test.ts`, which is a check rather than an intention, and
+this section is what the page will be held to when it is written.
 
 ## Consequences
 

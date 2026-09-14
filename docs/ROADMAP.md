@@ -43,7 +43,7 @@ something.
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` ✅, `split` **held** (#54), `compress` is the last. #61 discharged by ADR 0022 — see *Ship blockers*. |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` ✅, `split` core ✅ (#54 closed), its bridge and page to come, `compress` is the last. #61 discharged by ADR 0022 — see *Ship blockers*. |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started; **gated on #62** — native has no wasm sandbox |
 | [M4](#m4--ios) | iOS app | not started; **gated on #62**, as M3 |
@@ -404,14 +404,27 @@ what later PRs can assume:
 
 ### Operations
 
-**`split` is held, and the remaining three are not blocked by it.** This is on the record
-because the reason is not obvious from a status line.
+**`split`'s hold is lifted in the core and the operation has not shipped yet.** Those are two
+different statements and keeping them apart is the point of this paragraph.
 
 [ADR 0019](adr/0019-how-split-builds-its-outputs.md) §2 states a property that applies to any
 operation whose output is a **subset** of its input: the emitted bytes may carry nothing derived
-from the excluded content. `split` does not yet meet it — six measured channels, issue #54 —
-and shipping it would mean shipping a tool that puts data from pages you did not include into
-files you did.
+from the excluded content. `split` did not meet it — six measured channels, issue #54 — and
+shipping it then would have meant shipping a tool that puts data from pages you did not include
+into files you did.
+
+**Issue #54 closed it on the native path.** `core/burrow-engines/src/qpdf/prune.rs` takes back out
+what `qpdf_add_page`'s reachability closure drags in, and both gates are green with their controls:
+`subset_closure.rs`'s structural property over every object in the source, and `split_no_leak.rs`'s
+named channels on top. ADR 0019's 2026-09-14 amendment records which answer each channel took, two
+defects the harness caught inside the fix, and the cost. A document that uses layers is **refused**
+rather than split, for a reason that amendment gives.
+
+**What remains before `/split-pdf` exists** is the rest of the vertical slice, not the rule:
+ADR 0022 verification for split, an `impl PageExtractor for WebQpdf` with the exports and the
+size-budget re-measure it implies, and the page. `apps/web/src/production-build.test.ts` keeps the
+route and the operation name out of the shipped bundle until then, which is a check rather than an
+intention.
 
 **`rotate`, `reorder` and `compress` are not subsetting operations.** Every input page appears
 in the output of each: rotate changes a page's `/Rotate`, reorder permutes the page tree,
@@ -444,7 +457,7 @@ assert:
 | Operation | Invariant |
 |---|---|
 | `merge` ✅ | Output page count equals the sum of inputs; page order is preserved; merging one document is the identity |
-| `split` | Splitting then merging round-trips to the original page sequence; every input page appears exactly once across outputs. **Both hold; the subsetting rule in ADR 0019 §2 does not yet — see #54.** |
+| `split` | Splitting then merging round-trips to the original page sequence; every input page appears exactly once across outputs. **All three hold.** The subsetting rule in ADR 0019 §2 was the one that did not, and #54 closed it: `subset_closure.rs` asserts the structural property — no object belonging only to excluded pages — and `split_no_leak.rs` keeps §2a's named channels as regression cases, because neither layer can see what the other does. A document using optional content is refused rather than split; ADR 0019's 2026-09-14 amendment says why, and what pruning costs. Not yet on the web: no bridge, no page, no ADR 0022 promise. |
 | `rotate` ✅ | Four 90° rotations return to the original; rotation is recorded, not re-rasterised. **Both hold**: `four_ninety_degree_rotations_return_to_the_original`, and `every_page_s_content_stream_comes_out_byte_identical` — which searches each page's operator run in the decompressed output rather than comparing whole stream bodies, a narrower claim than its name suggests. |
 | `reorder` ✅ | Output is a permutation of the input — no page lost, added, or duplicated; the identity permutation is a no-op. **Both hold**: `any_permutation_is_carried_out_exactly` reads the order back out of the emitted bytes, and `the_identity_permutation_is_a_no_op` asserts it on the page ORDER rather than on the bytes — qpdf rewrites the file it is asked to write, so the output is never byte-identical to the input and no operation here preserves a signature. The page tree is flattened by any real permutation and left alone by the identity ([ADR 0021](adr/0021-how-reorder-permutes-a-page-tree.md)); `reorder_keeps_everything.rs` requires `content` and `navigation` whole and states that third-kind loss by name. The bridge is built and four conformance cases compare the two implementations, using the rotations vector as the observable. **They are not equally strong**, which the generator spells out per case: `reorder-a-document-where-one-page-differs` is the one a wrong permutation fails; `reorder-a-document-that-inherits` catches a flattening that drops an inherited `/Rotate`; the other two assert the page count and that nothing was lost. `/reorder-pdf` ships. Without thumbnails (#57) an order is typed rather than dragged, so the page completes a partial one by a stated rule — *the pages you list come first, and everything else keeps its current order after them* — and **shows the resulting order before anything runs**, which is what keeps that a rule rather than a guess. An identity is refused by the page: the core accepts it, but running it rewrites somebody's file to no effect. |
 | `compress` | Output is never larger than the input; page count and page dimensions are unchanged; text remains extractable |

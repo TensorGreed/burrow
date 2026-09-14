@@ -14,3 +14,4 @@
 - [M1 web reorder bridge](m1_web_reorder_bridge.md) — the leak-free Pages guard, why the oh_object fail-open drain is sound, and the self-test emptying the not-exported toml breaks.
 - [Tool-page result staleness](m1_web_tool_page_staleness.md) — `resultRequest` captured after the await drifts in rotate + reorder; merge is immune only by disabling controls.
 - [ADR 0022 read-back verification](m1_verify_output.md) — fresh-engine logger leak, sweep deadlines, and the declared_rotation i64 overflow repro.
+- [Split pruning (#54)](m1_split_pruning.md) — measured: images refuse the split, nested OC bypasses the refusal, /Resources is a category denylist, 34 kB → 17 s.

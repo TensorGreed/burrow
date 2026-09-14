@@ -29,7 +29,7 @@
 //! |---|---|
 //! | `max_input_bytes` | the input, once, at [`Stage::InputSize`] -- there is one input |
 //! | `max_pages` | the input's page count, and each output's, at [`Stage::PageCount`] |
-//! | `max_duration_ms` | the whole operation, on the injected clock, checkpointed **between outputs** |
+//! | `max_duration_ms` | the whole operation, checkpointed **between outputs** -- and one output now includes the pruning pass, which decodes every page's streams |
 //! | `max_memory_bytes` | **detected, never bounded** (ADR 0007), measured across the whole split |
 //!
 //! Unlike `merge`, there is no aggregate-versus-per-item question for size: one input cannot
@@ -100,11 +100,18 @@ pub fn split<E: PageExtractor>(
 
     let runs = runs_from(cuts, pages)?;
 
-    // One deadline for the whole operation, started after the input is open -- the open itself
-    // has its own inside the engine. Checked BETWEEN outputs, which is the only granularity
-    // available: the work inside `extract` is one engine call per page and no engine here
-    // offers a timeout, a cancellation or an abort hook (ADR 0007). Saying so is better than
-    // implying a limit that is checked more often than it is.
+    // One deadline for the whole operation, started after the input is open -- the open has its
+    // own inside the engine, and since #54 the sharing sweep `PageExtractor::open` runs is
+    // checkpointed against THAT one rather than starting a third.
+    //
+    // Checked BETWEEN outputs, which is the granularity available: no engine here offers a
+    // timeout, a cancellation or an abort hook (ADR 0007). What that overshoot now covers is
+    // more than it was. `extract` was one engine call per page; it is now that plus the pruning
+    // pass -- per page, an `unparse` and a key sweep, an `/Annots` walk, a `/Properties` and
+    // `/XObject` scan, and a DECODE of every content and appearance stream the page reaches.
+    // ADR 0019's 2026-09-14 amendment measures it at +33% to +167% of the split. So a single
+    // output is a larger unit of unchecked work than this comment used to describe, and saying
+    // so is better than implying a limit that is checked more often than it is.
     let deadline = Deadline::start(clock.as_ref(), &limits);
 
     let mut outputs = Vec::with_capacity(runs.len());

@@ -36,7 +36,7 @@
 //! of this comment said "no new FFI", which was false the moment the blank page needed
 //! removing.)
 
-use burrow_types::{Error, Limits, Result, Stage};
+use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
 use super::handle::ObjectHandle;
 use super::{Document, Qpdf, ffi};
@@ -109,6 +109,25 @@ pub struct QpdfSource {
     /// The ceilings the source was opened under, so `extract` can apply the measured check
     /// without the caller having to pass them twice.
     limits: Limits,
+    /// For each source page, the other source pages its `/Annots` array is shared with.
+    ///
+    /// **Read here and not in `extract`, because by then it is gone.** The destination holds a
+    /// *copy* of the array, and a copy shared with an excluded page is indistinguishable from a
+    /// copy shared with nobody — so the question can only be asked of the source, before
+    /// anything is copied. See `prune::annots_sharing` for why sharedness rather than `/P`
+    /// alone decides the filter.
+    ///
+    /// Computed once per split rather than once per output: it is a sweep over the source's
+    /// pages, and the answer does not depend on which run is being extracted. What DOES depend
+    /// on the run is whether any of those sharers falls outside it, which `extract` works out
+    /// per output.
+    annots_shared: Vec<Vec<u64>>,
+    /// The deadline `open` started, so the pruning pass spends the same budget.
+    ///
+    /// **Not a fresh one.** `Deadline::start` resets the origin *and* the budget, so a pass that
+    /// made its own would be handed a whole second `max_duration_ms` — the defect ADR 0022
+    /// records being fixed three times over in `rotations`.
+    deadline: Deadline,
 }
 
 impl PageExtractor for Qpdf {
@@ -121,12 +140,19 @@ impl PageExtractor for Qpdf {
     fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Source> {
         // Every ceiling, in one place, shared with the other operations that open a document
         // this way -- see `open_document` for why this is not written out here.
-        let (document, pages, rss_before) = super::open_document(bytes, options)?;
+        let (document, pages, rss_before, deadline) = super::open_document(bytes, options)?;
+        // INSIDE THE OPEN'S OWN DEADLINE, not a fresh one. This is a sweep over every source
+        // page, so on a `max_pages`-sized document it is not "one engine call" of overshoot --
+        // and `Deadline::start` resets the budget as well as the origin, so making one here
+        // would hand the sweep a whole second `max_duration_ms`. Found by code review.
+        let annots_shared = super::prune::annots_sharing(&document, pages, options, &deadline)?;
         Ok(QpdfSource {
             document,
             pages,
             rss_before,
             limits: options.limits,
+            annots_shared,
+            deadline,
         })
     }
 
@@ -230,6 +256,43 @@ impl PageExtractor for Qpdf {
         if let Some(error) = dest.take_error() {
             return Err(error);
         }
+
+        // WHAT THE COPY DRAGGED ALONG, taken back out. `qpdf_add_page` copies a reachability
+        // closure rather than a page (ADR 0019 §2a), so at this point the destination holds
+        // every object the wanted pages could reach -- an inherited resource dictionary, a form
+        // field whose siblings are on pages this output excludes, a shared annotation array, an
+        // article bead. `prune` is the second half of the rule §2 states: build, and then ask
+        // separately what came with it.
+        //
+        // AFTER the blank page is gone, so the indices below are over real pages only.
+        //
+        // WHOLE-OUTPUT, not per page, because the objects being pruned are SHARED between pages
+        // -- the flattening pushes one `/Resources` reference onto every page under a node, so a
+        // per-page pass would delete page 4's font while computing page 1's answer. See
+        // `prune_output`.
+        let kept = usize::try_from(count)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut ambiguous = Vec::with_capacity(kept);
+        for at in 0..kept {
+            // THE SOURCE PAGE'S sharing answer, not the destination page's: `at` is an index
+            // into this output and `first + at` is the page it came from. Getting this wrong
+            // would filter one page's annotations by another page's rule, which on a document
+            // where only some arrays are shared is a leak on exactly the pages that have one.
+            let source_index = usize::try_from(first)
+                .ok()
+                .and_then(|first| first.checked_add(at))
+                .ok_or_else(|| Error::Internal("source page index does not fit".to_owned()))?;
+            let sharers = source.annots_shared.get(source_index).ok_or_else(|| {
+                Error::Internal("a copied page has no recorded source page".to_owned())
+            })?;
+            // AMBIGUOUS MEANS "SHARED WITH A PAGE THIS OUTPUT DOES NOT CONTAIN", not "shared".
+            // An array every one of whose pages is in this output carries nothing from excluded
+            // content, and requiring `/P` of its annotations would delete the kept pages' own --
+            // which a one-way split, excluding nothing, measured as losing every annotation in
+            // the document.
+            ambiguous.push(sharers.iter().any(|page| *page < first || *page >= end));
+        }
+        super::prune::prune_output(&dest, &ambiguous, options, &source.deadline)?;
 
         let output = write_out(&dest, &source.document)?;
 

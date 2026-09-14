@@ -127,8 +127,48 @@ pub(crate) mod object_type {
     /// `ot_integer` — the fifth member.
     pub(crate) const INTEGER: c_int = 4;
 
+    /// `ot_name` — the eighth member.
+    pub(crate) const NAME: c_int = 7;
+
+    /// `ot_array` — the ninth member.
+    pub(crate) const ARRAY: c_int = 8;
+
     /// `ot_dictionary` — the tenth member.
     pub(crate) const DICTIONARY: c_int = 9;
+
+    /// `ot_stream` — the eleventh member.
+    ///
+    /// A stream is **not** a dictionary to qpdf, and the difference is load-bearing for
+    /// `split`'s pruning: a Form XObject resource is a stream, so a walk that asked
+    /// `type_code == DICTIONARY` before reading its `/Resources` would skip every one of them
+    /// and under-collect the names its own resources use. `qpdf_oh_get_dict` is how a stream's
+    /// dictionary is reached.
+    pub(crate) const STREAM: c_int = 10;
+}
+
+/// `enum qpdf_stream_decode_level_e` — `Constants.h:152-158`.
+///
+/// Gated the same way and for the same reason as [`object_type`]: only the native pruning
+/// reads it today, and the web pruning will need the identical value rather than a second
+/// copy of it.
+#[cfg_attr(
+    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
+    allow(dead_code)
+)]
+pub(crate) mod decode_level {
+    use core::ffi::c_int;
+
+    /// `qpdf_dl_specialized` — the third member: general-purpose filters plus the other
+    /// non-lossy ones.
+    ///
+    /// **Not `qpdf_dl_all`**, which also decodes the lossy filters. `split`'s pruning reads
+    /// content streams to collect the resource names they mention, and a content stream is
+    /// never `/DCTDecode` or `/JPXDecode` — so decoding lossy data here would spend an image's
+    /// worth of memory and CPU to lex bytes that are not syntax. The distinction is the same
+    /// one ADR 0022 and `object_closure.rs` both record from the other side: `qpdf --qdf` does
+    /// not decode those filters either, which is why a leak living only in transformed form is
+    /// outside every check in this repository.
+    pub(crate) const SPECIALIZED: c_int = 2;
 }
 
 /// `typedef int QPDF_ERROR_CODE` — `qpdf-c.h:136`.

@@ -75,7 +75,7 @@ impl PageReorderer for Qpdf {
     fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Source> {
         // Every ceiling, in one place, shared with the other operations that open a document
         // this way -- see `open_document` for why this is not written out here.
-        let (document, pages, rss_before) = super::open_document(bytes, options)?;
+        let (document, pages, rss_before, _deadline) = super::open_document(bytes, options)?;
         Ok(QpdfReorderable {
             document,
             pages,

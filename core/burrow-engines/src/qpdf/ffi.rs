@@ -452,6 +452,160 @@ unsafe extern "C" {
     /// and would see this only as slow growth. `handle.rs` makes release automatic.
     pub(super) fn qpdf_oh_release(qpdf: QpdfData, oh: QpdfObjectHandle);
 
+    // ------------------------------------------------- the object-handle API, part two
+    //
+    // Added for `split`'s pruning (ADR 0019 §2b, issue #54). The same rule governs them as the
+    // six above: each was checked against `engines/qpdf-trapped-functions.txt`, and the one
+    // that is not on it carries an argued entry in `engines/qpdf-untrapped-accepted.toml`.
+    //
+    // # Two functions burrow wanted and may NOT have, recorded so nobody looks again
+    //
+    // `qpdf_get_root` and `qpdf_oh_begin_dict_key_iter` would each have saved real work --
+    // the first is the only route to a document's catalog, the second answers "what keys does
+    // this dictionary have" without a tokeniser. Neither is on the trapped list, and the
+    // reason is the same in both cases and is not obvious:
+    //
+    //     qpdf_get_root(qpdf_data qpdf)
+    //     {
+    //         QTC::TC("qpdf", "qpdf-c called qpdf_get_root");
+    //         return trap_oh_errors<qpdf_oh>(qpdf, return_uninitialized(qpdf), ...);
+    //     }
+    //
+    // TWO top-level statements, so ADR 0013's caller rule refuses it -- a caller of a proven
+    // helper must be a pure forwarder, and `QTC::TC` is reachable code outside the trap. Every
+    // `qpdf_oh_*` function on the list keeps its `QTC::TC` INSIDE the lambda, which is the
+    // whole difference. `qpdf_oh_dict_more_keys` and `qpdf_oh_dict_next_key` do not go near
+    // `trap_errors` at all.
+    //
+    // The consequences are in ADR 0019: `split` cannot write `/OCProperties` or `/AcroForm`
+    // onto a destination catalog, so it refuses a document with optional content rather than
+    // making hidden content visible; and issue #53's outline subsetting is blocked on the same
+    // thing rather than being "nearly free once pruning exists".
+
+    /// `char const* qpdf_oh_unparse_resolved(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:884`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// # `_resolved`, and why the plain `qpdf_oh_unparse` is useless here
+    ///
+    /// `QPDFObjectHandle::unparse()` returns `"N G R"` for an **indirect** object
+    /// (`QPDFObjectHandle.cc:1585-1592`), and every page in a real document is indirect. So the
+    /// plain call on a page hands back a reference rather than a dictionary, and the key reader
+    /// is given three tokens instead of `<< … >>`.
+    ///
+    /// That is not a guess: this module declared the plain one first, and every leak test failed
+    /// with `asked for the keys of something that is not a dictionary` on the first run. The
+    /// comment that stood here claimed `_resolved` "expands every reference, which on a page
+    /// means expanding the whole document behind it" — which would have been a good reason to
+    /// avoid it and **is not true**. `unparseResolved` is `BaseHandle::unparse`
+    /// (`QPDFObjectHandle.cc:1594-1601`), which resolves *this* object and unparses each child
+    /// through `QPDFObjectHandle::unparse()` — so children that are indirect still come back as
+    /// `N G R` (`QPDFObjectHandle.cc:521-528`). It is one object deep, not a document.
+    ///
+    /// A stream is the exception: it unparses as `N G R` under both
+    /// (`QPDFObjectHandle.cc:530-531`), so a stream's dictionary is reached with
+    /// [`qpdf_oh_get_dict`] rather than by unparsing the stream.
+    ///
+    /// The returned pointer is owned by the `qpdf_data` and dies on the next call that returns
+    /// one. Copy out immediately; never store it.
+    pub(super) fn qpdf_oh_unparse_resolved(qpdf: QpdfData, oh: QpdfObjectHandle) -> *const c_char;
+
+    /// `void qpdf_oh_remove_key(qpdf_data, qpdf_oh, char const* key)` — `qpdf-c.h:869`.
+    /// **Trapped** via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// Removing a key that is not there is not an error, which is what lets the page-key rule
+    /// be written as "remove everything not on the allowlist" rather than as a diff.
+    pub(super) fn qpdf_oh_remove_key(qpdf: QpdfData, oh: QpdfObjectHandle, key: *const c_char);
+
+    /// `int qpdf_oh_get_array_n_items(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:780`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// Returns 0 for anything that is not an array, rather than raising — so the type is
+    /// checked first, like every other accessor here.
+    pub(super) fn qpdf_oh_get_array_n_items(qpdf: QpdfData, oh: QpdfObjectHandle) -> c_int;
+
+    /// `qpdf_oh qpdf_oh_get_array_item(qpdf_data qpdf, qpdf_oh oh, int n)` — `qpdf-c.h:782`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`. Out of range yields a null object.
+    pub(super) fn qpdf_oh_get_array_item(
+        qpdf: QpdfData,
+        oh: QpdfObjectHandle,
+        n: c_int,
+    ) -> QpdfObjectHandle;
+
+    /// `void qpdf_oh_erase_item(qpdf_data qpdf, qpdf_oh oh, int at)` — `qpdf-c.h:864`.
+    /// **Trapped** via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// **Erasing renumbers everything after it**, so the pruning walks an `/Annots` array
+    /// backwards. Forwards, removing item 2 of 5 makes the old item 3 the new item 2 and the
+    /// loop skips it — which for a leak filter means an annotation belonging to an excluded
+    /// page is never examined.
+    pub(super) fn qpdf_oh_erase_item(qpdf: QpdfData, oh: QpdfObjectHandle, at: c_int);
+
+    /// `char const* qpdf_oh_get_name(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:747`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// Canonicalised: escapes resolved, leading `/` included. Same pointer lifetime as
+    /// [`qpdf_oh_unparse`].
+    pub(super) fn qpdf_oh_get_name(qpdf: QpdfData, oh: QpdfObjectHandle) -> *const c_char;
+
+    /// `qpdf_oh qpdf_oh_get_dict(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:874`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// A stream's dictionary. `ot_stream` is a distinct type from `ot_dictionary`, so a Form
+    /// XObject's `/Resources` is unreachable without this.
+    pub(super) fn qpdf_oh_get_dict(qpdf: QpdfData, oh: QpdfObjectHandle) -> QpdfObjectHandle;
+
+    /// ```c
+    /// QPDF_ERROR_CODE qpdf_oh_get_page_content_data(
+    ///     qpdf_data qpdf, qpdf_oh page_oh, unsigned char** bufp, size_t* len);
+    /// ```
+    /// `qpdf-c.h:930-931`. **Trapped**, `direct` — it calls `trap_errors` in its own body.
+    ///
+    /// The concatenation of a page's content streams, **decoded**. That is what makes the
+    /// resource-name filter possible at all: the names a page draws with are inside a flate
+    /// stream in the file, and a scan of the raw bytes would find none of them and prune every
+    /// resource the page uses.
+    ///
+    /// **The buffer is `malloc`ed and is the caller's to free** with
+    /// [`qpdf_oh_free_buffer`], not qpdf's — unlike every other pointer in this module, which
+    /// qpdf owns and recycles.
+    pub(super) fn qpdf_oh_get_page_content_data(
+        qpdf: QpdfData,
+        page_oh: QpdfObjectHandle,
+        bufp: *mut *mut u8,
+        len: *mut usize,
+    ) -> QpdfErrorCode;
+
+    /// ```c
+    /// QPDF_ERROR_CODE qpdf_oh_get_stream_data(
+    ///     qpdf_data qpdf, qpdf_oh stream_oh, enum qpdf_stream_decode_level_e decode_level,
+    ///     QPDF_BOOL* filtered, unsigned char** bufp, size_t* len);
+    /// ```
+    /// `qpdf-c.h:917-923`. **Trapped**, `direct`.
+    ///
+    /// A nested Form XObject's, tiling pattern's, Type 3 glyph procedure's or appearance
+    /// stream's body, so the name walk can follow them. Same `malloc`ed buffer as above.
+    ///
+    /// **`filtered` must be checked.** It reports whether qpdf could actually decode the
+    /// stream; when it comes back false the buffer is still compressed, and lexing compressed
+    /// bytes for names yields a handful of accidents rather than the names that are there —
+    /// the under-approximation that deletes a resource the page draws with. `prune.rs` treats
+    /// an unfiltered stream as a refusal.
+    pub(super) fn qpdf_oh_get_stream_data(
+        qpdf: QpdfData,
+        stream_oh: QpdfObjectHandle,
+        decode_level: c_int,
+        filtered: *mut QpdfBool,
+        bufp: *mut *mut u8,
+        len: *mut usize,
+    ) -> QpdfErrorCode;
+
+    /// `void qpdf_oh_free_buffer(unsigned char** bufp)` — `qpdf-c.h:936`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`: its whole body is
+    /// `free(*bufp); *bufp = nullptr;`. It never sees a `qpdf_data`, so it cannot reach the
+    /// document or the parser — the bar that file sets, met exactly.
+    pub(super) fn qpdf_oh_free_buffer(bufp: *mut *mut u8);
+
     /// `void qpdflogger_set_info(qpdflogger_handle, enum qpdf_log_dest_e, qpdf_log_fn_t,
     /// void*)` — `qpdflogger-c.h:70`.
     pub(super) fn qpdflogger_set_info(

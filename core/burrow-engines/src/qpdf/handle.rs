@@ -44,7 +44,7 @@
 use core::ffi::{c_char, c_int};
 use core::marker::PhantomData;
 
-use burrow_types::Result;
+use burrow_types::{Error, Result};
 
 use super::{Document, ffi};
 
@@ -225,6 +225,155 @@ impl<'a> ObjectHandle<'a> {
         Ok((id, generation))
     }
 
+    // ------------------------------------------------------------ split's pruning
+    //
+    // Everything below exists for ADR 0019 §2b: reading a page apart far enough to remove what
+    // belongs to pages the output does not contain. They are here rather than in `prune.rs`
+    // for this module's standing reason -- every route from qpdf to a handle returns an
+    // `ObjectHandle`, and `the_handle_api_is_reachable_only_from_here` measures it.
+
+    /// This object's own syntax, with its CHILDREN left as `N G R`.
+    ///
+    /// `qpdf_oh_unparse_resolved`, not `qpdf_oh_unparse`: the plain one returns `"N G R"` for an
+    /// indirect object, and every page in a real document is indirect — so it would hand back a
+    /// reference rather than a dictionary. See the declaration for the measurement.
+    ///
+    /// **The route to a dictionary's keys**, because qpdf's own key iterator may not be called:
+    /// `qpdf_oh_begin_dict_key_iter` reaches `trap_errors` only through an assignment and its
+    /// two companions do not go near it, so none of the three is on the trapped list. See
+    /// `crate::pdfsyntax::dict`, which reads what this returns.
+    ///
+    /// Returns an empty vector when qpdf hands back null, which it does for a released or
+    /// uninitialised handle. **No caller treats that as "no keys"**: every one of them feeds it
+    /// to `pdfsyntax::top_level_keys`, which fails on the first token because an empty slice is
+    /// not a dictionary — so an unreadable object is a refusal rather than an object that
+    /// appears to have nothing in it. That is the direction this whole module needs: a
+    /// dictionary read as empty is a dictionary nothing gets removed from.
+    pub(super) fn unparse(&self) -> Vec<u8> {
+        // SAFETY: `self.data` is a live document and `self.handle` is one of its handles, by
+        // this type's invariant. Routes through `trap_errors` via `do_with_oh`.
+        let text = unsafe { ffi::qpdf_oh_unparse_resolved(self.data, self.handle) };
+        // COPIED OUT IMMEDIATELY. The pointer belongs to the `qpdf_data` and is invalidated by
+        // the next call that returns one -- including the next `unparse`, which is exactly what
+        // a loop over a page's keys does.
+        copy_c_string(text)
+    }
+
+    /// This name object's value, canonicalised and including its leading `/`.
+    ///
+    /// Empty for anything that is not a name, which qpdf returns rather than raising -- so the
+    /// caller checks [`Self::type_code`] first, as everywhere else here.
+    pub(super) fn name(&self) -> Vec<u8> {
+        // SAFETY: as `unparse`.
+        let text = unsafe { ffi::qpdf_oh_get_name(self.data, self.handle) };
+        copy_c_string(text)
+    }
+
+    /// Remove `key` from this dictionary.
+    ///
+    /// Removing a key that is not there is not an error, which is what lets the page-key rule
+    /// be "remove everything the allowlist does not name" rather than a diff.
+    pub(super) fn remove_key(&self, key: *const c_char) {
+        // SAFETY: as `unparse`. Routes through `trap_errors` via `do_with_oh_void` ->
+        // `do_with_oh` -> `trap_oh_errors`.
+        unsafe { ffi::qpdf_oh_remove_key(self.data, self.handle, key) }
+    }
+
+    /// How many items this array has, or 0 for anything that is not an array.
+    pub(super) fn array_len(&self) -> c_int {
+        // SAFETY: as `unparse`.
+        unsafe { ffi::qpdf_oh_get_array_n_items(self.data, self.handle) }
+    }
+
+    /// The item at `n`, as an owned handle. Out of range yields a null object.
+    pub(super) fn array_item(&self, document: &'a Document, n: c_int) -> Self {
+        // SAFETY: as `unparse`. The returned handle belongs to `self.data`, which is
+        // `document`'s -- the caller passes the document this handle came from.
+        let handle = unsafe { ffi::qpdf_oh_get_array_item(self.data, self.handle, n) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { Self::owned(document, handle) }
+    }
+
+    /// Remove the item at `at` from this array.
+    ///
+    /// **Everything after `at` shifts down**, so a caller filtering an array walks it
+    /// backwards. Forwards, erasing item 2 of 5 makes the old item 3 the new item 2 and the
+    /// loop skips it -- which, for the annotation filter this exists for, means an annotation
+    /// belonging to an excluded page is never examined and rides into the output.
+    pub(super) fn erase_item(&self, at: c_int) {
+        // SAFETY: as `unparse`.
+        unsafe { ffi::qpdf_oh_erase_item(self.data, self.handle, at) }
+    }
+
+    /// This stream's dictionary, as an owned handle.
+    ///
+    /// `ot_stream` is a distinct type from `ot_dictionary`, so a Form XObject's `/Resources` is
+    /// unreachable without this.
+    pub(super) fn stream_dict(&self, document: &'a Document) -> Self {
+        // SAFETY: as `array_item`.
+        let handle = unsafe { ffi::qpdf_oh_get_dict(self.data, self.handle) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { Self::owned(document, handle) }
+    }
+
+    /// This page's content streams, concatenated and **decoded**.
+    ///
+    /// What the resource-name filter reads. In the file the names are inside a flate stream, so
+    /// a scan of the raw bytes would find none of them and prune every resource the page uses.
+    ///
+    /// # Errors
+    ///
+    /// Whatever qpdf latched. A page with no `/Contents` is `Ok(empty)` rather than an error:
+    /// it is a legitimate page that draws nothing and therefore uses no resources.
+    pub(super) fn page_content(&self, document: &Document) -> Result<Vec<u8>> {
+        let mut buffer: *mut u8 = core::ptr::null_mut();
+        let mut length: usize = 0;
+        // SAFETY: `self.data` is a live document and `self.handle` one of its handles. Both
+        // out-parameters point at live locals for the duration of the call. Routes through
+        // `trap_errors` directly.
+        let status = unsafe {
+            ffi::qpdf_oh_get_page_content_data(
+                self.data,
+                self.handle,
+                &raw mut buffer,
+                &raw mut length,
+            )
+        };
+        take_malloced_buffer(document, status, buffer, length)
+    }
+
+    /// This stream's data, decoded, or `None` if qpdf could not decode it.
+    ///
+    /// **`None` is not "empty" and a caller may not treat it as such.** It means the bytes came
+    /// back still compressed, and lexing compressed bytes for resource names yields a handful
+    /// of accidents rather than the names that are there -- the under-approximation that
+    /// deletes a resource the page draws with. `prune.rs` turns it into a refusal.
+    ///
+    /// # Errors
+    ///
+    /// Whatever qpdf latched while reading the stream.
+    pub(super) fn stream_data(&self, document: &Document) -> Result<Option<Vec<u8>>> {
+        let mut filtered: ffi::QpdfBool = ffi::QPDF_FALSE;
+        let mut buffer: *mut u8 = core::ptr::null_mut();
+        let mut length: usize = 0;
+        // SAFETY: as `page_content`; all three out-parameters point at live locals.
+        let status = unsafe {
+            ffi::qpdf_oh_get_stream_data(
+                self.data,
+                self.handle,
+                crate::codes::qpdf::decode_level::SPECIALIZED,
+                &raw mut filtered,
+                &raw mut buffer,
+                &raw mut length,
+            )
+        };
+        let data = take_malloced_buffer(document, status, buffer, length)?;
+        if filtered == ffi::QPDF_FALSE {
+            return Ok(None);
+        }
+        Ok(Some(data))
+    }
+
     /// Hand the raw handle to a qpdf call that takes one.
     ///
     /// Narrow on purpose: `qpdf_add_page` and `qpdf_remove_page` take a handle and are not
@@ -233,6 +382,65 @@ impl<'a> ObjectHandle<'a> {
     pub(super) const fn raw(&self) -> ffi::QpdfObjectHandle {
         self.handle
     }
+}
+
+/// A NUL-terminated string qpdf owns, copied out before the next call invalidates it.
+///
+/// Every `char const*` in qpdf's C API points into storage on the `qpdf_data` that the next
+/// call returning one overwrites (`qpdf-c.h:796-800` says so for the key iterator and the same
+/// holds for `unparse` and `get_name`). Holding one across a second call is a use-after-free
+/// that looks like a wrong answer, so there is one function that copies and no way to get the
+/// pointer out of this module.
+fn copy_c_string(text: *const c_char) -> Vec<u8> {
+    if text.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `text` is non-null and qpdf guarantees a NUL-terminated string at it, valid
+    // until the next call on the same `qpdf_data` that returns one. This reads it and copies
+    // before returning, so nothing outlives that window.
+    unsafe { core::ffi::CStr::from_ptr(text) }
+        .to_bytes()
+        .to_vec()
+}
+
+/// Copy a `malloc`ed buffer out of qpdf and free it, whatever the outcome.
+///
+/// The two stream readers are the only qpdf functions this crate calls whose buffer is the
+/// **caller's** to free rather than qpdf's. Every path through here frees it -- including the
+/// error path, which is the one that would otherwise leak the decompressed size of a stream
+/// per failed page.
+fn take_malloced_buffer(
+    document: &Document,
+    status: ffi::QpdfErrorCode,
+    mut buffer: *mut u8,
+    length: usize,
+) -> Result<Vec<u8>> {
+    // READ THE BYTES BEFORE THE ERROR IS DRAINED, and free before returning either way.
+    let data = if buffer.is_null() || length == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: qpdf reports `length` readable bytes at `buffer`, which it allocated with
+        // `malloc`. Copied out immediately and not stored.
+        unsafe { core::slice::from_raw_parts(buffer, length) }.to_vec()
+    };
+    if !buffer.is_null() {
+        // SAFETY: `buffer` was allocated by qpdf with `malloc` and has not been freed. The
+        // function nulls it out, and nothing reads it afterwards. Untrapped and argued in
+        // `engines/qpdf-untrapped-accepted.toml`: its body is a `free`.
+        unsafe { ffi::qpdf_oh_free_buffer(&raw mut buffer) }
+    }
+
+    // THE ERROR BIT, never `!= 0`: a warning here is an ordinary outcome, and a page whose
+    // content stream qpdf grumbled about still has content worth reading.
+    if ffi::has_errors(status) {
+        return Err(document.take_error().unwrap_or_else(|| {
+            Error::Malformed("qpdf: a stream's data could not be read".to_owned())
+        }));
+    }
+    if let Some(error) = document.take_error() {
+        return Err(error);
+    }
+    Ok(data)
 }
 
 impl Drop for ObjectHandle<'_> {
@@ -258,11 +466,12 @@ mod tests {
     fn the_handle_api_is_reachable_only_from_here() {
         // Every sibling that could reach `ffi`, by name. `include_str!` needs a literal, so
         // the contents are listed; what is NOT listed is how many there should be.
-        let siblings: [(&str, &str); 6] = [
+        let siblings: [(&str, &str); 7] = [
             ("assemble.rs", include_str!("assemble.rs")),
             ("extract.rs", include_str!("extract.rs")),
             ("limits.rs", include_str!("limits.rs")),
             ("mod.rs", include_str!("mod.rs")),
+            ("prune.rs", include_str!("prune.rs")),
             ("reorder.rs", include_str!("reorder.rs")),
             ("rotate.rs", include_str!("rotate.rs")),
         ];
@@ -342,9 +551,35 @@ mod tests {
 
         // AND THE SCAN LOOKED AT SOMETHING. A pattern that matches nothing passes everything,
         // and this one would pass an empty file list just as happily.
+        // `ffi::`, but NOT `core::ffi::` or `std::ffi::`. The predicate was a bare substring
+        // match, and `prune.rs` imports `core::ffi::c_int` -- so the module that reaches qpdf
+        // ONLY through `ObjectHandle`, which is this file's whole thesis, was reported as
+        // calling the C API directly. A check that counts a standard-library import as a
+        // foreign-function call is one whose list grows for reasons unrelated to its rule, and
+        // a list like that is one people learn to update without reading.
+        let reaches_the_c_api = |source: &str| {
+            source.match_indices("ffi::").any(|(at, _)| {
+                !source[..at].ends_with("core::") && !source[..at].ends_with("std::")
+            })
+        };
+
+        // ITS OWN FIXTURE AND NEAR-MISS, like the call predicate above.
+        assert!(
+            reaches_the_c_api("let added = unsafe { ffi::qpdf_add_page(dest.data) };"),
+            "the scan no longer recognises a real C API call, so its list means nothing"
+        );
+        assert!(
+            !reaches_the_c_api("use core::ffi::c_int;"),
+            "the scan counts a standard-library import as a C API call"
+        );
+        assert!(
+            !reaches_the_c_api("use std::ffi::CStr;"),
+            "the scan counts a standard-library import as a C API call"
+        );
+
         let reach_ffi: Vec<&str> = siblings
             .iter()
-            .filter(|(_, source)| source.contains("ffi::"))
+            .filter(|(_, source)| reaches_the_c_api(source))
             .map(|(name, _)| *name)
             .collect();
         // `rotate.rs` reaches qpdf only through `ObjectHandle` and `open_document`, so it names
@@ -352,6 +587,12 @@ mod tests {
         // call the C API directly and are the ones worth scanning; `reorder.rs` is among them
         // because it calls `qpdf_remove_page` and `qpdf_add_page_at`, neither of which takes
         // or returns an object handle it could leak.
+        //
+        // `prune.rs` is the newest and the most handle-heavy module in the crate -- it reads
+        // keys, walks arrays, opens streams -- and it reaches qpdf's C API nowhere at all. That
+        // is the whole point of this file existing: the module that would leak the most handles
+        // is the one that cannot reach the API that issues them. It DOES name `core::ffi::c_int`,
+        // which is what the predicate above had to learn to tell apart.
         assert_eq!(
             reach_ffi,
             vec![
