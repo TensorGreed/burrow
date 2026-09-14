@@ -278,11 +278,13 @@ interface WorkerGlobalScope {
   // --- PDFium ---
   __burrow_pdfium_copy_in(bytes: Uint8Array): number;
   __burrow_pdfium_wipe_free(ptr: number, len: number): void;
-  __burrow_pdfium_free_input(ptr: number): void;
+  /** Wipes before freeing: this buffer holds the user's document. */
+  __burrow_pdfium_free_input(ptr: number, len: number): void;
   /** `(code << 32) | handle` — both values from one call. See `bridge.js`. */
   __burrow_pdfium_load(data: number, len: number, password: number): bigint;
   __burrow_pdfium_pages(doc: number): number;
-  __burrow_pdfium_close(doc: number, data: number): void;
+  /** Closes, then wipes and frees `data` — the user's document. See `bridge.js`. */
+  __burrow_pdfium_close(doc: number, data: number, len: number): void;
   __burrow_pdfium_heap_pages(): number;
 
   // --- qpdf ---
