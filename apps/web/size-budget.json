@@ -96,7 +96,7 @@
     "Shortening that list is the real fix and it means making `pkg/` reproducible, which is a",
     "build change nobody has made yet."
   ],
-  "measured_on": "2026-09-13, apps/web production build (no BURROW_HARNESS), linux-aarch64, heaviest landing route; re-recorded for M1's rotate bridge",
+  "measured_on": "2026-09-13, apps/web production build (no BURROW_HARNESS), linux-aarch64, heaviest landing route (/rotate-pdf); re-recorded for M1's rotate page",
   "headroom": {
     "per_artifact": 0.1,
     "page": "absolute",
@@ -130,12 +130,12 @@
       "measured_sha256_normalised": "c74d1b8ef95ab0e34fc1cf1d4e39af9bc2292e23a69a1dcd77caa4d2d2e40b3c"
     },
     "engines/burrow-worker.js": {
-      "measured_raw": 287834,
-      "measured_brotli": 52013,
-      "budget_brotli": 57214,
+      "measured_raw": 288546,
+      "measured_brotli": 52258,
+      "budget_brotli": 57483,
       "why": "The one bundle: prelude, bridge, both Emscripten glue files, wasm-bindgen glue, worker main. This is the line our own worker code moves, so it is the one worth watching on an ordinary PR. M1 PR B2 added +2,628 -- the write path's nine bridge functions and the wasm-bindgen glue for the merge entry point. M1 PR B3 took it DOWN by 13 (48,092 -> 48,079): unwrapping `InputFailed` for the reply's limit detail added code, and one `innermost` helper replacing three ad-hoc unwraps took back slightly more than it cost. M1's consolidation batch added +1,125 for the pre-flight budget call and the Reply it drains. And +635 for the start-up progress message the stall bound reads (ADR 0018). M1's rotate bridge moved it +1,924 brotli: six `__burrow_qpdf_oh_*` forwarders, the `rotate` and `page_rotations` dispatch arms, and the `rotations` line in `drainReply`.",
-      "measured_sha256": "3b2da09b725af9be8c0549aefd2a80bbc1f3bb8bf5b24a10d09d62535e609222",
-      "measured_sha256_normalised": "f456e10cb5ce0a205ee323039de45a71b06b606c4236dc9a981d1e33dd04375a"
+      "measured_sha256": "8f683cb339e0ee2b09f907c36163220e34a0209ed8ceb2b70d3615496b2f7480",
+      "measured_sha256_normalised": "502d058646d97d82ec1b68e1ecfeacd156b3646eeef19d36b1a032658813a491"
     },
     "engines/burrow_wasm_bg.wasm": {
       "measured_raw": 79775,
@@ -154,28 +154,28 @@
       "measured_sha256_normalised": "ad9d8021d8ae20c52a99717073dee047fc55bcbf1b9c7821ee0b5b5375bd673b"
     },
     "page": {
-      "measured_raw": 29161,
-      "measured_brotli": 21901,
+      "measured_raw": 29632,
+      "measured_brotli": 22121,
       "budget_brotli": 51200,
-      "why": "The heaviest landing route's markup, stylesheets and fonts, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. SCRIPTS ARE NOT ON THIS LINE ANY MORE; they are on `page-js`, for the reason recorded there and in tools/first-load.mjs. That split is what lets this line keep the EXACT digest check: it was briefly on not_byte_reproducible with a 2% bound, about 600 bytes, which is enough to hide a CSS regression -- and the thing it was tolerating belonged entirely to the JavaScript. An ABSOLUTE budget (50 KiB), not a percentage. The route is the heaviest one, not the home page: people arrive from a search for \"merge pdf\" and land on /merge-pdf. `measured_route` records which one that was, and the test fails if the build disagrees. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of that is one file: the self-hosted typeface, 18,524 of it. apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload.",
-      "measured_sha256": "7f8588606a144059d937a465cc5d7cc5270692359bfc4d5a8a25518d6faefeab",
-      "measured_sha256_normalised": "83e00c5df5628a919af47345619b264b63b58941063eec9ce969e02824cf7677",
-      "measured_route": "merge-pdf/index.html"
+      "why": "The heaviest landing route's markup, stylesheets and fonts, pooled -- Vite splits and names those chunks at its own discretion, so a per-file budget here would fail on a rename. SCRIPTS ARE NOT ON THIS LINE ANY MORE; they are on `page-js`, for the reason recorded there and in tools/first-load.mjs. That split is what lets this line keep the EXACT digest check: it was briefly on not_byte_reproducible with a 2% bound, about 600 bytes, which is enough to hide a CSS regression -- and the thing it was tolerating belonged entirely to the JavaScript. An ABSOLUTE budget (50 KiB), not a percentage. The route is the heaviest one, not the home page: people arrive from a search for \"merge pdf\" and land on /merge-pdf. `measured_route` records which one that was, and the test fails if the build disagrees. M1 PR A moved this line from 881 to 21,652 brotli, and almost all of that is one file: the self-hosted typeface, 18,524 of it. apps/web/fonts.toml records what the face is and what the alternatives cost (brotli: 47,804 unsubsetted, 31,620 subsetted with the full weight axis, 18,524 with the axis clipped to the 400-700 the design uses). The font is only in this measurement because BaseLayout preloads it: tools/first-load.mjs scans the markup and does not follow url(...) inside CSS, so a face referenced only from @font-face would be a real download this budget could not see. src/styles/tokens.test.ts fails if any @font-face here has no matching preload. M1's ROTATE PAGE OVERTOOK MERGE AS THE HEAVIEST ROUTE, by 500 brotli bytes (2,350,467 against 2,349,967) -- the two pages are within a rounding error of each other and rotate's prose is slightly longer. The test caught the change rather than letting the line quietly start meaning a different page, which is exactly what `measured_route` is for. Re-measured against /rotate-pdf, and the budget stays an absolute 50 KiB.",
+      "measured_sha256": "7b0e7b0db1ed0b85505fa6c2c4642be68bee21b6d26959abfff3667eeb5db75c",
+      "measured_sha256_normalised": "713e51e32b7c37441424db83c48cbf16011aec8aef0f2bf857e97e11179e1325",
+      "measured_route": "rotate-pdf/index.html"
     },
     "page-js": {
-      "measured_raw": 53019,
-      "measured_brotli": 19199,
-      "budget_brotli": 21118,
+      "measured_raw": 56332,
+      "measured_brotli": 20664,
+      "budget_brotli": 22730,
       "why": "Every bundled script the heaviest landing route needs: the island that mounts the merge tool, and the Svelte runtime it imports. IT IS ITS OWN LINE BECAUSE IT IS THE ONLY PART OF THE PAGE THAT IS NOT BYTE-REPRODUCIBLE. Measured, not assumed: M1's consolidation batch pushed a per-file digest breakdown to CI, and against this aarch64 recording the x86_64 build reported identical digests for the markup, both stylesheets and the font, and a different one for the island chunk alone -- the bundler's native binary mangles identifiers differently. Pooled with the rest, that cost the whole page line its exact check. THE RUNTIME CHUNK WAS INVISIBLE UNTIL NOW, and it is 31 KB raw of the 52 KB here. `firstLoad` derived the payload from the markup alone and did not follow a script's own `import`s, so a third of the page's real JavaScript was a download nothing watched -- found while splitting this line, not by anything failing. The budget is the usual 10% per-artifact headroom on a fresh measurement. M1's consolidation batch added +192 for the \"getting the engine ready\" line the page now shows while the engines load (ADR 0018).",
-      "measured_sha256": "da9c87e5bc4c071f09753bf8f8a95fe8392c18f3e19d8097ff223ee9ab1a14bc",
-      "measured_sha256_normalised": "0b6b12eef017aaa1d41930cc6e7e5b3c6bee7ea2d8d62de72579c50c65261ca1"
+      "measured_sha256": "d9f1023492b79a664492ed1c3e512f2a54fd053494819cf265a57cfa81fcca1c",
+      "measured_sha256_normalised": "42e64019c4e93675c1aad67f3e0a241b1c25b2d9b4c786407f9234006bd621b8"
     }
   },
   "total": {
-    "measured_raw": 7232000,
-    "measured_brotli": 2348917,
+    "measured_raw": 7236496,
+    "measured_brotli": 2350847,
     "budget_brotli": 2403482,
-    "why": "The binding gate. Everything a user downloads before their first operation runs. RAISED IN M1 PR B2, from 2,299,796 to 2,383,361, and this is the first raise. The payload grew 60,124 brotli bytes because merge needs an engine that can WRITE: qpdf's QPDFWriter (+53,456), the Rust entry point (+4,044) and the bridge (+2,628). The raise restores the recorded 3% headroom rather than inventing a new margin, and the alternative was measured rather than assumed -- PDFium can merge with zero added bytes and loses outlines, attachments and working form fields (ADR 0017). A budget raised without knowing what grew has stopped being a budget; this one names every line that moved and why. M1 PR B3 moved it +8,206, to 2,322,444, and NOT by shipping more engine: the page line changed which route it measures, from the home page to /merge-pdf, which is the heaviest route and the one people actually land on. The budget is NOT raised for it -- 2,383,361 still leaves 2.6% of headroom against the recorded 3%, and raising a budget that is not binding would spend margin nobody needed. RAISED AGAIN IN M1's CONSOLIDATION BATCH, from 2,383,361 to 2,403,482, and this raise is unlike the last one: THE PAYLOAD DID NOT GROW. The measurement stopped being blind. `firstLoad` never followed a script's own `import`s, so the Svelte runtime the island pulls in -- 31,063 raw, 11,034 brotli -- was a real download no budget line could see. Counting it moved the total by exactly that. The raise restores the recorded 3% headroom rather than inventing a margin; refusing to raise it would have left the file claiming 3% and enforcing 2.1%, which is the kind of quiet disagreement this file exists to prevent. The pre-flight budget check (#51) added 2,130 on top of that: 1,005 in the Rust module and 1,125 in the worker bundle. Within the budget above; not raised for it."
+    "why": "The binding gate. Everything a user downloads before their first operation runs. RAISED IN M1 PR B2, from 2,299,796 to 2,383,361, and this is the first raise. The payload grew 60,124 brotli bytes because merge needs an engine that can WRITE: qpdf's QPDFWriter (+53,456), the Rust entry point (+4,044) and the bridge (+2,628). The raise restores the recorded 3% headroom rather than inventing a new margin, and the alternative was measured rather than assumed -- PDFium can merge with zero added bytes and loses outlines, attachments and working form fields (ADR 0017). A budget raised without knowing what grew has stopped being a budget; this one names every line that moved and why. M1 PR B3 moved it +8,206, to 2,322,444, and NOT by shipping more engine: the page line changed which route it measures, from the home page to /merge-pdf, which is the heaviest route and the one people actually land on. The budget is NOT raised for it -- 2,383,361 still leaves 2.6% of headroom against the recorded 3%, and raising a budget that is not binding would spend margin nobody needed. RAISED AGAIN IN M1's CONSOLIDATION BATCH, from 2,383,361 to 2,403,482, and this raise is unlike the last one: THE PAYLOAD DID NOT GROW. The measurement stopped being blind. `firstLoad` never followed a script's own `import`s, so the Svelte runtime the island pulls in -- 31,063 raw, 11,034 brotli -- was a real download no budget line could see. Counting it moved the total by exactly that. The raise restores the recorded 3% headroom rather than inventing a margin; refusing to raise it would have left the file claiming 3% and enforcing 2.1%, which is the kind of quiet disagreement this file exists to prevent. The pre-flight budget check (#51) added 2,130 on top of that: 1,005 in the Rust module and 1,125 in the worker bundle. Within the budget above; not raised for it. M1's ROTATE PAGE added the second tool page and its island: the total moved to 2350467, which is within the budget above and does not raise it. The page line now measures /rotate-pdf rather than /merge-pdf -- it overtook merge by 500 bytes, which the heaviest-route test reported rather than absorbing."
   },
   "not_byte_reproducible": {
     "engines/burrow_wasm_bg.wasm": "wasm-pack output. bindings/burrow-wasm/pkg/ is gitignored and rebuilt per machine, so the bytes depend on the local Rust and wasm-bindgen versions rather than on anything committed.",

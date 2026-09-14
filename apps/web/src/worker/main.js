@@ -401,18 +401,29 @@ self.onmessage = async (event) => {
       // one should hear about it"). These are caller arguments rather than file content, so
       // this is not the attacker-controlled-size rule; it is the same principle one layer out.
       // Found by code review.
+      // AND THE ANGLE, for the same reason. wasm-bindgen coerces a JS number to `i32` by
+      // truncation, so a fractional or out-of-range angle becomes a DIFFERENT angle rather
+      // than a refusal -- the asymmetry the comment below argues against, one argument over.
+      // The island can only produce 90, 180 or 270 from radio buttons, so nothing on this
+      // page reaches it; the worker is not the island's private API. Found by security review.
+      const degrees = request.degrees ?? 0;
+      const angleUsable =
+        typeof degrees === "number" && Number.isInteger(degrees) && degrees % 90 === 0;
+
       const pages = request.pages ?? [];
       const usable = pages.every(
         /** @param {unknown} n */
         (n) => typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 0xffff_ffff,
       );
-      if (!usable) {
+      if (!usable || !angleUsable) {
         self.postMessage({
           id: request.id,
           ok: false,
           kind: "InvalidArgument",
           fatal: false,
-          message: "a page number is not a whole number in range",
+          message: usable
+            ? "a rotation must be a whole multiple of 90 degrees"
+            : "a page number is not a whole number in range",
           pages: 0,
           limit: "",
           stage: "",
@@ -427,13 +438,7 @@ self.onmessage = async (event) => {
         });
         return;
       }
-      reply = wasm_bindgen.rotate(
-        bytes,
-        Uint32Array.from(pages),
-        request.degrees ?? 0,
-        password,
-        limits,
-      );
+      reply = wasm_bindgen.rotate(bytes, Uint32Array.from(pages), degrees, password, limits);
     } else if (request.op === "page_rotations") {
       reply = wasm_bindgen.page_rotations(bytes, password, limits);
     } else if (request.op === "page_count") {

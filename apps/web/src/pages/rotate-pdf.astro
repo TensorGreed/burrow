@@ -1,0 +1,136 @@
+---
+// The second tool page. One URL, indexable, its own title and prose — people arrive here
+// from a search for "rotate pdf", not from the landing page.
+//
+// The interactive part is one island. Everything above and below it is static, so the page is
+// readable and its claim is checkable with JavaScript switched off.
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="Rotate PDF — turn pages on your own computer | burrow"
+  description="Turn pages that were scanned the wrong way up. The pages are rotated in your browser and never uploaded, because there is no server to upload them to."
+>
+  <div class="read">
+    <h1>Rotate PDF</h1>
+
+    <p>
+      Turn some or all of a PDF's pages a quarter or a half turn — the usual fix for a scan that
+      came out sideways. The rotating happens in this browser, on this computer: the file is not
+      uploaded, because burrow has no server that could receive it.
+    </p>
+  </div>
+
+  {
+    /*
+    NO `client:*` DIRECTIVE. Astro's hydration directives bootstrap an island with an INLINE
+    script, and `script-src 'self'` carries no `'unsafe-inline'` and no nonce (ADR 0014) — so
+    the browser refuses the bootstrap, the island never hydrates, and the tool renders as dead
+    markup with nothing visible but a CSP line in the console. Measured on `/merge-pdf`; the
+    same wall, the same answer. The component is mounted by the module below, which Astro
+    bundles to `_astro/*.js` and references with a `src`.
+
+    The ENGINES are still not loaded here. The tool starts a worker the first time a file is
+    chosen (ADR 0018). Mounting the component is a few kilobytes; starting the engines is
+    6.8 MB.
+  */
+  }
+  <div id="rotate-tool"></div>
+
+  <script>
+    import { type Component, mount } from "svelte";
+
+    import RotateTool from "../components/RotateTool.svelte";
+
+    const target = document.getElementById("rotate-tool");
+    if (target) {
+      // The cast is Astro's type, not ours: `@astrojs/svelte` declares a `.svelte` default
+      // export as an ASTRO component, because that is what a `client:*` directive would need.
+      // Mounting it by hand is the same module reached through Svelte's own API, and the two
+      // declarations do not overlap. See the comment above on why `mount` is the only correct
+      // call here.
+      mount(RotateTool as unknown as Component, { target });
+    }
+  </script>
+
+  <noscript>
+    <div class="read no-js">
+      <h2>This tool needs JavaScript</h2>
+      <p>
+        The rotating is done by code running in your browser, so with JavaScript switched off there
+        is nothing to do the work. There is no server-side version to fall back to — that is the
+        whole design, not a missing feature.
+      </p>
+      <p>
+        With JavaScript on, this page lets you choose a PDF, pick which pages to turn and which way,
+        and download the result. Nothing is sent anywhere.
+      </p>
+    </div>
+  </noscript>
+
+  <div class="read">
+    <h2>Choosing pages by number</h2>
+
+    <p>
+      You can turn every page, or type the ones you want: <code>3</code>, or <code>2-5</code>, or
+      <code>1, 4, 7-9</code>. burrow shows how many pages the document has once it has opened it.
+    </p>
+
+    <p>
+      <strong>There are no page pictures yet.</strong> Choosing pages here means knowing their numbers,
+      which is harder than pointing at a thumbnail, and it is a real limitation rather than an oversight
+      — showing pages means rendering them, and rendering a long document needs a memory ceiling burrow
+      does not have yet. It is being built; until it is, this page does not pretend to offer it.
+    </p>
+
+    <h2>What happens to large files</h2>
+
+    <p>
+      Everything is held in this browser tab's memory, so the practical limit is what your device
+      can spare rather than an upload size. burrow refuses a file larger than 512 MB before it opens
+      it, and a document of more than 10,000 pages before it turns any of them — so an oversized job
+      is refused rather than failing part way through and leaving you with something incomplete.
+    </p>
+
+    <p>
+      What that does not save you from, said here rather than discovered: a very large document that
+      is under both limits can still make the tab slow while it runs, and on a phone the browser may
+      stop the tab entirely. That is the device's memory ceiling, reached inside the PDF engine
+      where nothing can intervene.
+    </p>
+
+    <h2>What is kept, and what is not</h2>
+
+    <p>
+      <strong>Everything.</strong> Rotating changes one attribute on the pages you chose and touches nothing
+      else: bookmarks, attachments, form fields, annotations and the page contents all come through unchanged.
+      The pages themselves are not re-encoded, so a scan is not resampled and a photograph does not lose
+      quality — the document simply records that those pages display turned.
+    </p>
+
+    <p>
+      That is worth stating plainly because the other tools here cannot say it. <a href="/merge-pdf"
+        >Merging</a
+      > keeps bookmarks from the first file only; a tool that takes pages out of a document has to drop
+      what pointed at the pages it left behind. Rotating drops nothing, and burrow's tests check the claim
+      rather than assuming it: every bookmark, annotation, form field and attachment the document carried
+      must still be there afterwards, and each page's drawing instructions must come through unaltered.
+    </p>
+
+    <p>
+      A file that is encrypted, damaged, or not a PDF is refused. So is one where a page you asked
+      to turn already carries a rotation that is not a whole number of quarter turns — burrow will
+      not guess at what was meant, because guessing would turn a page on a value the file never
+      carried. A page you did not ask for is never read, so a document can carry an odd rotation
+      elsewhere and still be usable here.
+    </p>
+  </div>
+</BaseLayout>
+
+<style>
+  /* The no-JS block is ordinary content, but it only ever appears in place of the tool, so it
+     gets the same top margin the tool has. */
+  .no-js {
+    margin-block-start: var(--space-6);
+  }
+</style>

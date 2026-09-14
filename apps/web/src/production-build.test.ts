@@ -44,6 +44,103 @@ describe("the production build", () => {
     expect(offenders, `burrowHarness leaked into: ${offenders.join(", ")}`).toEqual([]);
   });
 
+  it("ships no route to an operation that is held", () => {
+    // SPLIT IS HELD. Its outputs can still carry data belonging to pages they excluded —
+    // ADR 0019 §2's rule, measured as unmet, tracked as issue #54, and pinned by two
+    // deliberately-failing tests in the Rust suite. A tool whose whole claim is that your file
+    // does not leave your computer must not offer an operation that can put part of it into a
+    // file you then send to somebody else.
+    //
+    // THE ASSERTION IS ABOUT `dist/`, not about intent. Nobody plans to ship a held tool; what
+    // ships is a route, and a route appears the moment somebody adds `src/pages/split-pdf.astro`
+    // — which is a one-file change that no other test in this repository would notice. The
+    // landing page not linking it is not protection either: an unlinked page is still a page,
+    // still indexable, and still reachable by anyone who guesses the URL.
+    //
+    // This is written as a LIST so lifting the hold is one line, and so the reason travels with
+    // the name. An operation comes off it in the pull request that closes the issue holding it.
+    const held = [
+      { slug: "split-pdf", why: "ADR 0019 §2 / issue #54: outputs can carry excluded pages" },
+    ];
+
+    for (const { slug, why } of held) {
+      const routes = files.filter(
+        (f) => f === `${slug}/index.html` || f === `${slug}.html` || f.startsWith(`${slug}/`),
+      );
+      expect(routes, `/${slug} must not ship — ${why}`).toEqual([]);
+    }
+
+    // AND THE CHECK IS NOT VACUOUS. A filter that matched nothing would pass this whether or
+    // not the route existed, so the same patterns are run against a route that DOES ship: if
+    // they cannot find `/merge-pdf`, they could not have found `/split-pdf` either.
+    const shipped = files.filter(
+      (f) => f === "merge-pdf/index.html" || f === "merge-pdf.html" || f.startsWith("merge-pdf/"),
+    );
+    expect(
+      shipped.length,
+      "the patterns above cannot find a route that does ship, so they prove nothing about one that must not",
+    ).toBeGreaterThan(0);
+  });
+
+  it("ships no way to ASK for a held operation, whatever a route is called", () => {
+    // THE SLUG IS A NAME; THE OPERATION IS THE THING HELD. The assertion above keys on
+    // `/split-pdf`, so `src/pages/extract-pages.astro` posting `op: "split"` would ship a
+    // split tool and pass it. Security review made the point: gate on what is actually held.
+    //
+    // The worker's allowlist is the real control -- `src/worker/main.js` refuses an unknown
+    // op before `limits` is even constructed -- and this asserts that the shipped bundle
+    // still has the shape that control depends on: the held ops are absent from it, and the
+    // ops that ARE allowed are present, so a bundle that stopped containing op names at all
+    // could not pass by saying nothing.
+    const held = ["split", "reorder", "compress"];
+    const allowed = ["page_count", "structure_check", "merge", "rotate", "page_rotations"];
+
+    const scripts = files.filter((f) => /\.(js|mjs)$/.test(f));
+    const sources = scripts.map((f) => readFileSync(join(outDir, f), "utf8"));
+
+    for (const op of allowed) {
+      const present = sources.some((text) => text.includes(`"${op}"`));
+      expect(
+        present,
+        `no shipped script mentions the op "${op}", so this scan proves nothing`,
+      ).toBe(true);
+    }
+    for (const op of held) {
+      const offenders = scripts.filter((f, i) => sources[i].includes(`"${op}"`));
+      expect(
+        offenders,
+        `a shipped script names the held operation "${op}": ${offenders.join(", ")}`,
+      ).toEqual([]);
+    }
+  });
+
+  it("links every tool page it ships, and no tool page it does not", () => {
+    // The landing page is where a person finds these. A link to a route that does not exist is
+    // a 404 on the one page whose argument is that it tells you the truth about itself; a page
+    // that ships with no link is a tool nobody can find. Both have happened here: the first in
+    // an early draft, the second to `/merge-pdf`, which shipped without its link.
+    const landing = readFileSync(join(outDir, "index.html"), "utf8");
+    const linked = [...landing.matchAll(/href="\/([a-z-]+-pdf)"/g)].map((m) => m[1]);
+    const routes = files
+      .filter((f) => /^[a-z-]+-pdf(\/index)?\.html$/.test(f))
+      .map((f) => f.replace(/(\/index)?\.html$/, ""));
+
+    // TWO DIRECTIONS, REPORTED SEPARATELY. One `toEqual` said "links a route that does not
+    // ship" for the opposite failure too. And `linked` is de-duplicated: a page legitimately
+    // linked twice is not a defect, and comparing raw arrays would have failed on it.
+    const linkedSet = [...new Set(linked)].sort();
+    const routeSet = [...new Set(routes)].sort();
+    expect(
+      linkedSet.filter((slug) => !routeSet.includes(slug)),
+      "the landing page links a route that does not ship",
+    ).toEqual([]);
+    expect(
+      routeSet.filter((slug) => !linkedSet.includes(slug)),
+      "a tool page ships with no link from the landing page, so nobody can find it",
+    ).toEqual([]);
+    expect(routes.length, "no tool page ships at all, so this compares nothing").toBeGreaterThan(0);
+  });
+
   it("still ships the engines and the worker bundle, which are not test-only", () => {
     // The complement of the assertions above. Without this, deleting too much would pass.
     for (const pattern of [

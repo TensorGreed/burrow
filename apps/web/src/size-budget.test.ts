@@ -187,38 +187,62 @@ describe("the first-load size budget", () => {
     ).toBe(heaviest.page);
   });
 
-  it("states the page's ceilings once, and the page's prose repeats them", () => {
+  it("states each tool page's ceilings once, and that page's prose repeats them", () => {
     // `apps/web/CLAUDE.md`: "It sends the files and reports what the core refuses, so the
     // prose and the code can be caught disagreeing." That was true of the page ceiling --
     // `e2e/merge-pdf.spec.ts` drives a real refusal past it -- and NOT true of the byte
     // ceiling, which appears in the island and in the page's prose with nothing comparing
     // them. Code review found it; this is the comparison.
-    const island = readFileSync(join(webApp, "src", "components", "MergeTool.svelte"), "utf8");
-    // Whitespace-normalised: the prose is wrapped at 100 columns, so "512 MB" is really
-    // "512\n      MB" in the source and a naive search would report a disagreement that is
-    // only a line break.
-    const prose = readFileSync(join(webApp, "src", "pages", "merge-pdf.astro"), "utf8").replace(
-      /\s+/g,
-      " ",
-    );
+    //
+    // EVERY TOOL PAGE, not just the first. It hard-coded `/merge-pdf` and its island, so
+    // `/rotate-pdf` shipped the same two numbers in two more places with nothing comparing
+    // them -- and tools three to five would each have added two more. Found by code review on
+    // the rotate page. The pairs are DERIVED from the pages that exist: a page added without
+    // a line here is still checked, which is the whole point.
+    const pagesDir = join(webApp, "src", "pages");
+    const toolPages = readdirSync(pagesDir).filter((f) => /^[a-z-]+-pdf\.astro$/.test(f));
 
-    const bytes = /maxInputBytes:\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(island);
-    const pages = /maxPages:\s*([\d_]+)/.exec(island);
+    // ONE SET OF CEILINGS, read once. They used to be declared per island, so each page had
+    // its own copy to keep in step; they now live in `src/components/tool-host.ts`, which
+    // makes this one comparison against N pages rather than N pairs.
+    const shared = readFileSync(join(webApp, "src", "components", "tool-host.ts"), "utf8");
+    const bytes = /maxInputBytes:\s*(\d+)\s*\*\s*1024\s*\*\s*1024/.exec(shared);
+    const pages = /maxPages:\s*([\d_]+)/.exec(shared);
     expect(
       bytes,
-      "maxInputBytes is no longer written as N * 1024 * 1024; update this rule",
+      "maxInputBytes is no longer written as N * 1024 * 1024 in tool-host.ts; update this rule",
     ).not.toBeNull();
-    expect(pages, "maxPages is not where this rule looks; update it").not.toBeNull();
-
+    expect(
+      pages,
+      "maxPages is not where this rule looks in tool-host.ts; update it",
+    ).not.toBeNull();
     const mb = Number(bytes?.[1]);
     const maxPages = Number(pages?.[1].replace(/_/g, ""));
-    expect(prose, `the island refuses at ${mb} MB and the page's prose does not say so`).toContain(
-      `${mb} MB`,
-    );
+
+    let checked = 0;
+    for (const pageFile of toolPages) {
+      // Whitespace-normalised: the prose is wrapped at 100 columns, so "512 MB" is really
+      // "512\n      MB" in the source and a naive search would report a disagreement that is
+      // only a line break.
+      const prose = readFileSync(join(pagesDir, pageFile), "utf8").replace(/\s+/g, " ");
+
+      expect(prose, `${pageFile} refuses at ${mb} MB and its prose does not say so`).toContain(
+        `${mb} MB`,
+      );
+      expect(
+        prose,
+        `${pageFile} refuses at ${maxPages} pages and its prose does not say so`,
+      ).toContain(maxPages.toLocaleString("en-GB"));
+      checked += 1;
+    }
+
+    // GATED ON THE COUNT. A resolver that found no pages would pass this whether or not any
+    // page disagreed with its island -- "0 of 5" reads exactly like success.
+    expect(checked, "no tool page was checked, so this compares nothing").toBe(toolPages.length);
     expect(
-      prose,
-      `the island refuses at ${maxPages} pages and the page's prose does not say so`,
-    ).toContain(maxPages.toLocaleString("en-GB"));
+      checked,
+      "fewer tool pages than expected; a page was added without a route",
+    ).toBeGreaterThanOrEqual(2);
   });
 
   it("stays within the total budget", () => {
