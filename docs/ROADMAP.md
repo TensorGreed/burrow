@@ -13,15 +13,22 @@ is short on purpose: a blocker is not "important", it is "we do not ship with th
 
 | | what | why it blocks |
 |---|---|---|
-| **#61** | A damaged-but-openable document silently loses a page on write | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user — not an error, not a warning, not a count that disagrees. Someone can lose a page of a contract and find out months later. It reproduces through `rotate`, which is written and merged, so it is live on any build of `/rotate-pdf` that gets deployed. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** |
-| **#62** | Memory-unsafety in the pinned qpdf — two distinct defects | Blocks **M3/M4** outright: a native app has no sandbox, and opening an attachment is the scenario. Blocks **`/merge-pdf`** conditionally, because the second defect is inside `qpdf_add_page`, the call merge makes per page — measured, it crashes natively and hangs on wasm, both loud, but a use-after-free read's outcome is decided by heap layout and wasm has no unmapped page to fault on. **Dischargeable by #65** (merge verifies its own output) without waiting for upstream. Does not block `/rotate-pdf`, which copies nothing between documents. Disclosed 2026-09-14; `docs/security/exposure-2026-09-14-qpdf-uaf.md` has the reasoning. |
+| **#61** | A damaged-but-openable document silently loses a page | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user. It reproduces through `rotate`, which is merged, and through `split`'s build route. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** **Characterised** (2026-09-14): not the write losing a page — qpdf reads the same document as 5 pages without reconstruction and 4 with it, and `open` reports the first while the writer emits the second. **Discharged by #65 / ADR 0022**, which turns the disagreement into a refusal. |
+| **#62** | Memory-unsafety in the pinned qpdf — two distinct defects | Blocks **M3/M4 only**. Natively it is a hard crash with no sandbox, and opening an attachment is the scenario. **Does not block the web**, and the earlier conditional block on `/merge-pdf` is withdrawn: measured on every path it is a fault natively and a hang on wasm that the watchdog converts into a typed error, with **no silent wrong output observed anywhere**. The argument that blocked merge — *not observed is not cannot happen* — applies to every operation, since the defect is reachable from `open`; used as a blocker criterion it blocks everything indefinitely. The answer to *cannot be excluded* is a detector, and that is ADR 0022. Accepted and recorded: a crafted file freezes an operation for the 60 s watchdog budget before failing. `docs/security/exposure-2026-09-14-qpdf-uaf.md`. |
 
 Neither blocks further M1 development. They block **deployment**, which is the distinction
 worth keeping: work continues, and a build does not go in front of a person until the row is
 gone — or, for a conditional row, until its named discharge has landed.
 
-**A discharge is a checkable thing, not a judgement call at deploy time.** #62's is #65; when
-that merges, `/merge-pdf` is free of it whether or not upstream has responded.
+**A discharge is a checkable thing, not a judgement call at deploy time.** #61's is #65 /
+[ADR 0022](adr/0022-every-operation-verifies-its-own-output.md) — every operation verifying its
+own output. When that merges, silent page loss becomes a typed refusal and this table has one
+row left.
+
+**#62's row narrowed rather than gaining a discharge**, and the difference is worth keeping: a
+discharge is a thing you build, and what happened there was that a measurement showed the
+blocker had been drawn too wide. Correcting scope on evidence is not the same as fixing
+something.
 
 
 | Milestone | Scope | State |

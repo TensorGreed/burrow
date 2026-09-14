@@ -163,6 +163,50 @@ The discharge is #65: `merge` verifies its own output before returning it. That 
 only unbounded outcome — a plausible-looking wrong document — into a refusal, and leaves the
 crash and the hang bounded by the process boundary and the watchdog respectively.
 
+## 8. Scope reconciled, later the same day: the web is not blocked
+
+§7 concluded that `/merge-pdf` was conditionally blocked and the other tools were not. Seeded
+fuzzing then reached the **open-path** defect from `rotate` — that is,
+`QPDF::processMemoryFile`, which every operation calls — and that dissolves the distinction.
+
+Two measurements that were not in §7, both of which correct something stated there:
+
+**The open-path defect faults in burrow's configuration.** §7 recorded "without a sanitizer the
+plain binary does not crash", measured with `qpdf --check`. Through the C API with
+`attempt_recovery` **off**, which is what burrow does deliberately, it segfaults every time.
+Recovery **on** gives a clean `Malformed`. The CLI reconstructs, which is why it looked clean.
+
+**On wasm both defects hang, and neither produces output.** Measured through the real harness on
+the open-path proof of concept: `structure_check` and `page_rotations` both return
+`LimitExceeded` with `fatal: true` — the watchdog killing a worker that never replied.
+
+| | native, recovery off | native, recovery on | wasm | silent wrong output observed |
+|---|---|---|---|---|
+| open path | SIGSEGV | clean `Malformed` | hang → typed error | **no** |
+| copier | SIGSEGV | not retested | hang → typed error | **no** |
+
+### The decision that changes
+
+The conditional block on `/merge-pdf` rested on *"not observed is not cannot happen — and on
+wasm there is no unmapped page to fault on."* **That argument does not discriminate.** It is
+equally true of the open-path defect and therefore of every operation, so as a blocker criterion
+it blocks the entire product, indefinitely, on an unpatched upstream bug for which no silent
+failure has been observed on any path.
+
+A blocker has to be actionable and bounded. The right answer to "cannot be excluded" is a
+**detector**, not an indefinite hold — so the block is withdrawn and the mitigation is widened:
+[ADR 0022](../adr/0022-every-operation-verifies-its-own-output.md), every operation verifying
+its own output, which turns any page-level silent case into a refusal wherever it occurs.
+
+**#62 still blocks M3/M4**, unchanged and for the original reason: a hard crash with no sandbox.
+
+### Accepted, and recorded rather than discovered
+
+A crafted document freezes an operation for the 60-second watchdog budget before failing, and
+repeated attempts can open the circuit breaker and leave the page unusable until reload.
+Recoverable, self-inflicted on a file the user chose, no data at risk. Shortening the watchdog
+for the *open* phase would bound it; not done.
+
 ## 6. What has not changed
 
 - No mitigation is claimed for §3b. The engine's own freed memory is still there.
