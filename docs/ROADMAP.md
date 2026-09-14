@@ -14,11 +14,14 @@ is short on purpose: a blocker is not "important", it is "we do not ship with th
 | | what | why it blocks |
 |---|---|---|
 | **#61** | A damaged-but-openable document silently loses a page on write | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user — not an error, not a warning, not a count that disagrees. Someone can lose a page of a contract and find out months later. It reproduces through `rotate`, which is written and merged, so it is live on any build of `/rotate-pdf` that gets deployed. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** |
-| **#62** | Memory-unsafety in the pinned qpdf, on the open path | Blocks **M3/M4 only**, not the web. The wasm sandbox contains it (`docs/security/exposure-2026-09-14-qpdf-uaf.md` sets out why); a native Android or iOS app has no such boundary, and opening an attachment is the scenario. Disclosed upstream 2026-09-14. |
+| **#62** | Memory-unsafety in the pinned qpdf — two distinct defects | Blocks **M3/M4** outright: a native app has no sandbox, and opening an attachment is the scenario. Blocks **`/merge-pdf`** conditionally, because the second defect is inside `qpdf_add_page`, the call merge makes per page — measured, it crashes natively and hangs on wasm, both loud, but a use-after-free read's outcome is decided by heap layout and wasm has no unmapped page to fault on. **Dischargeable by #65** (merge verifies its own output) without waiting for upstream. Does not block `/rotate-pdf`, which copies nothing between documents. Disclosed 2026-09-14; `docs/security/exposure-2026-09-14-qpdf-uaf.md` has the reasoning. |
 
 Neither blocks further M1 development. They block **deployment**, which is the distinction
 worth keeping: work continues, and a build does not go in front of a person until the row is
-gone.
+gone — or, for a conditional row, until its named discharge has landed.
+
+**A discharge is a checkable thing, not a judgement call at deploy time.** #62's is #65; when
+that merges, `/merge-pdf` is free of it whether or not upstream has responded.
 
 
 | Milestone | Scope | State |
