@@ -9,7 +9,7 @@ Dates are deliberately absent. The order is the commitment.
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `split` **held** (#54), `rotate` core ✅ (web page pending), `reorder`/`compress` proceeding |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `split` **held** (#54), `reorder`/`compress` next |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started |
 | [M4](#m4--ios) | iOS app | not started |
@@ -411,7 +411,7 @@ assert:
 |---|---|
 | `merge` ✅ | Output page count equals the sum of inputs; page order is preserved; merging one document is the identity |
 | `split` | Splitting then merging round-trips to the original page sequence; every input page appears exactly once across outputs. **Both hold; the subsetting rule in ADR 0019 §2 does not yet — see #54.** |
-| `rotate` | Four 90° rotations return to the original; rotation is recorded, not re-rasterised. **Both hold**: `four_ninety_degree_rotations_return_to_the_original` and `every_page_s_content_stream_comes_out_byte_identical`. |
+| `rotate` ✅ | Four 90° rotations return to the original; rotation is recorded, not re-rasterised. **Both hold**: `four_ninety_degree_rotations_return_to_the_original`, and `every_page_s_content_stream_comes_out_byte_identical` — which searches each page's operator run in the decompressed output rather than comparing whole stream bodies, a narrower claim than its name suggests. |
 | `reorder` | Output is a permutation of the input — no page lost, added, or duplicated; the identity permutation is a no-op |
 | `compress` | Output is never larger than the input; page count and page dimensions are unchanged; text remains extractable |
 
