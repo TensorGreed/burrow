@@ -135,6 +135,27 @@ check "a wasm-pack build CI runs but nothing local does is refused" \
 " \
   "wasm-pack:bindings/brandnew" 1
 
+# THE SIXTH, AND THE ONLY ONE THAT SLIPPED PAST THIS CHECK RATHER THAN PAST A HABIT.
+#
+# The subsetting gate was a `run:` block whose body was `cargo test -p burrow-ops … --test X --
+# --exact Y`. The extractor maps that to the `cargo:test` token the local `test` job already
+# covers, so parity reported FULL COVERAGE while the gate itself had no local counterpart -- and
+# the branch that closed #54 went red on it after a clean `tools/ci-local.py`.
+#
+# The fix was structural rather than a new pattern: the gate moved into
+# `tools/check-subsetting-gate.sh`, which the extractor sees as its own command. This case is the
+# shape that got through, so that a future gate written as a bare `cargo test` line is refused
+# rather than absorbed.
+#
+# It is DELIBERATELY a `cargo test` invocation with distinguishing arguments. A pattern that
+# looked only at the subcommand would swallow it again, which is the whole point.
+check "a cargo-test gate CI runs that no local job covers is refused" \
+  "||
+      - name: A gate nothing local runs
+        run: cargo test -p burrow-ops --all-features --test brandnew_gate -- --exact some_case
+" \
+  "test:brandnew_gate" 1
+
 # --- Drift in the other direction -----------------------------------------------------------
 #
 # A local command covering something CI no longer runs is dead weight that reads as coverage.

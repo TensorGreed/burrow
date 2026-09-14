@@ -49,6 +49,21 @@ CI = REPO / ".github" / "workflows" / "ci.yml"
 # a developer needs to see before pushing.
 PATTERNS: list[tuple[str, str]] = [
     (r"\bcargo \+nightly fuzz run \"?\$?\{?(\w+)", r"fuzz:\1"),
+    # A NAMED INTEGRATION SUITE IS ITS OWN GATE, and must be matched BEFORE the generic
+    # `cargo test` below or it is swallowed by it.
+    #
+    # That swallowing is the sixth miss of the class this tool exists for, and the only one that
+    # got past the parity check rather than past a habit. ADR 0019 §2's gate was a `run:` block
+    # invoking `cargo test -p burrow-ops --test split_no_leak -- --exact <name>`; it mapped to
+    # `cargo:test`, which the local `test` job already covered, so parity reported FULL coverage
+    # while that gate had no local counterpart at all. The branch closing #54 ran this tool clean
+    # and went red on that step.
+    #
+    # `--test <suite>` is the thing worth keying on: a step that names one suite is a gate about
+    # that suite, not a re-run of the workspace. A `$`-interpolated name is skipped rather than
+    # matched as the literal `$suite`, because a token nobody can cover is noise -- such a step
+    # belongs in a script, which is how this one was fixed.
+    (r"\bcargo test\b[^\n|&;]*?--test \"?([a-z_][\w-]*)", r"test:\1"),
     (r"\bcargo (fmt|clippy|test|deny|audit|build|doc|install)\b", r"cargo:\1"),
     # `wasm-pack build`, which is NOT a cargo subcommand and so matched nothing above. It
     # produced the fifth miss of the class this tool exists for: `bindings/burrow-wasm/pkg/`
@@ -131,6 +146,22 @@ JOBS: list[dict] = [
         "covers": [],
         "needs_qpdf_cli": True,
         "why": "the engine-seam defect CI requires to keep reproducing beneath ADR 0022's refusal (#61)",
+    },
+    {
+        # ADDED AFTER THIS RUNNER REPORTED FULL PARITY AND CI WENT RED ANYWAY.
+        #
+        # The gate was a `run:` block invoking `cargo test`, and the extractor below maps that to
+        # a token the `test` job already covers -- so parity passed while the specific gate had no
+        # local counterpart. Moving it into a script is what makes it visible here, and this entry
+        # is the other half of that: a named command with a named local job.
+        "name": "subsetting-gate",
+        "run": "tools/check-subsetting-gate.sh && tools/test-check-subsetting-gate.sh",
+        "covers": [
+            "tools/check-subsetting-gate.sh",
+            "tools/test-check-subsetting-gate.sh",
+        ],
+        "needs_qpdf_cli": True,
+        "why": "ADR 0019 §2's rule, and that the tests asserting it are not ignored (#54)",
     },
     {
         "name": "corpus",
