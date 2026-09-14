@@ -32,7 +32,10 @@ mod assemble;
 mod extract;
 mod ffi;
 mod handle;
+// Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod limits;
+// Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
+mod prune;
 mod reorder;
 mod rotate;
 
@@ -355,7 +358,7 @@ impl StructureEngine for Qpdf {
 pub(super) fn open_document(
     bytes: Box<[u8]>,
     options: &crate::OpenOptions<'_>,
-) -> Result<(Document, u64, Option<u64>)> {
+) -> Result<(Document, u64, Option<u64>, Deadline)> {
     let limits = options.limits;
 
     let input_len = u64::try_from(bytes.len())
@@ -398,7 +401,13 @@ pub(super) fn open_document(
     // lived in a function that was never reached. Found by code review on `extract`.
     crate::estimate::check_measured_memory(rss_before, crate::rss::resident_bytes(), &limits)?;
 
-    Ok((document, pages, rss_before))
+    // THE DEADLINE GOES BACK TO THE CALLER, so work an engine does after this function
+    // returns but still inside its own `open` spends the SAME budget rather than starting a
+    // third. `split`'s `annots_sharing` is a sweep over every source page and it ran outside
+    // every ceiling until code review measured it: `Deadline::start` resets the origin and the
+    // budget, so a sweep that made its own would have been handed a fresh `max_duration_ms` —
+    // the exact defect ADR 0022 records being fixed three times over in `rotations`.
+    Ok((document, pages, rss_before, deadline))
 }
 
 #[cfg(test)]

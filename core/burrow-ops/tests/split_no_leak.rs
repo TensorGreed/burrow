@@ -28,17 +28,36 @@
 //! bytes at all** -- and a scan of the raw bytes would report silence for the wrong reason.
 //! That failure has already happened once in this repository, to `merge`'s first order test.
 //!
-//! # The control
+//! # The controls
 //!
-//! Two of them, because the scan can be wrong in two directions:
+//! Four, because a scan like this can be wrong in more directions than it can be right in, and
+//! three of the four exist because the thing they guard against has already happened here:
 //!
-//!   * `the_scan_finds_a_canary_that_is_really_there` -- run the identical scan over the
-//!     SOURCE, where every canary is present by construction, and require it to report a leak.
-//!     Without this, a scan that had stopped finding anything reports the same green as one
-//!     that works.
-//!   * `the_included_pages_canaries_do_survive` -- the output must still contain the canaries
-//!     of the pages it kept. Otherwise "no excluded canary" would be satisfied perfectly by an
+//!   * `the_scan_finds_a_canary_that_is_really_there` -- run the identical scan over the SOURCE,
+//!     where every canary is present by construction, and require it to report a leak. Without
+//!     this, a scan that had stopped finding anything reports the same green as one that works.
+//!   * `the_included_pages_canaries_do_survive` -- the output must still contain the canaries of
+//!     the pages it kept. Otherwise "no excluded canary" would be satisfied perfectly by an
 //!     operation that emitted an empty document.
+//!   * `the_scan_can_still_see_every_channel_it_is_the_gate_for` -- each of ADR 0019 §2a's
+//!     channels, found by name in a document that has them all. It replaces
+//!     `the_measured_leak_channels_are_exactly_the_ones_recorded`, which asserted the channels
+//!     still fired while the rule was unmet. That assertion had to invert when #54 closed, not
+//!     disappear: the state it was distinguishing -- a scan gone blind -- is exactly as reachable
+//!     now as it was then, and now it looks like success rather than like failure.
+//!   * `a_document_without_layers_is_not_caught_by_the_layer_refusal` -- the near-miss for the
+//!     optional-content refusal. A refusal that fired on every document would close §2a row 6
+//!     perfectly, make `split` useless, and be indistinguishable from a correct one by the test
+//!     that only checks the refusal fires.
+//!
+//! # Two layers, and neither is sufficient
+//!
+//! This file is the canary layer. `tests/subset_closure.rs` is the structural one, and ADR 0019
+//! §3 requires both. The structural harness asserts a property over every object in the source,
+//! so it fails for categories nobody named -- but it cannot see a leak **inside** an object that
+//! legitimately survives, which is what §2a rows 2 and 5 are: a form field owned by a kept and an
+//! excluded page carrying the value typed on the excluded one, and a named destination sitting in
+//! a kept page's own link. Those are what the canaries here are for.
 
 #![cfg(all(feature = "native-engines", target_os = "linux"))]
 #![allow(
@@ -54,7 +73,7 @@ use std::sync::Arc;
 use burrow_engines::OpenOptions;
 use burrow_engines::qpdf::Qpdf;
 use burrow_ops::{Cuts, split};
-use burrow_types::{Clock, Limits, ManualClock};
+use burrow_types::{Clock, Error, Limits, ManualClock};
 
 /// Pages in the generated fixture.
 const PAGES: u64 = 5;
@@ -223,6 +242,31 @@ fn no_output_carries_a_canary_from_a_page_it_excluded() {
     }
 }
 
+/// Every channel `shared-objects.pdf` plants, in one place.
+///
+/// **One list, read by both the scan and the control that proves the scan works.** They were two
+/// copies, and the count assertion built on the second was a tautology: it re-listed these names,
+/// checked each, then asserted the total was seven. Code review measured that it could not fail
+/// independently of the checks above it.
+const CHANNELS: [&str; 8] = [
+    "LEAKCANARY-resource-only-page-4-draws-it",
+    "LEAKCANARY-fieldgroup-spans-1-and-4",
+    "LEAKCANARY-utf16-typed-on-page-4",
+    "LEAKCANARY-widget-page-4",
+    "LEAKCANARY-annot-page-4",
+    "LEAKCANARY-thread-covers-page-4",
+    // ADR 0019 §2a ROW 5, which had no fixture and no test until #54 closed. It rides INSIDE an
+    // object the output is allowed to keep -- page 1's own link -- so the structural closure
+    // harness cannot see it by construction. This is what the named canaries are for.
+    "LEAKCANARY-namedest-page-4",
+    // Reachable only through `/Stash`, a key on the inherited `/Resources` that is not one of
+    // the seven resource categories. The filter iterated the categories and filtered inside
+    // each, so anything else came through whole -- ADR 0019 §2a row 1 leaking through a key
+    // nobody enumerated, which is what the page-key rule is an allowlist to avoid. Found by
+    // security review; the resource filter is an allowlist now too.
+    "LEAKCANARY-stash-belongs-to-page-4",
+];
+
 /// Canaries in the shared-object fixture that name a page this output does not contain.
 ///
 /// Separate from `leaked_canaries` because this fixture names its canaries by CHANNEL rather
@@ -230,23 +274,13 @@ fn no_output_carries_a_canary_from_a_page_it_excluded() {
 /// channels are what the enumeration is about.
 fn shared_object_leaks(bytes: &[u8]) -> Vec<&'static str> {
     let text = expanded(bytes);
-    [
-        "LEAKCANARY-resource-only-page-4-draws-it",
-        "LEAKCANARY-fieldgroup-spans-1-and-4",
-        "LEAKCANARY-utf16-typed-on-page-4",
-        "LEAKCANARY-widget-page-4",
-        "LEAKCANARY-annot-page-4",
-        "LEAKCANARY-thread-covers-page-4",
-    ]
-    .into_iter()
-    .filter(|canary| contains(&text, canary))
-    .collect()
+    CHANNELS
+        .into_iter()
+        .filter(|canary| contains(&text, canary))
+        .collect()
 }
 
 #[test]
-#[ignore = "ADR 0019 §2a: six measured channels still carry data from excluded pages. \
-            This is the test that says so; it is ignored rather than deleted so the gap is \
-            visible in the suite rather than only in a document. See issue #54."]
 fn no_output_carries_anything_from_a_page_it_excluded_even_when_objects_are_shared() {
     // THE TEST THE ORIGINAL ONE SHOULD HAVE BEEN. `canary-per-page.pdf` gives every page its
     // own annotations, its own resources and its own everything -- precisely the structure in
@@ -254,9 +288,9 @@ fn no_output_carries_anything_from_a_page_it_excluded_even_when_objects_are_shar
     // never at risk. This fixture shares objects between page 1 (kept) and page 4 (excluded),
     // which is what documents real software emits look like.
     //
-    // It is `#[ignore]`d and it is expected to FAIL when run. That is deliberate: ADR 0019 §2
-    // states a rule the implementation does not yet meet, and a suite that simply omitted the
-    // failing case would report the rule as satisfied.
+    // It was `#[ignore]`d and expected to FAIL for the whole of M1, because ADR 0019 §2 stated a
+    // rule the implementation did not meet. Issue #54 closed it: `qpdf/prune.rs` takes back out
+    // what `qpdf_add_page`'s reachability closure dragged in.
     let outputs = split(
         &Qpdf::new(),
         fixture("shared-objects.pdf").into_boxed_slice(),
@@ -273,38 +307,208 @@ fn no_output_carries_anything_from_a_page_it_excluded_even_when_objects_are_shar
 }
 
 #[test]
-fn the_measured_leak_channels_are_exactly_the_ones_recorded() {
-    // THE GAP, PINNED. ADR 0019 §2a lists the channels that still carry excluded data. If a
-    // future change closes one, this fails and the ADR must be updated; if a change OPENS a
-    // new one, the ignored test above is the one that catches it. Neither direction is allowed
-    // to happen quietly, which is the only honest way to ship a known-incomplete rule.
+fn the_scan_can_still_see_every_channel_it_is_the_gate_for() {
+    // THE REPLACEMENT FOR `the_measured_leak_channels_are_exactly_the_ones_recorded`, and it is
+    // a replacement rather than a deletion on purpose.
+    //
+    // That test asserted the §2a channels still FIRED. While the rule was unmet it was the only
+    // thing separating two states that look identical from a green run: the channels closing,
+    // and the scan going blind. Now that pruning has landed the first state is the goal, so the
+    // assertion has to be inverted rather than dropped -- because the second state has not gone
+    // anywhere. A changed canary prefix, a fixture whose markers moved, an expansion that
+    // silently stopped decompressing, and `shared_object_leaks` returns an empty list over an
+    // output that is full of leaks, and every no-leak assertion above passes.
+    //
+    // So: the identical scan, over the SOURCE, where every canary is present by construction.
+    // Each of the six must be found BY NAME. That keeps "the scan can see this channel" asserted
+    // per channel, which is the property the old test was really carrying.
+    let source = fixture("shared-objects.pdf");
+    let seen = shared_object_leaks(&source);
+
+    // EVERY CHANNEL THE SCAN ENUMERATES, derived from the scan's own list rather than repeated
+    // here. The first version listed the seven names again and then asserted `seen.len() == 7`
+    // -- which, after seven `contains` checks, cannot fail independently of them and is not the
+    // derived denominator its comment claimed it was. Found by code review. `CHANNELS` is now
+    // the one place the list lives, and `shared_object_leaks` scans exactly it.
+    for channel in CHANNELS {
+        assert!(
+            seen.contains(&channel),
+            "the scan cannot see {channel} in a document that definitely contains it, so the \
+             no-leak assertion for that channel is measuring nothing"
+        );
+    }
+}
+
+#[test]
+fn a_document_that_uses_layers_is_refused_rather_than_split() {
+    // ADR 0019 §2a ROW 6, which had no fixture and no test at all before #54.
+    //
+    // It is the channel a canary scan is the wrong instrument for: dropping the catalog's
+    // `/OCProperties` while keeping the OCGs a page references does not move a string anywhere,
+    // it makes content the source HID visible. §2b forbids dropping the configuration alone for
+    // that reason, and carrying a pruned one needs the destination's catalog -- which ADR 0013's
+    // caller rule puts out of reach, because `qpdf_get_root` is `QTC::TC(…); return
+    // trap_oh_errors(…)` and is not on the trapped list.
+    //
+    // So the answer is a refusal, and this is the assertion that it fires rather than the split
+    // quietly succeeding and revealing a watermark somebody turned off.
+    let result = split(
+        &Qpdf::new(),
+        fixture("optional-content.pdf").into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    );
+    assert!(
+        matches!(result, Err(Error::Unsupported(_))),
+        "a document whose page draws inside a layer that `/D /OFF` turns off was split; the \
+         part would show content the source hid. Got {result:?}"
+    );
+}
+
+#[test]
+fn a_page_whose_content_cannot_be_tokenised_is_refused_rather_than_guessed_at() {
+    // A BEHAVIOUR CHANGE #54 BROUGHT, pinned rather than left to be discovered from a bug
+    // report. A document with a malformed content stream -- here a stray `)` -- opens and splits
+    // on any other tool. burrow refuses it, because the resource filter has to know which names
+    // the page uses and a PARTIAL answer deletes a resource the page draws with. There is no
+    // third option: keeping every resource on a stream we could not read would carry the
+    // excluded pages' fonts, which is the leak this whole file is about.
+    //
+    // The refusal is the safe direction and it costs something real. That is worth a test
+    // stating it, because "split got stricter" is not visible from the signature.
+    let result = split(
+        &Qpdf::new(),
+        fixture("unlexable-content.pdf").into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    );
+    assert!(
+        matches!(result, Err(Error::Malformed(_))),
+        "a page whose content stream cannot be tokenised was split, so the resource filter ran \
+         on a partial name set. Got {result:?}"
+    );
+}
+
+#[test]
+fn a_stream_that_cannot_be_decoded_is_refused_rather_than_scanned_compressed() {
+    // THE OTHER REFUSAL, and the one that is easiest to get wrong quietly. qpdf reports whether
+    // it actually decoded a stream, and at `qpdf_dl_specialized` it will not decode a lossy
+    // filter -- so the bytes come back COMPRESSED. Lexing those for resource names finds a
+    // handful of accidents, which is an under-approximation, which deletes resources the page
+    // uses. A caller that treated "not decoded" as "empty" would produce a document that opens
+    // and renders wrong.
+    let result = split(
+        &Qpdf::new(),
+        fixture("undecodable-stream.pdf").into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    );
+    assert!(
+        matches!(result, Err(Error::Unsupported(_))),
+        "a page reaching a stream qpdf could not decode was split, so its names were read from \
+         compressed bytes. Got {result:?}"
+    );
+}
+
+#[test]
+fn a_page_that_draws_images_is_split_rather_than_refused() {
+    // THE WORST DEFECT SECURITY REVIEW FOUND, as a regression case. `/XObject` holds images as
+    // well as forms, and the walk followed anything in it that was a stream -- so it tried to
+    // DECODE them. A JPEG cannot be decoded at `qpdf_dl_specialized`, which the walk turned into
+    // a refusal, so **every document containing a JPEG** was refused. A flate image decoded and
+    // then failed to lex as PDF syntax whenever its pixels held an unbalanced `(`.
+    //
+    // This fixture has one of each. An image names no resources, so following one was never
+    // useful -- only expensive, and then fatal.
+    let outputs = split(
+        &Qpdf::new(),
+        fixture("images.pdf").into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    );
+    assert!(
+        outputs.is_ok(),
+        "a page drawing a JPEG and a flate image was refused: {outputs:?}"
+    );
+}
+
+#[test]
+fn a_font_named_two_levels_down_is_not_pruned_off_the_page() {
+    // THE OVER-PRUNE DIRECTION, which is the one that produces a file that opens and renders
+    // wrong. A form draws a form which draws text in `/F1`, and the inner form has no
+    // `/Resources` of its own — so `/F1` resolves against the page's. The walk resolved names
+    // against the page's categories only, never reached the inner form, and pruned the font off
+    // the page while the form still asked for it. Security review measured the font object
+    // leaving the file entirely.
+    let outputs = split(
+        &Qpdf::new(),
+        fixture("nested-forms.pdf").into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    )
+    .expect("a document with nested forms must split");
+    let text = expanded(&outputs[0]);
+    assert!(
+        text.windows(9).any(|w| w == b"Helvetica"),
+        "the font the inner form draws with was pruned off the page; the part still asks for \
+         `/F1` and the file no longer contains it"
+    );
+}
+
+#[test]
+fn a_layer_one_level_down_is_refused_like_one_on_the_page() {
+    // ADR 0019 §2a ROW 6, at depth. The refusal read the page's own `/Resources /Properties`, so
+    // an OCG inside a form XObject's own resources was past it — and security review measured
+    // that document splitting happily, with the hidden text visible in the output and the
+    // layer's name still in it. It is the shape Illustrator and InDesign emit, not an
+    // adversarial one.
+    let result = split(
+        &Qpdf::new(),
+        fixture("oc-nested.pdf").into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    );
+    assert!(
+        matches!(result, Err(Error::Unsupported(_))),
+        "a hidden layer one level down was split rather than refused, so content the source hid \
+         is visible in the part. Got {result:?}"
+    );
+}
+
+#[test]
+fn an_ordinary_document_is_not_caught_by_either_refusal() {
+    // THE NEAR-MISS FOR BOTH. A tokeniser that refused everything, or a decode check that read
+    // every stream as unfiltered, would satisfy the two assertions above perfectly and make
+    // `split` refuse every document in the world.
+    let outputs = split(
+        &Qpdf::new(),
+        canary_fixture().into_boxed_slice(),
+        Cuts::after_pages(&[2]),
+        &options(),
+    );
+    assert!(
+        outputs.is_ok(),
+        "an ordinary five-page document was refused: {outputs:?}"
+    );
+}
+
+#[test]
+fn a_document_without_layers_is_not_caught_by_the_layer_refusal() {
+    // THE NEAR-MISS FOR THE RULE ABOVE. A refusal that fired on everything would close the
+    // channel perfectly and make `split` useless, and it would look identical to a correct one
+    // from the test above alone. `/Properties` also carries ordinary marked-content property
+    // lists -- every tagged PDF has them -- so the detector keys on `/Type /OCG` and `/OCMD`
+    // rather than on the category being present.
     let outputs = split(
         &Qpdf::new(),
         fixture("shared-objects.pdf").into_boxed_slice(),
         Cuts::after_pages(&[1]),
         &options(),
-    )
-    .expect("split");
-
-    let leaks = shared_object_leaks(&outputs[0]);
-    assert!(
-        !leaks.is_empty(),
-        "no leak was found in the shared-object fixture -- either the channels have been \
-         closed (update ADR 0019 §2a and un-ignore the test above) or the scan has gone \
-         blind, and those two look identical from here"
     );
-    // Named individually, so closing one is visible rather than absorbed into a count.
-    for expected in [
-        "LEAKCANARY-resource-only-page-4-draws-it",
-        "LEAKCANARY-fieldgroup-spans-1-and-4",
-        "LEAKCANARY-utf16-typed-on-page-4",
-    ] {
-        assert!(
-            leaks.contains(&expected),
-            "ADR 0019 §2a records {expected} as a live channel and it did not appear; the \
-             record and the code disagree"
-        );
-    }
+    assert!(
+        outputs.is_ok(),
+        "the optional-content refusal fired on a document that has no layers: {outputs:?}"
+    );
 }
 
 #[test]

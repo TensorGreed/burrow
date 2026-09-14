@@ -74,6 +74,14 @@ pub mod qpdf;
 // the JS bridge, and it should get it without a second implementation.
 pub mod prescan;
 
+// Reading PDF syntax in Rust: a dictionary's keys, and the resource names a content stream
+// mentions. Pure Rust and `forbid(unsafe_code)`, so like `prescan` it is compiled everywhere.
+// It exists because qpdf's own answers to those two questions are not callable -- the
+// dictionary-key iterator does not route through `trap_errors` and the content-stream parser
+// is not in the C API (ADR 0013 §1). `split`'s pruning needs both, and redaction reuses the
+// module unchanged.
+pub mod pdfsyntax;
+
 // The web implementations of both engine traits, plus the bridge traits the JS binding
 // implements. Ungated for the same reason as `prescan`: the orchestration is shared Rust,
 // and compiling it everywhere is what lets `cargo test` drive the whole web path against a

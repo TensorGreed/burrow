@@ -80,3 +80,21 @@ path = "fuzz_targets/reorder.rs"
 test = false
 doc = false
 bench = false
+
+# Pure Rust, like `prescan` and for the same reason: no engine to link, so coverage-guided
+# fuzzing actually steers the code under test. Both read bytes qpdf hands back -- a decoded
+# content stream and an unparsed dictionary -- which are as attacker-controlled as the file
+# they came out of.
+[[bin]]
+name = "pdfsyntax_names"
+path = "fuzz_targets/pdfsyntax_names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pdfsyntax_dict_keys"
+path = "fuzz_targets/pdfsyntax_dict_keys.rs"
+test = false
+doc = false
+bench = false

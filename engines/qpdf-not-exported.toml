@@ -51,12 +51,20 @@
 # files and the cached `qpdf.wasm` -- both present either way.
 
 # =================================================================================
-# THE LIST IS EMPTY TODAY, AND THAT IS A STATE RATHER THAN AN ABSENCE
+# THE LIST IS NOT EMPTY: SPLIT'S PRUNING IS DECLARED NATIVELY AND NOT YET ON THE WEB
 # =================================================================================
 #
-# Every function `qpdf/ffi.rs` declares is now exported. The four entries that used to be here
-# went in the pull request that made each reachable from the web, which is the lifecycle this
-# file describes working correctly:
+# The ten entries at the end of this file are the object-surgery functions `split`'s pruning
+# needs (ADR 0019 §2b, issue #54). They are declared natively in the PR that closes the leak on
+# the native path, and they are exported by the PR that gives `WebQpdf` an `impl PageExtractor`
+# -- which is the lifecycle described above, running forwards for the first time since the four
+# entries below ran it backwards.
+#
+# They are listed one per function rather than as a group, because the check compares sets and
+# a group entry cannot be removed one function at a time.
+#
+# Four earlier entries went in the pull request that made each reachable from the web, which is
+# the same lifecycle working correctly:
 #
 #   qpdf_remove_page      declared for split (#55), exported for reorder's bridge
 #   qpdf_add_page_at      declared and exported for reorder's bridge
@@ -87,3 +95,91 @@
 version = 1
 # The ADR that governs which qpdf functions may be called at all.
 trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
+
+# =================================================================================
+# split's pruning (ADR 0019 §2b, issue #54). Removed by the PR that gives the web an
+# `impl PageExtractor for WebQpdf`, in the same change that adds each export.
+# =================================================================================
+#
+# ONE SHARED REASON, STATED ONCE HERE AND REFERRED TO BY EACH ENTRY. Every function below is
+# object surgery on a destination document: reading a dictionary's keys, filtering an array,
+# removing a key, pulling a decoded content stream out so its resource names can be read.
+# `burrow-ops`'s `split` calls them through `PageExtractor::extract`, and there is no
+# `impl PageExtractor for WebQpdf` -- so on the web they would be ten more functions reachable
+# from JavaScript with no caller at all. That is the opposite of what an export allowlist is
+# for, and it is the argument the file's preamble asks each entry to make.
+#
+# Exporting them is NOT free even beyond the reachable surface: it busts the wasm cache key,
+# forces an engine rebuild, regenerates the CSP hashes and moves the size budget, whose total
+# headroom is under a third of its 3% gate. Doing that in the PR that cannot use the result
+# would spend the budget twice.
+
+[[function]]
+name = "qpdf_oh_unparse_resolved"
+reason = """\
+split's pruning: reads a dictionary's own keys as syntax, because qpdf's key iterator is not trapped and so may not be called (ADR 0013 §1). It is what makes the page-key rule an allowlist rather than a list of keys somebody thought of. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_remove_key"
+reason = """\
+split's pruning: removes a key the allowlist does not name -- the rule that closes `/B`, `/AA`, `/Thumb`, `/PieceInfo` and everything nobody enumerated in one stroke. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_get_array_n_items"
+reason = """\
+split's pruning: the length of a shared `/Annots` array being filtered. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_get_array_item"
+reason = """\
+split's pruning: one annotation out of that array, so its `/P` can be compared against the page. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_erase_item"
+reason = """\
+split's pruning: drops an annotation belonging to a page this output does not contain. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_get_name"
+reason = """\
+split's pruning: reads a resource sub-dictionary's entry name, to compare it against the names the copied content streams actually use. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_get_dict"
+reason = """\
+split's pruning: a stream's dictionary. A Form XObject is `ot_stream`, not `ot_dictionary`, so its own `/Resources` is unreachable without this. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_get_page_content_data"
+reason = """\
+split's pruning: the page's DECODED content, which is where the resource names are. In the file they are inside a flate stream, and a scan of the raw bytes would find none of them and prune every resource the page uses. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_get_stream_data"
+reason = """\
+split's pruning: the same for a nested Form XObject, tiling pattern, Type 3 glyph procedure or appearance stream, so the name walk can follow them. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_free_buffer"
+reason = """\
+split's pruning: frees the two `malloc`ed buffers above, which are the caller's rather than qpdf's. Not calling it leaks the decompressed size of every stream on every page of every output. \
+Not exported because there is no `impl PageExtractor for WebQpdf` -- see the shared reason \
+above. Removed by the bridge PR, in the same change that adds the export."""

@@ -7,7 +7,8 @@
 //! `assert_nothing_lost` asks whether anything vanished, which is the question here.
 //!
 //! Both `content` and `navigation` are required. A subsetting operation may drop the
-//! catalog-level furniture (ADR 0019 §1 does, and `/split-pdf` says so); a rotation may not,
+//! catalog-level furniture (ADR 0019 §1 does, and §4 has the wording the page will say it
+//! in); a rotation may not,
 //! because nothing it did could justify losing an outline.
 //!
 //! # And content streams come out byte-identical

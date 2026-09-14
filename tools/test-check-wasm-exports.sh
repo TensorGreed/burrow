@@ -62,10 +62,26 @@ plants_it() {
   fi
 }
 
+# THE NAME EVERY FIXTURE BELOW PLANTS, and it is synthetic on purpose.
+#
+# These cases used to plant REAL qpdf function names that happened to be undeclared --
+# `qpdf_oh_get_array_item`, `qpdf_oh_get_array_n_items`. Split's pruning declared both, and all
+# three cases using them broke at once and in two different ways: rule 1's "new" declaration was
+# already argued so nothing refused, and rules 3 and 4 appended a DUPLICATE entry, so the count
+# check fired first and each case reported "it refused, but not for the stated reason".
+#
+# This is the second time this file has been caught by a fixture that depended on the live
+# repository having a particular shape, and the first time is recorded at rule 4 below. The
+# answer is the same one and it is stronger here: a name that is not a real qpdf function cannot
+# become declared, cannot become exported, and cannot collide with an entry somebody adds. It
+# still has to start with `qpdf` to be seen by the declaration parser, which is what the parser's
+# own probes assert.
+synthetic="qpdf_selftest_not_a_real_function"
+
 # RULE 1: declared natively, not exported, not argued. The original rule, and the one that
 # caught rotate's six and split's one.
 cp "$ffi_rs" "$work/ffi-undeclared.rs"
-printf '    pub(super) fn qpdf_oh_get_array_item(\n' >>"$work/ffi-undeclared.rs"
+printf '    pub(super) fn %s(\n' "$synthetic" >>"$work/ffi-undeclared.rs"
 plants_it "a new native declaration that is neither exported nor argued is caught" \
   "$work/ffi-undeclared.rs" "$not_exported" \
   "DECLARED NATIVELY BUT NOT EXPORTED"
@@ -83,7 +99,7 @@ plants_it "an entry for a function that IS exported is caught" \
 # RULE 3: an entry for a function ffi.rs does not declare -- dead weight that reads as coverage.
 {
   cat "$not_exported"
-  printf '\n[[function]]\nname = "qpdf_oh_get_array_n_items"\noperation = "test"\nreason = """A deliberately stale entry: nothing declares this natively."""\n'
+  printf '\n[[function]]\nname = "%s"\noperation = "test"\nreason = """A deliberately stale entry: nothing declares this natively."""\n' "$synthetic"
 } >"$work/toml-stale.toml"
 plants_it "an entry for a function nobody declares is caught" \
   "$ffi_rs" "$work/toml-stale.toml" \
@@ -105,10 +121,10 @@ plants_it "an entry for a function nobody declares is caught" \
 # an ffi.rs that declares a function nothing exports, and an entry for it with no reason. The
 # entry makes it argued, so rule 1 cannot fire; the missing reason is the only thing left.
 cp "$ffi_rs" "$work/ffi-for-rule-4.rs"
-printf '    pub(super) fn qpdf_oh_get_array_item(\n' >>"$work/ffi-for-rule-4.rs"
+printf '    pub(super) fn %s(\n' "$synthetic" >>"$work/ffi-for-rule-4.rs"
 {
   cat "$not_exported"
-  printf '\n[[function]]\nname = "qpdf_oh_get_array_item"\noperation = "test"\n'
+  printf '\n[[function]]\nname = "%s"\noperation = "test"\n' "$synthetic"
 } >"$work/toml-no-reason.toml"
 plants_it "an entry with no reason is caught" \
   "$work/ffi-for-rule-4.rs" "$work/toml-no-reason.toml" \

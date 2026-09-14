@@ -75,8 +75,14 @@ def page(parent, contents, width=200, extra=""):
     ).encode()
 
 
-def stream(data):
-    return f"<< /Length {len(data)} >>\nstream\n".encode() + data + b"\nendstream"
+def stream(data, extra=""):
+    """A stream object, optionally with keys of its own on the dictionary.
+
+    `extra` is what lets a fixture build a Form XObject or an image rather than a bare content
+    stream -- the walk's behaviour depends entirely on `/Subtype`, so a fixture that cannot set
+    it cannot exercise the distinction.
+    """
+    return f"<< /Length {len(data)} {extra}>>\nstream\n".encode() + data + b"\nendstream"
 
 
 def content(n):
@@ -191,6 +197,9 @@ def main(out: Path) -> None:
 
     canary_per_page(out)
     shared_objects(out)
+    optional_content(out)
+    refusal_shapes(out)
+    walk_shapes(out)
 
 
 def canary_per_page(out: Path) -> None:
@@ -284,14 +293,26 @@ def shared_objects(out: Path) -> None:
     canaries confirmed a case that was never at risk -- measured, and recorded in ADR 0019 §2a
     and `add-operation` §2c.
 
-    This fixture carries the four channels that are plantable, each named for the page it
+    This fixture carries the five channels that a byte scan can see, each named for the page it
     belongs to so a scan of an output can say which excluded page it came from:
 
-      * an inherited ``/Resources`` on the ``/Pages`` node, holding a stream only page 4 draws;
+      * an inherited ``/Resources`` on the ``/Pages`` node, holding a stream page 4 draws and
+        nobody else does -- and page 4's content stream really does draw it, which it did not
+        until #54 closed;
       * a hierarchical ``/AcroForm``: one field, widgets on pages 1 and 4, and a ``/V`` holding
         what a person "typed" on page 4;
       * an ``/Annots`` array shared between pages 1 and 4;
-      * an article thread whose bead on page 1 reaches a thread title naming page 4.
+      * an article thread whose bead on page 1 reaches a thread title naming page 4;
+      * a **named destination** in a kept page's own link annotation -- ADR 0019 §2a row 5, which
+        had no fixture and no test until #54 closed. It is the odd one out: the leak is not an
+        object belonging to another page, it is a NAME sitting inside an object that legitimately
+        survives, and names of destinations are routinely descriptive ("Appendix-C-Salaries").
+        The structural closure harness cannot see it by construction, which is why the named
+        canaries exist alongside it.
+
+    Row 6, ``/OCProperties``, is not here and cannot be: it is not a string arriving where it
+    should not, it is content becoming *visible*, and a byte scan is the wrong instrument. It has
+    its own fixture, ``optional-content.pdf``, and its own test -- a refusal rather than a scan.
 
     Two encodings for the field value, because a byte-literal ASCII search cannot see the
     UTF-16BE strings real producers write.
@@ -313,21 +334,47 @@ def shared_objects(out: Path) -> None:
         # NO `/Resources` OF ITS OWN, deliberately: a page that carries an empty one overrides
         # the inherited dictionary and inherits nothing, which is how the first version of this
         # fixture failed to reproduce the channel it was written for.
+        # PAGE 1 CARRIES A `/Properties` ENTRY THAT IS NOT OPTIONAL CONTENT, and it is the
+        # near-miss for the layer refusal rather than decoration. Every tagged PDF has marked
+        # content with a property list; a refusal keyed on `/Properties` being present rather
+        # than on `/Type /OCG` would reject all of them. Code review MEASURED the gap: with
+        # `is_optional_content_group` mutated to return true for any dictionary, the whole suite
+        # stayed green, because no fixture had a `/Properties` at all.
+        if i == 0:
+            extra += "/Resources << /Properties << /MC0 25 0 R >> >> "
         pages.append(
             (
                 f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
                 f"/Contents {3 + PAGES + i} 0 R {extra}>>"
             ).encode()
         )
-        streams.append(content(i + 1))
+        # PAGE 4 ACTUALLY DRAWS THE INHERITED RESOURCE. Until this line existed the fixture
+        # claimed "a stream only page 4 draws" -- in its docstring AND in the canary's own name
+        # -- while no page's content mentioned `/Only4`, so the headline channel of ADR 0019
+        # §2a was inert. `add-operation` §2c; the sibling generator had the identical defect.
+        if i == 3:
+            streams.append(stream(f"BURROWMARK page 4 /Only4 Do".encode()))
+        elif i == 0:
+            streams.append(
+                stream(b"/OC /MC0 BDC BT (BURROWMARK page 1) Tj ET EMC")
+            )
+        else:
+            streams.append(content(i + 1))
 
     objs = (
         [
             b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [16 0 R] >> "
             b"/Threads [23 0 R] >>",
             # INHERITED RESOURCES. A kept page inherits this whole dictionary from its parent.
+            # INHERITED RESOURCES, holding a stream page 4 draws AND a key that is not one of
+            # the seven resource categories. `/Stash` is the second one: the filter iterated the
+            # categories and filtered inside each, so anything else survived whole. Security
+            # review measured `/Stash << /Secret … >>` coming through untouched while `/Font` was
+            # pruned correctly -- ADR 0019 §2a row 1 leaking through a key nobody enumerated,
+            # which is the shape the page-key rule was made an allowlist to avoid.
             f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} "
-            f"/Resources << /XObject << /Only4 13 0 R >> >> >>".encode(),
+            f"/Resources << /XObject << /Only4 13 0 R >> "
+            f"/Stash << /Secret 26 0 R >> >> >>".encode(),
         ]
         + pages
         + streams
@@ -345,8 +392,9 @@ def shared_objects(out: Path) -> None:
             b"<< /Type /Annot /Subtype /Widget /Parent 16 0 R /Rect [0 0 9 9] "
             b"/T (LEAKCANARY-widget-page-4) >>",
             b"<< >>",  # 19
-            # 20: the SHARED /Annots array, on pages 1 and 4
-            b"[17 0 R 21 0 R]",
+            # 20: the SHARED /Annots array, on pages 1 and 4 -- and object 24, the link whose
+            # named destination is ADR 0019 §2a row 5.
+            b"[17 0 R 21 0 R 24 0 R]",
             # 21: an annotation that belongs to page 4
             b"<< /Type /Annot /Subtype /Text /Contents (LEAKCANARY-annot-page-4) "
             b"/Rect [0 0 9 9] >>",
@@ -354,9 +402,249 @@ def shared_objects(out: Path) -> None:
             b"<< /T 23 0 R /P 3 0 R >>",
             b"<< /Type /Thread /I << /Title (LEAKCANARY-thread-covers-page-4) >> "
             b"/F 22 0 R >>",
+            # 24: A LINK ON PAGE 1 whose action names a destination elsewhere in the document.
+            # `/P 3 0 R` is page 1, so the annotation itself belongs here and a filter keyed on
+            # ownership keeps it -- which is the point. The leak rides INSIDE an object that is
+            # allowed to survive, and only dropping the action closes it.
+            b"<< /Type /Annot /Subtype /Link /P 3 0 R /Rect [0 0 9 9] "
+            b"/A << /S /GoTo /D (LEAKCANARY-namedest-page-4) >> >>",
+            # 25: A MARKED-CONTENT PROPERTY LIST THAT IS NOT AN OCG. `/Type` is absent, which is
+            # what an ordinary tagged-PDF property list looks like. This document must still
+            # split; `a_document_without_layers_is_not_caught_by_the_layer_refusal` is the test,
+            # and without this object that test proved only that a document with no
+            # `/Properties` is not refused.
+            b"<< /Metadata (an ordinary marked-content property list) >>",
+            # 26: what `/Stash` points at. Reachable only through a resource-dictionary key that
+            # is not a category, which is the whole point of it.
+            b"<< /Note (LEAKCANARY-stash-belongs-to-page-4) >>",
         ]
     )
     write(out, "shared-objects.pdf", build(objs, 1))
+
+
+def walk_shapes(out: Path) -> None:
+    """Three documents the resource walk has to handle, each a defect security review measured.
+
+      * ``images.pdf`` — a page drawing a ``/DCTDecode`` image and a ``/FlateDecode`` one. The
+        walk followed anything in ``/XObject`` that was a stream, so it tried to decode images:
+        a JPEG cannot be decoded at ``qpdf_dl_specialized`` and **every JPEG-bearing document was
+        refused**, while a flate image decoded and then failed to lex as PDF syntax roughly
+        whenever its pixels contained an unbalanced ``(``. An image names no resources; following
+        one was never useful.
+      * ``nested-forms.pdf`` — a form drawing a form drawing text in a font named only two levels
+        down, where the inner form has no ``/Resources`` of its own. The walk resolved collected
+        names against the PAGE's categories only, so it never reached the inner form and pruned
+        the font off the page while the form still asked for it. The font object left the file
+        entirely.
+      * ``oc-nested.pdf`` — an optional content group one level down, inside a form XObject's own
+        ``/Resources``. The refusal looked at the page's dictionary only, so a document whose
+        hidden layer lived in a form split happily, with the hidden text visible in the output
+        and the layer's name still in it. This is the shape Illustrator and InDesign emit.
+    """
+    kids = " ".join(f"{3+i} 0 R" for i in range(PAGES))
+
+    def document(
+        page1_resources: str,
+        page1_stream: bytes,
+        extra: list[bytes],
+        catalog_extra: str = "",
+    ) -> bytes:
+        pages, streams = [], []
+        for i in range(PAGES):
+            resources = page1_resources if i == 0 else ""
+            pages.append(
+                (
+                    f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                    f"{resources}/Contents {3 + PAGES + i} 0 R >>"
+                ).encode()
+            )
+            streams.append(page1_stream if i == 0 else content(i + 1))
+        return build(
+            [
+                f"<< /Type /Catalog /Pages 2 0 R {catalog_extra}>>".encode(),
+                f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            ]
+            + pages
+            + streams
+            + extra,
+            1,
+        )
+
+    # A JPEG and a flate image whose "pixels" contain an unbalanced `(`, which is what made the
+    # flate case fail rather than merely waste time.
+    write(
+        out,
+        "images.pdf",
+        document(
+            "/Resources << /XObject << /Jpeg 13 0 R /Flat 14 0 R >> >> ",
+            stream(b"BURROWMARK page 1 q /Jpeg Do /Flat Do Q"),
+            [
+                b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray "
+                b"/BitsPerComponent 8 /Filter /DCTDecode /Length 4 >>\nstream\n"
+                b"\xff\xd8\xff\xd9\nendstream",
+                stream(b"(((( unbalanced pixels", extra="/Type /XObject /Subtype /Image "
+                       "/Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 "),
+            ],
+        ),
+    )
+
+    # form -> form -> /F1, with the inner form carrying no `/Resources`.
+    write(
+        out,
+        "nested-forms.pdf",
+        document(
+            "/Resources << /XObject << /Fx1 13 0 R >> /Font << /F1 15 0 R >> >> ",
+            stream(b"BURROWMARK page 1 q /Fx1 Do Q"),
+            [
+                stream(
+                    b"q /Fx2 Do Q",
+                    extra="/Type /XObject /Subtype /Form /BBox [0 0 9 9] "
+                    "/Resources << /XObject << /Fx2 14 0 R >> >> ",
+                ),
+                stream(
+                    b"BT /F1 12 Tf (drawn two levels down) Tj ET",
+                    extra="/Type /XObject /Subtype /Form /BBox [0 0 9 9] ",
+                ),
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            ],
+        ),
+    )
+
+    # An OCG inside a form's own `/Resources`, turned off by the catalog's configuration.
+    #
+    # THE CATALOG IS BUILT WITH `/OCProperties`, not patched afterwards. The first version wrote
+    # the document and then `bytes.replace`d the catalog -- which changed an object's length
+    # after `build` had computed the xref offsets, so every offset past it was wrong and qpdf
+    # refused the file as damaged. The test caught it, which is the only reason this is a comment
+    # rather than a fixture that quietly exercised nothing.
+    write(
+        out,
+        "oc-nested.pdf",
+        document(
+        "/Resources << /XObject << /Fx1 13 0 R >> >> ",
+        stream(b"BURROWMARK page 1 q /Fx1 Do Q"),
+        [
+            stream(
+                b"/OC /MC0 BDC BT (BURROWMARK hidden one level down) Tj ET EMC",
+                extra="/Type /XObject /Subtype /Form /BBox [0 0 9 9] "
+                "/Resources << /Properties << /MC0 14 0 R >> >> ",
+            ),
+            b"<< /Type /OCG /Name (BURROWMARK nested layer) >>",
+        ],
+            catalog_extra="/OCProperties << /OCGs [14 0 R] /D << /OFF [14 0 R] >> >> ",
+        ),
+    )
+
+
+def refusal_shapes(out: Path) -> None:
+    """Two documents that open and split on any other tool, and that burrow refuses.
+
+    Both are behaviour changes that arrived with the pruning in #54, and neither is obvious from
+    the operation's signature — so they are fixtures with tests rather than facts somebody finds
+    out from a bug report.
+
+      * ``unlexable-content.pdf`` — a page whose content stream contains a stray ``)``. The
+        resource filter has to know which names the page uses, a partial answer deletes a
+        resource the page draws with (see ``pdfsyntax::names``), and there is no third option, so
+        a stream that cannot be tokenised refuses the whole split.
+      * ``undecodable-stream.pdf`` — a Form XObject declaring ``/JPXDecode``. qpdf will not
+        decode a lossy filter at ``qpdf_dl_specialized``, so the bytes come back compressed, and
+        lexing those for names yields accidents rather than the names that are there.
+
+    Both are the safe direction and both cost something real: a document burrow could have split
+    is refused. That trade is the subject of ADR 0019 §2b's "prune correctly, or drop entirely" —
+    a refusal is neither, and it is stronger than both.
+    """
+    kids = " ".join(f"{3+i} 0 R" for i in range(PAGES))
+    for name, first_stream, extra_objs, page1_extra in (
+        (
+            "unlexable-content.pdf",
+            # A stray `)` with no string to close. Real producers do emit malformed content.
+            stream(b"BT (ok) Tj ET ) q Q"),
+            [],
+            "",
+        ),
+        (
+            "undecodable-stream.pdf",
+            stream(b"BURROWMARK page 1 /Lossy Do"),
+            [
+                b"<< /Type /XObject /Subtype /Form /BBox [0 0 9 9] /Filter /JPXDecode "
+                b"/Length 4 >>\nstream\n\x00\x00\x00\x00\nendstream",
+            ],
+            "/Resources << /XObject << /Lossy 13 0 R >> >> ",
+        ),
+    ):
+        pages = []
+        streams = []
+        for i in range(PAGES):
+            resources = page1_extra if i == 0 else ""
+            pages.append(
+                (
+                    f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                    f"{resources}/Contents {3 + PAGES + i} 0 R >>"
+                ).encode()
+            )
+            streams.append(first_stream if i == 0 else content(i + 1))
+        objs = (
+            [
+                b"<< /Type /Catalog /Pages 2 0 R >>",
+                f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            ]
+            + pages
+            + streams
+            + extra_objs
+        )
+        write(out, name, build(objs, 1))
+
+
+def optional_content(out: Path) -> None:
+    """A document with a layer that is turned OFF, which `split` refuses rather than splits.
+
+    ADR 0019 §2a row 6, and the one channel a canary scan is the wrong instrument for. Dropping
+    the catalog's ``/OCProperties`` while keeping the OCGs a page references does not put a
+    string somewhere it should not be -- it makes content the source **hid** visible, which is a
+    disclosure a byte scan cannot detect and a structural closure check cannot either.
+
+    §2b forbids dropping the configuration alone for exactly that reason, and carrying a pruned
+    one needs the destination's catalog, which ADR 0013's caller rule puts out of reach
+    (``qpdf_get_root`` is not on the trapped list). So the answer is a refusal, and this is the
+    fixture that proves the refusal fires: page 1 draws content inside a layer that ``/D /OFF``
+    turns off, and page 1 is in every part of any split.
+    """
+    kids = " ".join(f"{3+i} 0 R" for i in range(PAGES))
+    pages = []
+    streams = []
+    for i in range(PAGES):
+        resources = "/Resources << /Properties << /MC0 13 0 R >> >> " if i == 0 else ""
+        pages.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                f"{resources}/Contents {3 + PAGES + i} 0 R >>"
+            ).encode()
+        )
+        if i == 0:
+            # Marked content inside the layer. Without the configuration that turns `/MC0` off,
+            # a viewer draws this.
+            streams.append(
+                stream(b"/OC /MC0 BDC BT (BURROWMARK hidden by a layer) Tj ET EMC")
+            )
+        else:
+            streams.append(content(i + 1))
+
+    objs = (
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [13 0 R] "
+            b"/D << /OFF [13 0 R] >> >> >>",
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+        ]
+        + pages
+        + streams
+        + [
+            # 13: the optional content group, named as layers usually are.
+            b"<< /Type /OCG /Name (BURROWMARK draft watermark) >>",
+        ]
+    )
+    write(out, "optional-content.pdf", build(objs, 1))
 
 
 if __name__ == "__main__":
@@ -364,4 +652,4 @@ if __name__ == "__main__":
         sys.exit(f"usage: {sys.argv[0]} <output-dir>")
     target = Path(sys.argv[1])
     main(target)
-    print(f"split fidelity fixtures: 6 written to {target}")
+    print(f"split fidelity fixtures: 12 written to {target}")

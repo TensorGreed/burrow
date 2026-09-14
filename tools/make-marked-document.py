@@ -145,7 +145,13 @@ def main(out: Path) -> None:
     objects[only4 - 1] = stream(f"{mark(only4)} only page 4 draws this".encode())
 
     # A form field spanning pages 1 and 4, with widgets on each.
-    field = add(b"", [1, 4])
+    #
+    # `navigation`, not `content`, and the kind changed when #54 closed. A field is reached from
+    # the catalog's `/AcroForm` and describes the whole document; `split` drops it by cutting
+    # every widget's `/Parent` (ADR 0019 §2b's "drop the widget's field rather than ship a dead
+    # one"), so requiring it to survive would require the opposite of the decision. The WIDGETS
+    # stay `content`: they are annotations on their own pages and must survive.
+    field = add(b"", [1, 4], kind="navigation")
     widget1 = add(b"", [1])
     widget4 = add(b"", [4])
 
@@ -154,9 +160,14 @@ def main(out: Path) -> None:
     annot4 = add(b"", [4])
 
     # An article bead on page 1 reaching a thread whose info names page 4.
-    bead = add(b"", [1])
-    thread = add(b"", [1, 4])
-    thread_info = add(b"", [4])
+    #
+    # All three are `navigation` for the same reason the field is: `/B` is not on split's page
+    # allowlist and `/Threads` lives on the catalog, so the whole article structure is dropped
+    # (ADR 0019 §2a row 4). PDF classes articles as a navigation feature, which is the same
+    # sentence this kind already carried for outlines.
+    bead = add(b"", [1], kind="navigation")
+    thread = add(b"", [1, 4], kind="navigation")
+    thread_info = add(b"", [4], kind="navigation")
 
     # An outline entry per page, and the outline root.
     outline_root = add(b"", [], kind="navigation")
@@ -188,26 +199,53 @@ def main(out: Path) -> None:
             extra += f"/B [{bead} 0 R] "
         # No `/Resources` of its own, so the inherited one is what it gets.
         parent = left if i < half else right
+        # NO `/BM` ON THE PAGE ITSELF. `split`'s pruning removes every page key outside the
+        # specified set (ADR 0019 §2b), which is the rule that closes `/B`, `/AA`, `/Thumb`
+        # and everything nobody enumerated -- and `/BM` is exactly such a key. A marker here
+        # would be removed from a page that survived perfectly well, and the harness would
+        # report five lost pages on a correct operation: a measurement of the marker rather
+        # than of the object. The page is declared `unmarkable` below, with that reason, and
+        # its survival is witnessed by its content stream, which is marked and owned by the
+        # same page.
         objects[p - 1] = (
-            f"<< /Type /Page /BM ({mark(p)}) /Parent {parent} 0 R /MediaBox [0 0 200 200] "
+            f"<< /Type /Page /Parent {parent} 0 R /MediaBox [0 0 200 200] "
             f"/Contents {contents[i]} 0 R {extra}>>"
         ).encode()
+        # PAGE 4 ACTUALLY DRAWS THE INHERITED RESOURCE. Until split pruned by usage, this
+        # fixture claimed "a resource only page 4 draws" while no page's content stream
+        # mentioned `/Only4` at all -- so the object survived into every output for the
+        # trivial reason that nothing had a reason to remove it, and a resource filter that
+        # pruned it from EVERY output (including page 4's own) looked identical to one that
+        # pruned it correctly. `add-operation` §2c, from the other direction: a fixture whose
+        # channel is never exercised cannot distinguish a correct implementation from a
+        # destructive one. Measured: `a_one_way_split_loses_no_page_content` failed on an
+        # operation that excluded nothing.
+        draws = " /Only4 Do" if i == 3 else ""
         objects[contents[i] - 1] = stream(
-            f"{mark(contents[i])} page {i+1}".encode()
+            f"{mark(contents[i])} page {i+1}{draws}".encode()
         )
     objects[field - 1] = (
         f"<< /FT /Tx /BM ({mark(field)}) /T (field) /V ({mark(thread_info)}-typed-on-page-4) "
         f"/Kids [{widget1} 0 R {widget4} 0 R] >>"
     ).encode()
+    # EACH WIDGET CARRIES `/P`, and each is in the shared `/Annots` array.
+    #
+    # Both were wrong until #54 closed, and both mattered. `widget4` was in the field's `/Kids`
+    # and in no page's `/Annots` at all -- a widget no page displays, which no real producer
+    # emits and which made it unreachable the moment split cut the `/Parent` edge. And no
+    # annotation had a `/P`, so the fixture only ever exercised the *conservative* half of the
+    # annotation filter (drop what cannot prove where it lives) and never the precise half
+    # (keep what says it is here). `annot4` is deliberately left WITHOUT a `/P`, so one of each
+    # is present: the precise path and the fallback.
     objects[widget1 - 1] = (
         f"<< /Type /Annot /Subtype /Widget /BM ({mark(widget1)}) /Parent {field} 0 R "
-        f"/Rect [0 0 9 9] >>"
+        f"/P {page_objs[0]} 0 R /Rect [0 0 9 9] >>"
     ).encode()
     objects[widget4 - 1] = (
         f"<< /Type /Annot /Subtype /Widget /BM ({mark(widget4)}) /Parent {field} 0 R "
-        f"/Rect [0 0 9 9] >>"
+        f"/P {page_objs[3]} 0 R /Rect [0 0 9 9] >>"
     ).encode()
-    objects[shared_annots - 1] = f"[{widget1} 0 R {annot4} 0 R]".encode()
+    objects[shared_annots - 1] = f"[{widget1} 0 R {widget4} 0 R {annot4} 0 R]".encode()
     objects[annot4 - 1] = (
         f"<< /Type /Annot /Subtype /Text /BM ({mark(annot4)}) /Contents (note) "
         f"/Rect [0 0 9 9] >>"
@@ -232,9 +270,28 @@ def main(out: Path) -> None:
             f"{prev}{nxt}/Dest [{page_objs[i]} 0 R /Fit] >>"
         ).encode()
 
-    # The shared array has no marker of its own -- it is an array, not a dictionary -- so it is
-    # declared unmarkable rather than silently absent from the manifest.
-    unmarkable = [shared_annots]
+    # What cannot carry a marker, declared rather than silently absent from the manifest.
+    #
+    #   * the shared `/Annots` array -- an array has nowhere to put one;
+    #   * every page dictionary -- see the comment where they are built. A marker is a key
+    #     outside the specified page set, and removing exactly those keys is the rule that
+    #     closes half of ADR 0019 §2a. Marking a page would measure the rule rather than the
+    #     page.
+    #
+    # PER-OBJECT REASONS, not one reason for the list. They are unmarkable for two entirely
+    # different causes, and a single shared string would have said "an array, which has nowhere
+    # to carry a marker" about five page dictionaries.
+    unmarkable = {
+        shared_annots: "an array, which has nowhere to carry a marker; its members are marked",
+        **{
+            p: (
+                "a page dictionary, whose every key outside the specified set split's pruning "
+                "removes -- so a marker here would measure the rule rather than the page. Its "
+                "survival is witnessed by its content stream."
+            )
+            for p in page_objs
+        },
+    }
 
     # EVERY DECLARED MARKER IS IN THE DOCUMENT. A manifest entry naming a string nobody wrote
     # is a channel that cannot fail any assertion, and it reads as coverage -- the denominator
@@ -261,13 +318,22 @@ def main(out: Path) -> None:
             for n, pages in owners.items()
             if n not in unmarkable
         },
-        "unmarkable": [
-            {
-                "object": n,
-                "why": "an array, which has nowhere to carry a marker; its members are marked",
-            }
-            for n in unmarkable
-        ],
+        "unmarkable": [{"object": n, "why": why} for n, why in unmarkable.items()],
+        # NAMED ROLES, so a test can say "the resource only page 4 draws" without hardcoding an
+        # object number. The numbers here shift whenever this generator gains an object, and a
+        # test pinned to a literal would then assert something about whatever moved into its
+        # place -- silently, and in the direction of passing. `marker` is carried alongside so a
+        # failure message can name the thing rather than a number.
+        # BARE NUMBERS, not objects with their own fields. The manifest reader in
+        # `object_closure.rs` is hand-rolled and finds objects by splitting on `"marker":`, so a
+        # role carrying a marker of its own was read as three extra objects and every closure
+        # test failed with "a pages list". A role is a pointer; the marker is already in
+        # `objects`, which is where a reader should look it up.
+        "roles": {
+            "inherited_resource": only4,
+            "shared_annots_array": shared_annots,
+            "annotation_without_p": annot4,
+        },
     }
     (out / "marked.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"  marked.pdf               {len((out / 'marked.pdf').read_bytes()):>6} bytes")

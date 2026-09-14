@@ -117,6 +117,29 @@ mutate_and_check "a merge corpus with no document pairs is refused" \
   'for padding in range(0, 0):' \
   "never see a two-document merge"
 
+# --- Case 6: a carving that produces empty spans -----------------------------------------
+#
+# `pdfsyntax_names` and `pdfsyntax_dict_keys` are seeded by CARVING spans out of the fixtures
+# rather than copying them, because neither target's input is a document. A carving bug that
+# produced empty spans would fill a corpus directory with zero-byte files, and the run would
+# report a healthy span count over a corpus that is nothing at all.
+mutate_and_check "a carving that produces empty spans is refused" \
+  'spans.append(body[start:end])' \
+  'spans.append(b"")' \
+  "an empty span is not a seed"
+
+# --- Case 7: a carving that quietly stops contributing ------------------------------------
+#
+# The gate is the derivable count, not non-zero: every fixture with a closing delimiter must
+# contribute at least one span. Without it, a carver that worked on two fixtures out of
+# eighteen would report 8 spans and look like a seeded corpus. This is the shape the root
+# CLAUDE.md calls "4 of 15 reads exactly like success" -- here the numerator is checked
+# against a denominator the fixtures themselves supply.
+mutate_and_check "a carving that skips most fixtures is refused" \
+  'start = body.find(b"<<", at)' \
+  'start = body.find(b"<<ONLYINNOFIXTURE", at)' \
+  "carved nothing from"
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

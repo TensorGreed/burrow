@@ -229,7 +229,8 @@ JOBS: list[dict] = [
             'export LD_LIBRARY_PATH="$PWD/../engines/vendor/native-$(uname -m)/lib" && '
             'export RUSTFLAGS="-L native=$PWD/../engines/vendor/native-$(uname -m)/lib/fuzz" && '
             "export ASAN_OPTIONS=detect_leaks=0 && "
-            "for t in document_open prescan qpdf_check rotate reorder merge split; do "
+            "for t in document_open prescan pdfsyntax_names pdfsyntax_dict_keys "
+            "qpdf_check rotate reorder merge split; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
             # nightly-style run left behind and reproduce #62 while CI stayed green.
@@ -240,6 +241,8 @@ JOBS: list[dict] = [
         "covers": [
             "fuzz:document_open",
             "fuzz:prescan",
+            "fuzz:pdfsyntax_names",
+            "fuzz:pdfsyntax_dict_keys",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

@@ -11,10 +11,11 @@
 //! survives, so *every* marked object should, and `assert_closed` with all pages included says
 //! exactly that.
 //!
-//! The six named channels from ADR 0019 §2a stay as regression cases on top, in
-//! `split_no_leak.rs`. They catch what this cannot: a leak **inside** an object that
-//! legitimately survives, such as a form field owned by two pages carrying the value somebody
-//! typed on the excluded one.
+//! ADR 0019 §2a's named channels stay as regression cases on top, in `split_no_leak.rs`, and
+//! **both layers are required while neither is sufficient**. They catch what this cannot: a leak
+//! **inside** an object that legitimately survives -- a form field owned by two pages carrying the
+//! value somebody typed on the excluded one (row 2), and a named destination sitting in a kept
+//! page's own link annotation (row 5). This catches what they cannot: a category nobody named.
 
 #![cfg(all(feature = "native-engines", target_os = "linux"))]
 #![allow(
@@ -57,10 +58,9 @@ fn split_marked(cuts: &[u64]) -> Vec<Vec<u8>> {
 }
 
 #[test]
-#[ignore = "ADR 0019 §2a: the build route still carries objects from excluded pages. This is \
-            the structural test that says so — it is ignored rather than deleted so the gap \
-            is visible in the suite. See issue #54."]
 fn every_surviving_object_belongs_to_a_page_the_output_contains() {
+    // THE PROPERTY, and the gate on ADR 0019 §2. `#[ignore]`d and expected to fail for the
+    // whole of M1; issue #54 closed it.
     let marked = marked_document();
     let outputs = split_marked(&[1, 3]);
     // Pages 1 | 2-3 | 4-5.
@@ -70,29 +70,132 @@ fn every_surviving_object_belongs_to_a_page_the_output_contains() {
 }
 
 #[test]
-fn the_closure_property_is_violated_exactly_where_the_adr_records_it() {
-    // THE GAP, PINNED STRUCTURALLY. While the rule is unmet, this is the assertion that keeps
-    // the record and the code honest with each other: it fails if a channel closes without
-    // ADR 0019 §2a being updated, and it fails if the scan goes blind — two things that look
-    // identical from a green run.
+fn the_closure_scan_can_still_find_a_trespasser_that_is_really_there() {
+    // THE REPLACEMENT FOR `the_closure_property_is_violated_exactly_where_the_adr_records_it`,
+    // and a replacement rather than a deletion.
+    //
+    // That test asserted the closure property was still VIOLATED. While the rule was unmet it
+    // was the only thing separating two states a green run cannot tell apart: the leak closing,
+    // and the harness going blind. Pruning has made the first true. The second is exactly as
+    // possible as it was before -- a changed marker prefix, a manifest the reader stopped
+    // understanding, an expansion that silently stopped decompressing -- and it now produces the
+    // same clean run as success.
+    //
+    // So the assertion inverts rather than disappearing: the identical `trespassers` call, over
+    // the SOURCE, where every page's objects are present by construction. It must report the
+    // objects belonging only to pages 2 to 5 as trespassing on a claim of page 1.
     let marked = marked_document();
-    let outputs = split_marked(&[1, 3]);
-
-    let leaking = trespassers(&marked, &outputs[0], &[1]);
+    let intruders = trespassers(&marked, &marked.bytes, &[1]);
     assert!(
-        !leaking.is_empty(),
-        "the page-1-only output carried nothing it should not have. Either the pruning in \
-         issue #54 has landed — in which case un-ignore the test above, delete this one and \
-         amend ADR 0019 §2a — or the harness has stopped finding markers."
+        !intruders.is_empty(),
+        "the harness found no trespasser in a document that contains every page's objects, so \
+         every closure assertion in this file is measuring nothing"
     );
 
-    // The harness must be *finding* things, not merely failing to. Without this, a manifest
-    // that had stopped listing objects would satisfy the assertion above by accident.
-    let survived = object_closure::survivors(&marked, &outputs[0]);
+    // AND IT SEES EACH KIND, not merely something. A scan that had lost its ability to match
+    // stream-borne markers would still find the dictionary-borne ones and look healthy -- which
+    // is the shape of the near-miss `CLAUDE.md` asks every rule-driven check to carry.
+    for kind in ["content", "navigation"] {
+        assert!(
+            intruders.iter().any(|(number, _, _)| marked
+                .objects
+                .get(number)
+                .is_some_and(|object| object.kind == kind)),
+            "the harness cannot see a trespassing {kind} object, so a leak through one would \
+             be invisible"
+        );
+    }
+
+    // AND THE DENOMINATOR. `survivors` over the source must be every marked object, because the
+    // source contains all of them -- so a reader that had understood half the manifest, or a
+    // scan matching half the markers, fails here rather than reporting a clean split.
+    let survived = object_closure::survivors(&marked, &marked.bytes);
+    assert_eq!(
+        survived.len(),
+        marked.objects.len(),
+        "the scan found {} of the source's own {} markers; it is not seeing what it reports on",
+        survived.len(),
+        marked.objects.len()
+    );
+}
+
+#[test]
+fn a_resource_survives_exactly_where_it_is_drawn() {
+    // THE TWO-SIDED ASSERTION FOR THE RESOURCE FILTER, and the only test here that fails for
+    // BOTH of its failure modes rather than one.
+    //
+    // `assert_closed` catches over-keeping: a resource belonging only to page 4 in an output
+    // that excludes page 4. `assert_nothing_lost` catches over-pruning across a whole output.
+    // Neither says the two are the SAME resource — and the filter's most likely defect, a name
+    // scan that stops finding names, prunes everything everywhere, which reads as a perfectly
+    // closed output.
+    //
+    // The fixture's inherited `/Resources` holds one stream that page 4 draws and nobody else
+    // does, so it must be in the part containing page 4 and absent from the part that is not.
+    // It is looked up BY ROLE rather than by number: object numbers shift whenever the
+    // generator gains an object, and a test pinned to a literal would then assert about
+    // whatever moved into its place — silently, and in the direction of passing.
+    let marked = marked_document();
+    let resource = *marked
+        .roles
+        .get("inherited_resource")
+        .expect("the manifest names the resource only page 4 draws");
+
+    let outputs = split_marked(&[3]);
+    assert_eq!(outputs.len(), 2);
+    let without = object_closure::survivors(&marked, &outputs[0]); // pages 1-3
+    let with = object_closure::survivors(&marked, &outputs[1]); // pages 4-5
+
     assert!(
-        survived.len() > leaking.len(),
-        "every surviving object is a trespasser, which means the scan is matching everything \
-         rather than the markers it was given"
+        with.contains(&resource),
+        "the resource page 4 draws with is missing from the part that CONTAINS page 4 — the \
+         name filter is pruning what the page uses"
+    );
+    assert!(
+        !without.contains(&resource),
+        "the resource only page 4 draws is in the part that EXCLUDES page 4 — ADR 0019 §2a \
+         row 1, the inherited-`/Resources` channel, is open again"
+    );
+}
+
+#[test]
+fn an_annotation_that_cannot_prove_where_it_lives_does_not_travel() {
+    // THE COST OF THE CONSERVATIVE RULE, pinned rather than discovered.
+    //
+    // `/P` is optional and producers routinely omit it. When an `/Annots` array is shared with a
+    // page the output does not contain, an annotation with no `/P` cannot be placed — so it is
+    // dropped, from EVERY part, including the one containing the page it actually belonged to.
+    // That is ADR 0019 §2b's "drop the array, losing the kept page's own annotations —
+    // acceptable only if said", and this is where it is said in executable form.
+    //
+    // It is a real fidelity loss and it is the safe direction: the alternative is carrying an
+    // annotation into a file whose pages it may have nothing to do with. It was found by this
+    // file's sibling test asserting the opposite, which is the right way round to find it.
+    let marked = marked_document();
+    let orphan = *marked
+        .roles
+        .get("annotation_without_p")
+        .expect("the manifest names the annotation with no /P");
+
+    let outputs = split_marked(&[3]);
+    for (part, output) in outputs.iter().enumerate() {
+        let survived = object_closure::survivors(&marked, output);
+        assert!(
+            !survived.contains(&orphan),
+            "part {part} kept an annotation that cannot say which page it is on, out of an \
+             array shared with a page this part does not contain"
+        );
+    }
+
+    // AND THE NEAR-MISS: the annotation that CAN prove it belongs survives. Without this, the
+    // assertion above is satisfied by a filter that erases every annotation in the document —
+    // which is exactly what the first version of the rule did.
+    let with_p: Vec<u64> = owned_by(&marked, &[1], &["content"]);
+    let kept = object_closure::survivors(&marked, &outputs[0]);
+    assert!(
+        with_p.iter().any(|object| kept.contains(object)),
+        "nothing page 1 owns survived into the part containing page 1, so the assertion above \
+         is passing because everything was erased"
     );
 }
 

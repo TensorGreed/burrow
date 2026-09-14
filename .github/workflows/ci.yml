@@ -507,13 +507,13 @@ jobs:
           python3 tools/seed-fuzz-corpus.py --check
           tools/test-seed-fuzz-corpus.sh
 
-      - name: fuzz document_open and prescan for 60s each
+      - name: fuzz the pure-Rust targets for 60s each
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          for target in document_open prescan; do
+          for target in document_open prescan pdfsyntax_names pdfsyntax_dict_keys; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             cargo +nightly fuzz run "$target" -- \
