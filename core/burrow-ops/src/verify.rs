@@ -23,12 +23,18 @@
 //!   parsed page tree it built, and an engine in a bad state can agree with itself. See
 //!   `OutputReader::fresh` for what "fresh" does and does not mean on each platform.
 //!
-//! # The witness is each page's effective rotation
+//! # The witness is each page's `/Rotate`, as written
 //!
 //! A page count cannot see a permutation, so the check needs something per page. What the
 //! engine seam already offers on both platforms, without a new bridge method and without
-//! decompressing anything, is `PageRotator::effective_rotation` — the value a page displays
-//! at, followed up the page tree.
+//! decompressing anything, is the value a page displays at, followed up the page tree —
+//! `PageRotator::rotations`.
+//!
+//! **Recorded, not judged.** The value is the one in the file: an out-of-spec `/Rotate 45`
+//! reads back as 45. `effective_rotation` is the *judging* read and refuses that, because a
+//! turn applied to 45 is undefined — but a witness only has to be **stable** between the read
+//! before an operation and the read after it, and normalising it made a page nobody named fail
+//! a whole reorder.
 //!
 //! It is a **weak identity and a real one**. Two pages sharing a rotation are
 //! indistinguishable to it, so on a document where every page displays the same way the vector
@@ -66,12 +72,16 @@ pub enum Expected {
     /// and free, because rotate's source is already a rotator's source. So it catches a turn
     /// applied to a page nobody named: the failure both rotate modules call their worst.
     ///
+    /// The turn is normalised **only** on the pages the request names, which is also the only
+    /// place an out-of-spec `/Rotate` is refused; every other page's value is carried through
+    /// as written.
+    ///
     /// **Undetectable:** a rotation written to a shared ancestor rather than to the page, on a
     /// document where every page inherits the same value — the vector is identical either way.
     /// `the_rotation_is_written_to_the_page_and_never_to_an_ancestor` covers that, and needs a
     /// fake to do it.
     Rotated {
-        /// Every page's effective rotation, in page order.
+        /// Every page's `/Rotate` as written, in page order — recorded, not judged.
         rotations: Vec<i64>,
     },
 
@@ -86,7 +96,7 @@ pub enum Expected {
     /// degrades to the page count — which still catches a page lost or duplicated, the failure
     /// #61 is about, and says nothing about order.
     Reordered {
-        /// Every page's effective rotation, in the order the permutation asked for.
+        /// Every page's `/Rotate` as written, in the order the permutation asked for.
         rotations: Vec<i64>,
     },
 
@@ -201,21 +211,15 @@ pub fn output<E: OutputReader>(
     // A FRESH ENGINE. Not `engine` -- see the module header and `OutputReader::fresh`.
     let witness = engine.fresh();
 
-    let read = witness.open_output(bytes, &reading).map_err(|error| {
-        Error::OutputRejected(format!(
-            "{}: burrow produced a document it cannot read back ({error:?})",
-            expected.operation()
-        ))
-    })?;
+    let read = witness
+        .open_output(bytes, &reading)
+        .map_err(|error| rejected(expected, "it cannot read back", error))?;
 
     deadline.checkpoint(clock.as_ref())?;
 
-    let produced = witness.page_count(&read).map_err(|error| {
-        Error::OutputRejected(format!(
-            "{}: burrow produced a document whose pages cannot be counted ({error:?})",
-            expected.operation()
-        ))
-    })?;
+    let produced = witness
+        .page_count(&read)
+        .map_err(|error| rejected(expected, "whose pages cannot be counted", error))?;
 
     if produced != expected.pages() {
         return Err(Error::OutputRejected(format!(
@@ -244,12 +248,9 @@ pub fn output<E: OutputReader>(
 
     deadline.checkpoint(clock.as_ref())?;
 
-    let actual = witness.rotations(&read, &reading).map_err(|error| {
-        Error::OutputRejected(format!(
-            "{}: burrow produced a document whose pages cannot be read ({error:?})",
-            expected.operation()
-        ))
-    })?;
+    let actual = witness
+        .rotations(&read, &reading, deadline)
+        .map_err(|error| rejected(expected, "whose pages cannot be read", error))?;
 
     if &actual != promised {
         // THE NUMBERS ARE OURS. A rotation is a multiple of 90 the engine computed from the
@@ -296,4 +297,26 @@ fn read_back_options<'a>(options: &OpenOptions<'a>, produced: usize) -> Result<O
     let mut reading = OpenOptions::new(limits, Arc::clone(&options.clock));
     reading.password = options.password;
     Ok(reading)
+}
+
+/// Wrap a failure to read the output back, **except** the ones that are not about the output.
+///
+/// # `LimitExceeded` passes through unchanged
+///
+/// Running out of time is the operation's outcome, not a verdict on the document — the same
+/// distinction `merge` draws when it refuses to blame the input its clock happened to stop on.
+/// Wrapping it produced "burrow produced a document whose pages cannot be read (LimitExceeded
+/// …)", which tells a person their file is broken when what happened is that the work did not
+/// fit in `max_duration_ms`. The page then offers them the wrong next step.
+///
+/// Everything else really is a rejected output: a document burrow just wrote and cannot read
+/// back is not a malformed input, and calling it `Malformed` would blame the user's file.
+fn rejected(expected: &Expected, what: &str, error: Error) -> Error {
+    if matches!(error, Error::LimitExceeded { .. }) {
+        return error;
+    }
+    Error::OutputRejected(format!(
+        "{}: burrow produced a document {what} ({error:?})",
+        expected.operation()
+    ))
 }

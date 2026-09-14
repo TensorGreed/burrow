@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Limits, Password, Permutation, Result, Rotation};
+use burrow_types::{Clock, Deadline, Limits, Password, Permutation, Result, Rotation};
 
 // Engine error codes and their mapping to typed errors. Ungated, like `prescan` below and
 // for the same reason: M1 PR 4's web path needs the SAME mapping table, and two copies of
@@ -514,7 +514,8 @@ pub trait OutputReader {
     /// is not a count.
     fn page_count(&self, read: &Self::Read) -> Result<u64>;
 
-    /// Every page's effective rotation, in page order.
+    /// Every page's `/Rotate` **as written**, in page order, following inheritance — the same
+    /// recorded-not-judged value [`PageRotator::rotations`] describes.
     ///
     /// **The witness.** A page count cannot see a permutation, and this is what the seam
     /// offers per page on both platforms without a new bridge method and without decompressing
@@ -523,14 +524,28 @@ pub trait OutputReader {
     ///
     /// # Errors
     ///
-    /// Whatever reading a page's rotation reports; see
-    /// [`PageRotator::effective_rotation`].
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a `/Rotate` that is not an
+    ///   integer at all, or a page tree that cannot be walked.
     /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — `max_duration_ms`. The
     ///   sweep is one call from outside and one FFI call per page times the page tree's depth
-    ///   from inside, so it **checkpoints per page** against the limits the document was opened
-    ///   under. `options` is here for the clock; ignoring it would put a loop the caller sized
-    ///   outside every deadline, which is what code and security review both found it doing.
-    fn rotations(&self, read: &Self::Read, options: &OpenOptions<'_>) -> Result<Vec<i64>>;
+    ///   from inside, so it **checkpoints per page**. `options` is here for the clock; ignoring
+    ///   it would put a loop the caller sized outside every deadline, which is what code and
+    ///   security review both found it doing.
+    ///
+    /// # The deadline is the CALLER'S
+    ///
+    /// Passed in rather than started here, unlike every other looping method on these traits.
+    /// Those bracket work the caller cannot see inside; this one is a sweep the caller asked
+    /// for as part of its own operation, and `Deadline::start` resets the origin AND the
+    /// budget -- so a sweep that started its own gave the operation a second full
+    /// `max_duration_ms`. Measured by security review at 56 ms against a 50 ms budget, and it
+    /// contradicts what `verify::output` says in capitals about spending one budget.
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>>;
 }
 
 /// An engine that can change a page's rotation and emit the document.
@@ -592,6 +607,34 @@ pub trait PageRotator {
     /// - [`Error::Malformed`](burrow_types::Error::Malformed) — `/Rotate` is not an integer, the page
     ///   tree is deeper than the engine will walk, or `/Parent` forms a cycle.
     fn effective_rotation(&self, source: &Self::Source, index: u64) -> Result<Rotation>;
+
+    /// Every page's `/Rotate` **as written**, in page order, following inheritance.
+    ///
+    /// # This records; it does not judge
+    ///
+    /// The value is the one in the file, not a normalised one: a `/Rotate 45` reads back as
+    /// `45`. [`PageRotator::effective_rotation`] is the judging read, and it refuses an
+    /// out-of-spec value because a *turn* applied to one is undefined.
+    ///
+    /// The difference is ADR 0022's, and it was a regression before it was a rule: the promise
+    /// sweep normalised every page, so a `/Rotate 45` on a page the request never named failed
+    /// the whole operation. A witness only has to be **stable** between the read before an
+    /// operation and the read after it, and 45 is a perfectly good witness.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a `/Rotate` that is not an
+    ///   integer at all, or a page tree that cannot be walked. A value that cannot be *read*
+    ///   is still a refusal; only the in-spec judgement is relaxed.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — `max_duration_ms`,
+    ///   checkpointed **per page** for the reason [`OutputReader::rotations`] gives, against
+    ///   the **caller's** deadline for the reason it gives too.
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>>;
 
     /// Turn every page in `pages` by `rotation`, and emit the document.
     ///
@@ -668,7 +711,8 @@ pub trait PageReorderer {
     /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that is not a count.
     fn pages(&self, source: &Self::Source) -> Result<u64>;
 
-    /// Every page's effective rotation, in page order.
+    /// Every page's `/Rotate` **as written**, in page order, following inheritance — the same
+    /// recorded-not-judged value [`PageRotator::rotations`] describes.
     ///
     /// **The witness a reorder is verified against** (ADR 0022), read from the document that
     /// is about to be permuted — the only place the *input's* rotations exist once the bytes
@@ -681,10 +725,18 @@ pub trait PageReorderer {
     ///
     /// # Errors
     ///
-    /// Whatever reading a page's rotation reports; see [`PageRotator::effective_rotation`].
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a `/Rotate` that is not an
+    ///   integer at all, or a page tree that cannot be walked. A value that cannot be *read*
+    ///   is still a refusal; only the in-spec judgement is relaxed.
     /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — `max_duration_ms`,
-    ///   checkpointed **per page** for the reason [`OutputReader::rotations`] gives.
-    fn rotations(&self, source: &Self::Source, options: &OpenOptions<'_>) -> Result<Vec<i64>>;
+    ///   checkpointed **per page** for the reason [`OutputReader::rotations`] gives, against
+    ///   the **caller's** deadline for the reason it gives too.
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>>;
 
     /// Put the pages in `order` and emit the document.
     ///
@@ -790,7 +842,7 @@ pub trait DocumentEngine {
     /// of it.
     ///
     /// **This deliberately takes no clock.** An earlier signature did, and it silently
-    /// disabled `max_duration_ms`. A [`Deadline`](burrow_types::Deadline) stores a start
+    /// disabled `max_duration_ms`. A [`Deadline`] stores a start
     /// reading from one clock's *unspecified* epoch; measured against a different clock
     /// the elapsed time saturates to zero, so the limit could never fire again — with no
     /// error and no warning. Implementors must hold the clock, not accept one.

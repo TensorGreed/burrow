@@ -1,6 +1,6 @@
 ---
 name: m1-verify-output
-description: ADR 0022's read-back verification (branch m1-verify-output, 2026-09-14) — the WebQpdf::fresh logger leak, the two page sweeps that sit outside the deadline, max_input_bytes applied to the output, and how to build adversarial PDFs qpdf will actually open.
+description: ADR 0022's read-back verification (branch m1-verify-output, 2026-09-14) — the WebQpdf::fresh logger leak, the two page sweeps that sit outside the deadline, max_input_bytes applied to the output, how to build adversarial PDFs qpdf will actually open, and the declared_rotation split's i64 overflow.
 metadata:
   type: project
 ---
@@ -53,7 +53,21 @@ linked against the native engines on this machine:
 also in the vendor tree and is not the one that gets built). A probe crate under the scratchpad
 with `path` deps into `core/` builds and links fine.
 
-**`/Rotate 45` now denies the whole operation.** Reproduced: the engine seam reorders such a
+**The `declared_rotation` follow-up (uncommitted, 2026-09-14) fixed the `/Rotate 45` denial and
+opened two new things, both reproduced in a scratchpad probe crate:**
+
+- `ops/rotate/mod.rs`'s promise loop does `*current + rotation.degrees()` where `current` is now
+  a raw i64 from the file. `/Rotate 9223372036854775710` (the largest multiple of 90 in i64) on
+  a NAMED page + a 270 turn: **debug/overflow-checks builds panic** ("attempt to add with
+  overflow"); release wraps and lands on `Malformed`, i.e. fail-closed but mis-attributed.
+  `Rotation::from_degrees` accepts any magnitude multiple of 90, so nothing upstream clamps.
+  qpdf returns the value verbatim (`declared sweep: [9223372036854775710, 0, 0, 0]`).
+- `PageRotator::rotations` starts its **own** `Deadline` from `source.limits`, so the promise
+  sweep no longer spends the operation's budget. Measured with a clock that ticks 1 ms per read:
+  a 400-page rotate under `max_duration_ms = 50` returned at virtual **56 ms**. `verify.rs`'s own
+  comment asserts the opposite invariant ("THE OPERATION'S DEADLINE, NOT A NEW ONE").
+
+**`/Rotate 45` now denies the whole operation** (fixed by the delta above; kept for the history)**.** Reproduced: the engine seam reorders such a
 document happily, `burrow_ops::reorder` returns `Malformed("/Rotate is not a multiple of 90")`
 because the promise sweep walks every page. Indirect `/Rotate 6 0 R` resolves correctly and is
 unaffected.

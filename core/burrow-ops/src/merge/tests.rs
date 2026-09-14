@@ -248,6 +248,7 @@ impl burrow_engines::OutputReader for Fake {
         &self,
         read: &Self::Read,
         _options: &OpenOptions<'_>,
+        _deadline: &burrow_types::Deadline,
     ) -> burrow_types::Result<Vec<i64>> {
         Ok(vec![0; usize::try_from(*read).unwrap_or(0)])
     }

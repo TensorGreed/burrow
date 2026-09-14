@@ -439,21 +439,18 @@ impl crate::OutputReader for Qpdf {
         crate::PageRotator::pages(self, read)
     }
 
-    fn rotations(&self, read: &Self::Read, options: &crate::OpenOptions<'_>) -> Result<Vec<i64>> {
-        let pages = crate::PageRotator::pages(self, read)?;
-        let capacity = usize::try_from(pages)
-            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
-        let mut rotations = Vec::with_capacity(capacity);
-
-        // PER PAGE. See `OutputReader::rotations`' own docs: this loop is sized by the
-        // document and, unchecked, runs outside every deadline.
-        let clock = std::sync::Arc::clone(&options.clock);
-        let deadline = burrow_types::Deadline::start(clock.as_ref(), &options.limits);
-
-        for index in 0..pages {
-            deadline.checkpoint(clock.as_ref())?;
-            rotations.push(crate::PageRotator::effective_rotation(self, read, index)?.degrees());
-        }
-        Ok(rotations)
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        options: &crate::OpenOptions<'_>,
+        deadline: &burrow_types::Deadline,
+    ) -> Result<Vec<i64>> {
+        // ONE SWEEP IMPLEMENTATION, not a second copy of it. `Read` is a rotatable source, so
+        // this is the same walk under a different name -- and the first version wrote the loop
+        // out again, which is two places for the checkpoint, the recorded-not-judged read and
+        // the handle discipline to drift apart. It drifted immediately: this copy kept
+        // `effective_rotation`, so the witness refused an out-of-spec page the promise sweep
+        // had already accepted.
+        crate::PageRotator::rotations(self, read, options, deadline)
     }
 }

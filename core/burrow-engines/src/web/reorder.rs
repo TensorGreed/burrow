@@ -166,7 +166,12 @@ impl PageReorderer for WebQpdf {
         Ok(source.pages)
     }
 
-    fn rotations(&self, source: &Self::Source, options: &OpenOptions<'_>) -> Result<Vec<i64>> {
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
         // THE SAME WALK `web/rotate.rs` DOES, against the document this is about to permute.
         // The two key strings are copied into the engine heap ONCE, by the same `Keys` guard
         // rotate uses, so the walk cannot fail on an allocation part-way through and leave a
@@ -178,9 +183,8 @@ impl PageReorderer for WebQpdf {
 
         // PER PAGE, as the native sweep checkpoints and for the same measured reason: this is
         // one call from outside and a `/Parent` climb per page from inside, so unchecked it
-        // sits outside every deadline. The ceilings come from `source.limits`.
+        // sits outside every deadline. Against the CALLER'S deadline -- see the trait's docs.
         let clock = Arc::clone(&options.clock);
-        let deadline = Deadline::start(clock.as_ref(), &source.limits);
 
         for index in 0..source.pages {
             // BEFORE THE HANDLE IS ISSUED, so a refusal cannot leave one behind.
@@ -188,9 +192,10 @@ impl PageReorderer for WebQpdf {
             let page = self.page_handle(&source.session, index, source.pages)?;
             // EVERY PATH RELEASES, as everywhere else across this bridge: `?` inside the loop
             // would return past the release.
-            let outcome = super::rotate::effective_rotation(self, &source.session, &keys, page);
+            // RECORDED, NOT JUDGED -- see the native sweep's comment and the trait's docs.
+            let outcome = super::rotate::declared_rotation(self, &source.session, &keys, page);
             self.bridge().oh_release(source.session.data(), page);
-            rotations.push(outcome?.degrees());
+            rotations.push(outcome?.unwrap_or(0));
         }
         Ok(rotations)
     }
@@ -484,20 +489,14 @@ impl crate::OutputReader for WebQpdf {
         crate::PageRotator::pages(self, read)
     }
 
-    fn rotations(&self, read: &Self::Read, options: &OpenOptions<'_>) -> Result<Vec<i64>> {
-        let pages = crate::PageRotator::pages(self, read)?;
-        let capacity = usize::try_from(pages)
-            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
-        let mut rotations = Vec::with_capacity(capacity);
-
-        // PER PAGE. See `OutputReader::rotations`' own docs.
-        let clock = Arc::clone(&options.clock);
-        let deadline = Deadline::start(clock.as_ref(), &options.limits);
-
-        for index in 0..pages {
-            deadline.checkpoint(clock.as_ref())?;
-            rotations.push(crate::PageRotator::effective_rotation(self, read, index)?.degrees());
-        }
-        Ok(rotations)
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        // ONE SWEEP IMPLEMENTATION, for the reason the native one records: `Read` is a
+        // rotatable source, so this is the same walk under a different name.
+        crate::PageRotator::rotations(self, read, options, deadline)
     }
 }

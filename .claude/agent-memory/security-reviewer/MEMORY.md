@@ -13,4 +13,4 @@
 - [M1 web rotate bridge](m1_web_rotate_bridge.md) — why both rotate conformance cases pass under the ancestor-write bug, and the two real handle-leak holes.
 - [M1 web reorder bridge](m1_web_reorder_bridge.md) — the leak-free Pages guard, why the oh_object fail-open drain is sound, and the self-test emptying the not-exported toml breaks.
 - [Tool-page result staleness](m1_web_tool_page_staleness.md) — `resultRequest` captured after the await drifts in rotate + reorder; merge is immune only by disabling controls.
-- [ADR 0022 read-back verification](m1_verify_output.md) — the WebQpdf::fresh logger leak, sweeps outside the deadline, and measured costs on a 10,000-page document.
+- [ADR 0022 read-back verification](m1_verify_output.md) — fresh-engine logger leak, sweep deadlines, and the declared_rotation i64 overflow repro.

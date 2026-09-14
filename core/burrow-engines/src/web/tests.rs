@@ -1866,3 +1866,99 @@ fn a_fresh_witness_shares_the_installed_logger_rather_than_making_another() {
     );
     state.assert_empty();
 }
+
+// --- the rotation sweep, which had no web coverage at all (ADR 0022) ----------------------
+//
+// The sweep is the read ADR 0022's witness is built from, and until security review looked
+// there was no test here that called it: the `live_handles` counter covers `rotate` and
+// `reorder`, and the one `OutputReader` test stops at `page_count`. The code was correct; a
+// leak or a missing checkpoint added to it would have gone unnoticed.
+
+/// A script whose pages carry their own `/Rotate`, so the walk stops at the page.
+///
+/// NOT `inheriting_script()`: that one answers "dictionary" to every `/Parent`, so the climb
+/// never terminates and the sweep refuses with a depth exhaustion -- correct behaviour, and
+/// not what these tests are asking about.
+fn own_rotation_script() -> QpdfScript {
+    QpdfScript {
+        page_count: 3,
+        oh_int_value: 90,
+        oh_type_codes: [
+            ("/Rotate".to_owned(), 4), // ot_integer, found on the page itself
+            ("/Parent".to_owned(), 9), // ot_dictionary, never reached
+        ]
+        .into_iter()
+        .collect(),
+        ..QpdfScript::default()
+    }
+}
+
+#[test]
+fn every_object_handle_the_web_rotation_sweep_takes_is_released() {
+    let script = own_rotation_script();
+    let live = Arc::clone(&script.live_handles);
+    let (engine, _state) = structure_engine(script);
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+
+    let clock = stopped();
+    let deadline = burrow_types::Deadline::start(clock.as_ref(), &Limits::DEFAULT);
+    let rotations = PageRotator::rotations(&engine, &source, &rotate_options(), &deadline)
+        .expect("the sweep reads every page");
+    assert_eq!(
+        rotations,
+        vec![90, 90, 90],
+        "one value per page, read not judged"
+    );
+
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the sweep left object handles alive in qpdf's cache"
+    );
+}
+
+#[test]
+fn a_refused_web_rotation_sweep_releases_its_handles_too() {
+    // THE ERROR PATH, which is where a hand-written release is actually lost. The refusal is a
+    // spent deadline, raised at the top of the loop -- so the pages before it have already
+    // taken and returned handles, and the refusal itself must take none.
+    let script = own_rotation_script();
+    let live = Arc::clone(&script.live_handles);
+    let (engine, _state) = structure_engine(script);
+
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+
+    let clock = Arc::new(ManualClock::new(0));
+    let limits = Limits::with(|l| l.max_duration_ms = 10);
+    let deadline = burrow_types::Deadline::start(clock.as_ref(), &limits);
+    clock.advance(11);
+
+    let refused = PageRotator::rotations(
+        &engine,
+        &source,
+        &OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>),
+        &deadline,
+    );
+    // AND IT IS THE CALLER'S DEADLINE THAT REFUSED IT. A sweep that started its own would get
+    // a full budget from a clock reading 11 and sweep all three pages happily.
+    assert!(
+        matches!(&refused, Err(Error::LimitExceeded { limit, .. }) if *limit == "max_duration_ms"),
+        "got {refused:?}"
+    );
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "a refused sweep left object handles alive"
+    );
+}

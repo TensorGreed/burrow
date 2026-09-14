@@ -239,6 +239,48 @@ already consumed by `finish`. The residue is real and is the usual one: `max_mem
 **detects and does not bound** (ADR 0007), and the only true bound anywhere is the web
 module's fixed 2 GiB.
 
+**One budget covers producing the output and checking it**, and that took three attempts to
+be true. The sweeps first had no checkpoint at all; then they had one against a `Deadline` they
+started themselves — and `Deadline::start` resets the origin *and* the budget, so each sweep
+handed the operation another full `max_duration_ms`. Security review measured 56 ms returned
+against a 50 ms ceiling. The sweeps now take the caller's deadline as an argument, which is why
+`PageRotator::rotations` and its two siblings have a parameter no other engine method has, and
+`one_budget_covers_the_promise_sweep_and_the_read_back` fails if any of them starts its own
+again.
+
+A `LimitExceeded` from inside the read-back now propagates unchanged rather than being wrapped
+in `OutputRejected`. Running out of time is the operation's outcome, not a verdict on the
+document — the same distinction `merge` draws when it refuses to blame the input its clock
+happened to stop on. Wrapping it told a person their file was broken when the work simply did
+not fit in the budget.
+
+**If this ever needs to be faster, the measurement is here rather than the change.** The
+per-page sweep is linear in page-tree depth — 10,000 pages, one page rotated, promise sweep
+only:
+
+| tree depth | 1 | 2 | 4 | 8 | 16 | 60 |
+|---|--:|--:|--:|--:|--:|--:|
+| sweep | 5.5 ms | 8.1 ms | 13.0 ms | 23.2 ms | 41.6 ms | 149 ms |
+| share of the operation | 16% | 23% | 31% | 45% | 60% | 84% |
+
+Roughly 2.5 ms per level per 10,000 pages, because `effective_rotation` re-walks `/Parent` to
+the root for every page and pages under one node share their whole ancestor chain.
+
+**The obvious fix is a memo** keyed on ancestor *identity* — object number and generation, the
+only thing that may be compared (`core/CLAUDE.md`) — which collapses the sweep to O(pages +
+nodes) and would flatten that row to about 5.5 ms at every depth. **It was looked at and not
+taken**, and the reason is the shape of the benefit: on the depth a real producer writes (2–4)
+it saves 7–18% of one operation, and it is large only on the adversarial shapes the per-page
+deadline checkpoint already bounds. Against that, it restructures the same page-tree walk in
+**both** engines — the newest and least exercised code here — and a memo that returns a stale
+value is a silently wrong witness, which is the failure class this whole ADR exists to catch.
+Identity comparison is also precisely where this repository has been bitten before (ADR 0013's
+handle-identity amendment).
+
+So: recorded, not done. `split`, `compress` and M2's redaction inherit this step, and if a
+large-document profile ever justifies the memo, the numbers to beat are in the table above and
+`--deep <pages> <depth>` in `measure-verification` reproduces them.
+
 **It discharges #61 for shipping.** Silent page loss becomes a typed refusal, which is that
 issue's own stated bar: *"a refusal would not block; losing the page quietly does."* It does not
 fix the underlying disagreement between qpdf's two readings — that is a separate decision about
@@ -271,7 +313,7 @@ two of its claims did not survive contact.
 | `pub fn output<E: DocumentEngine>` | `pub fn output<E: OutputReader>`, a new trait | `DocumentEngine` has no way to read bytes back and no way to make a fresh instance. The fresh-instance requirement is a *capability*, so it is a trait, and the method list is the audit surface |
 | "reopens through the engine seam" | that, **and through a fresh instance** | a corrupted instance agreeing with itself is #62's residue, and it is the one thing the original three properties left open |
 | the read-back runs under the operation's `OpenOptions` | it runs under those with **`max_input_bytes` raised to fit the output** | that ceiling governs what a *caller* may hand burrow. Applied unchanged it denied a supported operation: a merge of inputs totalling exactly the ceiling succeeded and then refused its own output, because qpdf's output is normally larger than the sum of its inputs. Security review measured 32,995 bytes rejected under a 32,408-byte ceiling |
-| (not considered) | **an out-of-spec `/Rotate` now fails the whole operation** | the promise sweep reads *every* page, including ones the request never named, and a `/Rotate 45` is `Malformed`. Before ADR 0022 such a document reordered fine. It fails closed and the value is out of spec, so this is a recorded behaviour change rather than a defect — but it is a behaviour change, and it was found by security review rather than by a test |
+| the witness is each page's *effective rotation*, normalised | it is each page's `/Rotate` **as written** | normalising made an out-of-spec `/Rotate 45` on a page the request never named fail the whole operation — before ADR 0022 such a document reordered fine. A witness only has to be **stable** between the read before and the read after, and 45 is stable. The engine seam now has two reads: `effective_rotation` judges (a *turn* of 45 is undefined, so naming that page is still refused) and `rotations` records. Found by security review; `a_page_displaying_out_of_spec_does_not_fail_the_reordering` covers it against real qpdf |
 
 ## Alternatives considered
 

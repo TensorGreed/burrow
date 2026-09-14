@@ -53,11 +53,17 @@ mod measure {
 
     use burrow_engines::qpdf::Qpdf;
     use burrow_engines::{OpenOptions, OutputReader, PageRotator};
-    use burrow_types::{Clock, Limits, ManualClock};
+    use burrow_types::{Clock, Deadline, Limits, ManualClock};
 
     /// Enough that one scheduler hiccup does not become the answer, few enough that the whole
     /// run stays under a few seconds on the largest fixture in the repository.
     const RUNS: usize = 11;
+
+    /// A clock for the deadline the sweeps are handed. Measuring, not limiting: the budget is
+    /// `Limits::DEFAULT`'s, and nothing here is meant to hit it.
+    fn clock() -> Arc<dyn Clock> {
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>
+    }
 
     fn options() -> OpenOptions<'static> {
         OpenOptions::new(
@@ -175,15 +181,10 @@ mod measure {
             pages = total;
 
             let promised = Instant::now();
-            let mut rotations = Vec::with_capacity(total as usize);
-            for index in 0..total {
-                rotations.push(
-                    engine
-                        .effective_rotation(&source, index)
-                        .expect("effective rotation")
-                        .degrees(),
-                );
-            }
+            let ticking = clock();
+            let budget = Deadline::start(ticking.as_ref(), &Limits::DEFAULT);
+            let _rotations =
+                PageRotator::rotations(&engine, &source, &options(), &budget).expect("sweep");
             promise.push(promised.elapsed());
 
             output = engine
@@ -201,7 +202,8 @@ mod measure {
             freshness.push(checked.elapsed());
             let read = witness.open_output(&output, &options()).expect("read back");
             let _ = witness.page_count(&read).expect("page count");
-            let _ = witness.rotations(&read, &options()).expect("rotations");
+            let _ =
+                OutputReader::rotations(&witness, &read, &options(), &budget).expect("rotations");
             verification.push(checked.elapsed());
 
             // THE ALTERNATIVE ADR 0022 REJECTED, timed beside it: reading the bytes back
@@ -210,7 +212,8 @@ mod measure {
             let reused = Instant::now();
             let read = engine.open_output(&output, &options()).expect("read back");
             let _ = engine.page_count(&read).expect("page count");
-            let _ = engine.rotations(&read, &options()).expect("rotations");
+            let _ =
+                OutputReader::rotations(&engine, &read, &options(), &budget).expect("rotations");
             through_self.push(reused.elapsed());
         }
 

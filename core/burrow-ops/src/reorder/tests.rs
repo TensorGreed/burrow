@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use burrow_engines::{OpenOptions, PageReorderer};
-use burrow_types::{Clock, Error, Limits, ManualClock, Permutation, Result, Stage};
+use burrow_types::{Clock, Deadline, Error, Limits, ManualClock, Permutation, Result, Stage};
 
 use super::reorder;
 
@@ -43,6 +43,8 @@ struct FakeReorderer {
     freshes: Rc<RefCell<usize>>,
     /// Every page displays the same way, which is the document the witness cannot see into.
     uniform: bool,
+    /// Milliseconds each page of a rotation sweep costs, so a budget can be spent on one.
+    sweep_ms: u64,
     /// Whether this instance came from `OutputReader::fresh`.
     ///
     /// THE FRESHNESS IS ASSERTED, NOT ASSUMED. A fake that reads the emitted document back
@@ -64,6 +66,7 @@ impl FakeReorderer {
             reads_back_as: None,
             freshes: Rc::new(RefCell::new(0)),
             uniform: false,
+            sweep_ms: 0,
             fresh: false,
         }
     }
@@ -83,12 +86,36 @@ impl FakeReorderer {
         }
     }
 
+    /// A fake whose every rotation sweep costs `sweep_ms` per page.
+    fn sweeping_ms(pages: u64, sweep_ms: u64) -> Self {
+        Self {
+            sweep_ms,
+            ..Self::with_pages(pages)
+        }
+    }
+
     /// A document whose every page displays at 0, and a reader that lies about the order.
     fn uniform_but_lying(pages: u64, reads_back_as: Vec<i64>) -> Self {
         Self {
             uniform: true,
             ..Self::lying(pages, reads_back_as)
         }
+    }
+
+    /// What each page displays at, with no clock and no deadline.
+    ///
+    /// The sweep meters this; the writer consults it directly. Separate so the fake does not
+    /// charge itself twice, which would make the budget test measure the fake.
+    ///
+    /// ONE DISTINCT VALUE PER PAGE, not a flat vector. A fake whose pages all read back the
+    /// same would make the verifier's order check vacuous -- `add-operation` §2c's mistake,
+    /// inside the thing that exists to catch it. The values are multiples of 90 because that
+    /// is what a rotation is, and distinct so an order is observable.
+    fn declared(&self, source: &u64) -> Vec<i64> {
+        if self.uniform {
+            return vec![0; usize::try_from(*source).expect("pages fit in usize")];
+        }
+        (0..*source).map(|n| ((n % 4) * 90).cast_signed()).collect()
     }
 
     fn options(&self, limits: Limits) -> OpenOptions<'static> {
@@ -111,18 +138,21 @@ impl PageReorderer for FakeReorderer {
         Ok(*source)
     }
 
-    fn rotations(&self, source: &Self::Source, _options: &OpenOptions<'_>) -> Result<Vec<i64>> {
-        // ONE DISTINCT VALUE PER PAGE, not a flat vector. A fake whose pages all read back
-        // the same would make the verifier's order check vacuous -- `add-operation` §2c's
-        // mistake, inside the thing that exists to catch it. The values are multiples of 90
-        // because that is what a rotation is, and distinct so an order is observable.
-        if self.uniform {
-            return Ok(vec![
-                0;
-                usize::try_from(*source).expect("pages fit in usize")
-            ]);
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        // THE SWEEP COSTS TIME, and checkpoints the deadline it was HANDED. Both halves are
+        // what a real engine does, and both are what the test below needs: a fake whose sweep
+        // is free cannot tell the operation's budget from a fresh one.
+        for _ in 0..*source {
+            deadline.checkpoint(self.clock.as_ref())?;
+            self.clock.advance(self.sweep_ms);
         }
-        Ok((0..*source).map(|n| ((n % 4) * 90).cast_signed()).collect())
+        let _ = options;
+        Ok(self.declared(source))
     }
 
     fn reorder(
@@ -135,7 +165,8 @@ impl PageReorderer for FakeReorderer {
         // The document this fake would have written: the input's own rotations, moved by the
         // permutation it was actually handed. Honest by construction -- the lie, when a test
         // wants one, lives on the reader.
-        let before = PageReorderer::rotations(self, source, options)?;
+        let _ = options;
+        let before = self.declared(source);
         let mut emitted = Vec::with_capacity(before.len());
         for &from in order.order() {
             let at = usize::try_from(from).expect("index fits in usize");
@@ -161,6 +192,7 @@ impl burrow_engines::OutputReader for FakeReorderer {
             reads_back_as: self.reads_back_as.clone(),
             freshes: Rc::clone(&self.freshes),
             uniform: self.uniform,
+            sweep_ms: self.sweep_ms,
             fresh: true,
         }
     }
@@ -180,7 +212,16 @@ impl burrow_engines::OutputReader for FakeReorderer {
         Ok(u64::try_from(read.len()).expect("page count fits in u64"))
     }
 
-    fn rotations(&self, read: &Self::Read, _options: &OpenOptions<'_>) -> Result<Vec<i64>> {
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        _options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        for _ in 0..read.len() {
+            deadline.checkpoint(self.clock.as_ref())?;
+            self.clock.advance(self.sweep_ms);
+        }
         Ok(read.clone())
     }
 }
@@ -419,4 +460,39 @@ fn a_reorder_of_pages_that_all_display_the_same_way_is_only_a_page_count() {
     // a test is what keeps the claim honest when the witness changes.
     let engine = FakeReorderer::uniform_but_lying(4, vec![0, 0, 0, 0]);
     run(&engine, &[4, 3, 2, 1]).expect("indistinguishable, and therefore accepted");
+}
+
+#[test]
+fn one_budget_covers_the_promise_sweep_and_the_read_back() {
+    // THE INVARIANT `verify` STATES IN CAPITALS, asserted. Producing the output and checking it
+    // spend ONE `max_duration_ms`; a sweep that started its own `Deadline` would hand the
+    // operation a second full budget, because `Deadline::start` resets the origin AND the
+    // budget. Both sweeps did exactly that until security review measured 56 ms returned
+    // against a 50 ms ceiling.
+    //
+    // The fake's sweep costs 3 ms per page over 3 pages, so the promise sweep spends 9 of a
+    // 10 ms budget and the read-back's sweep runs out. Under per-sweep deadlines every phase
+    // starts fresh and nothing is ever refused.
+    let engine = FakeReorderer::sweeping_ms(3, 3);
+    let err = run_under(
+        &engine,
+        &[3, 2, 1],
+        Limits::with(|l| l.max_duration_ms = 10),
+    )
+    .expect_err("the budget must cover both sweeps");
+    assert!(
+        matches!(err, Error::LimitExceeded { limit, stage, .. } if limit == "max_duration_ms"
+            && stage == Stage::Deadline),
+        "got {err:?}"
+    );
+
+    // THE CONTROL: the same work under a budget that fits it. Without this the assertion above
+    // is satisfied by an operation that refuses every document with a clock attached.
+    let engine = FakeReorderer::sweeping_ms(3, 3);
+    run_under(
+        &engine,
+        &[3, 2, 1],
+        Limits::with(|l| l.max_duration_ms = 1_000),
+    )
+    .expect("a budget that covers both sweeps must not refuse");
 }

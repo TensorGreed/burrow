@@ -157,6 +157,37 @@ fn an_inherited_rotation_survives_the_reordering() {
 }
 
 #[test]
+fn a_page_displaying_out_of_spec_does_not_fail_the_reordering() {
+    // THE REGRESSION ADR 0022 INTRODUCED AND THIS CLOSES, against real qpdf rather than a
+    // fake. `/Rotate 45` is out of spec, and the promise sweep normalised every page -- so a
+    // document carrying one refused a reorder that was never going to turn anything. Before
+    // ADR 0022 this document reordered fine; found by security review, not by a test.
+    //
+    // The witness only has to be STABLE between the read before and the read after. 45 is.
+    let bytes = minimal_pdf::pdf_with_page_tree(
+        4,
+        RotationPlacement::OnTheRootAndTheFirstPage {
+            root: 0,
+            first_page: 45,
+        },
+    );
+
+    let output = put(bytes, &[4, 3, 2, 1]).expect("an out-of-spec /Rotate must not fail this");
+
+    // AND THE PAGES REALLY MOVED, so this is not passing because the operation did nothing.
+    assert_eq!(page_order(&output), vec![4, 3, 2, 1]);
+
+    // AND THE 45 SURVIVED. If the operation had quietly normalised it, the verification would
+    // still have passed -- both sides would agree on the rounded value -- so the document is
+    // what gets asserted, not the outcome.
+    let text = String::from_utf8_lossy(&output);
+    assert!(
+        text.contains("/Rotate 45"),
+        "the out-of-spec rotation was not carried through to the output"
+    );
+}
+
+#[test]
 fn a_page_named_twice_is_refused_rather_than_duplicated() {
     // The invariant's teeth, against the real engine rather than only the fake: `[1, 1, 3]`
     // has the right length and is not a permutation.

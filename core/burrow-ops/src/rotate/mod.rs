@@ -180,24 +180,60 @@ pub fn rotate<E: PageRotator + OutputReader>(
     // which is the only place they exist. Every page's expected value is its current one, plus
     // the turn for the pages that were named. So this is a statement about the request rather
     // than about the answer, which is what makes comparing it to the answer worth anything.
-    let mut promised = Vec::with_capacity(
-        usize::try_from(total)
-            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?,
-    );
-    for index in 0..total {
-        // PER PAGE. `effective_rotation` walks `/Parent` to the root, so this loop is sized by
-        // the page count times the tree depth -- both attacker-chosen -- and without a
-        // checkpoint it sat outside every deadline. Security review measured 144 ms of sweep
-        // against 12 ms of edit-and-write on a 10,000-page document.
-        deadline.checkpoint(clock.as_ref())?;
-        let current = engine.effective_rotation(&source, index)?.degrees();
-        let turned = if seen.contains(&(index + 1)) {
-            Rotation::from_degrees(current + rotation.degrees())?.degrees()
+    // ONE SWEEP, in the engine, which checkpoints per page: the walk is one `/Parent` climb
+    // per page, so it is sized by page count times tree depth -- both attacker-chosen -- and
+    // security review measured it at 147 ms against 28 ms of edit-and-write on a 10,000-page
+    // document with a 60-deep tree. Calling `effective_rotation` in a loop from here was the
+    // same work through N trait calls, with the checkpoint on the wrong side of the seam.
+    let before = PageRotator::rotations(engine, &source, options, &deadline)?;
+
+    let mut promised = Vec::with_capacity(before.len());
+    for (at, current) in before.iter().enumerate() {
+        let number = u64::try_from(at)
+            .map_err(|_| Error::Internal("page index does not fit in u64".to_owned()))?
+            + 1;
+        // NORMALISED ONLY WHERE A TURN IS APPLIED. `before` records what each page displays at
+        // AS WRITTEN, so an out-of-spec `/Rotate 45` is carried through as 45 -- a witness only
+        // has to be stable, and a page nobody named is not this operation's business.
+        //
+        // On a page that WAS named, a turn of an out-of-spec value is undefined, so
+        // `from_degrees` refuses it and the operation fails. That refusal is the one this
+        // function's `# Errors` has always promised; the regression was applying it to every
+        // other page as well, which failed a whole operation over a page it was not touching.
+        let turned = if seen.contains(&number) {
+            // THE ENGINE'S OWN EXPRESSION, not a re-derivation of it: both qpdf modules write
+            // `rotation.after(effective_rotation(page))`, so the promise is that, and the two
+            // cannot drift.
+            //
+            // IT ALSO CANNOT OVERFLOW, which the first version could. `current` is now the raw
+            // `/Rotate` from the file rather than one of four quarter turns, and
+            // `from_degrees` accepts ANY multiple of 90 -- so `current + turn` on a
+            // `/Rotate 9223372036854775710` panicked under `overflow-checks` (every test
+            // build, and cargo-fuzz's, which drives this function directly) and wrapped in
+            // release. Reproduced against real qpdf by security review. Normalising first
+            // bounds both sides to a quarter turn before any arithmetic.
+            //
+            // MALFORMED, NOT INVALID ARGUMENT. The number `from_degrees` refuses here is the
+            // document's own `/Rotate`, not the caller's argument -- and the old
+            // `InvalidArgument` carried it into the message verbatim, which is file content in
+            // an error string. The variant is matched rather than mapped wholesale so an
+            // `Internal` from the normaliser stays `Internal`.
+            let base = match Rotation::from_degrees(*current) {
+                Ok(base) => base,
+                Err(Error::InvalidArgument(_)) => {
+                    return Err(Error::Malformed(
+                        "a page's /Rotate is not a multiple of 90".to_owned(),
+                    ));
+                }
+                Err(other) => return Err(other),
+            };
+            rotation.after(base).degrees()
         } else {
-            current
+            *current
         };
         promised.push(turned);
     }
+    deadline.checkpoint(clock.as_ref())?;
 
     let output = engine.rotate(&source, &indices, rotation, options)?;
     deadline.checkpoint(clock.as_ref())?;

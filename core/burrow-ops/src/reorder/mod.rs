@@ -114,7 +114,7 @@ pub fn reorder<E: PageReorderer + OutputReader>(
     // the one requested wherever the two put differently-rotated pages in different places.
     // The engine checkpoints this sweep per page against the limits the document was opened
     // under; see `PageReorderer::rotations`.
-    let before = PageReorderer::rotations(engine, &source, options)?;
+    let before = PageReorderer::rotations(engine, &source, options, &deadline)?;
     let mut promised = Vec::with_capacity(before.len());
     for &from in permutation.order() {
         let at = usize::try_from(from)
