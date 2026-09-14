@@ -147,7 +147,12 @@ A change is done when all of these hold:
 - [ ] `cargo fmt --all -- --check`, `cargo clippy … -D warnings`, `cargo test --workspace` pass.
 - [ ] `cargo deny check` passes; any new dependency has a `license-auditor` pass and a
       `THIRD_PARTY_NOTICES.md` entry.
-- [ ] New parser entry points have a fuzz target that runs clean for 60s.
+- [ ] New parser entry points have a fuzz target that runs clean for 60s **against a
+      seeded corpus** (`python3 tools/seed-fuzz-corpus.py`). Unseeded, that sentence was
+      hollow for the whole of M1: libFuzzer does not invent a valid PDF, so the targets
+      were measuring the parser's rejection paths and nothing else. Measured — a defect
+      planted in `reorder` survived 577,209 unseeded executions and died on the first
+      seeded one. See `fuzz/README.md`.
 - [ ] New operations have unit, property, golden, and fuzz tests, and enforce `Limits`.
 - [ ] No new `unwrap`/`expect`/`panic!` in library code; new `unsafe` has `// SAFETY:`.
 - [ ] No new network call reachable from code that touches file content.
@@ -282,6 +287,15 @@ those at full candour is working and is not what "summarise" is asking you to sh
   against `git ls-files '*.py'`, and `check-engine-licences.py` names every component whose
   original it could not resolve. Where the expected count genuinely is not knowable, **say
   what was examined by name** rather than printing a bare total.
+- **A test harness that generates its own inputs is measuring what it can generate.** A fuzz
+  target seeded from random bytes explores the shape of its parser's front door and nothing
+  past it; a fixture whose pages are interchangeable cannot fail an order test; a marked
+  document with a flat page tree cannot detect a flattening. All three happened here, and the
+  first cost the most: every "fuzz target runs clean for 60 s" recorded during M1 was measured
+  against a corpus grown from `/dev/urandom`, and seeding the targets from the committed
+  fixtures found three real defects in minutes — one of them a ship blocker, two of them
+  memory-unsafety in a pinned dependency. **Ask what the harness can produce before believing
+  what it reports.**
 - **A mutation test must assert the mutation applied before running the suite.** Twice in
   one session a `str.replace` silently matched nothing, the suite stayed green, and the
   green read as "this defence works" when nothing had been mutated at all. A mutation that
