@@ -51,7 +51,8 @@ mod tests;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use burrow_engines::{OpenOptions, PageRotator};
+use crate::verify;
+use burrow_engines::{OpenOptions, OutputReader, PageRotator};
 use burrow_types::{Deadline, Error, Limits, Result, Rotation, Stage};
 
 /// Which pages to turn.
@@ -101,8 +102,11 @@ impl<'a> Pages<'a> {
 ///   could not be read, or a page's existing `/Rotate` is not an integer multiple of 90.
 /// - [`Error::LimitExceeded`] — a ceiling in `options.limits` was reached.
 /// - [`Error::Io`] — the output could not be written.
+/// - [`Error::OutputRejected`] — the document burrow produced is not the one it promised:
+///   the wrong number of pages, or a page displaying at a rotation nobody asked for. It is returned **instead of** the output, which is
+///   dropped (ADR 0022).
 /// - [`Error::Internal`] — a number did not fit, or the engine returned something impossible.
-pub fn rotate<E: PageRotator>(
+pub fn rotate<E: PageRotator + OutputReader>(
     engine: &E,
     bytes: Box<[u8]>,
     pages: Pages<'_>,
@@ -169,8 +173,53 @@ pub fn rotate<E: PageRotator>(
     // a limit checked more often than it is.
     let deadline = Deadline::start(clock.as_ref(), &limits);
     deadline.checkpoint(clock.as_ref())?;
+
+    // WHAT THE OUTPUT MUST DISPLAY, computed BEFORE the operation runs (ADR 0022).
+    //
+    // From the input's own rotations, read through the handle that is about to be edited --
+    // which is the only place they exist. Every page's expected value is its current one, plus
+    // the turn for the pages that were named. So this is a statement about the request rather
+    // than about the answer, which is what makes comparing it to the answer worth anything.
+    let mut promised = Vec::with_capacity(
+        usize::try_from(total)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?,
+    );
+    for index in 0..total {
+        // PER PAGE. `effective_rotation` walks `/Parent` to the root, so this loop is sized by
+        // the page count times the tree depth -- both attacker-chosen -- and without a
+        // checkpoint it sat outside every deadline. Security review measured 144 ms of sweep
+        // against 12 ms of edit-and-write on a 10,000-page document.
+        deadline.checkpoint(clock.as_ref())?;
+        let current = engine.effective_rotation(&source, index)?.degrees();
+        let turned = if seen.contains(&(index + 1)) {
+            Rotation::from_degrees(current + rotation.degrees())?.degrees()
+        } else {
+            current
+        };
+        promised.push(turned);
+    }
+
     let output = engine.rotate(&source, &indices, rotation, options)?;
     deadline.checkpoint(clock.as_ref())?;
+
+    // THE INPUT DOCUMENT GOES BEFORE THE OUTPUT IS PARSED. Verification holds a second parsed
+    // document plus a copy of the output bytes, and holding the source across it puts both
+    // documents in memory at once for no purpose -- `max_memory_bytes` only detects, and the
+    // web module's fixed 2 GiB is the only real bound anywhere. Found by security review,
+    // which measured RSS 197 MB -> 387 MB across the read-back of a 200 MB output.
+    drop(source);
+
+    // AND THE LAST THING BEFORE THE CALLER HAS IT. Reopened through a fresh engine, never the
+    // handle that just wrote it. See `verify`'s header and ADR 0022.
+    verify::output(
+        engine,
+        &output,
+        &verify::Expected::Rotated {
+            rotations: promised,
+        },
+        options,
+        &deadline,
+    )?;
 
     Ok(output)
 }

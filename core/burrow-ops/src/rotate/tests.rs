@@ -6,6 +6,7 @@
 //! is asked for exactly what the caller asked for.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use burrow_engines::{OpenOptions, PageRotator};
@@ -24,6 +25,35 @@ struct Asked {
 struct FakeRotator {
     pages: u64,
     asked: RefCell<Vec<Asked>>,
+    /// What the fake's writer put in the document, as the fake's reader will report it.
+    ///
+    /// Shared with every `fresh()` instance, because that is the one thing a fresh reader of
+    /// the same bytes must agree about. A fake whose reader re-derived the answer from the
+    /// request would agree with the operation by construction and verify nothing.
+    emitted: Rc<RefCell<Vec<i64>>>,
+    /// THE VERIFIER'S ONLY LEVER: what the reader reports instead of `emitted`.
+    ///
+    /// A shorter vector is a page lost (#61's shape); a same-length different one is a turn
+    /// that landed on the wrong page. Both are documents the fake's *writer* claims to have
+    /// produced and its *reader* contradicts, which is the whole situation ADR 0022 exists
+    /// for, and it is unreachable through `PageRotator` alone.
+    reads_back_as: Option<Vec<i64>>,
+    /// How many times `OutputReader::fresh` was called, shared across every instance.
+    ///
+    /// ADR 0022's first requirement is that the witness is not the instance that produced the
+    /// bytes, and nothing else here can see the difference: a verifier that read through
+    /// `&self` would agree with every honest fake in this file.
+    freshes: Rc<RefCell<usize>>,
+    /// Whether this instance came from `OutputReader::fresh`.
+    ///
+    /// THE FRESHNESS IS ASSERTED, NOT ASSUMED. A fake that reads the emitted document back
+    /// identically whoever asks leaves ADR 0022's first requirement untested: swap
+    /// `engine.fresh()` for `engine` in `verify::output` and every test still passes. Found by
+    /// code review, with that mutation run. So the instance that WROTE the bytes reports
+    /// nonsense when asked to read them -- which is what "a corrupted instance can agree with
+    /// itself" looks like from outside, and it makes the mutation fail
+    /// `an_honest_engine_is_not_refused`.
+    fresh: bool,
     /// How far the fake moves the clock inside `rotate`.
     ///
     /// `merge` and `split`'s fakes both have this, and `rotate`'s did not -- so no test here
@@ -38,6 +68,10 @@ impl FakeRotator {
         Self {
             pages,
             asked: RefCell::new(Vec::new()),
+            emitted: Rc::new(RefCell::new(Vec::new())),
+            reads_back_as: None,
+            freshes: Rc::new(RefCell::new(0)),
+            fresh: false,
             elapse_ms: 0,
             clock: Arc::new(ManualClock::new(0)),
         }
@@ -46,6 +80,14 @@ impl FakeRotator {
     fn taking_ms(pages: u64, elapse_ms: u64) -> Self {
         Self {
             elapse_ms,
+            ..Self::with_pages(pages)
+        }
+    }
+
+    /// A fake whose writer is honest and whose reader is not.
+    fn lying(pages: u64, reads_back_as: Vec<i64>) -> Self {
+        Self {
+            reads_back_as: Some(reads_back_as),
             ..Self::with_pages(pages)
         }
     }
@@ -85,8 +127,57 @@ impl PageRotator for FakeRotator {
             pages: pages.to_vec(),
             degrees: rotation.degrees(),
         });
+        // The document this fake would have written: every page at the rotation
+        // `effective_rotation` reports above, plus the turn for the pages that were named.
+        let mut emitted = vec![0_i64; usize::try_from(self.pages).expect("pages fit in usize")];
+        for &index in pages {
+            let at = usize::try_from(index).expect("index fits in usize");
+            if let Some(slot) = emitted.get_mut(at) {
+                *slot = rotation.degrees();
+            }
+        }
+        *self.emitted.borrow_mut() = emitted;
         self.clock.advance(self.elapse_ms);
         Ok(b"%PDF-1.7\n".to_vec())
+    }
+}
+
+impl burrow_engines::OutputReader for FakeRotator {
+    type Read = Vec<i64>;
+
+    fn fresh(&self) -> Self {
+        *self.freshes.borrow_mut() += 1;
+        // A new instance that shares the emitted document and the clock -- and shares the
+        // lie, so a test can aim it at the read-back without the writer knowing.
+        Self {
+            pages: self.pages,
+            asked: RefCell::new(Vec::new()),
+            emitted: Rc::clone(&self.emitted),
+            reads_back_as: self.reads_back_as.clone(),
+            freshes: Rc::clone(&self.freshes),
+            fresh: true,
+            elapse_ms: 0,
+            clock: Arc::clone(&self.clock),
+        }
+    }
+
+    fn open_output(&self, _bytes: &[u8], _options: &OpenOptions<'_>) -> Result<Self::Read> {
+        if !self.fresh {
+            // The writing instance is not a witness. See `fresh`.
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .reads_back_as
+            .clone()
+            .unwrap_or_else(|| self.emitted.borrow().clone()))
+    }
+
+    fn page_count(&self, read: &Self::Read) -> Result<u64> {
+        Ok(u64::try_from(read.len()).expect("page count fits in u64"))
+    }
+
+    fn rotations(&self, read: &Self::Read, _options: &OpenOptions<'_>) -> Result<Vec<i64>> {
+        Ok(read.clone())
     }
 }
 
@@ -290,4 +381,51 @@ fn a_rotation_inside_the_deadline_is_allowed() {
         )
         .is_ok()
     );
+}
+
+// --- ADR 0022: the output is read back, through an engine that did not write it -----------
+
+#[test]
+fn the_output_is_read_back_through_a_fresh_engine() {
+    // Not an incidental count. One `fresh` per operation is the whole of ADR 0022's first
+    // requirement -- a verifier that read through `&self` would leave this at zero and every
+    // other test in this file would still pass.
+    let engine = FakeRotator::with_pages(3);
+    run(&engine, &[2], 90).expect("rotate");
+    assert_eq!(*engine.freshes.borrow(), 1);
+}
+
+#[test]
+fn a_rotation_that_lands_on_the_wrong_page_is_refused() {
+    // The failure both rotate modules call their worst: the right number of pages, the right
+    // turn, on a page nobody named. Page 2 was asked for; the reader says page 1 moved.
+    let engine = FakeRotator::lying(3, vec![90, 0, 0]);
+    let err = run(&engine, &[2], 90).expect_err("a wrong page must be refused");
+    assert!(matches!(err, Error::OutputRejected(_)), "got {err:?}");
+    // And the writer was asked for the right thing, so the refusal is the READER's -- without
+    // this the test would pass against an operation that simply asked for the wrong page.
+    assert_eq!(
+        engine.asked.borrow().as_slice(),
+        &[Asked {
+            pages: vec![1],
+            degrees: 90
+        }]
+    );
+}
+
+#[test]
+fn an_output_that_lost_a_page_is_refused() {
+    // Issue #61's shape: qpdf reads five pages and writes four. Nothing in `PageRotator` can
+    // see it, because the call that lost the page returned `Ok`.
+    let engine = FakeRotator::lying(3, vec![0, 90]);
+    let err = run(&engine, &[2], 90).expect_err("a lost page must be refused");
+    assert!(matches!(err, Error::OutputRejected(_)), "got {err:?}");
+}
+
+#[test]
+fn an_honest_engine_is_not_refused() {
+    // The other half of the lever: the same document, the same turn, no lie. Without this the
+    // three tests above are satisfied by a verifier that refuses everything.
+    let engine = FakeRotator::with_pages(3);
+    run(&engine, &[2], 90).expect("an honest read-back must pass");
 }

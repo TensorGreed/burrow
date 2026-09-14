@@ -217,7 +217,10 @@ fn page_handle(document: &Document, index: u64, pages: u64) -> Result<ObjectHand
 ///
 /// Returns [`Rotation::None`] when no ancestor carries the key, which is what a PDF with no
 /// `/Rotate` anywhere means.
-fn effective_rotation<'a>(document: &'a Document, page: &ObjectHandle<'a>) -> Result<Rotation> {
+pub(super) fn effective_rotation<'a>(
+    document: &'a Document,
+    page: &ObjectHandle<'a>,
+) -> Result<Rotation> {
     // The walk owns exactly one handle at a time: `node` is replaced by its parent, and the
     // previous one is dropped — and therefore released — at that moment. A version of this
     // that collected ancestors into a `Vec` first would hold one handle per level, which is

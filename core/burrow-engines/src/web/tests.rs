@@ -1804,3 +1804,65 @@ fn an_order_for_a_different_document_is_refused() {
         Err(Error::InvalidArgument(_))
     ));
 }
+
+/// Reading an output back must not install a second logger (ADR 0022, and the leak it nearly
+/// reintroduced).
+///
+/// `OutputReader::fresh` returns a new engine VALUE, and the first version built it with
+/// `WebQpdf::new`. That makes a fresh `installed: OnceLock`, so the witness re-entered
+/// `install()` and called `logger_create()` again — a `qpdflogger_handle` plus three
+/// `Pl_Discard` pipelines leaked per operation into a heap that never shrinks, which is
+/// exactly the growth `qpdf.rs`'s "one logger, not one per operation" header records. Found
+/// by security review, and by nothing here: the retained-allocation detector already existed
+/// and no test drove the new call.
+#[test]
+fn a_fresh_witness_shares_the_installed_logger_rather_than_making_another() {
+    let state = {
+        let (engine, state) = structure_engine(QpdfScript::default());
+
+        // One operation's worth: open a document, then read an "output" back through a fresh
+        // witness, which is what every verified operation now does.
+        let _source = crate::PageRotator::open(
+            &engine,
+            ordinary_pdf().into_boxed_slice(),
+            &rotate_options(),
+        )
+        .expect("open");
+        let witness = crate::OutputReader::fresh(&engine);
+        let read = crate::OutputReader::open_output(&witness, &ordinary_pdf(), &rotate_options())
+            .expect("read the output back");
+        let _ = crate::OutputReader::page_count(&witness, &read).expect("page count");
+        state
+    };
+
+    let loggers = state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::LoggerCreate))
+        .count();
+    assert_eq!(
+        loggers, 1,
+        "an operation plus its verification created {loggers} loggers"
+    );
+
+    // AND THE SETTINGS ONCE. `install()` applies the global ceilings, so a second install is
+    // both a leak and seven redundant FFI calls per operation.
+    let installs = state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::GlobalSet(..)))
+        .count();
+    assert_eq!(
+        installs,
+        crate::codes::qpdf::policy::settings().len(),
+        "the global limits were applied more than once"
+    );
+
+    assert_eq!(
+        state.retained(),
+        1,
+        "the witness left {} long-lived allocations behind",
+        state.retained()
+    );
+    state.assert_empty();
+}

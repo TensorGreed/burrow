@@ -27,6 +27,7 @@ const KINDS = [
   "Unknown",
   "InputFailed",
   "EngineUnavailable",
+  "OutputRejected",
 ] as const;
 
 describe("every kind produces something a person can act on", () => {

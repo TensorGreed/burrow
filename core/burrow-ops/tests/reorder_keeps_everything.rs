@@ -227,22 +227,17 @@ fn the_nothing_lost_assertion_can_fail_on_this_fixture() {
 }
 
 #[test]
-#[ignore = "issue #61: a damaged-but-openable document loses a page on write, on every \
-            operation including rotate, which has shipped. Ignored rather than deleted so the \
-            gap is visible in the suite rather than only in the tracker."]
-fn a_damaged_document_loses_pages_on_write() {
-    // THE GAP, ASSERTED AS IT IS RATHER THAN AS IT SHOULD BE. This test states the current
-    // behaviour exactly, so it fails when the behaviour changes in EITHER direction -- a fix
-    // that refuses the document and a fix that keeps all the pages both go red here, which is
-    // what makes it a pin rather than a note.
+fn a_damaged_document_is_refused_rather_than_losing_a_page_silently() {
+    // ISSUE #61, TAKEN. The document opens as five pages and writes as four; ADR 0022's
+    // verification reads the output back through a fresh engine, sees four where five were
+    // promised, and refuses. That meets #61's own stated bar -- "a refusal would not block;
+    // losing the page quietly does" -- and it is separable from the recovery-posture question
+    // of WHICH of qpdf's two readings is right, which is still open on the issue.
     //
     // Found by the `reorder` fuzz target once its corpus was seeded with the conformance
-    // fixtures. It is not reorder's: the identity permutation short-circuits to a plain write
-    // and loses the same page, and so does `rotate` by zero degrees on the same bytes.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/damaged/page-loss-on-write.pdf");
-    let bytes = std::fs::read(&path).expect("the committed reproduction must be readable");
-
+    // fixtures. It is not reorder's: a rotation by zero degrees on the same bytes loses the
+    // same page, which is why the fix is the shared step and not a guard here.
+    let bytes = damaged();
     let engine = Qpdf::new();
     let source =
         burrow_engines::PageReorderer::open(&engine, bytes.clone().into_boxed_slice(), &options())
@@ -255,7 +250,43 @@ fn a_damaged_document_loses_pages_on_write() {
 
     // The IDENTITY permutation: no page moves, so this is a plain write of what was opened.
     let order: Vec<u64> = (1..=opened).collect();
-    let written = reorder(&engine, bytes.into_boxed_slice(), &order, &options())
+    let err = reorder(&engine, bytes.into_boxed_slice(), &order, &options())
+        .expect_err("a document short of a page must not reach the caller");
+
+    match err {
+        burrow_types::Error::OutputRejected(why) => {
+            // The MESSAGE, not only the variant. A refusal that does not say which two numbers
+            // disagreed sends someone back to the engine to find out.
+            assert!(
+                why.contains('5') && why.contains('4'),
+                "the refusal must name both counts: {why}"
+            );
+        }
+        other => panic!("expected OutputRejected, got {other:?}"),
+    }
+}
+
+#[test]
+#[ignore = "issue #61: the ENGINE still loses the page. The operation now refuses the output \
+            (ADR 0022), so the defect is no longer reachable by a caller -- but it is not \
+            fixed, and this pins the behaviour so CI goes red the day it moves."]
+fn a_damaged_document_loses_pages_on_write() {
+    // THE DEFECT BENEATH THE REFUSAL, asserted as it is rather than as it should be. The test
+    // above proves nobody receives the short document; this one proves the short document is
+    // still what qpdf writes, at the engine seam where verification does not run.
+    //
+    // It fails in EITHER direction -- a qpdf that keeps all five pages and a qpdf that errors
+    // both go red here -- which is what makes it a pin rather than a note. Whichever happens,
+    // #61's recovery-posture decision has moved and needs re-measuring.
+    let bytes = damaged();
+    let engine = Qpdf::new();
+    let source = burrow_engines::PageReorderer::open(&engine, bytes.into_boxed_slice(), &options())
+        .expect("the document opens");
+    let opened = burrow_engines::PageReorderer::pages(&engine, &source).expect("a page count");
+    assert_eq!(opened, 5, "five pages resolve out of the six declared");
+
+    let order = burrow_types::Permutation::of((0..opened).collect(), opened).expect("identity");
+    let written = burrow_engines::PageReorderer::reorder(&engine, &source, &order, &options())
         .expect("and it writes without an error, which is the defect");
 
     let reopened =
@@ -265,12 +296,19 @@ fn a_damaged_document_loses_pages_on_write() {
 
     assert_eq!(
         after, 4,
-        "issue #61: writing this document loses a page silently. If this assertion fails with \
-         {opened}, the loss is fixed and this test should become a positive one; if it fails \
-         some other way, the behaviour has moved again and #61 needs re-measuring."
+        "issue #61: writing this document loses a page silently at the engine seam. If this \
+         fails with {opened}, the loss is fixed -- close #61, delete this test and move the \
+         fixture into the conformance corpus; if it fails some other way, re-measure."
     );
     assert!(
         after < opened,
         "the point of the case: fewer pages came out than went in, with no error anywhere"
     );
+}
+
+/// The committed reproduction for #61, read once by both tests above.
+fn damaged() -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/damaged/page-loss-on-write.pdf");
+    std::fs::read(&path).expect("the committed reproduction must be readable")
 }

@@ -409,3 +409,51 @@ mod rotate_tests;
 
 #[cfg(test)]
 mod tests;
+
+/// Reading a document back to check what an operation produced (ADR 0022).
+///
+/// Built on [`PageRotator`], which already opens a document and reads each page's effective
+/// rotation. Nothing new reaches qpdf through this — it is the same three calls with a
+/// different purpose, and the purpose is the part worth naming at the call site.
+impl crate::OutputReader for Qpdf {
+    // Trait paths are written out here rather than imported at the top: this block was
+    // appended and a file-wide import would move behaviour for everything above it.
+    type Read = <Self as crate::PageRotator>::Source;
+
+    fn fresh(&self) -> Self {
+        // `Qpdf` is a unit struct: the engine carries no state, and every `open` makes its own
+        // `qpdf_data`. So a fresh value plus a fresh open is a genuinely separate parse, with
+        // nothing shared but the process allocator.
+        Self::new()
+    }
+
+    fn open_output(&self, bytes: &[u8], options: &crate::OpenOptions<'_>) -> Result<Self::Read> {
+        // RECOVERY OFF, as every other open here has it. Reading our own output back with
+        // reconstruction enabled would let a document burrow wrote badly be repaired on the
+        // way in and pass — the verifier agreeing with the writer through a repair neither
+        // asked for.
+        crate::PageRotator::open(self, bytes.to_vec().into_boxed_slice(), options)
+    }
+
+    fn page_count(&self, read: &Self::Read) -> Result<u64> {
+        crate::PageRotator::pages(self, read)
+    }
+
+    fn rotations(&self, read: &Self::Read, options: &crate::OpenOptions<'_>) -> Result<Vec<i64>> {
+        let pages = crate::PageRotator::pages(self, read)?;
+        let capacity = usize::try_from(pages)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut rotations = Vec::with_capacity(capacity);
+
+        // PER PAGE. See `OutputReader::rotations`' own docs: this loop is sized by the
+        // document and, unchecked, runs outside every deadline.
+        let clock = std::sync::Arc::clone(&options.clock);
+        let deadline = burrow_types::Deadline::start(clock.as_ref(), &options.limits);
+
+        for index in 0..pages {
+            deadline.checkpoint(clock.as_ref())?;
+            rotations.push(crate::PageRotator::effective_rotation(self, read, index)?.degrees());
+        }
+        Ok(rotations)
+    }
+}

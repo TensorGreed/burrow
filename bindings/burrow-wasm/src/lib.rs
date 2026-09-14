@@ -303,6 +303,12 @@ fn is_fatal(error: &Error) -> bool {
             | Error::PasswordRequired
             | Error::LimitExceeded { .. }
             | Error::InvalidArgument(_)
+            // NOT FATAL, and the reasoning is the opposite of `Internal`'s. A rejected output
+            // (ADR 0022) means the engine answered, burrow checked the answer and would not
+            // hand it over -- the instance is working, and it is the *document* that is in
+            // question. Costing a worker for it would latch the circuit breaker on somebody
+            // with one awkward file, which is the failure `InputFailed` was un-fatalled for.
+            | Error::OutputRejected(_)
     )
 }
 
@@ -341,6 +347,7 @@ fn kind_of(error: &Error) -> &'static str {
         // things depending on the operation.
         Error::InputFailed { .. } => "InputFailed",
         Error::Io(_) => "Io",
+        Error::OutputRejected(_) => "OutputRejected",
         Error::Internal(_) => "Internal",
         // `Error` is `#[non_exhaustive]`. A variant added later must arrive as something
         // the page can act on, and the conservative action is the safe one.

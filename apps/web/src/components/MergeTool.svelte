@@ -17,6 +17,7 @@
   import { CANCELLED } from "../host/worker-host.js";
   import { messageFor, type Message } from "./merge-messages.js";
   import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
+  import { createDelivery, type Handout } from "./tool-delivery.js";
 
   interface Entry {
     id: number;
@@ -30,7 +31,7 @@
   let entries = $state<Entry[]>([]);
   let phase = $state<"idle" | "working" | "done">("idle");
   let notice = $state<Message | null>(null);
-  let result = $state<{ url: string; name: string; pages: number } | null>(null);
+  let result = $state<(Handout & { pages: number }) | null>(null);
   let announcement = $state("");
   let nextId = 0;
 
@@ -158,7 +159,7 @@
   const canMerge = $derived(entries.length > 0 && unusable.length === 0 && phase === "idle");
 
   /**
-   * Which merge is current.
+   * Generations, capture-before-await, and the object URLs -- one shared path (#69).
    *
    * A cancelled merge STILL ANSWERS. `discardWorker()` terminates the worker and the host
    * then fails every in-flight request with `Internal` (ADR 0015) -- correctly, because from
@@ -171,7 +172,7 @@
    * a bare `if (phase !== "working") return` would also swallow a genuine failure that
    * arrived a moment late.
    */
-  let currentMerge = 0;
+  const delivery = createDelivery();
 
   /**
    * Whether the engines have ever finished starting on this page.
@@ -191,10 +192,19 @@
 
   async function merge() {
     if (!canMerge) return;
+
+    // THE NAME, CAPTURED BEFORE THE FIRST AWAIT. This island called `suggestedName()` after
+    // them, which re-derives it from `entries[0]` as it stands when the reply lands -- the
+    // same shape as rotate's finding, where the page offered one document's bytes under
+    // another document's name. It has never been reachable here, because every control is
+    // disabled while `phase === "working"`; that is a property of the markup rather than of
+    // the delivery, and it is one `disabled` attribute away from not being true. Fixed by
+    // construction: `run.hand()` takes bytes and cannot reach the list (#69).
+    const run = delivery.begin({ name: suggestedName() });
+
     clearResult();
     notice = null;
     phase = "working";
-    const mine = ++currentMerge;
     announce("Merging.");
 
     try {
@@ -205,7 +215,7 @@
       // being fetched -- so Stop was a no-op and the operation was posted a moment after the
       // person stopped it. The generation is the record of the cancel either way, so it is
       // read again here, on the far side of the await. Found by security review.
-      if (mine !== currentMerge) {
+      if (!run.live()) {
         phase = "idle";
         return;
       }
@@ -222,7 +232,7 @@
       );
 
       // The person stopped this one and has already been told so. Its answer is not news.
-      if (mine !== currentMerge) return;
+      if (!run.live()) return;
 
       if (!reply.ok) {
         // A request the page cancelled is not news: `cancel()` has already said "Stopped."
@@ -245,18 +255,24 @@
         return;
       }
 
-      // An object URL over the Blob. The bytes stay in the Blob — the page never reads them
-      // into its own heap, and `clearResult` revokes the URL so the browser can release
-      // them the moment the person is done.
-      result = {
-        url: URL.createObjectURL(reply.output),
-        name: suggestedName(),
-        pages: reply.pages,
-      };
+      // An object URL over the Blob, created only if this run is still current — and not
+      // created at all if it is not, because an unrevoked one holds the bytes for the life of
+      // the page. The bytes stay in the Blob; the page never reads them into its own heap, and
+      // `clearResult` revokes the URL so the browser can release them.
+      const handout = run.hand(reply.output);
+      if (!handout) {
+        // STALE, so there is nothing to show -- and the page must not be left showing Stop
+        // for work that is over. Unreachable today, because `run.live()` is checked in the
+        // same synchronous continuation above; the branch exists for the day it is not, and a
+        // branch that fails safe is the only kind worth having there.
+        phase = "idle";
+        return;
+      }
+      result = { ...handout, pages: reply.pages };
       phase = "done";
       announce(`Done. ${reply.pages} pages, ready to download.`);
     } catch {
-      if (mine !== currentMerge) return;
+      if (!run.live()) return;
       notice = messageFor({ kind: "Internal" });
       phase = "idle";
     }
@@ -285,7 +301,7 @@
   function cancel() {
     // BEFORE the worker goes, so the reply that the discard provokes is already stale when it
     // arrives rather than racing this line.
-    currentMerge += 1;
+    delivery.invalidate();
     host.discardWorker();
     phase = "idle";
     notice = null;
@@ -312,7 +328,7 @@
   }
 
   function clearResult() {
-    if (result) URL.revokeObjectURL(result.url);
+    delivery.release(result);
     result = null;
   }
 

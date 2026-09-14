@@ -191,6 +191,36 @@ So, before trusting a fixture set:
   pixel dimensions, fonts re-embedded per page.
 - Make cancellation actually stop work, not just stop reporting it.
 
+## 4a. The operation verifies its own output — not optional, not deferrable
+
+[ADR 0022](../../../docs/adr/0022-every-operation-verifies-its-own-output.md). An operation
+does not return bytes; it returns bytes **that have been checked**, and the check is the last
+thing between the engine and the caller.
+
+```rust
+let output = engine.<the operation>(&source, …, options)?;
+verify::output(engine, &output, &verify::Expected::<…> { … }, options)?;
+Ok(output)
+```
+
+Four things, each of which has already been got wrong once:
+
+1. **Compute the promise BEFORE the operation runs**, from the input. A promise derived from
+   the output is the output agreeing with itself.
+2. **`verify::output` reads through `engine.fresh()`** — a new instance, not the one that
+   wrote the bytes. That is the shared step's job, not yours; what is yours is implementing
+   `OutputReader` for the engine the operation runs on, on **both** platforms.
+3. **Add an `Expected` variant if none of the existing ones states what your operation
+   promises**, and write in its rustdoc what it leaves undetectable. `split` promises each
+   part's count *and* that the parts sum to the input; `compress` promises what `rotate` does.
+   A variant with no stated residue is a variant somebody will over-trust.
+4. **Ship the test that makes it fire**: a fake engine that lies on the way back, and a
+   mutation — delete the check — that fails it. On a correct engine and an undamaged file the
+   refusal never fires, so it is untested by construction unless a fake lies.
+
+Measured cost, so nobody removes it as free or refuses it as expensive: roughly **1.7× the
+operation**, of which the freshness is **32 ns**. ADR 0022's *Consequences* has the table.
+
 ## 5. Tests — all four kinds
 
 Delegate to the `test-engineer` agent, or follow the same standard. See

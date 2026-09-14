@@ -166,6 +166,35 @@ impl PageReorderer for WebQpdf {
         Ok(source.pages)
     }
 
+    fn rotations(&self, source: &Self::Source, options: &OpenOptions<'_>) -> Result<Vec<i64>> {
+        // THE SAME WALK `web/rotate.rs` DOES, against the document this is about to permute.
+        // The two key strings are copied into the engine heap ONCE, by the same `Keys` guard
+        // rotate uses, so the walk cannot fail on an allocation part-way through and leave a
+        // handle behind -- the defect that module's header records.
+        let keys = super::rotate::Keys::copy_in(self)?;
+        let capacity = usize::try_from(source.pages)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut rotations = Vec::with_capacity(capacity);
+
+        // PER PAGE, as the native sweep checkpoints and for the same measured reason: this is
+        // one call from outside and a `/Parent` climb per page from inside, so unchecked it
+        // sits outside every deadline. The ceilings come from `source.limits`.
+        let clock = Arc::clone(&options.clock);
+        let deadline = Deadline::start(clock.as_ref(), &source.limits);
+
+        for index in 0..source.pages {
+            // BEFORE THE HANDLE IS ISSUED, so a refusal cannot leave one behind.
+            deadline.checkpoint(clock.as_ref())?;
+            let page = self.page_handle(&source.session, index, source.pages)?;
+            // EVERY PATH RELEASES, as everywhere else across this bridge: `?` inside the loop
+            // would return past the release.
+            let outcome = super::rotate::effective_rotation(self, &source.session, &keys, page);
+            self.bridge().oh_release(source.session.data(), page);
+            rotations.push(outcome?.degrees());
+        }
+        Ok(rotations)
+    }
+
     fn reorder(
         &self,
         source: &Self::Source,
@@ -408,5 +437,67 @@ impl WebQpdf {
             return Err(error);
         }
         Ok(page)
+    }
+}
+
+/// Reading a document back to check what an operation produced (ADR 0022).
+///
+/// Here rather than beside `web/rotate.rs` only because this file is the newest; it serves
+/// every web operation. The implementation is `PageRotator`'s three calls with a different
+/// purpose, exactly as the native one is.
+impl crate::OutputReader for WebQpdf {
+    type Read = super::rotate::WebRotatable;
+
+    fn fresh(&self) -> Self {
+        // A NEW ENGINE VALUE AND A NEW `qpdf_data`, over the SAME WebAssembly module.
+        //
+        // That is the whole of what "fresh" can mean here, and the limit is worth stating at
+        // the place it bites: `WebQpdf` holds an `Arc<dyn QpdfBridge>`, and the bridge is one
+        // module with one linear memory. Cloning the `Arc` gives a separate document handle
+        // and a separate parse; it does not give a separate heap. A module whose heap is
+        // corrupt corrupts the writer and the reader alike.
+        //
+        // The alternative is a fresh worker per operation -- 6.8 MB re-fetched and three
+        // modules recompiled -- which ADR 0022 measures and declines. Natively the two handles
+        // share nothing but the process allocator, so the same code is stronger there; the
+        // asymmetry is real and recorded rather than smoothed over.
+        //
+        // CLONE, NEVER `WebQpdf::new`. The first version constructed, and `new` builds a fresh
+        // `installed: OnceLock`, so the witness re-entered `install()` and called
+        // `logger_create()` a second time -- a `qpdflogger_handle` plus three `Pl_Discard`
+        // pipelines leaked per operation into a heap that never shrinks, which is the exact
+        // defect `web/qpdf.rs`'s "one logger, not one per operation" header records and the
+        // `installed` field exists to prevent. Found by security review. The `Clone` shares
+        // the bridge and the `OnceLock`, which is what must be shared, and shares no document:
+        // the fresh `qpdf_data` comes from `open_output`, not from this value.
+        self.clone()
+    }
+
+    fn open_output(&self, bytes: &[u8], options: &crate::OpenOptions<'_>) -> Result<Self::Read> {
+        // Recovery off, as every other open has it: reading our own output back with
+        // reconstruction enabled would let a badly-written document be repaired on the way in
+        // and pass.
+        crate::PageRotator::open(self, bytes.to_vec().into_boxed_slice(), options)
+    }
+
+    fn page_count(&self, read: &Self::Read) -> Result<u64> {
+        crate::PageRotator::pages(self, read)
+    }
+
+    fn rotations(&self, read: &Self::Read, options: &OpenOptions<'_>) -> Result<Vec<i64>> {
+        let pages = crate::PageRotator::pages(self, read)?;
+        let capacity = usize::try_from(pages)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut rotations = Vec::with_capacity(capacity);
+
+        // PER PAGE. See `OutputReader::rotations`' own docs.
+        let clock = Arc::clone(&options.clock);
+        let deadline = Deadline::start(clock.as_ref(), &options.limits);
+
+        for index in 0..pages {
+            deadline.checkpoint(clock.as_ref())?;
+            rotations.push(crate::PageRotator::effective_rotation(self, read, index)?.degrees());
+        }
+        Ok(rotations)
     }
 }

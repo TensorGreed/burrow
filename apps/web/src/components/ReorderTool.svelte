@@ -30,6 +30,7 @@
   import { messageFor, type Message } from "./reorder-messages.js";
   import { isUnchanged, resolveOrder } from "./reorder-order.js";
   import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
+  import { createDelivery, type Handout } from "./tool-delivery.js";
 
   /**
    * How many of the resulting pages the preview shows before it says "and the rest".
@@ -44,7 +45,7 @@
   let pageCount = $state<number | null>(null);
   let phase = $state<"idle" | "working" | "done">("idle");
   let notice = $state<Message | null>(null);
-  let result = $state<{ url: string; name: string } | null>(null);
+  let result = $state<Handout | null>(null);
   let announcement = $state("");
 
   /** The new order, as typed. Empty means "leave it alone". */
@@ -71,14 +72,15 @@
     // THIS IS A DISCLOSURE PATH, not a tidiness one, and an earlier version of this comment
     // claimed to have closed it while closing only half. Choose a private document, press
     // Turn pages, change your mind, choose an innocuous one: the first rotation's reply still
-    // arrived with `mine === currentRun`, and `suggestedName()` re-derived the name from
+    // arrived with the run still counted as current, and `suggestedName()` re-derived the name from
     // `file` AT THAT MOMENT. The page then showed the new file's name, the new file's page
     // count, and a download link reading `holiday-rotated.pdf` whose bytes were the private
     // document. Nothing on screen distinguished it. Found by security review.
     //
-    // The generation bump is what makes the stale reply stale; `rotate()` also captures the
-    // name before it posts, so the two cannot disagree even if this line is ever moved.
-    currentRun += 1;
+    // The generation bump is what makes the stale reply stale; `reorder()` captures the name
+    // and the signature before it posts, so the two cannot disagree even if this line moves.
+    // Both halves live in `tool-delivery.ts` now, with the test none of this had (#69).
+    delivery.invalidate();
     clearResult();
     phase = "idle";
     notice = null;
@@ -98,7 +100,7 @@
     // resolves after `choose()` has already swapped `file` and cleared `pageCount`, and
     // without this it would write the old document's page count beside the new document's
     // name -- which `resolveOrder` then validates against, and `canReorder` believes.
-    const mine = currentRun;
+    const watching = delivery.watch();
     try {
       const h = await host.ensure();
       const raw = await h.run(
@@ -112,7 +114,7 @@
       engineStarted = h.hasWorker();
 
       // A count for a file that is no longer chosen is not news.
-      if (mine !== currentRun) return;
+      if (!watching.live()) return;
       // A count the page cancelled says nothing about the file.
       if (!raw.ok && raw.kind === CANCELLED) return;
       const reply = raw.ok ? raw : { ...raw, kind: hostKind(raw.kind) };
@@ -127,7 +129,7 @@
       notice = messageFor(reply);
       announce(notice.title);
     } catch {
-      if (mine !== currentRun) return;
+      if (!watching.live()) return;
       // Nothing from the thrown value is read: it can carry module output, and module output
       // can carry input-derived bytes (ADR 0009).
       pageCount = -1;
@@ -172,9 +174,8 @@
    * an operation finished the effect re-ran and undid it. The download link never appeared and
    * ten e2e tests timed out at 45 seconds.
    */
-  let resultRequest = $state("");
   const request = $derived(`${file?.name ?? ""}|${wanted}`);
-  const stale = $derived(result !== null && resultRequest !== request);
+  const stale = $derived(result !== null && result.signature !== request);
 
   const canReorder = $derived(
     file !== null &&
@@ -192,7 +193,7 @@
   );
 
   /**
-   * Which run is current.
+   * Generations, capture-before-await, and the object URLs -- one shared path (#69).
    *
    * A cancelled operation STILL ANSWERS: `discardWorker()` terminates the worker and the host
    * fails every in-flight request with `Internal` (ADR 0015) -- correct from its point of
@@ -200,7 +201,7 @@
    * than the failure branch suppressed, so a genuine failure arriving a moment late is still
    * reported.
    */
-  let currentRun = 0;
+  const delivery = createDelivery();
 
   /**
    * Whether the engines have ever finished starting on this page.
@@ -224,23 +225,17 @@
     // window named the download.
     const order = resolved !== null && resolved.ok ? resolved.order : null;
     if (order === null) return;
-    const name = suggestedName();
-    // THE SIGNATURE IS CAPTURED HERE, beside `order` and `name`, and not read back after the
-    // awaits. `request` is a `$derived` over the LIVE controls, so assigning
-    // `resultRequest = request` once the reply lands records what the box says THEN rather
-    // than what was posted -- and a person who edits the order mid-run gets a download link
-    // that is not stale, sitting under a preview showing an order the bytes are not in.
-    //
-    // That is the exact defect `resultRequest` exists to prevent, reintroduced in the shape
-    // this operation is most sensitive to: the filename still looks right and nothing on
-    // screen distinguishes one permutation from another. `MergeTool.svelte` escapes it only
-    // because it disables every control while working. Found by security review.
-    const signature = request;
+    // THE NAME AND THE SIGNATURE ARE CAPTURED HERE, beside `order`, and are not readable
+    // after the awaits at all -- `run.hand()` takes bytes and nothing else. `request` is a
+    // `$derived` over the LIVE controls, so recording it when the reply lands records what the
+    // box says THEN rather than what was posted, and a person who edits the order mid-run gets
+    // a download link that is not stale, sitting under a preview showing an order the bytes
+    // are not in. Found by security review; now unexpressible rather than commented against.
+    const run = delivery.begin({ name: suggestedName(), signature: request });
 
     clearResult();
     notice = null;
     phase = "working";
-    const mine = ++currentRun;
     announce("Putting the pages in order.");
 
     try {
@@ -249,7 +244,7 @@
       // CANCELLED BEFORE THERE WAS ANYTHING TO CANCEL: during the first operation on a page,
       // the host is still being built, so Stop is a no-op and the work would be posted a
       // moment after the person stopped it. The generation is the record either way.
-      if (mine !== currentRun) {
+      if (!run.live()) {
         phase = "idle";
         return;
       }
@@ -260,7 +255,7 @@
       );
 
       // The person stopped this one and has already been told so. Its answer is not news.
-      if (mine !== currentRun) return;
+      if (!run.live()) return;
 
       if (!reply.ok) {
         if (reply.kind === CANCELLED) {
@@ -279,14 +274,24 @@
         return;
       }
 
-      // An object URL over the Blob. The bytes stay in the Blob -- the page never reads them
-      // into its own heap, and `clearResult` revokes the URL so the browser can release them.
-      result = { url: URL.createObjectURL(reply.output), name };
-      resultRequest = signature;
+      // An object URL over the Blob, created only if this run is still current -- and not
+      // created at all if it is not, because an unrevoked one holds the bytes for the life of
+      // the page. The bytes stay in the Blob; the page never reads them into its own heap, and
+      // `clearResult` revokes the URL so the browser can release them.
+      const handout = run.hand(reply.output);
+      if (!handout) {
+        // STALE, so there is nothing to show -- and the page must not be left showing Stop
+        // for work that is over. Unreachable today, because `run.live()` is checked in the
+        // same synchronous continuation above; the branch exists for the day it is not, and a
+        // branch that fails safe is the only kind worth having there.
+        phase = "idle";
+        return;
+      }
+      result = handout;
       phase = "done";
       announce(`Done. ${reply.pages} pages, ready to download.`);
     } catch {
-      if (mine !== currentRun) return;
+      if (!run.live()) return;
       notice = messageFor({ kind: "Internal" });
       phase = "idle";
     }
@@ -316,7 +321,7 @@
    */
   function cancel() {
     // BEFORE the worker goes, so the reply the discard provokes is already stale on arrival.
-    currentRun += 1;
+    delivery.invalidate();
     host.discardWorker();
     phase = "idle";
     notice = null;
@@ -331,7 +336,7 @@
   }
 
   function clearResult() {
-    if (result) URL.revokeObjectURL(result.url);
+    delivery.release(result);
     result = null;
   }
 

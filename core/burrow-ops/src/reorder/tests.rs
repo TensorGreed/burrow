@@ -10,6 +10,7 @@
 //! is the only thing that separates them, and against a fake it is only visible in the ask.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use burrow_engines::{OpenOptions, PageReorderer};
@@ -24,6 +25,32 @@ struct FakeReorderer {
     /// How far the fake moves the clock inside `reorder`, so `max_duration_ms` is reachable.
     elapse_ms: u64,
     clock: Arc<ManualClock>,
+    /// What the fake's writer put in the document, as the fake's reader will report it.
+    ///
+    /// Shared with every `fresh()` instance. A reader that re-derived this from the request
+    /// would agree with the operation by construction and verify nothing.
+    emitted: Rc<RefCell<Vec<i64>>>,
+    /// THE VERIFIER'S ONLY LEVER: what the reader reports instead of `emitted`.
+    ///
+    /// A shorter vector is a page lost (#61's shape); a same-length different one is a
+    /// permutation that is not the one asked for. Neither is reachable through
+    /// `PageReorderer` alone, because its writer returns `Ok` either way.
+    reads_back_as: Option<Vec<i64>>,
+    /// How many times `OutputReader::fresh` was called, shared across every instance.
+    ///
+    /// ADR 0022's first requirement is that the witness is not the instance that produced the
+    /// bytes, and nothing else here can see the difference.
+    freshes: Rc<RefCell<usize>>,
+    /// Every page displays the same way, which is the document the witness cannot see into.
+    uniform: bool,
+    /// Whether this instance came from `OutputReader::fresh`.
+    ///
+    /// THE FRESHNESS IS ASSERTED, NOT ASSUMED. A fake that reads the emitted document back
+    /// identically whoever asks leaves ADR 0022's first requirement untested: swap
+    /// `engine.fresh()` for `engine` in `verify::output` and every test still passes. Found by
+    /// code review, with that mutation run. So the instance that WROTE the bytes reports
+    /// nonsense when asked to read them.
+    fresh: bool,
 }
 
 impl FakeReorderer {
@@ -33,6 +60,11 @@ impl FakeReorderer {
             asked: RefCell::new(Vec::new()),
             elapse_ms: 0,
             clock: Arc::new(ManualClock::new(0)),
+            emitted: Rc::new(RefCell::new(Vec::new())),
+            reads_back_as: None,
+            freshes: Rc::new(RefCell::new(0)),
+            uniform: false,
+            fresh: false,
         }
     }
 
@@ -40,6 +72,22 @@ impl FakeReorderer {
         Self {
             elapse_ms,
             ..Self::with_pages(pages)
+        }
+    }
+
+    /// A fake whose writer is honest and whose reader is not.
+    fn lying(pages: u64, reads_back_as: Vec<i64>) -> Self {
+        Self {
+            reads_back_as: Some(reads_back_as),
+            ..Self::with_pages(pages)
+        }
+    }
+
+    /// A document whose every page displays at 0, and a reader that lies about the order.
+    fn uniform_but_lying(pages: u64, reads_back_as: Vec<i64>) -> Self {
+        Self {
+            uniform: true,
+            ..Self::lying(pages, reads_back_as)
         }
     }
 
@@ -63,15 +111,77 @@ impl PageReorderer for FakeReorderer {
         Ok(*source)
     }
 
+    fn rotations(&self, source: &Self::Source, _options: &OpenOptions<'_>) -> Result<Vec<i64>> {
+        // ONE DISTINCT VALUE PER PAGE, not a flat vector. A fake whose pages all read back
+        // the same would make the verifier's order check vacuous -- `add-operation` §2c's
+        // mistake, inside the thing that exists to catch it. The values are multiples of 90
+        // because that is what a rotation is, and distinct so an order is observable.
+        if self.uniform {
+            return Ok(vec![
+                0;
+                usize::try_from(*source).expect("pages fit in usize")
+            ]);
+        }
+        Ok((0..*source).map(|n| ((n % 4) * 90).cast_signed()).collect())
+    }
+
     fn reorder(
         &self,
-        _source: &Self::Source,
+        source: &Self::Source,
         order: &Permutation,
-        _options: &OpenOptions<'_>,
+        options: &OpenOptions<'_>,
     ) -> Result<Vec<u8>> {
         self.asked.borrow_mut().push(order.order().to_vec());
+        // The document this fake would have written: the input's own rotations, moved by the
+        // permutation it was actually handed. Honest by construction -- the lie, when a test
+        // wants one, lives on the reader.
+        let before = PageReorderer::rotations(self, source, options)?;
+        let mut emitted = Vec::with_capacity(before.len());
+        for &from in order.order() {
+            let at = usize::try_from(from).expect("index fits in usize");
+            emitted.push(*before.get(at).expect("a permutation names pages it has"));
+        }
+        *self.emitted.borrow_mut() = emitted;
         self.clock.advance(self.elapse_ms);
         Ok(b"%PDF-1.7\n".to_vec())
+    }
+}
+
+impl burrow_engines::OutputReader for FakeReorderer {
+    type Read = Vec<i64>;
+
+    fn fresh(&self) -> Self {
+        *self.freshes.borrow_mut() += 1;
+        Self {
+            pages: self.pages,
+            asked: RefCell::new(Vec::new()),
+            elapse_ms: 0,
+            clock: Arc::clone(&self.clock),
+            emitted: Rc::clone(&self.emitted),
+            reads_back_as: self.reads_back_as.clone(),
+            freshes: Rc::clone(&self.freshes),
+            uniform: self.uniform,
+            fresh: true,
+        }
+    }
+
+    fn open_output(&self, _bytes: &[u8], _options: &OpenOptions<'_>) -> Result<Self::Read> {
+        if !self.fresh {
+            // The writing instance is not a witness. See `fresh`.
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .reads_back_as
+            .clone()
+            .unwrap_or_else(|| self.emitted.borrow().clone()))
+    }
+
+    fn page_count(&self, read: &Self::Read) -> Result<u64> {
+        Ok(u64::try_from(read.len()).expect("page count fits in u64"))
+    }
+
+    fn rotations(&self, read: &Self::Read, _options: &OpenOptions<'_>) -> Result<Vec<i64>> {
+        Ok(read.clone())
     }
 }
 
@@ -264,4 +374,49 @@ fn a_zero_page_document_takes_only_an_empty_order() {
     let engine = FakeReorderer::with_pages(0);
     assert!(run(&engine, &[]).is_ok());
     assert!(matches!(run(&engine, &[1]), Err(Error::InvalidArgument(_))));
+}
+
+// --- ADR 0022: the output is read back, through an engine that did not write it -----------
+
+#[test]
+fn the_output_is_read_back_through_a_fresh_engine() {
+    let engine = FakeReorderer::with_pages(4);
+    run(&engine, &[4, 1, 3, 2]).expect("reorder");
+    assert_eq!(*engine.freshes.borrow(), 1);
+}
+
+#[test]
+fn a_permutation_that_is_not_the_one_asked_for_is_refused() {
+    // The fake's pages display at 0, 90, 180, 270, so an order IS observable -- which is the
+    // whole reason `PageReorderer::rotations` returns distinct values per page. The reader
+    // reports the input unchanged while the caller asked for a reversal.
+    let engine = FakeReorderer::lying(4, vec![0, 90, 180, 270]);
+    let err = run(&engine, &[4, 3, 2, 1]).expect_err("a wrong permutation must be refused");
+    assert!(matches!(err, Error::OutputRejected(_)), "got {err:?}");
+    // The engine was asked for the right permutation, so the refusal came from the read-back.
+    assert_eq!(engine.asked.borrow().as_slice(), &[vec![3, 2, 1, 0]]);
+}
+
+#[test]
+fn an_output_that_lost_a_page_is_refused() {
+    // Issue #61 again, on the operation whose invariant is "no page is lost".
+    let engine = FakeReorderer::lying(4, vec![270, 180, 90]);
+    let err = run(&engine, &[4, 3, 2, 1]).expect_err("a lost page must be refused");
+    assert!(matches!(err, Error::OutputRejected(_)), "got {err:?}");
+}
+
+#[test]
+fn an_honest_engine_is_not_refused() {
+    let engine = FakeReorderer::with_pages(4);
+    run(&engine, &[4, 3, 2, 1]).expect("an honest read-back must pass");
+}
+
+#[test]
+fn a_reorder_of_pages_that_all_display_the_same_way_is_only_a_page_count() {
+    // WHAT THIS CHECK CANNOT DO, asserted rather than only written down. Four pages that all
+    // display at 0 make every permutation indistinguishable, so a reader reporting the
+    // identity is accepted even though a reversal was asked for. `verify`'s header says this;
+    // a test is what keeps the claim honest when the witness changes.
+    let engine = FakeReorderer::uniform_but_lying(4, vec![0, 0, 0, 0]);
+    run(&engine, &[4, 3, 2, 1]).expect("indistinguishable, and therefore accepted");
 }

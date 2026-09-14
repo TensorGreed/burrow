@@ -13,17 +13,26 @@ is short on purpose: a blocker is not "important", it is "we do not ship with th
 
 | | what | why it blocks |
 |---|---|---|
-| **#61** | A damaged-but-openable document silently loses a page | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user. It reproduces through `rotate`, which is merged, and through `split`'s build route. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** **Characterised** (2026-09-14): not the write losing a page — qpdf reads the same document as 5 pages without reconstruction and 4 with it, and `open` reports the first while the writer emits the second. **Discharged by #65 / ADR 0022**, which turns the disagreement into a refusal. |
 | **#62** | Memory-unsafety in the pinned qpdf — two distinct defects | Blocks **M3/M4 only**. Natively it is a hard crash with no sandbox, and opening an attachment is the scenario. **Does not block the web**, and the earlier conditional block on `/merge-pdf` is withdrawn: measured on every path it is a fault natively and a hang on wasm that the watchdog converts into a typed error, with **no silent wrong output observed anywhere**. The argument that blocked merge — *not observed is not cannot happen* — applies to every operation, since the defect is reachable from `open`; used as a blocker criterion it blocks everything indefinitely. The answer to *cannot be excluded* is a detector, and that is ADR 0022. Accepted and recorded: a crafted file freezes an operation for the 60 s watchdog budget before failing. `docs/security/exposure-2026-09-14-qpdf-uaf.md`. |
 
-Neither blocks further M1 development. They block **deployment**, which is the distinction
+The remaining row does not block further M1 development. It blocks **deployment**, which is the distinction
 worth keeping: work continues, and a build does not go in front of a person until the row is
 gone — or, for a conditional row, until its named discharge has landed.
 
-**A discharge is a checkable thing, not a judgement call at deploy time.** #61's is #65 /
+### Discharged
+
+Kept rather than deleted: a blocker that was cleared is evidence about how the bar is applied,
+and the table above is only honest if it says what left it and why.
+
+| | what | why it no longer blocks |
+|---|---|---|
+| **#61** | A damaged-but-openable document silently loses a page | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user. It reproduces through `rotate`, which is merged, and through `split`'s build route. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** **Characterised** (2026-09-14): not the write losing a page — qpdf reads the same document as 5 pages without reconstruction and 4 with it, and `open` reports the first while the writer emits the second. **DISCHARGED** (2026-09-14): ADR 0022's verification reads every operation's output back through a fresh engine, sees four pages where five were promised, and returns `OutputRejected`. `a_damaged_document_is_refused_rather_than_losing_a_page_silently` asserts it on every run; the engine-seam defect underneath stays pinned by an `#[ignore]`d reproduction. **The underlying disagreement is not fixed** — which of qpdf's two readings is right is a recovery-posture decision, still open on #61 and deliberately separate. |
+
+**A discharge is a checkable thing, not a judgement call at deploy time.** #61's was #65 /
 [ADR 0022](adr/0022-every-operation-verifies-its-own-output.md) — every operation verifying its
-own output. When that merges, silent page loss becomes a typed refusal and this table has one
-row left.
+own output — and it landed: silent page loss is now a typed refusal, so the row moved to
+*Discharged* below and the blockers table has one row left. What #61 keeps open is the posture question, which is not a
+ship blocker: a refusal is a correct answer, a quietly short document is not.
 
 **#62's row narrowed rather than gaining a discharge**, and the difference is worth keeping: a
 discharge is a thing you build, and what happened there was that a measurement showed the
@@ -34,7 +43,7 @@ something.
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` ✅, `split` **held** (#54), `compress` is the last. **Not shippable until #61 is fixed** — see *Ship blockers*. |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` ✅, `split` **held** (#54), `compress` is the last. #61 discharged by ADR 0022 — see *Ship blockers*. |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started; **gated on #62** — native has no wasm sandbox |
 | [M4](#m4--ios) | iOS app | not started; **gated on #62**, as M3 |
@@ -451,9 +460,10 @@ nothing, and one seed failed on the first execution.
 
 - **#61 — a damaged-but-openable document silently loses a page on write.** Opens as 5, writes
   4, no error, valid output. Reproduces through `rotate` (shipped) and through a plain write,
-  so it belongs to the write path rather than to any operation. Pinned by an `#[ignore]`d
-  reproduction in `reorder_keeps_everything.rs` and a CI step that requires it to keep
-  reproducing. The whole input class — damaged enough to be wrong, intact enough to open — had
+  so it belongs to the write path rather than to any operation. **Detected and refused since
+  ADR 0022**: no caller receives the short document. The engine-seam defect underneath is still
+  pinned by an `#[ignore]`d reproduction in `reorder_keeps_everything.rs` and a CI step that
+  requires it to keep reproducing. The whole input class — damaged enough to be wrong, intact enough to open — had
   no coverage: every damaged fixture in the conformance corpus is refused at open.
 - **#62 — memory-unsafety in the pinned qpdf 12.4.1, on the open path.** Reproduced from `rotate`, `merge` and `qpdf_check` — it is reached by *opening* a document, so every target and every operation can hit it, which is why seeded fuzzing is nightly-only until it closes. Upstream's code,
   reachable from opening any untrusted document. Private disclosure pending; no reproducer is

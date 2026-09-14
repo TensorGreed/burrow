@@ -30,7 +30,7 @@ enum Call {
     Finish { sources: usize },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
 struct Script {
     /// Fail `begin` with this error.
     begin_fails: Option<&'static str>,
@@ -38,6 +38,21 @@ struct Script {
     append_fails_at: Option<usize>,
     /// Pages each document reports.
     pages_each: u64,
+    /// Append this input (1-based, counting the first document as input 1) contributing
+    /// nothing, while every other input contributes normally.
+    ///
+    /// A fake whose inputs ALL contribute nothing makes `position()` return 0 every time, so
+    /// "the message names which input" is satisfied by a verifier that hardcodes `input 1`.
+    /// Found by code review. This expresses the case a person actually hits: one file among
+    /// several silently dropped.
+    drops_input: Option<usize>,
+    /// What the output reads back as, in pages. `None` means "whatever was assembled".
+    ///
+    /// THE VERIFIER'S ONLY LEVER (ADR 0022). A real engine cannot be asked to write a document
+    /// with the wrong number of pages in it, so the check that refuses one can only be tested
+    /// against a fake that lies on the way back. That is what `OutputReader` being a separate
+    /// trait buys.
+    reads_back_as: Option<u64>,
     /// Milliseconds the fake puts on the clock per call, so time passes where work does.
     ///
     /// A `ManualClock` that nobody advances never expires, so a deadline test written
@@ -48,9 +63,44 @@ struct Script {
     clock: Option<Arc<ManualClock>>,
 }
 
+/// A one-page document per input, and nothing else scripted.
+///
+/// **Not `#[derive(Default)]`**, which would make `pages_each` zero — and a fake whose every
+/// input has no pages is refused by the verifier under `Expected::Merged`'s zero-page rule,
+/// for a reason that has nothing to do with the test doing the asking. One page is the
+/// smallest document a real merge can be handed.
+impl Default for Script {
+    fn default() -> Self {
+        Self {
+            begin_fails: None,
+            append_fails_at: None,
+            pages_each: 1,
+            drops_input: None,
+            reads_back_as: None,
+            ms_per_call: 0,
+            clock: None,
+        }
+    }
+}
+
 struct Fake {
     script: Script,
+    /// Whether this instance came from `OutputReader::fresh`.
+    ///
+    /// THE FRESHNESS IS ASSERTED, NOT ASSUMED. A fake that reads the emitted document back
+    /// identically whoever asks leaves ADR 0022's first requirement untested: swap
+    /// `engine.fresh()` for `engine` in `verify::output` and every test still passes. Found by
+    /// code review, with that mutation run. So the instance that WROTE the bytes reports
+    /// nonsense when asked to read them -- which is what "a corrupted instance can agree with
+    /// itself" looks like from outside.
+    fresh: bool,
     calls: Arc<Mutex<Vec<Call>>>,
+    /// How many times `OutputReader::fresh` was called, shared across every instance.
+    ///
+    /// ADR 0022's first requirement is that the witness is not the instance that produced the
+    /// bytes, and nothing else here can see the difference: a verifier reading through
+    /// `&self` would agree with every honest fake in this file.
+    freshes: Arc<Mutex<usize>>,
 }
 
 struct FakeAssembly {
@@ -66,7 +116,9 @@ impl Fake {
         (
             Self {
                 script,
+                fresh: false,
                 calls: Arc::clone(&calls),
+                freshes: Arc::new(Mutex::new(0)),
             },
             calls,
         )
@@ -124,20 +176,80 @@ impl PageAssembler for Fake {
             return Err(Error::Malformed("fake: refused".to_owned()));
         }
         assembly.seen.push(next.len());
-        assembly.pages += self.script.pages_each;
-        Ok(self.script.pages_each)
+        // `nth` is 0 for the first APPEND, which is input 2 -- the first document went through
+        // `begin`. So the 1-based input number of this append is `nth + 2`.
+        let contributed = if self.script.drops_input == Some(nth + 2) {
+            0
+        } else {
+            self.script.pages_each
+        };
+        assembly.pages += contributed;
+        Ok(contributed)
     }
 
     fn finish(&self, assembly: Self::Assembly) -> burrow_types::Result<Vec<u8>> {
         self.record(Call::Finish {
             sources: assembly.seen.len(),
         });
-        // The "document" is the sequence of input lengths, so order is observable.
-        Ok(assembly
+        // The "document" is the sequence of input lengths, so order is observable, followed
+        // by the page total -- which is what makes the fake's READER honest about the document
+        // its WRITER built. Deriving the count as `inputs * pages_each` instead made every
+        // dropped-input case fail the page-count check first, so the "which input" message was
+        // unreachable. Found by code review.
+        let mut bytes: Vec<u8> = assembly
             .seen
             .iter()
             .map(|n| u8::try_from(*n % 251).unwrap_or(0))
-            .collect())
+            .collect();
+        bytes.push(u8::try_from(assembly.pages % 251).unwrap_or(0));
+        Ok(bytes)
+    }
+}
+
+/// Reading the output back (ADR 0022).
+///
+/// The fake's "document" is one byte per input plus the page total, so its page count is
+/// derivable from the bytes -- which means the honest reading and the lying one are both
+/// expressible, and the lie is what tests the refusal.
+impl burrow_engines::OutputReader for Fake {
+    type Read = u64;
+
+    fn fresh(&self) -> Self {
+        *self.freshes.lock().expect("freshes mutex") += 1;
+        // Shares the call log, so a test can still see what the verifier did, and nothing
+        // else -- which is all `fresh` means for a fake with no document state.
+        Self {
+            script: self.script.clone(),
+            fresh: true,
+            calls: Arc::clone(&self.calls),
+            freshes: Arc::clone(&self.freshes),
+        }
+    }
+
+    fn open_output(
+        &self,
+        bytes: &[u8],
+        _options: &OpenOptions<'_>,
+    ) -> burrow_types::Result<Self::Read> {
+        if !self.fresh {
+            // The writing instance is not a witness. See `fresh`.
+            return Ok(0);
+        }
+        // The last byte is the page total the writer put there; see `finish`.
+        let assembled = u64::from(bytes.last().copied().unwrap_or(0));
+        Ok(self.script.reads_back_as.unwrap_or(assembled))
+    }
+
+    fn page_count(&self, read: &Self::Read) -> burrow_types::Result<u64> {
+        Ok(*read)
+    }
+
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        _options: &OpenOptions<'_>,
+    ) -> burrow_types::Result<Vec<i64>> {
+        Ok(vec![0; usize::try_from(*read).unwrap_or(0)])
     }
 }
 
@@ -161,7 +273,9 @@ fn merges_inputs_in_order() {
 
     let out = merge(&fake, vec![input(10), input(20), input(30)], &opts).expect("merge");
 
-    assert_eq!(out, vec![10, 20, 30], "the inputs arrived out of order");
+    // The trailing byte is the page total the fake's writer records for its reader; see
+    // `finish`. The prefix is what says the inputs arrived in order.
+    assert_eq!(out, vec![10, 20, 30, 6], "the inputs arrived out of order");
     assert_eq!(
         *calls.lock().expect("calls"),
         vec![
@@ -194,7 +308,8 @@ fn merging_one_document_is_the_identity() {
 
     let out = merge(&fake, vec![input(42)], &opts).expect("merge");
 
-    assert_eq!(out, vec![42]);
+    // One input byte, then the page total the fake's writer records for its reader.
+    assert_eq!(out, vec![42, 7]);
     assert_eq!(
         *calls.lock().expect("calls"),
         vec![
@@ -531,4 +646,77 @@ fn a_total_that_overflows_is_internal_rather_than_a_limit() {
         matches!(err, Error::Internal(_)),
         "an overflowing total must not be reported as a limit: {err:?}"
     );
+}
+
+// --- ADR 0022: the output is read back, through an engine that did not write it -----------
+
+#[test]
+fn the_output_is_read_back_through_a_fresh_engine() {
+    // One `fresh` per operation. A verifier that read through `&self` would leave this at
+    // zero and every other test in this file would still pass.
+    let (fake, _) = Fake::new(Script::default());
+    let (opts, _clock) = options(Limits::DEFAULT);
+    merge(&fake, vec![input(4), input(5)], &opts).expect("merge");
+    assert_eq!(*fake.freshes.lock().expect("freshes"), 1);
+}
+
+#[test]
+fn an_output_with_the_wrong_page_count_is_refused() {
+    // The assembly says four pages went in; the reader says three came out. No `PageAssembler`
+    // call failed, which is exactly why this needs a separate reader to catch.
+    let (fake, _) = Fake::new(Script {
+        pages_each: 2,
+        reads_back_as: Some(3),
+        ..Script::default()
+    });
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let err = merge(&fake, vec![input(4), input(5)], &opts).expect_err("must be refused");
+    assert!(matches!(err, Error::OutputRejected(_)), "got {err:?}");
+}
+
+#[test]
+fn the_message_names_which_input_contributed_nothing() {
+    // NOT INPUT 1. Every other test of this refusal has every input contributing nothing, so
+    // `position()` returns 0 and a verifier that hardcoded "input 1" would pass them all.
+    // Here the second of three inputs is the one that was dropped.
+    let (fake, _) = Fake::new(Script {
+        pages_each: 2,
+        drops_input: Some(2),
+        ..Script::default()
+    });
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let err = merge(&fake, vec![input(4), input(5), input(6)], &opts).expect_err("must be refused");
+    match err {
+        Error::OutputRejected(why) => assert!(why.contains("input 2"), "got {why:?}"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn an_input_that_contributed_nothing_is_refused_and_named() {
+    // #62's shape at the merge boundary: a co-input's pages absent from an output that is
+    // otherwise a valid PDF. The message names WHICH input, one-based, because the caller's
+    // next move is to remove a file from a list.
+    let (fake, _) = Fake::new(Script {
+        pages_each: 0,
+        ..Script::default()
+    });
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let err = merge(&fake, vec![input(4), input(5)], &opts).expect_err("must be refused");
+    match err {
+        Error::OutputRejected(why) => assert!(why.contains("input 1"), "got {why:?}"),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn an_honest_engine_is_not_refused() {
+    // The other half of the lever: without this the two refusals above are satisfied by a
+    // verifier that refuses everything.
+    let (fake, _) = Fake::new(Script {
+        pages_each: 2,
+        ..Script::default()
+    });
+    let (opts, _clock) = options(Limits::DEFAULT);
+    merge(&fake, vec![input(4), input(5)], &opts).expect("an honest read-back must pass");
 }

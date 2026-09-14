@@ -87,7 +87,7 @@ pub struct WebRotatable {
 /// The two dictionary keys rotate reads, resident in the engine heap.
 ///
 /// Freed by [`Drop`] rather than by the code that uses them, so no path can return past them.
-struct Keys {
+pub(super) struct Keys {
     rotate: QpdfPtr,
     parent: QpdfPtr,
     bridge: Arc<dyn super::bridge::QpdfBridge>,
@@ -307,7 +307,7 @@ impl Keys {
     ///
     /// [`Error::Internal`] if the engine heap could not allocate. Two compile-time constants,
     /// so a failure here is the module out of memory rather than anything about a document.
-    fn copy_in(engine: &WebQpdf) -> Result<Self> {
+    pub(super) fn copy_in(engine: &WebQpdf) -> Result<Self> {
         let bridge = Arc::clone(engine.bridge());
         let rotate = bridge.copy_in(ROTATE_KEY);
         if rotate.is_null() {
@@ -359,7 +359,7 @@ fn page_handle(engine: &WebQpdf, session: &Session, index: u64, pages: u64) -> R
 /// The rotation `page` displays at, following `/Rotate` up the page tree.
 ///
 /// Releases every handle it takes; `page` belongs to the caller.
-fn effective_rotation(
+pub(super) fn effective_rotation(
     engine: &WebQpdf,
     session: &Session,
     keys: &Keys,

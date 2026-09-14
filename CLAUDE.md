@@ -154,6 +154,11 @@ A change is done when all of these hold:
       planted in `reorder` survived 577,209 unseeded executions and died on the first
       seeded one. See `fuzz/README.md`.
 - [ ] New operations have unit, property, golden, and fuzz tests, and enforce `Limits`.
+- [ ] **The operation verifies its own output** through `burrow_ops::verify` before returning
+      it (ADR 0022), with an `Expected` variant whose rustdoc states what it leaves
+      undetectable — and a test where a fake engine lies on the way back, which the mutation
+      that deletes the check fails. `split` and `compress` inherit this on arrival; neither
+      ships without it.
 - [ ] No new `unwrap`/`expect`/`panic!` in library code; new `unsafe` has `// SAFETY:`.
 - [ ] No new network call reachable from code that touches file content.
 - [ ] Any new check ships with **per-rule probes**: every pattern or rule matches its own

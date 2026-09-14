@@ -41,7 +41,9 @@ mod tests;
 
 use std::sync::Arc;
 
-use burrow_engines::{OpenOptions, PageReorderer};
+use burrow_engines::{OpenOptions, OutputReader, PageReorderer};
+
+use crate::verify;
 use burrow_types::{Deadline, Error, Limits, Permutation, Result, Stage};
 
 /// Put the pages of `bytes` in `order`, and return the document.
@@ -58,8 +60,11 @@ use burrow_types::{Deadline, Error, Limits, Permutation, Result, Stage};
 ///   could not be read.
 /// - [`Error::LimitExceeded`] — a ceiling in `options.limits` was reached.
 /// - [`Error::Io`] — the output could not be written.
+/// - [`Error::OutputRejected`] — the document burrow produced is not the one it promised:
+///   the wrong number of pages, or the pages in an order that is not the one requested. It is returned **instead of** the output, which is
+///   dropped (ADR 0022).
 /// - [`Error::Internal`] — a number did not fit, or the engine returned something impossible.
-pub fn reorder<E: PageReorderer>(
+pub fn reorder<E: PageReorderer + OutputReader>(
     engine: &E,
     bytes: Box<[u8]>,
     order: &[u64],
@@ -101,8 +106,47 @@ pub fn reorder<E: PageReorderer>(
     // refusal is attributable either to the operation or to what surrounds it.
     let deadline = Deadline::start(clock.as_ref(), &limits);
     deadline.checkpoint(clock.as_ref())?;
+
+    // WHAT THE OUTPUT MUST DISPLAY, computed BEFORE the operation runs (ADR 0022): the input's
+    // own rotations, permuted by the order that was asked for. A permutation cannot change
+    // what a page displays -- only where it is -- so the promised vector is the input's read
+    // through `permutation`, and comparing it to the answer catches a permutation that is not
+    // the one requested wherever the two put differently-rotated pages in different places.
+    // The engine checkpoints this sweep per page against the limits the document was opened
+    // under; see `PageReorderer::rotations`.
+    let before = PageReorderer::rotations(engine, &source, options)?;
+    let mut promised = Vec::with_capacity(before.len());
+    for &from in permutation.order() {
+        let at = usize::try_from(from)
+            .map_err(|_| Error::Internal("page index does not fit in usize".to_owned()))?;
+        let Some(rotation) = before.get(at) else {
+            // Unreachable: `Permutation::of` established the order names every page of a
+            // document of `total` pages, and `before` has `total` entries.
+            return Err(Error::Internal(
+                "a validated page order named a page the document does not have".to_owned(),
+            ));
+        };
+        promised.push(*rotation);
+    }
+
     let output = engine.reorder(&source, &permutation, options)?;
     deadline.checkpoint(clock.as_ref())?;
+
+    // THE INPUT DOCUMENT GOES BEFORE THE OUTPUT IS PARSED, for the reason `rotate` records at
+    // length: verification holds a second parsed document, and both at once is peak memory
+    // nothing bounds.
+    drop(source);
+
+    // AND THE LAST THING BEFORE THE CALLER HAS IT, through a fresh engine.
+    verify::output(
+        engine,
+        &output,
+        &verify::Expected::Reordered {
+            rotations: promised,
+        },
+        options,
+        &deadline,
+    )?;
 
     Ok(output)
 }

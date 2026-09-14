@@ -459,6 +459,80 @@ pub trait PageExtractor {
     ) -> Result<Vec<u8>>;
 }
 
+/// Reading a document back, to check what an operation produced.
+///
+/// [ADR 0022](../../../docs/adr/0022-every-operation-verifies-its-own-output.md). Every
+/// operation's last act is to reopen its own output through this and compare it against what
+/// it promised.
+///
+/// # Why a trait of its own, rather than a `PageRotator` bound
+///
+/// It reads the same two things [`PageRotator`] does, and it is separate because the *purpose*
+/// is what has to be visible at the call site. `merge<E: PageAssembler + PageRotator>` would
+/// say merge rotates. This says merge checks its own work, which is the property ADR 0022 is
+/// about — and it means a fake can be made to read back something other than what it wrote,
+/// which is the only way to test that the check fires.
+pub trait OutputReader {
+    /// A document opened for reading back. Never the one that produced the bytes.
+    type Read;
+
+    /// An engine that shares no **document** state with this one.
+    ///
+    /// # What "fresh" means, and what it does not
+    ///
+    /// The handle that produced the bytes is not a neutral witness to them: it holds a page
+    /// tree it built and then edited, and an engine in a bad state can agree with itself.
+    /// So verification opens the output through a new engine value and a new document handle
+    /// — a new `qpdf_data` — rather than asking the one that just wrote it.
+    ///
+    /// **On the web that is a new document handle inside the same WebAssembly module**, and
+    /// it cannot be more than that. A genuinely fresh module means a fresh worker, which is a
+    /// 6.8 MB fetch and a recompile per operation; `docs/adr/0022` records the measurement and
+    /// the decision. What that leaves undetectable is stated there too: a corrupted module
+    /// heap can corrupt the writer and the reader alike, because they are the same heap.
+    ///
+    /// Natively there is no shared heap between the two handles beyond the process allocator,
+    /// so the separation is as complete as it can be short of a subprocess.
+    #[must_use]
+    fn fresh(&self) -> Self
+    where
+        Self: Sized;
+
+    /// Open bytes this crate just produced.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the engine reports. A failure here is not a malformed *input* — the input was
+    /// fine and burrow wrote this — so the caller reports it as a rejected output.
+    fn open_output(&self, bytes: &[u8], options: &OpenOptions<'_>) -> Result<Self::Read>;
+
+    /// How many pages the document that was read back has.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that
+    /// is not a count.
+    fn page_count(&self, read: &Self::Read) -> Result<u64>;
+
+    /// Every page's effective rotation, in page order.
+    ///
+    /// **The witness.** A page count cannot see a permutation, and this is what the seam
+    /// offers per page on both platforms without a new bridge method and without decompressing
+    /// anything. It is a weak identity — two pages sharing a rotation are indistinguishable —
+    /// and `burrow_ops::verify` states per operation what that leaves undetectable.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading a page's rotation reports; see
+    /// [`PageRotator::effective_rotation`].
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — `max_duration_ms`. The
+    ///   sweep is one call from outside and one FFI call per page times the page tree's depth
+    ///   from inside, so it **checkpoints per page** against the limits the document was opened
+    ///   under. `options` is here for the clock; ignoring it would put a loop the caller sized
+    ///   outside every deadline, which is what code and security review both found it doing.
+    fn rotations(&self, read: &Self::Read, options: &OpenOptions<'_>) -> Result<Vec<i64>>;
+}
+
 /// An engine that can change a page's rotation and emit the document.
 ///
 /// The seam `rotate` is written against. Separate from [`PageExtractor`] and
@@ -593,6 +667,24 @@ pub trait PageReorderer {
     ///
     /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that is not a count.
     fn pages(&self, source: &Self::Source) -> Result<u64>;
+
+    /// Every page's effective rotation, in page order.
+    ///
+    /// **The witness a reorder is verified against** (ADR 0022), read from the document that
+    /// is about to be permuted — the only place the *input's* rotations exist once the bytes
+    /// have been consumed. Comparing the output's vector against this one read through the
+    /// permutation is what catches a permutation that is not the one asked for.
+    ///
+    /// Here rather than on [`OutputReader`] because it reads the INPUT, and reading it through
+    /// `OutputReader` would mean parsing the input a second time — the cost `merge` declines
+    /// to pay and this one does not have to.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading a page's rotation reports; see [`PageRotator::effective_rotation`].
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — `max_duration_ms`,
+    ///   checkpointed **per page** for the reason [`OutputReader::rotations`] gives.
+    fn rotations(&self, source: &Self::Source, options: &OpenOptions<'_>) -> Result<Vec<i64>>;
 
     /// Put the pages in `order` and emit the document.
     ///

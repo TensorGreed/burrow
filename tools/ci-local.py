@@ -120,7 +120,7 @@ JOBS: list[dict] = [
         ),
         "covers": [],
         "needs_qpdf_cli": True,
-        "why": "the known-defect reproduction CI requires to keep reproducing (#61)",
+        "why": "the engine-seam defect CI requires to keep reproducing beneath ADR 0022's refusal (#61)",
     },
     {
         "name": "corpus",
