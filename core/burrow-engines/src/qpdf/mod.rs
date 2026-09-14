@@ -33,6 +33,7 @@ mod extract;
 mod ffi;
 mod handle;
 mod limits;
+mod reorder;
 mod rotate;
 
 #[cfg(feature = "fuzzing")]
@@ -399,6 +400,9 @@ pub(super) fn open_document(
 
     Ok((document, pages, rss_before))
 }
+
+#[cfg(test)]
+mod reorder_tests;
 
 #[cfg(test)]
 mod rotate_tests;

@@ -41,8 +41,10 @@
 //! calls — trading a leak for a hole in the exception-safety check is not a trade worth
 //! making.
 
-use core::ffi::c_char;
+use core::ffi::{c_char, c_int};
 use core::marker::PhantomData;
+
+use burrow_types::Result;
 
 use super::{Document, ffi};
 
@@ -180,6 +182,49 @@ impl<'a> ObjectHandle<'a> {
         unsafe { Self::owned(document, handle) }
     }
 
+    /// The object this handle refers to, as `(number, generation)`.
+    ///
+    /// **A handle is not an identity.** `qpdf_get_page_n` issues a new one on every call, so
+    /// two handles to the same page compare unequal — `reorder` compared them and every
+    /// permutation failed, including the identity. This is what identity means in a PDF.
+    ///
+    /// # `Result`, because the fallback compares EQUAL
+    ///
+    /// Unlike [`Self::type_code`] and [`Self::integer_value`], this one may not fail open.
+    /// `qpdf-c.cc` implements both reads as `do_with_oh<int>(qpdf, oh, return_T<int>(0), …)`:
+    /// on any internal failure `trap_oh_errors` returns the fallback **0** and latches the
+    /// exception in `qpdf->error`. So two failing reads both yield `(0, 0)` — and `(0, 0)`
+    /// equals `(0, 0)`.
+    ///
+    /// For every caller of this method, "equal" is the answer that means *do nothing*:
+    /// `reorder` reads it as "the page is already in place" and skips the move; `split`'s
+    /// pruning and M2's redaction will read it as "this object belongs here" and keep it. A
+    /// silent `Ok` with the work not done is the failure mode this project treats most
+    /// seriously, so the error is drained and returned rather than swallowed. `0` is also a
+    /// legitimate object id for a direct object, so the sentinel is not even distinguishable
+    /// from a real answer.
+    ///
+    /// Found by security review. It was not shown to be reachable on any input; it is fixed
+    /// because the direction it fails in is the one that produces a valid-looking wrong file.
+    ///
+    /// # Errors
+    ///
+    /// Whatever qpdf latched while reading the object's number or generation, mapped by code.
+    pub(super) fn object(&self, document: &Document) -> Result<(c_int, c_int)> {
+        // SAFETY: `self.data` is a live document and `self.handle` is one of its handles, by
+        // this type's invariant. Both route through `trap_errors` via `do_with_oh`.
+        let id = unsafe { ffi::qpdf_oh_get_object_id(self.data, self.handle) };
+        let generation = unsafe { ffi::qpdf_oh_get_generation(self.data, self.handle) };
+        // DRAINED AFTER BOTH READS, not between them: one latched error is one error whichever
+        // of the two raised it, and leaving it latched would surface it later against an
+        // unrelated page or against the write. The caller passes the document this handle came
+        // from -- the same contract `key` has.
+        if let Some(error) = document.take_error() {
+            return Err(error);
+        }
+        Ok((id, generation))
+    }
+
     /// Hand the raw handle to a qpdf call that takes one.
     ///
     /// Narrow on purpose: `qpdf_add_page` and `qpdf_remove_page` take a handle and are not
@@ -211,22 +256,79 @@ mod tests {
     /// examined rather than reporting a bare pass.
     #[test]
     fn the_handle_api_is_reachable_only_from_here() {
-        // Every sibling that could reach `ffi`, by name. Listed rather than globbed: a new
-        // module nobody added here is a gap, and a glob would silently cover it with nothing.
-        let siblings: [(&str, &str); 5] = [
+        // Every sibling that could reach `ffi`, by name. `include_str!` needs a literal, so
+        // the contents are listed; what is NOT listed is how many there should be.
+        let siblings: [(&str, &str); 6] = [
             ("assemble.rs", include_str!("assemble.rs")),
             ("extract.rs", include_str!("extract.rs")),
             ("limits.rs", include_str!("limits.rs")),
             ("mod.rs", include_str!("mod.rs")),
+            ("reorder.rs", include_str!("reorder.rs")),
             ("rotate.rs", include_str!("rotate.rs")),
         ];
+
+        // THE LIST IS COMPARED AGAINST THE DIRECTORY, not against a number. It used to assert
+        // `siblings.len() == 5` against a hand-written five, and `reorder.rs` -- which calls
+        // `ffi::qpdf_remove_page` and `ffi::qpdf_add_page_at` directly -- was added without
+        // being added here. The count still matched, the scan still passed, and the claim
+        // underneath it ("the set of modules calling the qpdf C API directly") was false while
+        // the assertion was green. Exactly the shape `CLAUDE.md` calls a check that silently
+        // examines nothing. Found by security review.
+        //
+        // Reading the directory means a new module is a FAILURE rather than an omission.
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/qpdf");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&directory)
+            .expect("the qpdf module directory must be readable")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".rs"))
+            // `handle.rs` is the subject, and `ffi.rs` is the declaration site the rule is
+            // about reaching -- neither is a sibling that could bypass this module.
+            .filter(|name| name != "handle.rs" && name != "ffi.rs")
+            // Test modules are `#[cfg(test)]` and may reach `ffi` to build a fixture.
+            .filter(|name| !name.ends_with("_tests.rs") && name != "tests.rs")
+            .collect();
+        on_disk.sort();
+        let listed: Vec<String> = siblings
+            .iter()
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        assert_eq!(
+            listed, on_disk,
+            "a module was added to src/qpdf/ without being added to this scan, so the qpdf_oh              check below examined everything except the newest code"
+        );
+
+        // THE RULE, as a function, so it can be probed before it is trusted.
+        let is_a_call =
+            |line: &str| !line.trim_start().starts_with("//") && line.contains("ffi::qpdf_oh_");
+
+        // ITS OWN FIXTURE AND NEAR-MISS, checked here rather than assumed. Skipping comment
+        // lines is what makes this rule usable, and it is also the way it could be made to
+        // match nothing -- a predicate that skipped everything would report a clean scan over
+        // any source at all.
+        assert!(
+            is_a_call("        let id = unsafe { ffi::qpdf_oh_get_object_id(d, h) };"),
+            "the scan no longer recognises a real call, so it would pass any file"
+        );
+        assert!(
+            !is_a_call("        // see `ffi::qpdf_oh_get_object_id`."),
+            "the scan flags prose, so it cannot be satisfied without deleting the comments \
+             that explain the rule"
+        );
 
         let mut offenders = Vec::new();
         for (name, source) in siblings {
             for (number, line) in source.lines().enumerate() {
-                // `ffi::qpdf_oh_` is the call shape. A mention in a comment is fine and is
-                // wanted -- `ffi.rs`'s own prose discusses these functions at length.
-                if line.contains("ffi::qpdf_oh_") {
+                // `ffi::qpdf_oh_` is the call shape. A mention in a COMMENT is fine and is
+                // wanted -- `ffi.rs`'s own prose discusses these functions at length, and
+                // `reorder.rs` has to name `qpdf_oh_get_object_id` to explain why it compares
+                // object numbers rather than handles.
+                //
+                // The comment above said that before the code did it. Nothing had noticed,
+                // because until `reorder.rs` joined the scan no sibling had ever mentioned the
+                // API in prose -- so the rule read as correct while being strictly stricter
+                // than stated. It fired the moment the scan was widened.
+                if is_a_call(line) {
                     offenders.push(format!("{name}:{}: {}", number + 1, line.trim()));
                 }
             }
@@ -239,21 +341,26 @@ mod tests {
         );
 
         // AND THE SCAN LOOKED AT SOMETHING. A pattern that matches nothing passes everything,
-        // and this one would pass an empty file list just as happily. Two floors: the list is
-        // the length it is meant to be, and the modules on it are the ones that can actually
-        // reach `ffi`.
-        assert_eq!(siblings.len(), 5, "the sibling list has changed");
+        // and this one would pass an empty file list just as happily.
         let reach_ffi: Vec<&str> = siblings
             .iter()
             .filter(|(_, source)| source.contains("ffi::"))
             .map(|(name, _)| *name)
             .collect();
-        // `rotate.rs` reaches qpdf only through `ObjectHandle` and `open_document`, so it
-        // names `ffi` nowhere -- which is the outcome this test is for, not a gap in it. The
-        // other four call the C API directly and are the ones worth scanning.
+        // `rotate.rs` reaches qpdf only through `ObjectHandle` and `open_document`, so it names
+        // `ffi` nowhere -- which is the outcome this test is for, not a gap in it. The others
+        // call the C API directly and are the ones worth scanning; `reorder.rs` is among them
+        // because it calls `qpdf_remove_page` and `qpdf_add_page_at`, neither of which takes
+        // or returns an object handle it could leak.
         assert_eq!(
             reach_ffi,
-            vec!["assemble.rs", "extract.rs", "limits.rs", "mod.rs"],
+            vec![
+                "assemble.rs",
+                "extract.rs",
+                "limits.rs",
+                "mod.rs",
+                "reorder.rs"
+            ],
             "the set of modules calling the qpdf C API directly has changed; check whether the \
              new one takes object handles"
         );

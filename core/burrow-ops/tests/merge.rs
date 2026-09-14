@@ -21,6 +21,10 @@
 //!
 //! If qpdf ever starts writing page dictionaries into object streams, `page_widths_in_order`
 //! finds nothing and these tests fail with an empty vector rather than passing vacuously.
+//!
+//! The reader itself is `testsupport/pdf_reading.rs` now, not a copy here: `split.rs` had a
+//! near-identical one and `reorder` wrote a third, rediscovering the flating and the array
+//! spacing at the cost of six failing tests against a working operation.
 //! That is the same way the content-stream version failed, and it is why the assertion
 //! compares against a full expected sequence rather than merely checking for a subsequence.
 
@@ -35,6 +39,11 @@
     clippy::panic,
     clippy::indexing_slicing
 )]
+
+#[path = "../../burrow-engines/testsupport/pdf_reading.rs"]
+mod pdf_reading;
+
+use pdf_reading::page_widths as page_widths_in_order;
 
 /// The one generator, included by path rather than copied.
 ///
@@ -359,49 +368,4 @@ fn sized_pdf(width: u32, pages: usize) -> Vec<u8> {
         .as_bytes(),
     );
     out
-}
-
-/// Each page's `/MediaBox` width, in the order the page tree lists them.
-///
-/// Walks `/Kids` for the object numbers and then reads each page object's width, so it
-/// reports the document's OWN order rather than the order objects happen to be written in.
-/// Reading them in file order would pass a merge that wrote the pages out of sequence but
-/// listed them correctly, and fail one that did the reverse — neither of which is the
-/// question.
-///
-/// Returns an empty vector if the page tree is not written plainly, which fails the
-/// assertions rather than satisfying them.
-fn page_widths_in_order(bytes: &[u8]) -> Vec<u32> {
-    let text = String::from_utf8_lossy(bytes);
-
-    let Some(kids_at) = text.find("/Kids") else {
-        return Vec::new();
-    };
-    let after = &text[kids_at..];
-    let (Some(open), Some(close)) = (after.find('['), after.find(']')) else {
-        return Vec::new();
-    };
-    let kids: Vec<u32> = after[open + 1..close]
-        .split_whitespace()
-        .filter_map(|t| t.parse::<u32>().ok())
-        .collect();
-    // `N 0 R` triples: keep the object numbers, drop the generations and the `R`s.
-    let object_numbers: Vec<u32> = kids.chunks(2).filter_map(|c| c.first().copied()).collect();
-
-    object_numbers
-        .iter()
-        .filter_map(|n| {
-            let marker = format!("\n{n} 0 obj");
-            let at = text.find(&marker)?;
-            let body = &text[at..];
-            let end = body.find("endobj")?;
-            let box_at = body[..end].find("/MediaBox")?;
-            let rest = &body[box_at..];
-            let inner = rest.find('[').and_then(|o| {
-                let tail = &rest[o + 1..];
-                tail.find(']').map(|c| &tail[..c])
-            })?;
-            inner.split_whitespace().nth(2)?.parse::<u32>().ok()
-        })
-        .collect()
 }

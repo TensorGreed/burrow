@@ -18,6 +18,7 @@ mod clock;
 mod error;
 mod limits;
 mod password;
+mod permutation;
 mod rotation;
 mod stage;
 
@@ -27,5 +28,6 @@ pub use clock::{Clock, Deadline, ManualClock};
 pub use error::{Error, Result};
 pub use limits::Limits;
 pub use password::Password;
+pub use permutation::Permutation;
 pub use rotation::Rotation;
 pub use stage::Stage;

@@ -84,13 +84,23 @@ def main(out: Path) -> None:
         """Record an object, who it belongs to, and what KIND of thing it is.
 
         `kind` is what lets one harness serve operations with different obligations.
+
         `content` is what a page is made of -- an operation that keeps the page must keep it.
+
         `navigation` is document-level furniture that points AT pages: an outline entry. A
         subsetting operation may legitimately drop it (ADR 0019 SS1 does, and the page says
         so), while `rotate`, `reorder` and `compress` may not lose it.
 
-        Without this the inverse assertion had to require every owned object, and a correct
-        one-way split failed it by dropping five outline entries on purpose.
+        `page-tree` is structure that exists only to HOLD other pages: an intermediate
+        `/Pages` node. Nothing in it is anybody's content, and no reader can observe it. qpdf
+        flattens the tree whenever a page moves, so `reorder` legitimately loses these
+        (ADR 0021) while still losing nothing of the other two kinds.
+
+        Without the second kind the inverse assertion had to require every owned object, and
+        a correct one-way split failed it by dropping five outline entries on purpose. The
+        third is the same argument one operation further on -- and it is a third kind rather
+        than a weakening of `assert_nothing_lost` to a subset check, which would have quietly
+        weakened it for `rotate` and `compress` too.
         """
         objects.append(body)
         owners[len(objects)] = pages
@@ -105,6 +115,19 @@ def main(out: Path) -> None:
     # 1 catalog, 2 page tree -- scaffolding, owned by nobody.
     catalog = add(b"", [])
     tree = add(b"", [])
+
+    # TWO LEVELS, NOT ONE, so a flattening is observable. A flat tree makes `reorder`'s
+    # structural cost invisible: qpdf flattens a tree that is already flat into itself and the
+    # harness reports a clean run, which would be a measurement of nothing.
+    #
+    # The branches are declared `page-tree` and OWNED by the pages they hold, so `owned_by`
+    # with the content and navigation kinds excludes them BY NAME rather than by their page
+    # list being empty -- a branch that is merely scaffolding would be allowed anywhere, and
+    # a branch surviving into an output that excluded its pages is a real trespass.
+    half = PAGES // 2
+    left = add(b"", list(range(1, half + 1)), kind="page-tree")
+    right = add(b"", list(range(half + 1, PAGES + 1)), kind="page-tree")
+    branches = [left, right]
 
     page_objs = [add(b"", [i + 1]) for i in range(PAGES)]
     contents = [add(b"", [i + 1]) for i in range(PAGES)]
@@ -145,11 +168,18 @@ def main(out: Path) -> None:
         f"/Outlines {outline_root} 0 R /AcroForm << /Fields [{field} 0 R] >> "
         f"/Threads [{thread} 0 R] >>"
     ).encode()
-    kids = " ".join(f"{p} 0 R" for p in page_objs)
+    # The root holds the two branches; the inherited `/Resources` stays here, so every page
+    # gets it through two levels of `/Parent` rather than one.
     objects[tree - 1] = (
-        f"<< /Type /Pages /BM ({mark(tree)}) /Kids [{kids}] /Count {PAGES} "
+        f"<< /Type /Pages /BM ({mark(tree)}) /Kids [{left} 0 R {right} 0 R] /Count {PAGES} "
         f"/Resources << /XObject << /Only4 {only4} 0 R >> >> >>"
     ).encode()
+    for branch, held in ((left, page_objs[:half]), (right, page_objs[half:])):
+        kids = " ".join(f"{p} 0 R" for p in held)
+        objects[branch - 1] = (
+            f"<< /Type /Pages /BM ({mark(branch)}) /Parent {tree} 0 R /Kids [{kids}] "
+            f"/Count {len(held)} >>"
+        ).encode()
     for i, p in enumerate(page_objs):
         extra = ""
         if i in (0, 3):
@@ -157,8 +187,9 @@ def main(out: Path) -> None:
         if i == 0:
             extra += f"/B [{bead} 0 R] "
         # No `/Resources` of its own, so the inherited one is what it gets.
+        parent = left if i < half else right
         objects[p - 1] = (
-            f"<< /Type /Page /BM ({mark(p)}) /Parent {tree} 0 R /MediaBox [0 0 200 200] "
+            f"<< /Type /Page /BM ({mark(p)}) /Parent {parent} 0 R /MediaBox [0 0 200 200] "
             f"/Contents {contents[i]} 0 R {extra}>>"
         ).encode()
         objects[contents[i] - 1] = stream(
@@ -241,6 +272,7 @@ def main(out: Path) -> None:
     (out / "marked.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"  marked.pdf               {len((out / 'marked.pdf').read_bytes()):>6} bytes")
     print(f"  marked.json              {len(manifest['objects']):>6} marked objects")
+    print(f"  page tree                two levels, branches {branches} (kind page-tree)")
 
 
 if __name__ == "__main__":

@@ -182,6 +182,54 @@ files plus the cached `qpdf.wasm`, and runs in the `web` job on every run. Seven
 cases in `tools/test-check-wasm-exports.sh` plant a defect per rule and require a refusal by
 name.
 
+### Amendment, 2026-09-13 (reorder): a `qpdf_oh` handle is not an identity
+
+Everything above governs how qpdf is *called*. This governs what a value it hands back means,
+and it is here rather than in an operation's own ADR because every operation that decides
+"is this the same object?" depends on it.
+
+`qpdf_oh` is a key into a cache on the `qpdf_data`, and `qpdf-c.cc` allocates a fresh one on
+every call that yields a handle:
+
+```c
+qpdf_oh oh = ++qpdf->next_oh;
+qpdf->oh_cache[oh] = qoh;
+```
+
+So two handles to the same object are two different numbers, always. Asking
+`qpdf_get_page_n` for page 3 twice gives a handle that does not equal the handle it gave the
+first time. **Handle equality is never object equality**, and there is no input for which it
+accidentally is.
+
+The identity of a PDF object is its **object number and generation** —
+`qpdf_oh_get_object_id` plus `qpdf_oh_get_generation`, which is what `ObjectHandle::object`
+returns and the only thing this codebase may compare.
+
+**Measured, not read.** `reorder` asked "is this page already where it belongs?" as
+`current.raw() == wanted_page.raw()`. The comparison was false for every page, including the
+ones that had not moved, so the loop removed each page and tried to insert it immediately
+before itself; qpdf answered `qpdf_e_pages` for every permutation, the identity included. The
+code read exactly like correct code.
+
+**Why it is a check and not a paragraph.** `reorder` failed loudly and immediately. The two
+operations that make the same decision next do not:
+
+| | the decision | what an always-false comparison does |
+|---|---|---|
+| `split`'s pruning | which objects an output may carry | prunes nothing — a **leak**, and the output is a valid PDF |
+| redaction | which objects carry the content being removed | removes nothing, and the document looks redacted |
+
+Neither produces an error. Both produce a plausible file. So the rule is enforced by
+`tools/check-handle-identity.py`, which refuses a raw handle compared for equality, used as a
+search needle, collected into a set, or pattern-matched — with a fixture and a near-miss per
+rule verified on every run, the named-file report this repository requires of a check, and
+`tools/test-check-handle-identity.sh` replanting `reorder`'s exact comparison as its first
+case. A line may be exempted with `// handle-identity-ok: <reason>`, and the reason is
+required and printed.
+
+`ObjectHandle::raw` remains, because handing a raw handle *to* qpdf is what it is for. What is
+refused is treating the value as though it meant something to us.
+
 ## Context
 
 M1 PR 1 linked qpdf; nothing used it. This decision covers how it is called, and it had to

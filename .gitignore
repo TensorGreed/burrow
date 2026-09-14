@@ -135,3 +135,13 @@ tests/conformance/native-outcomes.json
 # repository whose whole engine story is about provenance.
 __pycache__/
 *.pyc
+
+# Mutated copies of a checker, written BESIDE the original by its adversarial self-test.
+# Beside it deliberately: a copy in a temp directory resolves the repository root from its own
+# location and exits non-zero for the wrong reason, which an exit-code-only assertion reports
+# as a pass. They are removed on the normal path and left behind by an interrupted run -- and
+# a `git add -A` after an interrupted run is how this repository twice put generated output on
+# main. In the ROOT ignore file, never a directory-local one: checking out another branch
+# deletes a tracked local rule from the working tree, which is exactly when it is needed.
+tools/.*-fixture.py
+tools/.*-fixture.sh

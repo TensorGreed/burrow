@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Limits, Password, Result, Rotation};
+use burrow_types::{Clock, Limits, Password, Permutation, Result, Rotation};
 
 // Engine error codes and their mapping to typed errors. Ungated, like `prescan` below and
 // for the same reason: M1 PR 4's web path needs the SAME mapping table, and two copies of
@@ -104,6 +104,14 @@ mod link_check;
 #[cfg(test)]
 #[path = "../testsupport/minimal_pdf.rs"]
 mod minimal_pdf;
+
+// Reading emitted documents back -- decompression, tolerant array matching, the page-tree
+// walk. Shared for the same reason as the fixtures: `merge`, `split` and `reorder` each
+// rediscovered that qpdf flates content streams and spaces its arrays, and the third time
+// it cost six failing tests against a working operation.
+#[cfg(test)]
+#[path = "../testsupport/pdf_reading.rs"]
+mod pdf_reading;
 
 /// Everything an engine needs to open one document safely.
 ///
@@ -532,6 +540,81 @@ pub trait PageRotator {
         source: &Self::Source,
         pages: &[u64],
         rotation: Rotation,
+        options: &OpenOptions<'_>,
+    ) -> Result<Vec<u8>>;
+}
+
+/// An engine that can put a document's pages in a different order.
+///
+/// The seam `reorder` is written against. Separate from [`PageRotator`] for the reason every
+/// one of these is separate: the operations differ in what they take and in what they are
+/// allowed to change, and one trait with an extra method would mean an `open` that sometimes
+/// means one thing and sometimes another.
+///
+/// # It is not a subsetting operation either
+///
+/// Every input page appears in the output — that is what a permutation is — so
+/// [ADR 0019](../../../docs/adr/0019-how-split-builds-its-outputs.md) §2's rule has nothing to
+/// bite on, and the obligation is the inverse: nothing may be lost. `reorder` therefore edits
+/// the document in place rather than building a new one, as [`PageRotator`] does and unlike
+/// [`PageExtractor`]. Building would drop the outline, the attachments and the `/AcroForm`
+/// (ADR 0019 §1), which is the right trade for a subsetting operation and pure loss here.
+///
+/// # The page tree is rewritten, and an implementation must say so
+///
+/// [ADR 0021](../../../docs/adr/0021-how-reorder-permutes-a-page-tree.md) measured what qpdf
+/// does when a page moves: it **flattens the page tree**, after pushing inherited attributes
+/// down onto each page. So what every page displays is preserved — an inherited `/Rotate`
+/// survives as an explicit one — while intermediate `/Pages` nodes are gone. On a two-level
+/// six-page fixture that is 16 objects in and 14 out.
+///
+/// That is a real change to the document and it is **not** a defect to be hidden: the inverse
+/// closure test excludes page-tree scaffolding by name rather than the harness being weakened,
+/// and `/reorder-pdf` says what changes in a person's words.
+pub trait PageReorderer {
+    /// A document opened once and permuted in place.
+    ///
+    /// No `Send` bound, for the reason [`PageAssembler::Assembly`] gives.
+    type Source;
+
+    /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Open the document to be reordered.
+    ///
+    /// # Errors
+    ///
+    /// The same set [`StructureEngine::check`] documents.
+    fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Source>;
+
+    /// How many pages the document has.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that is not a count.
+    fn pages(&self, source: &Self::Source) -> Result<u64>;
+
+    /// Put the pages in `order` and emit the document.
+    ///
+    /// [`Permutation`] has already established that the order names every page exactly once,
+    /// which is the invariant `docs/ROADMAP.md` states — so an implementation may rely on it
+    /// and does not re-derive it. What it must still check is that the permutation is for
+    /// **this** document: a `Permutation` built against a different page count is a caller's
+    /// mistake, not a malformed file.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — the permutation is not for a document
+    ///   of this size.
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a page could not be moved.
+    /// - [`Error::Io`](burrow_types::Error::Io) — the output could not be written.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling was reached. **The ceilings are
+    ///   the ones the source was opened under**, not `options.limits`, for the reason
+    ///   [`PageRotator::rotate`] gives.
+    fn reorder(
+        &self,
+        source: &Self::Source,
+        order: &Permutation,
         options: &OpenOptions<'_>,
     ) -> Result<Vec<u8>>;
 }

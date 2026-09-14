@@ -631,9 +631,19 @@ pub fn pdf_with_page_tree_shaped(
         offsets.push(out.len());
         out.extend_from_slice(
             format!(
-                "{} 0 obj\n<< /Type /Page /Parent {parent} 0 R /MediaBox [0 0 612 792] \
+                // EVERY PAGE A DIFFERENT WIDTH, so order and identity are observable in the
+                // OUTPUT. qpdf flates content streams on write, so the `(page N)` marker below
+                // is not in the emitted bytes at all -- while page dictionaries are written
+                // plainly. `split.rs` and `merge.rs` use the same device for the same measured
+                // reason, and `add-operation` §2c records the mistake it avoids: a fixture
+                // whose pages are interchangeable cannot fail an order test.
+                //
+                // Widths start at 101 so no page can be confused with a count, a generation
+                // number, or the `0 0` of a `/MediaBox` origin.
+                "{} 0 obj\n<< /Type /Page /Parent {parent} 0 R /MediaBox [0 0 {} 792] \
                  /Resources << >> /Contents {} 0 R{} >>\nendobj\n",
                 page_obj(i),
+                101 + i,
                 stream_obj(i),
                 match placement {
                     // ONLY THE FIRST PAGE, which is what makes this fixture able to tell a

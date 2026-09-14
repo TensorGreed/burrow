@@ -254,7 +254,43 @@ unsafe extern "C" {
     /// start with. qpdf refuses to open a document with no pages — the corpus records
     /// `no-pages.pdf` as `Malformed` — so the empty destination `extract` builds into cannot
     /// actually be empty, and the blank is taken back out once the wanted pages are in.
+    ///
+    /// **`reorder` uses it with the page still in hand.** `QPDF::removePage` is
+    /// `m->pages.erase(page)` and `Pages::erase` does `kids.eraseItem(pos)` — it takes the page
+    /// out of `/Kids` and does **not** destroy the object, so the handle stays usable and can
+    /// be put back elsewhere with [`qpdf_add_page_at`]. Read from `libqpdf/QPDF_pages.cc`
+    /// rather than assumed; the whole permutation rests on it (ADR 0021).
     pub(super) fn qpdf_remove_page(qpdf: QpdfData, page: QpdfObjectHandle) -> QpdfErrorCode;
+
+    /// ```c
+    /// QPDF_ERROR_CODE qpdf_add_page_at(qpdf_data qpdf, qpdf_data newpage_qpdf,
+    ///     qpdf_oh newpage, QPDF_BOOL before, qpdf_oh refpage);
+    /// ```
+    /// `qpdf-c.h:1000-1001`. **Trapped**, `direct` — it calls `trap_errors` in its own body,
+    /// so it needs none of the helper-following argument the `qpdf_oh_*` family required.
+    ///
+    /// Inserts `newpage` next to `refpage`: before it when `before` is `QPDF_TRUE`, after it
+    /// otherwise. `reorder` uses the `before` form exclusively, so a page always lands at a
+    /// known index rather than at "one past something".
+    ///
+    /// # It flattens the page tree, and that is not incidental
+    ///
+    /// Both this and [`qpdf_remove_page`] go through `Pages::erase`/`insert`, which call
+    /// `findPage` — whose own comment says it "also ensures flat /Pages" — and
+    /// `flattenPagesTree` begins with `pushInheritedAttributesToPage(true, true)`.
+    ///
+    /// So reordering **rewrites the document's page tree**: intermediate `/Pages` nodes are
+    /// gone and every page carries the attributes it used to inherit. Measured on a two-level
+    /// fixture whose root held `/Rotate 90`: 16 objects in and 14 out, one `/Rotate` in and
+    /// six out, and every page still displaying turned. ADR 0021 records the measurement and
+    /// why the alternative — rewriting `/Kids` by hand — is worse.
+    pub(super) fn qpdf_add_page_at(
+        qpdf: QpdfData,
+        newpage_qpdf: QpdfData,
+        newpage: QpdfObjectHandle,
+        before: QpdfBool,
+        refpage: QpdfObjectHandle,
+    ) -> QpdfErrorCode;
 
     /// `QPDF_ERROR_CODE qpdf_init_write_memory(qpdf_data qpdf)` — `qpdf-c.h:424`.
     ///
@@ -381,6 +417,27 @@ unsafe extern "C" {
     /// document, never resolves an object, and cannot see a byte of the input — so it meets
     /// that file's bar exactly, and can fail only by allocation.
     pub(super) fn qpdf_oh_new_integer(qpdf: QpdfData, value: i64) -> QpdfObjectHandle;
+
+    /// `int qpdf_oh_get_object_id(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:877`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// # Why `reorder` needs it, and what it cost to find out
+    ///
+    /// **A handle is not an identity.** `qpdf_get_page_n` issues a NEW handle on every call
+    /// (`qpdf_oh oh = ++qpdf->next_oh`), so two handles to the same page compare unequal.
+    /// `reorder`'s first version compared handle ids to decide whether a page was already in
+    /// the right place, concluded "no" for every page that was, removed it and tried to insert
+    /// it before itself — and qpdf answered `qpdf_e_pages` because the reference page was no
+    /// longer in the tree. Every permutation failed, including the identity.
+    ///
+    /// The object number and generation are what identity means in a PDF, and they are stable
+    /// across handles. Paired with [`qpdf_oh_get_generation`], because an object number alone
+    /// is not unique.
+    pub(super) fn qpdf_oh_get_object_id(qpdf: QpdfData, oh: QpdfObjectHandle) -> c_int;
+
+    /// `int qpdf_oh_get_generation(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:879`.
+    /// **Trapped** via `do_with_oh` -> `trap_oh_errors`. See [`qpdf_oh_get_object_id`].
+    pub(super) fn qpdf_oh_get_generation(qpdf: QpdfData, oh: QpdfObjectHandle) -> c_int;
 
     /// `void qpdf_oh_release(qpdf_data qpdf, qpdf_oh oh)` — `qpdf-c.h:630`.
     ///

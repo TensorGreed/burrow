@@ -34,6 +34,17 @@ use burrow_ops::{Cuts, Input, merge, split};
 use burrow_types::{Clock, Error, Limits, ManualClock};
 use proptest::prelude::*;
 
+/// The output reader, shared rather than written a third time.
+///
+/// `widths_in_order` used to live here, and a near-identical copy lived in `merge.rs`, and
+/// `reorder` then wrote a third — which rediscovered, at the cost of six failing tests, the
+/// two facts the comment above already records. The module carries the reasoning with the
+/// code now.
+#[path = "../../burrow-engines/testsupport/pdf_reading.rs"]
+mod pdf_reading;
+
+use pdf_reading::page_widths as widths_in_order;
+
 fn options(limits: Limits) -> OpenOptions<'static> {
     OpenOptions::new(limits, Arc::new(ManualClock::new(0)) as Arc<dyn Clock>)
 }
@@ -88,54 +99,6 @@ fn distinct_pages(pages: usize) -> Vec<u8> {
     out
 }
 
-/// The `/MediaBox` widths of a document's pages, in page-tree order.
-///
-/// Returns an empty vector rather than panicking if the structure is not where it is expected,
-/// so a test fails by comparing against a full expected sequence rather than passing
-/// vacuously. Same shape, and same reasoning, as `merge.rs`'s reader.
-fn widths_in_order(bytes: &[u8]) -> Vec<u32> {
-    let text = String::from_utf8_lossy(bytes);
-    let Some(kids_at) = text.find("/Kids") else {
-        return Vec::new();
-    };
-    let after = &text[kids_at..];
-    let (Some(open), Some(close)) = (after.find('['), after.find(']')) else {
-        return Vec::new();
-    };
-    let numbers: Vec<u32> = after[open + 1..close]
-        .split_whitespace()
-        .filter_map(|t| t.parse::<u32>().ok())
-        .collect();
-    let object_numbers: Vec<u32> = numbers
-        .chunks(2)
-        .filter_map(|c| c.first().copied())
-        .collect();
-
-    object_numbers
-        .iter()
-        .filter_map(|n| {
-            let at = text.find(&format!("\n{n} 0 obj"))?;
-            let body = &text[at..];
-            // BETWEEN THE BRACKETS, not by counting tokens. `[0 0 101 200]` and
-            // `[ 0 0 101 200 ]` are the same array and qpdf writes the second, so a
-            // `nth(3)` that works on the fixture reads the y-origin out of the output --
-            // every width came back as 0 and the test failed with a vector of zeroes.
-            let box_at = body.find("/MediaBox")?;
-            let after = &body[box_at..];
-            let open = after.find('[')?;
-            let close = after.find(']')?;
-            let numbers: Vec<u32> = after[open + 1..close]
-                .split_whitespace()
-                .filter_map(|t| t.parse::<u32>().ok())
-                .collect();
-            // A `/MediaBox` is four numbers; anything else means this reader is looking at
-            // something it does not understand, and returning `None` makes the test fail
-            // with a short vector rather than a plausible wrong one.
-            (numbers.len() == 4).then(|| numbers[2])
-        })
-        .collect()
-}
-
 fn split_at(doc: Vec<u8>, cuts: &[u64], limits: Limits) -> burrow_types::Result<Vec<Vec<u8>>> {
     split(
         &Qpdf::new(),
@@ -155,7 +118,7 @@ fn every_page_appears_exactly_once_across_the_outputs() {
 
     let outputs = split_at(source, &[3, 7], Limits::default()).expect("split");
 
-    let seen: Vec<u32> = outputs.iter().flat_map(|o| widths_in_order(o)).collect();
+    let seen: Vec<u64> = outputs.iter().flat_map(|o| widths_in_order(o)).collect();
     assert_eq!(
         seen, expected,
         "the outputs are not the input's pages, once each, in order"
@@ -217,7 +180,7 @@ proptest! {
         let outputs = split_at(source, &[cut], Limits::default()).expect("split");
 
         prop_assert_eq!(outputs.len(), 2);
-        let seen: Vec<u32> = outputs.iter().flat_map(|o| widths_in_order(o)).collect();
+        let seen: Vec<u64> = outputs.iter().flat_map(|o| widths_in_order(o)).collect();
         prop_assert_eq!(seen, expected);
     }
 }

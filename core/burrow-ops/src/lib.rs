@@ -29,10 +29,12 @@
 pub use burrow_engines as engines;
 
 pub mod merge;
+pub mod reorder;
 pub mod rotate;
 pub mod split;
 
 pub use merge::{Input, check_total_input_bytes, merge};
+pub use reorder::reorder;
 pub use rotate::{Pages, rotate};
 pub use split::{Cuts, split};
 
@@ -50,7 +52,7 @@ pub use split::{Cuts, split};
 /// divergence; it is recorded rather than hidden, because the alternative is a constant that
 /// means something different depending on which crate reads it. A caller that needs to know
 /// what a *binding* can do must ask the binding.
-pub const AVAILABLE: &[&str] = &["merge", "rotate", "split"];
+pub const AVAILABLE: &[&str] = &["merge", "reorder", "rotate", "split"];
 
 #[cfg(test)]
 mod tests {
