@@ -231,7 +231,7 @@ jobs:
             done
           }
           engines_suites="parallelism limits properties structure secret_leak prescan"
-          ops_suites="conformance merge rotate rotate_keeps_everything split split_no_leak subset_closure"
+          ops_suites="conformance merge reorder reorder_keeps_everything rotate rotate_keeps_everything split split_no_leak subset_closure"
           run_suites burrow-engines $engines_suites
           run_suites burrow-ops $ops_suites
 
@@ -285,6 +285,36 @@ jobs:
           done
           [ "$failed" -eq 2 ] || { echo "::error::expected 2 known-unmet tests, ran $failed" >&2; exit 1; }
           echo "OK -- $failed known-unmet test(s) failed as required; the gap is measured, not asserted"
+
+      # The other kind of ignored test: a REPRODUCTION, required to pass.
+      #
+      # The step above runs ignored tests that must FAIL, because they assert a rule the code
+      # does not yet meet. This one runs ignored tests that must PASS, because they assert the
+      # defective behaviour exactly as it is -- so the day the defect is fixed, or moves, this
+      # step goes red and says which issue needs re-measuring. An ignored test nobody runs is
+      # a comment containing `assert!`, whichever direction it points in.
+      #
+      # #61: a damaged-but-openable document loses a page on write, on every operation
+      # including `rotate`, which has shipped. Found by fuzzing `reorder`; not reorder's.
+      - name: Known-defect reproductions still reproduce
+        run: |
+          set -u
+          expected="reorder_keeps_everything::a_damaged_document_loses_pages_on_write"
+          ran=0
+          for suite_test in $expected; do
+            suite=${suite_test%%::*}
+            name=${suite_test##*::}
+            echo "--- $suite::$name (expected to PASS, because it reproduces a defect)"
+            if ! cargo test -p burrow-ops --all-features --test "$suite" -- --ignored --exact "$name" >/tmp/repro.log 2>&1; then
+              echo "::error::$suite::$name no longer reproduces. Either the defect is fixed -- in which case turn this into a positive test, close the issue it names and move the fixture into the conformance corpus -- or the behaviour has moved and the issue needs re-measuring." >&2
+              tail -20 /tmp/repro.log >&2
+              exit 1
+            fi
+            ran=$((ran + 1))
+            echo "    reproduced as required"
+          done
+          [ "$ran" -eq 1 ] || { echo "::error::expected 1 reproduction, ran $ran" >&2; exit 1; }
+          echo "OK -- $ran known-defect reproduction(s) still reproduce"
 
       # Asks the question check-engine-licences.py cannot: is every component we can
       # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared
@@ -442,14 +472,14 @@ jobs:
       # x86-64. If this step fails to link here, that is the answer to the open question,
       # and the target moves to the self-hosted arm64 runner with the decision recorded
       # rather than worked around. See fuzz/README.md.
-      - name: fuzz qpdf_check and merge for 60s each, against the instrumented archive
+      - name: fuzz the qpdf operations for 60s each, against the instrumented archive
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in qpdf_check merge split rotate; do
+          for target in qpdf_check merge split rotate reorder; do
             cargo +nightly fuzz run "$target" -- \
               -max_total_time=60 -timeout=10 -rss_limit_mb=2048
           done
@@ -564,6 +594,21 @@ jobs:
         run: |
           python3 tools/check-qpdf-trapped.py
           tools/test-check-qpdf-trapped.sh
+
+      # A `qpdf_oh` is a cache key that is fresh on every call, not an object's identity.
+      # `reorder` compared two raw handles to ask whether a page was already in place; the
+      # comparison was false for every page, so every permutation -- the identity included --
+      # failed with `qpdf_e_pages`. That one failed loudly. `split`'s pruning and redaction
+      # make the same decision, and the same mistake there prunes nothing and redacts
+      # nothing while producing a perfectly valid PDF. ADR 0013's handle-identity amendment.
+      #
+      # Here, in the job that fetches nothing, because it reads only Rust source -- and it
+      # scans untracked files too, since the code being written is exactly where this
+      # mistake is made.
+      - name: no qpdf handle is used as an object identity (ADR 0013)
+        run: |
+          python3 tools/check-handle-identity.py
+          tools/test-check-handle-identity.sh
 
       # Compile every tool in tools/ with warnings promoted to errors.
       #

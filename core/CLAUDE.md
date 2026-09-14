@@ -93,6 +93,20 @@ the invariant it relies on and why it holds. Other crates are `#![forbid(unsafe_
 **Never log or embed file content** in an error, a debug print, or a panic message. Errors
 describe the failure, not the input.
 
+**A `qpdf_oh` handle is not an identity.** qpdf issues a **fresh** handle on every call that
+yields one (`qpdf_oh oh = ++qpdf->next_oh;`), so two handles to the same object never compare
+equal — there is no input for which they do. The identity of a PDF object is its **object
+number and generation**: `ObjectHandle::object()`, which is the only thing that may be
+compared. `ObjectHandle::raw()` exists to hand a handle *to* qpdf and for nothing else.
+
+`reorder` compared two raw handles to ask whether a page was already in place, and every
+permutation failed with `qpdf_e_pages` — the identity permutation included. That one failed
+loudly. `split`'s pruning and redaction make the same decision, and an always-false comparison
+there prunes nothing and redacts nothing while producing a valid PDF. So the rule is checked:
+`tools/check-handle-identity.py` refuses a raw handle compared, searched for, collected into a
+set, or matched, and CI runs it with its adversarial self-test. ADR 0013's handle-identity
+amendment has the measurement.
+
 ## Tests
 
 Four kinds, and an operation is not done without all of them:

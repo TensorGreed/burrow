@@ -27,13 +27,13 @@ fn stopped() -> Arc<dyn Clock> {
 /// it reachable from the fuzz targets, where a clock that moves on its own would turn every
 /// long input into a `LimitExceeded` and hide whatever the input was really doing.
 #[derive(Debug)]
-struct SteppingClock {
+pub(super) struct SteppingClock {
     step_ms: u64,
     now_ms: std::sync::atomic::AtomicU64,
 }
 
 impl SteppingClock {
-    const fn new(step_ms: u64) -> Self {
+    pub(super) const fn new(step_ms: u64) -> Self {
         Self {
             step_ms,
             now_ms: std::sync::atomic::AtomicU64::new(0),

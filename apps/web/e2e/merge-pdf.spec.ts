@@ -228,19 +228,53 @@ test("it says the engine is loading, and stops saying it once it has", async ({ 
   //
   // Not throttled here, so the line is brief. What is asserted is that it appears before the
   // first count and is gone after it — not how long it lasts, which is the network's business.
+  //
+  // RECORDED WITH AN OBSERVER RATHER THAN CAUGHT WITH AN ASSERTION, and that was a fix. The
+  // first version polled the live element twice in a row — `toBeVisible()`, then
+  // `toContainText(...)` — for a line whose whole purpose is to be transient. On a fast
+  // runner the engine finished between the two polls, the element was gone, and the test
+  // failed on a page that had behaved perfectly. Flaky in the worst direction: it reported a
+  // correct build as broken, twice, and would have gone on doing so at random.
+  //
+  // A MutationObserver installed BEFORE the file is chosen cannot lose that race: it records
+  // every state the line passed through, and the assertions read the history. Nothing about
+  // what is being asserted changes — only whether the test can observe it.
   await page.goto("/merge-pdf");
 
   const preparing = page.locator(".preparing");
   await expect(preparing).toHaveCount(0);
 
-  await page.locator("input[type=file]").setInputFiles(fixture("pages-10.pdf"));
-  await expect(
-    preparing,
-    "the page never said it was fetching the engine, so the first file's wait is unexplained",
-  ).toBeVisible();
-  await expect(preparing).toContainText("once per visit");
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { __preparingSeen: string[] }).__preparingSeen = seen;
+    const record = () => {
+      const line = document.querySelector(".preparing");
+      if (line) {
+        seen.push(line.textContent ?? "");
+      }
+    };
+    record();
+    new MutationObserver(record).observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  });
 
+  await page.locator("input[type=file]").setInputFiles(fixture("pages-10.pdf"));
   await expect(page.locator(".total")).toContainText("10", { timeout: 45_000 });
+
+  const seen = await page.evaluate(
+    () => (window as unknown as { __preparingSeen: string[] }).__preparingSeen,
+  );
+  expect(
+    seen.length,
+    "the page never said it was fetching the engine, so the first file's wait is unexplained",
+  ).toBeGreaterThan(0);
+  expect(
+    seen.some((text) => text.includes("once per visit")),
+    `the line appeared but never explained itself; it said: ${JSON.stringify(seen)}`,
+  ).toBe(true);
   await expect(
     preparing,
     "the line stayed up after the engine was ready, so it says nothing about what is happening",

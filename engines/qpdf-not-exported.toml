@@ -66,3 +66,37 @@ could call this. Exporting it would let JavaScript remove a page from a document
 operation the web cannot perform. Drifted onto main in PR #55 and undetected until rotate's \
 branch busted the wasm cache -- it is recorded here rather than quietly exported, because the \
 honest state is "declared, not yet reachable from the web", not "cleared for the web"."""
+
+[[function]]
+name = "qpdf_add_page_at"
+operation = "reorder"
+reason = """\
+Inserts a page next to a reference page, which is how `reorder` puts a page back after taking \
+it out. Trapped (`direct` -- it calls trap_errors in its own body), so calling it natively is \
+cleared by ADR 0013 §1 without any helper-following argument. Not exported because the web has \
+no `impl PageReorderer for WebQpdf` yet and so has no caller; it goes in the pull request that \
+gives the web the implementation, in the same change that adds the export. \
+Note what it does beyond inserting: like `qpdf_remove_page` it routes through Pages::erase / \
+insert, which flatten the page tree and push inherited attributes down onto each page first. \
+That is a structural rewrite of the document rather than a permutation of it, measured and \
+recorded in ADR 0021 -- and it is the reason reorder's page has to say what changes."""
+
+[[function]]
+name = "qpdf_oh_get_object_id"
+operation = "reorder"
+reason = """\
+Reads an object's number, which with its generation is what object IDENTITY means in a PDF -- \
+a `qpdf_oh` handle is not one, because qpdf issues a fresh handle on every call (ADR 0013's \
+handle-identity amendment). `reorder` needs it to ask whether a page is already where it \
+belongs. Trapped via `do_with_oh -> trap_oh_errors`. Not exported because the web has no \
+`impl PageReorderer for WebQpdf` yet and so has no caller; it goes in the pull request that \
+gives the web the implementation, in the same change that adds the export."""
+
+[[function]]
+name = "qpdf_oh_get_generation"
+operation = "reorder"
+reason = """\
+The other half of a PDF object's identity, and useless apart from `qpdf_oh_get_object_id` -- \
+two objects may share a number across generations, so comparing the number alone would call \
+two different objects the same one. Same trapping route, same operation, same reason for not \
+being exported yet, and the two are added and removed together."""

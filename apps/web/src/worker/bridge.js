@@ -19,6 +19,9 @@
 //   * `__burrow_pdfium_free_input` and `__burrow_pdfium_close` are separate, rather than one
 //     function with `if (doc !== 0)`. That `if` would be a branch on engine state. Rust
 //     knows whether a document was created and picks; the bridge just does as it is told.
+//     Both take a LENGTH, because both release the user's document and both wipe it first:
+//     a plain `_free` returns those bytes to the module's free list intact, where they stay
+//     for the life of the worker -- and one worker serves many documents in a session.
 //
 //   * `__burrow_pdfium_load` returns the handle and the error code packed into one BigInt.
 //     `FPDF_GetLastError` reads a process-global slot that the next PDFium call overwrites,
@@ -133,7 +136,7 @@ const heapPages = (module) => module.HEAPU8.byteLength / 65536;
 
 self.__burrow_pdfium_copy_in = (bytes) => copyInto(pdfium(), bytes);
 self.__burrow_pdfium_wipe_free = (ptr, len) => wipeAndFree(pdfium(), ptr, len);
-self.__burrow_pdfium_free_input = (ptr) => pdfium()._free(ptr);
+self.__burrow_pdfium_free_input = (ptr, len) => wipeAndFree(pdfium(), ptr, len);
 
 self.__burrow_pdfium_load = (data, len, password) => {
   const doc = pdfium()._FPDF_LoadMemDocument64(data, len, password);
@@ -144,12 +147,12 @@ self.__burrow_pdfium_load = (data, len, password) => {
 
 self.__burrow_pdfium_pages = (doc) => pdfium()._FPDF_GetPageCount(doc);
 
-self.__burrow_pdfium_close = (doc, data) => {
-  // Close, then free. PDFium reads from the input buffer for as long as the document is
-  // open (fpdfview.h:451), so the other order is a use-after-free. Two statements in one
+self.__burrow_pdfium_close = (doc, data, len) => {
+  // Close, then wipe and free. PDFium reads from the input buffer for as long as the document
+  // is open (fpdfview.h:451), so the other order is a use-after-free. Two statements in one
   // function is the only reason no call site can get it wrong.
   pdfium()._FPDF_CloseDocument(doc);
-  pdfium()._free(data);
+  wipeAndFree(pdfium(), data, len);
 };
 
 self.__burrow_pdfium_heap_pages = () => heapPages(pdfium());
@@ -157,6 +160,9 @@ self.__burrow_pdfium_heap_pages = () => heapPages(pdfium());
 // --- qpdf -----------------------------------------------------------------------------
 
 self.__burrow_qpdf_copy_in = (bytes) => copyInto(qpdf(), bytes);
+// Plain `_free`, for buffers this crate wrote itself and that hold nothing of the user's --
+// the fixed `DESCRIPTION` string, and the `/Rotate` and `/Parent` key names. The user's
+// DOCUMENT goes through `__burrow_qpdf_wipe_free`, as the password always has.
 self.__burrow_qpdf_free = (ptr) => qpdf()._free(ptr);
 self.__burrow_qpdf_wipe_free = (ptr, len) => wipeAndFree(qpdf(), ptr, len);
 

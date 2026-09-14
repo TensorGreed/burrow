@@ -39,6 +39,13 @@
 
 #![allow(dead_code, clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
+/// Reading a document back without a PDF parser — decompression, arrays, the page tree.
+///
+/// Declared here rather than beside this module so a test binary that wants both gets one
+/// copy: every consumer of this harness reaches it as `object_closure::pdf_reading`.
+#[path = "pdf_reading.rs"]
+pub mod pdf_reading;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -215,47 +222,11 @@ fn field_number(text: &str, key: &str) -> Option<u64> {
 
 /// `qpdf --qdf` the bytes, so a marker inside a compressed stream is findable.
 ///
-/// **Via temp files and with no fallback.** `qpdf --qdf - -` looks like the obvious spelling
-/// and this qpdf rejects it (`open -: No such file or directory`), writing nothing -- and a
-/// helper that fell back to the raw bytes then scanned COMPRESSED output while reporting a
-/// clean result. Measured; ADR 0019's third correction.
-pub fn expanded(bytes: &[u8]) -> Vec<u8> {
-    let dir = std::env::temp_dir();
-    let tag = format!(
-        "burrow-closure-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    );
-    let input = dir.join(format!("{tag}-in.pdf"));
-    let output = dir.join(format!("{tag}-out.pdf"));
-    std::fs::write(&input, bytes).expect("write the document to expand");
-
-    let status = Command::new("qpdf")
-        .args(["--qdf", "--object-streams=disable"])
-        .arg(&input)
-        .arg(&output)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect(
-            "the `qpdf` CLI is needed to decompress output before scanning it; without it a \
-             marker inside a flated stream is invisible and the scan reports silence for the \
-             wrong reason",
-        );
-    // 0 is clean, 3 is warnings -- both wrote a file.
-    assert!(
-        matches!(status.code(), Some(0 | 3)),
-        "qpdf could not expand the document ({status:?}), so nothing could be scanned"
-    );
-    let expanded = std::fs::read(&output).expect("read the expanded document");
-    assert!(
-        !expanded.is_empty(),
-        "qpdf produced an empty expansion, so nothing could be scanned"
-    );
-    let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_file(&output);
-    expanded
-}
+/// **Re-exported, not implemented here.** It used to be a copy, and `reorder` then wrote a
+/// third one — which is how a lesson already recorded in two files cost six failing tests
+/// again. `pdf_reading` is the one home for reading output back, and the reasoning lives
+/// there with it.
+pub use pdf_reading::expanded;
 
 /// Which marked objects survived into `output`.
 ///
@@ -342,8 +313,21 @@ pub fn assert_nothing_lost(marked: &Marked, output: &[u8], must: &[u64], what: &
 /// Every object of `kind` that belongs to at least one of `pages`.
 ///
 /// What a caller passes to [`assert_nothing_lost`]. The kind is the caller's obligation stated
-/// explicitly: a subsetting operation requires `"content"`, because ADR 0019 §1 lets it drop
-/// navigation; `rotate`, `reorder` and `compress` keep every page and require both.
+/// explicitly, and there are three:
+///
+/// | kind | what it is | who may lose it |
+/// |---|---|---|
+/// | `content` | what a page is made of | nobody who keeps the page |
+/// | `navigation` | document furniture pointing at pages | a subsetting operation (ADR 0019 §1) |
+/// | `page-tree` | an intermediate `/Pages` node, holding other pages | anything that moves a page (ADR 0021) |
+///
+/// So a subsetting operation requires `"content"`; `rotate` and `compress` require
+/// `"content"` and `"navigation"`; `reorder` requires the same two and **states** that it
+/// loses the third, by name.
+///
+/// **The third kind is an exemption, not a weakening.** `assert_nothing_lost` still requires
+/// everything it is given, whole. The alternative considered and rejected was relaxing it to a
+/// subset check, which would have quietly relaxed it for `rotate` and `compress` as well.
 #[must_use]
 pub fn owned_by(marked: &Marked, pages: &[u64], kinds: &[&str]) -> Vec<u64> {
     marked

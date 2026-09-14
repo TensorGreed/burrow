@@ -40,3 +40,11 @@ challenge point is the part of the review they will notice is missing.
   `Command::new("qpdf")`.
 - `#[ignore]`d tests are the repo's way of pinning a known-unmet rule. Run them with
   `-- --ignored` to check they still fail, and for the reason claimed.
+- Rust mutation testing here: edit the file in place, run
+  `cargo test --workspace --all-features`, restore from a scratchpad copy. Two traps.
+  (a) **A surviving mutation is not automatically a gap** — check it is not semantically
+  equivalent first. `qpdf_add_page_at`'s `before` flag flipped to `after` survives the whole
+  suite, and a brute-force simulation over every permutation up to n=6 shows both variants
+  produce the identical result, so the tests are not at fault.
+  (b) **A mutation that breaks a proptest writes `tests/<name>.proptest-regressions`** into
+  the repo. Delete it before finishing — this repo fails CI on tracked generated files.

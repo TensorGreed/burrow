@@ -9,7 +9,7 @@ Dates are deliberately absent. The order is the commitment.
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `split` **held** (#54), `reorder`/`compress` next |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` core ✅ (bridge and page next), `split` **held** (#54), `compress` next |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started |
 | [M4](#m4--ios) | iOS app | not started |
@@ -412,8 +412,29 @@ assert:
 | `merge` ✅ | Output page count equals the sum of inputs; page order is preserved; merging one document is the identity |
 | `split` | Splitting then merging round-trips to the original page sequence; every input page appears exactly once across outputs. **Both hold; the subsetting rule in ADR 0019 §2 does not yet — see #54.** |
 | `rotate` ✅ | Four 90° rotations return to the original; rotation is recorded, not re-rasterised. **Both hold**: `four_ninety_degree_rotations_return_to_the_original`, and `every_page_s_content_stream_comes_out_byte_identical` — which searches each page's operator run in the decompressed output rather than comparing whole stream bodies, a narrower claim than its name suggests. |
-| `reorder` | Output is a permutation of the input — no page lost, added, or duplicated; the identity permutation is a no-op |
+| `reorder` (core ✅) | Output is a permutation of the input — no page lost, added, or duplicated; the identity permutation is a no-op. **Both hold**: `any_permutation_is_carried_out_exactly` reads the order back out of the emitted bytes, and `the_identity_permutation_is_a_no_op` asserts it on the page ORDER rather than on the bytes — qpdf rewrites the file it is asked to write, so the output is never byte-identical to the input and no operation here preserves a signature. The page tree is flattened by any real permutation and left alone by the identity ([ADR 0021](adr/0021-how-reorder-permutes-a-page-tree.md)); `reorder_keeps_everything.rs` requires `content` and `navigation` whole and states that third-kind loss by name. The bridge and `/reorder-pdf` are not built yet. |
 | `compress` | Output is never larger than the input; page count and page dimensions are unchanged; text remains extractable |
+
+### Two findings from fuzzing `reorder`, neither of which is reorder's
+
+Both were found in the same run, and both were only reachable because the target's corpus was
+**seeded with real PDFs** for the first time. That is the third finding, and the one that
+generalises: `fuzz/corpus/` is gitignored and nothing here has ever shipped a seed set, so
+every "runs clean for 60 s" this project has recorded was measured against a corpus grown from
+random bytes. Measured, with a defect deliberately planted: 577,209 unseeded executions found
+nothing, and one seed failed on the first execution.
+
+- **#61 — a damaged-but-openable document silently loses a page on write.** Opens as 5, writes
+  4, no error, valid output. Reproduces through `rotate` (shipped) and through a plain write,
+  so it belongs to the write path rather than to any operation. Pinned by an `#[ignore]`d
+  reproduction in `reorder_keeps_everything.rs` and a CI step that requires it to keep
+  reproducing. The whole input class — damaged enough to be wrong, intact enough to open — had
+  no coverage: every damaged fixture in the conformance corpus is refused at open.
+- **#62 — memory-unsafety in the pinned qpdf 12.4.1, on the open path.** Upstream's code,
+  reachable from opening any untrusted document. Private disclosure pending; no reproducer is
+  in this repository. ADR 0013's trapping is unaffected and does not help — it catches C++
+  exceptions, which this is not. The web build's wasm sandbox is a real mitigation; the native
+  paths have none, and nothing native ships today.
 
 ### Web app
 

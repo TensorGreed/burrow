@@ -28,10 +28,10 @@ use super::bridge::{LoadOutcome, PdfiumBridge, PdfiumPtr, QpdfBridge, QpdfPtr};
 pub(super) enum Call {
     CopyIn(usize),
     WipeAndFree(u32, u32),
-    AbandonInput(u32),
+    AbandonInput(u32, u32),
     Load,
     PageCount,
-    CloseDocument(u32, u32),
+    CloseDocument(u32, u32, u32),
     Init,
     Cleanup,
     SilenceErrors,
@@ -287,9 +287,17 @@ impl PdfiumBridge for FakePdfium {
         heap.free(ptr.0);
     }
 
-    fn abandon_input(&self, ptr: PdfiumPtr) {
-        self.state.record(Call::AbandonInput(ptr.0));
-        self.state.heap.lock().expect("not poisoned").free(ptr.0);
+    fn abandon_input(&self, ptr: PdfiumPtr, len: u32) {
+        self.state.record(Call::AbandonInput(ptr.0, len));
+        // MODELS THE WIPE, like `wipe_and_free` above. A fake that only freed would let a
+        // test assert "the call happened" and nothing about the bytes, which is the weaker
+        // claim -- and this buffer holds the user's document.
+        let mut heap = self.state.heap.lock().expect("not poisoned");
+        if let Some((_, bytes)) = heap.live.iter_mut().find(|(at, _)| *at == ptr.0) {
+            bytes.fill(0);
+            *self.state.wiped.lock().expect("not poisoned") = Some(bytes.clone());
+        }
+        heap.free(ptr.0);
     }
 
     fn load_mem_document64(
@@ -323,11 +331,17 @@ impl PdfiumBridge for FakePdfium {
         self.script.page_count
     }
 
-    fn close_document(&self, doc: PdfiumPtr, data: PdfiumPtr) {
+    fn close_document(&self, doc: PdfiumPtr, data: PdfiumPtr, len: u32) {
         // Recorded as one call, which is the point: the ordering is not expressible at a
         // call site, so a test asserting "close before free" is asserting about this.
-        self.state.record(Call::CloseDocument(doc.0, data.0));
-        self.state.heap.lock().expect("not poisoned").free(data.0);
+        self.state.record(Call::CloseDocument(doc.0, data.0, len));
+        let mut heap = self.state.heap.lock().expect("not poisoned");
+        // The wipe, modelled -- see `abandon_input`.
+        if let Some((_, bytes)) = heap.live.iter_mut().find(|(at, _)| *at == data.0) {
+            bytes.fill(0);
+            *self.state.wiped.lock().expect("not poisoned") = Some(bytes.clone());
+        }
+        heap.free(data.0);
     }
 
     fn heap_bytes(&self) -> u64 {

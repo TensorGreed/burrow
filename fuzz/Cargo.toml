@@ -73,3 +73,10 @@ path = "fuzz_targets/rotate.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "reorder"
+path = "fuzz_targets/reorder.rs"
+test = false
+doc = false
+bench = false

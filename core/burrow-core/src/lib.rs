@@ -14,7 +14,9 @@
 )]
 
 pub use burrow_ops as ops;
-pub use burrow_types::{Clock, Deadline, Error, Limits, Password, Result, Rotation, Stage};
+pub use burrow_types::{
+    Clock, Deadline, Error, Limits, Password, Permutation, Result, Rotation, Stage,
+};
 
 /// The engine trait seams.
 ///
