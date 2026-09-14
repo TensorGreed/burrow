@@ -1,0 +1,154 @@
+---
+// The third tool page. One URL, indexable, its own title and prose — people arrive here from
+// a search for "reorder pdf pages", not from the landing page.
+//
+// The interactive part is one island. Everything above and below it is static, so the page is
+// readable and its claim is checkable with JavaScript switched off.
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="Reorder PDF pages — rearrange them on your own computer | burrow"
+  description="Move pages around inside a PDF. The pages are rearranged in your browser and never uploaded, because there is no server to upload them to."
+>
+  <div class="read">
+    <h1>Reorder PDF pages</h1>
+
+    <p>
+      Move pages around inside a PDF — put a page first, reverse a scan that came out back to front,
+      or shuffle a few into the order they should have been in. The rearranging happens in this
+      browser, on this computer: the file is not uploaded, because burrow has no server that could
+      receive it.
+    </p>
+  </div>
+
+  {
+    /*
+    NO `client:*` DIRECTIVE. Astro's hydration directives bootstrap an island with an INLINE
+    script, and `script-src 'self'` carries no `'unsafe-inline'` and no nonce (ADR 0014) — so
+    the browser refuses the bootstrap, the island never hydrates, and the tool renders as dead
+    markup with nothing visible but a CSP line in the console. Measured on `/merge-pdf`; the
+    same wall, the same answer on every page since.
+
+    The ENGINES are still not loaded here. The tool starts a worker the first time a file is
+    chosen (ADR 0018). Mounting the component is a few kilobytes; starting the engines is
+    6.8 MB.
+  */
+  }
+  <div id="reorder-tool"></div>
+
+  <script>
+    import { type Component, mount } from "svelte";
+
+    import ReorderTool from "../components/ReorderTool.svelte";
+
+    const target = document.getElementById("reorder-tool");
+    if (target) {
+      // The cast is Astro's type, not ours: `@astrojs/svelte` declares a `.svelte` default
+      // export as an ASTRO component, because that is what a `client:*` directive would need.
+      // Mounting it by hand is the same module reached through Svelte's own API.
+      mount(ReorderTool as unknown as Component, { target });
+    }
+  </script>
+
+  <noscript>
+    <div class="read no-js">
+      <h2>This tool needs JavaScript</h2>
+      <p>
+        The rearranging is done by code running in your browser, so with JavaScript switched off
+        there is nothing to do the work. There is no server-side version to fall back to — that is
+        the whole design, not a missing feature.
+      </p>
+      <p>
+        With JavaScript on, this page lets you choose a PDF, type the order you want its pages in,
+        and download the result. Nothing is sent anywhere.
+      </p>
+    </div>
+  </noscript>
+
+  <div class="read">
+    <h2>Saying what order you want</h2>
+
+    <p>
+      Type the pages you want moved. <strong>They come first, in the order you type them</strong>,
+      and every page you do not type keeps its current order after them. So on a ten-page document,
+      <code>3</code> puts page 3 first and leaves 1, 2, 4, 5… following it; <code>4, 2</code> puts those
+      two at the front in that order.
+    </p>
+
+    <p>
+      Ranges work, and they can run backwards: <code>2-5</code> moves those four to the front in order,
+      and <code>10-1</code> reverses the whole document — which is what the
+      <strong>Reverse the order</strong> button types for you.
+    </p>
+
+    <p>
+      The page shows the order your pages will come out in before you run anything. That is there
+      because the rule above is a rule rather than a guess, and the way to keep it one is to let you
+      see the result rather than take our word for it.
+    </p>
+
+    <p>
+      <strong>There are no page pictures yet.</strong> Choosing pages here means knowing their numbers,
+      and for reordering that is harder than it is for the other tools — turning a page you can find by
+      number, but deciding where a page should go usually means looking at it. It is a real limitation
+      rather than an oversight: showing pages means rendering them, and rendering a long document needs
+      a memory ceiling burrow does not have yet. It is being built; until it is, this page does not pretend
+      to offer it.
+    </p>
+
+    <h2>What happens to large files</h2>
+
+    <p>
+      Everything is held in this browser tab's memory, so the practical limit is what your device
+      can spare rather than an upload size. burrow refuses a file larger than 512 MB before it opens
+      it, and a document of more than 10,000 pages before it moves any of them — so an oversized job
+      is refused rather than failing part way through and leaving you with something incomplete.
+    </p>
+
+    <p>
+      What that does not save you from, said here rather than discovered: a very large document that
+      is under both limits can still make the tab slow while it runs, and on a phone the browser may
+      stop the tab entirely. That is the device's memory ceiling, reached inside the PDF engine
+      where nothing can intervene.
+    </p>
+
+    <h2>What is kept, and what is not</h2>
+
+    <p>
+      <strong>Every page, and everything attached to the document.</strong> Reordering moves pages around;
+      it does not remove any. Bookmarks, attachments, form fields and annotations all come through, and
+      what each page displays is unchanged — including pages that inherit their rotation or their size
+      from the document rather than carrying it themselves, which is the case most likely to go wrong
+      and the one burrow's tests check directly.
+    </p>
+
+    <p>
+      <strong>The document's internal page tree is rebuilt.</strong> PDFs store pages in a tree, and moving
+      a page makes the PDF engine flatten that tree into a single list. Nothing a reader shows you changes,
+      and no page is lost — but the file's internal structure genuinely differs from the original, so
+      a byte-for-byte comparison of the two will not match. That matters to nobody reading the document
+      and to anybody comparing its bytes, which is why it is written here rather than left to be discovered.
+    </p>
+
+    <p>
+      <strong>A signature does not survive.</strong> No tool here preserves one — any change to a PDF
+      invalidates a digital signature — but it is worth saying on this page in particular, because "the
+      pages are the same pages" is true and the file is still not the same file.
+    </p>
+
+    <p>
+      A file that is encrypted, damaged, or not a PDF is refused. So is an order that would not give
+      every page back exactly once: type a page twice and burrow says so rather than handing you a
+      document with one page duplicated and another gone.
+    </p>
+  </div>
+</BaseLayout>
+
+<style>
+  /* The no-JS block is ordinary content, but it only ever appears in place of the tool, so it
+     gets the same top margin the tool has. */
+  .no-js {
+    margin-block-start: var(--space-6);
+  }
+</style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The rotate tool. One island, and the only JavaScript this page ships.
+  // The reorder tool. One island, and the only JavaScript this page ships.
   //
   // Built on the parts `/merge-pdf` established rather than re-deciding them: the worker host
   // is IMPORTED (not fetched from `/host/`), the engines start on first use, every typed error
@@ -10,20 +10,34 @@
   //
   // WHAT IS DIFFERENT HERE, and why:
   //
-  //   * ONE FILE, not a list. So there is no ordering, no per-file problem row, and no
-  //     `InputFailed` wrapper to unwrap -- a failure is about the one document in front of
-  //     the person.
-  //   * A SELECTION, which merge had no equivalent of. Parsed by `page-selection.ts`, a pure
-  //     function with its own tests, against the page count the core reported.
-  //   * NO THUMBNAILS. ADR 0020 records the decision and issue #57 carries the work. The
-  //     honest consequence is that choosing pages means knowing their numbers, and the page
-  //     says so rather than leaving somebody to notice.
+  //   * AN ORDER, not a selection. `page-selection.ts` sorts and de-duplicates, which is right
+  //     for "which pages" and wrong for "in what order" -- `3, 1` and `1, 3` are different
+  //     documents, and `1, 1` is a request that would lose a page rather than a tidy-away.
+  //     `reorder-order.ts` is the separate parser, with its own tests.
+  //   * A PARTIAL ORDER IS COMPLETED, by a rule the page states and SHOWS. A permutation of a
+  //     500-page document is 500 numbers; requiring all of them would make the tool useless
+  //     for the thing people want. Pages you list come first, in the order you list them, and
+  //     everything else keeps its place after them.
+  //   * A PREVIEW, which neither other tool has. The completion rule is a rule rather than a
+  //     guess, and the way to keep it one is to let somebody see the result before they run
+  //     it -- the design brief's "the interface reports, it does not reassure".
+  //   * NO THUMBNAILS, and it bites harder here than on rotate. ADR 0020 records the decision
+  //     and #57 carries the work; reordering by number without seeing the pages is genuinely
+  //     harder than turning them, and the page says so rather than leaving somebody to notice.
   import { onDestroy } from "svelte";
 
   import { CANCELLED } from "../host/worker-host.js";
-  import { parseSelection } from "./page-selection.js";
-  import { messageFor, type Message } from "./rotate-messages.js";
+  import { messageFor, type Message } from "./reorder-messages.js";
+  import { isUnchanged, resolveOrder } from "./reorder-order.js";
   import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
+
+  /**
+   * How many of the resulting pages the preview shows before it says "and the rest".
+   *
+   * TWELVE IS ENOUGH RATHER THAN ARBITRARY: named pages come first, so every change a person
+   * makes is in the visible prefix. What the truncation hides is the untouched tail.
+   */
+  const PREVIEW_PAGES = 12;
 
   let file = $state<File | null>(null);
   /** Pages, once counted. `null` while counting, `-1` if it could not be read. */
@@ -33,11 +47,8 @@
   let result = $state<{ url: string; name: string } | null>(null);
   let announcement = $state("");
 
-  /** Which pages to turn: everything, or what is typed in the box. */
-  let scope = $state<"all" | "some">("all");
-  let selection = $state("");
-  /** A quarter turn clockwise, in degrees. The core accepts any multiple of 90. */
-  let degrees = $state(90);
+  /** The new order, as typed. Empty means "leave it alone". */
+  let wanted = $state("");
 
   // ---------------------------------------------------------------- the worker
 
@@ -72,6 +83,11 @@
     phase = "idle";
     notice = null;
     file = chosen;
+    // THE ORDER GOES WITH THE DOCUMENT IT WAS FOR. Carrying `9-5` over to a different file
+    // leaves a valid-looking preview for a document the person has not looked at, which is
+    // the same "the readout is about a different document" class the rest of this file is
+    // careful about. Found by security review.
+    wanted = "";
     pageCount = null;
     announce(`${chosen.name} chosen.`);
     await count(chosen);
@@ -81,7 +97,7 @@
     // The generation this count belongs to. A count still pending for the PREVIOUS file
     // resolves after `choose()` has already swapped `file` and cleared `pageCount`, and
     // without this it would write the old document's page count beside the new document's
-    // name -- which `parseSelection` then validates against, and `canRotate` believes.
+    // name -- which `resolveOrder` then validates against, and `canReorder` believes.
     const mine = currentRun;
     try {
       const h = await host.ensure();
@@ -119,60 +135,66 @@
     }
   }
 
-  // ---------------------------------------------------------------- rotating
+  // ---------------------------------------------------------------- reordering
 
   /**
-   * The pages to turn, or why the selection cannot be used.
+   * The complete new order, or why what was typed cannot be used.
    *
    * Recomputed as the box is typed in, so the problem appears beside the box rather than
    * after a round trip. The core still refuses anything that gets past this -- the page does
    * not re-implement a ceiling, and this is not one: it is a question about the document in
    * front of the person, which the page already knows the answer to.
    */
-  const chosenPages = $derived.by(() => {
+  const resolved = $derived.by(() => {
     if (pageCount === null || pageCount < 0) return null;
-    if (scope === "all") return { ok: true as const, pages: null };
-    const parsed = parseSelection(selection, pageCount);
-    return parsed.ok ? { ok: true as const, pages: parsed.pages } : parsed;
+    return resolveOrder(wanted, pageCount);
   });
 
-  const selectionProblem = $derived(
-    chosenPages !== null && !chosenPages.ok ? chosenPages.problem : "",
-  );
+  const orderProblem = $derived(resolved !== null && !resolved.ok ? resolved.problem : "");
+
+  /** The resulting order, or `null` while there is nothing to show. */
+  const preview = $derived(resolved !== null && resolved.ok ? resolved.order : null);
+
+  /** Whether the typed order would leave the document exactly as it is. */
+  const unchanged = $derived(preview !== null && isUnchanged(preview));
 
   /**
    * The request the visible result was produced from.
    *
-   * A finished rotation is over the moment the REQUEST changes -- rotating pages 1-3 and then
-   * typing `1-3, 7` used to leave "Turn pages" disabled with no explanation, beside a download
-   * link for the old result whose filename still looked right. That is the defect
-   * `MergeTool.svelte` records having been found by both of its reviews, in a new shape: its
-   * request is the file list, and rotate's is the file AND the controls. Found by code review.
+   * A finished reorder is over the moment the REQUEST changes. The defect is merge's, found by
+   * both of its reviews and then again on rotate: a download link for the old result, whose
+   * filename still looks right. It is sharper here than anywhere -- one permutation of a
+   * document looks exactly like another from the outside, so the filename is ALL there is.
    *
-   * A SIGNATURE RATHER THAN AN EFFECT, and the first attempt is worth recording. It was an
-   * `$effect` that cleared the result when `scope`, `selection` or `degrees` changed -- with
-   * `if (phase === "done")` inside it. Reading `phase` there makes `phase` a DEPENDENCY, so
-   * the moment a rotation finished the effect re-ran and undid it: the download link never
-   * appeared and every test that downloads timed out at 45 seconds. Ten of them, caught by the
-   * e2e suite and by nothing else.
+   * A SIGNATURE RATHER THAN AN EFFECT. ROTATE'S HISTORY, kept because it is the reason this is
+   * a `$derived` comparison and not an effect: an `$effect` that cleared the result when the
+   * controls changed read `phase` inside itself, which made `phase` a dependency, so the moment
+   * an operation finished the effect re-ran and undid it. The download link never appeared and
+   * ten e2e tests timed out at 45 seconds.
    */
   let resultRequest = $state("");
-  const request = $derived(`${file?.name ?? ""}|${scope}|${selection}|${degrees}`);
+  const request = $derived(`${file?.name ?? ""}|${wanted}`);
   const stale = $derived(result !== null && resultRequest !== request);
 
-  const canRotate = $derived(
+  const canReorder = $derived(
     file !== null &&
       typeof pageCount === "number" &&
       pageCount > 0 &&
       phase !== "working" &&
-      chosenPages !== null &&
-      chosenPages.ok,
+      resolved !== null &&
+      resolved.ok &&
+      // AN IDENTITY IS REFUSED BY THE PAGE, not by the core. The core accepts it -- it is a
+      // legitimate request and the ROADMAP names it a no-op -- but running it rewrites
+      // somebody's file to no effect and hands them a download that differs from their
+      // original in every byte while displaying identically. Saying "that is the order it is
+      // already in" is more useful than doing it.
+      !unchanged,
   );
 
   /**
-   * Which rotation is current.
+   * Which run is current.
    *
-   * A cancelled rotation STILL ANSWERS: `discardWorker()` terminates the worker and the host
+   * A cancelled operation STILL ANSWERS: `discardWorker()` terminates the worker and the host
    * fails every in-flight request with `Internal` (ADR 0015) -- correct from its point of
    * view, and a lie to a person who pressed Stop. The reply is ignored by generation rather
    * than the failure branch suppressed, so a genuine failure arriving a moment late is still
@@ -190,54 +212,50 @@
   let engineStarted = $state(false);
   const preparing = $derived(!engineStarted && file !== null && pageCount === null);
 
-  async function rotate() {
-    if (!canRotate || !file) return;
+  async function reorder() {
+    if (!canReorder || !file) return;
 
-    // DECIDED BEFORE THE FIRST AWAIT, both of them.
-    //
-    // `canRotate` is checked on the line above, and `await ensureHost()` below is a 270 KB
-    // fetch on the first operation of a page. The selection box is live during it, so a
-    // person who cleared the box inside that window used to fall through to "every page" --
-    // the exact silent reinterpretation `page-selection.ts` refuses for a blank box, done by
-    // the code that cites it. And `suggestedName()` read `file` after the await, so a file
-    // chosen during the window named the download. Both found by security review.
-    const chosen = chosenPages;
-    const pages =
-      chosen !== null && chosen.ok && chosen.pages !== null
-        ? chosen.pages
-        : Array.from({ length: pageCount ?? 0 }, (_, i) => i + 1);
+    // DECIDED BEFORE THE FIRST AWAIT, both of them. `await host.ensure()` below is a 270 KB
+    // fetch on the first operation of a page, and the box is live during it -- a person who
+    // edited the order inside that window would otherwise have a DIFFERENT order posted than
+    // the one they were looking at, which for this operation means a document whose pages are
+    // somewhere nobody asked for. `suggestedName()` is captured for the same reason: rotate's
+    // security review found the name re-derived after the await, so a file chosen during the
+    // window named the download.
+    const order = resolved !== null && resolved.ok ? resolved.order : null;
+    if (order === null) return;
     const name = suggestedName();
-    // THE SIGNATURE, CAPTURED HERE for the reason `ReorderTool.svelte` records at length:
-    // `request` is a `$derived` over the live controls, so reading it back after the awaits
-    // records what the page says when the reply lands rather than what was posted. A person
-    // who changes the angle mid-rotation would otherwise get a download link that is not
-    // stale, labelled for a rotation the bytes do not carry. Found by security review on
-    // reorder's page; the same line, fixed in both rather than only where it was found.
+    // THE SIGNATURE IS CAPTURED HERE, beside `order` and `name`, and not read back after the
+    // awaits. `request` is a `$derived` over the LIVE controls, so assigning
+    // `resultRequest = request` once the reply lands records what the box says THEN rather
+    // than what was posted -- and a person who edits the order mid-run gets a download link
+    // that is not stale, sitting under a preview showing an order the bytes are not in.
+    //
+    // That is the exact defect `resultRequest` exists to prevent, reintroduced in the shape
+    // this operation is most sensitive to: the filename still looks right and nothing on
+    // screen distinguishes one permutation from another. `MergeTool.svelte` escapes it only
+    // because it disables every control while working. Found by security review.
     const signature = request;
 
     clearResult();
     notice = null;
     phase = "working";
     const mine = ++currentRun;
-    announce("Turning pages.");
+    announce("Putting the pages in order.");
 
     try {
       const h = await host.ensure();
 
       // CANCELLED BEFORE THERE WAS ANYTHING TO CANCEL: during the first operation on a page,
-      // `host` is still null while the worker bundle is fetched, so Stop is a no-op and the
-      // work would be posted a moment after the person stopped it. The generation is the
-      // record either way, so it is read again on the far side of the await.
+      // the host is still being built, so Stop is a no-op and the work would be posted a
+      // moment after the person stopped it. The generation is the record either way.
       if (mine !== currentRun) {
         phase = "idle";
         return;
       }
 
-      // EVERY PAGE IS A LIST, not an empty one: the core refuses an empty selection on
-      // purpose. `pages` was decided before the await -- see the top of this function.
-
       const reply = await h.run(
-        { op: "rotate", blob: file, pages, degrees, password: null, limits: LIMITS },
+        { op: "reorder", blob: file, order, password: null, limits: LIMITS },
         { maxDurationMs: LIMITS.maxDurationMs },
       );
 
@@ -274,9 +292,18 @@
     }
   }
 
+  /** Fill the box with the order that reverses the document. */
+  function reverse() {
+    if (typeof pageCount !== "number" || pageCount < 2) return;
+    // `N-1` is a descending range, which `resolveOrder` reads as a reversal. The preset types
+    // into the box rather than setting a hidden mode, so what it did is visible and editable
+    // -- a person can reverse and then move one page, which a mode would not allow.
+    wanted = `${pageCount}-1`;
+  }
+
   function suggestedName(): string {
     const base = file?.name.replace(/\.pdf$/i, "") ?? "document";
-    return `${base}-rotated.pdf`;
+    return `${base}-reordered.pdf`;
   }
 
   /**
@@ -333,7 +360,7 @@
 </script>
 
 <section class="tool" aria-labelledby="tool-heading">
-  <h2 id="tool-heading" class="visually-hidden">Turn your pages</h2>
+  <h2 id="tool-heading" class="visually-hidden">Put your pages in order</h2>
 
   <!-- THE DROP ZONE HAS A REAL FILE INPUT INSIDE IT, not a click handler that opens one: a
        label wrapping an input is reachable by keyboard and by a screen reader without
@@ -388,39 +415,51 @@
 
   {#if typeof pageCount === "number" && pageCount > 0}
     <fieldset class="choice">
-      <legend>Which pages</legend>
-      <label class="choice__option">
-        <input type="radio" name="scope" value="all" bind:group={scope} />
-        Every page
-      </label>
-      <label class="choice__option">
-        <input type="radio" name="scope" value="some" bind:group={scope} />
-        Just these:
-      </label>
+      <legend>The new order</legend>
+
+      <p class="choice__rule" id="order-rule">
+        Type the pages you want moved. <strong>They come first, in the order you type them</strong>,
+        and every page you do not type keeps its place after them.
+      </p>
+
+      <!-- NOT `inputmode="numeric"`, which is what rotate's selection box uses and what this
+           copied at first. iOS shows a digits-only keypad for that, and this grammar needs `,`
+           and `-` — so on a phone the only order typable would be a single page. Found by code
+           review. -->
       <input
         type="text"
         class="choice__pages"
-        inputmode="numeric"
-        placeholder="1-3, 5"
-        aria-label="Page numbers to turn, for example 1-3, 5"
-        aria-describedby={selectionProblem ? "selection-problem" : undefined}
-        aria-invalid={selectionProblem ? "true" : undefined}
-        bind:value={selection}
-        onfocus={() => (scope = "some")}
+        inputmode="text"
+        placeholder="3, 1"
+        aria-label="The new page order, for example 3, 1"
+        aria-describedby={orderProblem ? "order-rule order-problem" : "order-rule order-preview"}
+        aria-invalid={orderProblem ? "true" : undefined}
+        bind:value={wanted}
       />
-      {#if selectionProblem}
-        <p class="choice__problem" id="selection-problem">{selectionProblem}</p>
-      {/if}
-    </fieldset>
 
-    <fieldset class="choice">
-      <legend>Which way</legend>
-      {#each [{ value: 90, label: "Right, a quarter turn" }, { value: 180, label: "Upside down" }, { value: 270, label: "Left, a quarter turn" }] as option (option.value)}
-        <label class="choice__option">
-          <input type="radio" name="degrees" value={option.value} bind:group={degrees} />
-          {option.label}
-        </label>
-      {/each}
+      {#if pageCount > 1}
+        <button type="button" class="choice__preset" onclick={reverse}>Reverse the order</button>
+      {/if}
+
+      {#if orderProblem}
+        <p class="choice__problem" id="order-problem">{orderProblem}</p>
+      {:else if preview}
+        <!-- THE RULE, SHOWN RATHER THAN DESCRIBED. Completing a partial order is a rule and
+             not a guess, and the thing that keeps it one is that a person can see the result
+             before running it. A sentence alone would be this page asking to be trusted. -->
+        <p class="choice__preview" id="order-preview">
+          {#if unchanged}
+            That is the order the pages are already in.
+          {:else}
+            Pages will come out:
+            <span class="choice__order">
+              {preview.slice(0, PREVIEW_PAGES).join(", ")}{preview.length > PREVIEW_PAGES
+                ? `, … (${preview.length} in total)`
+                : ""}
+            </span>
+          {/if}
+        </p>
+      {/if}
     </fieldset>
   {/if}
 
@@ -435,12 +474,12 @@
   {/if}
 
   <div class="actions">
-    <button type="button" disabled={!canRotate} onclick={rotate}>Turn pages</button>
+    <button type="button" disabled={!canReorder} onclick={reorder}>Put pages in order</button>
     {#if phase === "working"}
       <button type="button" onclick={cancel}>Stop</button>
-      <!-- NO PROGRESS BAR. The rotation is engine calls inside a worker and reports nothing
+      <!-- NO PROGRESS BAR. The reordering is engine calls inside a worker and reports nothing
            until it finishes, so a bar would be animating against nothing. -->
-      <p class="working" role="status">Turning pages. This does not report progress.</p>
+      <p class="working" role="status">Putting pages in order. This does not report progress.</p>
     {/if}
   </div>
 
@@ -476,6 +515,28 @@
     border-style: solid;
   }
 
+  .choice__rule {
+    margin: 0 0 var(--space-3);
+    color: var(--ink-quiet);
+  }
+
+  .choice__preset {
+    margin-block-start: var(--space-3);
+  }
+
+  .choice__preview {
+    margin: var(--space-3) 0 0;
+    color: var(--ink-quiet);
+  }
+
+  .choice__order {
+    /* TABULAR, because it is a readout of numbers and a number that shifts width while it
+       updates is a number that looks unreliable. The design brief asks for this wherever a
+       count is shown. */
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+
   .drop__text {
     color: var(--ink);
   }
@@ -509,11 +570,6 @@
   .choice legend {
     color: var(--ink-quiet);
     padding: 0;
-  }
-
-  .choice__option {
-    display: block;
-    margin-block-start: var(--space-2);
   }
 
   .choice__pages {

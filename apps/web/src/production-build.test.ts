@@ -98,9 +98,9 @@ describe("the production build", () => {
     // they send on. `compress` is not written at all. Only the first is a thing this test can
     // usefully assert about a build: the second is absent because absent code is absent.
     //
-    // `reorder` moved to `allowed` in the pull request that gave it a bridge. There is no
-    // `/reorder-pdf` yet, so nothing routes to it -- but the worker can name it, and a list
-    // claiming otherwise would fail the moment it became true, which is what happened.
+    // `reorder` moved to `allowed` in the pull request that gave it a bridge -- before
+    // `/reorder-pdf` existed, because the worker could name it from that moment and a list
+    // claiming otherwise fails as soon as it becomes true, which is what happened.
     const held = ["split", "compress"];
     const allowed = [
       "page_count",
