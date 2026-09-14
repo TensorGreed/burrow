@@ -186,6 +186,13 @@ impl Expected {
 /// `burrow-engines` constructs is a fixed constant or a constant plus a number it computed —
 /// see `core/burrow-engines/src/codes/` and `core/burrow-engines/tests/secret_leak.rs`.
 ///
+/// **`Display`, not `Debug`, and the difference is 4,064 bytes of brotli** in every user's
+/// first-load payload. `{error:?}` instantiates `Debug` for the whole `Error` enum and drags
+/// in the formatting machinery behind it; `{error}` uses the `Display` `thiserror` already
+/// generates, which was measured at 75 bytes more than dropping the detail altogether. It also
+/// reads better: `malformed: …` rather than `Malformed("…")`. Found because the size budget
+/// went red in CI — the local sweep had been staging a wasm binary built before any of this.
+///
 /// **Not** `core/burrow-engines/tests/properties.rs`, which an earlier version of this
 /// paragraph cited: that file is PDFium-only, and the only `OutputReader` there is runs on
 /// qpdf. A citation that does not support its claim is the bug, even when the claim holds.
@@ -316,7 +323,7 @@ fn rejected(expected: &Expected, what: &str, error: Error) -> Error {
         return error;
     }
     Error::OutputRejected(format!(
-        "{}: burrow produced a document {what} ({error:?})",
+        "{}: burrow produced a document {what} ({error})",
         expected.operation()
     ))
 }

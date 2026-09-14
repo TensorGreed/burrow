@@ -50,6 +50,16 @@ CI = REPO / ".github" / "workflows" / "ci.yml"
 PATTERNS: list[tuple[str, str]] = [
     (r"\bcargo \+nightly fuzz run \"?\$?\{?(\w+)", r"fuzz:\1"),
     (r"\bcargo (fmt|clippy|test|deny|audit|build|doc|install)\b", r"cargo:\1"),
+    # `wasm-pack build`, which is NOT a cargo subcommand and so matched nothing above. It
+    # produced the fifth miss of the class this tool exists for: `bindings/burrow-wasm/pkg/`
+    # is gitignored, `stage-web-engines.mjs` copies whatever is in it, and CI builds it
+    # fresh -- so a local sweep measured the size budget against a binding from whenever
+    # anyone last ran wasm-pack by hand. ADR 0022 grew that binding by 9.5% and every local
+    # run said the budget was fine.
+    # THE CRATE IS PART OF THE KEY, not just the verb: a second binding built by CI would
+    # otherwise map to the same gate as the first and read as covered. Caught by the
+    # self-test's own case, which is what that case is for.
+    (r"\bwasm-pack build (\S+)", r"wasm-pack:\1"),
     (r"\bpython3 (tools/[\w.-]+\.py)", r"\1"),
     (r"(?<![\w/])(tools/[\w.-]+\.sh)", r"\1"),
     # ANY pnpm script, not a fixed list. The first version enumerated lint|check|build|test|e2e,
@@ -237,6 +247,17 @@ JOBS: list[dict] = [
             "fuzz:split",
         ],
         "slow": True,
+    },
+    {
+        "name": "wasm-pack",
+        "run": (
+            "wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release"
+        ),
+        "covers": ["wasm-pack:bindings/burrow-wasm"],
+        # BEFORE `web`, because `web` stages `pkg/` into the app and measures the result
+        # against the size budget. Running them the other way round measures the previous
+        # build, which is what happened when this job did not exist.
+        "why": "the wasm binding the size budget is measured against",
     },
     {
         "name": "web",

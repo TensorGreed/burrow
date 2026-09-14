@@ -124,6 +124,17 @@ check "a new pnpm script CI runs is refused" \
 " \
   "" 1
 
+# THE wasm-pack MISS, and the fifth of the class. `wasm-pack build` is not a cargo subcommand,
+# so the pattern list matched nothing and the parity check reported full coverage while the
+# local sweep staged whatever `bindings/burrow-wasm/pkg/` happened to hold. ADR 0022 grew that
+# binding by 9.5% and CI was the only thing that noticed.
+check "a wasm-pack build CI runs but nothing local does is refused" \
+  "||
+      - name: Build another wasm binding
+        run: wasm-pack build bindings/brandnew --target no-modules --out-dir pkg --release
+" \
+  "wasm-pack:bindings/brandnew" 1
+
 # --- Drift in the other direction -----------------------------------------------------------
 #
 # A local command covering something CI no longer runs is dead weight that reads as coverage.
