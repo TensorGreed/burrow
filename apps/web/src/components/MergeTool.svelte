@@ -14,9 +14,9 @@
   // machine lives in `worker-host.js`, with tests. This component decides what to show.
   import { onDestroy } from "svelte";
 
-  import { CANCELLED, ENGINE_UNAVAILABLE, createWorkerHost } from "../host/worker-host.js";
-  import { ENGINES } from "../generated/engines.js";
+  import { CANCELLED } from "../host/worker-host.js";
   import { messageFor, type Message } from "./merge-messages.js";
+  import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
 
   interface Entry {
     id: number;
@@ -36,90 +36,13 @@
 
   // ---------------------------------------------------------------- the worker
 
-  /** Built on first use, never on page load. See the page's comment on `client:visible`. */
-  let host: ReturnType<typeof createWorkerHost> | null = null;
-  let workerUrl: string | null = null;
-
-  /**
-   * THE PROMISE IS MEMOISED, NOT THE RESULT, and that is the rule `apps/web/CLAUDE.md`
-   * states for the worker's own engine init: "Guard flags set after an `await` are exactly
-   * what allows it, so memoise the **promise**, not the result."
-   *
-   * The same shape was here: `if (host) return host` guarded a function that assigned `host`
-   * only after awaiting a 270 KB fetch. `add()` puts a file in the list BEFORE awaiting its
-   * count, so Merge is live during that fetch -- two callers arriving inside the window each
-   * built a host, each spawned a worker with its own pdfium and qpdf, they shared one
-   * `workerUrl` binding so one revoked the other's, and `cancel()`, `startAgain()` and
-   * `dispose()` reached only the last. The first worker then held file bytes for the life of
-   * the page. Found by security review; no hostile input needed, just a second click.
-   */
-  let hostPromise: Promise<ReturnType<typeof createWorkerHost>> | null = null;
-
-  function ensureHost() {
-    hostPromise ??= buildHost();
-    return hostPromise;
-  }
-
-  async function buildHost() {
-    // The worker's SOURCE is fetched with its integrity digest and the worker is built from
-    // a Blob. Not a convenience: a dedicated worker loaded from a same-origin script URL
-    // does not inherit this page's CSP — it takes its policy from that script's response
-    // headers, and a static host sends none, so it would run unpoliced. ADR 0014 §1a,
-    // measured. The worker is the only place file bytes ever exist.
-    //
-    // Fetched once per page, because this function runs once per page: the memoised promise
-    // above is what makes that true, so the source needs no guard of its own.
-    const entry = ENGINES.worker;
-    const response = await fetch(entry.url, { integrity: entry.integrity });
-    if (!response.ok) throw new Error("worker fetch failed");
-    const workerSource = await response.text();
-
-    const built = createWorkerHost({
-      spawn: () => {
-        if (workerUrl) URL.revokeObjectURL(workerUrl);
-        // The engine manifest is NOT injected here. `stage-web-engines.mjs` generates
-        // `const BURROW_ENGINES = {...}` into the bundle itself, because `pdfium.js` begins
-        // instantiating as it is parsed -- there is no moment after load and before
-        // instantiation at which a postMessage could arrive (ADR 0014 §1a). The source is
-        // complete as fetched.
-        workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
-
-        return new Worker(workerUrl);
-      },
-      release: () => {
-        if (workerUrl) {
-          URL.revokeObjectURL(workerUrl);
-          workerUrl = null;
-        }
-      },
-      now: () => performance.now(),
-      setTimer: (fn, ms) => setTimeout(fn, ms),
-      clearTimer: (handle) => clearTimeout(handle as number),
-    });
-    host = built;
-    return built;
-  }
-
-  /**
-   * A host verdict, as the kind `messageFor` expects.
-   *
-   * `worker-host.js` produces two kinds that are not `burrow_types::Error` variants:
-   * `ENGINE_UNAVAILABLE` when the breaker has latched, and `CANCELLED` when the page stopped
-   * a request before it was posted. Neither is a failure of a file. Normalised in one place
-   * so the counting path and the merging path cannot describe the same verdict differently.
-   */
-  function hostKind(kind: string): string {
-    if (kind === ENGINE_UNAVAILABLE) return "EngineUnavailable";
-    return kind;
-  }
-
-  const LIMITS = {
-    maxInputBytes: 512 * 1024 * 1024,
-    maxMemoryBytes: 1024 * 1024 * 1024,
-    maxDurationMs: 120_000,
-    maxPages: 10_000,
-    maxPixels: 256 * 1024 * 1024,
-  };
+  // THE WIRING IS SHARED WITH EVERY OTHER TOOL PAGE. It used to live here, and rotate's
+  // island copied it -- including the memoised-promise fix a security review made after two
+  // callers each built a host, each spawned a worker, and one revoked the other's `workerUrl`,
+  // leaving an orphan worker holding file bytes for the life of the page. Two copies of a
+  // fixed defect is one copy that will miss the next fix, and the two had already started to
+  // diverge in their reasoning. `tool-host.ts` has the argument in full.
+  const host = createToolHost();
 
   // ---------------------------------------------------------------- adding files
 
@@ -148,7 +71,7 @@
 
   async function count(entry: Entry) {
     try {
-      const h = await ensureHost();
+      const h = await host.ensure();
       const raw = await h.run(
         { op: "page_count", blob: entry.file, password: null, limits: LIMITS },
         { maxDurationMs: LIMITS.maxDurationMs },
@@ -275,7 +198,7 @@
     announce("Merging.");
 
     try {
-      const h = await ensureHost();
+      const h = await host.ensure();
 
       // CANCELLED BEFORE THERE WAS ANYTHING TO CANCEL. `cancel()` calls `host?.discardWorker()`,
       // and during the first merge on a page `host` is still null while the worker bundle is
@@ -363,7 +286,7 @@
     // BEFORE the worker goes, so the reply that the discard provokes is already stale when it
     // arrives rather than racing this line.
     currentMerge += 1;
-    host?.discardWorker();
+    host.discardWorker();
     phase = "idle";
     notice = null;
     announce("Stopped.");
@@ -371,7 +294,7 @@
 
   /** The deliberate gesture that closes the circuit breaker. */
   function startAgain() {
-    host?.reset();
+    host.reset();
     notice = null;
     announce("Ready to try again.");
   }
@@ -407,7 +330,8 @@
 
   onDestroy(() => {
     clearResult();
-    host?.dispose();
+    // Disposes a host still being built, too -- see `tool-host.ts`.
+    host.dispose();
   });
 
   // ---------------------------------------------------------------- drag and drop

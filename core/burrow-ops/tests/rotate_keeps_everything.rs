@@ -15,8 +15,13 @@
 //! The closure harness cannot see this. Rotation changes an attribute on the page dictionary,
 //! so a page's content stream must survive **unchanged**: an implementation that round-tripped
 //! content through a filter would keep every object, keep every page, set every `/Rotate`
-//! correctly, and quietly recompress somebody's scan. The comparison is over the decompressed
-//! stream bodies of the original and the output, per page.
+//! correctly, and quietly recompress somebody's scan.
+//!
+//! **The comparison is a substring search, not a whole-body one**, and the difference is worth
+//! stating because the first version of this comment claimed the stronger thing. Each page's
+//! operator run is looked for in the decompressed output; a re-encode that preserved those
+//! bytes and changed everything around them would pass. That is a narrower claim than "byte
+//! for byte", and it is the one the code makes. Code review caught the overclaim.
 
 #![cfg(all(feature = "native-engines", target_os = "linux"))]
 #![allow(

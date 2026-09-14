@@ -1,20 +1,43 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
 
-// Tool pages land in M1, each at its own indexable URL. Listed here as the routes that
-// will exist, so the shape of the site is visible from the start.
+// The five tools, each at its own indexable URL once it exists.
 //
-// DELIBERATELY NOT LINKS UNTIL THE PAGE EXISTS. An earlier draft of this page linked each
-// name to `/{slug}`. None of those routes is built yet, so every link would have been a
-// 404 — on the one page whose argument is that it tells you the truth about itself. Each
-// entry gains its link in the pull request that ships its page, starting with merge.
+// A `href` ONLY WHERE THE PAGE SHIPS. An early draft linked every name to `/{slug}` while no
+// route existed, so every link was a 404 — on the one page whose whole argument is that it
+// tells you the truth about itself. The rule that replaced it said each entry gains its link
+// in the pull request that ships its page. Merge's page shipped and its link did not, so the
+// rule was right and nobody applied it; both are linked here now.
+//
+// SPLIT IS DELIBERATELY UNLINKED, and not because the page is unwritten. `split` is held: its
+// outputs can still carry data belonging to pages they excluded (ADR 0019 §2, issue #54), and
+// a tool whose whole claim is that your file does not leave your computer must not offer an
+// operation that can leak part of it into a file you then send to somebody else. There is no
+// `/split-pdf` route in this build, and `production-build.test.ts` fails if one appears.
 const plannedTools = [
-  { name: "Merge PDF", blurb: "Combine several PDFs into one, in the order you choose." },
-  { name: "Split PDF", blurb: "Take a range of pages out into their own document." },
-  { name: "Rotate PDF", blurb: "Turn pages that were scanned the wrong way up." },
+  {
+    name: "Merge PDF",
+    blurb: "Combine several PDFs into one, in the order you choose.",
+    href: "/merge-pdf",
+  },
+  {
+    name: "Split PDF",
+    // THE REASON IS IN THE INTERFACE, not only in the comment above. A visitor sees a name
+    // that is not a link and no explanation, on the page whose argument is that it tells you
+    // the truth about itself. Code review's point, and a fair one.
+    blurb:
+      "Take a range of pages out into their own document. Not available yet: the parts it " +
+      "produces can still carry data from the pages left behind, and burrow will not ship a " +
+      "tool that does that.",
+  },
+  {
+    name: "Rotate PDF",
+    blurb: "Turn pages that were scanned the wrong way up.",
+    href: "/rotate-pdf",
+  },
   { name: "Reorder PDF", blurb: "Move pages around without losing any of them." },
   { name: "Compress PDF", blurb: "Make a PDF smaller to send or store." },
-];
+] as { name: string; blurb: string; href?: string }[];
 ---
 
 <BaseLayout
@@ -88,7 +111,7 @@ const plannedTools = [
       {
         plannedTools.map((tool) => (
           <div class="tools__row">
-            <dt>{tool.name}</dt>
+            <dt>{tool.href ? <a href={tool.href}>{tool.name}</a> : tool.name}</dt>
             <dd>{tool.blurb}</dd>
           </div>
         ))
