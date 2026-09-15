@@ -536,15 +536,14 @@
           }
         },
         "structure_check": {
-          "ok": {
-            "page_count": 10
+          "err": {
+            "kind": "LimitExceeded",
+            "limit": "max_memory_bytes",
+            "stage": "size_estimate",
+            "requested": 16778951,
+            "allowed": 8388608
           }
         }
-      },
-      "known_gap": {
-        "issue": "https://github.com/TensorGreed/burrow/issues/26",
-        "reason": "the length-based memory estimate runs on the PDFium path and not the qpdf path, so `max_memory_bytes` does not get its cheapest pre-check when a caller asks for a structure check. Consistent across native and web, so not a divergence -- but undocumented until this case surfaced it.",
-        "milestone": "M2"
       }
     },
     {

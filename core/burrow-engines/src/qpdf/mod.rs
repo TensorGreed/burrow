@@ -283,19 +283,11 @@ impl StructureEngine for Qpdf {
             return Err(Error::Malformed("input is empty".to_owned()));
         }
 
-        let input_len = u64::try_from(bytes.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check(
-            Stage::InputSize,
-            "max_input_bytes",
-            input_len,
-            limits.max_input_bytes,
-        )?;
-
-        // The structural pre-scan runs here too, for the same reason it runs before
-        // PDFium: qpdf is a C++ parser and this is untrusted input. qpdf's own global
-        // limits are a second layer under it, not a replacement for it.
-        crate::prescan::check(&bytes, &limits)?;
+        // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
+        // the size estimate, the structural pre-scan. Shared rather than spelled out
+        // here, so a path that pre-scans without estimating is not writable --- see
+        // `crate::estimate::before_open`, and #26 for what the drift cost last time.
+        crate::estimate::before_open(&bytes, &limits)?;
 
         // The budget for everything that follows. See `StructureEngine::check` for what
         // this can and cannot catch.
@@ -361,18 +353,11 @@ pub(super) fn open_document(
 ) -> Result<(Document, u64, Option<u64>, Deadline)> {
     let limits = options.limits;
 
-    let input_len = u64::try_from(bytes.len())
-        .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-    Limits::check(
-        Stage::InputSize,
-        "max_input_bytes",
-        input_len,
-        limits.max_input_bytes,
-    )?;
-
-    // The structural pre-scan, before the engine sees the bytes. Pure Rust,
-    // `forbid(unsafe_code)`, and the only pre-emptive defence there is (ADR 0013).
-    crate::prescan::check(&bytes, &limits)?;
+    // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
+    // the size estimate, the structural pre-scan. Shared rather than spelled out
+    // here, so a path that pre-scans without estimating is not writable --- see
+    // `crate::estimate::before_open`, and #26 for what the drift cost last time.
+    crate::estimate::before_open(&bytes, &limits)?;
 
     // ESTABLISHES THE START POINT; it does not check anything. Elapsed is zero here, so this
     // checkpoint passes for every budget including zero. Said plainly because the line reads

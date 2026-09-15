@@ -297,3 +297,90 @@ fn an_expired_budget_is_a_normal_outcome_and_costs_nothing() {
         .expect("the engine is fine");
     assert_eq!(Pdfium::new().page_count(&doc).unwrap(), 2);
 }
+
+// --- #26: the estimate runs on both engines, at the same point, for the same reason ---------
+
+/// Both engines refuse the same input at the same ceiling, with the same four numbers.
+///
+/// # Asserting the THRESHOLD, not merely that both refuse
+///
+/// "Both engines apply the estimate" is satisfied by two engines that apply it at different
+/// points — one at `estimate`, one at `estimate + 1` — and a caller tuning `max_memory_bytes`
+/// against one engine would then be surprised by the other. That is the shape of #26 itself,
+/// which was "one engine has this check and the other does not" and read for a long time as a
+/// difference too small to matter.
+///
+/// So this walks the boundary from both sides. At exactly the estimate both accept, because
+/// `Limits::check` refuses on `requested > allowed`; one byte below it, both refuse — and the
+/// refusal carries the same `limit`, the same `stage`, and the same `requested`/`allowed`,
+/// which is what makes the two paths substitutable rather than merely both strict.
+///
+/// The estimate is keyed on input LENGTH and nothing else, which is what makes this possible
+/// and is also its limit: `examples/measure-open-cost.rs` shows qpdf's real cost tracks page
+/// count, reaching 99.7% of the estimate on a 1 MB / 9,000-page file where PDFium uses a
+/// fifth of it. Equal thresholds are a property of the check, not a claim about the engines.
+#[test]
+fn both_engines_refuse_at_the_same_estimate_with_the_same_reason() {
+    let bytes = minimal_pdf::pdf_with_pages(3);
+    let estimate = estimate_for(bytes.len());
+
+    // ONE BYTE BELOW: both refuse.
+    let tight = Limits::with(|l| l.max_memory_bytes = estimate - 1);
+    let pdfium = open_with(bytes.clone(), tight).unwrap_err();
+    let qpdf = check_with(bytes.clone(), tight).unwrap_err();
+
+    for (engine, error) in [("pdfium", &pdfium), ("qpdf", &qpdf)] {
+        match error {
+            Error::LimitExceeded {
+                limit,
+                stage,
+                requested,
+                allowed,
+            } => {
+                assert_eq!(*limit, "max_memory_bytes", "{engine}");
+                assert_eq!(*stage, Stage::SizeEstimate, "{engine}");
+                assert_eq!(
+                    *requested, estimate,
+                    "{engine} reported a different estimate"
+                );
+                assert_eq!(*allowed, estimate - 1, "{engine}");
+            }
+            other => panic!("{engine} did not refuse on the estimate: {other:?}"),
+        }
+    }
+
+    // AT THE ESTIMATE: both accept. Without this half the test would pass against an engine
+    // that refused everything, which is the failure mode a one-sided threshold test has.
+    let exact = Limits::with(|l| l.max_memory_bytes = estimate);
+    for (engine, outcome) in [
+        ("pdfium", open_with(bytes.clone(), exact).map(|_| ())),
+        ("qpdf", check_with(bytes, exact)),
+    ] {
+        // NOT a bare `is_ok`. If the fixture were ever refused for a STRUCTURAL reason, an
+        // `is_ok` assertion would fail with "refused at exactly the estimate" and send the
+        // next reader after a limit bug that is not there. What matters is that the estimate
+        // did not fire.
+        if let Err(Error::LimitExceeded { limit, stage, .. }) = &outcome {
+            assert!(
+                !(*limit == "max_memory_bytes" && *stage == Stage::SizeEstimate),
+                "{engine} refused at exactly the estimate, which must be the accepting side"
+            );
+        }
+        assert!(outcome.is_ok(), "{engine}: {outcome:?}");
+    }
+}
+
+/// A structural check under `limits`, the qpdf-side counterpart of `support::open_with`.
+fn check_with(bytes: Vec<u8>, limits: Limits) -> burrow_types::Result<()> {
+    use burrow_engines::qpdf::Qpdf;
+    use burrow_engines::{CheckOptions, StructureEngine};
+
+    let clock: Arc<dyn burrow_types::Clock> = Arc::new(burrow_types::SystemClock::new());
+    let engine = Qpdf::new();
+    StructureEngine::check(
+        &engine,
+        bytes.into_boxed_slice(),
+        &CheckOptions::new(limits, clock),
+    )
+    .map(|_| ())
+}

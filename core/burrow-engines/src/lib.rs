@@ -44,6 +44,10 @@ mod codes;
 // `codes`: the web path enforces the SAME ceiling with the same arithmetic, and only the
 // counter it reads differs (process RSS on native, the engine module's heap on the web).
 mod estimate;
+// The one item `burrow-ops` needs out of it: `verify`'s read-back has to raise
+// `max_memory_bytes` to what opening its own output will be estimated at, or a finished
+// operation rejects itself. The heuristic stays private; only the number is public.
+pub use estimate::estimated_open_bytes;
 
 // Preparing a password for a C API. Ungated, and shared by both engines and both
 // platforms -- it copies bytes and appends a NUL, which needs no engine.

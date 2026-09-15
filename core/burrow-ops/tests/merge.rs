@@ -305,6 +305,51 @@ fn a_merge_at_exactly_the_size_ceiling_is_not_refused_by_its_own_verification() 
     );
 }
 
+#[test]
+fn a_merge_under_a_tight_memory_ceiling_is_not_refused_by_its_own_verification() {
+    // THE SAME DEFECT AS THE TEST ABOVE, through the adjacent field, and it became reachable
+    // only when #26 put the length-based estimate on the qpdf paths -- before that the
+    // read-back had no size estimate and this could not fire.
+    //
+    // The shape: every INPUT passes its own estimate, the merge completes, and then the
+    // read-back estimates against the OUTPUT's length and rejects the finished document. The
+    // `LimitExceeded` it produced carried `stage: SizeEstimate`, identical to the one the
+    // input pre-check emits, so nothing in the typed error distinguished "your file was
+    // refused before we started" from "we finished and threw it away". Found by security
+    // review; `verify::read_back_options` raising `max_memory_bytes` is the fix.
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/fixtures/pages-137.pdf");
+    let document = std::fs::read(&fixture).expect("the committed fixture must be readable");
+    let each = document.len() as u64;
+    let inputs = vec![document.clone(), document];
+
+    // A ceiling that admits each input on its own and NOT their sum, which is the window the
+    // defect lived in. Derived from the real estimate rather than guessed, so it cannot drift
+    // out of the window if the constants change.
+    let per_input = burrow_engines::estimated_open_bytes(each);
+    let combined = burrow_engines::estimated_open_bytes(each * 2);
+    assert!(
+        per_input < combined,
+        "the estimate no longer grows with length, so this test has no window to sit in"
+    );
+    let limits = Limits::with(|l| {
+        l.max_memory_bytes = per_input;
+        l.max_input_bytes = each * 2;
+    });
+
+    let merged = merge_all(inputs, limits)
+        .expect("a merge whose inputs each fit the ceiling must not reject its own output");
+
+    // AND THE OUTPUT REALLY WOULD HAVE BEEN REFUSED, so this is not green because the
+    // situation did not arise.
+    assert!(
+        burrow_engines::estimated_open_bytes(merged.len() as u64) > per_input,
+        "the output's estimate ({}) is within the ceiling ({per_input}), so the read-back \
+         would have passed anyway and this test proves nothing",
+        burrow_engines::estimated_open_bytes(merged.len() as u64)
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 

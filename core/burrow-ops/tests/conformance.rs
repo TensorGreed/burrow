@@ -559,7 +559,12 @@ fn the_schema_records_a_route_for_every_limit_failure() {
 /// Raising this number is a deliberate act in a diff a reviewer sees, which is the point.
 /// It is the same shape as the licence allowlist: the constraint is worth having precisely
 /// because widening it cannot be done quietly.
-const MAX_KNOWN_GAPS: usize = 2;
+/// **Ratcheted 2 -> 1 when #26 closed.** It is a `<=` ceiling, so leaving it at 2 would have
+/// failed nothing --- and that is exactly the quiet widening the paragraph above says the
+/// constant exists to prevent: one free slot is one gap that can be added without a reviewer
+/// seeing a number change. Lowering it in the same diff that closes a gap is what keeps the
+/// constraint real. Found by code review.
+const MAX_KNOWN_GAPS: usize = 1;
 
 /// A recorded gap needs somewhere to lead, and a deadline to lead there by.
 #[test]
