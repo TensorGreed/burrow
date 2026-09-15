@@ -283,6 +283,67 @@ def check_no_harness(workflow: dict, report: list[str]) -> None:
     report.append("BURROW_HARNESS is never set (the variable, not the word)")
 
 
+def check_project(workflow: dict, report: list[str]) -> None:
+    """Both inputs are stated, and the upload reads the variable rather than a literal.
+
+    THE PROJECT NAME WAS DERIVED FROM THE HOSTNAME AND THAT WAS WRONG. Cloudflare names a
+    project's subdomain after the project *by convention*, not by rule -- this project is
+    `burrow` and its generated subdomain is `burrow-f2s`, because `burrow.pages.dev` was taken.
+    The first deploy failed with `The Pages project "burrow-f2s" does not exist`.
+
+    It failed loudly and uploaded nothing, which is the only reason it was cheap. What makes it
+    worth a rule is the shape: the derivation was CORRECT REASONING about a real convention,
+    and it would have gone on looking correct. A rule that is right for the wrong reason
+    survives review, because the reasoning is what gets reviewed.
+
+    So both are explicit, and this asserts:
+
+      * both are set -- a missing project name would deploy nowhere, a missing origin would
+        build for the development default;
+      * they are allowed to DIFFER, which is why nothing here compares them;
+      * the upload step reads `$BURROW_PAGES_PROJECT` rather than restating the name, so the
+        one place it is written is the one place it is read.
+
+    What stops a wrong project name reaching the live site is not this rule but the read-back
+    after the upload, which compares wrangler's reported URL against `BURROW_SITE`.
+    """
+    env = workflow.get("env") or {}
+    project = env.get("BURROW_PAGES_PROJECT")
+    if not project:
+        raise Refused(
+            "BURROW_PAGES_PROJECT is not set. It was derived from BURROW_SITE until a deploy "
+            "failed on it -- Cloudflare's subdomain matches the project name by convention "
+            "rather than by rule. State it."
+        )
+    project = str(project)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,57}", project):
+        raise Refused(
+            f"BURROW_PAGES_PROJECT is {project!r}, which is not a Cloudflare Pages project "
+            f"name (lowercase letters, digits and hyphens)."
+        )
+
+    # READ, NOT RESTATED. A literal in the `wrangler` command would be a second statement of
+    # the same fact, which is how the two drift -- and the whole point of naming it once.
+    steps = workflow["jobs"][CREDENTIAL_JOB]["steps"]
+    upload = next(
+        (
+            step
+            for step in steps
+            if isinstance(step.get("run"), str)
+            and re.search(r"wrangler\b[^\n]*pages\s+deploy", step["run"])
+        ),
+        None,
+    )
+    if upload is None:
+        raise Refused("no `wrangler pages deploy` step to check the project name against")
+    if "BURROW_PAGES_PROJECT" not in upload["run"]:
+        raise Refused(
+            "the upload step does not read $BURROW_PAGES_PROJECT; it states the project name "
+            "a second time, which is the drift this rule exists to prevent"
+        )
+    report.append(f"project `{project}`, read from the variable rather than restated")
+
+
 def check_origin(workflow: dict, report: list[str]) -> None:
     site = (workflow.get("env") or {}).get("BURROW_SITE")
     if not site:
@@ -373,6 +434,46 @@ PROBES = [
         lambda: check_no_harness({"env": {"BURROW_SITE": "https://x"}}, []),
     ),
     (
+        "the project-name rule",
+        lambda: check_project(
+            {"env": {"BURROW_SITE": "https://x.pages.dev"}, "jobs": {"publish": {"steps": []}}}, []
+        ),
+        lambda: check_project(
+            {
+                "env": {"BURROW_SITE": "https://x.pages.dev", "BURROW_PAGES_PROJECT": "burrow"},
+                "jobs": {
+                    "publish": {
+                        "steps": [{"run": "wrangler pages deploy d --project-name \"$BURROW_PAGES_PROJECT\""}]
+                    }
+                },
+            },
+            [],
+        ),
+    ),
+    (
+        "the project name is READ, not restated",
+        lambda: check_project(
+            {
+                "env": {"BURROW_SITE": "https://x.pages.dev", "BURROW_PAGES_PROJECT": "burrow"},
+                "jobs": {
+                    "publish": {"steps": [{"run": "wrangler pages deploy d --project-name burrow"}]}
+                },
+            },
+            [],
+        ),
+        lambda: check_project(
+            {
+                "env": {"BURROW_SITE": "https://x.pages.dev", "BURROW_PAGES_PROJECT": "burrow"},
+                "jobs": {
+                    "publish": {
+                        "steps": [{"run": "wrangler pages deploy d --project-name \"$BURROW_PAGES_PROJECT\""}]
+                    }
+                },
+            },
+            [],
+        ),
+    ),
+    (
         "the origin rule",
         lambda: check_origin({"env": {"BURROW_SITE": "http://localhost:4321"}}, []),
         lambda: check_origin({"env": {"BURROW_SITE": "https://burrow.example"}}, []),
@@ -416,6 +517,7 @@ def main(argv: list[str]) -> int:
         check_gates_before_upload(workflow, report)
         check_no_harness(workflow, report)
         check_origin(workflow, report)
+        check_project(workflow, report)
         check_no_other_workflow_holds_the_credential(report)
     except Refused as exc:
         for line in report:

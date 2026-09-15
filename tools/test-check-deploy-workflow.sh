@@ -159,6 +159,51 @@ p = pathlib.Path(sys.argv[1])
 p.write_text(p.read_text().rstrip() + "\n      # see tools/check-deployable-build.sh for what this asserted\n")
 '
 
+# --- THE PROJECT NAME, which a derivation got right for the wrong reason ------------------------
+#
+# `burrow-f2s.pages.dev` is the subdomain; the project is called `burrow`. Cloudflare matches
+# them by convention, not by rule -- it generated `burrow-f2s` because `burrow.pages.dev` was
+# taken. The first deploy derived the name from the hostname and failed with
+# `The Pages project "burrow-f2s" does not exist`.
+expect_refusal "removing BURROW_PAGES_PROJECT is refused" "BURROW_PAGES_PROJECT is not set" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s = s.replace("  BURROW_PAGES_PROJECT: burrow\n", "", 1)
+p.write_text(s)
+assert "BURROW_PAGES_PROJECT" not in (yaml.safe_load(s).get("env") or {}), "plant did not apply"
+'
+
+expect_refusal "a project name that is not a Pages project name is refused" "not a Cloudflare Pages project name" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s = s.replace("  BURROW_PAGES_PROJECT: burrow\n", "  BURROW_PAGES_PROJECT: Not A Name\n", 1)
+p.write_text(s)
+assert yaml.safe_load(s)["env"]["BURROW_PAGES_PROJECT"] == "Not A Name", "plant did not apply"
+'
+
+# RESTATING IT IS THE DRIFT THIS PREVENTS. The name is written once and read once; a literal in
+# the wrangler command is a second statement of the same fact, and two statements are how the
+# pair goes out of step. Note the near-miss below: the two values DIFFERING is correct and must
+# not be refused -- that is the whole finding.
+expect_refusal "restating the project name in the upload step is refused" "states the project name a second time" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s = s.replace(chr(34) + "$BURROW_PAGES_PROJECT" + chr(34), "burrow", 1)
+p.write_text(s)
+steps = yaml.safe_load(s)["jobs"]["publish"]["steps"]
+assert not any("BURROW_PAGES_PROJECT" in str(x.get("run", "")) for x in steps), "plant did not apply"
+'
+
+expect_pass "the project name and the hostname LEGITIMATELY differ, and that is not refused" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+# They already differ in the real file (`burrow` vs `burrow-f2s`). Make them differ more, so
+# the case cannot pass by accident if somebody renames the project to match one day.
+s = s.replace("  BURROW_PAGES_PROJECT: burrow\n", "  BURROW_PAGES_PROJECT: something-else-entirely\n", 1)
+p.write_text(s)
+assert yaml.safe_load(s)["env"]["BURROW_PAGES_PROJECT"] == "something-else-entirely"
+'
+
 # --- the gate the first checker could not tell existed -----------------------------------------
 expect_refusal "deleting the PUBLISH job's gate is refused (the build job's copy is not it)" "never runs in the \`publish\` job" '
 import sys, pathlib, yaml
