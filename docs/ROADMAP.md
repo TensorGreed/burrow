@@ -15,9 +15,16 @@ is short on purpose: a blocker is not "important", it is "we do not ship with th
 |---|---|---|
 | **#62** | Memory-unsafety in the pinned qpdf — two distinct defects | Blocks **M3/M4 only**. Natively it is a hard crash with no sandbox, and opening an attachment is the scenario. **Does not block the web**, and the earlier conditional block on `/merge-pdf` is withdrawn: measured on every path it is a fault natively and a hang on wasm that the watchdog converts into a typed error, with **no silent wrong output observed anywhere**. The argument that blocked merge — *not observed is not cannot happen* — applies to every operation, since the defect is reachable from `open`; used as a blocker criterion it blocks everything indefinitely. The answer to *cannot be excluded* is a detector, and that is ADR 0022. Accepted and recorded: a crafted file freezes an operation for the 60 s watchdog budget before failing. `docs/security/exposure-2026-09-14-qpdf-uaf.md`. |
 
-The remaining row does not block further M1 development. It blocks **deployment**, which is the distinction
-worth keeping: work continues, and a build does not go in front of a person until the row is
-gone — or, for a conditional row, until its named discharge has landed.
+The remaining row does not block further M1 development. It blocks **the deployment it is
+scoped to** — M3/M4, per its own text — which is the distinction worth keeping: work continues,
+and a build does not go in front of a person until the row is gone, or, for a conditional row,
+until its named discharge has landed.
+
+**This sentence used to read "it blocks deployment", full stop, and contradicted the row above
+it.** #62's row was narrowed on measurement to M3/M4 and explicitly says *"Does not block the
+web"*; the generic prose here was written when the table held rows that did block the web, and
+survived the narrowing. It was found at the moment it mattered — reading the table before the
+first web deploy — which is exactly the wrong time to be deciding what a blocker list meant.
 
 ### Discharged
 
@@ -39,6 +46,20 @@ discharge is a thing you build, and what happened there was that a measurement s
 blocker had been drawn too wide. Correcting scope on evidence is not the same as fixing
 something.
 
+
+### Deployment
+
+The web app is deployed to **`https://burrow-f2s.pages.dev`** — Cloudflare Pages, uploaded
+directly from this repository's CI, never built on Cloudflare's infrastructure.
+[ADR 0024](adr/0024-how-burrow-is-deployed.md) records why that host, why direct upload, and
+why the workflow is split so the job that compiles holds no credential.
+
+**The blockers table above gates this.** Its one remaining row, #62, is scoped *"Blocks M3/M4
+only… Does not block the web"*, so the web deploy is not blocked by it — and the paragraph
+under that table saying the remaining row "blocks **deployment**" is about the M3/M4
+deployment the row is scoped to, not this one. That sentence predates the row being narrowed
+on evidence, and it is corrected here rather than left to be read either way at the moment it
+decides something.
 
 | Milestone | Scope | State |
 |---|---|---|

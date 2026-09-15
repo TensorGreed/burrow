@@ -1,0 +1,192 @@
+name: Build the web payload
+description: >-
+  Everything from the vendored wasm engines to an installed apps/web, shared by CI's `web`
+  job and by the deploy. One definition, because two copies drifted on day one.
+
+# WHY THIS IS AN ACTION AND NOT SIXTY DUPLICATED LINES.
+#
+# The deploy workflow began as a copy of `ci.yml`'s `web` job prefix, and a review diffed the
+# two with comments stripped. Four divergences, ALL PRESENT ON DAY ONE:
+#
+#   1. `tools/check-wasm-exports.sh` and its self-test -- missing from the deploy
+#   2. `tools/check-qpdf-crypto.sh` -- missing, and that is the gate asserting the shipped
+#      qpdf.wasm links native crypto and NEVER GnuTLS, which is LGPL and forbidden by
+#      non-negotiable 2
+#   3. `package_json_file: apps/web/package.json` on pnpm/action-setup -- missing, and there
+#      is no root package.json, so the pnpm version pin was not being read at all
+#   4. `tools/ci-local.py --preflight --only web` -- missing, so the build that actually
+#      ships was the one where the node/pnpm pin check was absent
+#
+# THE POINT A "DO THE TWO AGREE ON THEIR PINS?" CHECK WOULD HAVE MISSED ALL FOUR. Every pin
+# was byte-identical between the two files: emsdk version and repo commit, wasm-pack 0.15.0,
+# `.nvmrc`, every action SHA. What drifted was the set of GATES, and pin-agreement is blind to
+# it. So the answer is not a comparison, it is one definition -- the workflow analogue of
+# `CLAUDE.md`'s rule that a gate belongs in a script both callers can invoke.
+#
+# ci.yml's `web` job and deploy.yml's `build` job BOTH use this. A gate added here is added to
+# the shipping build and to CI at once, which is the property that was missing.
+
+# NO INPUTS, AND THE ORIGIN IS THE REASON THERE ARE NONE. This action stops at an installed
+# `apps/web`; the build itself happens in the caller, which is where `BURROW_SITE` belongs --
+# CI builds for the development default and the deploy builds for the live origin, and that is
+# the one thing about them that SHOULD differ. An unused `site:` input here would document a
+# capability this action does not have.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache vendored wasm engines
+      id: wasm-engines-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: engines/vendor
+        key: wasm-engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh') }}
+
+    - name: Read the pinned emsdk version and repo commit
+      id: emsdk
+      shell: bash
+      run: |
+        block="$(sed -n '/^\[emsdk\]/,/^\[/p' engines/pins.toml)"
+        version="$(printf '%s' "$block" | sed -n 's/^version = "\(.*\)"/\1/p')"
+        commit="$(printf '%s' "$block" | sed -n 's/^repo_commit = "\(.*\)"/\1/p')"
+        [ -n "$version" ] || { echo "no emsdk version in engines/pins.toml" >&2; exit 1; }
+        [ -n "$commit" ] || { echo "no emsdk repo_commit in engines/pins.toml" >&2; exit 1; }
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+    - name: Cache emsdk
+      if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.local/share/emsdk
+        key: emsdk-${{ runner.os }}-${{ runner.arch }}-${{ steps.emsdk.outputs.version }}
+
+    - name: Install the pinned emsdk
+      if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+      env:
+        EMSDK_REPO_COMMIT: ${{ steps.emsdk.outputs.commit }}
+      shell: bash
+      run: |
+        version="${{ steps.emsdk.outputs.version }}"
+        if [ ! -f "$HOME/.local/share/emsdk/emsdk_env.sh" ]; then
+          # The SDK VERSION is pinned in engines/pins.toml and asserted by
+          # engines/build-wasm.sh; the emsdk repo that installs it was not, which is out
+          # of step with everything else under engines/. emsdk verifies the toolchain
+          # archive it downloads by sha512, so the exposure is the installer script
+          # rather than the compiler -- but the installer runs in CI with the same
+          # privileges as the build.
+          git clone https://github.com/emscripten-core/emsdk.git "$HOME/.local/share/emsdk"
+          git -C "$HOME/.local/share/emsdk" checkout --detach "$EMSDK_REPO_COMMIT"
+        fi
+        "$HOME/.local/share/emsdk/emsdk" install "$version"
+        "$HOME/.local/share/emsdk/emsdk" activate "$version"
+
+    - name: Fetch and build the wasm engines
+      if: steps.wasm-engines-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        engines/fetch.sh
+        engines/build-wasm.sh
+
+    # Re-run the artifact checks even on a cache hit. A cache is not a provenance claim:
+    # the export allowlist, the crypto flags and the no-async/no-network assertions must
+    # hold for the bytes we are about to ship, not for the bytes that were built once.
+    # NAMED FOR WHAT IT CHECKS. It re-hashes the fetched TARBALLS against `engines/pins.toml`;
+    # it does not hash the built `vendor/wasm/lib/*.a` that actually get linked, and on a warm
+    # cache those are restored without being rebuilt. A cache entry with honest tarballs and
+    # tampered static libraries passes this step with `ok` on every line.
+    #
+    # Reachability is bounded -- Actions cache scope means a run on `main` restores only caches
+    # created on `main`, so poisoning one needs write access to `main` already -- which is why
+    # this is a naming correction rather than a rebuild-every-time. The step used to be called
+    # "Re-verify engine checksums", which asserted more than it checks.
+    - name: Re-verify the fetched engine tarballs against their pins
+      shell: bash
+      run: engines/fetch.sh
+
+    # ON EVERY RUN, WARM CACHE OR COLD -- which is the whole reason this step exists rather
+    # than only the call inside build-wasm.sh.
+    #
+    # The comparison lived in build-wasm.sh, which the step above runs only on a cache MISS,
+    # and the cache key is (pins.toml, fetch.sh, build-wasm.sh). `qpdf_remove_page` was
+    # declared natively for split in PR #55, never exported, and sat on main undetected
+    # because no PR since touched any of those three files. It surfaced only when rotate's
+    # branch edited a COMMENT in pins.toml and busted the cache.
+    #
+    # The comment above already says a cache is not a provenance claim. This is the same
+    # point one layer in: a check gated on a cache miss is a check that mostly does not run,
+    # and it is the second one in this repository to have hidden a real defect. It reads only
+    # committed files plus the cached qpdf.wasm, both present either way.
+    - name: qpdf.wasm exports exactly what ffi.rs declares (ADR 0013 §1)
+      shell: bash
+      run: |
+        tools/check-wasm-exports.sh
+        tools/test-check-wasm-exports.sh
+
+    # ---- the Rust module --------------------------------------------------------
+    - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+    # The wasm half of the same assertion, and it names `qpdf.wasm` -- the LINKED module a
+    # user downloads -- not `libqpdf.a`.
+    #
+    # Two reasons, and the second is why this step is not simply the archive:
+    #
+    #   * The module is what ships. A library introduced at the emcc link step is invisible
+    #     in the archive, and an archive member the linker dropped as unused never reaches
+    #     anyone. The shipped bytes are the honest subject.
+    #   * Reading a wasm ARCHIVE needs `llvm-nm`; plain `nm` cannot, and emsdk is installed
+    #     in this job only on a cache MISS and never exported to PATH. So an archive check
+    #     here would fail closed on every warm-cache PR -- correct behaviour, red CI, no
+    #     added safety. Scanning the module needs only `strings`, from binutils.
+    #
+    # The native archives get the full symbol-table treatment in the `test` job.
+    - name: qpdf wasm links native crypto only, never GnuTLS (ROADMAP item 3, ADR 0008)
+      shell: bash
+      run: tools/check-qpdf-crypto.sh engines/vendor/wasm/lib/qpdf.wasm
+
+    - name: Install wasm-pack
+      shell: bash
+      run: cargo install wasm-pack --locked --version 0.15.0
+    # --target no-modules, NOT --target web: the worker is classic (pdfium.js is not
+    # modularised and needs importScripts), and a classic worker cannot import an ES
+    # module. See apps/web/CLAUDE.md.
+    - name: Build the wasm binding
+      shell: bash
+      run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+
+    # ---- the web app ------------------------------------------------------------
+    - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      with:
+        package_json_file: apps/web/package.json
+    # THE PIN LIVES IN `.nvmrc`, and this reads it rather than repeating it. A literal
+    # `node-version: 22` here was the only statement of the version, so a developer's shell
+    # had nothing to agree with -- `tools/ci-local.py`'s preflight measured node 24 against
+    # CI's 22 on a machine that had no way of knowing. `.nvmrc` is read by BOTH sides: by
+    # this step, and by a bare `nvm use` at the repository root.
+    #
+    # It stays a MAJOR version, which is what `node-version: 22` meant and what the runner
+    # honoured. Narrowing it to an exact patch would be a policy change, not a relocation.
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version-file: .nvmrc
+        cache: pnpm
+        cache-dependency-path: apps/web/pnpm-lock.yaml
+    # WHAT THIS RUNNER ACTUALLY INSTALLED, asserted rather than assumed. `node-version-file`
+    # is read by the action, and nothing downstream checked the result -- so an empty or
+    # unreadable `.nvmrc` could leave the job on the runner's preinstalled node with every
+    # gate still green. That is the fail-OPEN direction, which is the one worth closing.
+    #
+    # The preflight already performs exactly this comparison, against the same `.nvmrc`, and
+    # it is covered by its own self-test -- so this reuses a tested gate instead of adding an
+    # inline one the parity extractor has no pattern for. It also checks pnpm against
+    # `packageManager`, and that ci.yml still READS the pin rather than stating it inline.
+    - name: The installed node and pnpm match the pins
+      shell: bash
+      run: tools/ci-local.py --preflight --only web
+
+    - name: Install web dependencies
+      working-directory: apps/web
+      shell: bash
+      run: pnpm install --frozen-lockfile

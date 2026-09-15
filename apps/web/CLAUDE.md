@@ -418,8 +418,14 @@ re-decide. Each was a decision with a reason, not a shape that happened.
   from production builds, so a console-silence or zero-requests assertion that runs only there
   says nothing about a route a person can visit. `e2e/merge-pdf.spec.ts` runs both against the
   page that ships, using the helpers in `e2e/request-log.ts` and `e2e/console-noise.ts`.
-- **Before any upload, run `tools/check-deployable-build.sh https://<origin>`.** It is the last
-  gate before bytes leave, and it asks a question no test does: not whether the build's four
+- **The deploy is `.github/workflows/deploy.yml`, and production is
+  `https://burrow-f2s.pages.dev`** (Cloudflare Pages, direct upload from our CI — ADR 0024).
+  Merging to `main` deploys; there is no separate approval step. Two jobs: `build` holds no
+  secret and produces the payload, `publish` holds the Cloudflare token and only downloads,
+  verifies, uploads and reads back where it went.
+- **Before any upload, run `tools/check-deployable-build.sh https://<origin>`** — the workflow
+  does this for you, twice, and this is what to run by hand. It is the last gate before bytes
+  leave, and it asks a question no test does: not whether the build's four
   origin-bearing places agree with each other — `src/built-for-origin.test.ts` asserts that —
   but whether they are the origin you MEANT. A build for `http://localhost:4321` is perfectly
   self-consistent, and it is the one `pnpm build` produces when nobody passed `BURROW_SITE`,

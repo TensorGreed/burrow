@@ -1,0 +1,229 @@
+name: Deploy
+
+# THE LIVE SITE. This workflow holds a credential that can write to it.
+#
+# TRIGGERS ARE THE SECURITY BOUNDARY, and there are exactly two: a manual dispatch, and a push
+# to `main` — which, since the branch ruleset landed, means a merged pull request that passed
+# `ci`. There is deliberately NO `pull_request` trigger and there must never be one: a
+# `pull_request` run is triggered by a branch anyone can open, and this workflow can write to
+# the site people visit. `tools/check-deploy-workflow.sh` enforces that rather than trusting
+# this comment, and CI runs it.
+#
+# `pull_request_target`, `issue_comment` and `workflow_call` are refused by the same check and
+# for the same reason: each is a way for content outside `main` to reach a job holding a
+# credential.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this deploy is happening (recorded in the run)"
+        required: false
+        default: "manual"
+  push:
+    branches: [main]
+
+# ONE DEPLOY AT A TIME, AND NEVER CANCELLED HALF WAY. `cancel-in-progress: false`, unlike
+# `ci.yml`: cancelling a build wastes a runner, cancelling an upload leaves the live site
+# holding half of one deploy and half of another.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # THE ORIGIN IS A BUILD INPUT, NOT A DEPLOY SETTING (ADR 0014 §4). `connect-src` names the
+  # exact content-hashed engine URLs and the worker bundle carries absolute URLs, so a build
+  # is bound to one origin and cannot be relocated by uploading it somewhere else. It reaches
+  # the CSP, `_headers`, the worker manifest, Astro's `site:` and the run-time stamp through
+  # ONE reader, `tools/build-origin.mjs`.
+  #
+  # Changing this means rebuilding, not redeploying. `tools/check-deployable-build.sh` is
+  # invoked with the same value below and refuses a build that disagrees.
+  BURROW_SITE: https://burrow-f2s.pages.dev
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # THE BUILD HOLDS NO SECRETS. Splitting it from the upload is the whole point: this job
+  # compiles third-party C++ through emsdk and runs a package manager, and it does so with no
+  # credential in its environment. The job that holds the token does almost nothing.
+  build:
+    name: build the production payload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # THE SAME BUILD CI RUNS, from one definition. Not a copy: this began as sixty
+      # duplicated lines and a review diffed them, finding FOUR divergences on day one --
+      # including `tools/check-qpdf-crypto.sh`, the gate asserting the shipped qpdf.wasm links
+      # native crypto and never GnuTLS, which is LGPL and forbidden by non-negotiable 2. The
+      # bytes that actually leave would have gone out without it.
+      #
+      # Pin-agreement would have caught none of the four: every pin was byte-identical. What
+      # drifted was the GATE SET, which is why the fix is one definition rather than a
+      # comparison.
+      - uses: ./.github/actions/build-web-payload
+
+      # NO `BURROW_HARNESS`. `/harness` exposes `window.burrowHarness`, which drives a real
+      # file through the real worker, and `dist/host/` is the lifecycle module it loads. Both
+      # are excluded by `astro.config.mjs` unless the flag is set, and the gate below refuses
+      # the build outright if either directory exists — so this is asserted, not just omitted.
+      - name: Build for ${{ env.BURROW_SITE }}
+        working-directory: apps/web
+        run: pnpm build
+
+      # THE GATES, BEFORE ANYTHING LEAVES. Both read `apps/web/dist`, which only exists now.
+      - name: This build is for this origin and no other
+        run: tools/check-deployable-build.sh "$BURROW_SITE"
+
+      - name: PDFium reaches no part of the payload (spike 0004)
+        run: tools/check-no-pdfium-on-the-web.sh
+
+      - name: Record what is about to be uploaded
+        run: |
+          echo "### Payload" >> "$GITHUB_STEP_SUMMARY"
+          node tools/report-size-budget.mjs apps/web/dist >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the payload for the publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-dist
+          path: apps/web/dist
+          retention-days: 7
+          if-no-files-found: error
+          # `include-hidden-files` governs paths whose components start with a DOT. An earlier
+          # comment here claimed it was what preserved `_headers` -- that is wrong, and
+          # `_headers` starts with an underscore and was never excluded. Kept because a build
+          # may yet emit a dotted path, and corrected because an overclaiming comment is a bug
+          # in this repository, not a wording preference.
+          #
+          # What actually protects `_headers` is `tools/check-deployable-build.sh`, which
+          # fails on its absence AND runs again on the artifact after the round trip. Without
+          # that file Cloudflare serves the site with no CSP header, no `frame-ancestors` and
+          # no `nosniff`, leaving only the `<meta>` copy.
+          include-hidden-files: true
+
+  # THE ONLY JOB WITH THE CREDENTIAL, and it does three things: download, verify, upload.
+  publish:
+    name: publish to Cloudflare Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      # CHECKED OUT FOR THE GATE SCRIPT ONLY. `dist/` comes from the artifact, never from a
+      # build in this job — a job holding a live-site token does not compile anything.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the payload
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: production-dist
+          path: apps/web/dist
+
+      # THE PROJECT NAME IS DERIVED, NOT RESTATED. `burrow-f2s.pages.dev` -> `burrow-f2s`. It
+      # was written out a second time beside `BURROW_SITE` with nothing tying them, and a
+      # wrong one uploads a correct build to a DIFFERENT project: different origin, so
+      # `connect-src` refuses every engine fetch, every tool is dead, the origin-guard banner
+      # fires -- and the run is green with a summary naming the origin it did not deploy to.
+      - name: Work out where this is going
+        id: target
+        run: |
+          host="${BURROW_SITE#https://}"
+          project="${host%%.*}"
+          case "$host" in
+            *.pages.dev) : ;;
+            *) echo "BURROW_SITE is $BURROW_SITE, which is not a *.pages.dev origin. The
+          project name is derived from it; a custom domain needs this step changed
+          deliberately rather than guessed." >&2; exit 1 ;;
+          esac
+          [ -n "$project" ] || { echo "could not derive a project name from $BURROW_SITE" >&2; exit 1; }
+          echo "project=$project" >> "$GITHUB_OUTPUT"
+          echo "derived project name: $project"
+
+      # INSTALLED BEFORE THE GATE, DELIBERATELY. `npx --yes` resolves and installs wrangler's
+      # whole transitive tree from the network at run time, in the only job holding the
+      # credential, with write access to `apps/web/dist`. Run between the gate and the upload,
+      # any `postinstall` in that tree could rewrite the bytes AFTER they were checked --
+      # including `_headers`, which is the entire response-header policy. Doing the install
+      # first makes the gate the last thing to touch `dist/`.
+      #
+      # THE RESIDUAL IS NOT CLOSED BY THIS, and is stated rather than implied: the version is
+      # pinned and npm forbids republish, but the dependency CLOSURE is not pinned, and this
+      # is the one step in either workflow that is not SHA-pinned. Pinning it properly means
+      # `wrangler` as a devDependency under `pnpm-lock.yaml`, which is a dependency decision
+      # (licence audit, notices entry) rather than a detail.
+      - name: Install the pinned wrangler, before anything is verified
+        run: npx --yes wrangler@4.132.0 --version
+
+      # THE LAST THING BEFORE THE UPLOAD. The build job already passed this; that is not the
+      # same claim. What gets deployed is what came back out of the artifact, so the round
+      # trip is checked too -- a dropped `_headers` or a mangled `connect-src` fails here
+      # rather than on the live site.
+      - name: Re-verify the payload that is actually being uploaded
+        run: tools/check-deployable-build.sh "$BURROW_SITE"
+
+      # `--branch main` publishes to production rather than to a preview URL -- but only if the
+      # Pages project's production branch IS `main`, which is why the URL is read back below
+      # rather than assumed.
+      - name: Deploy
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          npx --yes wrangler@4.132.0 pages deploy apps/web/dist \
+            --project-name "${{ steps.target.outputs.project }}" \
+            --branch main \
+            --commit-dirty=true 2>&1 | tee wrangler.log
+
+      # AN EXIT CODE IS NOT AN OUTCOME -- READ THE STATE BACK. `CLAUDE.md` records three
+      # measured cases of a green exit over something that had not happened, and this is the
+      # one workflow whose outcome is a live website. Two failures that both report success:
+      # a wrong project name deploys a correct build somewhere nobody visits, and `--branch
+      # main` produces a PREVIEW deployment if the project's production branch is not `main`.
+      - name: The deployment actually landed on the origin this build is for
+        run: |
+          url="$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' wrangler.log | tail -1 || true)"
+          [ -n "$url" ] || { echo "wrangler printed no deployment URL, so where this went is unknown" >&2; exit 1; }
+          echo "wrangler reported: $url"
+          [ "$url" = "$BURROW_SITE" ] || {
+            echo "Deployed to $url, NOT $BURROW_SITE. A build is bound to one origin (ADR" >&2
+            echo "0014 §4), so on that URL connect-src refuses every engine fetch and every" >&2
+            echo "tool is dead. Either the project name is wrong, or this went to a preview" >&2
+            echo "because the project's production branch is not \`main\`." >&2
+            exit 1
+          }
+
+      # AND THE POLICY ARRIVES AS A REAL RESPONSE HEADER. `_headers` is a file the host chooses
+      # to read; ADR 0014 §5 duplicates the CSP into a `<meta>` precisely because a static host
+      # may ignore it. Which of the two is in force is a fact about the deployed site, so it is
+      # asserted here rather than left for somebody to check by hand.
+      - name: The CSP arrives as a header, from the live site
+        run: |
+          headers="$(curl -sSI --max-time 30 "$BURROW_SITE/" || true)"
+          [ -n "$headers" ] || { echo "no response from $BURROW_SITE" >&2; exit 1; }
+          printf '%s\n' "$headers" | grep -qi '^HTTP/.* 200' ||
+            { echo "$BURROW_SITE/ did not return 200:" >&2; printf '%s\n' "$headers" >&2; exit 1; }
+          printf '%s\n' "$headers" | grep -qi '^content-security-policy:' ||
+            { echo "no Content-Security-Policy RESPONSE HEADER from $BURROW_SITE -- _headers was
+          not read, so only the <meta> copy is in force and frame-ancestors is absent" >&2; exit 1; }
+          printf '%s\n' "$headers" | grep -qi '^x-content-type-options: *nosniff' ||
+            { echo "no nosniff header from $BURROW_SITE" >&2; exit 1; }
+          echo "the live site sends a CSP header and nosniff"
+
+      - name: Say where it went
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "- origin: \`$BURROW_SITE\`"
+            echo "- commit: \`${{ github.sha }}\`"
+            echo ""
+            echo "Verify against the live site, not a local preview: the CSP must arrive as a"
+            echo "real response header, the policy must reach the worker, the integrity pins"
+            echo "must match the bytes Cloudflare serves, and there must be zero requests"
+            echo "after engine init."
+          } >> "$GITHUB_STEP_SUMMARY"

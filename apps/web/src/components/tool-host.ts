@@ -40,7 +40,41 @@ import { readOrigin } from "../origin-guard.js";
 export const LIMITS = {
   maxInputBytes: 512 * 1024 * 1024,
   maxMemoryBytes: 1024 * 1024 * 1024,
-  maxDurationMs: 120_000,
+  /**
+   * 12 SECONDS, AND IT IS THE NUMBER THAT BOUNDS A HOSTILE FILE'S FREEZE.
+   *
+   * It was 120_000. `docs/security/exposure-2026-09-14-qpdf-uaf.md` accepted, as a residual,
+   * that a crafted document freezes an operation for the watchdog budget before failing --
+   * and recorded that budget as 60 s, which was already stale: the page asks for 120 s, and
+   * `WATCHDOG_GRACE_MS` puts the real bound at 120.5. **Two minutes of frozen tab.**
+   *
+   * That was accepted about a LOCAL build. On a public URL it is a different question: a
+   * minute-long freeze reads as a broken site, and most people close the tab well before the
+   * error lands -- so the honest failure never reaches them and the site looks broken rather
+   * than defended.
+   *
+   * MEASURED, NOT CHOSEN. `e2e/measure.spec.ts` walks the corpus and times every operation
+   * that SUCCEEDS, because a budget under real work turns a working tool into one that
+   * refuses honest documents -- which is worse than the freeze, since the freeze ends in a
+   * correct answer and a premature refusal is a wrong one. What it found, in a browser:
+   *
+   *   ordinary documents (1-137 pages)          1-9 ms
+   *   9,864 pages, just under `maxPages`        79-148 ms
+   *   27,400 pages (past the ceiling, for slope) 215 ms
+   *   `objstm-bomb.pdf`, structure-dense        611 ms   <- the slowest that succeeds
+   *
+   * The cost scales with STRUCTURE rather than with file size, which is why a document at the
+   * page ceiling is cheaper than a 204 KB bomb. 12 s is ~20x the slowest honest operation
+   * measured, which leaves an ordinary document three times the margin it needs on a machine
+   * far slower than the runner.
+   *
+   * WHAT IS NOT MEASURED, said rather than implied: no corpus fixture approaches the 512 MB
+   * `maxInputBytes` ceiling, so a file near it is outside this sample. If one is slower than
+   * 12 s the failure is a typed `LimitExceeded` the page explains -- `max_duration_ms` is
+   * cooperative and checked at checkpoints (ADR 0007) -- not a wrong answer and not a freeze.
+   * A visible refusal is the right direction to fail in; ADR 0015 records it as the residual.
+   */
+  maxDurationMs: 12_000,
   maxPages: 10_000,
   maxPixels: 256 * 1024 * 1024,
 } as const;
