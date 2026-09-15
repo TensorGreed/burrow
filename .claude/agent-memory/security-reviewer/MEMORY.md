@@ -16,3 +16,4 @@
 - [ADR 0022 read-back verification](m1_verify_output.md) — fresh-engine logger leak, sweep deadlines, and the declared_rotation i64 overflow repro.
 - [Split pruning (#54)](m1_split_pruning.md) — measured: images refuse the split, nested OC bypasses the refusal, /Resources is a category denylist, 34 kB → 17 s.
 - [Web split bridge (PR 3)](m1_web_split_bridge.md) — the measured attacker-chosen free() in bridge.js, the hole-skipping part gate, and the fixpoint DoS that is not one.
+- [ci-local preflight gaps](ci_local_preflight.md) — non-transitive tool derivation, skip-on-error version probes, and the SIGHUP trap hole.

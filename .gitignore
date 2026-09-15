@@ -145,3 +145,10 @@ __pycache__/
 # deletes a tracked local rule from the working tree, which is exactly when it is needed.
 tools/.*-fixture.py
 tools/.*-fixture.sh
+
+# The same argument, for a fixture that cannot live in `tools/`: the integration-suite gate's
+# self-test plants a test file where the gate looks, which is `core/*/tests/`. It is removed on
+# the normal path, and a run killed with SIGHUP skips the trap entirely (measured: an EXIT trap
+# does not run on HUP). A leftover here is worse than one in `tools/`, because a stray `.rs`
+# under `tests/` is both a `git add -A` candidate and something cargo will try to build.
+core/*/tests/zz_*.rs
