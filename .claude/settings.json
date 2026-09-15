@@ -1,5 +1,37 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "$comment": [
+    "A DENY LIST PREFIX-MATCHES A COMMAND STRING, SO IT CAN ONLY EVER BE AN ENUMERATION OF",
+    "SPELLINGS. The force-push entries below are the clearest case: they started as",
+    "`git push --force:*` and `git push -f:*`, were widened once to name every spelling that",
+    "targets `main`, and a security review of #80 then found four more --- `--force origin",
+    "HEAD:main`, `refs/heads/main`, a flag written AFTER the refspec, and any remote not called",
+    "`origin` or `upstream`. Those four are covered now. The next spelling nobody thought of is",
+    "not, and no amount of further widening changes that.",
+    "",
+    "SO THE RULE IS MATCHED AS A PROPERTY WHERE THE FORMAT ALLOWS IT, AND THAT IS `hooks`.",
+    "`.claude/hooks/refuse-force-push-to-main.sh` parses the command and refuses any force-push",
+    "whose destination ref resolves to `main` --- in any spelling, on any remote, including one",
+    "behind `&&` or `;`, and including the bare forms that name no refspec at all and therefore",
+    "push whatever branch happens to be checked out. That is the rule stated once, rather than",
+    "its spellings listed many times.",
+    "",
+    "BOTH ARE KEPT, LAYERED RATHER THAN DUPLICATED. The deny list refuses before the hook runs",
+    "and before a prompt is shown; the hook catches what an enumeration cannot reach. The hook",
+    "fails OPEN on its own internal error, deliberately --- a hook that failed closed on a bug",
+    "would block every push in the repository for a reason nobody could see --- and the deny",
+    "list is what is underneath it when that happens.",
+    "",
+    "The hook has an adversarial self-test, `.claude/hooks/test-refuse-force-push-to-main.sh`,",
+    "with both halves: 17 commands that must be refused and 10 near-misses that must be",
+    "allowed. The allow half is the one that matters --- a hook that refused everything would",
+    "pass a refuse-only suite and make the repository unusable. Its first run found a real bug,",
+    "and the same one `tools/ci-local.py`'s preflight hit: plain `shlex.split` leaves `hi;` as",
+    "one token, so a force-push behind a semicolon was invisible.",
+    "",
+    "Where a rule genuinely IS a spelling --- a literal path, an exact filename --- a list is",
+    "the right shape and this note does not apply to it."
+  ],
   "permissions": {
     "allow": [
       "Bash(cargo build:*)",
@@ -49,6 +81,20 @@
       "Bash(git push --force)",
       "Bash(git push -f)",
       "Bash(git push --force-with-lease)",
+      "Bash(git push --force origin HEAD:main:*)",
+      "Bash(git push --force origin refs/heads/main:*)",
+      "Bash(git push -f origin HEAD:main:*)",
+      "Bash(git push -f origin refs/heads/main:*)",
+      "Bash(git push --force-with-lease origin HEAD:main:*)",
+      "Bash(git push --force-with-lease origin refs/heads/main:*)",
+      "Bash(git push --force upstream HEAD:main:*)",
+      "Bash(git push --force upstream refs/heads/main:*)",
+      "Bash(git push origin main --force:*)",
+      "Bash(git push origin main -f:*)",
+      "Bash(git push origin main --force-with-lease:*)",
+      "Bash(git push upstream main --force:*)",
+      "Bash(git push origin HEAD:main:*)",
+      "Bash(git push origin refs/heads/main:*)",
       "Bash(git push --delete:*)",
       "Bash(git reset --hard:*)",
       "Bash(git clean -fdx:*)",
@@ -82,6 +128,18 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/refuse-force-push-to-main.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",

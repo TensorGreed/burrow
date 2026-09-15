@@ -681,6 +681,16 @@ jobs:
           python3 tools/ci-local.py --check
           tools/test-ci-local.sh
 
+      # A CONTROL NOTHING RUNS IS A CONTROL NOBODY KNOWS IS BROKEN, and a PreToolUse hook is
+      # the worst case of it: one that never fires is indistinguishable from one that is not
+      # installed, and this one fails OPEN by design, so a bug in it is silent twice over.
+      #
+      # It lives under `.claude/hooks/` rather than `tools/` because that is the path
+      # `.claude/settings.json` names. Its self-test needs nothing but python3, so it belongs
+      # in a job that fetches nothing and still runs on a clean checkout.
+      - name: The force-push hook still refuses the property, and still allows the near-misses
+        run: .claude/hooks/test-refuse-force-push-to-main.sh
+
       # Compile every tool in tools/ with warnings promoted to errors.
       #
       # M1 PR 4c shipped a regex in a non-raw docstring, so `check-qpdf-trapped.py` printed

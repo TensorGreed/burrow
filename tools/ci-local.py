@@ -83,6 +83,14 @@ PATTERNS: list[tuple[str, str]] = [
     (r"\bwasm-pack build (\S+)", r"wasm-pack:\1"),
     (r"\bpython3 (tools/[\w.-]+\.py)", r"\1"),
     (r"(?<![\w/])(tools/[\w.-]+\.sh)", r"\1"),
+    # A GATE MAY LIVE OUTSIDE `tools/`, AND ONE DOES. `.claude/hooks/*.sh` is where a hook's
+    # self-test has to live, because a hook path is what `.claude/settings.json` names -- and
+    # this pattern was added because parity REFUSED the first attempt to wire one in: CI ran
+    # `.claude/hooks/test-refuse-force-push-to-main.sh`, the local runner claimed to cover it,
+    # and the extractor saw neither. That is the fifth-row failure from CLAUDE.md, caught this
+    # time by the check rather than by a red CI run, and the fix is the extractor rather than
+    # the claim.
+    (r"(?<![\w/])(\.claude/hooks/[\w.-]+\.sh)", r"\1"),
     # ANY pnpm script, not a fixed list. The first version enumerated lint|check|build|test|e2e,
     # which meant a NEW script added to CI matched nothing and was reported as covered -- the
     # precise class of miss this tool exists for, reproduced inside the tool. `exec`, `install`
@@ -265,6 +273,12 @@ JOBS: list[dict] = [
                 "tools/test-check-no-network-deps.sh",
                 "tools/test-seed-fuzz-corpus.sh",
                 "tools/test-ci-local.sh",
+                # NOT UNDER tools/, and that is the only reason it stands out. It is the
+                # self-test for a PreToolUse hook, which lives beside the hook it tests
+                # because a hook path is what `.claude/settings.json` names. It is a control
+                # like any other here: it refuses a force-push to `main` in any spelling, and
+                # a control nothing runs is a control nobody knows is broken.
+                ".claude/hooks/test-refuse-force-push-to-main.sh",
             ]
         ),
         "covers": [
@@ -278,6 +292,7 @@ JOBS: list[dict] = [
             "tools/test-check-no-network-deps.sh",
             "tools/test-seed-fuzz-corpus.sh",
             "tools/test-ci-local.sh",
+            ".claude/hooks/test-refuse-force-push-to-main.sh",
         ],
     },
     {
@@ -666,7 +681,9 @@ def programs_used_in(text: str, candidates: frozenset[str] | set[str]) -> set[st
     return found
 
 
-SCRIPT_REF = re.compile(r"(?<![\w/.\-])(tools/[\w.\-]+\.(?:sh|py|mjs))")
+SCRIPT_REF = re.compile(
+    r"(?<![\w/.\-])((?:tools|\.claude/hooks)/[\w.\-]+\.(?:sh|py|mjs))"
+)
 
 
 class _CommandPosition(dict):
