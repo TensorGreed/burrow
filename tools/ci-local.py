@@ -34,7 +34,9 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -162,6 +164,16 @@ JOBS: list[dict] = [
         ],
         "needs_qpdf_cli": True,
         "why": "ADR 0019 §2's rule, and that the tests asserting it are not ignored (#54)",
+    },
+    {
+        # The mutation sweep that stands behind the shared pruning policy. It plants the deleted
+        # `prune_output` call on each extractor in turn and requires the suite covering that side
+        # to turn red, which is the only thing left that can catch one path not reaching the
+        # policy -- see `testsupport/expectations.rs`'s `Operation::Split`.
+        "name": "prune-is-reached",
+        "run": "tools/test-prune-is-reached.sh",
+        "covers": ["tools/test-prune-is-reached.sh"],
+        "why": "each split path is shown to reach the shared pruning policy (#54)",
     },
     {
         "name": "corpus",
@@ -385,12 +397,32 @@ def parity(found: dict[str, list[str]]) -> tuple[list[str], list[str]]:
     return uncovered, stale
 
 
-def run(job: dict) -> bool:
+def qpdf_cli() -> tuple[str | None, str]:
+    """Where a `qpdf` CLI can be found, and how it was found.
+
+    Two leak suites and the subsetting gate shell out to `qpdf --qdf` to decompress output
+    before scanning it, because a marker inside a flate stream is invisible to a byte scan.
+    CI installs the distro package and then asserts it is on PATH.
+
+    Locally the better answer is usually already built: `engines/build-native.sh` produces the
+    CLI for the PINNED qpdf beside the library, so preferring it means the tests decompress
+    with the same version they link against rather than with whatever the distro ships.
+    """
+    found = shutil.which("qpdf")
+    if found:
+        return found, "on PATH"
+    for built in sorted(REPO.glob("engines/vendor/src/build-qpdf-*/qpdf/qpdf")):
+        if built.is_file() and os.access(built, os.X_OK):
+            return str(built), "built by engines/build-native.sh"
+    return None, "not found"
+
+
+def run(job: dict, env: dict[str, str] | None = None) -> bool:
     print(f"\n=== {job['name']}")
     if job.get("why"):
         print(f"    ({job['why']})")
     print(f"    $ {job['run']}")
-    result = subprocess.run(job["run"], shell=True, cwd=REPO)
+    result = subprocess.run(job["run"], shell=True, cwd=REPO, env=env)
     ok = result.returncode == 0
     print(f"    {'PASS' if ok else 'FAIL'}  {job['name']}")
     return ok
@@ -465,7 +497,38 @@ def main(argv: list[str]) -> int:
         print(f"error: no local job named {only!r}", file=sys.stderr)
         return 1
 
-    failed = [j["name"] for j in jobs if not run(j)]
+    # THE `qpdf` CLI, RESOLVED BEFORE ANYTHING RUNS. `needs_qpdf_cli` was declared on three
+    # jobs and read by nothing -- so on a machine without the CLI those three did not refuse,
+    # they FAILED, with five tests panicking inside a testsupport helper about a missing
+    # binary. That reads as "the change broke the leak tests" and it is not what happened.
+    # This is the same write-only-flag defect the reviewers found twice elsewhere in this
+    # batch, in a file whose entire purpose is refusing to run a sweep it cannot complete.
+    needing = [j["name"] for j in jobs if j.get("needs_qpdf_cli")]
+    env = None
+    if needing:
+        cli, how = qpdf_cli()
+        if cli is None:
+            print(
+                f"\nREFUSED — {len(needing)} job(s) need the `qpdf` CLI, which is not "
+                f"installed: {', '.join(needing)}",
+                file=sys.stderr,
+            )
+            print(
+                "\n  Two leak suites and the subsetting gate decompress output with\n"
+                "  `qpdf --qdf` before scanning it; without it a marker inside a flate\n"
+                "  stream is invisible and the scan reports silence for the wrong reason.\n"
+                "\n  Either install it (apt-get install qpdf), or run\n"
+                "  engines/build-native.sh, which builds the pinned one this would prefer.\n"
+                "\n  Refusing rather than running: a sweep that cannot complete must not\n"
+                "  report a failure that looks like the change's fault.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"\nqpdf CLI: {cli} ({how})")
+        env = dict(os.environ)
+        env["PATH"] = f"{os.path.dirname(cli)}{os.pathsep}{env.get('PATH', '')}"
+
+    failed = [j["name"] for j in jobs if not run(j, env)]
     print("\n" + "=" * 60)
     if failed:
         print(f"FAILED — {len(failed)} of {len(jobs)}: {', '.join(failed)}", file=sys.stderr)

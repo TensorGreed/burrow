@@ -61,7 +61,7 @@ export type Outcome =
     }
   | { err: Failure };
 
-export type Operation = "page_count" | "structure_check" | "merge" | "rotate" | "reorder";
+export type Operation = "page_count" | "structure_check" | "merge" | "rotate" | "reorder" | "split";
 export type Platform = "native" | "web";
 
 export interface PlatformExpectation {
@@ -234,7 +234,14 @@ function key(caseName: string, operation: Operation): string {
  * RUN through -- schema 3 lets a case declare only the operations it is about -- but the
  * comparator still needs the full set, to reject a record naming something outside it.
  */
-const OPERATIONS: Operation[] = ["page_count", "structure_check", "merge", "rotate", "reorder"];
+const OPERATIONS: Operation[] = [
+  "page_count",
+  "structure_check",
+  "merge",
+  "rotate",
+  "reorder",
+  "split",
+];
 
 /**
  * What a case expects of one platform, honouring any recorded by-design difference.

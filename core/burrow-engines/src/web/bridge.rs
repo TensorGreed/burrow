@@ -413,6 +413,76 @@ pub trait QpdfBridge: Send + Sync {
     /// [`oh_get_key`](QpdfBridge::oh_get_key).
     fn oh_replace_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr, item: u32);
 
+    // ---- the object-handle API, part two ---------------------------------------------
+    //
+    // Added so `split`'s pruning works on the web. The audit question is the one the block
+    // above answers and the answer is the same: none of these decides anything. Each is one
+    // qpdf call with its arguments passed through and its answer returned unexamined.
+    //
+    // WHAT IS DIFFERENT HERE IS WHERE THE DECISIONS LIVE. `rotate` has a web implementation
+    // and a native one, deliberately. Pruning does not: the policy is `crate::prune`, written
+    // once against `ObjectGraph`, and these methods are the web half of the seam under it.
+    // `crate::prune`'s header has the argument -- a divergence between two prunings is a leak
+    // on one platform and not the other, which is the one thing the differential corpus
+    // cannot see.
+
+    /// `qpdf_oh_unparse_resolved`. The object's own syntax, children left as `N G R`.
+    ///
+    /// **`_resolved`, not the plain `qpdf_oh_unparse`**, which returns `"N G R"` for an
+    /// indirect object -- and every page in a real document is indirect, so the plain call
+    /// hands back a reference rather than a dictionary. Measured: every leak test failed at
+    /// once when the native side declared the wrong one.
+    ///
+    /// Returns a pointer into qpdf's own storage, valid until the next call that returns one.
+    /// The caller copies immediately; see `copy_c_string` on the native side for the same rule.
+    fn oh_unparse_resolved(&self, data: QpdfPtr, oh: u32) -> QpdfPtr;
+
+    /// `qpdf_oh_get_name`. Canonicalised, leading `/` included. Same pointer lifetime.
+    fn oh_get_name(&self, data: QpdfPtr, oh: u32) -> QpdfPtr;
+
+    /// `qpdf_oh_remove_key`. Removing an absent key is not an error.
+    fn oh_remove_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr);
+
+    /// `qpdf_oh_get_array_n_items`. Zero for anything that is not an array.
+    fn oh_get_array_n_items(&self, data: QpdfPtr, oh: u32) -> i32;
+
+    /// `qpdf_oh_get_array_item`. Out of range yields a null object rather than an error.
+    fn oh_get_array_item(&self, data: QpdfPtr, oh: u32, at: i32) -> u32;
+
+    /// `qpdf_oh_erase_item`. **Everything after `at` shifts down**; the policy walks backwards.
+    fn oh_erase_item(&self, data: QpdfPtr, oh: u32, at: i32);
+
+    /// `qpdf_oh_get_dict`. A stream's dictionary -- a distinct type from a dictionary, so a
+    /// Form XObject's `/Resources` is unreachable without it.
+    fn oh_get_dict(&self, data: QpdfPtr, oh: u32) -> u32;
+
+    /// `qpdf_oh_get_int_value`. Only meaningful once the type code has said it is an integer.
+    fn oh_get_int_value_i64(&self, data: QpdfPtr, oh: u32) -> i64;
+
+    /// `qpdf_oh_get_page_content_data`, copied out and freed in one call.
+    ///
+    /// **The buffer qpdf allocates here is the CALLER's to free**, unlike every other pointer
+    /// this bridge receives. Copying out and freeing on the JS side keeps that ownership rule
+    /// in one place rather than making it a discipline every caller has to remember -- and a
+    /// leak of it is the decompressed size of a content stream, per page, per part.
+    ///
+    /// Returns the decoded bytes, or `None` if qpdf reported an error.
+    fn oh_page_content(&self, data: QpdfPtr, page: u32) -> Option<Vec<u8>>;
+
+    /// `qpdf_oh_get_stream_data` at `qpdf_dl_specialized`, copied out and freed.
+    ///
+    /// Returns `None` when qpdf reports an error **or when it could not decode the stream** --
+    /// the two are not distinguished here because the policy treats them the same way, and it
+    /// must: undecoded bytes are still compressed, and lexing those for resource names yields
+    /// accidents rather than the names that are there.
+    fn oh_stream_data(&self, data: QpdfPtr, oh: u32) -> Option<Vec<u8>>;
+
+    /// Copy a NUL-terminated string qpdf owns out of the engine heap.
+    ///
+    /// Paired with [`QpdfBridge::oh_unparse_resolved`] and [`QpdfBridge::oh_get_name`], whose
+    /// pointers die on the next call that returns one.
+    fn copy_c_string(&self, ptr: QpdfPtr) -> Vec<u8>;
+
     /// `qpdf_oh_get_object_id` and `qpdf_oh_get_generation`, as one call.
     ///
     /// # A handle is not an identity

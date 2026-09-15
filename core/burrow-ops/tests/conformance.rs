@@ -192,6 +192,29 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         };
     }
 
+    if operation == Operation::Split {
+        // CUT AFTER THE FIRST PAGE, fixed like rotate's angle and reorder's reversal.
+        //
+        // The recorded outcome is the number of PARTS, not a page count -- and on the fixture
+        // this operation exists for it is a refusal rather than either. `Operation::Split`'s
+        // rustdoc has the argument: the optional-content refusal lives inside the shared
+        // pruning policy, so a path that skips pruning succeeds where this expects
+        // `Unsupported`, and that is the one failure a single shared policy can still have.
+        let mut options = OpenOptions::new(limits, clock);
+        options.password = password.as_ref();
+        let result = burrow_ops::split(
+            &Qpdf::new(),
+            first(),
+            burrow_ops::Cuts::after_pages(&[1]),
+            &options,
+        )
+        .and_then(|parts| {
+            u64::try_from(parts.len())
+                .map_err(|_| burrow_types::Error::Internal("part count does not fit".to_owned()))
+        });
+        return outcome_of(&result);
+    }
+
     let result = match operation {
         Operation::PageCount => {
             let mut options = OpenOptions::new(limits, clock);
@@ -237,6 +260,7 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         // caught needing a runner at all.
         Operation::Rotate => unreachable!("rotate returns before this match"),
         Operation::Reorder => unreachable!("reorder returns before this match"),
+        Operation::Split => unreachable!("split returns before this match"),
     };
     outcome_of(&result)
 }

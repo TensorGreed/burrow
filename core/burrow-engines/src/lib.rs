@@ -80,7 +80,16 @@ pub mod prescan;
 // dictionary-key iterator does not route through `trap_errors` and the content-stream parser
 // is not in the C API (ADR 0013 §1). `split`'s pruning needs both, and redaction reuses the
 // module unchanged.
+// The one-blank-page destination a split builds into. Ungated: both engine paths read it.
+pub(crate) mod blank;
+
 pub mod pdfsyntax;
+
+// The pruning policy ADR 0019 §2b states, written ONCE and implemented over a seam both engine
+// paths satisfy. Ungated like `pdfsyntax` and for a stronger reason: a divergence between two
+// prunings is a leak on one platform and not the other, and the differential corpus compares
+// outcomes and page counts -- neither of which can see an object that should not have travelled.
+pub mod prune;
 
 // The web implementations of both engine traits, plus the bridge traits the JS binding
 // implements. Ungated for the same reason as `prescan`: the orchestration is shared Rust,

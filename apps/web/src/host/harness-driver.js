@@ -246,9 +246,22 @@ function buildPrologue({ captureConsole = false, logCanary = null, poison = null
  * @param {import("./harness-api.js").Reply & { output?: Blob | null }} reply
  * @returns {import("./harness-api.js").Reply}
  */
+/**
+ * @param {import("./worker-host.js").HostReply & { output?: Blob | null, parts?: Blob[] }} reply
+ */
 function serialisable(reply) {
-  const { output, ...rest } = reply;
-  return { ...rest, outputBytes: output ? output.size : 0 };
+  // `parts` COMES OUT TOO, and it was not until code review pointed out the fourth reader.
+  // `output` was stripped because a `Blob` is not structured-cloneable across the Playwright
+  // boundary; `parts` is an array of them and arrived later, through `worker-host.js`'s
+  // multi-output path. A `page.evaluate` returning one resolves to `undefined`, which would
+  // make the conformance spec throw on `parts.fatal` -- a failure with nothing to do with
+  // split. `add-operation` §2a's "three readers move together" has a fourth here.
+  const { output, parts, ...rest } = reply;
+  return {
+    ...rest,
+    outputBytes: output ? output.size : 0,
+    partCount: parts ? parts.length : 0,
+  };
 }
 
 /**
@@ -262,7 +275,7 @@ function serialisable(reply) {
  * @param {Blob} blob
  * @param {{ password?: string | null, limits?: Record<string, number>, extra?: string[],
  *           attemptRecovery?: boolean, pages?: number[], degrees?: number,
- *           order?: number[] }} options
+ *           order?: number[], cuts?: number[] }} options
  */
 async function runOnBlob(op, blob, options = {}) {
   sourceForSpawn = await ensureSource();
@@ -296,6 +309,8 @@ async function runOnBlob(op, blob, options = {}) {
       degrees: options.degrees,
       // `reorder` only. A permutation of one-based page numbers, chosen by the caller.
       order: options.order,
+      // `split` only. One-based page numbers to cut after, chosen by the caller.
+      cuts: options.cuts,
       password,
       limits,
       attemptRecovery: options.attemptRecovery ?? false,
@@ -458,6 +473,39 @@ const harness = {
     if (!reordered.ok || !reordered.output) return serialisable(reordered);
 
     return serialisable(await runOnBlob("page_rotations", reordered.output, options));
+  },
+
+  /**
+   * Split a document after the given one-based pages and report how many parts came out.
+   *
+   * **The count, not the parts.** `Operation::Split` records a part count, and the conformance
+   * corpus compares typed outcomes — so the observable that crosses back into a Playwright test
+   * is a number, exactly as `merge`'s is a page count.
+   *
+   * The case this exists for records a REFUSAL rather than a count: the optional-content check
+   * lives inside the shared pruning policy, so a path that skipped pruning would split happily
+   * and report parts where the corpus expects `Unsupported`. That is the one divergence a single
+   * shared policy can still have, and it is why this helper reports the failure faithfully
+   * instead of turning it into zero parts.
+   *
+   * @param {string} base64
+   * @param {{ password?: string | null, limits?: Record<string, number>, cuts?: number[] }} options
+   */
+  async splitAt(base64, options = {}) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "application/pdf" });
+
+    const reply = await runOnBlob("split", blob, { ...options, cuts: options.cuts ?? [1] });
+    const flat = serialisable(reply);
+    if (!flat.ok) return flat;
+    // THE PART COUNT AS `pages`, so `outcomeOf` records it the way it records every other
+    // operation's number. `serialisable` has already turned the Blobs into a count -- nothing
+    // that crosses back into a test holds one.
+    return { ...flat, pages: flat.partCount };
   },
 
   /** How many workers have been spawned. The recovery tests read this. */

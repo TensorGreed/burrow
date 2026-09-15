@@ -115,6 +115,34 @@ extern "C" {
     /// in one call and cannot be used apart. See `QpdfBridge::oh_object`.
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_object)]
     fn qpdf_oh_object(data: u32, oh: u32) -> u64;
+    // ---- split's pruning ------------------------------------------------------------
+    //
+    // `__burrow_qpdf_oh_page_content` and `__burrow_qpdf_oh_stream_data` return the DATA
+    // rather than a pointer, and free qpdf's buffer on the JS side. Those two are the only
+    // qpdf calls whose buffer belongs to the caller rather than to qpdf, and keeping the
+    // free next to the allocation is what stops that ownership rule becoming a discipline
+    // every caller has to remember. `null` means qpdf reported an error or could not decode.
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_unparse_resolved)]
+    fn qpdf_oh_unparse_resolved(data: u32, oh: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_name)]
+    fn qpdf_oh_get_name(data: u32, oh: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_remove_key)]
+    fn qpdf_oh_remove_key(data: u32, oh: u32, key: u32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_array_n_items)]
+    fn qpdf_oh_get_array_n_items(data: u32, oh: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_array_item)]
+    fn qpdf_oh_get_array_item(data: u32, oh: u32, at: i32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_erase_item)]
+    fn qpdf_oh_erase_item(data: u32, oh: u32, at: i32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_dict)]
+    fn qpdf_oh_get_dict(data: u32, oh: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_page_content)]
+    fn qpdf_oh_page_content(data: u32, page: u32) -> Option<Vec<u8>>;
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_stream_data)]
+    fn qpdf_oh_stream_data(data: u32, oh: u32) -> Option<Vec<u8>>;
+    #[wasm_bindgen(js_name = __burrow_qpdf_copy_c_string)]
+    fn qpdf_copy_c_string(ptr: u32) -> Vec<u8>;
+
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_release)]
     fn qpdf_oh_release(data: u32, oh: u32);
     #[wasm_bindgen(js_name = __burrow_qpdf_write)]
@@ -334,6 +362,50 @@ impl QpdfBridge for JsQpdf {
 
     fn oh_get_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr) -> u32 {
         qpdf_oh_get_key(data.0, oh, key.0)
+    }
+
+    fn oh_unparse_resolved(&self, data: QpdfPtr, oh: u32) -> QpdfPtr {
+        QpdfPtr(qpdf_oh_unparse_resolved(data.0, oh))
+    }
+
+    fn oh_get_name(&self, data: QpdfPtr, oh: u32) -> QpdfPtr {
+        QpdfPtr(qpdf_oh_get_name(data.0, oh))
+    }
+
+    fn oh_remove_key(&self, data: QpdfPtr, oh: u32, key: QpdfPtr) {
+        qpdf_oh_remove_key(data.0, oh, key.0);
+    }
+
+    fn oh_get_array_n_items(&self, data: QpdfPtr, oh: u32) -> i32 {
+        qpdf_oh_get_array_n_items(data.0, oh)
+    }
+
+    fn oh_get_array_item(&self, data: QpdfPtr, oh: u32, at: i32) -> u32 {
+        qpdf_oh_get_array_item(data.0, oh, at)
+    }
+
+    fn oh_erase_item(&self, data: QpdfPtr, oh: u32, at: i32) {
+        qpdf_oh_erase_item(data.0, oh, at);
+    }
+
+    fn oh_get_dict(&self, data: QpdfPtr, oh: u32) -> u32 {
+        qpdf_oh_get_dict(data.0, oh)
+    }
+
+    fn oh_get_int_value_i64(&self, data: QpdfPtr, oh: u32) -> i64 {
+        qpdf_oh_get_int_value(data.0, oh)
+    }
+
+    fn oh_page_content(&self, data: QpdfPtr, page: u32) -> Option<Vec<u8>> {
+        qpdf_oh_page_content(data.0, page)
+    }
+
+    fn oh_stream_data(&self, data: QpdfPtr, oh: u32) -> Option<Vec<u8>> {
+        qpdf_oh_stream_data(data.0, oh)
+    }
+
+    fn copy_c_string(&self, ptr: QpdfPtr) -> Vec<u8> {
+        qpdf_copy_c_string(ptr.0)
     }
 
     fn oh_get_type_code(&self, data: QpdfPtr, oh: u32) -> i32 {

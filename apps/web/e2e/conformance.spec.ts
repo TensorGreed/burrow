@@ -223,6 +223,33 @@ test("every corpus file produces the same typed outcome as the native path", asy
         continue;
       }
 
+      // SPLIT IS ONE OPERATION AND ITS OBSERVABLE IS A COUNT -- or, on the case this operation
+      // exists for, a REFUSAL. `Operation::Split`'s rustdoc has the argument: the pruning policy
+      // is shared between the two implementations, so this harness can no longer catch them
+      // pruning differently. What it catches instead is one of them never reaching the policy,
+      // and the optional-content refusal lives inside it.
+      if (operation === "split") {
+        const parts = await page.evaluate(
+          ([bytes, password, limits]) =>
+            window.burrowHarness.splitAt(bytes as string, {
+              password: password as string | null,
+              limits: limits as Record<string, number>,
+              cuts: [1],
+            }),
+          [
+            base64,
+            testCase.password,
+            { maxDurationMs: 600_000, ...camelCaseLimits(testCase.limits) },
+          ] as const,
+        );
+        expect(
+          parts.fatal,
+          `${testCase.name} (split): a corpus file must not poison the instance`,
+        ).toBe(false);
+        results.push({ case: testCase.name, operation, outcome: outcomeOf(parts) });
+        continue;
+      }
+
       const reply = await page.evaluate(
         ([op, bytes, password, attemptRecovery, limits, more]) =>
           window.burrowHarness.runBase64(

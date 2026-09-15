@@ -168,6 +168,54 @@ check "removing the cargo-audit action is noticed" \
   "uses: rustsec/audit-check@||uses: rustsec/audit-check-removed@" \
   "cargo:audit" 1
 
+# --- The environment, not ci.yml: a job whose tool is missing must REFUSE, not fail ----------
+#
+# `needs_qpdf_cli` was declared on three jobs and read by nothing. On a machine without the
+# CLI those three did not refuse -- they ran, and five tests panicked inside a testsupport
+# helper about a missing binary, which reads as "the change broke the leak tests". A flag
+# nothing reads is the same defect the reviewers found twice elsewhere in this batch, and it
+# is worse in the one file whose purpose is refusing to run a sweep it cannot complete.
+#
+# This hides BOTH routes to the CLI -- the PATH and the pinned build engines/build-native.sh
+# produces -- and requires a refusal that names the tool.
+# THE REAL ci.yml, restored first. `check()` restores at the START of each call rather than
+# the end, so the last mutation is still in place here -- and this case's refusal happens
+# AFTER the parity check, which would fail on it for an unrelated reason.
+cp "$backup" "$ci"
+
+echo
+hidden=""
+built="$(ls -1 "$repo"/engines/vendor/src/build-qpdf-*/qpdf/qpdf 2>/dev/null | head -1 || true)"
+if [ -n "$built" ] && [ -x "$built" ]; then
+  hidden="$built.hidden-by-test-ci-local"
+  mv "$built" "$hidden"
+  # RESTORED ON EVERY EXIT, alongside the ci.yml copy the outer trap already handles.
+  trap 'cp "$backup" "$ci"; rm -f "$backup"; [ -n "$hidden" ] && [ -e "$hidden" ] && mv "$hidden" "${hidden%.hidden-by-test-ci-local}"' EXIT
+fi
+
+# A PATH holding the interpreter and NOTHING ELSE, so `shutil.which("qpdf")` genuinely finds
+# nothing. Emptying PATH outright would make the failure "python3 not found", which is a
+# different refusal and would have passed a status check while proving nothing.
+py="$(command -v python3)"
+empty="$(mktemp -d)"
+ln -s "$py" "$empty/python3"
+status=0
+out="$(PATH="$empty" "$py" "$here/ci-local.py" --only subsetting-gate 2>&1)" || status=$?
+rm -rf "$empty"
+if [ "$status" -eq 1 ] && grep -q "REFUSED" <<<"$out" && grep -q "qpdf" <<<"$out"; then
+  echo "  ok   a job whose qpdf CLI is missing is refused, not run"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a job whose qpdf CLI is missing was not refused (status $status)"
+  echo "$out" | tail -10
+  fail=$((fail + 1))
+fi
+
+if [ -n "$hidden" ] && [ -e "$hidden" ]; then
+  mv "$hidden" "${hidden%.hidden-by-test-ci-local}"
+  hidden=""
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

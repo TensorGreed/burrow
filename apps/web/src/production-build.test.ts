@@ -93,21 +93,23 @@ describe("the production build", () => {
     // ops that ARE allowed are present, so a bundle that stopped containing op names at all
     // could not pass by saying nothing.
     // HELD MEANS HELD FOR A REASON, not merely "not built yet", and the two were conflated
-    // here until `reorder` shipped its bridge. `split` is held because ADR 0019 §2's rule is
-    // measured as unmet (#54) -- shipping it would put part of somebody's file in a document
-    // they send on. `compress` is not written at all. Only the first is a thing this test can
-    // usefully assert about a build: the second is absent because absent code is absent.
+    // here until `reorder` shipped its bridge. `compress` is not written at all, which is not
+    // a thing this test can usefully assert about a build: absent code is absent.
     //
-    // `reorder` moved to `allowed` in the pull request that gave it a bridge -- before
-    // `/reorder-pdf` existed, because the worker could name it from that moment and a list
-    // claiming otherwise fails as soon as it becomes true, which is what happened.
-    const held = ["split", "compress"];
+    // `split` moved to `allowed` in the pull request that gave it a bridge, which is the third
+    // time this list has recorded that lifecycle and the second time for the same reason:
+    // the worker can name the operation from that moment, and a list claiming otherwise fails
+    // as soon as it becomes true. Its hold was never about the bridge -- ADR 0019 §2's rule was
+    // measured as unmet (#54), and #54 closed it. What keeps `/split-pdf` out of the build is
+    // the ROUTE assertion above, which is a different check and still holds.
+    const held = ["compress"];
     const allowed = [
       "page_count",
       "structure_check",
       "merge",
       "rotate",
       "reorder",
+      "split",
       "page_rotations",
     ];
 

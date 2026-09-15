@@ -34,13 +34,14 @@ relying entirely on having been preceded by `cache()`. `util::assertion` throws
 Inherited non-scalar resources are made indirect and *shared*, so flattening does not amplify
 output size.
 
-**Emptying `engines/qpdf-not-exported.toml` breaks `tools/test-check-wasm-exports.sh`.**
-Its RULE 4 case builds its fixture by deleting the last entry's `reason` from the REAL file:
-`head, sep, last = text.rpartition("[[function]]"); assert sep`. With zero entries that
-asserts and exits 1; `set -uo pipefail` (no `-e`) lets the script continue, the fixture file
-is never written, and the checker is then invoked on a nonexistent path and refuses for the
-wrong reason. Reproduced directly. Rules 2/3/5 append to the file so they still fire, but the
-exemption mechanism has no live instance left in the repo.
+**Emptying `engines/qpdf-not-exported.toml` NO LONGER breaks `tools/test-check-wasm-exports.sh`.**
+It did, and it was fixed: RULE 4 used to build its fixture by deleting the last entry's
+`reason` from the REAL file (`rpartition` + `assert sep`), which threw on a file with zero
+entries and left the case running against a nonexistent path. It is now self-contained --
+it writes its own ffi.rs and its own entry. **Re-verified 2026-09-15 on `split-bridge`, where
+the file really is empty (0 `[[function]]` entries)**: rules 1/2/3/5 append synthetic entries
+to whatever is there, so all five still fire. The exemption mechanism again has no live
+instance in the repo, which is the lifecycle working, not a gap.
 
 **`check-wasm-exports.sh` fails locally on any branch that adds an export** until
 `engines/build-wasm.sh` is re-run — the committed `engines/vendor/wasm/lib/qpdf.wasm` is

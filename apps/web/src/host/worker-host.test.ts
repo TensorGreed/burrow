@@ -1026,3 +1026,180 @@ describe("recycling", () => {
     factory.assertNoLeaks(1);
   });
 });
+
+// =====================================================================================
+// ADR 0023: an operation that delivers more than one document
+// =====================================================================================
+//
+// The protocol is general — `{ part: { index, of }, output }` messages followed by an ordinary
+// terminal reply — so redaction and any later multi-output operation inherit it rather than a
+// split-specific field. What is asserted here is the host's half of it, which is the half no
+// browser test can reach on demand: a dropped part message, a part carrying no bytes, and a
+// watchdog that has to survive fifty units of work without firing on the honest case.
+
+/** A split request. The host does not interpret it; the worker's reply shape is what matters. */
+const splitOperation = { op: "split", blob: { size: 3 }, at: [1] };
+
+/** Post `count` parts, then the terminal success. Returns what the caller was handed. */
+function deliver(
+  worker: { reply: (message: unknown) => void },
+  id: number,
+  count: number,
+  options: { skip?: number; withoutOutput?: number } = {},
+) {
+  for (let index = 0; index < count; index += 1) {
+    if (options.skip === index) continue;
+    worker.reply({
+      id,
+      part: { index, of: count },
+      output: options.withoutOutput === index ? undefined : new Blob([`part ${index}`]),
+    });
+  }
+}
+
+describe("multi-output delivery", () => {
+  test("parts arrive one at a time and are handed over on the terminal reply", async () => {
+    const { host, factory, clock } = track(build());
+    await host.ready();
+
+    const seen: Array<{ part: number; of: number }> = [];
+    const running = host.run(splitOperation, { onProgress: (p) => seen.push(p) });
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+
+    // PROGRESS PER PART, not one jump at the end. The worker posts it between parts, and a
+    // host that dropped it would leave a fifty-way split looking hung for its whole duration.
+    worker.reply({ id: request.id, progress: { part: 1, of: 3 } });
+    deliver(worker, request.id, 3);
+    worker.reply({ id: request.id, progress: { part: 3, of: 3 } });
+    worker.reply(workerReply(request.id, { pages: 3 }));
+
+    const reply = await running;
+    expect(reply.ok).toBe(true);
+    expect(reply.parts?.length).toBe(3);
+    expect(await reply.parts?.[1]?.text()).toBe("part 1");
+    expect(seen).toEqual([
+      { part: 1, of: 3 },
+      { part: 3, of: 3 },
+    ]);
+    expect(host.state()).toBe("idle");
+    expect(host.spawnCount(), "a successful split costs no worker").toBe(1);
+    expect(clock.outstanding(), "the per-part watchdog must be cleared").toBe(0);
+  });
+
+  test("a part that never arrived is a failure, not a success with a hole in it", async () => {
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const running = host.run(splitOperation);
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+
+    // NINE OF TEN, with the LAST one present so `entry.parts.length` reaches the total. This
+    // is the exact shape that passed the gate when it was written with `Array.prototype.every`,
+    // which skips holes: the caller was handed ten parts, nine of them `undefined`.
+    deliver(worker, request.id, 10, { skip: 4 });
+    worker.reply(workerReply(request.id, { pages: 10 }));
+
+    const reply = await running;
+    expect(reply.ok).toBe(false);
+    expect(reply.kind).toBe("Internal");
+    expect(reply.parts, "a failed split hands over nothing").toBeUndefined();
+    // AND THE WORKER GOES. It is mid-protocol with a session this host has forgotten; leaving
+    // it would wedge the host in `busy` for the life of the tab.
+    expect(worker.terminations).toBe(1);
+    expect(host.state()).toBe("dead");
+  });
+
+  test("a part carrying no document is refused as soon as it arrives", async () => {
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const running = host.run(splitOperation);
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+    deliver(worker, request.id, 3, { withoutOutput: 1 });
+
+    // NO TERMINAL REPLY IS SENT. The failure is named at the part, not several messages later
+    // as "a part did not arrive".
+    const reply = await running;
+    expect(reply.ok).toBe(false);
+    expect(reply.kind).toBe("Internal");
+    expect(worker.terminations).toBe(1);
+  });
+
+  test("a split that fails partway delivers nothing, matching merge's rule", async () => {
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const running = host.run(splitOperation);
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+
+    // TWO OF TEN ARRIVED, and then the operation failed. ADR 0023 §3: `split` is defined as a
+    // partition, and a subset of the parts is not a partition of anything -- so the two that
+    // succeeded are dropped rather than handed over with the failure named beside them.
+    deliver(worker, request.id, 2);
+    worker.reply(workerReply(request.id, { ok: false, kind: "Malformed", fatal: false }));
+
+    const reply = await running;
+    expect(reply.ok).toBe(false);
+    expect(reply.kind).toBe("Malformed");
+    expect(reply.parts).toBeUndefined();
+    // AND A MALFORMED FILE STILL COSTS NO WORKER, part-way through a split or not.
+    expect(host.spawnCount()).toBe(1);
+    expect(host.hasWorker()).toBe(true);
+    factory.assertNoLeaks(1);
+  });
+
+  test("the watchdog is re-armed per part, so a long split is not one budget", async () => {
+    const { host, factory, clock } = track(build());
+    await host.ready();
+
+    const running = host.run(splitOperation);
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+
+    // TEN PARTS, each arriving just inside the budget, totalling ten times it. One budget for
+    // the whole operation would have fired on part two -- and this is the honest case.
+    for (let index = 0; index < 10; index += 1) {
+      clock.advance(MAX_DURATION_MS + WATCHDOG_GRACE_MS - 1);
+      worker.reply({ id: request.id, part: { index, of: 10 }, output: new Blob([`p${index}`]) });
+    }
+    worker.reply(workerReply(request.id, { pages: 10 }));
+
+    const reply = await running;
+    expect(reply.ok, "the watchdog fired on a split that was making progress").toBe(true);
+    expect(reply.parts?.length).toBe(10);
+    expect(host.spawnCount()).toBe(1);
+  });
+
+  test("a single-output operation is handed no parts field at all", async () => {
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const running = host.run(operation);
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+    worker.reply(workerReply(request.id, { pages: 10 }));
+
+    const reply = await running;
+    // THE PROTOCOL IS OPT-IN. `partsExpected` is set by the first part message, so an
+    // operation that posts none is untouched by any of the code above -- which is what makes
+    // this shape general rather than a split-shaped branch every other operation walks past.
+    expect(reply.ok).toBe(true);
+    expect("parts" in reply).toBe(false);
+  });
+});

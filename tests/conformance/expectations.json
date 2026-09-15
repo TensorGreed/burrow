@@ -397,6 +397,42 @@
       }
     },
     {
+      "name": "split-an-ordinary-document",
+      "inputs": [
+        {
+          "file": "fixtures/pages-10.pdf",
+          "sha256": "567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "split": {
+          "ok": {
+            "page_count": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "split-refuses-a-layered-document",
+      "inputs": [
+        {
+          "file": "fixtures/layered.pdf",
+          "sha256": "1ec9d4fe1f05bf396c37a76af1ac6912b3b6b405ff040739964b79d85a6a227d"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "split": {
+          "err": {
+            "kind": "Unsupported"
+          }
+        }
+      }
+    },
+    {
       "name": "reorder-a-flat-document",
       "inputs": [
         {

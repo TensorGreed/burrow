@@ -107,6 +107,25 @@ interface EmscriptenModule extends EmscriptenConfig {
   _qpdf_oh_replace_key(data: number, oh: number, key: number, item: number): void;
   _qpdf_oh_get_object_id(data: number, oh: number): number;
   _qpdf_oh_get_generation(data: number, oh: number): number;
+  _qpdf_oh_unparse_resolved(data: number, oh: number): number;
+  _qpdf_oh_get_name(data: number, oh: number): number;
+  _qpdf_oh_remove_key(data: number, oh: number, key: number): void;
+  _qpdf_oh_get_array_n_items(data: number, oh: number): number;
+  _qpdf_oh_get_array_item(data: number, oh: number, at: number): number;
+  _qpdf_oh_erase_item(data: number, oh: number, at: number): void;
+  _qpdf_oh_get_dict(data: number, oh: number): number;
+  /** `bufp` and `lenp` are POINTERS to scratch words the caller owns and must free. */
+  _qpdf_oh_get_page_content_data(data: number, page: number, bufp: number, lenp: number): number;
+  _qpdf_oh_get_stream_data(
+    data: number,
+    oh: number,
+    level: number,
+    filteredp: number,
+    bufp: number,
+    lenp: number,
+  ): number;
+  /** Frees a buffer qpdf `malloc`ed and handed to the caller -- the only such buffers here. */
+  _qpdf_oh_free_buffer(bufp: number): void;
   _qpdf_oh_release(data: number, oh: number): void;
   _qpdf_global_set_uint32(param: number, value: number): number;
   _qpdflogger_create(): number;
@@ -242,6 +261,13 @@ declare const wasm_bindgen: {
     password: Uint8Array | undefined,
     limits: WebLimits,
   ): Reply;
+  /** ADR 0023: a split in progress, pulled one part at a time. */
+  split_begin(
+    bytes: Uint8Array,
+    cuts: Uint32Array,
+    password: Uint8Array | undefined,
+    limits: WebLimits,
+  ): SplitSession;
 };
 
 /** Consumed by the call it is passed to — see the note in `main.js`. Never `.free()`d. */
@@ -250,6 +276,19 @@ interface WebLimits {
 }
 
 /** Returned owned, so it MUST be freed. */
+
+/**
+ * A split in progress. `parts` is known before the first part is; `next_part` produces, verifies
+ * and returns one; a reply with `ok === false` means the WHOLE split failed (ADR 0023 §3).
+ */
+interface SplitSession {
+  readonly ok: boolean;
+  readonly parts: number;
+  begin_reply(): Reply;
+  next_part(): Reply;
+  free(): void;
+}
+
 interface Reply {
   readonly ok: boolean;
   readonly kind: string;
@@ -354,6 +393,18 @@ interface WorkerGlobalScope {
   ): number;
   /** `(object_number << 32) | generation` — both halves in one call. See `bridge.js`. */
   __burrow_qpdf_oh_object(data: number, oh: number): bigint;
+  __burrow_qpdf_oh_unparse_resolved(data: number, oh: number): number;
+  __burrow_qpdf_oh_get_name(data: number, oh: number): number;
+  __burrow_qpdf_oh_remove_key(data: number, oh: number, key: number): void;
+  __burrow_qpdf_oh_get_array_n_items(data: number, oh: number): number;
+  __burrow_qpdf_oh_get_array_item(data: number, oh: number, at: number): number;
+  __burrow_qpdf_oh_erase_item(data: number, oh: number, at: number): void;
+  __burrow_qpdf_oh_get_dict(data: number, oh: number): number;
+  __burrow_qpdf_copy_c_string(ptr: number): Uint8Array;
+  /** `null` when qpdf reported an error. */
+  __burrow_qpdf_oh_page_content(data: number, page: number): Uint8Array | null;
+  /** `null` when qpdf reported an error **or could not decode the stream**. */
+  __burrow_qpdf_oh_stream_data(data: number, oh: number): Uint8Array | null;
   __burrow_qpdf_oh_release(data: number, oh: number): void;
   /** The only bridge function that carries bytes OUT of an engine heap. */
   __burrow_qpdf_copy_out(ptr: number, len: number): Uint8Array;

@@ -156,6 +156,79 @@ fn reorders(page_count: u64, rotations: Vec<i64>) -> Outcomes {
     )])
 }
 
+/// A `split` outcome: how many parts came out.
+fn splits_into(parts: u64) -> Outcomes {
+    Outcomes::from([(
+        Operation::Split,
+        Outcome::Ok {
+            page_count: parts,
+            rotations: None,
+        },
+    )])
+}
+
+/// A `split` outcome: the operation refuses this document.
+fn split_refused() -> Outcomes {
+    Outcomes::from([(
+        Operation::Split,
+        Outcome::Err(Failure::of(ErrorKind::Unsupported)),
+    )])
+}
+
+/// A two-page document whose first page draws inside a layer the catalog turns OFF.
+///
+/// **The fixture that catches one platform failing to prune at all.** `split`'s pruning policy is
+/// shared between the native and web implementations, so the corpus can no longer catch them
+/// pruning *differently* -- there is only one pruning. What it has to catch instead is one path
+/// never reaching it, and this is how.
+///
+/// The refusal for optional content lives inside the policy. A path that skips pruning does not
+/// refuse; it splits happily and reports two parts. So the expectation is `Unsupported`, and a
+/// dropped `prune_output` call on either side turns this case red with a plain outcome mismatch --
+/// no new expectation shape, no byte comparison, nothing the corpus could not already express.
+fn layered_document() -> Vec<u8> {
+    // 1 catalog, 2 page tree, 3-4 pages, 5-6 contents, 7 the OCG.
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [7 0 R] \
+/D << /OFF [7 0 R] >> >> >>"
+            .to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+/Resources << /Properties << /MC0 7 0 R >> >> /Contents 5 0 R >>"
+            .to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".to_vec(),
+    ];
+    for body in [
+        &b"/OC /MC0 BDC BT (hidden by a layer) Tj ET EMC"[..],
+        b"BT (page two) Tj ET",
+    ] {
+        let mut stream = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        stream.extend_from_slice(body);
+        stream.extend_from_slice(b"\nendstream");
+        objects.push(stream);
+    }
+    objects.push(b"<< /Type /OCG /Name (a layer that is off) >>".to_vec());
+
+    let mut out = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    let count = objects.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {count}\n0000000000 65535 f \n").as_bytes());
+    for at in &offsets {
+        out.extend_from_slice(format!("{at:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
 fn main() {
     // `--check` WRITES NOTHING AND REPORTS DRIFT.
     //
@@ -398,6 +471,38 @@ fn main() {
             limits: None,
             attempt_recovery: false,
             expect: rotates(4, vec![0, 180, 180, 180]),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        // ---- split -------------------------------------------------------------------
+        //
+        // Cut after the first page, fixed like the other two operations' parameters.
+        //
+        // TWO CASES, AND THE SECOND IS THE ONE THAT MATTERS. The first says a split of an
+        // ordinary document produces two parts on both platforms, which is the ordinary
+        // agreement this corpus is for. The second is the replacement for something the corpus
+        // gave up: `split`'s pruning policy is SHARED between the two implementations, so this
+        // harness can no longer catch them pruning differently. What it catches instead is one
+        // of them never reaching the policy -- see `layered_document`.
+        Fixture {
+            name: "split-an-ordinary-document",
+            filename: "pages-10.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: splits_into(2),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            name: "split-refuses-a-layered-document",
+            filename: "layered.pdf",
+            bytes: Some(layered_document()),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: split_refused(),
             platform_expectations: Vec::new(),
             known_gap: None,
         },

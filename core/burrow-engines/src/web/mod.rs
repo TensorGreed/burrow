@@ -33,6 +33,9 @@ pub mod bridge;
 mod pdfium;
 mod qpdf;
 pub mod recycle;
+// The web half of the pruning seam; the policy above it is shared (crate::prune).
+mod extract;
+mod prune;
 mod reorder;
 mod rotate;
 

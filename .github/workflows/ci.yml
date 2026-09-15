@@ -291,6 +291,18 @@ jobs:
       - name: That gate refuses when its own rules are broken
         run: tools/test-check-subsetting-gate.sh
 
+      # The shared pruning policy's replacement risk, measured rather than argued.
+      #
+      # One policy, two callers. The differential corpus can no longer catch the two paths
+      # pruning DIFFERENTLY -- there is one pruning -- so what it has to catch instead is one
+      # path never reaching the policy. This plants that deletion on each extractor in turn and
+      # requires the suite covering that side to go red.
+      #
+      # IN `test` because its native half needs the engines and the conformance corpus; the web
+      # half needs neither, and the script says which halves ran.
+      - name: Each split path reaches the shared pruning policy
+        run: tools/test-prune-is-reached.sh
+
       # The other kind of ignored test: a REPRODUCTION, required to pass.
       #
       # The step above runs ignored tests that must FAIL, because they assert a rule the code
