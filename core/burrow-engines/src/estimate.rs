@@ -66,14 +66,34 @@
 //! | | pre-scan | [`check_open_memory`] | [`check_measured_memory`] |
 //! |---|---|---|---|
 //! | native PDFium (`pdfium::Pdfium`) | yes | **yes** | yes, on process RSS |
-//! | native qpdf (`qpdf::Qpdf`) | yes | **no** | yes, on process RSS |
+//! | native qpdf (`qpdf::Qpdf`) | yes | **yes** | yes, on process RSS |
 //! | web PDFium (`web::WebPdfium`) | yes | **yes** | yes, on module heap |
-//! | web qpdf (`web::WebQpdf`) | yes | **no** | yes, on module heap |
+//! | web qpdf (`web::WebQpdf`) | yes | **yes** | yes, on module heap |
 //!
-//! [`check_open_memory`]'s constants are both PDFium measurements, so applying them to qpdf
-//! would predict the wrong number. The gap is consistent across native and web — an engine
-//! difference, not a platform divergence — and it is pinned by a conformance case rather than
-//! asserted here. Issue #26 records the three honest options and why none was taken in 4b.
+//! **The qpdf column used to read `no`, and this paragraph used to explain why.** It argued
+//! that [`check_open_memory`]'s constants are PDFium measurements, so applying them to qpdf
+//! "would predict the wrong number" — a consistent engine difference rather than a platform
+//! divergence, pinned by a conformance case, with issue #26 recording three options and why
+//! none was taken.
+//!
+//! It was measured and it is the wrong way round. `examples/measure-open-cost.rs` reads
+//! `VmHWM` around one open, one engine per process:
+//!
+//! | file | bytes | qpdf | PDFium | estimate |
+//! |---|--:|--:|--:|--:|
+//! | `pages-10.pdf` | 1,388 | 1.28 MB | 1.16 MB | 16.78 MB |
+//! | 1 MB, 5,480 pages | 1,081,041 | 12.28 MB | 2.91 MB | 18.13 MB |
+//! | 1 MB, 9,000 pages | 1,096,125 | **19.30 MB** | 3.39 MB | 18.15 MB |
+//!
+//! qpdf is the hungrier engine and its cost tracks **page count** where this estimate tracks
+//! length — on the last row it **exceeds** the estimate while PDFium uses a fifth of it. So
+//! the estimate was never too strict for qpdf; it is too lenient, and leaving it off that
+//! path was giving up the cheapest check on the engine that needed it most.
+//!
+//! Every path now takes it, through [`before_open`], which is one function precisely so that
+//! "a path that pre-scans but does not estimate" is not writable. #26 is closed. Its
+//! successor — that a length-keyed estimate under-predicts a page-keyed cost — is open and
+//! unfixed, and is why the last row is in this table rather than in a commit message.
 //!
 //! # Detect, not bound
 //!
@@ -138,7 +158,7 @@ const MEASURED_NOISE_MARGIN_BYTES: u64 = 64 * 1024 * 1024;
 ///
 /// Saturating throughout: an absurd length must produce an absurd estimate, which is then
 /// rejected, rather than wrapping to a small one that passes.
-pub(crate) fn estimated_open_bytes(input_len: u64) -> u64 {
+pub fn estimated_open_bytes(input_len: u64) -> u64 {
     // `div_euclid` rather than `/`: the workspace denies `integer_division` as a class
     // because silent truncation on an attacker-controlled size is a real bug, and this is
     // the deliberate exception rather than an accident. Truncating downward here is also
@@ -164,6 +184,58 @@ pub(crate) fn check_open_memory(input_len: u64, limits: &Limits) -> Result<()> {
         estimated_open_bytes(input_len),
         limits.max_memory_bytes,
     )
+}
+
+/// Every ceiling that applies **before** an engine is handed the bytes, in order.
+///
+/// Returns the input length, which callers need for their own bookkeeping.
+///
+/// # Why this is one function and not three lines at each call site
+///
+/// It was three lines at each of twelve call sites for exactly one commit, and the reviewer
+/// pointed at the precedent in this very crate: `qpdf::open_document`'s rustdoc records that
+/// `extract` and `rotate` once held byte-identical copies of a ceiling sequence, that **one
+/// of the checks had already gone missing from a copy that had drifted**, and that it was
+/// restored by code review. The failure mode is a ceiling that silently stops applying on one
+/// path, and nothing goes red.
+///
+/// Issue #26 is the same shape one level up: `check_open_memory` existed and one engine's
+/// paths did not call it, for long enough that a conformance case had to record it as a known
+/// gap. Fixing that by adding nine more hand-written copies would have been fixing the
+/// instance and leaving the mechanism.
+///
+/// So the three are inseparable here, and "a path that pre-scans but does not estimate" stops
+/// being something a person can write by accident.
+///
+/// # The order is load-bearing
+///
+/// 1. **`max_input_bytes`**, on the byte count alone, before anything is read.
+/// 2. **The size estimate**, which is arithmetic on that count — it costs nothing and it is
+///    the only ceiling that can refuse before a single byte is examined.
+/// 3. **The structural pre-scan**, which reads what the file *declares*. More expensive than
+///    (2) and far cheaper than a parse: a 330 KB file declaring twenty million cross-reference
+///    entries is refused here rather than after an engine has allocated 1.2 GB for it.
+///
+/// A path that ran the pre-scan first would do real work before the free check had spoken.
+///
+/// # Errors
+///
+/// [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) naming `max_input_bytes`,
+/// `max_memory_bytes` or whichever ceiling the pre-scan found exceeded, and
+/// [`Error::Internal`](burrow_types::Error::Internal) if the length does not fit in a `u64`.
+pub(crate) fn before_open(bytes: &[u8], limits: &Limits) -> Result<u64> {
+    let input_len = u64::try_from(bytes.len()).map_err(|_| {
+        burrow_types::Error::Internal("input length does not fit in u64".to_owned())
+    })?;
+    Limits::check(
+        Stage::InputSize,
+        "max_input_bytes",
+        input_len,
+        limits.max_input_bytes,
+    )?;
+    check_open_memory(input_len, limits)?;
+    crate::prescan::check(bytes, limits)?;
+    Ok(input_len)
 }
 
 /// Reject a document whose open actually cost more than the caller allowed.

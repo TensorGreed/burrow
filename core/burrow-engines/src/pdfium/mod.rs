@@ -116,25 +116,11 @@ impl DocumentEngine for Pdfium {
         }
 
         // 1. Input size, before the buffer goes anywhere near the engine.
-        let input_len = u64::try_from(bytes.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check(
-            Stage::InputSize,
-            "max_input_bytes",
-            input_len,
-            limits.max_input_bytes,
-        )?;
-
-        // 2. The size-based memory pre-check. A floor, not a ceiling -- see `estimate`'s
-        //    docs, and step (e) below for the half that catches what a byte count cannot.
-        crate::estimate::check_open_memory(input_len, &limits)?;
-
-        // 3. The structural pre-scan: what the file *declares*, checked before anything
-        //    parses it. This is what step 2 cannot see and step (e) can only see after the
-        //    fact -- a 330 KB file declaring twenty million cross-reference entries is
-        //    refused here, having cost nothing, rather than after PDFium has allocated
-        //    1.2 GB for it. Pure Rust, bounded by construction; see `crate::prescan`.
-        crate::prescan::check(&bytes, &limits)?;
+        // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
+        // the size estimate, the structural pre-scan. Shared rather than spelled out
+        // here, so a path that pre-scans without estimating is not writable --- see
+        // `crate::estimate::before_open`, and #26 for what the drift cost last time.
+        crate::estimate::before_open(&bytes, &limits)?;
 
         // 4. The password copy, before the deadline starts: it is our work, not the
         //    engine's, and a rejected password should not consume the caller's budget.

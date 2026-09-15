@@ -227,6 +227,14 @@ finally compared the two.
 
 ### Finding 4 — the size estimate runs on one engine and not the other (#26)
 
+> **Closed, 2026-09-15.** Both engines run it, and the reasoning below — that PDFium's
+> constants would predict the wrong number for qpdf — was measured backwards: qpdf is the
+> hungrier engine and exceeds the estimate on a page-dense file where PDFium uses a fifth of
+> it. See ADR 0007's 2026-09-15 amendment for the measurements, and
+> `docs/spikes/0004-the-first-load-budget-before-compress.md` for why it was looked at. The
+> finding is left standing below because ADR 0001 makes this append-only; read it as history.
+
+
 Surfaced by adding a case for the one `Stage` the corpus did not otherwise reach.
 `estimate::check_open_memory` — the cheap length-based pre-check — is called from both PDFium
 paths and **neither** qpdf path. With `max_memory_bytes` below the estimate, the same file is

@@ -231,7 +231,7 @@ jobs:
             done
           }
           engines_suites="parallelism limits properties structure secret_leak prescan"
-          ops_suites="conformance merge reorder reorder_keeps_everything rotate rotate_keeps_everything split split_no_leak subset_closure"
+          ops_suites="conformance merge optimistic_counts reorder reorder_keeps_everything rotate rotate_keeps_everything split split_no_leak subset_closure"
           run_suites burrow-engines $engines_suites
           run_suites burrow-ops $ops_suites
 

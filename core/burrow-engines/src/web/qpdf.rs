@@ -373,22 +373,19 @@ impl StructureEngine for WebQpdf {
             return Err(Error::Malformed("input is empty".to_owned()));
         }
 
-        let input_len = u64::try_from(bytes.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check(
-            Stage::InputSize,
-            "max_input_bytes",
-            input_len,
-            limits.max_input_bytes,
-        )?;
-        // NO size-based memory estimate here, deliberately -- and the native qpdf path does
-        // not have one either. `crate::estimate`'s constants were measured against PDFium's
-        // open cost; applying them to a structural check would reject files qpdf handles
-        // comfortably. An earlier version of this function did call it, which made the web
-        // and native qpdf paths disagree on any file between `max_memory_bytes / 1.25` and
-        // `max_memory_bytes` -- exactly the divergence ROADMAP item 12 exists to catch, in
-        // the module whose docs claim the two paths cannot diverge.
-        crate::prescan::check(&bytes, &limits)?;
+        // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call --- and the size estimate
+        // is now among them, which REVERSES what this comment used to say. It argued that
+        // `crate::estimate`'s PDFium-derived constants "would reject files qpdf handles
+        // comfortably", and an earlier version of this function did call it and had it
+        // removed. Reasonable, and measurably wrong: `examples/measure-open-cost.rs` finds
+        // qpdf the HUNGRIER engine: on a 1 MB, 9,000-page document it peaks at 19.30 MB and
+        // EXCEEDS the 18.15 MB estimate, where PDFium uses 3.39 MB. Its cost tracks PAGE COUNT
+        // where the estimate tracks length, so the estimate is too lenient here --- #26's
+        // successor, not an argument for leaving it out.
+        //
+        // The old comment's other half was right and is kept by construction: web and native
+        // must not disagree. They do not, because the call went into the shared gate.
+        crate::estimate::before_open(&bytes, &limits)?;
 
         let clock = Arc::clone(&options.clock);
         let deadline = Deadline::start(clock.as_ref(), &limits);

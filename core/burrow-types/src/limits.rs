@@ -39,9 +39,10 @@
 ///    compressed object stream passes it (issue #24).
 /// 2. A **length-based size estimate**, predicting cost from the input's byte count. Blind to
 ///    anything declared, so a 330 KB PDF that drives an engine to 1.2 GB sails through it.
-///    It also runs on the **PDFium path only**, and on neither qpdf path — its constants are
-///    PDFium measurements, and applying them to qpdf would predict the wrong number
-///    (issue #26). So a structure check gets two of these three mechanisms, not three.
+///    It runs on **every** engine path since #26 was closed; it did run on the PDFium paths
+///    alone, on the reasoning that its PDFium-derived constants would predict the wrong
+///    number for qpdf. Measured, qpdf is the hungrier engine — so the estimate is if anything
+///    too lenient there, not too strict. A structure check gets all three mechanisms.
 /// 3. A **measured check**, after the operation, comparing a counter before and after. The
 ///    memory is allocated by the time it fires. What it buys is that the operation fails
 ///    instead of returning a handle that is already over budget.

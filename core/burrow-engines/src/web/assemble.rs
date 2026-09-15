@@ -60,18 +60,11 @@ impl PageAssembler for WebQpdf {
     fn begin(&self, first: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Assembly> {
         let limits = options.limits;
 
-        let input_len = u64::try_from(first.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check(
-            Stage::InputSize,
-            "max_input_bytes",
-            input_len,
-            limits.max_input_bytes,
-        )?;
-
-        // The structural pre-scan, per input, before the engine sees the bytes. Pure Rust,
-        // `forbid(unsafe_code)`, and the only pre-emptive defence there is (ADR 0013).
-        crate::prescan::check(&first, &limits)?;
+        // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
+        // the size estimate, the structural pre-scan. Shared rather than spelled out
+        // here, so a path that pre-scans without estimating is not writable --- see
+        // `crate::estimate::before_open`, and #26 for what the drift cost last time.
+        crate::estimate::before_open(&first, &limits)?;
 
         let clock = Arc::clone(&options.clock);
         let deadline = Deadline::start(clock.as_ref(), &limits);
@@ -113,15 +106,11 @@ impl PageAssembler for WebQpdf {
     ) -> Result<u64> {
         let limits = options.limits;
 
-        let input_len = u64::try_from(next.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check(
-            Stage::InputSize,
-            "max_input_bytes",
-            input_len,
-            limits.max_input_bytes,
-        )?;
-        crate::prescan::check(&next, &limits)?;
+        // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
+        // the size estimate, the structural pre-scan. Shared rather than spelled out
+        // here, so a path that pre-scans without estimating is not writable --- see
+        // `crate::estimate::before_open`, and #26 for what the drift cost last time.
+        crate::estimate::before_open(&next, &limits)?;
 
         let source = Session::open(self, &next, options.password, false)?;
         drop(next);

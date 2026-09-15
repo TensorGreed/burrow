@@ -583,43 +583,40 @@ fn main() {
                 ..CaseLimits::default()
             }),
             attempt_recovery: false,
-            expect: differ(
-                Outcome::Err(Failure {
-                    kind: ErrorKind::LimitExceeded,
-                    limit: Some("max_memory_bytes".to_owned()),
-                    stage: Some("size_estimate".to_owned()),
-                    // A pure function of the input's length, and written out rather than
-                    // computed: `estimated_open_bytes` is `len + len/4 + BASE_OVERHEAD_BYTES`,
-                    // which for this 1388-byte file is 1388 + 347 + 16,777,216. Spelled as one
-                    // number because an expectation that recomputed the implementation's own
-                    // formula would agree with it by construction, however wrong the formula
-                    // became. Deterministic and identical on both platforms, which is what
-                    // makes it comparable where the measured stage is not.
-                    requested: Some(16_778_951),
-                    allowed: Some(8 * 1024 * 1024),
-                }),
-                // **qpdf does not run this check at all**, on either platform. Found by adding
-                // this case: `check_open_memory` is called from both PDFium paths and neither
-                // qpdf path, so a ceiling below the estimate refuses a file through one engine
-                // and not the other. It is consistent across native and web, so it is an
-                // engine difference rather than a divergence -- and it is why this entry is
-                // `differ` rather than `both`. Issue #26.
-                opens(10),
-            ),
+            // `both`, not `differ`, since #26 --- and the flip is the whole point of the
+            // case. It was `differ` because `check_open_memory` was called from both PDFium
+            // paths and NEITHER qpdf path, so a ceiling below the estimate refused a file
+            // through one engine and not the other. Consistent across native and web, so an
+            // engine difference rather than a divergence, and recorded as a known gap.
+            //
+            // Both engines now run it, through `crate::estimate::before_open`, and
+            // `tests/limits.rs::both_engines_refuse_at_the_same_estimate_with_the_same_reason`
+            // walks the boundary from both sides: one byte below, both refuse with the same
+            // four numbers; at exactly the estimate, both accept.
+            //
+            // The constants were measured against PDFium, and `examples/measure-open-cost.rs`
+            // shows that is not the direction of risk --- qpdf is the hungrier engine and its
+            // cost tracks PAGE COUNT where the estimate tracks length. On a 1 MB document of
+            // 9,000 pages it peaks at 19.30 MB against an 18.15 MB estimate, EXCEEDING it,
+            // where PDFium uses 3.39 MB. Too lenient for qpdf rather than too strict, which
+            // is #26's successor and not an argument for leaving it out.
+            expect: both(Outcome::Err(Failure {
+                kind: ErrorKind::LimitExceeded,
+                limit: Some("max_memory_bytes".to_owned()),
+                stage: Some("size_estimate".to_owned()),
+                // A pure function of the input's length, and written out rather than
+                // computed: `estimated_open_bytes` is `len + len/4 + BASE_OVERHEAD_BYTES`,
+                // which for this 1388-byte file is 1388 + 347 + 16,777,216. Spelled as one
+                // number because an expectation that recomputed the implementation's own
+                // formula would agree with it by construction, however wrong the formula
+                // became. Deterministic and identical on both platforms, which is what
+                // makes it comparable where the measured stage is not.
+                requested: Some(16_778_951),
+                allowed: Some(8 * 1024 * 1024),
+            })),
             platform_expectations: Vec::new(),
-            known_gap: Some(KnownGap {
-                issue: "https://github.com/TensorGreed/burrow/issues/26".to_owned(),
-                reason: "the length-based memory estimate runs on the PDFium path and not the \
-                         qpdf path, so `max_memory_bytes` does not get its cheapest pre-check \
-                         when a caller asks for a structure check. Consistent across native \
-                         and web, so not a divergence -- but undocumented until this case \
-                         surfaced it."
-                    .to_owned(),
-                // M2: this is one of the numbers ADR 0015 §7 deferred to a pre-M2 decision,
-                // and #25's remedy is the same decision. Fixing it before then would mean
-                // giving qpdf its own cost model on a guess.
-                milestone: "M2".to_owned(),
-            }),
+            // NO KNOWN GAP ANY MORE. #26 is closed; the reason it recorded is above.
+            known_gap: None,
         },
         // ---- the bomb the pre-scan does NOT see --------------------------------------
         Fixture {

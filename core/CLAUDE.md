@@ -77,7 +77,7 @@ denial-of-service bug, not a missing nicety.
 
 **`max_memory_bytes` is the exception, and it must not be described as a cap.** It bounds
 nothing on any platform: the structural pre-scan reads declarations only, the length-based
-estimate is blind to them *and* runs on the PDFium paths alone (issue #26), and the measured
+estimate is blind to them (it runs on every engine path since #26 closed), and the measured
 check fires after the allocation. Those **detect** an overrun. The only real bound anywhere is
 the web engine modules' fixed 2 GiB maximum, which no caller can influence and which is not
 this limit. `burrow_types::Limits`, `burrow_engines::estimate` and ADR 0007's 2026-09-12

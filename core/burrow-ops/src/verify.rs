@@ -323,9 +323,23 @@ pub fn output<E: OutputReader>(
 /// burrow for a document that was fine. Measured by security review: two 16,204-byte inputs
 /// under a 32,408-byte ceiling produced 32,995 bytes and a rejection.
 ///
-/// `max_pages`, `max_memory_bytes` and `max_duration_ms` are left exactly as they are.
-/// `max_pages` still bites -- an output over the ceiling is a real refusal -- and the
-/// deadline is the operation's own, passed in rather than restarted.
+/// **`max_memory_bytes` is raised the same way, and for the same reason**, since #26 put the
+/// length-based estimate on the qpdf paths. Before that the read-back had no size estimate at
+/// all and this could not fire. Now it can: a caller sets `max_memory_bytes` to 256 MiB and
+/// merges ten 50 MiB files, each of which passes its own estimate at 78.5 MiB -- and the
+/// read-back sees a ~500 MiB output, estimates 641 MiB, and rejects the finished merge. That
+/// is the *identical* defect the paragraph above records for `max_input_bytes`, arriving
+/// through the adjacent field, and it is worse in one way: the `LimitExceeded` it produces
+/// carries `stage: SizeEstimate`, exactly like the one the INPUT pre-check emits, so nothing
+/// in the typed error tells a page which of the two happened. `merge-messages.ts` keys on
+/// `limit`, so a person would be told their file was too large. Found by security review.
+///
+/// It is raised only to what this read-back needs -- `estimated_open_bytes(size)` -- rather
+/// than removed, so an output that is genuinely enormous is still refused.
+///
+/// `max_pages` and `max_duration_ms` are left exactly as they are. `max_pages` still bites --
+/// an output over the ceiling is a real refusal -- and the deadline is the operation's own,
+/// passed in rather than restarted.
 ///
 /// The password is carried over: qpdf preserves a source document's encryption on write, so
 /// an encrypted input produces an encrypted output, and dropping the password here would turn
@@ -336,6 +350,9 @@ fn read_back_options<'a>(options: &OpenOptions<'a>, produced: usize) -> Result<O
 
     let mut limits = options.limits;
     limits.max_input_bytes = limits.max_input_bytes.max(size);
+    limits.max_memory_bytes = limits
+        .max_memory_bytes
+        .max(burrow_engines::estimated_open_bytes(size));
 
     // `OpenOptions` is `#[non_exhaustive]`, so it is built through its constructor and then
     // adjusted -- which is the right way round anyway: a field added later arrives at its own

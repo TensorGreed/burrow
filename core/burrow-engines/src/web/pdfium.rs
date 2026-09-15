@@ -154,23 +154,11 @@ impl DocumentEngine for WebPdfium {
         // 1. Input size, before anything is copied across the bridge. Note this bounds the
         //    *parse*, not the copy: the bytes are already in Rust's heap by now. A binding
         //    that reads a File must check its length before reading it in.
-        let input_len = u64::try_from(bytes.len())
-            .map_err(|_| Error::Internal("input length does not fit in u64".to_owned()))?;
-        Limits::check(
-            Stage::InputSize,
-            "max_input_bytes",
-            input_len,
-            limits.max_input_bytes,
-        )?;
-
-        // 2. The size-based estimate. A floor, not a ceiling; step (e) is the other half.
-        crate::estimate::check_open_memory(input_len, &limits)?;
-
-        // 3. The structural pre-scan, before any engine sees the file. Bounded pure Rust,
-        //    and on the web it matters more than on native, not less: the engine heap has
-        //    a hard 2 GiB ceiling and an allocation failure inside Emscripten is an
-        //    `abort()`, which is fatal to the instance.
-        crate::prescan::check(&bytes, &limits)?;
+        // EVERY CEILING THAT APPLIES BEFORE THE ENGINE, in one call: the byte count,
+        // the size estimate, the structural pre-scan. Shared rather than spelled out
+        // here, so a path that pre-scans without estimating is not writable --- see
+        // `crate::estimate::before_open`, and #26 for what the drift cost last time.
+        let input_len = crate::estimate::before_open(&bytes, &limits)?;
 
         // 4. The password copy, before the deadline starts: our work, not the engine's.
         let password = crate::password::nul_terminated(options.password, "pdfium")?;

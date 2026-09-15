@@ -793,31 +793,49 @@ fn the_logger_and_the_globals_are_installed_once_not_once_per_operation() {
     state.assert_empty();
 }
 
-/// The web qpdf path does **not** apply the PDFium-derived size estimate, because the
-/// native qpdf path does not either.
+/// The web qpdf path applies the size estimate, since #26 --- and this test asserted the
+/// opposite until it was measured.
 ///
-/// An earlier version called `estimate::check_open_memory` here. The two paths then
-/// disagreed on any file between `max_memory_bytes / 1.25` and `max_memory_bytes` — a
-/// divergence in the module whose docs claim the two cannot diverge, and exactly what
-/// ROADMAP item 12's differential harness exists to catch.
+/// It was called `a_file_under_the_memory_ceiling_is_checked_rather_than_estimated_away`,
+/// and it pinned a decision taken on a reasonable but unverified premise: that
+/// `crate::estimate`'s PDFium-derived constants "would reject files qpdf handles
+/// comfortably". `examples/measure-open-cost.rs` says otherwise --- qpdf is the hungrier
+/// engine, and on a 1 MB document of 9,000 pages it peaks at 19.30 MB, EXCEEDING the
+/// 18.15 MB estimate, while PDFium uses 3.39 MB. The estimate is not too strict for qpdf.
+///
+/// The old test's other half is preserved and is why the fix was to ADD rather than to
+/// remove: web and native must not disagree. `tests/limits.rs` asserts they refuse at the
+/// same input length, with the same numbers.
 #[test]
-fn a_file_under_the_memory_ceiling_is_checked_rather_than_estimated_away() {
+fn the_size_estimate_runs_on_the_web_qpdf_path_too() {
     let bytes = ordinary_pdf();
-    // A ceiling above the input but below `input + input/4 + overhead`, which is what the
-    // estimate would have compared against.
+    // A ceiling above the input and below the estimate, which is the window the old
+    // behaviour let through.
     let limits = Limits::with(|l| l.max_memory_bytes = u64::try_from(bytes.len()).unwrap() + 16);
 
     let (engine, state) = structure_engine(QpdfScript {
         page_count: 2,
         ..QpdfScript::default()
     });
-    let report = engine
-        .check(
-            bytes.into_boxed_slice(),
-            &CheckOptions::new(limits, stopped()),
-        )
-        .expect("a structural check must not apply PDFium's open-cost estimate");
-    assert_eq!(report.pages, 2);
+    let refused = engine.check(
+        bytes.into_boxed_slice(),
+        &CheckOptions::new(limits, stopped()),
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(Error::LimitExceeded { limit, stage, .. })
+                if *limit == "max_memory_bytes" && stage.as_str() == "size_estimate"
+        ),
+        "got {refused:?}"
+    );
+    // AND IT REFUSED BEFORE THE ENGINE WAS TOUCHED. That is the whole value of a
+    // length-based pre-check: it costs nothing and nothing has been allocated yet.
+    assert!(
+        state.calls().is_empty(),
+        "the estimate refused only after crossing the bridge: {:?}",
+        state.calls()
+    );
     state.assert_empty();
 }
 
@@ -825,8 +843,8 @@ fn a_file_under_the_memory_ceiling_is_checked_rather_than_estimated_away() {
 ///
 /// `QpdfBridge::heap_bytes` was declared and called from nowhere — a method that existed to
 /// make the two bridges look symmetric, in a trait whose own docs describe the method list
-/// as the audit surface. Unlike the size estimate (which is PDFium-derived and deliberately
-/// absent here), this one reads what the engine actually did.
+/// as the audit surface. Where the size estimate predicts from the input's length, this one
+/// reads what the engine actually did --- and since #26 both run on this path.
 #[test]
 fn a_read_that_costs_more_than_allowed_is_caught_on_the_qpdf_path() {
     let limits = Limits::with(|l| l.max_memory_bytes = 8 * 1024 * 1024);

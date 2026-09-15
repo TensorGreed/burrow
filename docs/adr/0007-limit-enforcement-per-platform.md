@@ -28,7 +28,7 @@ finished with it.
 | | native | web |
 |---|---|---|
 | structural pre-scan — reads **declarations only**, never decompresses | before open | before open |
-| length-based size estimate, `estimate::check_open_memory` | `pdfium/mod.rs` only; **not** called on the qpdf path (issue #26) | `web/pdfium.rs` only; same gap, so this is an engine difference and not a platform divergence |
+| length-based size estimate, `estimate::check_open_memory` | `pdfium/mod.rs` only; **not** called on the qpdf path (issue #26) — *closed; see the 2026-09-15 amendment* | `web/pdfium.rs` only; same gap, so this is an engine difference and not a platform divergence — *closed; see the 2026-09-15 amendment* |
 | measured check, `estimate::check_measured_memory` | **after** the open: process resident set before vs after, so a peak that occurs during and is released is invisible | **after** the operation: the engine module's heap size, which never shrinks, so it *does* see the peak |
 | worker recycling on heap growth | — | **after** the result is delivered (ADR 0015 §5) |
 
@@ -83,6 +83,41 @@ Two parts of this ADR are **not** implemented yet, and are not claimed to be:
 - Wiring the deadline into an **engine progress or abort callback** to tighten the
   granularity. PDFium exposes one; nothing uses it yet, so enforcement is exactly as
   coarse as this ADR says — one engine call.
+
+### Amendment, 2026-09-15 (M1, split bridge): the size estimate runs on every engine path
+
+The table above records the length-based estimate as running on `pdfium/mod.rs` and
+`web/pdfium.rs` only, "**not** called on the qpdf path (issue #26)", and calls that an engine
+difference rather than a platform divergence. **That gap is now closed, and the reasoning
+behind it was measured and found backwards.**
+
+The argument for leaving qpdf out was that `estimate::check_open_memory`'s constants are
+PDFium measurements, so applying them to qpdf would predict the wrong number and reject files
+qpdf handles comfortably. `core/burrow-engines/examples/measure-open-cost.rs` measures
+`VmHWM` around one open, one engine per process:
+
+| file | bytes | qpdf | PDFium | estimate |
+|---|--:|--:|--:|--:|
+| `pages-10.pdf` | 1,388 | 1.28 MB | 1.16 MB | 16.78 MB |
+| 1 MB, 5,480 pages | 1,081,041 | 12.28 MB | 2.91 MB | 18.13 MB |
+| 1 MB, 9,000 pages | 1,096,125 | **19.30 MB** | 3.39 MB | 18.15 MB |
+
+qpdf is the hungrier engine, and its cost tracks **page count** where the estimate tracks
+length — on the last row it *exceeds* the estimate while PDFium uses a fifth of it. The
+estimate was never too strict for qpdf; it is too lenient, and withholding it was giving up
+the cheapest ceiling on the engine that needed it most.
+
+So the table's qpdf cells now read **yes** on both platforms. The three checks are applied
+through one function, `estimate::before_open`, so a path that pre-scans without estimating is
+not expressible — which is the mechanism rather than the instance, and the reason this is an
+amendment rather than nine edits.
+
+**What this does not change.** Nothing here makes `max_memory_bytes` a bound; the amendment
+above stands in full. The estimate still **detects**, still runs before the engine, and is
+still blind to what a file declares. And it has a stated successor: a length-keyed estimate
+under-predicts a page-keyed cost, which is open and unfixed.
+
+Recorded against the decision rather than replacing it, per ADR 0001's append-only rule.
 
 ## Context
 
