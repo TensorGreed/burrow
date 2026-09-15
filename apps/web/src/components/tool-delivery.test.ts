@@ -263,7 +263,9 @@ describe("a multi-output run, which is the one that produces more than one name"
     // release that stopped at the first would leak all but one.
     const u = urls();
     const delivery = createDelivery(u);
-    const handouts = delivery.beginParts({ names: ["a-1.pdf", "a-2.pdf", "a-3.pdf"] }).handAll(blobs(3));
+    const handouts = delivery
+      .beginParts({ names: ["a-1.pdf", "a-2.pdf", "a-3.pdf"] })
+      .handAll(blobs(3));
 
     delivery.releaseAll(handouts);
 

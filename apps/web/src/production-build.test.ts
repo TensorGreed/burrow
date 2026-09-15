@@ -44,42 +44,39 @@ describe("the production build", () => {
     expect(offenders, `burrowHarness leaked into: ${offenders.join(", ")}`).toEqual([]);
   });
 
-  it("ships no route to an operation that is held", () => {
-    // SPLIT IS HELD. Its outputs can still carry data belonging to pages they excluded —
-    // ADR 0019 §2's rule, measured as unmet, tracked as issue #54, and pinned by two
-    // deliberately-failing tests in the Rust suite. A tool whose whole claim is that your file
-    // does not leave your computer must not offer an operation that can put part of it into a
-    // file you then send to somebody else.
+  it("ships every tool page whose operation is not held", () => {
+    // SPLIT'S HOLD IS LIFTED, AND THIS IS THE SAME CHECK POINTING THE OTHER WAY.
     //
-    // THE ASSERTION IS ABOUT `dist/`, not about intent. Nobody plans to ship a held tool; what
-    // ships is a route, and a route appears the moment somebody adds `src/pages/split-pdf.astro`
-    // — which is a one-file change that no other test in this repository would notice. The
-    // landing page not linking it is not protection either: an unlinked page is still a page,
-    // still indexable, and still reachable by anyone who guesses the URL.
+    // It read `const held = [{ slug: "split-pdf", why: "ADR 0019 §2 / issue #54: outputs can
+    // carry excluded pages" }]` and asserted the route was ABSENT, because a tool whose whole
+    // claim is that your file does not leave your computer must not offer an operation that
+    // puts part of it into a file you then send to somebody else. #54 closed that -- the
+    // pruning policy takes back out what the engine's reachability closure drags in,
+    // `subset_closure.rs` asserts the structural property over every object in the source,
+    // and each part verifies its own output before it is posted (ADR 0022).
     //
-    // This is written as a LIST so lifting the hold is one line, and so the reason travels with
-    // the name. An operation comes off it in the pull request that closes the issue holding it.
-    const held = [
-      { slug: "split-pdf", why: "ADR 0019 §2 / issue #54: outputs can carry excluded pages" },
-    ];
+    // The list is kept rather than deleted. `compress` is not written at all, which is not a
+    // thing this assertion can say anything about -- absent code is absent -- so `held` is
+    // empty and the SHIPPED list is what carries the weight now. A route that must not ship
+    // goes back on `held`, and the loop below is waiting for it.
+    const held: { slug: string; why: string }[] = [];
+    const shipped = ["merge-pdf", "split-pdf", "rotate-pdf", "reorder-pdf"];
 
-    for (const { slug, why } of held) {
-      const routes = files.filter(
+    const routesFor = (slug: string) =>
+      files.filter(
         (f) => f === `${slug}/index.html` || f === `${slug}.html` || f.startsWith(`${slug}/`),
       );
-      expect(routes, `/${slug} must not ship — ${why}`).toEqual([]);
+
+    for (const { slug, why } of held) {
+      expect(routesFor(slug), `/${slug} must not ship — ${why}`).toEqual([]);
     }
 
-    // AND THE CHECK IS NOT VACUOUS. A filter that matched nothing would pass this whether or
-    // not the route existed, so the same patterns are run against a route that DOES ship: if
-    // they cannot find `/merge-pdf`, they could not have found `/split-pdf` either.
-    const shipped = files.filter(
-      (f) => f === "merge-pdf/index.html" || f === "merge-pdf.html" || f.startsWith("merge-pdf/"),
-    );
-    expect(
-      shipped.length,
-      "the patterns above cannot find a route that does ship, so they prove nothing about one that must not",
-    ).toBeGreaterThan(0);
+    // GATED ON THE COUNT, not merely on each one being found: a slug dropped from this list
+    // would take its assertion with it and the suite would still pass.
+    expect(shipped).toHaveLength(4);
+    for (const slug of shipped) {
+      expect(routesFor(slug), `/${slug} must ship`).not.toEqual([]);
+    }
   });
 
   it("ships no way to ASK for a held operation, whatever a route is called", () => {
@@ -100,8 +97,8 @@ describe("the production build", () => {
     // time this list has recorded that lifecycle and the second time for the same reason:
     // the worker can name the operation from that moment, and a list claiming otherwise fails
     // as soon as it becomes true. Its hold was never about the bridge -- ADR 0019 §2's rule was
-    // measured as unmet (#54), and #54 closed it. What keeps `/split-pdf` out of the build is
-    // the ROUTE assertion above, which is a different check and still holds.
+    // measured as unmet (#54), and #54 closed it. The ROUTE assertion above now asserts
+    // `/split-pdf` SHIPS, so this list and that one agree about split for the first time.
     const held = ["compress"];
     const allowed = [
       "page_count",
