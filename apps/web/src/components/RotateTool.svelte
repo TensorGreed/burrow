@@ -184,9 +184,11 @@
   /**
    * Whether the engines have ever finished starting on this page.
    *
-   * Engines load on first use (ADR 0018), so the first file waits for 6.8 MB -- 7 seconds on
-   * Fast 4G and 145 on Slow 3G, both measured. Saying nothing for two and a half minutes is
-   * the page being silent about the one thing the person wants to know.
+   * Engines load on first use (ADR 0018), so the first file waits for the engine payload.
+   * At 6.8 MB that was 7 seconds on Fast 4G and 145 on Slow 3G, both measured; spike 0004 took
+   * it to about 420 KB over the wire and the new timings are PREDICTED until the deploy
+   * measures them. Saying nothing while it happens is the page being silent about the one
+   * thing the person wants to know.
    */
   let engineStarted = $state(false);
   const preparing = $derived(!engineStarted && file !== null && pageCount === null);
@@ -391,7 +393,7 @@
 
   {#if preparing}
     <p class="preparing" role="status">
-      Starting the PDF engine — about 6.8 MB, downloaded once. Nothing has been sent anywhere.
+      Starting the PDF engine — about 420 KB, downloaded once. Nothing has been sent anywhere.
     </p>
   {/if}
 

@@ -19,9 +19,10 @@
 //     CSS are not followed** -- a `url(...)` in an `@font-face` or a background. No HTML scan
 //     can see those, and a CSS parser here would be the wrong amount of machinery; the total
 //     budget is what catches them, since the font still has to be downloaded;
-//   * the worker bundle, which carries the Emscripten glue for both engines, the
-//     wasm-bindgen glue and the worker itself;
-//   * all three .wasm modules -- pdfium, qpdf, and the Rust binding;
+//   * the worker bundle, which carries the qpdf Emscripten glue, the wasm-bindgen glue and
+//     the worker itself (it carried PDFium's glue too, until spike 0004);
+//   * both .wasm modules -- qpdf and the Rust binding. It was three until spike 0004 took
+//     pdfium.wasm out of the payload, which is 80.7% of this measurement's history;
 //   * the CSP control file, fetched at init to prove an allowlisted request succeeds.
 //
 // NOT counted: `_headers` (host configuration, never a request). The credits page is large --

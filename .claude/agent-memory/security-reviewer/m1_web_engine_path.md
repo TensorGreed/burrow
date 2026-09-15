@@ -1,6 +1,6 @@
 ---
 name: m1-web-engine-path
-description: Measured facts about the web engine path (PR 20 / branch feat/web-engines-loader) — the blob: worker bundle, what the CSP really covers, and what pdfium.js actually contains.
+description: Measured facts about the web engine path — the blob: worker bundle, what the CSP really covers, and (from 2026-09-15) the fact that PDFium is no longer in the web payload at all.
 metadata:
   type: project
 ---
@@ -57,3 +57,34 @@ so `FakeHeap::assert_empty` remains structurally blind to that one allocation.
 
 Related: [[m1-qpdf-exception-boundary]], [[m1-limits-real-strength]],
 [[m1-engine-supply-chain]], [[m1-prescan-key-scan-bypass]].
+
+## 2026-09-15 — spike 0004: PDFium is OUT of the web payload
+
+Branch `m1-pdfium-off-the-web`. Re-verified against the working tree, not the diff.
+
+**Three paragraphs above are now history, not current state.** The bundle is
+`BURROW_ENGINES + prelude + bridge + qpdf.js + burrow_wasm.js + main.js` — **no
+pdfium.js**, so the `self.Module` hoisting analysis, the `typeof Module` guard and the
+load-order argument no longer describe anything shipped. `prelude.js` no longer assigns
+`self.Module` at all, deliberately: a spare global of that name is configuration bait for
+the next Emscripten glue added to the bundle. Two `.wasm` (qpdf 1,494,731 + burrow_wasm),
+not three.
+
+**`page_count` now runs on qpdf** (`StructureEngine::check`, `attempt_recovery = false`)
+instead of PDFium. Verified by parsing the import section of
+`bindings/burrow-wasm/pkg/burrow_wasm_bg.wasm`: **48 imports, zero `pdfium`**, every
+`__burrow_*` base name defined in `bridge.js`. So no declared wasm-bindgen import can fail
+to resolve at instantiation. Error text still comes from `codes::qpdf::map_code`, which is
+fixed strings per code — no byte offsets, no object numbers.
+
+**The CSP and the SRI pins are derived, not listed.** `policyFor()` builds `connect-src`
+from the `staged` map that `ENGINE_FILES` produces, so dropping an entry drops its URL and
+its pin together; there is no second place to forget. Confirmed on a real build.
+
+**`tools/check-no-pdfium-on-the-web.sh` only tells the truth about a PRODUCTION build.**
+`astro.config.mjs`'s `harnessGating()` deletes `dist/host/` unless `BURROW_HARNESS=1`, so a
+harness build leaves `dist/host/harness-driver.js` there — and that file has the string
+`__burrow_pdfium_copy_in` in a comment. Measured both ways on 2026-09-15: production
+`pnpm build` → the checker and its 10-case self-test pass; the e2e/harness build → the
+checker refuses and the self-test aborts at its baseline. CI is safe (its `Build` step sets
+no flag); a developer who last ran `pnpm e2e` is not.

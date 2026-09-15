@@ -3,7 +3,9 @@
 // This is the half `cargo test` cannot reach. The orchestration above the bridge is covered on
 // every target in `core/burrow-engines/src/web/tests.rs` against a fake bridge; what needs a
 // browser is the loading path — the integrity-pinned fetch, the streaming compile,
-// `instantiateWasm`, the classic worker, and whether two Emscripten modules coexist.
+// `instantiateWasm` and the classic worker. It also covered whether two Emscripten modules
+// coexist, until spike 0004 took PDFium out of the payload and left that property without a
+// subject; the last test in this file records what happened to it.
 //
 // WHAT MOVED OUT OF THIS FILE IN PR 4b, AND WHY
 //
@@ -44,7 +46,7 @@ test("the engines initialise inside a worker under the generated CSP", async ({ 
   await openHarness(page);
 });
 
-test("PDFium answers through the worker with a real page count", async ({ page }) => {
+test("qpdf answers a page count through the worker, and the number is real", async ({ page }) => {
   await openHarness(page);
   const reply = await run(page, "page_count", fixtureBytes("fixtures/pages-137.pdf"));
 
@@ -71,22 +73,38 @@ test("qpdf answers through the same worker, with its logging silenced", async ({
   // A first indication only. The thorough version — every failure path, canary fixtures,
   // worker consoles as well as the page's, and a control case that deliberately logs — is
   // `e2e/console-silence.spec.ts`. Asserting the weaker thing here would be worth little on
-  // its own; it is here because a regression would show up immediately, in the test that also
-  // proves the two modules coexist.
+  // its own; it is here because a regression would show up immediately on the operation whose
+  // engine is the one that logs.
   expect(console_messages.join("\n")).not.toMatch(/WARNING|offset|object \d/i);
 });
 
-test("both engines are live in one worker and answer independently", async ({ page }) => {
-  // ADR 0006 requirement 1's practical consequence: `pdfium.js` is not modularised and its
-  // state lives in worker globals, so "two Emscripten modules coexist" is a property to check
-  // rather than assume. The conformance harness leans on it for every case; this is the test
-  // that says so directly.
+test("the two operations reach the same engine, so their page counts cannot disagree", async ({
+  page,
+}) => {
+  // THIS TEST USED TO BE "both engines are live in one worker and answer independently", and
+  // it was still passing after spike 0004 took PDFium out of the payload — over a premise
+  // that no longer had a subject. Both calls below went to qpdf, so "two Emscripten modules
+  // coexist" was being confirmed by one module answering twice. That is the failure the root
+  // CLAUDE.md names: a check that silently examines nothing reads as coverage.
+  //
+  // What replaced it is the property the substitution actually created. `page_count` was
+  // PDFium and `structure_check` was qpdf, so the count a person saw on choosing a file and
+  // the count the write path worked from came from two engines that could differ — which is
+  // what #61 was about. They are one engine now, at one posture, so they must agree, and a
+  // future change that repoints either of them fails here.
+  //
+  // The coexistence property is not deleted because it stopped mattering; it is deleted
+  // because it has no subject. If M2 puts a second module back, this is where it returns.
   await openHarness(page);
   const bytes = fixtureBytes("fixtures/pages-10.pdf");
-  const viaPdfium = await run(page, "page_count", bytes);
-  const viaQpdf = await run(page, "structure_check", bytes);
+  const viaPageCount = await run(page, "page_count", bytes);
+  const viaStructureCheck = await run(page, "structure_check", bytes);
 
-  expect(viaPdfium.ok && viaQpdf.ok, "both engines must answer in the same worker").toBe(true);
-  expect(viaPdfium.pages).toBe(10);
-  expect(viaQpdf.pages).toBe(10);
+  expect(viaPageCount.ok && viaStructureCheck.ok, "both operations must answer").toBe(true);
+  expect(
+    viaPageCount.pages,
+    "page_count and structure_check are the same engine at the same posture; a disagreement " +
+      "means one of them was repointed",
+  ).toBe(viaStructureCheck.pages);
+  expect(viaPageCount.pages).toBe(10);
 });

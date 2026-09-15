@@ -84,7 +84,7 @@ afterEach(() => {
   //
   // 4a-i's Rust fake hid a per-operation leak because it did not account for what it handed
   // out. The same blindness here would hide a worker that is never terminated — which is not
-  // a tidiness problem: an abandoned worker keeps its 6.8 MB of compiled engines and its whole
+  // a tidiness problem: an abandoned worker keeps its compiled engines and its whole
   // linear memory for the life of the tab.
   currentHost?.dispose();
   currentFactory?.assertNoLeaks(0);
@@ -421,7 +421,7 @@ describe("initialisation", () => {
     //
     // `initTimeoutMs` bounded the WHOLE of start-up at 60 s, with a comment claiming that was
     // "comfortably above any measured cold load". Chrome's own "Slow 3G" profile refuted it:
-    // 6.8 MB of engines at 400 kbps is 140 seconds of network before anything is compiled. The
+    // the engines at 400 kbps were 140 seconds of network before anything was compiled. The
     // first file a person chose on a slow connection was refused at 60 s with "Something
     // inside burrow failed", the worker was discarded AS A CRASH, and three attempts would
     // have latched the breaker and taken the page offline. On a slow connection the engines
@@ -430,9 +430,15 @@ describe("initialisation", () => {
       build({
         onMessage: (instance, message) => {
           if (message?.type === "init") {
-            // Three engine modules landing slowly, the way `prelude.js` reports them: well
+            // Every engine module landing slowly, the way `prelude.js` reports them: well
             // inside the stall bound each time, and far outside it in total.
-            for (let i = 0; i < 3; i += 1) {
+            //
+            // DERIVED FROM THE CONSTANT, not a literal. It was `3`, and spike 0004 took a
+            // module out of the payload — so the third `starting` was ignored by the cap and
+            // the clock ran past the bound, failing this test. That is the constant and its
+            // test moving together, which is what `EXPECTED_ENGINE_MODULES`' own comment says
+            // has to happen; deriving it means the next change moves only the constant.
+            for (let i = 0; i < EXPECTED_ENGINE_MODULES; i += 1) {
               clock.advance(INIT_TIMEOUT_MS - 1_000);
               instance.reply({ starting: true });
             }
@@ -980,7 +986,7 @@ describe("recycling", () => {
       workerReply(request.id, {
         pages: 4,
         recycle: true,
-        pdfiumHeapBytes: String(600 * 1024 * 1024),
+        qpdfHeapBytes: String(600 * 1024 * 1024),
       }),
     );
 

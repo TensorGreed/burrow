@@ -94,7 +94,7 @@ const silent = { print: () => {}, printErr: () => {} };
 // tools/stage-web-engines.mjs.
 /** @type {Record<string, Promise<WebAssembly.Module>>} */
 const compiled = {};
-for (const id of /** @type {const} */ (["pdfiumWasm", "qpdfWasm", "burrowWasm"])) {
+for (const id of /** @type {const} */ (["qpdfWasm", "burrowWasm"])) {
   const entry = BURROW_ENGINES[id];
   compiled[id] = fetch(entry.url, { integrity: entry.integrity }).then((response) => {
     if (!response.ok) {
@@ -111,7 +111,9 @@ for (const id of /** @type {const} */ (["pdfiumWasm", "qpdfWasm", "burrowWasm"])
  *
  * Its start-up bound is a **stall** timer rather than a transfer timer, because the thing
  * being bounded is somebody else's network: 6.8 MB of engines at 400 kbps -- Chrome's own
- * "Slow 3G" -- is over two minutes, and no fixed bound is right for that. A stall timer needs
+ * "Slow 3G" -- was over two minutes, and no fixed bound is right for that. Spike 0004 took
+ * the payload to about 1.8 MB, which does not change the argument: a stall timer is right for
+ * a network you do not control at any payload size. A stall timer needs
  * evidence that something is still happening, and this is the only place that evidence exists.
  *
  * # ONE MESSAGE PER MODULE IS THE FINEST GRANULARITY AVAILABLE, and that is not a choice
@@ -274,8 +276,10 @@ const POLICED = (async () => {
   }
 })();
 
-// PDFium's glue reads this at load time. It must exist before the next file in the bundle.
-self.Module = {
-  ...silent,
-  instantiateWasm: instantiateFrom("pdfiumWasm"),
-};
+// NO `self.Module`. It existed for PDFium's glue, which reads a pre-existing global `Module`
+// for its configuration at load time --- the one reason the load ORDER in the generated bundle
+// was load-bearing. PDFium left the payload in spike 0004, and qpdf is MODULARIZE'd: it is
+// configured through the object passed to `createQpdfModule()`, not through a global.
+//
+// Leaving an unused `self.Module` behind would be worse than untidy: the next Emscripten glue
+// added to this bundle would silently pick it up as its configuration.

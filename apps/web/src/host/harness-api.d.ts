@@ -25,7 +25,6 @@ export interface Reply {
   allowed: string;
   /** The worker-lifecycle verdict, also computed in Rust. See `web/recycle.rs`. */
   recycle: boolean;
-  pdfiumHeapBytes: string;
   qpdfHeapBytes: string;
   /**
    * Every page's effective rotation, in page order. `page_rotations` only.

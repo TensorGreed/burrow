@@ -36,8 +36,8 @@ mod bridge;
 
 use std::sync::Arc;
 
-use burrow_core::engines::web::{WebPdfium, WebQpdf};
-use burrow_core::engines::{CheckOptions, DocumentEngine, OpenOptions, StructureEngine};
+use burrow_core::engines::web::WebQpdf;
+use burrow_core::engines::{CheckOptions, OpenOptions, StructureEngine};
 use burrow_core::{Clock, Deadline, Error, Limits, Password};
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -80,12 +80,7 @@ thread_local! {
     ///
     /// `thread_local` rather than a `static`: a wasm worker is one thread, so this is one
     /// instance per worker, which is exactly the lifetime ADR 0006 requirement 1 describes.
-    static PDFIUM: WebPdfium = WebPdfium::new(Arc::new(bridge::JsPdfium));
     static QPDF: WebQpdf = WebQpdf::new(Arc::new(bridge::JsQpdf));
-}
-
-fn pdfium() -> WebPdfium {
-    PDFIUM.with(Clone::clone)
 }
 
 fn qpdf() -> WebQpdf {
@@ -114,7 +109,6 @@ pub struct Reply {
     requested: u64,
     allowed: u64,
     recycle: bool,
-    pdfium_heap_bytes: u64,
     qpdf_heap_bytes: u64,
     /// What was wrong with the failing input, or empty.
     ///
@@ -248,18 +242,15 @@ impl Reply {
         self.recycle
     }
 
-    /// The PDFium module's heap size after this operation.
+    /// The qpdf module's heap size after this operation.
     ///
     /// Reported so the measurement harness can record it and so a page can show it while
     /// debugging. **The decision is [`Reply::recycle`]** — a page comparing this against a
     /// number of its own would be the thing this design exists to prevent.
-    #[wasm_bindgen(getter)]
-    #[must_use]
-    pub fn pdfium_heap_bytes(&self) -> u64 {
-        self.pdfium_heap_bytes
-    }
-
-    /// The qpdf module's heap size after this operation. See [`Reply::pdfium_heap_bytes`].
+    ///
+    /// There was a `pdfium_heap_bytes` beside this one until PDFium left the web payload
+    /// (spike 0004). It is gone rather than reported as zero: a reader cannot tell a zero
+    /// that means "not loaded" from one that means "allocated nothing".
     #[wasm_bindgen(getter)]
     #[must_use]
     pub fn qpdf_heap_bytes(&self) -> u64 {
@@ -374,7 +365,6 @@ impl Reply {
             requested: 0,
             allowed: 0,
             recycle: false,
-            pdfium_heap_bytes: 0,
             qpdf_heap_bytes: 0,
             inner_kind: String::new(),
             failed_input: -1,
@@ -404,21 +394,18 @@ impl Reply {
     /// Attach the worker-lifecycle verdict: both engine heap sizes, and whether the page
     /// should recycle this worker after delivering the result.
     ///
-    /// **Both engines are read whichever operation ran.** A worker holds one of each and is
-    /// only as healthy as its worse half, so reading only the engine that did the work would
-    /// let a qpdf-heavy session grow unbounded behind a run of PDFium operations.
+    /// **Every engine heap the worker holds**, which on the web is now one. It read both
+    /// PDFium's and qpdf's until PDFium left the payload (spike 0004); the rule it encodes is
+    /// unchanged and is not about how many engines there are — a worker is as healthy as its
+    /// worst heap, so reading only the engine that did the work would let a session grow
+    /// unbounded behind a run of operations that used the other one.
     ///
     /// Applied on the success and the failure path alike. A file that fails is exactly the
-    /// kind that grows a heap — `xref-bomb.pdf` returns `LimitExceeded` *after* PDFium has
-    /// allocated — so skipping this on failure would miss the case it exists for.
+    /// kind that grows a heap — `xref-bomb.pdf` returns `LimitExceeded` *after* the engine
+    /// has allocated — so skipping this on failure would miss the case it exists for.
     fn with_lifecycle(mut self, limits: &Limits) -> Self {
-        self.pdfium_heap_bytes = pdfium().heap_bytes();
         self.qpdf_heap_bytes = qpdf().heap_bytes();
-        self.recycle = burrow_core::engines::web::should_recycle(
-            self.pdfium_heap_bytes,
-            self.qpdf_heap_bytes,
-            limits,
-        );
+        self.recycle = burrow_core::engines::web::should_recycle(&[self.qpdf_heap_bytes], limits);
         self
     }
 
@@ -454,7 +441,6 @@ impl Reply {
             requested,
             allowed,
             recycle: false,
-            pdfium_heap_bytes: 0,
             qpdf_heap_bytes: 0,
             inner_kind: match error {
                 Error::InputFailed { .. } => kind_of(innermost(error)).to_owned(),
@@ -640,7 +626,17 @@ impl WebLimits {
     }
 }
 
-/// Open a document with PDFium and report its page count.
+/// Open a document with **qpdf** and report its page count.
+///
+/// **The document is opened WITHOUT recovery**, which is part of the contract and not an
+/// implementation detail: a damaged file is refused here rather than read optimistically, and
+/// there is no parameter through which a caller could ask for anything else. That posture is
+/// why this can be qpdf at all — see the comment in the body, and
+/// `core/burrow-ops/tests/optimistic_counts.rs` for what pins it.
+///
+/// It said "with PDFium" until spike 0004 took PDFium out of the web payload, which is the
+/// change this function IS. A stale summary line on the one item a change repoints is the
+/// doc-comment-as-a-bug case the root `CLAUDE.md` names, and it reached a commit here.
 ///
 /// `bytes` is taken by value: it arrives as a transferred `ArrayBuffer`, so there is no
 /// copy from the page, and ownership passing to Rust is what the trait requires anyway.
@@ -654,11 +650,28 @@ pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimi
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
     let password = password.map(|p| Password::new(&p));
 
-    let mut options = OpenOptions::new(limits, clock);
+    // QPDF, NOT PDFIUM, and this is the call that let PDFium leave the web payload at all.
+    //
+    // It was `pdfium().open(bytes, …).pages_at_open()`, and it was the ONLY place the web
+    // build called into PDFium --- 79.7% of the first-load payload reachable from one
+    // function (spike 0004). Every other web operation is qpdf, and `WebQpdf` already answers
+    // this question: `StructureEngine::check` returns a `StructureReport` carrying `pages`,
+    // which is the same call `structure_check` makes.
+    //
+    // `attempt_recovery` IS FALSE, which is the posture every write path opens under and the
+    // one thing that makes this substitution safe rather than merely smaller. Recovery is
+    // what produces an optimistic count on a damaged document --- qpdf reads
+    // `truncated-mid-object.pdf` as one page with it on and refuses the file with it off ---
+    // and `core/burrow-ops/tests/optimistic_counts.rs` pins all of it: the posture is what
+    // produces the difference, an optimistic count never reaches a write, and at equal
+    // posture qpdf is the STRICTER engine. Stricter is the safe direction: a refusal cannot
+    // hand somebody a document quietly short of a page.
+    let mut options = CheckOptions::new(limits, clock);
     options.password = password.as_ref();
+    options.attempt_recovery = false;
 
-    match pdfium().open(bytes, &options) {
-        Ok(document) => Reply::success(document.pages_at_open()),
+    match qpdf().check(bytes, &options) {
+        Ok(report) => Reply::success(report.pages),
         Err(error) => Reply::failure(&error),
     }
     .with_lifecycle(&limits)

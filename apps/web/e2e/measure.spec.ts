@@ -32,8 +32,9 @@ const MIB = 1024 * 1024;
 test("respawn cost, including compiling the engines", async ({ page }, testInfo) => {
   await openHarness(page);
 
-  // Five cold respawns. Each one re-fetches 6.8 MB of WebAssembly (from a `no-store` server,
-  // so no HTTP cache is hiding the fetch) and compiles all three modules.
+  // Five cold respawns. Each one re-fetches the whole engine payload (from a `no-store`
+  // server, so no HTTP cache is hiding the fetch) and compiles every module. That was 6.8 MB
+  // across three; since spike 0004 it is about 1.8 MB across two.
   const samples: number[] = [];
   for (let i = 0; i < 5; i += 1) {
     const elapsed = await page.evaluate(async () => {
@@ -58,7 +59,7 @@ test("respawn cost, including compiling the engines", async ({ page }, testInfo)
   console.log(`respawn cost [${testInfo.project.name}]: ${JSON.stringify(report)}`);
 
   // THE DECISION THIS FEEDS. ADR 0014 §1a generates the engine manifest INTO the worker bundle
-  // because `pdfium.js` starts instantiating as it is parsed — so handing a new worker
+  // because the Emscripten glue starts instantiating as it is parsed — so handing a new worker
   // pre-compiled modules by `postMessage` cannot arrive in time, and moving the
   // integrity-pinned fetch to the page would have to be shown to keep both SRI and the
   // in-worker policy guard intact. That re-derivation is only worth doing if a respawn is
@@ -89,7 +90,7 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
     "xref-bomb.pdf",
   ];
 
-  const rows: { file: string; op: string; kind: string; pdfiumMiB: number; qpdfMiB: number }[] = [];
+  const rows: { file: string; op: string; kind: string; qpdfMiB: number }[] = [];
 
   for (const name of files) {
     for (const op of ["page_count", "structure_check"] as const) {
@@ -114,26 +115,25 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
         file: name,
         op,
         kind: reply.ok ? "ok" : reply.kind,
-        pdfiumMiB: Math.round((Number(reply.pdfiumHeapBytes) / MIB) * 10) / 10,
         qpdfMiB: Math.round((Number(reply.qpdfHeapBytes) / MIB) * 10) / 10,
       });
     }
   }
 
-  const peakPdfium = Math.max(...rows.map((r) => r.pdfiumMiB));
+  // ONE ENGINE SINCE SPIKE 0004. This reported two columns because the web held two modules;
+  // PDFium is no longer in the payload, so a `peakPdfium` column would be a zero that a
+  // reader could not tell from "allocated nothing".
   const peakQpdf = Math.max(...rows.map((r) => r.qpdfMiB));
-  const report = { browser: testInfo.project.name, peakPdfium, peakQpdf, rows };
+  const report = { browser: testInfo.project.name, peakQpdf, rows };
   writeFileSync(
     join(testInfo.project.outputDir, `heap-growth.${testInfo.project.name}.json`),
     `${JSON.stringify(report, null, 2)}\n`,
   );
-  console.log(
-    `heap growth [${testInfo.project.name}]: peak pdfium ${peakPdfium} MiB, qpdf ${peakQpdf} MiB`,
-  );
+  console.log(`heap growth [${testInfo.project.name}]: peak qpdf ${peakQpdf} MiB`);
   for (const row of rows) {
     console.log(
       `  ${row.file.padEnd(18)} ${row.op.padEnd(16)} ${row.kind.padEnd(16)} ` +
-        `pdfium ${String(row.pdfiumMiB).padStart(7)} MiB  qpdf ${String(row.qpdfMiB).padStart(7)} MiB`,
+        `qpdf ${String(row.qpdfMiB).padStart(7)} MiB`,
     );
   }
 
@@ -150,24 +150,23 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
   // engines actually report on a fresh worker in this browser.
   //
   // It is not a coincidence that the numbers are stable. The Emscripten modules declare their
-  // initial memory in the module's own memory section — 17 MiB for PDFium, 16 MiB for qpdf,
-  // both `-sMAXIMUM_MEMORY=2GB` — so the baseline is a build-time property of the artifacts,
+  // initial memory in the module's own memory section — 16 MiB for qpdf, `-sMAXIMUM_MEMORY=2GB`
+  // — so the baseline is a build-time property of the artifact,
   // not an empirical accident. A pinned engine bump that changed it would land here.
   const floor = Number(await page.evaluate(() => window.burrowHarness.minConvergingMemoryBytes()));
   expect(floor, "the worker must report the floor Rust defines").toBeGreaterThan(0);
 
-  const baselinePdfium = Math.min(...rows.map((r) => r.pdfiumMiB));
   const baselineQpdf = Math.min(...rows.map((r) => r.qpdfMiB));
   console.log(
-    `baseline [${testInfo.project.name}]: pdfium ${baselinePdfium} MiB, qpdf ${baselineQpdf} ` +
-      `MiB, recycling floor ${floor / MIB} MiB`,
+    `baseline [${testInfo.project.name}]: qpdf ${baselineQpdf} MiB, ` +
+      `recycling floor ${floor / MIB} MiB`,
   );
 
   // The relationship the constant encodes: the threshold at the floor is half of it, and the
   // worse engine's baseline must sit below that. If this fails, the floor is too low for the
   // engines as they are now, and the constant needs raising rather than this bound relaxing.
   expect(
-    Math.max(baselinePdfium, baselineQpdf) * MIB,
+    baselineQpdf * MIB,
     `a worker's baseline must sit below the recycling threshold at MIN_CONVERGING_MEMORY_BYTES ` +
       `(${floor / MIB} MiB), or a caller who honours that floor still recycles every operation`,
   ).toBeLessThan(floor / 2);
@@ -175,17 +174,14 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
   // And not absurdly below either: a baseline far under the assumption would mean the floor is
   // needlessly conservative and a mobile page is being told to allow more than it needs.
   expect(
-    Math.max(baselinePdfium, baselineQpdf) * MIB,
+    baselineQpdf * MIB,
     "the baseline has dropped far below what the floor assumes; MIN_CONVERGING_MEMORY_BYTES " +
       "is now more conservative than it needs to be and should be revisited",
   ).toBeGreaterThan(floor / 8);
 
   // A heap that never grew would mean the reading is not wired up — the same failure the
   // native side hit in 4a-i, where `heap_bytes` was declared and called from nowhere.
-  expect(peakPdfium, "an engine heap that never grows means the reading is dead").toBeGreaterThan(
-    0,
-  );
-  expect(peakQpdf).toBeGreaterThan(0);
+  expect(peakQpdf, "an engine heap that never grows means the reading is dead").toBeGreaterThan(0);
 
   // THE TWO POPULATIONS ARE MEASURED SEPARATELY, because the whole design rests on them being
   // far apart. Measured in Chromium, M1 PR 4a-ii:
@@ -194,11 +190,17 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
   //   xref-bomb.pdf via page_count, ceiling raised to 4 GiB  pdfium 1900.7 MiB
   //   xref-bomb.pdf via structure_check, same ceiling                          qpdf 513 MiB
   //
+  // The PDFium column is kept as the measurement it was: it is why the floor is where it is,
+  // and deleting it would leave the constant resting on a table that no longer shows the
+  // reading that set it. What has changed is that the web no longer loads that engine, so
+  // only the qpdf column is measurable here now — and the qpdf figure alone still separates
+  // the two populations by two orders of magnitude.
+  //
   // Two orders of magnitude between them, with nothing in between. That is what makes the
   // 512 MiB floor in `recycle.rs` a threshold rather than a guess: any value from ~64 MiB to
   // ~512 MiB separates the populations identically.
   const ordinary = rows.filter((row) => row.file !== "xref-bomb.pdf");
-  const ordinaryPeak = Math.max(...ordinary.flatMap((r) => [r.pdfiumMiB, r.qpdfMiB]));
+  const ordinaryPeak = Math.max(...ordinary.map((r) => r.qpdfMiB));
   expect(
     ordinaryPeak,
     "ordinary corpus work must sit far below the recycling floor, or recycling would be " +
@@ -208,9 +210,7 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
   // And the floor must be REACHABLE by a real file, or recycling is a mechanism that never
   // fires. The bomb is the file that reaches it — and only when a caller has raised
   // `max_memory_bytes` above what the pre-scan would otherwise refuse.
-  const bomb = Math.max(
-    ...rows.filter((r) => r.file === "xref-bomb.pdf").flatMap((r) => [r.pdfiumMiB, r.qpdfMiB]),
-  );
+  const bomb = Math.max(...rows.filter((r) => r.file === "xref-bomb.pdf").map((r) => r.qpdfMiB));
   expect(
     bomb,
     "the recycling threshold must be reachable, or it is protection that never runs",

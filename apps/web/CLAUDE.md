@@ -31,11 +31,22 @@ wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
 
 **`--target no-modules`, not `--target web`.** This file said `web` until M1 PR 4a-i, and
 that does not work: `--target web` emits an ES module, and the worker is a **classic**
-worker, which cannot `import` one. It has to be classic because the prebuilt `pdfium.js` is
-not modularised and can only be loaded by `importScripts`, which exists only there. The
-knock-on is that the bridge's `#[wasm_bindgen]` imports carry no `module = "..."` attribute
-and resolve from the worker's global scope, because that is the only style `no-modules`
-supports.
+worker, which cannot `import` one.
+
+**THE REASON IT IS CLASSIC HAS CHANGED, AND THE DECISION HAS NOT.** It used to be forced: the
+prebuilt `pdfium.js` was not modularised and could only be loaded by `importScripts`, which
+exists only in a classic worker. Spike 0004 took PDFium out of the payload, so that constraint
+is gone — qpdf's glue _is_ `MODULARIZE`'d. What holds the decision now is the bundle: the whole
+worker ships as one concatenated file constructed from a `Blob`, which is what lets a single
+integrity digest cover the Emscripten glue, and a module worker would mean either giving that up
+or rewriting the concatenation as a module graph. Recorded rather than left as a stale "it has
+to be", because a constraint that has quietly become a choice is the thing somebody reopens at
+the worst moment.
+
+The knock-on is unchanged: the bridge's `#[wasm_bindgen]` imports carry no `module = "..."`
+attribute and resolve from the worker's global scope, because that is the only style
+`no-modules` supports. That is also what makes a leftover import fail at _instantiation_ rather
+than silently — see `bindings/burrow-wasm/src/bridge.rs`.
 
 After rebuilding, restage — the engine URLs are content-hashed and the CSP is generated
 from them, so a stale manifest means the browser refuses the new module:
@@ -132,9 +143,10 @@ page. Two things there are easy to get wrong again:
 
 **The watchdog's clock starts when the worker takes the operation, not when the page asks.**
 The worker posts `{ id, ack: true }` before it begins; the page's timer starts on that ack.
-Engine start-up has its own bound (`initTimeoutMs`), because a cold 6.8 MB compile must never
-be charged to the file — that is the web form of the queue-time bug PR 2 fixed natively. A
-start-up failure is `Internal`, **never** `LimitExceeded`.
+Engine start-up has its own bound (`initTimeoutMs`), because a cold compile of the engine
+payload — 6.8 MB until spike 0004, about 1.8 MB now — must never be charged to the file. That
+is the web form of the queue-time bug PR 2 fixed natively. A start-up failure is `Internal`,
+**never** `LimitExceeded`.
 
 **Operations are serialised, because the worker is.** `run()` queues; only one operation is
 posted at a time. Concurrency here is not free parallelism — the worker's message loop is
@@ -201,15 +213,28 @@ Recycling is not a failure and the caller must never see it as one. The verdict 
 (`core/burrow-engines/src/web/recycle.rs`), for the same reason `fatal` is: ADR 0009 forbids a
 binding enforcing any part of `Limits`. The threshold and the measurements behind it are in
 ADR 0015 §5-6 — ordinary corpus work sits at ~18 MiB per engine, and `xref-bomb.pdf` reaches
-1.9 GiB when a caller raises the ceiling far enough to let it.
+1.9 GiB when a caller raises the ceiling far enough to let it. **That 1.9 GiB was PDFium's
+reading and is no longer reachable on the web**: qpdf's was 513 MiB on the same file, and qpdf
+is the only module in the payload since spike 0004. The threshold is unchanged and the native
+figure still stands.
 
-**One engine instance per worker, and memoise the init promise.** `pdfium.js` is not
-modularised: its state lives in worker-global `var`s and `importScripts` does not dedupe
-by URL. Load it twice in one scope and the second load rebinds every glue global while
-your bridge still holds the first instance — an in-flight call then reads and writes the
-_other_ instance's linear memory and dispatches through its function table. The sandbox
-holds, so nothing escapes, but parses come back confidently wrong. Guard flags set after
-an `await` are exactly what allows it, so memoise the **promise**, not the result.
+**One engine instance per worker, and memoise the init promise.** The rule survives spike
+0004; the hazard it was written from is worth keeping in its original form, because it is
+sharper than the one that remains.
+
+That original was `pdfium.js`, which was not modularised: its state lived in worker-global
+`var`s and `importScripts` does not dedupe by URL, so loading it twice in one scope rebound
+every glue global while your bridge still held the first instance — an in-flight call then read
+and wrote the _other_ instance's linear memory and dispatched through its function table. The
+sandbox held, so nothing escaped, but parses came back confidently wrong.
+
+**qpdf is `MODULARIZE`'d and the shape is milder, not absent.** A second `createQpdfModule()`
+returns a genuinely separate instance, so the glue globals are safe — but `__burrow_attach`
+rebinds the bridge's module reference, and an in-flight call still ends up reading a different
+linear memory than the handle it holds came from. Same wrong answer, narrower cause.
+
+Guard flags set after an `await` are exactly what allows either, so memoise the **promise**,
+not the result.
 
 **Suppress engine logging before opening any real file.** qpdf's default logger writes
 warnings containing object numbers and byte offsets to stderr, which reaches the devtools
@@ -344,9 +369,15 @@ re-decide. Each was a decision with a reason, not a shape that happened.
 - **The page does not re-implement a ceiling.** It sends the files and reports what the core
   refuses, so the prose and the code can be caught disagreeing. Say what happens to a large
   file in the page's own words rather than letting someone discover it.
-- **The page says what it is doing while the engines load.** The first file waits for 6.8 MB —
-  7 seconds on Fast 4G, 145 on Slow 3G, both measured. "counting…" for two and a half minutes
-  with no explanation is the page being silent about the one thing the person wants to know.
+- **The page says what it is doing while the engines load.** The first file waits for the
+  engine payload: 6.8 MB when this was written — 7 seconds on Fast 4G, 145 on Slow 3G, both
+  measured — and about 420 KB over the wire since spike 0004. **The new timings are predicted,
+  not measured** (spike 0004 computes 2.3 s at 1.6 Mbps and 9.2 s at 400 kbps from the byte
+  count); the deploy is what will measure them, and until it does the old pair is the last thing
+  anybody actually observed. Either way, "counting…" with no explanation is the page being
+  silent about the one thing the person wants to know. The figure the islands SHOW is pinned to
+  `size-budget.json` by `src/engine-download-figure.test.ts`, because it was wrong by 16x for a
+  whole PR before a review caught it.
 - **A size ceiling is applied before the bytes are read.** The worker calls
   `check_input_budget` with each `Blob`'s `size`, which is the same
   `burrow_core::ops::check_total_input_bytes` that `merge` calls — not a mirror of it. Checking

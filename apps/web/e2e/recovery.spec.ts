@@ -55,7 +55,7 @@ test("a deliberate engine failure discards the worker, and the next operation su
   await openHarness(page);
   const before = await page.evaluate(() => window.burrowHarness.spawnCount());
 
-  await armFreshWorker(page, { poison: "__burrow_pdfium_copy_in" });
+  await armFreshWorker(page, { poison: "__burrow_qpdf_copy_in" });
 
   const poisoned = await page.evaluate(() =>
     window.burrowHarness.run("page_count", [0x25, 0x50, 0x44, 0x46]),
@@ -128,7 +128,7 @@ test("the watchdog kills a worker stuck inside a single engine call", async ({ p
   // ADR 0007 is explicit that checkpoint-based enforcement cannot interrupt one long engine
   // call: "A hostile file that makes a *single* PDFium call run for a minute is not stopped by
   // this, and we will not pretend otherwise." The prologue blocks the worker thread
-  // SYNCHRONOUSLY inside `__burrow_pdfium_copy_in`, which is exactly that shape — an `await`
+  // SYNCHRONOUSLY inside `__burrow_qpdf_copy_in`, which is exactly that shape — an `await`
   // would leave the worker responsive and prove nothing.
   await armFreshWorker(page, { hangMs: 20_000 });
 
@@ -163,14 +163,14 @@ test("the circuit breaker stops a respawn loop, and only reset() restarts it", a
   await openHarness(page);
 
   // A file that crashes every worker it touches. Without a breaker this is an unbounded
-  // respawn loop: each crash costs a 6.8 MB engine compile, and the tab does nothing else.
+  // respawn loop: each crash costs a full engine compile, and the tab does nothing else.
   //
   // THREE crashes, not four, and each one asserted to be a CRASH rather than merely fatal.
   // A fourth iteration would already be past the breaker and would return
   // `EngineUnavailable` — which an `expect(reply.fatal)` could not tell apart from a crash,
   // so the loop would pass while testing one fewer crash than it claimed.
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    await armFreshWorker(page, { poison: "__burrow_pdfium_copy_in" });
+    await armFreshWorker(page, { poison: "__burrow_qpdf_copy_in" });
     const reply = await page.evaluate(() =>
       window.burrowHarness.run("page_count", [0x25, 0x50, 0x44, 0x46]),
     );
@@ -217,7 +217,7 @@ test("the SAME file handle survives the worker that was reading it", async ({ pa
   await openHarness(page);
   await page.evaluate((b) => window.burrowHarness.holdFile(b), fixture("pages-10.pdf"));
 
-  await armFreshWorker(page, { poison: "__burrow_pdfium_copy_in" });
+  await armFreshWorker(page, { poison: "__burrow_qpdf_copy_in" });
   const failed = await page.evaluate(() => window.burrowHarness.runHeld("page_count"));
   expect(failed.fatal).toBe(true);
 

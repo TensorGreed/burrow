@@ -58,6 +58,7 @@ interface Line {
 }
 
 const budget: {
+  headroom: { per_artifact: number; page: number; total: number; why: string[] };
   artifacts: Record<string, Line>;
   total: Line;
   not_byte_reproducible: Record<string, string>;
@@ -292,11 +293,10 @@ describe("the first-load size budget", () => {
   });
 
   it("measures a payload that is actually the shipped one", () => {
-    // A budget over an empty or truncated measurement passes trivially. Pin the shape: all
-    // three wasm modules, the worker bundle, the control file, and a page.
+    // A budget over an empty or truncated measurement passes trivially. Pin the shape: every
+    // wasm module, the worker bundle, the control file, and a page.
     const keys = Object.keys(groups);
     for (const required of [
-      "engines/pdfium.wasm",
       "engines/qpdf.wasm",
       "engines/burrow_wasm_bg.wasm",
       "engines/burrow-worker.js",
@@ -305,32 +305,51 @@ describe("the first-load size budget", () => {
     ]) {
       expect(keys, `${required} is not in the measured payload`).toContain(required);
     }
-    // PDFium is 82% of it (spike 0001). If it ever is not, either the payload is wrong or
-    // something very large arrived.
-    expect(groups["engines/pdfium.wasm"].brotli / measurement.total.brotli).toBeGreaterThan(0.7);
+    // AND NO PDFIUM. It was 79.7% of this payload and the assertion here was that it stayed
+    // above 70% — which was the right shape of check (a payload missing its bulk is a broken
+    // measurement) pointed at an engine the web no longer loads. Spike 0004 removed it, so the
+    // same idea is now qpdf: it is the bulk, and a measurement where it is not has gone wrong.
+    expect(keys, "PDFium is not supposed to ship to the web").not.toContain("engines/pdfium.wasm");
+    expect(groups["engines/qpdf.wasm"].brotli / measurement.total.brotli).toBeGreaterThan(0.5);
   });
 
   it("catches a regression split across three files, which no per-file budget would", () => {
-    // The reason the total exists, planted rather than argued. Each artifact grows by 4% --
-    // comfortably inside its own 10% line -- and the total must still fail.
+    // The reason the total exists, planted rather than argued: a growth that every per-artifact
+    // line waves through and the total still refuses.
     //
+    // THE GROWTH IS DERIVED FROM THE TWO HEADROOMS, not hardcoded. It was a literal 4%, which
+    // silently encoded the 3%-total / 10%-per-artifact split this file used to have — so when
+    // spike 0004 cut the payload by 80.7% and the total moved to 10%, the number stopped
+    // expressing the property and the test failed against a budget that was fine. The property
+    // is that the total is the TIGHTER gate, and the midpoint between the two headrooms is a
+    // growth that demonstrates it whenever that is true. If the two are ever equal there is no
+    // such growth, and the assertion below says so rather than a magic number quietly
+    // preserving an arrangement nobody restated.
+    expect(
+      budget.headroom.total,
+      "the total must be tighter than the per-artifact lines, or it cannot catch what they miss",
+    ).toBeLessThan(budget.headroom.per_artifact);
+    const growth = 1 + (budget.headroom.total + budget.headroom.per_artifact) / 2;
+
     // Computed against the *recorded* measurements rather than the live ones, so this test
     // asserts a property of the budget file and cannot be made vacuous by the build changing.
     const grown = Object.fromEntries(
-      Object.entries(budget.artifacts).map(([k, v]) => [k, Math.round(v.measured_brotli * 1.04)]),
+      Object.entries(budget.artifacts).map(([k, v]) => [k, Math.round(v.measured_brotli * growth)]),
     );
 
     for (const [key, value] of Object.entries(grown)) {
       expect(
         value,
-        `${key} at +4% would already exceed its own budget, so this test proves nothing`,
+        `${key} at +${Math.round((growth - 1) * 100)}% would already exceed its own budget, ` +
+          `so this test proves nothing`,
       ).toBeLessThanOrEqual(budget.artifacts[key].budget_brotli);
     }
 
     const total = Object.values(grown).reduce((n, v) => n + v, 0);
     expect(
       total,
-      "a 4% regression spread across every artifact would pass the total budget. " +
+      `a +${Math.round((growth - 1) * 100)}% regression spread across every artifact would pass the ` +
+        "total budget. " +
         "The total's headroom is too loose to be the gate it claims to be",
     ).toBeGreaterThan(budget.total.budget_brotli);
   });
@@ -526,7 +545,7 @@ describe("normalising generated engine hashes out of the page digest", () => {
     // A .wasm could contain sixteen hex bytes by coincidence, and rewriting them would
     // corrupt the one digest that is supposed to be exact.
     const bytes = Buffer.from(".0123456789abcdef.", "utf8");
-    expect(normaliseEngineHashes(bytes, "engines/pdfium.wasm")).toEqual(bytes);
+    expect(normaliseEngineHashes(bytes, "engines/qpdf.wasm")).toEqual(bytes);
   });
 });
 

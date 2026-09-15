@@ -952,6 +952,20 @@ jobs:
       - name: First-load size budget
         working-directory: apps/web
         run: node ../../tools/report-size-budget.mjs dist
+      # PDFIUM REACHES NO PART OF THE WEB BUILD (spike 0004). In the `web` job because it
+      # reads `apps/web/dist`, which only this job has -- the rule CLAUDE.md states about
+      # where a check lives: a check that silently examines nothing reads as coverage.
+      #
+      # RUN FROM THE REPOSITORY ROOT, not with `working-directory: apps/web`. The parity
+      # extractor matches `tools/*.sh` with a lookbehind that rejects a preceding `/`, so
+      # `../../tools/check-…` is invisible to it — the gate would run in CI and parity would
+      # report full coverage over it, which is the exact class of miss that runner exists for.
+      # The checker defaults to `apps/web/dist`, so no argument is needed.
+      - name: PDFium reaches no part of the web build
+        run: |
+          tools/check-no-pdfium-on-the-web.sh
+          tools/test-check-no-pdfium-on-the-web.sh
+
       # Asserts what a production build contains: no harness route, no `burrowHarness`
       # identifier in any shipped file, the CSP in every page, and -- as a control -- that
       # the harness IS present when BURROW_HARNESS=1, so the gating is doing the work.

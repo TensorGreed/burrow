@@ -8,7 +8,7 @@
 //
 // This block is different, and the argument is not line count. **It is a fixed security
 // defect.** `MergeTool.svelte` records it: a guard flag set after an `await` let two callers
-// each build a host, each spawn a worker with its own pdfium and qpdf, and share one
+// each build a host, each spawn a worker with its own engine instances, and share one
 // `workerUrl` binding so one revoked the other's — leaving an orphan worker holding file bytes
 // for the life of the page. Found by security review, fixed by memoising the promise rather
 // than the result.

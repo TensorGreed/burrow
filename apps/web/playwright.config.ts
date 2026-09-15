@@ -38,7 +38,9 @@ const FOREIGN_PORT = Number(process.env.BURROW_FOREIGN_PORT ?? 4322);
 
 export default defineConfig({
   testDir: "./e2e",
-  // The engines are 6.5 MB and compile on first load; a cold run is slower than a UI test.
+  // The engines compile on first load; a cold run is slower than a UI test. The payload was
+  // 6.5 MB when this was set and is about 1.8 MB since spike 0004; the timeout is unchanged,
+  // because what it bounds is a cold compile on a loaded CI runner, not the download.
   timeout: 60_000,
   expect: { timeout: 15_000 },
   // No retries. A flaky engine test is a finding, not something to paper over — and a retry

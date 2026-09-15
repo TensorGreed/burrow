@@ -14,19 +14,26 @@
 // The trait definitions in `core/burrow-engines/src/web/bridge.rs` are the audit surface:
 // this file cannot grow a capability without a method appearing there first.
 //
-// TWO THINGS THAT LOOK LIKE OMISSIONS AND ARE NOT
+// ONE ENGINE, SINCE SPIKE 0004. PDFium left the web payload -- 79.7% of the first load,
+// reachable from one function -- and its seven bridge globals went with it. Two decisions
+// recorded here belonged to those globals and are kept as history, because the reasoning is
+// the kind that gets rediscovered the hard way if a second engine comes back:
 //
-//   * `__burrow_pdfium_free_input` and `__burrow_pdfium_close` are separate, rather than one
-//     function with `if (doc !== 0)`. That `if` would be a branch on engine state. Rust
-//     knows whether a document was created and picks; the bridge just does as it is told.
-//     Both take a LENGTH, because both release the user's document and both wipe it first:
-//     a plain `_free` returns those bytes to the module's free list intact, where they stay
-//     for the life of the worker -- and one worker serves many documents in a session.
+//   * A release that frees the user's document takes a LENGTH and wipes before freeing. A
+//     plain `_free` returns those bytes to the module's free list intact, where they stay for
+//     the life of the worker -- and one worker serves many documents in a session.
 //
-//   * `__burrow_pdfium_load` returns the handle and the error code packed into one BigInt.
-//     `FPDF_GetLastError` reads a process-global slot that the next PDFium call overwrites,
+//   * A handle and its error code crossed in ONE call, and that was PDFium's constraint
+//     specifically: its last-error read a PROCESS-GLOBAL slot which the next call overwrote,
 //     so fetching it in a second round trip could attach a different operation's error to
-//     this one. One call, both values.
+//     this one.
+//
+//     **qpdf does not need this, and the pairing must not be copied onto it.** Its error is
+//     latched per-`QPDF` handle rather than in a process global, so `__burrow_qpdf_read_memory`
+//     and `__burrow_qpdf_get_error_code` are deliberately two calls and nothing overwrites the
+//     second between them. An earlier draft of this comment said qpdf's error "is read the
+//     same way and for the same reason", which would send the next reader to pack a pair that
+//     is correct as it stands.
 
 // NO "use strict" HERE, deliberately.
 //
@@ -42,41 +49,25 @@
 // as "Cannot find name" (verified). `src/production-build.test.ts` asserts the bundle's mode
 // so this cannot drift back silently.
 
-/** @type {EmscriptenModule | null} The PDFium Emscripten module. */
-let pdfiumModule = null;
 /** @type {EmscriptenModule | null} The qpdf Emscripten module. */
 let qpdfModule = null;
 
 /**
- * Wire the bridge to the two initialised modules. Called once, by the worker.
+ * Wire the bridge to the initialised module. Called once, by the worker.
  *
- * @param {EmscriptenModule} pdfium
  * @param {EmscriptenModule} qpdf
  */
-function __burrow_attach(pdfium, qpdf) {
-  pdfiumModule = pdfium;
+function __burrow_attach(qpdf) {
   qpdfModule = qpdf;
 }
 
 /**
- * The PDFium module, or a loud failure.
+ * The qpdf module, or a loud failure.
  *
  * Not a branch on engine state — it cannot be, because no engine has spoken yet. It turns
  * "the bridge was called before init finished" into a thrown error instead of
  * `undefined._malloc`, which the worker would report as an opaque `Internal` with no clue
  * as to the cause.
- *
- * @returns {EmscriptenModule}
- */
-function pdfium() {
-  if (!pdfiumModule) {
-    throw new Error("bridge used before attach");
-  }
-  return pdfiumModule;
-}
-
-/**
- * The qpdf module, or a loud failure. See {@link pdfium}.
  *
  * @returns {EmscriptenModule}
  */
@@ -132,30 +123,13 @@ function wipeAndFree(module, ptr, len) {
  */
 const heapPages = (module) => module.HEAPU8.byteLength / 65536;
 
-// --- PDFium ---------------------------------------------------------------------------
-
-self.__burrow_pdfium_copy_in = (bytes) => copyInto(pdfium(), bytes);
-self.__burrow_pdfium_wipe_free = (ptr, len) => wipeAndFree(pdfium(), ptr, len);
-self.__burrow_pdfium_free_input = (ptr, len) => wipeAndFree(pdfium(), ptr, len);
-
-self.__burrow_pdfium_load = (data, len, password) => {
-  const doc = pdfium()._FPDF_LoadMemDocument64(data, len, password);
-  // Read immediately, before any other PDFium call can overwrite the global.
-  const code = pdfium()._FPDF_GetLastError();
-  return (BigInt(u32(code)) << 32n) | BigInt(u32(doc));
-};
-
-self.__burrow_pdfium_pages = (doc) => pdfium()._FPDF_GetPageCount(doc);
-
-self.__burrow_pdfium_close = (doc, data, len) => {
-  // Close, then wipe and free. PDFium reads from the input buffer for as long as the document
-  // is open (fpdfview.h:451), so the other order is a use-after-free. Two statements in one
-  // function is the only reason no call site can get it wrong.
-  pdfium()._FPDF_CloseDocument(doc);
-  wipeAndFree(pdfium(), data, len);
-};
-
-self.__burrow_pdfium_heap_pages = () => heapPages(pdfium());
+// NO PDFIUM. Seven of its bridge globals stood here until spike 0004 took PDFium out of
+// the web payload. They are removed rather than left defined against a module that is no
+// longer loaded: `bridge.rs` declares the matching imports, a `no-modules` wasm-bindgen import
+// resolves from this scope, and a declared import with no global fails at INSTANTIATION --- in
+// the browser and nowhere else.
+//
+// ADR 0009 §2: the bridge method list IS the audit surface, so it lists what exists.
 
 // --- qpdf -----------------------------------------------------------------------------
 
@@ -256,7 +230,7 @@ self.__burrow_qpdf_oh_replace_key = (data, oh, key, item) =>
 // Two objects may share an object number across generations, so a caller holding only the
 // number would call two different objects the same one. Offering the halves as separate
 // bridge methods invites exactly that; packing them means they cannot be used apart. Same
-// argument as `__burrow_pdfium_load` packing a handle with its error code.
+// argument as PDFium's load did, packing a handle with its error code (see the header).
 //
 // A `qpdf_oh` is NOT an identity -- qpdf issues a fresh one per call -- which is why this
 // exists at all. See `QpdfBridge::oh_object`.

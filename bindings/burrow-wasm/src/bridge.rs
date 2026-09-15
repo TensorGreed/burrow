@@ -28,31 +28,21 @@
 //!   be implemented at all. An `-sASYNCIFY` or JSPI build would break it, which is why
 //!   `engines/build-wasm.sh` fails if either appears in the glue.
 
-use burrow_core::engines::web::{LoadOutcome, PdfiumBridge, PdfiumPtr, QpdfBridge, QpdfPtr};
+use burrow_core::engines::web::{QpdfBridge, QpdfPtr};
 use wasm_bindgen::prelude::wasm_bindgen;
 
 #[wasm_bindgen]
 extern "C" {
-    // --- PDFium -------------------------------------------------------------------
-    #[wasm_bindgen(js_name = __burrow_pdfium_copy_in)]
-    fn pdfium_copy_in(bytes: &[u8]) -> u32;
-    #[wasm_bindgen(js_name = __burrow_pdfium_wipe_free)]
-    fn pdfium_wipe_free(ptr: u32, len: u32);
-    #[wasm_bindgen(js_name = __burrow_pdfium_free_input)]
-    fn pdfium_free_input(ptr: u32, len: u32);
-    /// Returns `(code << 32) | handle`, so the handle and `FPDF_GetLastError` cross in one
-    /// call. Splitting them into two would let another PDFium call overwrite the global in
-    /// between, and the code would then belong to a different operation.
-    #[wasm_bindgen(js_name = __burrow_pdfium_load)]
-    fn pdfium_load(data: u32, len: u32, password: u32) -> u64;
-    #[wasm_bindgen(js_name = __burrow_pdfium_pages)]
-    fn pdfium_pages(doc: u32) -> i32;
-    #[wasm_bindgen(js_name = __burrow_pdfium_close)]
-    fn pdfium_close(doc: u32, data: u32, len: u32);
-    /// The heap size in **WASM pages**, not bytes. See `pages_to_bytes`.
-    #[wasm_bindgen(js_name = __burrow_pdfium_heap_pages)]
-    fn pdfium_heap_pages() -> u32;
-
+    // NO PDFIUM. Seven `__burrow_pdfium_*` imports stood here until spike 0004 took PDFium
+    // out of the web payload --- 79.7% of the first load, reachable from one function
+    // (`page_count`), which qpdf answers through `StructureEngine::check`.
+    //
+    // THE IMPORTS HAD TO GO WITH THE ARTIFACT, not merely stop being used. A `no-modules`
+    // wasm-bindgen import resolves from the worker's global scope, and those globals are
+    // defined by `bridge.js` from the PDFium Emscripten module --- so leaving them declared
+    // against a module that is no longer loaded would fail at INSTANTIATION, in the browser
+    // and nowhere else. ADR 0009 §2: this list is the audit surface, so it says what is
+    // actually there.
     // --- qpdf ---------------------------------------------------------------------
     #[wasm_bindgen(js_name = __burrow_qpdf_copy_in)]
     fn qpdf_copy_in(bytes: &[u8]) -> u32;
@@ -181,45 +171,6 @@ const WASM_PAGE_BYTES: u64 = 64 * 1024;
 /// small one — the safe direction for a value a limit check rejects on.
 fn pages_to_bytes(pages: u32) -> u64 {
     u64::from(pages).saturating_mul(WASM_PAGE_BYTES)
-}
-
-/// The PDFium Emscripten module.
-pub(crate) struct JsPdfium;
-
-impl PdfiumBridge for JsPdfium {
-    fn copy_in(&self, bytes: &[u8]) -> PdfiumPtr {
-        PdfiumPtr(pdfium_copy_in(bytes))
-    }
-
-    fn wipe_and_free(&self, ptr: PdfiumPtr, len: u32) {
-        pdfium_wipe_free(ptr.0, len);
-    }
-
-    fn abandon_input(&self, ptr: PdfiumPtr, len: u32) {
-        pdfium_free_input(ptr.0, len);
-    }
-
-    fn load_mem_document64(&self, data: PdfiumPtr, len: u32, password: PdfiumPtr) -> LoadOutcome {
-        let packed = pdfium_load(data.0, len, password.0);
-        // The unpacking is arithmetic, not a decision: the low word is the handle and the
-        // high word is the error code, and which is which was fixed when they were packed.
-        LoadOutcome {
-            handle: PdfiumPtr(u32::try_from(packed & 0xFFFF_FFFF).unwrap_or(0)),
-            code: core::ffi::c_ulong::try_from(packed >> 32).unwrap_or(0),
-        }
-    }
-
-    fn get_page_count(&self, doc: PdfiumPtr) -> i32 {
-        pdfium_pages(doc.0)
-    }
-
-    fn close_document(&self, doc: PdfiumPtr, data: PdfiumPtr, len: u32) {
-        pdfium_close(doc.0, data.0, len);
-    }
-
-    fn heap_bytes(&self) -> u64 {
-        pages_to_bytes(pdfium_heap_pages())
-    }
 }
 
 /// The qpdf Emscripten module.

@@ -350,6 +350,20 @@ JOBS: list[dict] = [
         ],
     },
     {
+        # AFTER `web`, because it reads the `dist/` that job produces. Its own self-test runs
+        # beside it: the checker is made entirely of ABSENCE rules, which is the shape that
+        # passes on an empty directory or a build that never ran.
+        "name": "no-pdfium-on-the-web",
+        "run": (
+            "tools/check-no-pdfium-on-the-web.sh && tools/test-check-no-pdfium-on-the-web.sh"
+        ),
+        "covers": [
+            "tools/check-no-pdfium-on-the-web.sh",
+            "tools/test-check-no-pdfium-on-the-web.sh",
+        ],
+        "why": "PDFium reaches no part of the web build (spike 0004)",
+    },
+    {
         "name": "web-e2e",
         "run": "cd apps/web && pnpm e2e",
         "covers": ["pnpm:e2e"],

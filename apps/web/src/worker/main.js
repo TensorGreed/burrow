@@ -42,28 +42,14 @@ async function init() {
     instantiateWasm: instantiateFrom("qpdfWasm"),
   });
 
-  // PDFium's glue began instantiating when the bundle was parsed; `Module` is the object the
-  // prelude installed, and `onRuntimeInitialized` is how it reports readiness.
-  await new Promise((resolve) => {
-    if (Module.calledRun) {
-      resolve(undefined);
-      return;
-    }
-    const previous = Module.onRuntimeInitialized;
-    Module.onRuntimeInitialized = () => {
-      if (previous) previous();
-      resolve(undefined);
-    };
-  });
+  // NO PDFIUM STEP. It was three things here: awaiting `Module.onRuntimeInitialized` for glue
+  // that began instantiating when the bundle was parsed, a narrowing cast from config to
+  // module, and a library-init call. All of it went with the artifact in spike 0004.
+  //
+  // qpdf needs none of them: `createQpdfModule()` returns a promise for an initialised module,
+  // so readiness is the `await` above rather than a callback on a global.
 
-  // THE ONE NARROWING, and the one place the guarantee holds. `Module` is declared as a
-  // config because that is what it is when the prelude assigns it; the glue populates the
-  // same object with the exports, and `onRuntimeInitialized` (awaited above) is exactly the
-  // signal that it has finished. See `EmscriptenConfig` in globals.d.ts.
-  const pdfiumModule = /** @type {EmscriptenModule} */ (/** @type {unknown} */ (Module));
-  pdfiumModule._FPDF_InitLibrary();
-
-  __burrow_attach(pdfiumModule, qpdfModule);
+  __burrow_attach(qpdfModule);
 
   // The Rust module last: its imports are the `__burrow_*` globals, which now exist. The
   // compiled module is handed in rather than a URL, so every `.wasm` the worker loads goes
@@ -76,7 +62,7 @@ function ensureReady() {
   // `??=` assigns the promise, not its result, and only when there is not one already.
   //
   // IT MEMOISES REJECTION TOO, DELIBERATELY. If `init()` throws -- a trap in
-  // `_FPDF_InitLibrary()`, a failed engine fetch -- `ready` stays a rejected promise for the
+  // a library-init call, a failed engine fetch -- `ready` stays a rejected promise for the
   // worker's life and every later operation fails `Internal`/fatal. That is fail-closed and
   // it is the intended behaviour. Do not "fix" it by clearing `ready` on failure: a retry
   // would call `createQpdfModule()` a second time and rebind the bridge's module while an
@@ -108,7 +94,6 @@ function internalFailure(id, message) {
     // A worker that failed this way is being discarded anyway, so there is nothing to
     // recycle and no heap reading worth trusting.
     recycle: false,
-    pdfiumHeapBytes: "0",
     qpdfHeapBytes: "0",
   };
 }
@@ -159,7 +144,6 @@ function refusal(id, kind, message) {
     requested: "0",
     allowed: "0",
     recycle: false,
-    pdfiumHeapBytes: "0",
     qpdfHeapBytes: "0",
     rotations: [],
     failedInput: -1,
@@ -277,7 +261,6 @@ function drainReply(id, reply) {
       // against anything.
       recycle: reply.recycle,
       // Strings for the same reason `requested` is: these are `u64`.
-      pdfiumHeapBytes: reply.pdfium_heap_bytes.toString(),
       qpdfHeapBytes: reply.qpdf_heap_bytes.toString(),
       // EVERY PAGE'S ROTATION, for `page_rotations`. Numbers rather than the strings
       // `requested` and `allowed` use: a rotation is 0, 90, 180 or 270, so there is no `u64`
@@ -388,7 +371,6 @@ self.onmessage = async (event) => {
         requested: "0",
         allowed: "0",
         recycle: false,
-        pdfiumHeapBytes: "0",
         qpdfHeapBytes: "0",
       });
       return;
@@ -397,7 +379,7 @@ self.onmessage = async (event) => {
     // THE ACK, AND WHY IT IS HERE RATHER THAN AT THE TOP OF THIS HANDLER.
     //
     // The page's watchdog starts its clock on this message, not on its own `postMessage`.
-    // Everything above this line -- the policy guard, and a cold 6.8 MB engine compile that
+    // Everything above this line -- the policy guard, and a cold engine compile that
     // `ensureReady()` may be awaiting -- is start-up, which the page bounds separately. A
     // file must never be blamed for time spent before the worker could look at it.
     //
@@ -542,7 +524,6 @@ self.onmessage = async (event) => {
           requested: "0",
           allowed: "0",
           recycle: false,
-          pdfiumHeapBytes: "0",
           qpdfHeapBytes: "0",
           rotations: [],
           failedInput: -1,
@@ -581,7 +562,6 @@ self.onmessage = async (event) => {
           requested: "0",
           allowed: "0",
           recycle: false,
-          pdfiumHeapBytes: "0",
           qpdfHeapBytes: "0",
           rotations: [],
           failedInput: -1,

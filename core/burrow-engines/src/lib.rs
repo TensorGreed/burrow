@@ -535,7 +535,8 @@ pub trait OutputReader {
     ///
     /// **On the web that is a new document handle inside the same WebAssembly module**, and
     /// it cannot be more than that. A genuinely fresh module means a fresh worker, which is a
-    /// 6.8 MB fetch and a recompile per operation; `docs/adr/0022` records the measurement and
+    /// whole-payload fetch and a recompile per operation (6.8 MB when ADR 0022 measured it,
+    /// about 1.8 MB since spike 0004); `docs/adr/0022` records the measurement and
     /// the decision. What that leaves undetectable is stated there too: a corrupted module
     /// heap can corrupt the writer and the reader alike, because they are the same heap.
     ///

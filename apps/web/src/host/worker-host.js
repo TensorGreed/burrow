@@ -29,7 +29,7 @@
 //
 // No `Worker`, no `performance`, no `setTimeout`, no DOM. That is ADR 0007's reason for an
 // injectable clock applied to the page: a watchdog test that really waits thirty seconds is a
-// test nobody runs, and a respawn test that really compiles 6.8 MB of WebAssembly is worse.
+// test nobody runs, and a respawn test that really compiles several megabytes of WebAssembly is worse.
 // `worker-host.test.ts` drives every state below in milliseconds against a fake worker.
 
 /**
@@ -57,7 +57,6 @@
  * @property {string} requested
  * @property {string} allowed
  * @property {boolean} recycle
- * @property {string} pdfiumHeapBytes
  * @property {string} qpdfHeapBytes
  * @property {number} [failedInput] Which input failed, or -1.
  * @property {string} [innerKind] What was wrong with that input, or empty.
@@ -91,9 +90,10 @@ export const WATCHDOG_GRACE_MS = 500;
  * How long start-up may go **without news** before the worker is declared dead.
  *
  * **Separate from `max_duration_ms`, and that is the point.** Start-up fetches and compiles
- * 6.8 MB of WebAssembly across three modules and runs the CSP guard's probe. (6,819,245 bytes,
- * the sum of the three `.wasm` lines in `apps/web/size-budget.json` — 6.5 MiB, which is what
- * the older comments in this repository meant when they said "6.5 MB".) Charging that to
+ * every wasm module and runs the CSP guard's probe. That was 6.8 MB across three modules
+ * until spike 0004 took PDFium out of the payload; it is now 1,670,307 bytes across two — the
+ * sum of the `.wasm` lines in `apps/web/size-budget.json` (1,494,731 + 175,576). Charging
+ * that to
  * the file would tell a user their document took too long when what was slow was the page —
  * the web form of the queue-time bug PR 2 fixed on the native path, where a caller delayed
  * behind someone else's work was told its own deadline had expired.
@@ -115,29 +115,35 @@ export const WATCHDOG_GRACE_MS = 500;
  * One message per module is the finest granularity available — `integrity` makes the browser
  * verify a whole response before releasing any of it, so a module's body arrives in one read
  * however long it took. The gap this must tolerate is therefore **one module's download**, and
- * the largest is `pdfium.wasm` at 5,315,922 bytes.
+ * the largest is now `qpdf.wasm` at 1,494,731 bytes — it was `pdfium.wasm` at 5,315,922 until
+ * spike 0004, so the module this bound is derived from shrank by 3.6×.
  *
- * 240 s allows that module at about 22 KB/s, or 177 kbps — below Chrome's "Slow 3G" preset
- * (400 kbps), on which the measured gap between modules is 55 s. A connection slower than that
- * for four minutes together is not one this page can serve anyway.
+ * 240 s allows that module at about 6 KB/s, or 50 kbps — far below Chrome's "Slow 3G" preset
+ * (400 kbps). A connection slower than that for four minutes together is not one this page can
+ * serve anyway.
  *
- * The cost of the larger number is that a genuinely hung start-up is noticed in four minutes
- * rather than one. That is the right trade: a start-up hang is rare and recoverable, and the
- * failure it replaces made the page unusable for everyone on a slow connection.
+ * **NOT LOWERED TO MATCH, and that is deliberate rather than an oversight.** The bound is what
+ * a start-up may go *without news*, and the thing it protects against — a person on a slow
+ * connection being told their document took too long — got no less real when the payload got
+ * smaller. `src/host/start-up-bound.test.ts` derives the floor bandwidth from whatever the
+ * largest module currently is, so the slack is reported rather than assumed. Tightening it is
+ * a decision with a measurement behind it, not a consequence of this one.
  */
 export const DEFAULT_INIT_TIMEOUT_MS = 240_000;
 
 /**
  * How many `starting` messages a start-up may use to push its bound out.
  *
- * One per engine module — `pdfium.wasm`, `qpdf.wasm` and `burrow_wasm_bg.wasm`, the three
- * `prelude.js` fetches. It is a **cap on trust**, not a count of what must arrive: a start-up
- * that reports fewer still succeeds, and one that reports more is ignored past this point.
+ * One per engine module — `qpdf.wasm` and `burrow_wasm_bg.wasm`, the two `prelude.js` fetches.
+ * It was three until spike 0004 took `pdfium.wasm` out of the payload. It is a **cap on
+ * trust**, not a count of what must arrive: a start-up that reports fewer still succeeds, and
+ * one that reports more is ignored past this point.
  *
- * Stated as a constant rather than hard-coded at the call site because the day a fourth engine
- * lands, the number that has to change is this one and the test that pins it.
+ * Stated as a constant rather than hard-coded at the call site because the day an engine is
+ * added or removed, the number that has to change is this one and the test that pins it —
+ * which is how this line came to be edited rather than forgotten.
  */
-export const EXPECTED_ENGINE_MODULES = 3;
+export const EXPECTED_ENGINE_MODULES = 2;
 
 /**
  * How long a posted operation may go unacknowledged before the worker is declared dead.
@@ -202,7 +208,6 @@ function hostFailure(kind, message, detail = {}) {
     requested: detail.requested ?? "0",
     allowed: detail.allowed ?? "0",
     recycle: false,
-    pdfiumHeapBytes: "0",
     qpdfHeapBytes: "0",
   };
 }
@@ -224,7 +229,6 @@ function hostSuccess() {
     requested: "0",
     allowed: "0",
     recycle: false,
-    pdfiumHeapBytes: "0",
     qpdfHeapBytes: "0",
   };
 }
@@ -347,7 +351,7 @@ export function createWorkerHost(options) {
    * `queue` — they have not been posted, so there is nothing to settle — and without this
    * counter each of them went on to run after the cancel: `ensureWorker()` found the state
    * `dead`, the breaker permitted a spawn because a page-initiated discard is not a crash,
-   * and a fresh worker compiled 6.8 MB of engines to finish an operation the person had
+   * and a fresh worker recompiled every engine to finish an operation the person had
    * already stopped. The UI had returned to idle and said "Stopped."; the work had not.
    *
    * So a request records the count when it is ENQUEUED, and abandons itself if the count has
@@ -527,7 +531,7 @@ export function createWorkerHost(options) {
       //
       // It bounded the WHOLE of start-up until M1's consolidation batch, at 60 s, with a
       // comment claiming that was "comfortably above any measured cold load". A measurement
-      // refuted it: 6.8 MB of engines at 400 kbps -- Chrome's own "Slow 3G" -- is 140
+      // refuted it: the engines at 400 kbps -- Chrome's own "Slow 3G" -- were 140
       // seconds of network before anything is compiled, so the first file a person chose on
       // a slow connection was refused at 60 s with "Something inside burrow failed", the
       // worker was discarded as a crash, and three attempts would have latched the circuit

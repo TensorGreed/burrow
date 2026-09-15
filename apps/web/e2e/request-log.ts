@@ -57,7 +57,10 @@ export function since(marker: string): LogEntry[] {
  */
 export function isPinnedArtifact(url: string): boolean {
   return (
-    /^\/engines\/(pdfium|qpdf|burrow_wasm_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
+    // `pdfium` was in this alternation until spike 0004 took it out of the payload. The
+    // allowlist is EXACT, so leaving it would have meant a fetch of an artifact that no
+    // longer ships reading as expected rather than as a finding.
+    /^\/engines\/(qpdf|burrow_wasm_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
     /^\/engines\/burrow-worker\.[0-9a-f]{16}\.js$/.test(url) ||
     /^\/engines\/control\.[0-9a-f]{16}\.txt$/.test(url)
   );
