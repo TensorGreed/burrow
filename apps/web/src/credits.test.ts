@@ -81,6 +81,7 @@ function manifestViaPython(): {
     linked?: boolean;
     notice_required?: string;
     license_text?: string;
+    artifacts?: string[];
   }[];
 } {
   const out = execFileSync(
@@ -93,6 +94,29 @@ function manifestViaPython(): {
     { cwd: REPO, encoding: "utf8" },
   );
   return JSON.parse(out);
+}
+
+/**
+ * The artifacts a WEB reader downloads, and the components distributed with them.
+ *
+ * DERIVED FROM THE MANIFEST BY THE INDEPENDENT PARSER, not read from `CREDITS.surfaces`.
+ * Taking the scope from the generator's own output would make every assertion below a
+ * tautology: the page would be asserted to list what the generator decided it should list,
+ * and a scope that dropped a component would agree with itself.
+ *
+ * `artifacts` ("distributed with"), NOT `linked_in` ("code was found in"). A notice
+ * obligation attaches to distribution. And `linked_in` is measurably the wrong field here:
+ * scoping by it drops `zlib` and `libjpeg-turbo`, both of which
+ * `tools/detect-engine-components.py` finds inside the shipped `qpdf.wasm` -- and
+ * libjpeg-turbo carries the IJG affirmative notice, so that would be an UNDER-declaration.
+ * The manifest's own header says the field "has never been re-derived per artifact".
+ */
+const WEB_ARTIFACTS = ["qpdf-wasm"];
+
+function webComponents() {
+  return manifestViaPython().component.filter((c) =>
+    (c.artifacts ?? []).some((id) => WEB_ARTIFACTS.includes(id)),
+  );
 }
 
 describe("the built credits page", () => {
@@ -127,11 +151,36 @@ describe("the built credits page", () => {
     }
   });
 
-  it("carries FreeType's credit line in FTL's own wording", () => {
-    // "based in part OF the work" -- that is what FTL section 2 literally says. It reads like
-    // a typo and it is not ours to correct: a verbatim notice obligation means the text
-    // upstream wrote, not the text upstream meant. Do not "fix" this string.
-    expect(pageText()).toContain("based in part of the work of the FreeType Team");
+  it("does NOT credit FreeType, because the web no longer distributes it — and still owes it", () => {
+    // FTL section 2 says "based in part OF the work", which reads like a typo and is not ours
+    // to correct; the string is kept here verbatim because this test is what will be inverted
+    // when an artifact that carries PDFium gets its own credits screen.
+    //
+    // THE OBLIGATION IS NOT GONE, IT IS NOT OURS ON THIS SURFACE. FreeType reaches burrow
+    // through PDFium, and spike 0004 took PDFium out of the web payload. A browser downloads
+    // `qpdf.wasm` and no FreeType code arrives with it. Crediting it anyway is over-
+    // declaration -- harmless to the licence, corrosive to the page, which claims it credits
+    // what you actually received.
+    //
+    // ASSERTED IN BOTH DIRECTIONS, because this is a licence surface and "we removed it" is
+    // the sentence that later turns out to mean "we lost it":
+    const manifest = manifestViaPython().component;
+    const freetype = manifest.find((c) => c.name === "freetype");
+    expect(
+      freetype,
+      "freetype left the manifest entirely, which is not what was intended",
+    ).toBeDefined();
+    expect(freetype?.notice_required, "freetype's notice obligation was dropped").toBeTruthy();
+    expect(
+      (freetype?.artifacts ?? []).some((id) => WEB_ARTIFACTS.includes(id)),
+      "freetype now claims a web artifact; if PDFium is back in the payload this test is the " +
+        "wrong way round and the page must credit it again",
+    ).toBe(false);
+    // ...and it is absent from the page a browser gets.
+    expect(rosterInPage()).not.toContain("freetype");
+
+    // M3/M4: the Android and iOS screens scope to THEIR artifacts from the same data, and
+    // this obligation is theirs. `CREDITS.components` still carries it.
   });
 
   it("carries the Independent JPEG Group's credit line", () => {
@@ -140,18 +189,21 @@ describe("the built credits page", () => {
     expect(pageText()).toContain("based in part on the work of the Independent JPEG Group");
   });
 
-  it("carries HarfBuzz's copyright notice and BOTH disclaimer paragraphs", () => {
-    // MIT-Modern-Variant requires the notice *and* both paragraphs. PDFium's package ships no
-    // HarfBuzz licence at all, which is why the text is committed at
-    // docs/adr/licences/harfbuzz-14.3.1-COPYING.txt -- see ADR 0010.
-    const html = pageText();
-    expect(html, "no HarfBuzz copyright notice").toMatch(/Copyright © 2010-2022\s+Google, Inc\./);
-    expect(html, "disclaimer paragraph 1 missing").toContain(
-      "IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE",
-    );
-    expect(html, "disclaimer paragraph 2 missing").toContain(
-      "THE COPYRIGHT HOLDER SPECIFICALLY DISCLAIMS ANY WARRANTIES",
-    );
+  it("does NOT credit HarfBuzz either, and its obligation is likewise still declared", () => {
+    // MIT-Modern-Variant requires the notice AND both disclaimer paragraphs. PDFium's package
+    // ships no HarfBuzz licence at all, which is why the text is committed at
+    // docs/adr/licences/harfbuzz-14.3.1-COPYING.txt (ADR 0010) -- and why losing track of this
+    // one would be easy. Same shape as the FreeType case above: it arrives through PDFium,
+    // which the web has not distributed since spike 0004.
+    const harfbuzz = manifestViaPython().component.find((c) => c.name.startsWith("harfbuzz"));
+    expect(harfbuzz, "harfbuzz left the manifest").toBeDefined();
+    expect(harfbuzz?.notice_required, "harfbuzz's notice obligation was dropped").toBeTruthy();
+    expect(harfbuzz?.license_text, "harfbuzz's committed licence text was dropped").toBeTruthy();
+    expect(
+      (harfbuzz?.artifacts ?? []).some((id) => WEB_ARTIFACTS.includes(id)),
+      "harfbuzz now claims a web artifact",
+    ).toBe(false);
+    expect(rosterInPage().some((n) => n.startsWith("harfbuzz"))).toBe(false);
   });
 
   it("carries every notice obligation the manifest declares, verbatim", () => {
@@ -162,8 +214,16 @@ describe("the built credits page", () => {
     // substring match on the whole string would be wrong. What must appear verbatim is the
     // licence text the obligation is about -- which is what `license_text` points at.
     const html = pageText();
-    const obliged = manifestViaPython().component.filter((c) => c.notice_required);
-    expect(obliged.length, "the manifest declares no notice obligations").toBeGreaterThan(0);
+    const obliged = webComponents().filter((c) => c.notice_required);
+    // SCOPED, AND STILL GATED ON A COUNT. One obligation reaches the web today (the IJG line,
+    // through libjpeg-turbo inside qpdf.wasm). Zero would mean the scope had swallowed the
+    // obligations rather than the artifacts, which is the failure this whole change could
+    // plausibly cause and the one nobody would see.
+    expect(
+      obliged.length,
+      "no notice obligation reaches the web surface at all -- the scope has dropped an " +
+        "obligation rather than a component",
+    ).toBeGreaterThan(0);
 
     for (const component of obliged) {
       expect(
@@ -188,19 +248,45 @@ describe("the built credits page", () => {
     // parse, the template filtering the roster, `prebuild` not running. Those are the ways a
     // page silently stops covering what we ship, and they are invisible to any assertion
     // written against the generator's own output.
-    const expected = manifestViaPython().component.map((c) => c.name);
+    const expected = webComponents().map((c) => c.name);
     const listed = rosterInPage();
 
     expect(listed.length, "the page lists no components at all").toBeGreaterThan(0);
-    expect(listed, "the built roster does not match the manifest").toEqual(expected);
+    expect(
+      listed,
+      "the built roster does not match the components distributed with " + WEB_ARTIFACTS.join(", "),
+    ).toEqual(expected);
+  });
+
+  it("credits NOTHING that the web does not distribute", () => {
+    // THE OTHER DIRECTION, and the one the scoping exists for. Without it, a scope that quietly
+    // widened back to the whole manifest would pass every assertion above -- the roster would
+    // still CONTAIN everything it must contain. Over-declaration is exactly the state this
+    // change removed, and it is invisible from a completeness check.
+    const shipped = new Set(webComponents().map((c) => c.name));
+    const notShipped = manifestViaPython()
+      .component.map((c) => c.name)
+      .filter((name) => !shipped.has(name));
+
+    expect(
+      notShipped.length,
+      "every component in the manifest reaches the web, so this test proves nothing -- if " +
+        "PDFium is back in the payload, the scope is right and this expectation is stale",
+    ).toBeGreaterThan(0);
+    for (const name of notShipped) {
+      expect(
+        rosterInPage(),
+        `${name} is credited to a reader who did not download it`,
+      ).not.toContain(name);
+    }
   });
 
   it("carries the full licence text of every linked component", () => {
     // `linked` means "confirmed present in a shipped binary by symbol inspection". Those are
     // the ones whose terms actually reach a user's machine.
     const html = pageText();
-    const linked = manifestViaPython().component.filter((c) => c.linked);
-    expect(linked.length).toBeGreaterThan(0);
+    const linked = webComponents().filter((c) => c.linked);
+    expect(linked.length, "no linked component reaches the web surface").toBeGreaterThan(0);
 
     for (const component of linked) {
       expect(
