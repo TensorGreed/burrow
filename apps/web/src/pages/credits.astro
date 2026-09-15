@@ -18,8 +18,16 @@
 // EVERY WORD OF THE NOTICES IS GENERATED, from engines/licenses.toml via
 // tools/generate-credits.mjs, which runs as `prebuild`. Nothing on this page is typed out by
 // hand, because a hand-written notice passes review once and then rots while the manifest
-// moves on. Add a component to the manifest and this page carries it on the next build; fail
-// to, and src/credits.test.ts fails against dist/.
+// moves on.
+//
+// WHAT THIS PAGE CARRIES IS SCOPED, and the rule changed when the scoping landed. It is every
+// component distributed with `CREDITS.surfaces.web.artifacts` -- `qpdf-wasm`, what a browser
+// actually downloads. Add a component to the manifest WITH that artifact and this page carries
+// it on the next build; add one to another surface and this page deliberately does not, and
+// src/credits.test.ts asserts both directions. The header used to say the page carried every
+// component in the manifest, which after the scoping described the opposite of what the code
+// does -- on a page whose whole justification is a licence obligation, which is the worst place
+// for a comment somebody might act on.
 //
 // Note the FreeType wording. FTL section 2 literally says "based in part OF the work" -- not
 // "on". That is upstream's text, reproduced verbatim rather than corrected, which is what a
@@ -27,8 +35,27 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import { CREDITS } from "../generated/credits.js";
 
-const notices = CREDITS.components.filter((c) => c.noticeRequired !== null);
-const withText = CREDITS.components.filter((c) => c.licenseText !== null);
+// SCOPED TO WHAT THIS BROWSER DOWNLOADS. `CREDITS.components` is every component in the
+// manifest, across every artifact burrow ships anywhere; `CREDITS.surfaces.web` names the
+// subset distributed with the files a web reader actually receives.
+//
+// It was the whole manifest until this change, and until spike 0004 that was the same list.
+// PDFium left the web payload and the page went on crediting FreeType, HarfBuzz, ICU, lcms,
+// OpenJPEG, Abseil and eight more to a reader whose download contains none of them. Over-
+// declaring breaches nothing, which is why a security review raised it as a note rather than
+// a finding -- but it cost the sentence below, that this page cannot fall behind what we
+// actually ship. That was true in one direction and loose in the other, and a notice page
+// crediting things you did not receive is a page you cannot check.
+//
+// THE OTHER SURFACES ARE NOT LOSING ANYTHING. FreeType's FTL §2 and HarfBuzz's
+// MIT-Modern-Variant are still owed by the artifacts that carry PDFium; the Android (M3) and
+// iOS (M4) screens scope to their own artifacts from the same generated data. Nothing was
+// dropped from the DATA, only from this view of it.
+const scope = CREDITS.surfaces.web;
+const shipped = CREDITS.components.filter((c) => scope.components.includes(c.name));
+
+const notices = shipped.filter((c) => c.noticeRequired !== null);
+const withText = shipped.filter((c) => c.licenseText !== null);
 
 /** A stable id for a component, so the roster can link into the licence texts below. */
 const slug = (name: string) =>
@@ -56,11 +83,25 @@ const slug = (name: string) =>
     <strong>{CREDITS.lastAudited}</strong>.
   </p>
 
+  <p>
+    <strong>This page credits what your browser downloaded</strong> — the PDF engine that runs in this
+    tab, and the components inside it. burrow's Android and iOS apps and its command-line builds carry
+    more than this, and each of those credits its own. If you are comparing this list against the project's
+    licence manifest, that is why it is shorter: the manifest covers every build, and this page covers
+    yours.
+  </p>
+
   <h2 id="required-notices">Required notices</h2>
 
   <p>
-    {notices.length} components impose notice obligations that bind distribution of compiled code. These
-    are reproduced verbatim.
+    {
+      notices.length === 1
+        ? "One component imposes a notice obligation"
+        : `${notices.length} components impose notice obligations`
+    }
+    that bind{notices.length === 1 ? "s" : ""} distribution of compiled code. {
+      notices.length === 1 ? "It is" : "These are"
+    } reproduced verbatim.
   </p>
 
   {
@@ -80,10 +121,10 @@ const slug = (name: string) =>
     ))
   }
 
-  <h2 id="components">Every bundled component</h2>
+  <h2 id="components">Every component in this download</h2>
 
   <p>
-    {CREDITS.components.length} components ship inside burrow's engine artifacts.
+    {shipped.length} components ship inside the engine this page's tools run on.
     <em>Linked</em> means its code was confirmed present in a shipped binary by symbol inspection; a component
     that is not linked still travels in the package we distribute.
   </p>
@@ -99,7 +140,7 @@ const slug = (name: string) =>
     </thead>
     <tbody>
       {
-        CREDITS.components.map((component) => (
+        shipped.map((component) => (
           /*
             `data-component` carries the component's exact name as an attribute so a test can
             assert the ROSTER rather than search the document. Matching a bare name against

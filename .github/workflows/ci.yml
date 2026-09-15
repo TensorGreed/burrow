@@ -681,6 +681,16 @@ jobs:
           python3 tools/ci-local.py --check
           tools/test-ci-local.sh
 
+      # A CONTROL NOTHING RUNS IS A CONTROL NOBODY KNOWS IS BROKEN, and a PreToolUse hook is
+      # the worst case of it: one that never fires is indistinguishable from one that is not
+      # installed, and this one fails OPEN by design, so a bug in it is silent twice over.
+      #
+      # It lives under `.claude/hooks/` rather than `tools/` because that is the path
+      # `.claude/settings.json` names. Its self-test needs nothing but python3, so it belongs
+      # in a job that fetches nothing and still runs on a clean checkout.
+      - name: The force-push hook still refuses the property, and still allows the near-misses
+        run: .claude/hooks/test-refuse-force-push-to-main.sh
+
       # Compile every tool in tools/ with warnings promoted to errors.
       #
       # M1 PR 4c shipped a regex in a non-raw docstring, so `check-qpdf-trapped.py` printed
@@ -965,6 +975,22 @@ jobs:
         run: |
           tools/check-no-pdfium-on-the-web.sh
           tools/test-check-no-pdfium-on-the-web.sh
+
+      # THE DEPLOY GATE'S SELF-TEST, NOT THE GATE. `check-deployable-build.sh` asks whether a
+      # build is for the origin you MEANT, and CI builds for the development default -- so
+      # invoking it here would either be a gate that cannot fail (`|| true`, which this
+      # repository does not accept) or a gate that always fails. It runs at deploy time, with
+      # the real origin, which is the half that refuses a localhost build about to be uploaded.
+      #
+      # What belongs here is the evidence that it still works: 19 adversarial cases, four of
+      # them a probe gate, including the exact regression that prompted it -- a page shipping
+      # `<link rel="canonical" href="http://localhost/...">` while the CSP named the real
+      # origin.
+      #
+      # The four generated places agreeing WITH EACH OTHER is asserted separately, over the
+      # built artifacts, by `apps/web/src/built-for-origin.test.ts` in `pnpm test`.
+      - name: The deploy origin gate still refuses every mismatch it is supposed to
+        run: tools/test-check-deployable-build.sh
 
       # Asserts what a production build contains: no harness route, no `burrowHarness`
       # identifier in any shipped file, the CSP in every page, and -- as a control -- that

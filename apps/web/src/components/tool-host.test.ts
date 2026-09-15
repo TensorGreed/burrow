@@ -8,8 +8,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ENGINE_UNAVAILABLE } from "../host/worker-host.js";
-import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
+import { LIMITS, ORIGIN_MISMATCH, createToolHost, hostKind } from "./tool-host.js";
 import type { ToolHostDeps } from "./tool-host.js";
+import { ENGINE_ORIGIN } from "../generated/engines.js";
 
 /** A worker that does nothing, and records that it was made. */
 class FakeWorker {
@@ -53,6 +54,10 @@ function deps(overrides: Partial<ToolHostDeps> = {}): {
       revokeObjectURL: () => {
         urls.revoked += 1;
       },
+      // THE BUILD'S OWN ORIGIN BY DEFAULT, so every existing case keeps testing what it was
+      // testing. The mismatch branch is a case that overrides it, below -- if the default
+      // here were a mismatch, every test in this file would be exercising the refusal.
+      origin: ENGINE_ORIGIN,
       Worker: FakeWorker as unknown as typeof globalThis.Worker,
       now: () => 0,
       setTimer: (fn, ms) => setTimeout(fn, ms),
@@ -166,5 +171,44 @@ describe("the ceilings a tool page runs under", () => {
     // pins the two numbers the prose quotes so a change here has to be deliberate.
     expect(LIMITS.maxInputBytes).toBe(512 * 1024 * 1024);
     expect(LIMITS.maxPages).toBe(10_000);
+  });
+  it("refuses to start the engines when the page is not on the origin it was built for", async () => {
+    // THE OTHER HALF OF `src/origin-guard.ts`. The banner says the tools will not work here;
+    // this is what stops them trying. Without it a person reads the banner, uses the tool
+    // anyway, and gets "something inside burrow failed" -- the interface blaming itself for a
+    // deployment mistake, and contradicting the explanation directly above it.
+    let fetched = 0;
+    const { deps: d } = deps({
+      origin: "https://somewhere.else",
+      fetch: (async () => {
+        fetched += 1;
+        return { ok: true, text: async () => "// worker source" } as Response;
+      }) as unknown as typeof globalThis.fetch,
+    });
+    const host = createToolHost(d);
+
+    // BY IDENTITY, which is both the stronger assertion and the one that matches how an island
+    // must read it. The first version asserted `rejects.toThrow(/built for/)` -- it passed
+    // against a thrown `Error`, and an `Error` is exactly what islands could not use: ADR 0009
+    // forbids reading a thrown value's text, so every island fell through to
+    // `messageFor({ kind: "Internal" })` and the page said "Something inside burrow failed"
+    // beside a banner explaining the real cause. The test asserted the rejection and not the
+    // outcome, which is why it did not see that.
+    await expect(host.ensure()).rejects.toBe(ORIGIN_MISMATCH);
+    // BEFORE THE FETCH, not after it fails. The fetch is the thing CSP refuses, and letting
+    // it happen means the console carries a policy violation the person cannot act on --
+    // which is the state this whole guard exists to replace.
+    expect(fetched, "it fetched the worker source anyway").toBe(0);
+    expect(host.hasWorker()).toBe(false);
+  });
+
+  it("starts normally on the origin it WAS built for", async () => {
+    // The control. Without it the assertion above would also pass against a host that refused
+    // unconditionally, which would break every correctly-deployed page -- the worse failure.
+    const { deps: d, release } = deps();
+    const host = createToolHost(d);
+    const pending = host.ensure();
+    release();
+    await expect(pending).resolves.toBeDefined();
   });
 });

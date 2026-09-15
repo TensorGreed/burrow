@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile every tool in tools/ with SyntaxWarning promoted to an error.
+"""Compile every checked-in tool with SyntaxWarning promoted to an error.
 
 WHY THIS EXISTS
 
@@ -25,7 +25,7 @@ all, which is the right shape for a check that runs in a working tree.
 This file checks itself along with the rest.
 
 Usage: tools/check-python-syntax.py [file ...]
-With no arguments, checks every *.py under tools/.
+With no arguments, checks every *.py under tools/ and .claude/hooks/.
 """
 
 from __future__ import annotations
@@ -42,10 +42,11 @@ TOOLS = REPO / "tools"
 def uncovered_tracked_python(files: list[pathlib.Path]) -> list[str]:
     """Every tracked `.py` in the repository must be in the set being checked.
 
-    The default glob is `tools/*.py` -- non-recursive, and one directory. That covers
-    everything today, and it would silently stop covering `tools/sub/x.py` or `fuzz/foo.py`
-    the moment either existed. `CLAUDE.md` names that shape directly: *a check that silently
-    examines nothing is worse than no check, because it reads as coverage.* So the glob is
+    The default glob is `tools/*.py` and `.claude/hooks/*.py` -- non-recursive, two
+    directories. That covers everything today, and it would silently stop covering
+    `tools/sub/x.py` or `fuzz/foo.py` the moment either existed. `CLAUDE.md` names that shape
+    directly: *a check that silently examines nothing is worse than no check, because it reads
+    as coverage.* So the glob is
     compared against what git actually tracks, and a file outside it is a failure rather than
     an absence.
 
@@ -78,7 +79,13 @@ def main(argv: list[str]) -> int:
     if argv:
         files = [pathlib.Path(a).resolve() for a in argv]
     else:
-        files = sorted(TOOLS.glob("*.py"))
+        # `tools/*.py` PLUS `.claude/hooks/*.py`. The second directory arrived with the
+        # force-push hook, which is Python and used to wear a `.sh` name -- putting it outside
+        # both this glob and the `git ls-files '*.py'` cross-check below, so the
+        # SyntaxWarning-becomes-SyntaxError gate this file exists for did not cover it.
+        # Renaming it was the fix; the cross-check then failed and named the file, which is
+        # this check working rather than this check being wrong.
+        files = sorted(TOOLS.glob("*.py")) + sorted((REPO / ".claude" / "hooks").glob("*.py"))
 
     if not files:
         print("error: no Python files to check; this run would be vacuous", file=sys.stderr)
@@ -127,7 +134,13 @@ def main(argv: list[str]) -> int:
                 rel = path.relative_to(REPO) if path.is_relative_to(REPO) else path
                 problems.append(f"{rel}: {type(exc).__name__}: {exc}")
 
-    print(f"tools/: compiled {len(files)} Python file(s) with warnings as errors")
+    # NAME THE DIRECTORIES, rather than saying `tools/` over a set that is no longer only
+    # tools/. A report that misdescribes what it examined is the thing this file's own
+    # cross-check exists to prevent, one level up.
+    scanned = sorted({str(f.parent.relative_to(REPO)) for f in files})
+    print(
+        f"{', '.join(scanned)}: compiled {len(files)} Python file(s) with warnings as errors"
+    )
 
     if problems:
         print(f"\nFAILED — {len(problems)} problem(s):", file=sys.stderr)

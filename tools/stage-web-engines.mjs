@@ -58,6 +58,8 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { resolveBuildOrigin } from "./build-origin.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
 const webApp = join(repo, "apps", "web");
@@ -79,26 +81,14 @@ const hostOutDir = join(webApp, "public", "host");
 
 // The origin the policy is written against. A build for a different origin is a different
 // build; see the header.
-const ORIGIN = (() => {
-  const raw = process.env.BURROW_SITE ?? "http://localhost:4321";
-  // Round-tripped through `URL` rather than interpolated raw. This value reaches a CSP
-  // directive and a `_headers` file; a newline in it would inject arbitrary response
-  // headers on a host that reads one, and a trailing slash would silently produce a policy
-  // that blocks every engine. `.origin` strips path, query, fragment and any trailing
-  // slash, and the constructor rejects anything that is not a URL at all.
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    console.error(`stage-web-engines: BURROW_SITE is not a valid URL: ${JSON.stringify(raw)}`);
-    process.exit(1);
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    console.error(`stage-web-engines: BURROW_SITE must be http(s), got ${parsed.protocol}`);
-    process.exit(1);
-  }
-  return parsed.origin;
-})();
+//
+// RESOLVED IN `tools/build-origin.mjs`, NOT HERE, because `astro.config.mjs` needs the same
+// answer for `site:` and used to have no answer at all -- every shipped page carried
+// `<link rel="canonical" href="http://localhost/...">`. One input, one reader, two consumers.
+const { origin: ORIGIN } = resolveBuildOrigin((message) => {
+  console.error(`stage-web-engines: ${message}`);
+  process.exit(1);
+});
 
 // The files the worker loads. `.js` is Emscripten glue, `.wasm` is the module.
 //

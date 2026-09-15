@@ -18,3 +18,4 @@
 - [Web split bridge (PR 3)](m1_web_split_bridge.md) — the measured attacker-chosen free() in bridge.js, the hole-skipping part gate, and the fixpoint DoS that is not one.
 - [ci-local preflight gaps](ci_local_preflight.md) — non-transitive tool derivation, skip-on-error version probes, and the SIGHUP trap hole.
 - [Web split page (m1-split-page)](m1_web_split_page.md) — the #69 class closed by API shape; the untested island wiring, and four Low residuals.
+- [Force-push hook + deploy gate](m1_force_push_hook_and_deploy_gate.md) — measured `git -c`/newline bypasses of the hook, and two under-checking rules in the pre-upload origin gate.

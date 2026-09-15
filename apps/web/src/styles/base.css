@@ -241,3 +241,32 @@ code {
 .refusal {
   color: var(--refuse);
 }
+
+/*
+ * The build is not where it thinks it is.
+ *
+ * `--refuse`, because that is what this is: the browser will refuse every engine request
+ * this page makes, and the token is reserved for refusals and ceilings rather than for
+ * anything merely important. See tokens.css.
+ *
+ * NOT a card, and no radius beyond the one `--radius` this system has. It is a rule and a
+ * block of text, in the same measure as everything else, because it is content — the page
+ * reporting a fact about itself, which is what this design does instead of reassuring.
+ *
+ * It ships in every build and is displayed by `src/origin-guard.ts` only on a mismatch, so
+ * its cost is a few dozen bytes on a page that is otherwise correct.
+ * `apps/web/size-budget.json` counts them.
+ */
+.origin-mismatch {
+  max-inline-size: var(--track-read);
+  margin-block-end: var(--space-4);
+  padding: var(--space-3);
+  border-block-end: 2px solid var(--refuse);
+  color: var(--refuse);
+}
+
+.origin-mismatch p {
+  margin-block-start: var(--space-2);
+  margin-block-end: 0;
+  color: var(--ink);
+}

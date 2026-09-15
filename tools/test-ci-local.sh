@@ -97,6 +97,20 @@ check "a new Python checker with no local counterpart is refused" \
 " \
   "tools/check-something-else.py" 1
 
+# A GATE OUTSIDE `tools/`. The extractor matched only `tools/*.sh` until the force-push hook's
+# self-test needed wiring in, and `.claude/hooks/` is where a hook's self-test has to live --
+# a hook path is what `.claude/settings.json` names. Parity REFUSED that wiring, correctly and
+# for the wrong reason: CI ran the script, the runner claimed to cover it, and the extractor
+# saw neither, so the claim read as unbacked. That is CLAUDE.md's fifth row -- a gate the
+# extractor cannot see -- caught by the check this time rather than by a red CI run. This case
+# is the re-plant: a hook script CI runs and nothing local covers must be refused.
+check "a gate under .claude/hooks/ with no local counterpart is refused" \
+  "||
+      - name: A hook self-test nothing local runs
+        run: .claude/hooks/test-something-new.sh
+" \
+  ".claude/hooks/test-something-new.sh" 1
+
 # THE #63 MISS, EXACTLY. `reorder` was added to fuzz/Cargo.toml and to no run list; here the
 # inverse -- a target CI runs that nothing local does.
 #
