@@ -614,7 +614,23 @@ def programs_used_in(text: str, candidates: frozenset[str] | set[str]) -> set[st
     what `needs_qpdf_cli` is for.
     """
     found: set[str] = set()
+    # HEREDOC BODIES ARE DATA, NOT COMMANDS, and this is where every false positive lived.
+    # `tools/test-ci-local.sh` embeds Python that rewrites ci.yml, so it contains the literal
+    # `"pnpm test && pnpm run size-budget"` -- and `&&` is a command position, so the scan
+    # reported `checker-self-tests` as needing pnpm and probed it in the wrong directory. The
+    # refusal was against a correct machine, which is the direction that makes a check
+    # useless. Skipping heredoc bodies is exact rather than heuristic: the shell does not run
+    # them either.
+    heredoc: str | None = None
     for line in text.splitlines():
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        opener = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?\s*$", line)
+        if opener:
+            heredoc = opener.group(1)
+            continue
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -626,7 +642,7 @@ def programs_used_in(text: str, candidates: frozenset[str] | set[str]) -> set[st
             # regex literal in this very file and `run: pnpm typecheck` inside a heredoc in
             # `test-ci-local.sh`, so six jobs were reported as needing pnpm and the probe then
             # ran in the wrong directory. A rule that fires on a correct machine is not a
-            # check -- the same sentence `workdir_of` is written under.
+            # check -- the same sentence the per-pin probe directory is written under.
             #
             # A command position is the start of a line, or immediately after one of the
             # operators that begins a new command. `tree="$(cargo tree ...` matches on `$(`;
@@ -710,21 +726,6 @@ def transitive_programs(direct: set[str], candidates: frozenset[str]) -> dict[st
     return out
 
 
-def workdir_of(command: str) -> str:
-    """The directory a job's commands run in, from a leading `cd`.
-
-    NOT COSMETIC. `pnpm` is resolved by corepack from `apps/web/package.json`'s
-    `packageManager` field, so `pnpm --version` answers 12.3.4 at the repository root and
-    11.26.0 inside `apps/web` -- on the same machine, at the same moment. A version probe run
-    in the wrong directory reports a mismatch that does not exist, and a rule that fires on a
-    correct machine is not a check.
-    """
-    for words in _commands(command):
-        if words and words[0] == "cd" and len(words) > 1:
-            return words[1]
-    return "."
-
-
 # EVERY PARSER RULE, WITH ITS OWN CASE AND A NEAR-MISS, CHECKED ON EVERY RUN.
 #
 # `tools/check-engine-licences.py`'s SPLIT_CASES is the shape and the reason: a parser that
@@ -755,22 +756,6 @@ PROGRAM_CASES: list[tuple[str, set[str]]] = [
     ("export ASAN_OPTIONS=detect_leaks=0", set()),
 ]
 
-# THE RULE IS "THE FIRST `cd` ANYWHERE", not "a leading `cd`", and the first version of this
-# table said the latter in a comment while pinning neither. Code review measured the gap: no
-# case had a `cd` after another command, and none had two. Both are pinned now, with the
-# answers this file actually wants.
-WORKDIR_CASES: list[tuple[str, str]] = [
-    ("cd apps/web && pnpm lint", "apps/web"),
-    ("cargo fmt --all -- --check", "."),
-    ("cd fuzz && cargo +nightly fuzz run split", "fuzz"),
-    # A `cd` that is NOT the first command still sets the directory its successors run in.
-    ("cargo fmt && cd apps/web && pnpm lint", "apps/web"),
-    # TWO `cd`s: the first wins, which is wrong for the last command and is recorded as a
-    # known limit rather than left to be discovered. No job has this shape -- all 19 checked --
-    # and a job that grows one must either be rewritten or this rule taught to fold them.
-    ("cd a && cd b && pnpm lint", "a"),
-]
-
 # A body-scan fixture per rule, with its near-misses. `programs_used_in` decides whether a job
 # needs `cargo` at all, so a rule that matched nothing here would restore the exact gap
 # security review found.
@@ -788,6 +773,20 @@ USES_CASES: list[tuple[str, set[str]]] = [
     ("echo 'cargo'\n", set()),
     # NEAR-MISS: a path ending in the tool's name is a different program.
     ("engines/cargo build\n", set()),
+    # NEAR-MISS: a heredoc body is data. This exact shape -- a Python heredoc rewriting a
+    # command string -- made `checker-self-tests` falsely require pnpm and refuse a correct
+    # machine, because `&&` is a command position even inside a quoted literal.
+    (
+        "python3 - \"$ci\" <<'PYEOF'\n"
+        "dst.write_text(text.replace(old, '\"x && cargo run size-budget\"', 1))\n"
+        "PYEOF\n",
+        set(),
+    ),
+    # And the heredoc must END: a command after the terminator is a command again.
+    (
+        "cat <<'EOF'\ncargo build\nEOF\nnode tools/x.mjs\n",
+        {"node"},
+    ),
     # NEAR-MISS: the two shapes that made the full sweep refuse. A tool named after a YAML
     # key inside a heredoc, and a tool inside a regex literal. Neither is an invocation.
     ("        run: cargo typecheck\n", set()),
@@ -809,11 +808,6 @@ def verify_parser() -> list[str]:
         for cmd, exp in PROGRAM_CASES
         if programs_in(cmd) != exp
     ]
-    problems += [
-        f"{cmd!r}: expected workdir {exp!r}, got {workdir_of(cmd)!r}"
-        for cmd, exp in WORKDIR_CASES
-        if workdir_of(cmd) != exp
-    ]
     candidates = frozenset({"cargo", "node"})
     problems += [
         f"body scan of {text!r}: expected {sorted(exp)}, got {sorted(programs_used_in(text, candidates))}"
@@ -828,7 +822,6 @@ def verify_parser() -> list[str]:
     for job in JOBS:
         try:
             programs_in(job["run"])
-            workdir_of(job["run"])
         except ValueError as error:
             problems.append(f"job {job['name']!r} has a run string the parser cannot read: {error}")
     return [f"the command parser is broken, so nothing it reports means anything -- {p}" for p in problems]
@@ -846,7 +839,11 @@ def verify_parser() -> list[str]:
 # down. A pin that cannot be RESOLVED is therefore a refusal, not a skip: a regex that stops
 # matching because a file was reformatted would otherwise silently check nothing.
 #
-# `probe` runs in the job's own working directory, which is load-bearing -- see `workdir_of`.
+# EACH PROBE RUNS IN THE DIRECTORY OF THE FILE THAT PINS IT, which is load-bearing rather than
+# tidy: `pnpm --version` answers 12.3.4 at the repository root and 11.26.0 inside `apps/web` on
+# one machine at one moment, because corepack reads `packageManager`. Deriving that directory
+# from a JOB made the answer depend on which jobs were selected and in what order, and refused
+# a correct machine. The file that states a version is where that version is authoritative.
 PINS: list[dict] = [
     {
         "program": "cargo",
@@ -986,7 +983,7 @@ def _reported_version(probe: list[str], field: int, cwd: Path) -> tuple[str | No
     return parts[field].lstrip("v"), "ok"
 
 
-def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tuple[list[str], str]:
+def check_versions(required: dict[str, list[str]]) -> tuple[list[str], str]:
     """Version findings, and a report of how many pins were compared against how many were due.
 
     THE COUNT IS GATED, because the expected value is knowable: it is the number of PINS whose
@@ -1041,7 +1038,13 @@ def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tup
                 f"so nothing was compared for it"
             )
             continue
-        workdir = Path(where.get(program, "."))
+        # PROBED WHERE ITS PIN LIVES, not where some job happens to run. `pnpm --version`
+        # answers differently per directory because corepack reads `packageManager`, and
+        # deriving the directory from a JOB made the answer depend on which jobs were selected
+        # and in what order -- `--only checker-self-tests` probed at the repository root and
+        # refused a machine whose pnpm was exactly right for `apps/web`. The file that states
+        # the version is the place that version is authoritative.
+        workdir = Path(spec["source"]).parent
         # A JOB'S `cd` STAYS INSIDE THE REPOSITORY. No job has an absolute or climbing `cd`
         # today; this makes a future one a fallback rather than a probe executed somewhere
         # nobody intended. Security review.
@@ -1158,20 +1161,11 @@ def _rustup_toolchains() -> set[str]:
 def preflight(jobs: list[dict]) -> list[str]:
     """Refuse-worthy findings about this machine, plus a report of what was examined."""
     required: dict[str, list[str]] = {}
-    where: dict[str, str] = {}
     candidates = tool_candidates()
     for job in jobs:
-        workdir = workdir_of(job["run"])
         direct = programs_in(job["run"])
         for program in direct:
             required.setdefault(program, []).append(job["name"])
-            # A DIRECT NAMING WINS THE WORKING DIRECTORY, always, over a transitive one.
-            # `where` was first-writer-wins, and the full sweep refused because of it: jobs
-            # earlier in the table reached `pnpm` transitively with workdir `.`, so the probe
-            # ran at the repository root and read 12.3.4 where `web` -- which names pnpm
-            # directly, in `apps/web` -- would have read the pinned 11.26.0. The tool that
-            # runs a command knows where it runs it; a tool that merely mentions it does not.
-            where[program] = workdir
         # AND WHAT THOSE SCRIPTS USE FROM INSIDE. Without this, `checkers` requires `python3`
         # and four file paths while `check-no-network-deps.sh` calls `cargo tree` eight times.
         # SEEDED FROM SCRIPT PATHS IN THE RUN STRING, not only from `direct`. `python3
@@ -1183,14 +1177,12 @@ def preflight(jobs: list[dict]) -> list[str]:
         for script, used in transitive_programs(reachable, candidates).items():
             for program in used:
                 required.setdefault(program, []).append(f"{job['name']} (via {script})")
-                where.setdefault(program, workdir)
 
         # AND WHAT THOSE TOOLS CANNOT RUN WITHOUT.
         for program in list(required):
             for implied in IMPLIES.get(program, ()):
                 if job["name"] in required.get(program, []):
                     required.setdefault(implied, []).append(f"{job['name']} (needs {program})")
-                    where.setdefault(implied, workdir)
 
     subs = _cargo_subcommands()
     chains = _rustup_toolchains()
@@ -1217,7 +1209,7 @@ def preflight(jobs: list[dict]) -> list[str]:
                 f"{program} not found -- {how}; needed by: {', '.join(sorted(set(required[program])))}"
             )
 
-    version_problems, version_report = check_versions(required, where)
+    version_problems, version_report = check_versions(required)
     problems += version_problems
 
     print(

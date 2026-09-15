@@ -684,9 +684,14 @@ if cmp -s "$here/ci-local.py" "$implies_fixture"; then
 else
   status=0
   out="$(python3 "$implies_fixture" --only web --preflight 2>&1)" || status=$?
-  # The COUNT is the assertion: node must still be among the pins compared, whether or not
-  # this machine happens to match it.
-  if grep -qE "2 of 2 pinned version\(s\) compared" <<<"$out"; then
+  # THE DENOMINATOR IS THE ASSERTION, not the numerator. `due` is how many pins this job's
+  # requirements call for, so `of 2` says node is still one of them; `of 1` would mean it had
+  # dropped out, which is the defect. The numerator counts what was actually COMPARED, and
+  # that depends on which tools the runner has -- on the `deny` runner, where this suite
+  # runs, pnpm is absent, so it read `1 of 2` and this case failed in CI while passing
+  # locally. Third fixture in this file to assume a tool is installed; an assertion here must
+  # hold on a runner that installs nothing.
+  if grep -qE "of 2 pinned version\(s\) compared" <<<"$out"; then
     echo "  ok   the node pin is still compared when the web job stops spelling node"
     pass=$((pass + 1))
   else
