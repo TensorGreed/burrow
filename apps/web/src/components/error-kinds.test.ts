@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 
 import { messageFor as mergeMessage } from "./merge-messages.js";
 import { messageFor as reorderMessage } from "./reorder-messages.js";
+import { messageFor as splitMessage } from "./split-messages.js";
 import { messageFor as rotateMessage } from "./rotate-messages.js";
 
 /** Every string `kind_of` can return, read out of the binding itself. */
@@ -59,14 +60,14 @@ const UNHANDLED = "__not_a_kind_any_binding_produces__";
  */
 const FALLBACK_IS_CORRECT: Record<string, string[]> = {
   // The fallback IS the message for these two.
-  Io: ["merge", "rotate", "reorder"],
-  Internal: ["merge", "rotate", "reorder"],
+  Io: ["merge", "rotate", "reorder", "split"],
+  Internal: ["merge", "rotate", "reorder", "split"],
   // `Error` is `#[non_exhaustive]`; "Unknown" is the conservative arm and has no sentence of
   // its own by design.
-  Unknown: ["merge", "rotate", "reorder"],
+  Unknown: ["merge", "rotate", "reorder", "split"],
   // One input, so no input can be named. `merge` must handle it and does -- through the
   // INNER kind, which is why the probe below hands it one.
-  InputFailed: ["rotate", "reorder"],
+  InputFailed: ["rotate", "reorder", "split"],
 };
 
 type Probe = { kind: string; innerKind?: string };
@@ -75,6 +76,7 @@ const PAGES = [
   { name: "merge", messageFor: mergeMessage as (f: Probe) => { title: string } },
   { name: "rotate", messageFor: rotateMessage as (f: Probe) => { title: string } },
   { name: "reorder", messageFor: reorderMessage as (f: Probe) => { title: string } },
+  { name: "split", messageFor: splitMessage as (f: Probe) => { title: string } },
 ];
 
 /**

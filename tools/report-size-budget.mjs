@@ -20,7 +20,7 @@ import { appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { byBudgetKey, firstLoad } from "./first-load.mjs";
+import { byBudgetKey, heaviestFirstLoad } from "./first-load.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webApp = join(repo, "apps", "web");
@@ -28,7 +28,19 @@ const webApp = join(repo, "apps", "web");
 const buildDir = process.argv[2] ?? join(webApp, "dist");
 const budget = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));
 
-const measurement = firstLoad(buildDir);
+// THE HEAVIEST ROUTE, which is what the GATE measures. This called `firstLoad(buildDir)`,
+// which defaults to `index.html` -- the LIGHTEST route, because the home page carries no
+// island. So the report on every pull request compared the home page's payload against the
+// total budget and printed a delta against a recording taken on a tool page.
+//
+// Measured when /split-pdf landed: the report said the total was DOWN 19.6 KiB (-0.8%) in the
+// same build where the heaviest route had grown by 2,704 bytes. A reassuring number about the
+// wrong thing is worse than no number, and this one runs as a step summary on every PR --
+// which is exactly where somebody reads it instead of the gate.
+//
+// `measured_route` is printed too, so the report says which page it weighed rather than
+// leaving it to be assumed.
+const { page: measuredRoute, measurement } = heaviestFirstLoad(buildDir);
 const groups = byBudgetKey(measurement);
 
 const kib = (n) => `${(n / 1024).toFixed(1)} KiB`;
@@ -66,8 +78,10 @@ const report = [
   "## First-load size budget",
   "",
   "Everything a user downloads before their first operation can run: the page shell, the",
-  "worker bundle, all three wasm modules, and the CSP control file. Brotli, because that is",
+  "worker bundle, every wasm module, and the CSP control file. Brotli, because that is",
   "what a host serves.",
+  "",
+  `Weighed on the heaviest landing route in this build: \`${measuredRoute}\`.`,
   "",
   table,
   "",

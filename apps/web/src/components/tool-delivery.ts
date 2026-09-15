@@ -75,6 +75,30 @@ export interface Run {
   hand(bytes: Blob): Handout | null;
 }
 
+/** One multi-output operation's claim on the page's output (ADR 0023). */
+export interface MultiRun {
+  /** Whether this run is still the current one. **Call after every `await`.** */
+  live(): boolean;
+  /**
+   * Hand every part out, under the names captured when this run began.
+   *
+   * ALL OR NOTHING, in two senses that happen to agree. ADR 0023 §3 already says a split that
+   * fails on one part delivers none of them; this adds that a set which does not MATCH what
+   * was captured delivers none either. Returns `null` — creating no URL, so there is nothing
+   * to revoke — if the run is stale, if the number of parts differs from the number of names,
+   * or if any part is missing.
+   *
+   * The count check is the one that matters and it is why this is not a loop over `hand()`.
+   * A name is derived from the cut list the page holds; the bytes are produced from the cut
+   * list the core validated. If those ever disagreed about how many documents there are, a
+   * per-part loop would pair name `i` with whatever bytes happened to be at `i` and hand out
+   * a short set under confident names — which is the "bytes under the wrong name" class this
+   * whole file exists for (#69), arriving in the one operation that produces more than one
+   * document.
+   */
+  handAll(parts: readonly (Blob | undefined)[] | undefined): Handout[] | null;
+}
+
 /** The page's delivery path: generations, capture, and the URLs. */
 export interface Delivery {
   /**
@@ -88,6 +112,15 @@ export interface Delivery {
   /** Begin a run, capturing what its handout will carry. Bumps the generation. */
   begin(captured: { name: string; signature?: string }): Run;
   /**
+   * Begin a MULTI-OUTPUT run, capturing one name per part. Bumps the generation.
+   *
+   * Separate from `begin` rather than an optional field on it, so that `hand` and `handAll`
+   * are not both reachable from one run. A single-output page calling `handAll`, or a split
+   * calling `hand`, would be a name/bytes pairing nobody intended — and the point of this
+   * file is that such a pairing is unexpressible rather than discouraged.
+   */
+  beginParts(captured: { names: readonly string[]; signature?: string }): MultiRun;
+  /**
    * Observe the current generation without claiming it, for work that hands nothing out.
    *
    * A page count is the case: it reads a document and writes a number beside a filename, and
@@ -99,6 +132,8 @@ export interface Delivery {
   watch(): Pick<Run, "live">;
   /** Revoke a handout's URL, so the browser can release the bytes. Safe on `null`. */
   release(handout: Handout | null): void;
+  /** Revoke every handout in a set. Safe on `null` and on an empty list. */
+  releaseAll(handouts: readonly Handout[] | null): void;
 }
 
 /**
@@ -145,6 +180,40 @@ export function createDelivery(urls: ObjectUrls = BROWSER_URLS): Delivery {
       };
     },
 
+    beginParts(captured) {
+      // CAPTURED HERE, by value, and never read again from anywhere live -- the same rule as
+      // `begin`, one name per part. `handAll` cannot reach the cut list, the file, or the
+      // controls these names came from.
+      const names = [...captured.names];
+      const signature = captured.signature ?? "";
+      const mine = ++generation;
+
+      const live = () => mine === generation;
+
+      return {
+        live,
+        handAll(parts) {
+          if (!live()) return null;
+          if (parts === undefined) return null;
+          // EVERY REASON TO REFUSE IS CHECKED BEFORE THE FIRST URL EXISTS. Creating URLs as
+          // it went and revoking them on a late refusal would work, and would mean the page
+          // briefly held object URLs over bytes it had already decided not to deliver.
+          if (parts.length !== names.length) return null;
+          // `Array.prototype.every` SKIPS HOLES, which is how a gap in a part list passed a
+          // completeness gate in the split bridge -- nine of ten parts read as a success.
+          // An indexed loop sees the hole.
+          for (let index = 0; index < parts.length; index += 1) {
+            if (!(parts[index] instanceof Blob)) return null;
+          }
+          return parts.map((bytes, index) => ({
+            url: urls.create(bytes as Blob),
+            name: names[index],
+            signature,
+          }));
+        },
+      };
+    },
+
     watch() {
       const mine = generation;
       return { live: () => mine === generation };
@@ -152,6 +221,10 @@ export function createDelivery(urls: ObjectUrls = BROWSER_URLS): Delivery {
 
     release(handout) {
       if (handout) urls.revoke(handout.url);
+    },
+
+    releaseAll(handouts) {
+      for (const handout of handouts ?? []) urls.revoke(handout.url);
     },
   };
 }

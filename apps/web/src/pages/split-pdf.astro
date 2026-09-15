@@ -1,0 +1,165 @@
+---
+// The fourth tool page. One URL, indexable, its own title and prose — people arrive here from
+// a search for "split pdf", not from the landing page.
+//
+// The interactive part is one island. Everything above and below it is static, so the page is
+// readable and its claim is checkable with JavaScript switched off.
+import BaseLayout from "../layouts/BaseLayout.astro";
+---
+
+<BaseLayout
+  title="Split PDF — cut it into parts on your own computer | burrow"
+  description="Cut a PDF into separate documents. The splitting happens in your browser and the file is never uploaded, because there is no server to upload it to."
+>
+  <div class="read">
+    <h1>Split PDF</h1>
+
+    <p>
+      Cut a PDF into separate files — take a chapter out of a report, or break a long scan into the
+      documents it should have been. The cutting happens in this browser, on this computer: the file
+      is not uploaded, because burrow has no server that could receive it.
+    </p>
+  </div>
+
+  {
+    /*
+    NO `client:*` DIRECTIVE. Astro's hydration directives bootstrap an island with an INLINE
+    script, and `script-src 'self'` carries no `'unsafe-inline'` and no nonce (ADR 0014) — so
+    the browser refuses the bootstrap, the island never hydrates, and the tool renders as dead
+    markup with nothing visible but a CSP line in the console. Measured on `/merge-pdf`; the
+    same wall, the same answer on every page since.
+
+    The ENGINES are still not loaded here. The tool starts a worker the first time a file is
+    chosen (ADR 0018). Mounting the component is a few kilobytes; starting the engines is
+    6.8 MB.
+  */
+  }
+  <div id="split-tool"></div>
+
+  <script>
+    import { type Component, mount } from "svelte";
+
+    import SplitTool from "../components/SplitTool.svelte";
+
+    const target = document.getElementById("split-tool");
+    if (target) {
+      // The cast is Astro's type, not ours: `@astrojs/svelte` declares a `.svelte` default
+      // export as an ASTRO component, because that is what a `client:*` directive would need.
+      // Mounting it by hand is the same module reached through Svelte's own API.
+      mount(SplitTool as unknown as Component, { target });
+    }
+  </script>
+
+  <noscript>
+    <div class="read no-js">
+      <h2>This tool needs JavaScript</h2>
+      <p>
+        The cutting is done by code running in your browser, so with JavaScript switched off there
+        is nothing to do the work. There is no server-side version to fall back to — that is the
+        whole design, not a missing feature.
+      </p>
+      <p>
+        With JavaScript on, this page lets you choose a PDF, say where to cut it, and download each
+        part. Nothing is sent anywhere.
+      </p>
+    </div>
+  </noscript>
+
+  <div class="read">
+    <h2>Saying where to cut</h2>
+
+    <p>
+      Give the pages you want to cut <strong>after</strong>. A cut goes in the gap that follows a
+      page, so on a ten-page document <code>3, 7</code> makes three files: pages 1-3, 4-7 and 8-10. Cutting
+      after page 10 is refused, because the part after it would have no pages in it.
+    </p>
+
+    <p>
+      A range cuts after each page in it, so <code>1-9</code> on a ten-page document gives every page
+      its own file — and the <strong>Cut after every page</strong> button types that for you. It types
+      it into the box rather than switching to a mode, so you can see what it asked for and change one
+      cut afterwards.
+    </p>
+
+    <p>
+      The page shows the files you will get before you run anything. That is there because
+      &ldquo;after&rdquo; is the part people read past, and showing the result is more honest than
+      asking you to take our word for how it was read.
+    </p>
+
+    <p>
+      Each file is named for the pages inside it — <code>report-pages-04-07.pdf</code> — and the numbers
+      are padded so that ten parts sort in order rather than 1, 10, 2. The name is not a label we attach
+      afterwards: it is the pages that file contains.
+    </p>
+
+    <p>
+      <strong>There are no page pictures yet.</strong> Choosing where to cut means knowing page numbers,
+      and for splitting that is a real limitation rather than an oversight — you often want to cut where
+      a chapter starts, which is something you find by looking. Showing pages means rendering them, and
+      rendering a long document needs a memory ceiling burrow does not have yet. It is being built; until
+      it is, this page does not pretend to offer it.
+    </p>
+
+    <h2>What happens to large files</h2>
+
+    <p>
+      Everything is held in this browser tab's memory, so the practical limit is what your device
+      can spare rather than an upload size. burrow refuses a file larger than 512 MB before it opens
+      it, and a document of more than 10,000 pages before it cuts any of it — so an oversized job is
+      refused rather than failing part way through.
+    </p>
+
+    <p>
+      What that does not save you from, said here rather than discovered: a very large document that
+      is under both limits can still make the tab slow while it runs, and on a phone the browser may
+      stop the tab entirely. That is the device's memory ceiling, reached inside the PDF engine
+      where nothing can intervene.
+    </p>
+
+    <p>
+      <strong>Nothing is handed to you until every part has been made and checked.</strong> A split that
+      fails on the ninth of ten parts gives you nothing at all, deliberately: the point of splitting is
+      that the parts add up to the document you started with, and nine files out of ten do not add up
+      to anything. If it stops part way, you still have your original and no half-finished set to sort
+      through.
+    </p>
+
+    <h2>What is kept, and what is not</h2>
+
+    <p>
+      <strong>Each part contains its pages exactly as they were</strong> — their contents, their size
+      and their annotations. <strong>Links keep working when they point inside the same part</strong
+      >, and links to a page in a different part are removed rather than left to go nowhere. Web
+      links are kept.
+    </p>
+
+    <p>
+      Form fields keep their appearance but are no longer fillable. What makes a field a field is
+      recorded for the document as a whole, not on the page, so it cannot come with one part — and
+      carrying it would carry the names and the values typed on pages that part does not contain.
+      Bookmarks and attached files are left out for the same reason: they describe the whole
+      document, and copying them into every part would put the names of pages you did not include
+      into files you did.
+    </p>
+
+    <p>
+      A document that uses layers cannot be split here at all. Whether a layer is hidden is recorded
+      for the document as a whole, so burrow has no way to find out — and a hidden layer that
+      arrived visible would be worse than a refusal.
+    </p>
+
+    <p>
+      A file that is encrypted, damaged, or not a PDF is refused. So is a cut that would produce an
+      empty file — cutting after the last page, or after the same page twice.
+    </p>
+  </div>
+</BaseLayout>
+
+<style>
+  /* The no-JS block is ordinary content, but it only ever appears in place of the tool, so it
+     gets the same top margin the tool has. */
+  .no-js {
+    margin-block-start: var(--space-6);
+  }
+</style>

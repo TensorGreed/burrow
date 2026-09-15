@@ -17,3 +17,4 @@
 - [Split pruning (#54)](m1_split_pruning.md) — measured: images refuse the split, nested OC bypasses the refusal, /Resources is a category denylist, 34 kB → 17 s.
 - [Web split bridge (PR 3)](m1_web_split_bridge.md) — the measured attacker-chosen free() in bridge.js, the hole-skipping part gate, and the fixpoint DoS that is not one.
 - [ci-local preflight gaps](ci_local_preflight.md) — non-transitive tool derivation, skip-on-error version probes, and the SIGHUP trap hole.
+- [Web split page (m1-split-page)](m1_web_split_page.md) — the #69 class closed by API shape; the untested island wiring, and four Low residuals.
