@@ -125,7 +125,7 @@ const KEPT_PAGE_KEYS: &[&[u8]] = &[
     b"Tabs",
 ];
 
-/// Keys removed from every annotation that survives.
+/// Keys removed from every annotation that survives, whatever it points at.
 ///
 /// A **rule list rather than an allowlist**, and the difference is stated rather than glossed: an
 /// annotation's legitimate key set is large, producer-specific and per-subtype, so an allowlist
@@ -133,19 +133,23 @@ const KEPT_PAGE_KEYS: &[&[u8]] = &[
 /// The page dictionary is the opposite case — a small, specified key set — which is why that one is
 /// an allowlist and this one is not.
 ///
-/// What each closes:
-///
 /// - **`/Parent`** — §2a row 2, the worst of the six. A widget's parent is the form field, and the
 ///   field carries `/T` (its name), `/V` (**the value somebody typed**) and `/Kids` reaching every
-///   sibling widget, including the ones on pages this output does not contain. Cutting the edge
-///   leaves the field unreferenced, so qpdf's writer never emits it.
-/// - **`/A` and `/Dest`** — §2a row 5. A named destination *is* a name, and names are descriptive;
-///   an explicit destination points at a page object the copier stopped at, so it resolves to
-///   nothing anyway. Both are dropped, which is §2b's "drop the action, leaving a link that does
-///   nothing".
-/// - **`/AA`** — additional actions, the same leak through a different key.
-/// - **`/StructParent`** — as `/StructParents` on the page.
-const REMOVED_ANNOTATION_KEYS: &[&[u8]] = &[b"Parent", b"A", b"Dest", b"AA", b"StructParent"];
+///   sibling widget, including ones on pages this output does not contain. Cutting the edge leaves
+///   the field unreferenced, so qpdf's writer never emits it.
+///
+///   **What that costs is dead metadata and nothing a reader sees**, measured rather than assumed:
+///   the widget keeps its own `/AP`, so it still draws. What goes is `/T`, `/V` and `/DA` — and
+///   those are unusable in a split output whatever this module does, because a widget is only a
+///   *field* by virtue of the catalog's `/AcroForm`, which no output can have (see the module
+///   header). Keeping `/Parent` for a field that happens to lie wholly inside the output would
+///   retain three keys nothing can act on.
+/// - **`/AA`** — additional actions: a `/GoTo` by another name, plus JavaScript.
+/// - **`/StructParent`** — an index into a structure tree the output does not have.
+///
+/// `/A` and `/Dest` are **not** here. They were, and dropping them wholesale was over-broad; see
+/// [`prune_destination`].
+const REMOVED_ANNOTATION_KEYS: &[&[u8]] = &[b"Parent", b"AA", b"StructParent"];
 
 const RESOURCES_KEY: &[u8] = b"/Resources\0";
 const ANNOTS_KEY: &[u8] = b"/Annots\0";
@@ -443,8 +447,142 @@ fn prune_annotations(
                 return Err(error);
             }
         }
+        prune_destination(dest, &annot, in_output)?;
     }
     Ok(())
+}
+
+/// Keep a link that still points somewhere in this output; drop one that does not.
+///
+/// # Dropping every `/A` and `/Dest` was over-broad, and measuring said so
+///
+/// The first version removed both from every annotation, on the reasoning that a named destination
+/// *is* a name (§2a row 5, and names of destinations are routinely descriptive) and that an
+/// explicit one points at a page the copier stopped at. The second half is wrong, and the
+/// difference is visible in the emitted bytes. Splitting a four-page document at page 2, with two
+/// links on page 1:
+///
+/// | the link's destination | what the copy produced |
+/// |---|---|
+/// | page 2 — **in** this output | `[4 0 R /Fit]`, and object 4 **is** page 2 of the output |
+/// | page 4 — excluded | `[11 0 R /Fit]`, and object 11 is `null` |
+///
+/// So `qpdf_add_page`'s copier maps a reference to a page it copied, and reserves a **null** for a
+/// page it did not. A link into the output therefore survives *and works*; an outward one is
+/// already inert and carries no content from the page it named. Dropping the first was a fidelity
+/// loss with no privacy gain, which is the trade this module exists to avoid making by accident.
+///
+/// # What is kept, as an allowlist over action types
+///
+/// - a `/Dest` that is an **array** whose first element is a page in this output;
+/// - an `/A` whose `/S` is `/GoTo` and whose `/D` passes that same test;
+/// - an `/A` whose `/S` is `/URI` and which has no `/Next`. A web address is the kept page's own
+///   data and describes nothing that was excluded.
+///
+/// Everything else goes: a **named** destination, which is the leak; a `/GoTo` pointing outward,
+/// which resolves to null anyway; and every other action type. That last is deliberate
+/// over-dropping — `/SetOCGState` names optional content groups, `/GoToE` reaches into embedded
+/// files, `/Named` and `/JavaScript` are open-ended — and an allowlist of two is auditable where a
+/// denylist over PDF's action types would be a list of the ones somebody thought of.
+///
+/// # Errors
+///
+/// Whatever qpdf latched, and [`Error::Malformed`] for a key that cannot be addressed.
+fn prune_destination(
+    dest: &Document,
+    annot: &ObjectHandle<'_>,
+    in_output: &BTreeSet<(c_int, c_int)>,
+) -> Result<()> {
+    let destination = annot.key(dest, c"/Dest".as_ptr());
+    if let Some(error) = dest.take_error() {
+        return Err(error);
+    }
+    if !points_into_output(dest, &destination, in_output)? {
+        annot.remove_key(c"/Dest".as_ptr());
+        if let Some(error) = dest.take_error() {
+            return Err(error);
+        }
+    }
+
+    let action = annot.key(dest, c"/A".as_ptr());
+    if let Some(error) = dest.take_error() {
+        return Err(error);
+    }
+    if !action_survives(dest, &action, in_output)? {
+        annot.remove_key(c"/A".as_ptr());
+        if let Some(error) = dest.take_error() {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// Whether this action may stay. See [`prune_destination`] for the allowlist and why it is one.
+fn action_survives(
+    dest: &Document,
+    action: &ObjectHandle<'_>,
+    in_output: &BTreeSet<(c_int, c_int)>,
+) -> Result<bool> {
+    if action.type_code() != object_type::DICTIONARY {
+        // Absent is fine; anything that is not a dictionary is not an action.
+        return Ok(false);
+    }
+    let kind = action.key(dest, c"/S".as_ptr());
+    if let Some(error) = dest.take_error() {
+        return Err(error);
+    }
+    if kind.type_code() != object_type::NAME {
+        return Ok(false);
+    }
+    // A CHAINED ACTION IS NOT AUDITED, so it does not travel. `/Next` may hold any action, or an
+    // array of them, and following that graph is a second allowlist inside this one.
+    let next = action.key(dest, c"/Next".as_ptr());
+    if let Some(error) = dest.take_error() {
+        return Err(error);
+    }
+    if next.type_code() != object_type::NULL {
+        return Ok(false);
+    }
+    match kind.name().as_slice() {
+        b"/URI" => Ok(true),
+        b"/GoTo" => {
+            let target = action.key(dest, c"/D".as_ptr());
+            if let Some(error) = dest.take_error() {
+                return Err(error);
+            }
+            points_into_output(dest, &target, in_output)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Whether `destination` is an explicit array naming a page this output contains.
+///
+/// A destination that is a **string or a name** is the leak §2a row 5 records: it resolves through
+/// the catalog's `/Dests` or `/Names` tree, which no split output has, and the name itself is
+/// frequently descriptive of a page that is not here.
+fn points_into_output(
+    dest: &Document,
+    destination: &ObjectHandle<'_>,
+    in_output: &BTreeSet<(c_int, c_int)>,
+) -> Result<bool> {
+    if destination.type_code() != object_type::ARRAY {
+        return Ok(false);
+    }
+    if destination.array_len() < 1 {
+        return Ok(false);
+    }
+    let target = destination.array_item(dest, 0);
+    if let Some(error) = dest.take_error() {
+        return Err(error);
+    }
+    // A PAGE THE COPIER DID NOT COPY IS `null` HERE, not a dangling reference -- measured, see
+    // `prune_destination`. So the type check alone rejects an outward link, and the identity
+    // check is what makes an inward one specific rather than "any dictionary".
+    if target.type_code() != object_type::DICTIONARY {
+        return Ok(false);
+    }
+    Ok(in_output.contains(&target.object(dest)?))
 }
 
 /// Whether `annot` says it is on one of the pages `in_output` identifies.
@@ -1088,14 +1226,28 @@ mod tests {
     }
 
     #[test]
-    fn the_annotation_rules_close_the_field_and_the_destination_channels() {
-        // §2a rows 2 and 5. `/Parent` is the one that carries a typed value into a file that
-        // does not contain the page it was typed on.
-        for key in [&b"Parent"[..], b"A", b"Dest"] {
+    fn the_annotation_rules_close_the_field_channel() {
+        // §2a row 2, the one that carries a typed value into a file that does not contain the
+        // page it was typed on.
+        assert!(
+            REMOVED_ANNOTATION_KEYS.contains(&&b"Parent"[..]),
+            "a widget's /Parent is not removed, so the field it names travels with it"
+        );
+    }
+
+    #[test]
+    fn destinations_are_decided_rather_than_removed() {
+        // `/A` and `/Dest` were on the removal list and are deliberately not any more: a link
+        // whose destination is a page in THIS output survives and works, which was measured
+        // rather than assumed (see `prune_destination`). Removing them unconditionally was a
+        // fidelity loss with no privacy gain, and this asserts the list has not quietly grown
+        // back -- the rule lives in `prune_destination`, and a key on both would be dead code
+        // on one side and a silent over-drop on the other.
+        for decided in [&b"A"[..], b"Dest"] {
             assert!(
-                REMOVED_ANNOTATION_KEYS.contains(&key),
-                "{} is not removed from annotations",
-                String::from_utf8_lossy(key)
+                !REMOVED_ANNOTATION_KEYS.contains(&decided),
+                "/{} is removed unconditionally; it is supposed to be decided per link",
+                String::from_utf8_lossy(decided)
             );
         }
     }

@@ -156,8 +156,8 @@ way. So no split output can be given an `/OCProperties`, an `/AcroForm` or an `/
 | `/AcroForm` field tree | **dropped** | every widget's `/Parent` is cut, so the field is unreferenced and the writer never emits it. §2b's second option. The catalog constraint makes this the *only* option: a kept field would be a field with no `/AcroForm`, which is a dead field either way, so the choice was between a dead field plus a leak and neither |
 | shared `/Annots` | **pruned** | annotations whose `/P` is a page in this output are kept — and only when the array is shared with a page the output does **not** contain. See below: the first version keyed on "shared at all" and deleted every annotation from a split that excluded nothing |
 | article beads | **dropped** | `/B` is simply not on the page-key allowlist, and `/Threads` lives on the catalog the build route never copies |
-| named destinations | **dropped** | `/A` and `/Dest` are removed from every annotation. §2b's "drop the action, leaving a link that does nothing"; an explicit destination points at a page object the copier stopped at, and a named one is the leak |
-| `/OCProperties` | **refused** | neither §2b answer is reachable. Dropping the configuration alone is forbidden there; carrying a pruned one needs the catalog. So a document whose kept pages reference optional content is **not split** — a third answer, stronger than both, and §4 carries the sentence the page will say it in |
+| named destinations | **pruned** | a link pointing at a page **in this output** survives and works; a named destination goes, because the name is the leak. See the amendment below — dropping both was over-broad, and measuring said so |
+| `/OCProperties` | **refused** | neither §2b answer is reachable, and the binding constraint is **reading**, not writing — see the amendment below. So a document whose kept pages reference optional content is **not split**: a third answer, stronger than both, and §4 carries the sentence the page will say it in |
 
 **The page-key rule is an allowlist, and that is the part worth carrying to M2.** Everything not on
 a named list of page keys is removed, so `/B`, `/AA`, `/Thumb`, `/PieceInfo`, `/StructParents` and
@@ -222,6 +222,43 @@ These are the numbers **after** the walk was rewritten for the five defects secu
 below; the first version measured +33% / +99% / +161% / +167%, and the difference is mostly the
 per-object name cache that fix 3 required.
 
+**What the percentages are against, since a bare percentage is a number with no denominator.**
+Each is `(after - before) / before` where both terms are the **whole `burrow_ops::split` call** —
+open, the sharing sweep, copy, prune, write, for **every part of a five-way split**. Not against
+one part, not against the rest of the operation, and not against verification, which `split` does
+not yet have. So "+112%" means a five-way split of a 10,000-page document takes 91.6 ms where it
+took 43.3 ms, and pruning is the difference.
+
+**They do not compose with ADR 0022's table, and the reason is not scale.** That table was measured
+on **`rotate`**, one page rotated, so its percentages are fractions of a different operation. Adding
+73.5% to 112% describes nothing. What composes is the milliseconds, and those are worth setting out
+because `split` inherits the verification in the next change:
+
+| for a 10,000-page document | flat tree | 60-deep tree |
+|---|--:|--:|
+| split, before pruning | 43.3 ms | 42.7 ms |
+| **+ pruning** (this change) | **91.6 ms** | **89.8 ms** |
+| + ADR 0022's promise sweep over the source | +5.5 ms | **+148.6 ms** |
+| + reading the output back, once per part | +24.5 ms | +167.7 ms |
+| **projected total after the next change** | **~122 ms** | **~406 ms** |
+
+**The last two rows are measured on a document, not on a five-way split, and the total is therefore
+a projection rather than a measurement — it is labelled as one and must be replaced.** The promise
+sweep is over the *source*, so it is paid once and the row is exact. The read-back is not: `split`
+will verify each part separately, so five read-backs of 2,000 pages each replace one of 10,000,
+which is the same page count plus four extra document opens. The projection assumes those are free
+and they are not.
+
+`measure-pruning` gains the composed number in the change that adds the verification, and this
+table's last row is replaced by it. Recording a projection and then not replacing it is how a
+prediction becomes a remembered fact.
+
+**The shape is the part worth keeping either way.** On a flat tree pruning dominates and the
+verification is modest; on a deep tree the promise sweep costs more than everything else combined,
+because it walks `/Parent` per page while the prune runs after the tree has been flattened. Those
+two costs are sensitive to different attacker-chosen numbers, which is why they are separate rows
+rather than one.
+
 **What each row does and does not exercise**, because the two largest ones do not support the
 cause the first conclusion gives them. `pages-10.pdf` and `pages-137.pdf` are committed fixtures
 with real content streams. `--generated` and `--deep` are built by
@@ -275,6 +312,84 @@ previously ran 17.4 s with nothing consulted.
 Each has a fixture and a regression test: `images.pdf`, `nested-forms.pdf`, `oc-nested.pdf`, and a
 `/Stash` canary added to `shared-objects.pdf`'s inherited `/Resources` so the existing scan covers
 row 4.
+
+### Amendment, 2026-09-14 (#54, second pass): the three consequences, priced
+
+Closing the leak produced three user-visible consequences larger than the outline loss §1 records,
+and all three arrived as *side effects of an implementation* rather than as decisions. Each was
+priced — prune correctly versus drop — before being left alone. One was cheap and was taken.
+
+#### Links: **pruned**, and dropping them was over-broad
+
+The rule was "remove `/A` and `/Dest` from every annotation", on the reasoning that a named
+destination is a name and an explicit one points at a page the copier stopped at. **The second half
+is wrong.** Splitting a four-page document at page 2, with two links on page 1:
+
+| the link's destination | what the copy produced |
+|---|---|
+| page 2 — **in** this output | `[4 0 R /Fit]`, and object 4 **is** page 2 of the output |
+| page 4 — excluded | `[11 0 R /Fit]`, and object 11 is `null` |
+
+`qpdf_add_page`'s copier maps a reference to a page it copied and reserves a **null** for one it did
+not. So a link into the output survives *and resolves*, and an outward one is already inert and
+carries nothing from the page it named. Dropping the first was a fidelity loss with no privacy gain
+— the trade this ADR exists to stop being made by accident, made by the fix for it.
+
+What survives now is an allowlist of two: an explicit destination array whose first element is a
+page in this output, and a `/URI` action with no `/Next`. A **named** destination goes, because the
+name is the leak and the tree that would resolve it is on a catalog no output has. Every other
+action type goes — `/SetOCGState` names optional content groups, `/GoToE` reaches into embedded
+files, `/Named` and `/JavaScript` are open-ended — which is deliberate over-dropping, and an
+allowlist of two is auditable where a denylist over PDF's action types would be a list of the ones
+somebody thought of.
+
+#### Form fields: **forced**, and the cost is dead metadata rather than anything a reader sees
+
+Cutting every widget's `/Parent` is §2b's drop option, and the alternative — keeping the edge where
+the field lies wholly inside the output — was priced and refused. Measured on a two-page form whose
+widgets carry their own appearance streams, split at page 1:
+
+- the surviving widget **keeps its `/AP`**, so it draws exactly as it did;
+- page 2's `/V` and page 2's appearance are both **absent**.
+
+What cutting `/Parent` costs is `/T`, `/V` and `/DA` — and those are unusable in a split output
+whatever this module does, because a widget is a *field* only by virtue of the catalog's
+`/AcroForm`, which no output can have. Keeping them for a wholly-contained field would retain three
+keys nothing can act on, in exchange for a subtree analysis on the leakiest channel in §2a.
+
+**"Fields are not fillable" is therefore forced by the catalog constraint, not chosen here.** The
+choice this module makes is only whether the dead field's name and value ride along, and they do
+not.
+
+#### Optional content: **forced**, and the reason is narrower than first recorded
+
+The amendment above says carrying a pruned `/OCProperties` "needs the catalog". That is true and it
+is not the binding constraint, and the difference matters to whoever reads this next.
+
+The **destination** catalog is reachable if one is willing to work for it: `BLANK_DOCUMENT` is our
+own bytes, so it could carry an `/OCProperties` object referenced from both the catalog and the
+blank page, and a handle taken from the page before the page is removed would reach it —
+`qpdf_remove_page` erases from `/Kids` without destroying the object. `qpdf_oh_copy_foreign_object`
+would then supply the dest twin of each source OCG, memoised, so the copies the pages already
+reference are the ones the configuration would name.
+
+**The source catalog is not reachable at all, and that is what forbids it.** Whether a layer is
+hidden lives in `/OCProperties /D /OFF` on the *source's* catalog — PDF 32000-1 §8.11.4.3 puts it
+nowhere else. An OCG dictionary does not say whether it is on. So burrow cannot find out what to
+carry, and the two defaults are both wrong in the direction that matters: everything on reveals
+what the source hid, everything off hides what it showed.
+
+So the refusal is forced by an inability to **read**, not to write, and no amount of cleverness on
+the destination side reaches it. Reopening it means reopening ADR 0013's caller rule, which is a
+security-posture decision and not this ADR's to take.
+
+#### What redaction inherits from all three
+
+The shape, not the answers. Redaction removes content from a page rather than pages from a
+document, so "does this still point at something the output contains" is the same question with a
+different set — and the link rule is the one piece of this that transfers as written. The other two
+are `split`-specific consequences of having no catalog, and redaction, which edits a document in
+place rather than building a new one, will not have that constraint.
 
 #### What transfers to M2, and what is `split`-only
 
@@ -444,23 +559,33 @@ owes the same paragraph from the other direction, and it is written here so the 
 to match rather than something to invent:
 
 > **What is kept, and what is not.** Each part contains its pages exactly as they were — their
-> contents, their size and their annotations. Form fields keep their appearance but are no longer
-> fillable: what makes a field a field describes the whole document, and carrying it into one part
-> would carry the names and the values typed on pages that part does not contain. Bookmarks and
-> attached files are left out for the same reason — they describe the whole document rather than
-> any one part, and copying them into every part would put the names of pages you did not include
-> into files you did. Links to somewhere else in the document stop working, because where they
-> pointed is a name that describes a page your part may not have. A document that uses layers
-> cannot be split here at all: burrow cannot carry the setting that decides whether a layer is
-> hidden, and a hidden layer that arrives visible is worse than a refusal.
+> contents, their size and their annotations. **Links keep working when they point inside the same
+> part**, and links to a page in a different part are removed rather than left to go nowhere.
+> Web links are kept.
+>
+> Form fields keep their appearance but are no longer fillable. What makes a field a field is
+> recorded for the document as a whole, not on the page, so it cannot come with one part — and
+> carrying it would carry the names and the values typed on pages that part does not contain.
+> Bookmarks and attached files are left out for the same reason: they describe the whole document,
+> and copying them into every part would put the names of pages you did not include into files you
+> did.
+>
+> A document that uses layers cannot be split here at all. Whether a layer is hidden is recorded
+> for the document as a whole, so burrow has no way to find out — and a hidden layer that arrived
+> visible would be worse than a refusal.
 
-**This version is not provisional, and the first one was.** The original said "their contents,
-their size, their form fields and their annotations", marked as provisional on issue #54 because
-§2b offered "drop the widget too, so the output has no form field rather than a dead one" as a
-legitimate outcome — and if #54 took it, the sentence stopped being true. #54 took it. The
-paragraph above is what the answers in the 2026-09-14 amendment actually are, and it says four
-things the first one did not have to: fields are not fillable, links do not work, layered documents
-are refused, and each of those has its reason attached.
+**This version is not provisional, and it has already been corrected once.** The original said
+"their contents, their size, their form fields and their annotations", marked provisional on #54
+because §2b offered dropping the widget as a legitimate outcome — and #54 took it. The first
+rewrite then said flatly that "links to somewhere else in the document stop working", which was
+true of the implementation and not of what the implementation *should* do: the second-pass
+amendment measured that a link into the same part survives and resolves, so that sentence
+overstated the loss and the code was changed rather than the copy.
+
+Three of the sentences above carry their reason, and the reasons are not decoration. "Fields are
+not fillable" reads as a bug without "recorded for the document as a whole"; "layered documents are
+refused" reads as a missing feature without "burrow has no way to find out". The point of each is
+that the person affected can tell a deliberate limit from a defect.
 
 **The reasons are the load-bearing part and they are not decoration.** A page that said only
 "bookmarks are not kept" would be true and would leave somebody thinking it was a limitation rather
