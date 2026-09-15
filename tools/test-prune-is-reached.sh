@@ -39,16 +39,46 @@ restore() {
 }
 trap 'restore; rm -rf "$backup"' EXIT
 
+# REFUSE IF A PREVIOUS RUN'S MUTATION IS STILL IN THE TREE.
+#
+# This rewrites tracked source and restores it from a backup under an EXIT trap. The trap
+# survives INT and TERM (measured), so the only way a mutation outlives a run is SIGKILL, an
+# OOM kill, or a failing `cp` inside the restore. What survives then COMPILES AND RUNS --- that
+# is the whole point of the new mutation shape --- and a split built from it carries content
+# from every page it excluded. So the residue is checked for by name rather than left for
+# someone to notice.
+#
+# NOT a `git diff --quiet` on these files: they are ordinarily modified on a working branch,
+# and refusing then would make the tool unusable exactly when it is wanted. The check is for
+# the marker, which nothing but this script writes.
+for f in "$web_file" "$native_file"; do
+  if grep -q 'let _ = (&graph' "$repo/$f"; then
+    echo "REFUSED — $f still carries a planted mutation from an earlier run." >&2
+    echo "  A previous run was killed before its restore. That tree COMPILES and prunes" >&2
+    echo "  NOTHING, so it must not be built on. Recover with:" >&2
+    echo "    git checkout -- $f      # if the file is otherwise unmodified" >&2
+    echo "  or restore the prune_output call by hand from the surrounding comment." >&2
+    exit 1
+  fi
+done
+
 pass=0
 fail=0
 
-# Comment out every line of the `prune_output` call on one side, leaving the rest of the
-# extractor intact. A deleted call is the mutation; a deleted FILE would fail to compile and
-# prove nothing about the corpus.
+# Replace the `prune_output` call with one that STILL READS ITS ARGUMENTS and prunes nothing.
+#
+# The first version substituted a bare `Ok(())?`, which left `source.deadline` unread -- and
+# CI compiles with `RUSTFLAGS: -D warnings`, so the mutated tree failed to BUILD with "field
+# `deadline` is never read" instead of failing the conformance case. The suite went red for
+# the wrong reason, which is the one outcome a mutation test must not accept. `require_red`
+# caught it, because it matches on the expected text rather than on the exit status alone;
+# this is the fix it asked for.
+#
+# A deleted FILE would also fail to compile and prove nothing about the corpus. What is wanted
+# is a tree that builds, runs, and does not prune.
 plant() {
   local file="$1"
   python3 - "$file" <<'PY'
-import re
 import sys
 
 path = sys.argv[1]
@@ -59,7 +89,11 @@ start = source.index("crate::prune::prune_output(")
 end = source.index("?;", start) + 2
 call = source[start:end]
 assert "prune_output" in call, call
-mutated = source[:start] + "Ok::<(), burrow_types::Error>(())?;" + source[end:]
+# The argument list, verbatim, bound and dropped. Every name the real call reads is still
+# read, so `-D dead-code` has nothing to say, and nothing is pruned.
+args = call[call.index("(") + 1 : call.rindex(")")]
+assert args.strip(), f"no arguments found in {call!r}"
+mutated = source[:start] + "{ let _ = (" + args + "); }" + source[end:]
 assert mutated != source, "the mutation did not apply"
 open(path, "w", encoding="utf-8").write(mutated)
 print(f"planted: removed the prune_output call from {path}")
@@ -91,17 +125,36 @@ require_red() {
   pass=$((pass + 1))
 }
 
+# THE ENGINES ARE NEEDED BY BOTH HALVES NOW. The web half runs with `--features
+# native-engines` (see below for why), and `build.rs` FAILS rather than skipping when that
+# feature is on and `engines/vendor` is absent. The guard used to sit between the two halves
+# and cover only the native one, so on a clean checkout the web half reported
+# "red, but nothing mentioned ..." -- the tool that exists to tell "red for the right reason"
+# from "red for the wrong reason", giving the wrong reason for its own missing prerequisite.
+# Found by security review.
+if [ ! -d "$repo/engines/vendor" ]; then
+  echo "SKIP  both paths: engines/vendor is absent (engines/fetch.sh && engines/build-native.sh)"
+  echo "      Nothing was measured. This is not a pass."
+  exit 0
+fi
+
 echo "=== the web path"
 plant "$web_file"
+# `--features native-engines`, and it is load-bearing rather than incidental: without it the
+# NATIVE caller of `crate::prune` is compiled out, so removing the web one leaves the whole
+# shared module unreachable and the tree fails to build with 31 dead-code errors under CI's
+# `-D warnings`. That is red for the wrong reason, which `require_red` refuses. With the
+# feature on, the module keeps its other caller and only the web BEHAVIOUR changes --- which
+# is the thing being measured.
 require_red \
   "web/extract.rs without its prune" \
   "the_web_split_refuses_a_layered_document_and_releases_its_handles" \
-  cargo test -p burrow-engines --lib web::tests
+  cargo test -p burrow-engines --features native-engines --lib web::tests
 restore
 
 echo
 echo "=== the native path"
-if [ -d "$repo/engines/vendor" ]; then
+{
   plant "$native_file"
   require_red \
     "qpdf/extract.rs without its prune" \
@@ -109,9 +162,7 @@ if [ -d "$repo/engines/vendor" ]; then
     cargo test -p burrow-ops --features native-engines --test conformance \
       every_fixture_produces_the_outcome_the_corpus_records
   restore
-else
-  echo "SKIP  the native path: engines/vendor is absent (engines/fetch.sh && engines/build-native.sh)"
-fi
+}
 
 echo
 echo "------------------------------------------------------------"
