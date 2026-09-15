@@ -34,8 +34,10 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -148,6 +150,22 @@ JOBS: list[dict] = [
         "covers": [],
         "needs_qpdf_cli": True,
         "why": "the engine-seam defect CI requires to keep reproducing beneath ADR 0022's refusal (#61)",
+    },
+    {
+        # THE SEVENTH MISS, AND THE SECOND FROM THE SAME CAUSE AS `subsetting-gate` BELOW.
+        #
+        # PR #76 added `core/burrow-ops/tests/optimistic_counts.rs`, ran this tool clean, and
+        # went red in CI on a gate that was a `run:` block invoking `cargo test … --test
+        # "$suite" -- --list`. That maps to `cargo:test`, which the `test` job above covers, so
+        # parity reported FULL coverage over a gate `cargo test --workspace` does not perform
+        # at all. Same shape, same answer: the gate moved into a script, and this is its job.
+        "name": "integration-suites",
+        "run": "tools/check-integration-suites.sh && tools/test-check-integration-suites.sh",
+        "covers": [
+            "tools/check-integration-suites.sh",
+            "tools/test-check-integration-suites.sh",
+        ],
+        "why": "every integration suite on disk is named and discovers tests (#76)",
     },
     {
         # ADDED AFTER THIS RUNNER REPORTED FULL PARITY AND CI WENT RED ANYWAY.
@@ -442,6 +460,696 @@ def workflow_env() -> dict[str, str]:
     return out
 
 
+# --- the environment preflight ----------------------------------------------------------
+#
+# REFUSE ON A BROKEN ENVIRONMENT; DO NOT REPORT IT AS TEST FAILURES.
+#
+# This is `needs_qpdf_cli`'s argument generalised, and it is here because that argument was
+# right and was applied to exactly one hand-declared tool. A machine with no `cargo` on PATH
+# does not get a refusal: it gets `cargo: not found` from every Rust job, seven failures inside
+# `tools/test-check-no-network-deps.sh` whose message is `cargo tree failed`, and a sweep that
+# reads as "this change broke the network-dependency checker". It did not. Nothing was measured.
+#
+# TWICE NOW. M0's rustfmt hook failed SILENTLY on the same cause; the split-page batch produced
+# the seven-failure run above. A habit that has failed twice is not a control -- the conclusion
+# this repository already reached about `git add -A` and about replicating CI by hand.
+#
+# DERIVED, NOT ENUMERATED, in both halves. The tool list is read out of the JOBS table's own
+# `run` strings, and every pinned version is read out of the file that pins it. A hand-written
+# list of required tools drifts the day somebody adds a job; a hand-written version number is a
+# second copy of a pin, and the two disagree silently.
+#
+# WHAT IT DOES NOT CATCH, said here rather than discovered:
+#
+#   * A tool that is present, correctly versioned and broken. `which` answers "is there a
+#     file"; a `--version` probe answers "what does it say it is".
+#   * A missing FILE argument -- `python3 tools/x.py` requires `python3`, and a deleted `x.py`
+#     is a different failure that git already makes visible.
+#   * A cargo subcommand's own dependencies: `cargo fuzz` is checked for presence and version,
+#     and its need for a C toolchain is not modelled.
+
+SHELL_KEYWORDS = frozenset({"do", "then", "else", "elif"})
+SHELL_BUILTINS = frozenset(
+    {
+        "cd", "export", "exit", "set", "unset", "echo", "true", "false",
+        "source", ".", "return", "shift", "read", "eval", "trap", "wait",
+        "for", "while", "until", "if", "fi", "done", "esac", "case", "in",
+    }
+)
+
+SEPARATORS = frozenset({"&&", "||", ";", "|"})
+
+# `VAR=value`, AFTER shlex has removed the quoting -- so `RUSTDOCFLAGS="-D warnings"` arrives as
+# the single word `RUSTDOCFLAGS=-D warnings` and matches. Splitting on whitespace instead of
+# shlex broke exactly here, and PROGRAM_CASES caught it: the assignment's own quoted space ended
+# the word, `RUSTDOCFLAGS="-D` was stripped as an assignment, and `warnings"` was reported as a
+# program to look for on PATH.
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+TOOLCHAIN = re.compile(r"^\+(\S+)$")
+
+# A name no package manager will ever install. Resolved on EVERY run, through every branch of
+# the resolver, and required to come back missing -- a resolver that answers "present" to
+# everything reports a perfect environment on a machine with nothing installed.
+SENTINEL = "burrow-no-such-program-preflight-canary"
+
+# The binary each derived kind is asked of. If that binary is itself missing, the derived rows
+# say nothing new -- nine "cargo subcommand missing" lines for one absent cargo is noise
+# standing in front of the finding.
+DERIVED_HOST = {"cargo:": "cargo", "rustup:": "rustup"}
+
+
+def _commands(command: str) -> list[list[str]]:
+    """`command` as a list of argv-shaped commands, split on the shell separators."""
+    # `punctuation_chars=True` is what makes `;` and `&&` their own tokens. `shlex.split` does
+    # NOT do this -- it splits on whitespace respecting quotes and nothing else, so
+    # `...split; do rm -rf ...` arrives as one command beginning with `for`, the whole segment
+    # is discarded as a keyword, and `rm` is never looked for. PROGRAM_CASES caught that; the
+    # union over the real JOBS table did not, because `mkdir` sat behind an `&&` and survived.
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    out: list[list[str]] = []
+    current: list[str] = []
+    for word in lexer:
+        if word in SEPARATORS:
+            if current:
+                out.append(current)
+            current = []
+            continue
+        current.append(word)
+    if current:
+        out.append(current)
+    return out
+
+
+def programs_in(command: str) -> set[str]:
+    """Every program `command` invokes, as written.
+
+    A token containing `/` is a path this repository owns and is checked on disk; a bare token
+    is looked up on PATH. `cargo X` additionally yields `cargo:X`, so a missing subcommand is a
+    refusal rather than sixty seconds of fuzzing that could not start, and `cargo +T` yields
+    `rustup:T`.
+    """
+    found: set[str] = set()
+    for words in _commands(command):
+        while words and (words[0] in SHELL_KEYWORDS or ASSIGNMENT.match(words[0])):
+            words = words[1:]
+        if not words:
+            continue
+        program = words[0]
+        if program in SHELL_BUILTINS or program in SHELL_KEYWORDS:
+            continue
+        found.add(program)
+
+        if program == "cargo":
+            rest = words[1:]
+            if rest and (m := TOOLCHAIN.match(rest[0])):
+                found.add(f"rustup:{m.group(1)}")
+                rest = rest[1:]
+            if rest and not rest[0].startswith("-"):
+                found.add(f"cargo:{rest[0]}")
+    return found
+
+
+def programs_used_in(text: str, candidates: frozenset[str] | set[str]) -> set[str]:
+    """Which `candidates` a script's BODY invokes.
+
+    THE PREFLIGHT IS TRANSITIVE OR IT DOES NOT CLOSE ITS OWN MOTIVATING INCIDENT. Five jobs
+    have a `run` string that is nothing but script names, so the only requirement derived from
+    them was "that file exists". `checkers` runs `tools/check-no-network-deps.sh`, which calls
+    `cargo tree` eight times -- so on a machine with no cargo the preflight passed `checkers`
+    and the job then failed with `cargo tree failed`, which is the LITERAL STRING this file's
+    own docstring cites as the incident it exists to prevent. Found by security review, after
+    the first version shipped that gap.
+
+    NARROW ON PURPOSE. Parsing a script body as shell was tried and is unusable: these files
+    are heavily commented and carry embedded Python heredocs, Rust snippets and prose, so
+    `programs_in` over every line yielded 23 real tools and about 200 tokens like `fn f() {`
+    and `Playwright report output`. So the search is inverted -- the candidate set is the
+    programs the JOBS table already names DIRECTLY, and a body is only asked whether it uses
+    one of those. That keeps the property this file argues for: derived, not enumerated. A tool
+    reached only from inside a script and never named in `ci.yml` is out of scope, and that is
+    what `needs_qpdf_cli` is for.
+    """
+    found: set[str] = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        for tool in candidates:
+            if tool in found:
+                continue
+            # AT A COMMAND POSITION, not merely present. "present anywhere on a non-comment
+            # line" was the first rule and the full sweep refused on it: `pnpm` matched a
+            # regex literal in this very file and `run: pnpm typecheck` inside a heredoc in
+            # `test-ci-local.sh`, so six jobs were reported as needing pnpm and the probe then
+            # ran in the wrong directory. A rule that fires on a correct machine is not a
+            # check -- the same sentence `workdir_of` is written under.
+            #
+            # A command position is the start of a line, or immediately after one of the
+            # operators that begins a new command. `tree="$(cargo tree ...` matches on `$(`;
+            # `run: pnpm typecheck` does not, because `:` begins nothing.
+            if COMMAND_POSITION[tool].search(line):
+                found.add(tool)
+    return found
+
+
+SCRIPT_REF = re.compile(r"(?<![\w/.\-])(tools/[\w.\-]+\.(?:sh|py|mjs))")
+
+
+class _CommandPosition(dict):
+    """Per-tool regexes for "invoked here", built on demand and cached."""
+
+    def __missing__(self, tool: str) -> re.Pattern[str]:
+        pattern = re.compile(
+            r"(?:^|&&|\|\||[;|({`]|\$\()\s*" + re.escape(tool) + r"(?=\s)",
+            re.MULTILINE,
+        )
+        self[tool] = pattern
+        return pattern
+
+
+COMMAND_POSITION = _CommandPosition()
+
+# ONLY SHELL SCRIPTS ARE SCANNED, and this is a stated limit rather than an oversight.
+#
+# A Python file's docstring can contain a table that reads exactly like a command -- this
+# file's own opening docstring has the line `    pnpm check   #63   a bridge signature
+# changed`, which no positional rule can distinguish from an invocation. Scanning `.py` and
+# `.mjs` produced six jobs falsely requiring pnpm, which is the false-positive direction and
+# the worse one.
+#
+# The residual: a Python or Node checker that shells out to a pinned tool is invisible here.
+# Measured before accepting it -- no `tools/*.py` invokes cargo, wasm-pack or pnpm today; the
+# two `cargo` mentions in `check-engine-licences.py` are prose. If one ever does, it belongs
+# in a `.sh` wrapper or in `needs_qpdf_cli`-style declaration.
+SCANNABLE = (".sh",)
+
+
+def tool_candidates() -> frozenset[str]:
+    """Every bare program the JOBS table names directly, anywhere.
+
+    THE UNIVERSE IS THE WHOLE TABLE, not the job being examined, and getting that wrong made
+    the transitive scan inert on exactly the job it was written for: `checkers` names only
+    `python3` directly, so a per-job universe was `{python3}` and `cargo tree` inside
+    `check-no-network-deps.sh` matched nothing. The report said "5 program(s) required", the
+    same number as before the scan existed.
+    """
+    universe: set[str] = set()
+    for job in JOBS:
+        universe |= {p for p in programs_in(job["run"]) if "/" not in p and ":" not in p}
+    return frozenset(universe)
+
+
+def transitive_programs(direct: set[str], candidates: frozenset[str]) -> dict[str, set[str]]:
+    """Every repository script reachable from `direct`, mapped to the candidates it uses.
+
+    Follows script-to-script references too, with a visited set, because a self-test that
+    invokes a checker inherits that checker's tools.
+    """
+    seen: set[str] = set()
+    queue = [p for p in direct if "/" in p]
+    out: dict[str, set[str]] = {}
+    while queue:
+        rel = queue.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        if not rel.endswith(SCANNABLE):
+            continue
+        try:
+            text = (REPO / rel).read_text()
+        except OSError:
+            continue  # its absence is the presence check's finding
+        out[rel] = programs_used_in(text, candidates)
+        for ref in SCRIPT_REF.findall(text):
+            if ref not in seen:
+                queue.append(ref)
+    return out
+
+
+def workdir_of(command: str) -> str:
+    """The directory a job's commands run in, from a leading `cd`.
+
+    NOT COSMETIC. `pnpm` is resolved by corepack from `apps/web/package.json`'s
+    `packageManager` field, so `pnpm --version` answers 12.3.4 at the repository root and
+    11.26.0 inside `apps/web` -- on the same machine, at the same moment. A version probe run
+    in the wrong directory reports a mismatch that does not exist, and a rule that fires on a
+    correct machine is not a check.
+    """
+    for words in _commands(command):
+        if words and words[0] == "cd" and len(words) > 1:
+            return words[1]
+    return "."
+
+
+# EVERY PARSER RULE, WITH ITS OWN CASE AND A NEAR-MISS, CHECKED ON EVERY RUN.
+#
+# `tools/check-engine-licences.py`'s SPLIT_CASES is the shape and the reason: a parser that
+# mis-reads a command makes every verdict below it meaningless, and this one decides whether a
+# sweep runs at all. Each entry names the rule it pins.
+PROGRAM_CASES: list[tuple[str, set[str]]] = [
+    # a plain command, and its subcommand
+    ("cargo fmt --all -- --check", {"cargo", "cargo:fmt"}),
+    # a leading environment assignment is not the command
+    ('RUSTDOCFLAGS="-D warnings" cargo doc --workspace', {"cargo", "cargo:doc"}),
+    # `&&` starts a new command, and a repository path is itself a program
+    (
+        "tools/check-subsetting-gate.sh && tools/test-check-subsetting-gate.sh",
+        {"tools/check-subsetting-gate.sh", "tools/test-check-subsetting-gate.sh"},
+    ),
+    # an interpreter is the program; its script is an argument
+    ("python3 tools/check-python-syntax.py", {"python3"}),
+    # `cd` is a builtin and contributes nothing; pnpm is reached through it
+    ("cd apps/web && pnpm lint && pnpm check", {"pnpm"}),
+    # a `for` loop: the keyword, its list and `do` are not programs; the body is
+    (
+        'for t in a b; do rm -rf "corpus/$t" && cargo +nightly fuzz run "$t" || exit 1; done',
+        {"rm", "cargo", "rustup:nightly", "cargo:fuzz"},
+    ),
+    # NEAR-MISS: a bare `--flag` after cargo is not a subcommand
+    ("cargo --list", {"cargo"}),
+    # NEAR-MISS: an assignment with no command is not a command
+    ("export ASAN_OPTIONS=detect_leaks=0", set()),
+]
+
+# THE RULE IS "THE FIRST `cd` ANYWHERE", not "a leading `cd`", and the first version of this
+# table said the latter in a comment while pinning neither. Code review measured the gap: no
+# case had a `cd` after another command, and none had two. Both are pinned now, with the
+# answers this file actually wants.
+WORKDIR_CASES: list[tuple[str, str]] = [
+    ("cd apps/web && pnpm lint", "apps/web"),
+    ("cargo fmt --all -- --check", "."),
+    ("cd fuzz && cargo +nightly fuzz run split", "fuzz"),
+    # A `cd` that is NOT the first command still sets the directory its successors run in.
+    ("cargo fmt && cd apps/web && pnpm lint", "apps/web"),
+    # TWO `cd`s: the first wins, which is wrong for the last command and is recorded as a
+    # known limit rather than left to be discovered. No job has this shape -- all 19 checked --
+    # and a job that grows one must either be rewritten or this rule taught to fold them.
+    ("cd a && cd b && pnpm lint", "a"),
+]
+
+# A body-scan fixture per rule, with its near-misses. `programs_used_in` decides whether a job
+# needs `cargo` at all, so a rule that matched nothing here would restore the exact gap
+# security review found.
+USES_CASES: list[tuple[str, set[str]]] = [
+    ("cargo tree --workspace --edges normal\n", {"cargo"}),
+    ("  node ../../tools/report-size-budget.mjs dist\n", {"node"}),
+    # The real shape in `check-no-network-deps.sh`: a command substitution.
+    ('tree="$(cargo tree --manifest-path "$m" --workspace)"\n', {"cargo"}),
+    ("mkdir -p x && cargo build\n", {"cargo"}),
+    # NEAR-MISS: a comment cannot invoke anything.
+    ("# cargo tree is what this checker does\n", set()),
+    # NEAR-MISS: a longer word that merely contains the tool's name.
+    ("mycargo tree --workspace\n", set()),
+    # NEAR-MISS: the name inside a quoted string is not a command word.
+    ("echo 'cargo'\n", set()),
+    # NEAR-MISS: a path ending in the tool's name is a different program.
+    ("engines/cargo build\n", set()),
+    # NEAR-MISS: the two shapes that made the full sweep refuse. A tool named after a YAML
+    # key inside a heredoc, and a tool inside a regex literal. Neither is an invocation.
+    ("        run: cargo typecheck\n", set()),
+    ('    (r"\\bcargo (?:-C \\S+ )?(?:run )?([a-z][\\w:-]*)", r"cargo:\\1"),\n', set()),
+]
+
+
+def verify_parser() -> list[str]:
+    """Every parser rule against its own case and its near-miss.
+
+    SEPARATE FROM THE ENVIRONMENT CHECK, and run on every invocation including `--check`. The
+    two answer different questions: this one asks whether the thing that decides what to look
+    for works at all, and a parser that reads nothing reports a healthy, EMPTY requirement set
+    on a machine with no tools installed. That is the failure the gate exists to refuse,
+    arriving through the gate itself.
+    """
+    problems = [
+        f"{cmd!r}: expected programs {sorted(exp)}, got {sorted(programs_in(cmd))}"
+        for cmd, exp in PROGRAM_CASES
+        if programs_in(cmd) != exp
+    ]
+    problems += [
+        f"{cmd!r}: expected workdir {exp!r}, got {workdir_of(cmd)!r}"
+        for cmd, exp in WORKDIR_CASES
+        if workdir_of(cmd) != exp
+    ]
+    candidates = frozenset({"cargo", "node"})
+    problems += [
+        f"body scan of {text!r}: expected {sorted(exp)}, got {sorted(programs_used_in(text, candidates))}"
+        for text, exp in USES_CASES
+        if programs_used_in(text, candidates) != exp
+    ]
+    # AND THE PARSER OVER THE REAL TABLE, not only over fixtures. `shlex` raises on an
+    # unbalanced quote, so a job string containing an apostrophe -- an `awk` one-liner, a
+    # `don't` in a message -- would give a traceback instead of a refusal. That is the failure
+    # mode `_listing`'s docstring rejects, and fixtures cannot see it because fixtures are not
+    # the table. Found by security review.
+    for job in JOBS:
+        try:
+            programs_in(job["run"])
+            workdir_of(job["run"])
+        except ValueError as error:
+            problems.append(f"job {job['name']!r} has a run string the parser cannot read: {error}")
+    return [f"the command parser is broken, so nothing it reports means anything -- {p}" for p in problems]
+
+
+# --- the pinned versions, each read from the file that pins it ---------------------------
+#
+# A cargo on PATH at the wrong version is the same failure wearing a disguise: the sweep runs,
+# every job reports something, and none of it describes what CI will do. So presence is not
+# enough.
+#
+# EVERY EXPECTED VERSION IS DERIVED. Writing `1.98.1` here would be a second copy of
+# `rust-toolchain.toml`'s pin, and the day somebody bumps one the other says nothing while
+# looking authoritative -- the same defect as a hand-written list of local commands, one layer
+# down. A pin that cannot be RESOLVED is therefore a refusal, not a skip: a regex that stops
+# matching because a file was reformatted would otherwise silently check nothing.
+#
+# `probe` runs in the job's own working directory, which is load-bearing -- see `workdir_of`.
+PINS: list[dict] = [
+    {
+        "program": "cargo",
+        "source": "rust-toolchain.toml",
+        "pin": (r'^channel = "([^"]+)"', "rust-toolchain.toml"),
+        "probe": ["cargo", "--version"],
+        "field": 1,
+        "match": "exact",
+    },
+    {
+        "program": "wasm-pack",
+        "source": ".github/workflows/ci.yml",
+        "pin": (r"cargo install wasm-pack --locked --version ([0-9][\w.+-]*)", "ci"),
+        "probe": ["wasm-pack", "--version"],
+        "field": 1,
+        "match": "exact",
+    },
+    {
+        "program": "cargo:fuzz",
+        "source": ".github/workflows/ci.yml",
+        "pin": (r"cargo install --locked --version ([0-9][\w.+-]*) cargo-fuzz", "ci"),
+        "probe": ["cargo", "fuzz", "--version"],
+        "field": 1,
+        "match": "exact",
+    },
+    {
+        "program": "cargo:audit",
+        "source": ".github/workflows/ci.yml",
+        "pin": (r"cargo install cargo-audit --version ([0-9][\w.+-]*)", "ci"),
+        "probe": ["cargo", "audit", "--version"],
+        "field": 1,
+        "match": "exact",
+    },
+    {
+        "program": "pnpm",
+        "source": "apps/web/package.json",
+        "pin": ("packageManager", "pnpm-package-json"),
+        "probe": ["pnpm", "--version"],
+        "field": 0,
+        "match": "exact",
+    },
+    {
+        # MAJOR ONLY, because `node-version: 22` IS a major-version pin -- that is what the
+        # setup-node field means, and CI takes whatever 22.x the runner has. Comparing the full
+        # string would refuse a machine that matches CI exactly.
+        "program": "node",
+        "source": ".github/workflows/ci.yml",
+        "pin": (r"node-version: ([0-9]+)", "ci"),
+        "probe": ["node", "--version"],
+        "field": 0,
+        "match": "major",
+    },
+]
+
+# Versions this repository has deliberately decided not to hold a machine to, with the reason
+# printed on every run. Same idea as EXEMPT, and the same rule: an allowance with a weak reason
+# is visible rather than buried. Empty is the correct default -- an allowance added to make a
+# sweep pass is the thing this block exists to make somebody argue for.
+VERSION_ALLOWANCES: dict[str, str] = {}
+
+
+def _pinned_version(spec: tuple[str, str]) -> str | None:
+    """The expected version, read from the file that pins it."""
+    pattern, kind = spec
+    if kind == "pnpm-package-json":
+        try:
+            data = json.loads((REPO / "apps/web/package.json").read_text())
+        except (OSError, ValueError):
+            return None
+        field = data.get(pattern, "")
+        m = re.match(r"pnpm@([0-9][\w.+-]*?)(?:\+sha|$)", field)
+        return m.group(1) if m else None
+    path = CI if kind == "ci" else REPO / "rust-toolchain.toml"
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    m = re.search(pattern, text, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def _reported_version(probe: list[str], field: int, cwd: Path) -> tuple[str | None, str]:
+    """What the installed tool says its version is, asked in `cwd`, and why if it did not say.
+
+    TWO OUTCOMES, NOT ONE, and collapsing them was a real defect. The first version returned
+    `None` for both "the binary is absent" and "the binary is present and did not answer", and
+    `check_versions` treated every `None` as "absence, reported elsewhere" -- so a `cargo` that
+    answered `--list` but exited non-zero on `--version` produced `0 pinned version(s)
+    compared` and a sweep that ran anyway reporting success. Zero of six compared reads exactly
+    like six of six.
+
+    IT ALSO CHECKS THE RETURN CODE, which is what made the message honest. With a mutated
+    `rust-toolchain.toml`, `cargo --version` fails and rustup prints an error whose first word
+    is `custom` -- so the refusal read `cargo is custom, pinned at 99.99.99`, and the
+    self-test greped only for the pinned half and passed over the garbage.
+    """
+    if shutil.which(probe[0]) is None:
+        return None, "absent"
+    try:
+        result = subprocess.run(
+            probe, capture_output=True, text=True, check=False, cwd=cwd, timeout=60
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"{' '.join(probe)} did not answer within 60s"
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, f"{' '.join(probe)} could not be run ({error})"
+    if result.returncode != 0:
+        first = (result.stderr or result.stdout).strip().splitlines()
+        detail = first[0] if first else "no output"
+        return None, f"{' '.join(probe)} exited {result.returncode}: {detail}"
+    lines = (result.stdout or result.stderr).strip().splitlines()
+    if not lines:
+        return None, f"{' '.join(probe)} printed nothing"
+    parts = lines[0].split()
+    if len(parts) <= field:
+        return None, f"{' '.join(probe)} printed {lines[0]!r}, which has no field {field}"
+    return parts[field].lstrip("v"), "ok"
+
+
+def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tuple[list[str], str]:
+    """Version findings, and a report of how many pins were compared against how many were due.
+
+    THE COUNT IS GATED, because the expected value is knowable: it is the number of PINS whose
+    program this selection of jobs requires. "0 pinned version(s) compared" reads exactly like
+    "6 of 6" unless something says what it should have been -- the "4 of 15" failure this
+    repository has now hit in three different tools.
+    """
+    problems: list[str] = []
+    compared = 0
+    absent = 0
+    due = sum(1 for spec in PINS if spec["program"] in required)
+    for spec in PINS:
+        program = spec["program"]
+        if program not in required:
+            continue
+        expected = _pinned_version(spec["pin"])
+        if expected is None:
+            # A PIN THAT CANNOT BE READ IS A REFUSAL. Skipping would mean this check quietly
+            # stops examining that tool the day its pin file is reformatted, and reports the
+            # same OK either way.
+            problems.append(
+                f"{program}: cannot read the pinned version out of {spec['source']}, "
+                f"so nothing was compared for it"
+            )
+            continue
+        workdir = Path(where.get(program, "."))
+        # A JOB'S `cd` STAYS INSIDE THE REPOSITORY. No job has an absolute or climbing `cd`
+        # today; this makes a future one a fallback rather than a probe executed somewhere
+        # nobody intended. Security review.
+        if workdir.is_absolute() or ".." in workdir.parts:
+            cwd = REPO
+        else:
+            cwd = REPO / workdir
+            if not cwd.is_dir():
+                cwd = REPO
+        actual, why = _reported_version(spec["probe"], spec["field"], cwd)
+        if actual is None:
+            if why == "absent":
+                # Absence is the presence check's finding, not this one's; reported there.
+                absent += 1
+                continue
+            # PRESENT AND DID NOT ANSWER IS THIS CHECK'S FINDING, not a skip. Collapsing the
+            # two meant a cargo that answered `--list` and failed `--version` produced
+            # "0 pinned version(s) compared" and a sweep that ran anyway reporting success.
+            # The realistic trigger is not exotic: a newly-bumped `rust-toolchain.toml` makes
+            # `cargo --version` install a toolchain, which can exceed the timeout.
+            problems.append(
+                f"{program}: the version probe did not answer, so nothing was compared "
+                f"for it -- {why}"
+            )
+            continue
+        compared += 1
+        ok = (
+            actual.split(".")[0] == expected.split(".")[0]
+            if spec["match"] == "major"
+            else actual == expected
+        )
+        if ok:
+            continue
+        if program in VERSION_ALLOWANCES:
+            print(f"  version allowance: {program} {actual} against pinned {expected} "
+                  f"-- {VERSION_ALLOWANCES[program]}")
+            continue
+        problems.append(
+            f"{program} is {actual}, pinned at {expected} in {spec['source']} "
+            f"(asked in {cwd.relative_to(REPO) if cwd != REPO else '.'}); "
+            f"needed by: {', '.join(sorted(set(required[program])))}"
+        )
+
+    # EVERY PIN DUE IS ACCOUNTED FOR: compared, or absent (which the presence check reports),
+    # or already a finding above. A shortfall means one slipped through silently.
+    accounted = compared + absent + len(problems)
+    if accounted < due:
+        problems.append(
+            f"{due - accounted} pinned version(s) were neither compared nor reported, so this "
+            f"check examined less than it was due to"
+        )
+    return problems, f"{compared} of {due} pinned version(s) compared"
+
+
+def resolve_program(program: str, subcommands: set[str], toolchains: set[str]) -> tuple[bool, str]:
+    """Whether `program` is available, and how that was decided."""
+    if program.startswith("cargo:"):
+        return (program.split(":", 1)[1] in subcommands, "cargo subcommand (cargo --list)")
+    if program.startswith("rustup:"):
+        if shutil.which("rustup") is None:
+            # Say what is actually wrong. "toolchain not installed" sends somebody to
+            # `rustup toolchain install` on a machine with no rustup to run it.
+            return (False, "rustup itself is not on PATH, so no toolchain can be resolved")
+        return (program.split(":", 1)[1] in toolchains, "rust toolchain (rustup toolchain list)")
+    if "/" in program:
+        path = REPO / program
+        return (path.is_file() and os.access(path, os.X_OK), "repository script")
+    found = shutil.which(program)
+    return (found is not None, f"PATH ({found})" if found else "PATH")
+
+
+def _listing(argv: list[str]) -> str:
+    """Stdout of a listing command, or empty if it is not installed.
+
+    NOT ALLOWED TO RAISE, and that is the whole reason it is a function. The first version
+    called `cargo --list` unguarded, so on a machine with no cargo the preflight itself died
+    with a `FileNotFoundError` traceback -- on precisely the machine it exists to give a clear
+    answer about. A gate whose failure mode is a stack trace has moved the confusion rather
+    than removed it.
+    """
+    if shutil.which(argv[0]) is None:
+        return ""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, check=False, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _cargo_subcommands() -> set[str]:
+    names: set[str] = set()
+    for line in _listing(["cargo", "--list"]).splitlines():
+        if not line.startswith(("    ", "\t")):
+            continue
+        parts = line.strip().split()
+        if parts:
+            names.add(parts[0])
+    return names
+
+
+def _rustup_toolchains() -> set[str]:
+    names: set[str] = set()
+    for line in _listing(["rustup", "toolchain", "list"]).splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        names.add(parts[0])
+        # `nightly-aarch64-unknown-linux-gnu` is how a channel is spelled once installed; the
+        # job asks for `+nightly`. Record the channel as well as the full triple.
+        names.add(parts[0].split("-")[0])
+    return names
+
+
+def preflight(jobs: list[dict]) -> list[str]:
+    """Refuse-worthy findings about this machine, plus a report of what was examined."""
+    required: dict[str, list[str]] = {}
+    where: dict[str, str] = {}
+    candidates = tool_candidates()
+    for job in jobs:
+        workdir = workdir_of(job["run"])
+        direct = programs_in(job["run"])
+        for program in direct:
+            required.setdefault(program, []).append(job["name"])
+            # A DIRECT NAMING WINS THE WORKING DIRECTORY, always, over a transitive one.
+            # `where` was first-writer-wins, and the full sweep refused because of it: jobs
+            # earlier in the table reached `pnpm` transitively with workdir `.`, so the probe
+            # ran at the repository root and read 12.3.4 where `web` -- which names pnpm
+            # directly, in `apps/web` -- would have read the pinned 11.26.0. The tool that
+            # runs a command knows where it runs it; a tool that merely mentions it does not.
+            where[program] = workdir
+        # AND WHAT THOSE SCRIPTS USE FROM INSIDE. Without this, `checkers` requires `python3`
+        # and four file paths while `check-no-network-deps.sh` calls `cargo tree` eight times.
+        # SEEDED FROM SCRIPT PATHS IN THE RUN STRING, not only from `direct`. `python3
+        # tools/x.py` yields the program `python3` and the script as an ARGUMENT, so a Python
+        # checker's own tool use would be invisible the same way a shell one's was. No checker
+        # invokes cargo from Python today -- the two mentions in `check-engine-licences.py` are
+        # prose -- so this closes the analogous gap before it is live rather than after.
+        reachable = set(direct) | set(SCRIPT_REF.findall(job["run"]))
+        for script, used in transitive_programs(reachable, candidates).items():
+            for program in used:
+                required.setdefault(program, []).append(f"{job['name']} (via {script})")
+                where.setdefault(program, workdir)
+
+    subs = _cargo_subcommands()
+    chains = _rustup_toolchains()
+
+    # THE NEGATIVE CONTROL, through every branch of the resolver, every run.
+    controls = (SENTINEL, f"cargo:{SENTINEL}", f"rustup:{SENTINEL}", f"tools/{SENTINEL}.sh")
+    for probe in controls:
+        if resolve_program(probe, subs, chains)[0]:
+            # NOTE: this returns before the `environment:` report line below, so a machine that
+            # trips a control gets the refusal and no report. That is the right order -- there
+            # is nothing honest to report once the resolver is known to be lying.
+            return [f"the resolver reports {probe!r} as present, so its verdicts mean nothing"]
+
+    missing_base = {p for p in required if ":" not in p and not resolve_program(p, subs, chains)[0]}
+
+    problems: list[str] = []
+    for program in sorted(required):
+        prefix = next((k for k in DERIVED_HOST if program.startswith(k)), None)
+        if prefix and DERIVED_HOST[prefix] in missing_base:
+            continue  # its host is already the finding
+        ok, how = resolve_program(program, subs, chains)
+        if not ok:
+            problems.append(
+                f"{program} not found -- {how}; needed by: {', '.join(sorted(set(required[program])))}"
+            )
+
+    version_problems, version_report = check_versions(required, where)
+    problems += version_problems
+
+    print(
+        f"environment: {len(required)} program(s) required by {len(jobs)} job(s), "
+        f"{version_report}, {len(controls)} resolver control(s) verified"
+    )
+    if VERSION_ALLOWANCES:
+        print(f"{len(VERSION_ALLOWANCES)} version allowance(s), with reasons, applied above")
+    return problems
+
+
 def qpdf_cli() -> tuple[str | None, str]:
     """Where a `qpdf` CLI can be found, and how it was found.
 
@@ -473,9 +1181,34 @@ def run(job: dict, env: dict[str, str] | None = None) -> bool:
     return ok
 
 
+def report_environment(findings: list[str]) -> None:
+    """Say what is wrong with this machine, and why nothing was run."""
+    print(f"\nREFUSED — environment not ready ({len(findings)}):", file=sys.stderr)
+    for finding in findings:
+        print(f"  - {finding}", file=sys.stderr)
+    print(
+        "\n  Nothing was run. A sweep on a machine that cannot complete it reports\n"
+        "  failures that look like the change's fault: a missing cargo produces\n"
+        "  `cargo tree failed` inside the network-dependency checker, which reads as a\n"
+        "  broken checker. Fix the environment, or argue an entry into\n"
+        "  VERSION_ALLOWANCES in tools/ci-local.py.",
+        file=sys.stderr,
+    )
+
+
 def main(argv: list[str]) -> int:
     check_only = "--check" in argv
     listing = "--list" in argv
+    # THE ENVIRONMENT CHECK, REACHABLE WITHOUT RUNNING A JOB.
+    #
+    # It cannot simply live under `--check`: CI runs `--check` as a parity gate on a runner that
+    # deliberately has none of these tools, and refusing there would fail every PR. And it must
+    # not ONLY live on the running path, because then the test that says "the preflight does not
+    # refuse a job needing none of the missing tools" has no way to reach it -- which is exactly
+    # what code review found: that case ran `--check`, returned before the preflight, and passed
+    # against a mutant whose `preflight()` refused everything unconditionally. A case that
+    # cannot observe the behaviour it names is the failure this whole file is about.
+    preflight_only = "--preflight" in argv
     only = None
     if "--only" in argv:
         index = argv.index("--only")
@@ -483,6 +1216,16 @@ def main(argv: list[str]) -> int:
             print("error: --only needs a job name", file=sys.stderr)
             return 1
         only = argv[index + 1]
+
+    # THE PARSER FIRST, AND ALWAYS -- including under `--check`, which runs no job. It decides
+    # what the preflight looks for, so a broken one reports an empty requirement set and a
+    # clean bill of health for a machine with nothing on it.
+    broken = verify_parser()
+    if broken:
+        print("\nFAILED — the command parser does not pass its own cases:", file=sys.stderr)
+        for problem in broken:
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
 
     found = commands_ci_runs()
     uncovered, stale = parity(found)
@@ -542,6 +1285,13 @@ def main(argv: list[str]) -> int:
         print(f"error: no local job named {only!r}", file=sys.stderr)
         return 1
 
+    if preflight_only:
+        findings = preflight(jobs)
+        if findings:
+            report_environment(findings)
+            return 1
+        return 0
+
     # CI's workflow-level env, applied to every local job. `RUSTFLAGS: -D warnings` is the
     # one that matters and the one that was missing: every local cargo job ran under weaker
     # lints than CI, so a warning-level regression passed here and went red there.
@@ -551,6 +1301,14 @@ def main(argv: list[str]) -> int:
     if inherited:
         applied = ", ".join(f"{k}={v}" for k, v in sorted(inherited.items()))
         print(f"\nci.yml env applied: {applied}")
+
+    # THE ENVIRONMENT, BEFORE ANY JOB RUNS. Scoped to the jobs actually selected, so
+    # `--only prune-is-reached` is not refused for a cargo it never invokes -- and so the qpdf
+    # case below still reaches its own refusal rather than being pre-empted by this one.
+    findings = preflight(jobs)
+    if findings:
+        report_environment(findings)
+        return 1
 
     # THE `qpdf` CLI, RESOLVED BEFORE ANYTHING RUNS. `needs_qpdf_cli` was declared on three
     # jobs and read by nothing -- so on a machine without the CLI those three did not refuse,

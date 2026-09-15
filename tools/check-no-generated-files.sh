@@ -65,6 +65,7 @@ PATTERNS=(
   '(^|/)engines/vendor/'
   '(^|/)\.astro/'
   '(^|/)src/generated/'
+  '(^|/)core/[^/]+/tests/zz_[^/]*\.rs$'
 )
 LABELS=(
   'Python bytecode'
@@ -83,6 +84,7 @@ LABELS=(
   'the fetched engine tree'
   'Astro cache'
   'generated source'
+  "a self-test's planted integration suite"
 )
 # One path each pattern MUST match. Both real incidents appear here by name.
 PROBES=(
@@ -102,6 +104,7 @@ PROBES=(
   'engines/vendor/wasm/lib/pdfium.js'
   'apps/web/.astro/types.d.ts'
   'apps/web/src/generated/engines.js'
+  'core/burrow-ops/tests/zz_planted_by_self_test.rs'
 )
 
 # Legitimate exceptions. Each needs a reason, because an unexplained entry here is how a

@@ -278,6 +278,311 @@ if [ -n "$hidden" ] && [ -e "$hidden" ]; then
   hidden=""
 fi
 
+# EVERYTHING THE CASES BELOW CREATE, RESTORED ON ANY EXIT. `rust-toolchain.toml` in particular:
+# leaving a mutated compiler pin behind would make every later cargo command in this tree build
+# with something nobody chose, which is a worse mess than the one this file tests for.
+broken=""
+tbackup=""
+allow_fixture=""
+# `-s`, NOT `-e`, ON THE TOOLCHAIN BACKUP. `tbackup="$(mktemp)"` creates a ZERO-BYTE file, and
+# the trap is armed before the `cp` that fills it -- so in that window `[ -e ]` was true and the
+# restore would have TRUNCATED the tracked compiler pin to nothing. Security review caught it;
+# the original code at the top of this file deliberately copies before arming, and the new
+# cases reversed that order. `-s` makes the window harmless either way.
+#
+# AND THE SIGNALS EXIT MISSES. Measured on bash 5: an EXIT trap runs on INT and TERM but NOT on
+# HUP -- exit 129, body never executed. A sweep in a terminal that goes away would leave
+# `rust-toolchain.toml` at `99.99.99`, and every later cargo command in the tree would try to
+# resolve a toolchain that does not exist.
+restore_all() {
+  trap - EXIT INT TERM HUP
+  cp "$backup" "$ci"
+  rm -f "$backup" "$broken" "$allow_fixture"
+  if [ -n "$tbackup" ] && [ -s "$tbackup" ]; then
+    cp "$tbackup" "$repo/rust-toolchain.toml"
+    rm -f "$tbackup"
+  fi
+  if [ -n "$hidden" ] && [ -e "$hidden" ]; then
+    mv "$hidden" "${hidden%.hidden-by-test-ci-local}"
+  fi
+  return 0
+}
+trap restore_all EXIT INT TERM HUP
+
+# --- The environment preflight: a missing TOOL refuses, rather than failing every job --------
+#
+# The second of this class, and the reason it is a DERIVED gate rather than another flag.
+# `needs_qpdf_cli` above covers one hand-declared tool; this covers every program the selected
+# jobs invoke, read out of their own `run` strings.
+#
+# Measured twice: M0's rustfmt hook failed SILENTLY when `~/.cargo/bin` was off PATH, and in the
+# split-page batch the same absence produced a sweep with seven failures inside
+# `tools/test-check-no-network-deps.sh`, every one of them reading `cargo tree failed` -- a
+# report about the network-dependency checker, of which nothing had been measured.
+#
+# Same empty-PATH technique as the qpdf case: an interpreter and nothing else, so `which`
+# genuinely finds nothing. `--only fmt` because `fmt` needs cargo and needs no qpdf.
+echo
+empty="$(mktemp -d)"
+ln -s "$py" "$empty/python3"
+status=0
+out="$(PATH="$empty" "$py" "$here/ci-local.py" --only fmt 2>&1)" || status=$?
+rm -rf "$empty"
+if [ "$status" -eq 1 ] && grep -q "environment not ready" <<<"$out" && grep -q "cargo not found" <<<"$out"; then
+  echo "  ok   a job whose cargo is missing is refused by name, not run"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a missing cargo was not refused by name (status $status)"
+  echo "$out" | tail -8
+  fail=$((fail + 1))
+fi
+
+# AND IT MUST NOT REFUSE A JOB THAT NEEDS NONE OF THE MISSING TOOLS. Without this, the case
+# above is satisfied by a preflight that refuses everything -- a different bug with the same
+# green tick, which would also silently pre-empt the qpdf case above, whose whole setup is an
+# empty PATH plus a job that needs no cargo.
+# `--preflight`, NOT `--check`. This case ran `--check`, which returns at the parity gate
+# BEFORE the preflight -- so it reached nothing, and code review proved it vacuous against a
+# mutant whose `preflight()` refused everything unconditionally and still exited 0. The case
+# whose own comment warns about a refuse-everything preflight could not see one.
+#
+# AN EXIT CODE IS NOT AN OUTCOME, so the report line is asserted too: exit 0 is also what a
+# preflight that never ran would give.
+#
+# `fuzz-seed`, NOT `prune-is-reached`: the latter was the fixture until the preflight became
+# transitive, at which point it correctly started requiring cargo through
+# `tools/test-prune-is-reached.sh` and this case went red. That is the transitivity fix working
+# and the fixture going stale, not a regression -- `fuzz-seed` runs `python3` and a script that
+# invokes nothing, so it is genuinely satisfied by the stub PATH.
+empty="$(mktemp -d)"
+ln -s "$py" "$empty/python3"
+status=0
+out="$(PATH="$empty" "$py" "$here/ci-local.py" --only fuzz-seed --preflight 2>&1)" || status=$?
+rm -rf "$empty"
+if [ "$status" -eq 0 ] && grep -q "program(s) required by 1 job(s)" <<<"$out"; then
+  echo "  ok   the preflight is scoped to the selected jobs, not to the whole table"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the preflight refused, or never ran, for a job needing none of the missing tools (status $status)"
+  echo "$out" | tail -8
+  fail=$((fail + 1))
+fi
+
+# --- AND IT IS TRANSITIVE: a tool a job reaches only THROUGH a script still counts ------------
+#
+# The gap that shipped in the first version of this gate and was found by security review. Five
+# jobs have a `run` string that is nothing but script names, so the derived requirement was
+# "that file exists". `checkers` runs `tools/check-no-network-deps.sh`, which calls `cargo tree`
+# eight times -- so with cargo off PATH the preflight passed `checkers` and the job then failed
+# with `cargo tree failed`, which is the LITERAL string this tool's docstring cites as the
+# incident it exists to prevent. The refusal must name the script, not just the tool.
+empty="$(mktemp -d)"
+ln -s "$py" "$empty/python3"
+status=0
+out="$(PATH="$empty" "$py" "$here/ci-local.py" --only checkers --preflight 2>&1)" || status=$?
+rm -rf "$empty"
+if [ "$status" -eq 1 ] && grep -q "cargo not found" <<<"$out" \
+   && grep -q "via tools/check-no-network-deps.sh" <<<"$out"; then
+  echo "  ok   a tool reached only through a script is required, and names the script"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the preflight is not transitive: checkers passed without cargo (status $status)"
+  echo "$out" | tail -8
+  fail=$((fail + 1))
+fi
+
+# --- A tool at the WRONG VERSION is refused, which is the same failure in disguise -----------
+#
+# Presence is not enough: a cargo on PATH at the wrong version runs every job and describes
+# nothing CI will do. The expected version is READ FROM rust-toolchain.toml, so this plants a
+# sentinel there and requires it to come back out -- the same technique as the RUSTFLAGS case,
+# and for the same reason: it proves the number is derived rather than written down twice.
+toolchain="$repo/rust-toolchain.toml"
+tbackup="$(mktemp)"
+cp "$toolchain" "$tbackup"
+python3 - "$toolchain" <<'PYPIN'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = 'channel = "'
+assert old in text, "rust-toolchain.toml no longer pins a channel"
+path.write_text(text.replace(old, 'channel = "99.99.99"  # ', 1))
+PYPIN
+if cmp -s "$toolchain" "$tbackup"; then
+  echo "  FAIL the toolchain pin mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$("$here/ci-local.py" --only fmt 2>&1)" || status=$?
+  # A BOGUS CHANNEL DOES NOT PRODUCE A MISMATCH, it produces a probe that FAILS -- rustup
+  # cannot resolve `99.99.99`, so `cargo --version` exits non-zero. That is its own rule and
+  # its own message. Before the probe checked the return code, this surfaced as
+  # `cargo is custom, pinned at 99.99.99` -- word one of rustup's error text read as a version
+  # -- and this case passed anyway, because it asserted only the pinned half. Code review.
+  # The genuine mismatch path is the wasm-pack case below, whose probe still succeeds.
+  if [ "$status" -eq 1 ] && grep -q "the version probe did not answer" <<<"$out" \
+     && ! grep -q "cargo is custom" <<<"$out"; then
+    echo "  ok   a version probe that fails is refused as such, not read as a version"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL a failing version probe was not refused correctly (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+cp "$tbackup" "$toolchain"
+rm -f "$tbackup"
+
+# AND AN UNREADABLE PIN IS A REFUSAL, NOT A SKIP. A regex that stops matching because a file
+# was reformatted would otherwise leave that tool silently unchecked while the output still
+# said OK -- "a check that silently examines nothing is worse than no check".
+tbackup="$(mktemp)"
+cp "$toolchain" "$tbackup"
+python3 - "$toolchain" <<'PYNOPIN'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+assert 'channel = "' in text, "rust-toolchain.toml no longer pins a channel"
+path.write_text(text.replace('channel = "', 'chanel = "', 1))
+PYNOPIN
+if cmp -s "$toolchain" "$tbackup"; then
+  echo "  FAIL the unreadable-pin mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$("$here/ci-local.py" --only fmt 2>&1)" || status=$?
+  if [ "$status" -eq 1 ] && grep -q "cannot read the pinned version" <<<"$out"; then
+    echo "  ok   a pin that cannot be read is refused, not skipped"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL an unreadable pin did not refuse (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+cp "$tbackup" "$toolchain"
+rm -f "$tbackup"
+
+# --- A GENUINE version mismatch, on a pin whose probe still answers --------------------------
+#
+# The case above covers a probe that FAILS. This one covers the comparison itself: `wasm-pack`
+# is pinned in ci.yml, and mutating that number leaves `wasm-pack --version` perfectly able to
+# answer -- so the refusal must name both halves, the installed version and the pinned one.
+# Without this, nothing tests the branch the whole block exists for.
+check_backup="$(mktemp)"
+cp "$ci" "$check_backup"
+python3 - "$ci" <<'PYWP'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "cargo install wasm-pack --locked --version 0.15.0"
+assert old in text, "ci.yml no longer pins wasm-pack this way"
+path.write_text(text.replace(old, "cargo install wasm-pack --locked --version 0.99.0", 1))
+PYWP
+if cmp -s "$ci" "$check_backup"; then
+  echo "  FAIL the wasm-pack pin mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$("$here/ci-local.py" --only wasm-pack --preflight 2>&1)" || status=$?
+  if [ "$status" -eq 1 ] && grep -q "wasm-pack is 0.15.0, pinned at 0.99.0" <<<"$out"; then
+    echo "  ok   a tool at the wrong version is refused, naming both halves"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL a genuine version mismatch was not refused (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+cp "$check_backup" "$ci"
+rm -f "$check_backup"
+
+# --- An allowance suppresses a mismatch, and says why ----------------------------------------
+#
+# VERSION_ALLOWANCES ships EMPTY, which is the right default and also means nothing exercises
+# it. An untested escape hatch is one nobody can trust when they need it, so a copy of the
+# checker with one entry must accept the same mutation the case above refuses -- and print the
+# reason while doing it.
+cp "$ci" "$check_backup" 2>/dev/null || check_backup="$(mktemp)"
+cp "$ci" "$check_backup"
+python3 - "$ci" <<'PYWP2'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "cargo install wasm-pack --locked --version 0.15.0"
+assert old in text, "ci.yml no longer pins wasm-pack this way"
+path.write_text(text.replace(old, "cargo install wasm-pack --locked --version 0.99.0", 1))
+PYWP2
+allow_fixture="$here/.ci-local-allowance-fixture.py"
+python3 - "$here/ci-local.py" "$allow_fixture" <<'PYALLOW'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = "VERSION_ALLOWANCES: dict[str, str] = {}"
+assert old in text, "VERSION_ALLOWANCES is not spelled as this test expects"
+dst.write_text(text.replace(
+    old,
+    'VERSION_ALLOWANCES: dict[str, str] = {"wasm-pack": "planted by tools/test-ci-local.sh"}',
+    1,
+))
+PYALLOW
+if cmp -s "$here/ci-local.py" "$allow_fixture"; then
+  echo "  FAIL the allowance mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$(python3 "$allow_fixture" --only wasm-pack --preflight 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] && grep -q "planted by tools/test-ci-local.sh" <<<"$out"; then
+    echo "  ok   an argued allowance suppresses a mismatch and prints its reason"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL an allowance did not suppress the mismatch (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+rm -f "$allow_fixture"
+cp "$check_backup" "$ci"
+rm -f "$check_backup"
+
+# --- The probe gate itself: break one RULE in a copy and require it to refuse, naming it -----
+#
+# CLAUDE.md's definition of done: "break a rule in a COPY of the checker and assert it refuses,
+# NAMING the reason. Put the copy beside the original -- a copy in a temp directory resolves its
+# own paths wrongly and exits non-zero for the wrong reason, which an exit-code-only assertion
+# reports as a pass." So the copy goes in tools/, and the assertion reads the message.
+#
+# The rule broken is the one that was actually wrong first: stripping a leading `VAR=value`
+# assignment. With ASSIGNMENT unable to match, `RUSTDOCFLAGS="-D warnings" cargo doc` stops
+# yielding `cargo`, so a machine with no cargo would pass the preflight for the `doc` job.
+broken="$here/.ci-local-parser-fixture.py"
+python3 - "$here/ci-local.py" "$broken" <<'PYBREAK'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = 'ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")'
+# THE MUTATION MUST APPLY. A replace that matched nothing leaves a working copy, and a working
+# copy passing its own probes reads exactly like the gate holding.
+assert old in text, "the assignment rule is not spelled as this test expects"
+dst.write_text(text.replace(old, 'ASSIGNMENT = re.compile(r"^(?!)")', 1))
+PYBREAK
+if cmp -s "$here/ci-local.py" "$broken"; then
+  echo "  FAIL the checker copy is identical to the original, so nothing was broken"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$(python3 "$broken" --check 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && grep -q "the command parser is broken" <<<"$out"; then
+    echo "  ok   a broken parser rule is refused by its own probe, naming the parser"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL a broken parser rule was not caught by the probe table (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+rm -f "$broken"
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2
