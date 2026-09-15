@@ -71,6 +71,90 @@ test("respawn cost, including compiling the engines", async ({ page }, testInfo)
   expect(median, `median respawn ${median}ms`).toBeLessThan(15_000);
 });
 
+test("the slowest LEGITIMATE operation in the corpus, which sets the watchdog budget", async ({
+  page,
+}, testInfo) => {
+  // THE NUMBER THE WATCHDOG IS DERIVED FROM, measured rather than chosen.
+  //
+  // `LIMITS.maxDurationMs` was 120 s, so a crafted file that hangs an engine call froze the
+  // tab for two minutes before failing. That was accepted as a residual for a LOCAL build
+  // (`docs/security/exposure-2026-09-14-qpdf-uaf.md`), and on a public URL it is a different
+  // question: a minute-long freeze reads as a broken site, and most people close the tab long
+  // before the error lands. So the budget comes down.
+  //
+  // IT CANNOT COME DOWN TO A GUESS. A budget under the slowest real operation turns a working
+  // tool into one that refuses honest documents with `LimitExceeded`, which is worse than the
+  // freeze: the freeze ends in a correct answer, and a premature refusal is a wrong one. So
+  // this walks the corpus, times every operation on every fixture, and reports the slowest
+  // that SUCCEEDS -- failures are excluded deliberately, because a file that is refused is
+  // not work anybody is waiting on.
+  //
+  // The assertion is loose on purpose, for the reason this file's header gives: a CI runner is
+  // not a benchmark. What is asserted is that the slowest honest operation still sits far
+  // enough under the budget that the budget is about hangs rather than about work.
+  await openHarness(page);
+
+  const files = [
+    "blank-1page.pdf",
+    "pages-10.pdf",
+    // THE BIGGEST HONEST DOCUMENT IN THE CORPUS, and the one that decides this number.
+    "pages-137.pdf",
+    "inherited-rotation-6page.pdf",
+    "mixed-rotation-4page.pdf",
+    // Large and legitimate: 204 KB of object streams. It is a bomb by construction and it is
+    // also a file qpdf reads, so whichever way it lands it belongs in the sample.
+    "objstm-bomb.pdf",
+  ];
+
+  const rows: { file: string; op: string; ok: boolean; ms: number }[] = [];
+
+  for (const name of files) {
+    for (const op of ["page_count", "structure_check"] as const) {
+      const measured = await page.evaluate(
+        async ([operation, bytes, limits]) => {
+          const started = performance.now();
+          const reply = await window.burrowHarness.run(
+            operation as "page_count" | "structure_check",
+            bytes as number[],
+            { limits },
+          );
+          return { ms: performance.now() - started, ok: reply.ok };
+        },
+        [op, fixture(name), { maxMemoryBytes: 4 * 1024 * MIB, maxInputBytes: 512 * MIB }] as const,
+      );
+      rows.push({ file: name, op, ok: measured.ok, ms: Math.round(measured.ms) });
+    }
+  }
+
+  const succeeded = rows.filter((r) => r.ok);
+  expect(
+    succeeded.length,
+    "no operation in the sample succeeded, so the slowest one is not a measurement of work",
+  ).toBeGreaterThan(4);
+
+  const slowest = succeeded.reduce((worst, row) => (row.ms > worst.ms ? row : worst));
+  const table = rows
+    .map((r) => `${r.file}\t${r.op}\t${r.ok ? "ok" : "refused"}\t${r.ms} ms`)
+    .join("\n");
+  writeFileSync(
+    join(testInfo.project.outputDir ?? "test-results", "watchdog-budget.txt"),
+    `slowest successful: ${slowest.file} ${slowest.op} ${slowest.ms} ms\n\n${table}\n`,
+  );
+  console.log(`slowest successful operation: ${slowest.file} ${slowest.op} — ${slowest.ms} ms`);
+  console.log(table);
+
+  // THE BUDGET IS 12 s. This asserts the headroom that number was chosen for: the slowest
+  // honest operation must finish inside a quarter of it, so an ordinary document on a slower
+  // machine than this runner still has three times the margin it needs. If this ever fails,
+  // the answer is to re-derive the budget from the new measurement and amend ADR 0015 --
+  // never to raise it quietly so the suite goes green.
+  expect(
+    slowest.ms,
+    `the slowest honest operation (${slowest.file} ${slowest.op}) is ${slowest.ms} ms, which is ` +
+      `not comfortably inside the 12 s watchdog budget. Re-derive the budget and amend ADR 0015.`,
+  ).toBeLessThan(3_000);
+});
+
 test("engine heap growth across the corpus, and what the bombs cost", async ({
   page,
 }, testInfo) => {

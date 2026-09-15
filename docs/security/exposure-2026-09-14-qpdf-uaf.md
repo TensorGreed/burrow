@@ -147,7 +147,7 @@ Measured, on all three paths rather than reasoned about:
 | path | outcome |
 |---|---|
 | native, ordinary release build | deterministic SIGSEGV |
-| web (wasm) | hangs; the watchdog kills it at 60 s → typed `LimitExceeded`, worker discarded |
+| web (wasm) | hangs; the watchdog kills it at the operation budget → typed `LimitExceeded`, worker discarded. **12.5 s** since ADR 0015 §12; it said 60 s here and the real figure was 120.5 — see *Accepted* below |
 | `qpdf --empty --pages A B --` | completes with warnings; does not reproduce |
 
 Order decides it: the crafted document faults only when it is **not** the first source — your
@@ -202,10 +202,26 @@ its own output, which turns any page-level silent case into a refusal wherever i
 
 ### Accepted, and recorded rather than discovered
 
-A crafted document freezes an operation for the 60-second watchdog budget before failing, and
-repeated attempts can open the circuit breaker and leave the page unusable until reload.
-Recoverable, self-inflicted on a file the user chose, no data at risk. Shortening the watchdog
-for the *open* phase would bound it; not done.
+A crafted document freezes an operation for the watchdog budget before failing, and repeated
+attempts can open the circuit breaker and leave the page unusable until reload. Recoverable,
+self-inflicted on a file the user chose, no data at risk.
+
+**THIS SAID "60-SECOND" AND THAT WAS ALREADY WRONG WHEN IT WAS WRITTEN.** The page asks for
+`maxDurationMs` and `WATCHDOG_GRACE_MS` is added to it, so the real bound was
+`120_000 + 500` — **two minutes of frozen tab**, not one. The number here was read off
+`DEFAULT_ACK_TIMEOUT_MS`, which bounds something else entirely: the wait for a worker to
+acknowledge a request *before* it touches the file.
+
+**AND "not done" IS NO LONGER TRUE.** The acceptance above was made about a build running on
+`localhost`. Deploying to a public URL (ADR 0024) made it a different question: a
+minute-long freeze reads as a broken site, and most people close the tab long before the
+honest error arrives — so the defence never reaches the person it defends. The budget is
+**12 seconds** now, derived in ADR 0015 §12 from the slowest operation in the corpus that
+actually succeeds (611 ms). What is accepted is a 12.5-second freeze, not a 120.5-second one.
+
+The residual that remains is stated there rather than here: no corpus fixture approaches the
+512 MB input ceiling, so a document near it is outside the measurement. If one exceeds the
+budget the result is a typed `LimitExceeded` the page explains, not a wrong answer.
 
 ## 6. What has not changed
 

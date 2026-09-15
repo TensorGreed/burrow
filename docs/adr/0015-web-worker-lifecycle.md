@@ -360,6 +360,54 @@ none will be made, so `true` was simply wrong — and it was not harmless: it ma
 that expected a crash pass on a refusal, because the two looked identical. Every other
 host-produced failure keeps `fatal: true`.
 
+### 12. The operation budget is 12 s, and the number is measured
+
+**Decided when the site stopped being local.** The page asked for `maxDurationMs: 120_000`, and
+`WATCHDOG_GRACE_MS` is added on top, so a crafted file that hangs an engine call froze the tab
+for **120.5 seconds** before failing.
+`docs/security/exposure-2026-09-14-qpdf-uaf.md` accepted that as a residual and recorded it as
+"the 60-second watchdog budget" — a figure taken from `DEFAULT_ACK_TIMEOUT_MS`, which bounds
+the wait for a worker to *acknowledge* a request rather than the operation itself. The
+acceptance was made about a build running on `localhost`. ADR 0024 put it on a public URL,
+where a two-minute freeze reads as a broken site and most people close the tab long before the
+honest error lands — so the defence never reaches the person it is defending.
+
+**THE BUDGET CANNOT BE CHOSEN, BECAUSE THE FAILURE DIRECTIONS ARE NOT SYMMETRIC.** Too high and
+a hostile file holds the tab. Too low and honest documents are refused with `LimitExceeded` —
+which is *worse*, because the freeze ends in a correct answer and a premature refusal is a
+wrong one. So the number is derived from the slowest operation in the corpus that **succeeds**;
+failures are excluded deliberately, since a file that is refused is not work anybody waits on.
+
+Measured in a real browser by `apps/web/e2e/measure.spec.ts`, which is a test rather than a
+one-off script for the reason §5 gives about the heap numbers — a measurement that decides
+something should be repeatable by whoever reads the decision:
+
+| document | `page_count` | `structure_check` |
+|---|--:|--:|
+| ordinary, 1–137 pages | 1–9 ms | 1–7 ms |
+| 9,864 pages, just under `max_pages` | 148 ms | 79 ms |
+| 27,400 pages, past the ceiling, for the slope | 218 ms | 215 ms |
+| `objstm-bomb.pdf`, 204 KB and structure-dense | 565 ms | **611 ms** |
+
+**The cost scales with structure, not with file size** — which is why a document at the page
+ceiling is cheaper than a 204 KB bomb, and why picking a budget from file size would have got
+it wrong in both directions.
+
+**12 seconds**, about 20× the slowest honest operation. The test asserts that slowest figure
+stays under 3 s, so an ordinary document keeps three times the margin it needs on a machine far
+slower than a CI runner; if that assertion ever fails the answer is to re-derive the budget and
+amend this section, never to raise the bound quietly so the suite goes green.
+
+**The residual, stated rather than implied.** No corpus fixture approaches the 512 MB
+`max_input_bytes` ceiling, so a document near it is outside this sample. If one exceeds 12 s
+the result is a typed `LimitExceeded` the page explains — `max_duration_ms` is cooperative and
+checked at checkpoints (ADR 0007) — not a wrong answer and not a freeze. A visible refusal is
+the right direction to fail in, and it is recoverable by the person choosing a smaller job.
+
+This is the page's request, not an enforcement: `burrow_types::Limits`' own default is
+unchanged at 60 s, and native and mobile callers are unaffected. What changed is what the web
+page asks for.
+
 ## Consequences
 
 The web now has a stronger duration guarantee than native, which inverts the usual

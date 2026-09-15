@@ -280,6 +280,8 @@ JOBS: list[dict] = [
                 # like any other here: it refuses a force-push to `main` in any spelling, and
                 # a control nothing runs is a control nobody knows is broken.
                 ".claude/hooks/test-refuse-force-push-to-main.sh",
+                "tools/check-deploy-workflow.py",
+                "tools/test-check-deploy-workflow.sh",
             ]
         ),
         "covers": [
@@ -295,6 +297,8 @@ JOBS: list[dict] = [
             "tools/test-seed-fuzz-corpus.sh",
             "tools/test-ci-local.sh",
             ".claude/hooks/test-refuse-force-push-to-main.sh",
+            "tools/check-deploy-workflow.py",
+            "tools/test-check-deploy-workflow.sh",
         ],
     },
     {
@@ -400,6 +404,39 @@ JOBS: list[dict] = [
 ]
 
 
+def ci_text_including_local_actions() -> str:
+    """`ci.yml`, plus every local composite action it uses.
+
+    A COMPOSITE ACTION IS STILL CI, AND THE EXTRACTOR COULD NOT SEE ONE. The wasm-engine build
+    moved into `.github/actions/build-web-payload/action.yml` so the deploy workflow and CI
+    could not drift -- they already had, in four places including the GnuTLS assertion. The
+    moment it moved, `tools/check-wasm-exports.sh` and `tools/check-qpdf-crypto.sh` stopped
+    appearing in `ci.yml`'s text and parity refused four local claims as unbacked.
+
+    That refusal was right and its cause was not: CI does still run them. This is `CLAUDE.md`'s
+    fifth row again -- a gate the extractor cannot SEE -- and the answer is the same as it was
+    for `.claude/hooks/*.sh`: teach the extractor where gates live, rather than deleting a true
+    claim to make the table agree.
+
+    Only LOCAL actions (`uses: ./...`) are followed. A third-party action is a SHA-pinned
+    black box; reading its contents would be claiming to know what it runs.
+    """
+    parts = [CI.read_text(encoding="utf-8")]
+    for match in re.finditer(r"uses:\s*(\./[\w./-]+)", parts[0]):
+        action_dir = REPO / match.group(1).removeprefix("./")
+        for name in ("action.yml", "action.yaml"):
+            candidate = action_dir / name
+            if candidate.is_file():
+                parts.append(candidate.read_text(encoding="utf-8"))
+                break
+        else:
+            # A `uses: ./x` with no action file is a workflow that cannot run. Say so here
+            # rather than silently extracting nothing from it.
+            raise SystemExit(
+                f"ci-local: {CI_REL} uses {match.group(1)}, which has no action.yml"
+            )
+    return "\n".join(parts)
+
 def commands_ci_runs() -> dict[str, list[str]]:
     """Every significant command in `ci.yml`, mapped to the step names that invoke it.
 
@@ -407,7 +444,7 @@ def commands_ci_runs() -> dict[str, list[str]]:
     inside `run:` block scalars -- shell, not YAML -- and a parser would hand back the same
     strings after more ceremony. What matters is that nothing is filtered out on the way.
     """
-    text = CI.read_text(encoding="utf-8")
+    text = ci_text_including_local_actions()
     found: dict[str, list[str]] = {}
     step = "(unnamed step)"
     # The most recent `for target in a b c` seen, so `cargo +nightly fuzz run "$target"`
@@ -982,7 +1019,14 @@ def _pinned_version(spec: tuple[str, str]) -> str | None:
         return None
     path = REPO / kind
     try:
-        text = path.read_text()
+        # FOLLOWS LOCAL COMPOSITE ACTIONS, like the extractor and the pin-consumer guards do.
+        # `cargo install wasm-pack --locked --version ...` moved into
+        # `.github/actions/build-web-payload/action.yml` when CI and the deploy were made to
+        # share one build, and this resolver went looking in `ci.yml` -- which no longer holds
+        # the line. It refused, correctly and for a reason that was about the refactor rather
+        # than the machine, and the count gate is what showed it: "5 of 6 pinned version(s)
+        # compared". A resolver that had SKIPPED instead would have printed 5 of 5.
+        text = ci_text_including_local_actions() if kind == CI_REL else path.read_text()
     except OSError:
         return None
     m = re.search(pattern, text, re.MULTILINE)
@@ -1048,8 +1092,18 @@ def check_versions(required: dict[str, list[str]]) -> tuple[list[str], str]:
         consumer = spec.get("consumer")
         if consumer is not None:
             pattern, rel = consumer
+            # FOLLOWS LOCAL COMPOSITE ACTIONS, for the reason the extractor does. The
+            # `setup-node` step moved into `.github/actions/build-web-payload/action.yml`
+            # when CI and the deploy were made to share one build, and this guard --
+            # "ci.yml still READS .nvmrc" -- went looking in a file that no longer contains
+            # the line. It would have reported the pin as unconsumed, which is the guard
+            # firing on its own blind spot rather than on a defect.
             try:
-                text = (REPO / rel).read_text()
+                text = (
+                    ci_text_including_local_actions()
+                    if rel == CI_REL
+                    else (REPO / rel).read_text()
+                )
             except OSError:
                 text = ""
             if not re.search(pattern, text, re.MULTILINE):
@@ -1062,7 +1116,11 @@ def check_versions(required: dict[str, list[str]]) -> tuple[list[str], str]:
         if conflict is not None:
             pattern, rel = conflict
             try:
-                text = (REPO / rel).read_text()
+                text = (
+                    ci_text_including_local_actions()
+                    if rel == CI_REL
+                    else (REPO / rel).read_text()
+                )
             except OSError:
                 text = ""
             if re.search(pattern, text, re.MULTILINE):

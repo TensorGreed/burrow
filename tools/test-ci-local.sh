@@ -111,6 +111,22 @@ check "a gate under .claude/hooks/ with no local counterpart is refused" \
 " \
   ".claude/hooks/test-something-new.sh" 1
 
+# A GATE INSIDE A LOCAL COMPOSITE ACTION. The wasm-engine build moved into
+# `.github/actions/build-web-payload/action.yml` so CI and the deploy could not drift -- they
+# already had, in four places including the GnuTLS assertion. The moment it moved, the gates
+# inside it vanished from `ci.yml`'s text and parity refused four TRUE local claims as
+# unbacked. CLAUDE.md's fifth row a third time: a gate the extractor cannot see.
+#
+# The extractor follows `uses: ./...` now. This is the re-plant: a gate that exists only
+# inside a composite action must be visible, and one with no local counterpart must be
+# refused.
+check "a gate inside a local composite action with no local counterpart is refused" \
+  "||
+      - name: Run the shared build
+        run: tools/check-inside-a-composite.sh
+" \
+  "tools/check-inside-a-composite.sh" 1
+
 # THE #63 MISS, EXACTLY. `reorder` was added to fuzz/Cargo.toml and to no run list; here the
 # inverse -- a target CI runs that nothing local does.
 #
@@ -613,16 +629,26 @@ nvmrc_backup=""
 # literal back to test something would leave CI on that version while `.nvmrc` sat inert and
 # the preflight went on comparing developer machines against it, reporting
 # "2 of 2 pinned version(s) compared". Code review found the gap; this is the regression case.
-cp "$backup" "$ci"
-python3 - "$ci" <<'PYCONSUMER'
+# THE PIN'S CONSUMER MOVED INTO A COMPOSITE ACTION, and these two cases moved with it.
+# `setup-node` now lives in `.github/actions/build-web-payload/action.yml`, shared by CI's
+# `web` job and by the deploy so the two cannot drift. `ci.yml` no longer contains the line,
+# so mutating `ci.yml` here would assert nothing -- and the guard in `ci-local.py` follows
+# local actions for exactly the same reason. Both halves had to move together; either one
+# alone is a check looking at a file that does not hold what it is checking.
+action="$repo/.github/actions/build-web-payload/action.yml"
+action_backup="$(mktemp)"
+cp "$action" "$action_backup"
+
+cp "$action_backup" "$action"
+python3 - "$action" <<'PYCONSUMER'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
 old = "node-version-file: .nvmrc"
-assert old in text, "ci.yml no longer reads .nvmrc, so this case has nothing to break"
+assert old in text, "the shared action no longer reads .nvmrc, so this case has nothing to break"
 path.write_text(text.replace(old, "node-version: 24", 1))
 PYCONSUMER
-if cmp -s "$ci" "$backup"; then
+if cmp -s "$action" "$action_backup"; then
   echo "  FAIL the consumer mutation did not apply, so this case measured nothing"
   fail=$((fail + 1))
 else
@@ -637,7 +663,7 @@ else
     fail=$((fail + 1))
   fi
 fi
-cp "$backup" "$ci"
+cp "$action_backup" "$action"
 
 # --- A version stated INLINE beside the file reference takes precedence, so it is refused ----
 #
@@ -645,16 +671,16 @@ cp "$backup" "$ci"
 # before `conflict` is ever evaluated -- so that rule had no probe of its own. This is the
 # shape that actually happens: somebody adds the literal back to test something and leaves the
 # file reference in place. `actions/setup-node` then uses the literal and only WARNS.
-cp "$backup" "$ci"
-python3 - "$ci" <<'PYCONFLICT'
+cp "$action_backup" "$action"
+python3 - "$action" <<'PYCONFLICT'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-old = "          node-version-file: .nvmrc"
-assert old in text, "ci.yml no longer reads .nvmrc, so this case has nothing to add to"
-path.write_text(text.replace(old, old + "\n          node-version: 24", 1))
+old = "        node-version-file: .nvmrc"
+assert old in text, "the shared action no longer reads .nvmrc, so this case has nothing to add to"
+path.write_text(text.replace(old, old + "\n        node-version: 24", 1))
 PYCONFLICT
-if cmp -s "$ci" "$backup"; then
+if cmp -s "$action" "$action_backup"; then
   echo "  FAIL the conflict mutation did not apply, so this case measured nothing"
   fail=$((fail + 1))
 else
@@ -669,7 +695,8 @@ else
     fail=$((fail + 1))
   fi
 fi
-cp "$backup" "$ci"
+cp "$action_backup" "$action"
+rm -f "$action_backup"
 
 # --- The node pin survives the web job no longer spelling `node` -----------------------------
 #
