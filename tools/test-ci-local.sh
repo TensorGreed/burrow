@@ -465,27 +465,37 @@ rm -f "$tbackup"
 
 # --- A GENUINE version mismatch, on a pin whose probe still answers --------------------------
 #
-# The case above covers a probe that FAILS. This one covers the comparison itself: `wasm-pack`
-# is pinned in ci.yml, and mutating that number leaves `wasm-pack --version` perfectly able to
-# answer -- so the refusal must name both halves, the installed version and the pinned one.
-# Without this, nothing tests the branch the whole block exists for.
+# The case above covers a probe that FAILS. This one covers the comparison itself: mutating the
+# pin leaves the probe perfectly able to answer, so the refusal must name BOTH halves -- the
+# installed version and the pinned one. Without this, nothing tests the branch the whole block
+# exists for.
+#
+# `node`, NOT `wasm-pack`, and that was a CI failure rather than a preference. This self-test
+# runs in the `deny` job, which fetches nothing and installs nothing -- so `wasm-pack` is absent
+# there, the presence check reported it instead of the version check, and both of these cases
+# went red on a runner while passing locally. "Where a check lives in ci.yml is load-bearing",
+# arriving on a fixture. `node` is present on any runner and is pinned by `node-version`.
+#
+# ASSERTED ON THE MESSAGE, never the exit code: `--only web` also needs `pnpm`, which may be
+# absent on that runner too, so the exit status is 1 for either reason and only the text
+# distinguishes them.
 check_backup="$(mktemp)"
 cp "$ci" "$check_backup"
 python3 - "$ci" <<'PYWP'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-old = "cargo install wasm-pack --locked --version 0.15.0"
-assert old in text, "ci.yml no longer pins wasm-pack this way"
-path.write_text(text.replace(old, "cargo install wasm-pack --locked --version 0.99.0", 1))
+old = "node-version: 22"
+assert old in text, "ci.yml no longer pins node-version"
+path.write_text(text.replace(old, "node-version: 99", 1))
 PYWP
 if cmp -s "$ci" "$check_backup"; then
-  echo "  FAIL the wasm-pack pin mutation did not apply, so this case measured nothing"
+  echo "  FAIL the node pin mutation did not apply, so this case measured nothing"
   fail=$((fail + 1))
 else
   status=0
-  out="$("$here/ci-local.py" --only wasm-pack --preflight 2>&1)" || status=$?
-  if [ "$status" -eq 1 ] && grep -q "wasm-pack is 0.15.0, pinned at 0.99.0" <<<"$out"; then
+  out="$("$here/ci-local.py" --only web --preflight 2>&1)" || status=$?
+  if grep -qE "node is [0-9][^,]*, pinned at 99" <<<"$out"; then
     echo "  ok   a tool at the wrong version is refused, naming both halves"
     pass=$((pass + 1))
   else
@@ -509,9 +519,9 @@ python3 - "$ci" <<'PYWP2'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-old = "cargo install wasm-pack --locked --version 0.15.0"
-assert old in text, "ci.yml no longer pins wasm-pack this way"
-path.write_text(text.replace(old, "cargo install wasm-pack --locked --version 0.99.0", 1))
+old = "node-version: 22"
+assert old in text, "ci.yml no longer pins node-version"
+path.write_text(text.replace(old, "node-version: 99", 1))
 PYWP2
 allow_fixture="$here/.ci-local-allowance-fixture.py"
 python3 - "$here/ci-local.py" "$allow_fixture" <<'PYALLOW'
@@ -522,7 +532,7 @@ old = "VERSION_ALLOWANCES: dict[str, str] = {}"
 assert old in text, "VERSION_ALLOWANCES is not spelled as this test expects"
 dst.write_text(text.replace(
     old,
-    'VERSION_ALLOWANCES: dict[str, str] = {"wasm-pack": "planted by tools/test-ci-local.sh"}',
+    'VERSION_ALLOWANCES: dict[str, str] = {"node": "planted by tools/test-ci-local.sh"}',
     1,
 ))
 PYALLOW
@@ -531,8 +541,13 @@ if cmp -s "$here/ci-local.py" "$allow_fixture"; then
   fail=$((fail + 1))
 else
   status=0
-  out="$(python3 "$allow_fixture" --only wasm-pack --preflight 2>&1)" || status=$?
-  if [ "$status" -eq 0 ] && grep -q "planted by tools/test-ci-local.sh" <<<"$out"; then
+  out="$(python3 "$allow_fixture" --only web --preflight 2>&1)" || status=$?
+  # THE MISMATCH IS GONE AND THE REASON IS PRINTED -- both halves, on the text. Not the exit
+  # code: `--only web` also needs pnpm, which a runner that installs nothing does not have, so
+  # exit 1 can mean "the allowance failed" or "pnpm is absent" and only the message tells them
+  # apart. That conflation is what took this case red in CI.
+  if grep -q "planted by tools/test-ci-local.sh" <<<"$out" \
+     && ! grep -qE "node is [0-9][^,]*, pinned at 99" <<<"$out"; then
     echo "  ok   an argued allowance suppresses a mismatch and prints its reason"
     pass=$((pass + 1))
   else
