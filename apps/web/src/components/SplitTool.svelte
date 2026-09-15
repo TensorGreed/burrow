@@ -31,7 +31,7 @@
 
   import { CANCELLED } from "../host/worker-host.js";
   import { messageFor, type Message } from "./split-messages.js";
-  import { isWholeDocument, resolveCuts, type Part } from "./split-cuts.js";
+  import { everyPageCuts, isWholeDocument, resolveCuts, type Part } from "./split-cuts.js";
   import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
   import { createDelivery, type Handout } from "./tool-delivery.js";
 
@@ -383,6 +383,22 @@
     }
   });
 
+  /**
+   * Fill the box with the cuts that give every page its own document.
+   *
+   * THE PRESET TYPES INTO THE BOX rather than setting a hidden mode, which is /reorder-pdf's
+   * answer for "Reverse the order" and the same reason: what it did is visible and editable,
+   * so a person can ask for every page and then change one cut, which a mode would not allow.
+   *
+   * It exists because without it this page could not do one of the two things people most
+   * want from a splitter: 39 cut points typed by hand for a 40-page document, 499 for a
+   * 500-page one.
+   */
+  function everyPage() {
+    if (typeof pageCount !== "number" || pageCount < 2) return;
+    wanted = everyPageCuts(pageCount);
+  }
+
   /** The deliberate gesture that closes the circuit breaker. */
   function startAgain() {
     host.reset();
@@ -486,7 +502,8 @@
 
       <p class="choice__rule" id="cut-rule">
         Give the pages to cut <strong>after</strong>. On a ten-page document,
-        <code>3, 7</code> makes three files: pages 1-3, 4-7 and 8-10.
+        <code>3, 7</code> makes three files: pages 1-3, 4-7 and 8-10. A range cuts after each page
+        in it, so <code>1-9</code> gives every page its own file.
       </p>
 
       <!-- NOT `inputmode="numeric"`: iOS shows a digits-only keypad for that, and this
@@ -502,6 +519,12 @@
         aria-invalid={cutProblem ? "true" : undefined}
         bind:value={wanted}
       />
+
+      {#if pageCount > 1}
+        <button type="button" class="choice__preset" onclick={everyPage}>
+          Cut after every page
+        </button>
+      {/if}
 
       {#if cutProblem}
         <p class="choice__problem" id="cut-problem">{cutProblem}</p>
@@ -659,6 +682,10 @@
     border-radius: var(--radius);
     font: inherit;
     font-variant-numeric: tabular-nums;
+  }
+
+  .choice__preset {
+    margin-block-start: var(--space-3);
   }
 
   .choice__preview {

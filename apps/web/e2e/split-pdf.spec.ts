@@ -324,6 +324,50 @@ test("a file burrow cannot read is refused, and nothing from it reaches the page
   await expect(page.locator(".result a.download")).toHaveCount(0);
 });
 
+test("the preset cuts a document into single pages, in one gesture", async ({ page }) => {
+  // THE GAP THIS CLOSES, driven the way a person would. Without it, splitting a ten-page
+  // document into single pages means typing nine cut points; a forty-page one, thirty-nine.
+  // `/reorder-pdf` reverses a 500-page document in five characters, and this page had no
+  // equivalent until the range and this button.
+  await page.goto("/split-pdf");
+  await choose(page, "pages-10.pdf");
+
+  await page.getByRole("button", { name: "Cut after every page" }).click();
+
+  // IT TYPED INTO THE BOX rather than switching to a mode, which is what lets somebody see
+  // what was asked for and change one cut afterwards.
+  await expect(page.getByLabel("The pages to cut after", { exact: false })).toHaveValue("1-9");
+  await expect(page.locator(".choice__preview")).toContainText("10 files");
+
+  const downloads = await splitAndDownloadAll(page);
+  expect(downloads).toHaveLength(10);
+  expect(downloads.map((d) => d.suggestedFilename())).toEqual(
+    Array.from({ length: 10 }, (_, i) => {
+      const n = String(i + 1).padStart(2, "0");
+      return `pages-10-pages-${n}-${n}.pdf`;
+    }),
+  );
+  for (const download of downloads) {
+    expect(pageCountIn(await bytesOf(download)), `${download.suggestedFilename()}`).toBe(1);
+  }
+});
+
+test("a range in the box is read as a cut after each page in it", async ({ page }) => {
+  await page.goto("/split-pdf");
+  await choose(page, "pages-10.pdf");
+
+  await cutAfter(page, "1-2, 7");
+  await expect(page.locator(".choice__parts")).toContainText("page 1, page 2, 3-7, 8-10");
+
+  const downloads = await splitAndDownloadAll(page);
+  expect(downloads.map((d) => d.suggestedFilename())).toEqual([
+    "pages-10-pages-01-01.pdf",
+    "pages-10-pages-02-02.pdf",
+    "pages-10-pages-03-07.pdf",
+    "pages-10-pages-08-10.pdf",
+  ]);
+});
+
 test("a cut past the end is refused beside the box, and the page recovers", async ({ page }) => {
   // REFUSED WHERE THE BOX IS, not after a round trip. A cut after the last page asks for a
   // part with no pages in it; the core refuses it, and so does the page, with the last place

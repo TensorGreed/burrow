@@ -84,44 +84,60 @@ export function resolveCuts(input: string, pageCount: number): Cuts {
     const part = rawPart.trim();
     if (part === "") continue;
 
+    // A RANGE MEANS "CUT AFTER EACH OF THESE", and it is here because without it one of the
+    // two things people most want from a splitter is unreachable. Splitting a 40-page
+    // document into single pages needs 39 cut points typed by hand — 145 characters; a
+    // 500-page one needs 2,385. `/reorder-pdf` reverses a 500-page document in five
+    // characters because it has a range and a preset, and this page had neither.
+    //
+    // IT IS NOT `burrow_ops::every`. The person still says WHERE the cuts go; this expands a
+    // range in a list the page already parses and the core still validates. "Every 10 pages"
+    // is a different thing — a rule about spacing rather than a list of places — and it stays
+    // in the core, unexposed, rather than being reimplemented here.
+    const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+      const from = Number(range[1]);
+      const to = Number(range[2]);
+      // BOTH ENDPOINTS CHECKED BEFORE THE RANGE IS EXPANDED, so `1-99999999999` is a refusal
+      // rather than an allocation — the same ordering `burrow_ops::every` needed after
+      // `every(1, u64::MAX)` allocated until it panicked.
+      for (const endpoint of [from, to]) {
+        const refusal = outOfRange(endpoint, pageCount);
+        if (refusal) return { ok: false, problem: refusal };
+      }
+      if (to < from) {
+        // DESCENDING IS REFUSED, not reversed. `reorder-order.ts` reads `9-5` as a reversal
+        // because an order has a direction; cuts are made in order and a descending range
+        // describes nothing a split could do.
+        return {
+          ok: false,
+          problem: `Cuts are made in order, so ${from}-${to} runs backwards. Give the range the other way round.`,
+        };
+      }
+      for (let cut = from; cut <= to; cut += 1) {
+        if (cut === previous) {
+          return { ok: false, problem: twice(cut) };
+        }
+        if (cut < previous) {
+          return { ok: false, problem: outOfOrder(cut, previous) };
+        }
+        cuts.push(cut);
+        previous = cut;
+      }
+      continue;
+    }
+
     if (!/^\d+$/.test(part)) {
       return {
         ok: false,
-        problem: `"${part}" is not a page number. Give the pages to cut after, like 3, 7.`,
+        problem: `"${part}" is not a page number. Give the pages to cut after, like 3, 7, or a range like 1-9.`,
       };
     }
     const cut = Number(part);
-    if (cut < 1) {
-      return { ok: false, problem: "Pages are numbered from 1, so there is no page 0." };
-    }
-    if (cut >= pageCount) {
-      // NOT `> pageCount`. A cut after the last page asks for a part with no pages in it,
-      // which the core refuses -- so the page refuses it here, where the box is, rather than
-      // after a round trip.
-      return {
-        ok: false,
-        problem:
-          pageCount === 1
-            ? "This document has one page, so there is nowhere to cut it."
-            : `A cut goes AFTER a page and there must be pages left over, so the last place to cut this document is after page ${pageCount - 1}.`,
-      };
-    }
-    if (cut === previous) {
-      return {
-        ok: false,
-        problem: `You have asked to cut after page ${cut} twice. Each cut makes one more part, so each place is named once.`,
-      };
-    }
-    if (cut < previous) {
-      // SORTED RATHER THAN REFUSED WOULD BE WRONG HERE, and this is the difference from
-      // `page-selection.ts`. A selection is a set and tidying it is kind; a cut list that
-      // arrived out of order means the person is thinking about it differently from the way
-      // it will happen, and quietly reordering hides that.
-      return {
-        ok: false,
-        problem: `Cuts are made in order, so ${cut} cannot come after ${previous}. List them smallest first.`,
-      };
-    }
+    const refusal = outOfRange(cut, pageCount);
+    if (refusal) return { ok: false, problem: refusal };
+    if (cut === previous) return { ok: false, problem: twice(cut) };
+    if (cut < previous) return { ok: false, problem: outOfOrder(cut, previous) };
     cuts.push(cut);
     previous = cut;
   }
@@ -154,4 +170,38 @@ export function partsFrom(cuts: readonly number[], pageCount: number): Part[] {
 /** Whether a cut list would leave the document as one whole document. */
 export function isWholeDocument(parts: readonly Part[]): boolean {
   return parts.length <= 1;
+}
+
+/** Why `cut` is not a place this document can be cut, or `null` if it is. */
+function outOfRange(cut: number, pageCount: number): string | null {
+  if (cut < 1) return "Pages are numbered from 1, so there is no page 0.";
+  if (cut < pageCount) return null;
+  // NOT `> pageCount`. A cut after the last page asks for a part with no pages in it, which
+  // the core refuses -- so the page refuses it here, where the box is, rather than after a
+  // round trip.
+  return pageCount === 1
+    ? "This document has one page, so there is nowhere to cut it."
+    : `A cut goes AFTER a page and there must be pages left over, so the last place to cut this document is after page ${pageCount - 1}.`;
+}
+
+function twice(cut: number): string {
+  return `You have asked to cut after page ${cut} twice. Each cut makes one more part, so each place is named once.`;
+}
+
+function outOfOrder(cut: number, previous: number): string {
+  // SORTED RATHER THAN REFUSED WOULD BE WRONG HERE, and this is the difference from
+  // `page-selection.ts`. A selection is a set and tidying it is kind; a cut list that arrived
+  // out of order means the person is thinking about it differently from the way it will
+  // happen, and quietly reordering hides that.
+  return `Cuts are made in order, so ${cut} cannot come after ${previous}. List them smallest first.`;
+}
+
+/**
+ * The cut list that gives every page its own document.
+ *
+ * The page offers this as a preset that types into the box, the way /reorder-pdf's "Reverse
+ * the order" does -- so what it did is visible and editable rather than a hidden mode.
+ */
+export function everyPageCuts(pageCount: number): string {
+  return pageCount >= 3 ? `1-${pageCount - 1}` : "1";
 }

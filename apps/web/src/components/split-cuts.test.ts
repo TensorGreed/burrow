@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isWholeDocument, partsFrom, resolveCuts } from "./split-cuts.js";
+import { everyPageCuts, isWholeDocument, partsFrom, resolveCuts } from "./split-cuts.js";
 
 const ok = (input: string, pages: number) => {
   const r = resolveCuts(input, pages);
@@ -89,10 +89,58 @@ describe("resolving a typed cut list", () => {
     expect(problem("7, 3", 10)).toContain("cannot come after");
   });
 
-  it("refuses anything that is not a page number", () => {
-    expect(problem("3-7", 10)).toContain("not a page number");
+  it("refuses anything that is not a page number or a range", () => {
     expect(problem("three", 10)).toContain("not a page number");
     expect(problem("3.5", 10)).toContain("not a page number");
+    expect(problem("3-", 10)).toContain("not a page number");
+  });
+
+  it("reads a range as a cut after each page in it", () => {
+    // THE GAP THIS CLOSES. Splitting a 40-page document into single pages needed 39 cut
+    // points typed by hand -- 145 characters, and 2,385 for a 500-page one. That is not a
+    // tedious way to do a common thing, it is an unreachable one.
+    expect(spans("1-3", 10)).toEqual(["1-1", "2-2", "3-3", "4-10"]);
+    expect(ok("1-3", 10).cuts).toEqual([1, 2, 3]);
+  });
+
+  it("gives every page its own document, which is the case the range exists for", () => {
+    expect(spans("1-9", 10)).toEqual([
+      "1-1",
+      "2-2",
+      "3-3",
+      "4-4",
+      "5-5",
+      "6-6",
+      "7-7",
+      "8-8",
+      "9-9",
+      "10-10",
+    ]);
+    expect(ok("1-9", 10).parts).toHaveLength(10);
+  });
+
+  it("mixes ranges and single cuts in one list", () => {
+    expect(spans("1-2, 7", 10)).toEqual(["1-1", "2-2", "3-7", "8-10"]);
+  });
+
+  it("refuses a range that runs backwards rather than reversing it", () => {
+    // THE DIFFERENCE FROM `reorder-order.ts`, which reads `9-5` as a reversal because an
+    // ORDER has a direction. Cuts are made in order, so a descending range describes nothing
+    // a split could do.
+    expect(problem("9-5", 10)).toContain("runs backwards");
+  });
+
+  it("refuses a range whose end is past the last cuttable page", () => {
+    // BOTH ENDPOINTS, BEFORE EXPANDING. `1-99999999999` must be a refusal rather than an
+    // allocation -- the ordering `burrow_ops::every` needed after it panicked on a capacity
+    // overflow.
+    expect(problem("1-10", 10)).toContain("after page 9");
+    expect(problem("1-99999999999", 10)).toContain("after page 9");
+  });
+
+  it("refuses a range that overlaps what came before it", () => {
+    expect(problem("5, 3-7", 10)).toContain("cannot come after");
+    expect(problem("3, 3-5", 10)).toContain("twice");
   });
 
   it("refuses a document with no pages", () => {
@@ -129,5 +177,27 @@ describe("the parts a cut list produces", () => {
         expect(part.count, `cuts ${cuts.join(",")}`).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe("the every-page preset", () => {
+  it("gives a cut list that makes one document per page", () => {
+    // It types into the box rather than setting a hidden mode, the way /reorder-pdf's
+    // "Reverse the order" does -- so what it did is visible and editable.
+    for (const pages of [3, 4, 10, 137]) {
+      const parts = ok(everyPageCuts(pages), pages).parts;
+      expect(parts, `${pages} pages`).toHaveLength(pages);
+      expect(
+        parts.every((p) => p.count === 1),
+        `${pages} pages`,
+      ).toBe(true);
+    }
+  });
+
+  it("works on a two-page document, where a range would name page 1 twice", () => {
+    // `1-{pageCount - 1}` is `1-1` at two pages, which is a legal range; the preset emits the
+    // bare `1` instead so the box reads the way a person would write it.
+    expect(everyPageCuts(2)).toBe("1");
+    expect(ok(everyPageCuts(2), 2).parts).toHaveLength(2);
   });
 });
