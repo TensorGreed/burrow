@@ -168,7 +168,11 @@ describe("the first-load size budget", () => {
     //
     // A cross-check that silently changed which file it was checking is the failure this
     // whole test exists to catch, arriving in the test itself.
-    const routeName = heaviest.page.split("/")[0] || "index";
+    // `index.html` AT THE ROOT HAS NO DIRECTORY, so `split("/")[0]` yields `"index.html"` and
+    // the `|| "index"` fallback was unreachable -- if the home page ever became heaviest this
+    // would look for `index.html.astro_astro_type_script` and fail for a reason the message
+    // does not explain. Strip the filename instead.
+    const routeName = heaviest.page.replace(/\/?index\.html$/, "") || "index";
     const entry = scripts.find((f) => f.includes(`${routeName}.astro_astro_type_script`));
     expect(entry, `no Astro page script for the measured route (${heaviest.page})`).toBeDefined();
 

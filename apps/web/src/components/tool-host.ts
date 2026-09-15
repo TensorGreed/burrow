@@ -111,6 +111,39 @@ function browserDeps(): ToolHostDeps {
  * static host sends none (ADR 0014 §1a, measured). The worker is the only place file bytes
  * ever exist.
  */
+/**
+ * Thrown by `ensure()` when the page is not on the origin this build was made for.
+ *
+ * COMPARED BY IDENTITY, NEVER READ. ADR 0009 §2 is the reason: a thrown value can carry
+ * module output, and module output can carry input-derived bytes, so an island that read a
+ * thrown value's text would be a path for file content to reach the interface. A unique
+ * object has no text to read and still tells the island exactly which failure it caught.
+ *
+ * It is not an `Error`. An `Error` invites `error.message` at the catch site, which is the
+ * thing being prevented.
+ */
+export const ORIGIN_MISMATCH: unique symbol = Symbol("burrow.origin-mismatch");
+
+/**
+ * What an island shows when it catches {@link ORIGIN_MISMATCH}.
+ *
+ * SHARED, because all four islands owe the same sentence and the failure has nothing to do
+ * with which tool is on the page. It points at the banner rather than repeating it: the
+ * banner carries both origins and the rebuild, and saying it twice in different words is how
+ * two explanations of one fact drift apart.
+ *
+ * `retryable: false` -- there is nothing on this page a person can do. The fix is a rebuild.
+ */
+export function originMismatchNotice(): { title: string; next: string; retryable: boolean } {
+  return {
+    title: "This copy of burrow was built for a different address.",
+    next:
+      "The tools cannot run here. Nothing is wrong with your file and nothing has been sent " +
+      "anywhere. The notice at the top of this page has the detail.",
+    retryable: false,
+  };
+}
+
 export function createToolHost(deps: ToolHostDeps = browserDeps()): ToolHost {
   let host: ReturnType<typeof createWorkerHost> | null = null;
   let workerUrl: string | null = null;
@@ -125,15 +158,25 @@ export function createToolHost(deps: ToolHostDeps = browserDeps()): ToolHost {
     //
     // `src/origin-guard.ts` already puts a banner at the top of every page saying the tools
     // will not work here. This is the other half: not attempting the work, so the explanation
-    // on screen is the ONLY thing that happens rather than being followed by a generic error
-    // that contradicts it. One check here covers all four islands, because they all come
-    // through this factory.
+    // on screen is not followed by a generic error that contradicts it. One check here covers
+    // all four islands, because they all come through this factory.
+    //
+    // THE FIRST VERSION THREW AN `Error` AND THIS COMMENT WAS FALSE. Every island catches a
+    // failed `ensure()` and renders `messageFor({ kind: "Internal" })` -- "Something inside
+    // burrow failed" -- so the contradiction it claimed to have removed was still on screen,
+    // beside the banner. Found by code review; the test asserted only that `ensure()`
+    // rejected, which is why nothing saw it.
+    //
+    // A SENTINEL, NOT A MESSAGE STRING. ADR 0009 forbids an island reading a thrown value's
+    // text, because a thrown value can carry module output and module output can carry
+    // input-derived bytes. `ORIGIN_MISMATCH` is compared by identity, so the island learns
+    // WHICH failure this is without reading anything out of it.
     const verdict = readOrigin({
       builtFor: ENGINE_ORIGIN,
       servedFrom: deps.origin,
     });
     if (verdict.kind === "mismatch") {
-      throw new Error(verdict.message);
+      throw ORIGIN_MISMATCH;
     }
 
     const entry = ENGINES.worker;

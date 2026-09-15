@@ -18,8 +18,16 @@
 // EVERY WORD OF THE NOTICES IS GENERATED, from engines/licenses.toml via
 // tools/generate-credits.mjs, which runs as `prebuild`. Nothing on this page is typed out by
 // hand, because a hand-written notice passes review once and then rots while the manifest
-// moves on. Add a component to the manifest and this page carries it on the next build; fail
-// to, and src/credits.test.ts fails against dist/.
+// moves on.
+//
+// WHAT THIS PAGE CARRIES IS SCOPED, and the rule changed when the scoping landed. It is every
+// component distributed with `CREDITS.surfaces.web.artifacts` -- `qpdf-wasm`, what a browser
+// actually downloads. Add a component to the manifest WITH that artifact and this page carries
+// it on the next build; add one to another surface and this page deliberately does not, and
+// src/credits.test.ts asserts both directions. The header used to say the page carried every
+// component in the manifest, which after the scoping described the opposite of what the code
+// does -- on a page whose whole justification is a licence obligation, which is the worst place
+// for a comment somebody might act on.
 //
 // Note the FreeType wording. FTL section 2 literally says "based in part OF the work" -- not
 // "on". That is upstream's text, reproduced verbatim rather than corrected, which is what a
@@ -113,7 +121,7 @@ const slug = (name: string) =>
     ))
   }
 
-  <h2 id="components">Every bundled component</h2>
+  <h2 id="components">Every component in this download</h2>
 
   <p>
     {shipped.length} components ship inside the engine this page's tools run on.

@@ -60,6 +60,12 @@ work="$workroot/dist"
 fixture() {
   rm -rf "$work"
   cp -r "$real" "$work"
+  # A HARNESS BUILD IS A USABLE FIXTURE ONCE IT STOPS BEING ONE. `pnpm e2e` leaves a harness
+  # build in `apps/web/dist`, and the checker refuses those by design -- so the baseline case
+  # failed with "the rewritten build does not pass", which reads as an accusation against the
+  # checker rather than as "your dist is the wrong variant". The harness rule has its own two
+  # cases below, which plant these directories deliberately.
+  rm -rf "$work/harness" "$work/host"
   grep -rlF "$built_for" "$work" 2>/dev/null | while IFS= read -r file; do
     sed -i "s|${built_for//|/\\|}|$DEPLOY_ORIGIN|g" "$file"
   done
@@ -135,6 +141,40 @@ sed -i "s|connect-src $DEPLOY_ORIGIN/|connect-src https://elsewhere.test/|" \
   "$work/split-pdf/index.html"
 expect_refusal "a page whose meta CSP names another origin is refused" \
   "own CSP does not name $DEPLOY_ORIGIN" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+# --- Rule: the page's own CSP naming an EXTRA origin ------------------------------------------
+#
+# THE GAP A SECURITY REVIEW FOUND, re-planted. The page rule checked only that the expected
+# origin was PRESENT, while the `_headers` rule below checked exclusivity -- so appending
+# ` https://evil.example` to a page's connect-src passed, and the gate printed "deployable to
+# ... and to nowhere else" over a build whose in-markup policy permitted an engine fetch to an
+# attacker origin. On the hosts that ignore `_headers`, that markup IS the policy.
+#
+# There was no case for it here, which is why nothing caught it. The asymmetry between the two
+# rules is what made it a defect rather than a decision.
+fixture
+sed -i "s|; style-src| https://evil.example; style-src|" "$work/index.html"
+expect_refusal "a page whose meta CSP names an EXTRA origin is refused, not just a wrong one" \
+  "own CSP names origins other than $DEPLOY_ORIGIN" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+fixture
+sed -i 's|<meta http-equiv="Content-Security-Policy"[^>]*>||' "$work/index.html"
+expect_refusal "a page with no meta CSP at all is refused" \
+  "carries no <meta> CSP" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+# --- Rule: a LOOKALIKE origin, which the stray check used to accept -----------------------------
+#
+# `grep -v "^$expected$"` used the origin as a REGEX, so `.` matched any character and
+# `https://burrow.app` accepted a stray `https://burrow-app`. Registrable, and it satisfied the
+# one rule that did enforce exclusivity. The fixture origin is `https://burrow.test`, so the
+# lookalike here is `https://burrowXtest`.
+fixture
+sed -i "s|; style-src| https://burrowXtest/x.wasm; style-src|" "$work/_headers"
+expect_refusal "a lookalike origin differing only where a regex dot would match is refused" \
+  "names origins other than $DEPLOY_ORIGIN" \
   "$checker" "$DEPLOY_ORIGIN" "$work"
 
 # --- Rule: _headers --------------------------------------------------------------------------

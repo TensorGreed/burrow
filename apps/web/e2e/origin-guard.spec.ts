@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
@@ -29,8 +29,13 @@ import { ORIGIN } from "../playwright.config.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(here, "..", "dist");
 
-/** A port no other part of the suite uses. 4321 is the site, 4322 the foreign logger. */
-const MISMATCH_PORT = 4323;
+/**
+ * A port no other part of the suite uses. 4321 is the site, 4322 the foreign logger.
+ *
+ * Overridable like its neighbours (`BURROW_TEST_PORT`, `BURROW_FOREIGN_PORT`): a hardcoded
+ * 4323 collides with `EADDRINUSE` in `beforeAll` if somebody points either of those here.
+ */
+const MISMATCH_PORT = Number(process.env.BURROW_MISMATCH_PORT ?? 4323);
 const MISMATCH_ORIGIN = `http://localhost:${MISMATCH_PORT}`;
 
 const TYPES: Record<string, string> = {
@@ -130,6 +135,39 @@ test("every route carries the stamp, so the guard has something to compare on al
       `${route} did not report the mismatch`,
     ).toBeVisible();
   }
+});
+
+test("choosing a file on a mismatched origin does NOT say 'something inside burrow failed'", async ({
+  page,
+}) => {
+  // THE ASSERTION THAT WAS MISSING, and its absence hid a real defect for the length of a
+  // commit. `tool-host.ts` refuses before the worker fetch, and its comment claimed that made
+  // the banner "the ONLY thing that happens" -- but every island catches a failed `ensure()`
+  // and renders `messageFor({ kind: "Internal" })`, so the page showed "Something inside
+  // burrow failed" beside a banner explaining exactly what was wrong. The unit test asserted
+  // only that `ensure()` rejected, which is why nothing saw it. Found by code review.
+  //
+  // So this asserts the VISIBLE OUTCOME rather than the rejection: what a person reads after
+  // doing the one thing the page invites them to do.
+  await page.goto(`${MISMATCH_ORIGIN}/split-pdf/`);
+  await expect(page.locator(".origin-mismatch")).toBeVisible();
+
+  await page.setInputFiles('input[type="file"]', {
+    name: "pages-10.pdf",
+    mimeType: "application/pdf",
+    buffer: readFileSync(
+      resolve(here, "..", "..", "..", "tests", "conformance", "fixtures", "pages-10.pdf"),
+    ),
+  });
+
+  // The specific notice, and the absence of the generic one. Both halves: asserting only the
+  // absence would pass on a page that said nothing at all, which is its own failure.
+  // TWO MATCHES ARE CORRECT, so the locator says which it means rather than the test being
+  // loosened: the notice is rendered visibly AND announced through the `role="status"`
+  // live region for a screen reader. Asserting both exist is the stronger claim.
+  await expect(page.locator("strong", { hasText: "built for a different address" })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("built for a different address");
+  await expect(page.getByText(/something inside burrow failed/i)).toHaveCount(0);
 });
 
 test("THE CONTROL: the right origin gets no banner at all", async ({ page }) => {

@@ -16,7 +16,13 @@
 
   import { CANCELLED } from "../host/worker-host.js";
   import { messageFor, type Message } from "./merge-messages.js";
-  import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
+  import {
+    LIMITS,
+    ORIGIN_MISMATCH,
+    createToolHost,
+    hostKind,
+    originMismatchNotice,
+  } from "./tool-host.js";
   import { createDelivery, type Handout } from "./tool-delivery.js";
 
   interface Entry {
@@ -119,12 +125,18 @@
             : { ...e, pages: -1, problem: message }
           : e,
       );
-    } catch {
-      // Nothing from the thrown value is read. It can carry module output, and module
+    } catch (error) {
+      // BY IDENTITY, NOT BY TEXT. `ORIGIN_MISMATCH` says this build is not on the origin it
+      // was made for. ADR 0009 forbids reading anything out of a thrown value, so it is
+      // compared rather than inspected -- a unique symbol has no text to read. Without this
+      // the page showed "Something inside burrow failed" beside a banner that explained
+      // exactly what was wrong: the interface contradicting its own explanation, on the one
+      // screen whose job was to be believed. Found by code review.
+      // Nothing else from the thrown value is read. It can carry module output, and module
       // output can carry input-derived bytes (ADR 0009).
-      entries = entries.map((e) =>
-        e.id === entry.id ? { ...e, pages: -1, problem: messageFor({ kind: "Internal" }) } : e,
-      );
+      const problem =
+        error === ORIGIN_MISMATCH ? originMismatchNotice() : messageFor({ kind: "Internal" });
+      entries = entries.map((e) => (e.id === entry.id ? { ...e, pages: -1, problem } : e));
     }
   }
 
@@ -273,9 +285,16 @@
       result = { ...handout, pages: reply.pages };
       phase = "done";
       announce(`Done. ${reply.pages} pages, ready to download.`);
-    } catch {
+    } catch (error) {
       if (!run.live()) return;
-      notice = messageFor({ kind: "Internal" });
+      // BY IDENTITY, NOT BY TEXT. `ORIGIN_MISMATCH` says this build is not on the origin it
+      // was made for. ADR 0009 forbids reading anything out of a thrown value, so it is
+      // compared rather than inspected -- a unique symbol has no text to read. Without this
+      // the page showed "Something inside burrow failed" beside a banner that explained
+      // exactly what was wrong: the interface contradicting its own explanation, on the one
+      // screen whose job was to be believed. Found by code review.
+      notice =
+        error === ORIGIN_MISMATCH ? originMismatchNotice() : messageFor({ kind: "Internal" });
       phase = "idle";
     }
   }

@@ -254,8 +254,8 @@ code {
  * reporting a fact about itself, which is what this design does instead of reassuring.
  *
  * It ships in every build and is displayed by `src/origin-guard.ts` only on a mismatch, so
- * its cost is a few dozen bytes on a page that is otherwise correct. `src/size-budget.json`
- * counts them.
+ * its cost is a few dozen bytes on a page that is otherwise correct.
+ * `apps/web/size-budget.json` counts them.
  */
 .origin-mismatch {
   max-inline-size: var(--track-read);

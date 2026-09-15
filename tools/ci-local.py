@@ -381,6 +381,17 @@ JOBS: list[dict] = [
         "why": "PDFium reaches no part of the web build (spike 0004)",
     },
     {
+        # AFTER `web`, BECAUSE IT READS `apps/web/dist`. It was in `checker-self-tests` for one
+        # commit, which builds nothing and runs BEFORE `web` -- so on a fresh clone the whole
+        # sweep refused with "no build at apps/web/dist" before reaching the job that would
+        # have made one. That is `CLAUDE.md`'s rule about where a check lives, arriving as a
+        # loud failure rather than a silent pass, which is the only reason it was cheap.
+        "name": "deployable-build",
+        "run": "tools/test-check-deployable-build.sh",
+        "covers": ["tools/test-check-deployable-build.sh"],
+        "why": "the deploy origin gate still refuses every mismatch it is supposed to",
+    },
+    {
         "name": "web-e2e",
         "run": "cd apps/web && pnpm e2e",
         "covers": ["pnpm:e2e"],

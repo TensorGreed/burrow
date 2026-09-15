@@ -83,20 +83,38 @@ has nothing to compare against at run time"
     *) fail "$shown is canonical at $canonical, not under $expected" ;;
   esac
 
-  grep -qF "connect-src $expected/" "$page" ||
-    fail "$shown's own CSP does not name $expected in connect-src. ADR 0014 §5 duplicates the \
-policy into the markup because a static host may ignore _headers, so this is the policy in \
-force on exactly the hosts that need it most"
+  # PRESENCE AND EXCLUSIVITY. The first version checked only that the expected origin appeared,
+  # which is not the same claim as the line this script prints at the end. A security review
+  # appended ` https://evil.example` to a page's `connect-src` and the gate reported
+  # "deployable to https://ok.example and to nowhere else" -- false for that build, on the
+  # copy of the policy that is in force on exactly the hosts that ignore `_headers`.
+  #
+  # The `_headers` rule below already did this, which is what made the asymmetry a defect
+  # rather than a decision.
+  page_csp="$(grep -o '<meta http-equiv="Content-Security-Policy" content="[^"]*"' "$page" |
+    head -1 | sed 's/.*content="//;s/"$//' || true)"
+  [ -n "$page_csp" ] || fail "$shown carries no <meta> CSP. ADR 0014 §5 duplicates the policy \
+into the markup because a static host may ignore _headers"
+  grep -qF "connect-src $expected/" <<<"$page_csp" ||
+    fail "$shown's own CSP does not name $expected in connect-src"
+  page_stray="$(grep -o 'https\?://[^ ;"]*' <<<"$page_csp" |
+    sed 's|\(https\?://[^/]*\).*|\1|' | sort -u | grep -vxF -- "$expected" || true)"
+  [ -z "$page_stray" ] ||
+    fail "$shown's own CSP names origins other than $expected: $(printf '%s' "$page_stray" | tr '\n' ' ')"
 done
-echo "  ${#pages[@]} page(s): stamp, canonical and meta CSP all name $expected"
+echo "  ${#pages[@]} page(s): stamp, canonical and meta CSP name $expected and no other origin"
 
 # --- the header policy ----------------------------------------------------------------------
 headers="$dist/_headers"
 [ -f "$headers" ] || fail "no _headers in the build"
 grep -qF "connect-src $expected/" "$headers" ||
   fail "_headers does not name $expected in connect-src"
+# `-vxF`, NOT `-v "^...$"`. The origin was being used as a REGEX, so `.` matched any
+# character and `https://burrow.app` accepted a stray `https://burrow-app` -- a registrable
+# lookalike satisfying the one rule that did enforce exclusivity. Reproduced by security
+# review. `-F` is literal, `-x` is whole-line.
 stray="$(grep -o 'https\?://[^ ;"]*' "$headers" | sed 's|\(https\?://[^/]*\).*|\1|' | sort -u |
-  grep -v "^$expected$" || true)"
+  grep -vxF -- "$expected" || true)"
 [ -z "$stray" ] || fail "_headers names origins other than $expected: $(echo "$stray" | tr '\n' ' ')"
 echo "  _headers names $expected and no other origin"
 

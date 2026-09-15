@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ENGINE_UNAVAILABLE } from "../host/worker-host.js";
-import { LIMITS, createToolHost, hostKind } from "./tool-host.js";
+import { LIMITS, ORIGIN_MISMATCH, createToolHost, hostKind } from "./tool-host.js";
 import type { ToolHostDeps } from "./tool-host.js";
 import { ENGINE_ORIGIN } from "../generated/engines.js";
 
@@ -187,7 +187,14 @@ describe("the ceilings a tool page runs under", () => {
     });
     const host = createToolHost(d);
 
-    await expect(host.ensure()).rejects.toThrow(/built for/);
+    // BY IDENTITY, which is both the stronger assertion and the one that matches how an island
+    // must read it. The first version asserted `rejects.toThrow(/built for/)` -- it passed
+    // against a thrown `Error`, and an `Error` is exactly what islands could not use: ADR 0009
+    // forbids reading a thrown value's text, so every island fell through to
+    // `messageFor({ kind: "Internal" })` and the page said "Something inside burrow failed"
+    // beside a banner explaining the real cause. The test asserted the rejection and not the
+    // outcome, which is why it did not see that.
+    await expect(host.ensure()).rejects.toBe(ORIGIN_MISMATCH);
     // BEFORE THE FETCH, not after it fails. The fetch is the thing CSP refuses, and letting
     // it happen means the console carries a policy violation the person cannot act on --
     // which is the state this whole guard exists to replace.

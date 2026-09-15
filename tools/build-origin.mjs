@@ -58,6 +58,18 @@ export function resolveBuildOrigin(fail, env = process.env) {
   if (parsed.username || parsed.password) {
     return fail(`BURROW_SITE must not carry credentials: ${JSON.stringify(value)}`);
   }
+  // A HOST, NOT A PATTERN. The URL parser accepts `*` in a host, so `BURROW_SITE=https://*`
+  // parses cleanly and lands verbatim in `connect-src` and `script-src` -- turning a pinned
+  // origin into a CSP wildcard, which is the one property ADR 0014 is built on. Self-inflicted,
+  // since the deployer sets this, but "an origin, not a pattern" was assumed rather than
+  // enforced until a security review pointed at it. Square brackets are allowed for IPv6
+  // literals; the colon is the port.
+  if (!/^[A-Za-z0-9.\-:[\]]+$/.test(parsed.host)) {
+    return fail(
+      `BURROW_SITE must name a single host, not a pattern: ${JSON.stringify(value)} ` +
+        `(host ${JSON.stringify(parsed.host)}). A wildcard here becomes a wildcard in the CSP.`,
+    );
+  }
   if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
     return fail(
       `BURROW_SITE must be an origin, not a URL with a path, query or fragment: ` +
