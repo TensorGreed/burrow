@@ -100,6 +100,42 @@ pub enum Expected {
         rotations: Vec<i64>,
     },
 
+    /// This part holds the run of source pages it was cut from, displaying as `rotations` says.
+    ///
+    /// **`split`** computes this once, from the source, before any part is extracted: the source's
+    /// rotation vector, sliced per run. Each part is verified against its own slice.
+    ///
+    /// # Why a slice per part rather than a page count per part
+    ///
+    /// ADR 0022's table originally wrote split's promise as "each part's page count, **and** the
+    /// parts summing to the input's". The slice is strictly stronger and subsumes both: if each
+    /// part's page count equals its slice's length, and the slices partition the source vector,
+    /// then the parts sum to the input by construction — there is nothing left for a separate
+    /// assertion to catch. What the slice adds is *which* pages: a part built from the wrong run
+    /// moves its rotations, and a count cannot see that.
+    ///
+    /// It costs one sweep over the source, paid once for the whole split rather than per part.
+    /// On a flat 10,000-page document that is 5.5 ms against a 91.6 ms split; on a 60-deep page
+    /// tree it is 148.6 ms, because the sweep walks `/Parent` per page. ADR 0019's cost table has
+    /// the composition.
+    ///
+    /// # Undetectable, and the first one is the reason `split` has a second layer
+    ///
+    /// - **Wrong content on a correctly-numbered, correctly-rotated page.** A part could hold the
+    ///   right count of pages displaying the right way and the wrong drawings entirely.
+    /// - **Anything about what the part carries from pages it excluded.** This checks a shape, not
+    ///   a closure: `split`'s whole subject is objects that should not have travelled, and a
+    ///   rotation vector says nothing about them. That is ADR 0019 §2's rule, and what holds it is
+    ///   `subset_closure.rs` and `split_no_leak.rs` — not this.
+    /// - **A partition of pages that all display the same way**, where it degrades to per-part page
+    ///   counts. That still catches a part that lost or gained a page; it says nothing about which
+    ///   run it came from. The same asymmetry `Reordered` has, and it is why the conformance
+    ///   fixtures are built with distinguishable pages.
+    Split {
+        /// The source's `/Rotate` values for this part's run, in page order.
+        rotations: Vec<i64>,
+    },
+
     /// Every input contributed the pages it had, in order.
     ///
     /// **`merge`** records how many pages each input added, taken from the assembly's running
@@ -142,9 +178,9 @@ impl Expected {
     /// influence, and every neighbouring conversion in this crate is a `try_from`.
     fn pages(&self) -> u64 {
         match self {
-            Self::Rotated { rotations } | Self::Reordered { rotations } => {
-                u64::try_from(rotations.len()).unwrap_or(u64::MAX)
-            }
+            Self::Rotated { rotations }
+            | Self::Reordered { rotations }
+            | Self::Split { rotations } => u64::try_from(rotations.len()).unwrap_or(u64::MAX),
             Self::Merged { contributions } => contributions.iter().sum(),
         }
     }
@@ -152,7 +188,9 @@ impl Expected {
     /// The rotation vector the output must have, where the operation can know it.
     const fn rotations(&self) -> Option<&Vec<i64>> {
         match self {
-            Self::Rotated { rotations } | Self::Reordered { rotations } => Some(rotations),
+            Self::Rotated { rotations }
+            | Self::Reordered { rotations }
+            | Self::Split { rotations } => Some(rotations),
             // See the variant's rustdoc: knowing it would cost a second parse of every input.
             Self::Merged { .. } => None,
         }
@@ -163,6 +201,7 @@ impl Expected {
         match self {
             Self::Rotated { .. } => "rotate",
             Self::Reordered { .. } => "reorder",
+            Self::Split { .. } => "split",
             Self::Merged { .. } => "merge",
         }
     }

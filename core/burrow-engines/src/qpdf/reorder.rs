@@ -319,7 +319,7 @@ fn permute(
 }
 
 /// The handle for page `index`, bounds-checked first.
-fn page_handle(document: &Document, index: u64, pages: u64) -> Result<ObjectHandle<'_>> {
+pub(super) fn page_handle(document: &Document, index: u64, pages: u64) -> Result<ObjectHandle<'_>> {
     if index >= pages {
         return Err(Error::InvalidArgument(
             "page is not in the document".to_owned(),

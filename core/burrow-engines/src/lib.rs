@@ -448,6 +448,33 @@ pub trait PageExtractor {
     /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that is not a count.
     fn pages(&self, source: &Self::Source) -> Result<u64>;
 
+    /// Every page's `/Rotate` as written, in page order, read from the **source**.
+    ///
+    /// The promise [ADR 0022](../../../docs/adr/0022-every-operation-verifies-its-own-output.md)
+    /// makes `split` verify each part against: the source's rotation vector, sliced per run.
+    /// Recorded rather than judged — an out-of-spec value reads back as itself — because a
+    /// witness only has to be stable between the read before the operation and the read after
+    /// it. See `PageRotator::rotations`, whose walk this is.
+    ///
+    /// **The caller's deadline, not a new one.** `Deadline::start` resets the origin *and* the
+    /// budget, so a sweep that made its own would be handed a whole second `max_duration_ms` —
+    /// the defect ADR 0022 records being fixed three times over. This parameter is why the three
+    /// `rotations` methods have one no other engine method has.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a page's `/Rotate` is not a number, or the page
+    ///   tree could not be walked.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — the deadline ran out mid-sweep. It is
+    ///   checkpointed per page: on a deep page tree this walk is the largest part of the
+    ///   operation, which ADR 0022 measured at 84%.
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>>;
+
     /// A document containing `count` pages of `source`, starting at zero-based `first`.
     ///
     /// # Errors

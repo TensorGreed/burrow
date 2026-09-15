@@ -211,9 +211,17 @@ Four things, each of which has already been got wrong once:
    wrote the bytes. That is the shared step's job, not yours; what is yours is implementing
    `OutputReader` for the engine the operation runs on, on **both** platforms.
 3. **Add an `Expected` variant if none of the existing ones states what your operation
-   promises**, and write in its rustdoc what it leaves undetectable. `split` promises each
-   part's count *and* that the parts sum to the input; `compress` promises what `rotate` does.
-   A variant with no stated residue is a variant somebody will over-trust.
+   promises**, and write in its rustdoc what it leaves undetectable. `split` promises **each
+   part's slice of the source's rotation vector**, read once before any part is extracted;
+   `compress` promises what `rotate` does. A variant with no stated residue is a variant somebody
+   will over-trust.
+
+   **Prefer the promise that subsumes the others to the one that enumerates them.** Split's was
+   written here as "each part's count *and* that the parts sum to the input" — two assertions, and
+   the slice makes both unnecessary: if each part's count equals its slice's length and the slices
+   partition the source vector, the sum follows by construction. What the slice adds is *which*
+   pages each part holds, which neither count could see. Two weak assertions are not one strong
+   one, and they read as more thorough.
 4. **Ship the test that makes it fire**: a fake engine that lies on the way back, and a
    mutation — delete the check — that fails it. On a correct engine and an undamaged file the
    refusal never fires, so it is untested by construction unless a fake lies.
