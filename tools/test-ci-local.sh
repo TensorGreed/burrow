@@ -168,6 +168,116 @@ check "removing the cargo-audit action is noticed" \
   "uses: rustsec/audit-check@||uses: rustsec/audit-check-removed@" \
   "cargo:audit" 1
 
+# --- ci.yml's workflow-level `env:` must actually reach the local jobs -----------------------
+#
+# It carries `RUSTFLAGS: -D warnings`, and this runner did not apply it, so every local cargo
+# job ran under weaker lints than CI. Measured: `tools/test-prune-is-reached.sh` passed a full
+# green local sweep and failed in CI, because its mutation left a struct field unread and
+# `-D dead-code` is only fatal on the CI side. A local runner that is quieter than CI is the
+# exact failure this file exists to make impossible.
+#
+# The assertion is that the value is READ FROM ci.yml rather than hardcoded, so a sentinel is
+# planted and has to come back out.
+cp "$backup" "$ci"
+python3 - "$ci" <<'PYENV'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "RUSTFLAGS: -D warnings"
+assert old in text, "ci.yml no longer sets RUSTFLAGS at workflow level"
+path.write_text(text.replace(old, "RUSTFLAGS: -D warnings --cfg burrow_env_probe", 1))
+PYENV
+if grep -q 'burrow_env_probe' "$ci"; then
+  out="$("$here/ci-local.py" --only fmt 2>&1 || true)"
+  if grep -q 'ci.yml env applied' <<<"$out" && grep -q 'burrow_env_probe' <<<"$out"; then
+    echo "  ok   ci.yml's workflow env reaches the local jobs, read from the file"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL ci.yml's workflow env did not reach the local jobs"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+else
+  echo "  FAIL the env sentinel did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+fi
+cp "$backup" "$ci"
+
+# --- Deleting the env block must REFUSE, not silently drop -D warnings -----------------------
+#
+# The modification case above proves the value is read from ci.yml. It does not prove that
+# LOSING the block is noticed -- and that is the same regression arriving by deletion rather
+# than by drift, which is the failure mode the parity table itself is built around.
+cp "$backup" "$ci"
+python3 - "$ci" <<'PYDEL'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "RUSTFLAGS: -D warnings"
+assert old in text, "ci.yml no longer sets RUSTFLAGS at workflow level"
+# Remove the whole workflow-level env block by renaming its key, which is exactly how a
+# refactor would lose it.
+path.write_text(text.replace("\nenv:\n", "\nnot-env:\n", 1))
+PYDEL
+out="$("$here/ci-local.py" --only fmt 2>&1 || true)"
+if grep -q 'no workflow-level' <<<"$out"; then
+  echo "  ok   a missing ci.yml env block is refused, not defaulted away"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a missing ci.yml env block did not refuse"
+  echo "$out" | tail -8
+  fail=$((fail + 1))
+fi
+cp "$backup" "$ci"
+
+# --- The environment, not ci.yml: a job whose tool is missing must REFUSE, not fail ----------
+#
+# `needs_qpdf_cli` was declared on three jobs and read by nothing. On a machine without the
+# CLI those three did not refuse -- they ran, and five tests panicked inside a testsupport
+# helper about a missing binary, which reads as "the change broke the leak tests". A flag
+# nothing reads is the same defect the reviewers found twice elsewhere in this batch, and it
+# is worse in the one file whose purpose is refusing to run a sweep it cannot complete.
+#
+# This hides BOTH routes to the CLI -- the PATH and the pinned build engines/build-native.sh
+# produces -- and requires a refusal that names the tool.
+# THE REAL ci.yml, restored first. `check()` restores at the START of each call rather than
+# the end, so the last mutation is still in place here -- and this case's refusal happens
+# AFTER the parity check, which would fail on it for an unrelated reason.
+cp "$backup" "$ci"
+
+echo
+hidden=""
+built="$(ls -1 "$repo"/engines/vendor/src/build-qpdf-*/qpdf/qpdf 2>/dev/null | head -1 || true)"
+if [ -n "$built" ] && [ -x "$built" ]; then
+  hidden="$built.hidden-by-test-ci-local"
+  mv "$built" "$hidden"
+  # RESTORED ON EVERY EXIT, alongside the ci.yml copy the outer trap already handles.
+  trap 'cp "$backup" "$ci"; rm -f "$backup"; [ -n "$hidden" ] && [ -e "$hidden" ] && mv "$hidden" "${hidden%.hidden-by-test-ci-local}"' EXIT
+fi
+
+# A PATH holding the interpreter and NOTHING ELSE, so `shutil.which("qpdf")` genuinely finds
+# nothing. Emptying PATH outright would make the failure "python3 not found", which is a
+# different refusal and would have passed a status check while proving nothing.
+py="$(command -v python3)"
+empty="$(mktemp -d)"
+ln -s "$py" "$empty/python3"
+status=0
+out="$(PATH="$empty" "$py" "$here/ci-local.py" --only subsetting-gate 2>&1)" || status=$?
+rm -rf "$empty"
+if [ "$status" -eq 1 ] && grep -q "REFUSED" <<<"$out" && grep -q "qpdf" <<<"$out"; then
+  echo "  ok   a job whose qpdf CLI is missing is refused, not run"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a job whose qpdf CLI is missing was not refused (status $status)"
+  echo "$out" | tail -10
+  fail=$((fail + 1))
+fi
+
+if [ -n "$hidden" ] && [ -e "$hidden" ]; then
+  mv "$hidden" "${hidden%.hidden-by-test-ci-local}"
+  hidden=""
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

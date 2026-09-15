@@ -61,6 +61,11 @@
  * @property {string} qpdfHeapBytes
  * @property {number} [failedInput] Which input failed, or -1.
  * @property {string} [innerKind] What was wrong with that input, or empty.
+ * @property {Blob[]} [parts] The documents a MULTI-OUTPUT operation produced, in order.
+ *
+ *   Present only on a successful split, and only when every part arrived (ADR 0023 §3): a
+ *   failed one delivers nothing, because `split` is a partition and a subset of the parts is
+ *   not a partition of anything.
  * @property {Blob | null} [output] The document an operation produced, or null.
  *
  *   A Blob rather than bytes, for the same reason the INPUT is one (ADR 0015 §4):
@@ -304,7 +309,8 @@ export function createWorkerHost(options) {
    * In-flight requests on the CURRENT generation, by id.
    *
    * @type {Map<number, { settle: (reply: HostReply) => void, timer: unknown, budgetMs: number,
-   *   isInit: boolean, acked: boolean }>}
+   *   isInit: boolean, acked: boolean, parts?: Blob[], partsExpected?: number,
+   *   onProgress?: (progress: { part: number, of: number }) => void }>}
    */
   let pending = new Map();
 
@@ -645,7 +651,9 @@ export function createWorkerHost(options) {
    * @param {Partial<HostReply> & { id?: number, ack?: boolean, ready?: boolean,
    *   starting?: boolean,
    *   minConvergingMemoryBytes?: string,
-   *   defaultLimits?: Record<string, number> }} data
+   *   defaultLimits?: Record<string, number>,
+   *   part?: { index: number, of: number }, progress?: { part: number, of: number },
+   *   }} data
    */
   function handleMessage(data) {
     // PROGRESS, which carries no id because it belongs to start-up rather than to a request.
@@ -668,6 +676,50 @@ export function createWorkerHost(options) {
     // before it — the worker's policy guard, and a cold engine compile — is start-up, which
     // `initTimeoutMs` bounds separately.
     const id = /** @type {number} */ (data.id);
+
+    // A PART, or progress within a multi-output operation (ADR 0023). Neither settles the
+    // request: the terminal reply still comes, and it is what the caller is waiting on.
+    //
+    // THE PARTS ARE HELD, NOT DELIVERED. ADR 0023 §3: a split that fails on part 3 of 10
+    // delivers nothing, because `split` is defined as a partition and a subset of the parts is
+    // not a partition of anything. So they accumulate here and the terminal reply decides
+    // whether the caller ever sees them -- which is also why the watchdog is re-armed per part
+    // rather than left running from the ack: a fifty-way split of a large document is fifty
+    // units of work, and one budget for all of them would fire on the honest case.
+    if (data.part !== undefined) {
+      entry.parts = entry.parts ?? [];
+      entry.partsExpected = data.part.of;
+      if (!data.output) {
+        // A PART WITH NO DOCUMENT. The worker posts bytes with every part or posts a failure
+        // instead, so this is the bundle doing something this host does not model -- and the
+        // gap-check on the terminal reply would catch it anyway. Failing here names it
+        // immediately rather than as "a part did not arrive" several messages later.
+        entry.settle(hostFailure("Internal", "a part of the split carried no document"));
+        clearTimer(entry.timer);
+        pending.delete(id);
+        // AND THE WORKER GOES. `apps/web/CLAUDE.md`: any `Internal` result is fatal to the
+        // worker -- terminate it and spawn a fresh one. These two paths only fire when the
+        // bundle violates the protocol, and leaving a worker mid-split holding a live
+        // `SplitSession` for a request the host has forgotten is the state that wedges it:
+        // `state` would stay "busy" for the life of the host. Every other failure path here
+        // discards; these two were the exception. Found by code review.
+        discard("Internal", "worker discarded", { crash: true });
+        return;
+      }
+      entry.parts[data.part.index] = data.output;
+      if (entry.acked) {
+        clearTimer(entry.timer);
+        entry.timer = setTimer(() => {
+          watchdogFired(id, entry.budgetMs);
+        }, entry.budgetMs + WATCHDOG_GRACE_MS);
+      }
+      return;
+    }
+
+    if (data.progress !== undefined) {
+      entry.onProgress?.(data.progress);
+      return;
+    }
 
     if (data.ack === true) {
       // ONCE, and never for an init. A worker that re-acked would push its deadline out
@@ -704,6 +756,37 @@ export function createWorkerHost(options) {
         discard("Internal", "engines failed to initialise", { crash: true });
       }
       return;
+    }
+
+    // A MULTI-OUTPUT REPLY. The terminal message carries no bytes of its own -- the parts came
+    // separately -- so the caller is handed them here, and ONLY on success.
+    if (entry.partsExpected !== undefined) {
+      const held = entry.parts ?? [];
+      if (data.ok === true) {
+        // EVERY PART, counted against the total the worker declared before the first one.
+        // A gap would mean a part message was dropped between the worker and here, which is
+        // not something the terminal reply can see -- and delivering nine of ten parts as a
+        // success is the outcome ADR 0023 §3 refuses.
+        // COUNTED, NOT `every`. `Array.prototype.every` SKIPS HOLES, so an array of length 10
+        // whose only assigned element is index 9 passed this gate -- and the parts were
+        // delivered as a success containing nine `undefined`s. The comment above says the gate
+        // exists because a dropped part message "is not something the terminal reply can see",
+        // and that was the one case it could not see either. Measured by security review.
+        let arrived = 0;
+        for (let i = 0; i < entry.partsExpected; i += 1) {
+          if (held[i] instanceof Blob) arrived += 1;
+        }
+        const complete = arrived === entry.partsExpected && held.length === entry.partsExpected;
+        if (!complete) {
+          entry.settle(hostFailure("Internal", "a part of the split did not arrive"));
+          discard("Internal", "worker discarded", { crash: true });
+          return;
+        }
+        data.parts = held;
+      } else {
+        // DISCARDED. The caller never sees a part of a failed split.
+        entry.parts = undefined;
+      }
     }
 
     if (pending.size === 0 && state === "busy") {
@@ -767,7 +850,8 @@ export function createWorkerHost(options) {
    * One operation, once the queue reaches it.
    *
    * @param {object} message
-   * @param {{ maxDurationMs?: number }} options
+   * @param {{ maxDurationMs?: number,
+   *   onProgress?: (progress: { part: number, of: number }) => void }} options
    * @returns {Promise<HostReply>}
    */
   async function runOne(message, options) {
@@ -821,6 +905,7 @@ export function createWorkerHost(options) {
         budgetMs: options.maxDurationMs ?? maxDurationMs,
         isInit: false,
         acked: false,
+        onProgress: options.onProgress,
       });
       live.postMessage({ ...message, id });
     });
@@ -880,7 +965,8 @@ export function createWorkerHost(options) {
      * same number.
      *
      * @param {object} message
-     * @param {{ maxDurationMs?: number }} [options]
+     * @param {{ maxDurationMs?: number,
+     *   onProgress?: (progress: { part: number, of: number }) => void }} [options]
      * @returns {Promise<HostReply>}
      */
     run(message, options = {}) {

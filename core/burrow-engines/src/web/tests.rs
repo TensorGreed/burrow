@@ -15,8 +15,8 @@ use burrow_types::{
 use super::fake::{Call, FakeHeap, FakePdfium, FakeQpdf, PdfiumScript, QpdfScript};
 use super::{QpdfBridge, WebPdfium, WebQpdf};
 use crate::{
-    CheckOptions, DocumentEngine, OpenOptions, PageAssembler, PageReorderer, PageRotator,
-    StructureEngine,
+    CheckOptions, DocumentEngine, OpenOptions, PageAssembler, PageExtractor, PageReorderer,
+    PageRotator, StructureEngine,
 };
 
 /// A stopped clock, so nothing here depends on how busy the machine is.
@@ -1960,5 +1960,211 @@ fn a_refused_web_rotation_sweep_releases_its_handles_too() {
         *live.lock().expect("not poisoned"),
         0,
         "a refused sweep left object handles alive"
+    );
+}
+
+// --- the web split, and the one thing the differential corpus cannot see -------------------
+//
+// `split`'s pruning POLICY is shared between the two implementations (`crate::prune`), so the
+// corpus can no longer catch the two paths pruning differently -- there is one pruning. What is
+// left is one path never reaching it, and until these tests existed nothing in `cargo test`
+// called `web/extract.rs` at all: security review deleted the `prune_output` call from it and
+// all 27 test binaries stayed green.
+//
+// These drive the web extractor against the fake, so a deletion there is a failure here.
+
+/// A source whose first page carries four keys, three of which the allowlist does not name.
+///
+/// The page is a dictionary and nothing else is: `/Annots` and `/Resources` read as null, which
+/// is what qpdf reports for an absent key, so the walk reaches the page-key pass with nothing
+/// else to do. That is the narrowest document that can tell pruning from its absence.
+fn split_script() -> QpdfScript {
+    QpdfScript {
+        page_count: 2,
+        oh_type_codes: [("<page 0>".to_owned(), 9)].into_iter().collect(),
+        oh_unparsed: [(
+            "<page 0>".to_owned(),
+            // `/Type` and `/Contents` are on the allowlist; `/B`, `/AA` and `/Thumb` are the
+            // article-bead, additional-action and thumbnail channels ADR 0019 §2a names.
+            "<< /Type /Page /Contents 3 0 R /B 4 0 R /AA 5 0 R /Thumb 6 0 R >>".to_owned(),
+        )]
+        .into_iter()
+        .collect(),
+        ..QpdfScript::default()
+    }
+}
+
+fn split_source(engine: &WebQpdf) -> <WebQpdf as PageExtractor>::Source {
+    PageExtractor::open(engine, ordinary_pdf().into_boxed_slice(), &rotate_options())
+        .expect("the fake opens")
+}
+
+#[test]
+fn the_web_extractor_reaches_the_shared_pruning_policy() {
+    let script = split_script();
+    let live = Arc::clone(&script.live_handles);
+    let (engine, state) = structure_engine(script);
+    let source = split_source(&engine);
+
+    let part = PageExtractor::extract(&engine, &source, 0, 1, &rotate_options())
+        .expect("one page comes out");
+    assert_eq!(
+        part,
+        b"%PDF-1.7\nmerged\n".to_vec(),
+        "the bytes that reach Rust are the bytes the engine wrote"
+    );
+
+    // WHAT THE POLICY DID, by name. A count would pass for three removals of the wrong keys.
+    let mut removed: Vec<String> = state
+        .calls()
+        .iter()
+        .filter_map(|c| match c {
+            Call::OhRemoveKey { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    removed.sort();
+    assert_eq!(
+        removed,
+        vec!["/AA".to_owned(), "/B".to_owned(), "/Thumb".to_owned()],
+        "the page-key allowlist did not run on the web path"
+    );
+
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the prune left object handles alive in qpdf's cache"
+    );
+}
+
+#[test]
+fn the_web_split_refuses_a_layered_document_and_releases_its_handles() {
+    // THE REFUSAL LIVES INSIDE THE POLICY, which is what makes the conformance corpus able to
+    // see a path that skipped pruning: a path that does not prune does not refuse, it succeeds.
+    // This is that refusal, reached through the web extractor.
+    let mut script = split_script();
+    script.oh_type_codes.extend([
+        ("/Resources".to_owned(), 9),
+        ("/Properties".to_owned(), 9),
+        ("/MC0".to_owned(), 9),
+        ("/Type".to_owned(), 7),
+    ]);
+    script
+        .oh_unparsed
+        .insert("/Properties".to_owned(), "<< /MC0 7 0 R >>".to_owned());
+    // `/Type` names `/OCG`, which is what makes the entry a layer rather than an ordinary
+    // marked-content property list. Refusing on the presence of `/Properties` would refuse
+    // every tagged PDF, which has nothing hidden in it.
+    script
+        .oh_names
+        .insert("/Type".to_owned(), "/OCG".to_owned());
+    let live = Arc::clone(&script.live_handles);
+    let (engine, state) = structure_engine(script);
+    let source = split_source(&engine);
+
+    let refused = PageExtractor::extract(&engine, &source, 0, 1, &rotate_options());
+    assert!(
+        matches!(&refused, Err(Error::Unsupported(message)) if message.contains("optional content")),
+        "got {refused:?}"
+    );
+
+    // AND IT REFUSED BEFORE IT EDITED ANYTHING. A refusal that arrives after half the keys are
+    // gone is a half-pruned document nobody receives, and a writer that ran anyway would have.
+    assert!(
+        !state
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::OhRemoveKey { .. } | Call::Write)),
+        "the refusal came after the output had already been edited or written"
+    );
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "a refused split left object handles alive"
+    );
+}
+
+#[test]
+fn the_web_split_strips_the_leaking_keys_from_every_annotation_it_keeps() {
+    // THE `/Annots` HALF OF THE POLICY, which the page-key test above does not reach: the page's
+    // `/Annots` is on the allowlist, so what protects it is the per-annotation rule list.
+    let mut script = split_script();
+    script.oh_type_codes.extend([
+        ("/Annots".to_owned(), 8),    // ot_array
+        ("/Annots[0]".to_owned(), 9), // ot_dictionary
+        ("/Annots[1]".to_owned(), 9),
+    ]);
+    script.oh_array_len.insert("/Annots".to_owned(), 2);
+    let live = Arc::clone(&script.live_handles);
+    let (engine, state) = structure_engine(script);
+    let source = split_source(&engine);
+
+    PageExtractor::extract(&engine, &source, 0, 1, &rotate_options()).expect("one page comes out");
+
+    // EVERY KEY THE POLICY REMOVED, by name and without duplicates. A count would be satisfied
+    // by five removals of the wrong keys, and the three annotation rules are the `/AcroForm`
+    // answer ADR 0019 §2b records -- `/Parent` is the one that reaches a field's `/V`.
+    let mut keys: Vec<String> = state
+        .calls()
+        .iter()
+        .filter_map(|c| match c {
+            Call::OhRemoveKey { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(
+        keys,
+        vec![
+            "/A".to_owned(),
+            "/AA".to_owned(),
+            "/B".to_owned(),
+            "/Dest".to_owned(),
+            "/Parent".to_owned(),
+            "/StructParent".to_owned(),
+            "/Thumb".to_owned(),
+        ],
+        "the annotation rules and the page allowlist did not both run"
+    );
+
+    // BACKWARDS, and this is not a style point: `qpdf_oh_erase_item` shifts everything after the
+    // erased item down, so a forward loop skips the annotation that takes a removed one's place.
+    // TWO passes over the array, each descending -- the filter, then the optional-content sweep.
+    let visited: Vec<i32> = state
+        .calls()
+        .iter()
+        .filter_map(|c| match c {
+            Call::OhArrayItem { at, .. } => Some(*at),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(visited, vec![1, 0, 1, 0], "an annotation walk ran forwards");
+
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the annotation walk left object handles alive"
+    );
+}
+
+#[test]
+fn a_page_run_outside_the_web_source_is_refused_before_a_destination_is_opened() {
+    let script = split_script();
+    let (engine, state) = structure_engine(script);
+    let source = split_source(&engine);
+    let before = state.calls().len();
+
+    for (first, count) in [(0, 0), (1, 2), (u64::MAX, 1)] {
+        let refused = PageExtractor::extract(&engine, &source, first, count, &rotate_options());
+        assert!(
+            matches!(refused, Err(Error::InvalidArgument(_))),
+            "({first}, {count}) was not refused: {refused:?}"
+        );
+    }
+    assert_eq!(
+        state.calls().len(),
+        before,
+        "a refused run still crossed the bridge"
     );
 }

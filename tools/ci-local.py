@@ -34,7 +34,9 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -164,6 +166,16 @@ JOBS: list[dict] = [
         "why": "ADR 0019 §2's rule, and that the tests asserting it are not ignored (#54)",
     },
     {
+        # The mutation sweep that stands behind the shared pruning policy. It plants the deleted
+        # `prune_output` call on each extractor in turn and requires the suite covering that side
+        # to turn red, which is the only thing left that can catch one path not reaching the
+        # policy -- see `testsupport/expectations.rs`'s `Operation::Split`.
+        "name": "prune-is-reached",
+        "run": "tools/test-prune-is-reached.sh",
+        "covers": ["tools/test-prune-is-reached.sh"],
+        "why": "each split path is shown to reach the shared pruning policy (#54)",
+    },
+    {
         "name": "corpus",
         "run": (
             "cargo run -p burrow-engines --all-features "
@@ -258,7 +270,7 @@ JOBS: list[dict] = [
         "run": (
             "cd fuzz && "
             'export LD_LIBRARY_PATH="$PWD/../engines/vendor/native-$(uname -m)/lib" && '
-            'export RUSTFLAGS="-L native=$PWD/../engines/vendor/native-$(uname -m)/lib/fuzz" && '
+            'export RUSTFLAGS="$RUSTFLAGS -L native=$PWD/../engines/vendor/native-$(uname -m)/lib/fuzz" && '
             "export ASAN_OPTIONS=detect_leaks=0 && "
             "for t in document_open prescan pdfsyntax_names pdfsyntax_dict_keys "
             "qpdf_check rotate reorder merge split; do "
@@ -385,12 +397,77 @@ def parity(found: dict[str, list[str]]) -> tuple[list[str], list[str]]:
     return uncovered, stale
 
 
-def run(job: dict) -> bool:
+def workflow_env() -> dict[str, str]:
+    """`ci.yml`'s workflow-level `env:` block, which every job inherits.
+
+    **READ, NOT COPIED.** It carries `RUSTFLAGS: -D warnings`, and this runner did not apply
+    it --- so every local cargo job ran under weaker lints than CI, and a warning-level
+    regression passed here and failed there. That is the sixth instance of the class this
+    file exists for, and the fix has to be the same shape as the parity table: derived from
+    `ci.yml` so it cannot drift, rather than a constant somebody remembers to update.
+
+    Parsed rather than YAML-loaded for the reason the extractor below gives: no dependency.
+    The block is flat `KEY: value` pairs at one indent level, and a shape this does not
+    understand is reported rather than skipped.
+    """
+    text = CI.read_text(encoding="utf-8")
+    out: dict[str, str] = {}
+    inside = False
+    for line in text.splitlines():
+        if line.startswith("env:"):
+            inside = True
+            continue
+        if inside:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            # The block ends at the next top-level key.
+            if not line.startswith(" "):
+                break
+            key, separator, value = line.strip().partition(":")
+            if not separator:
+                raise SystemExit(f"ci-local: unparsed line in ci.yml's env block: {line!r}")
+            out[key.strip()] = value.strip().strip('"').strip("'")
+    if not out:
+        # AN EMPTY RESULT IS A FAILURE, NOT A DEFAULT. Delete or rename `ci.yml`'s
+        # workflow-level `env:` and this would return `{}`, print nothing, and run every job
+        # WITHOUT `-D warnings` -- reintroducing the exact regression this function closes, by
+        # removing the thing it reads. "A check that silently examines nothing is worse than
+        # no check" (CLAUDE.md), and this is that check examining nothing.
+        raise SystemExit(
+            "ci-local: ci.yml has no workflow-level `env:` block.\n"
+            "  It is where `RUSTFLAGS: -D warnings` lives, and without it every local job\n"
+            "  runs under weaker lints than CI. If the block genuinely moved, teach\n"
+            "  workflow_env() where it went -- do not let it return nothing."
+        )
+    return out
+
+
+def qpdf_cli() -> tuple[str | None, str]:
+    """Where a `qpdf` CLI can be found, and how it was found.
+
+    Two leak suites and the subsetting gate shell out to `qpdf --qdf` to decompress output
+    before scanning it, because a marker inside a flate stream is invisible to a byte scan.
+    CI installs the distro package and then asserts it is on PATH.
+
+    Locally the better answer is usually already built: `engines/build-native.sh` produces the
+    CLI for the PINNED qpdf beside the library, so preferring it means the tests decompress
+    with the same version they link against rather than with whatever the distro ships.
+    """
+    found = shutil.which("qpdf")
+    if found:
+        return found, "on PATH"
+    for built in sorted(REPO.glob("engines/vendor/src/build-qpdf-*/qpdf/qpdf")):
+        if built.is_file() and os.access(built, os.X_OK):
+            return str(built), "built by engines/build-native.sh"
+    return None, "not found"
+
+
+def run(job: dict, env: dict[str, str] | None = None) -> bool:
     print(f"\n=== {job['name']}")
     if job.get("why"):
         print(f"    ({job['why']})")
     print(f"    $ {job['run']}")
-    result = subprocess.run(job["run"], shell=True, cwd=REPO)
+    result = subprocess.run(job["run"], shell=True, cwd=REPO, env=env)
     ok = result.returncode == 0
     print(f"    {'PASS' if ok else 'FAIL'}  {job['name']}")
     return ok
@@ -465,7 +542,46 @@ def main(argv: list[str]) -> int:
         print(f"error: no local job named {only!r}", file=sys.stderr)
         return 1
 
-    failed = [j["name"] for j in jobs if not run(j)]
+    # CI's workflow-level env, applied to every local job. `RUSTFLAGS: -D warnings` is the
+    # one that matters and the one that was missing: every local cargo job ran under weaker
+    # lints than CI, so a warning-level regression passed here and went red there.
+    inherited = workflow_env()
+    env = dict(os.environ)
+    env.update(inherited)
+    if inherited:
+        applied = ", ".join(f"{k}={v}" for k, v in sorted(inherited.items()))
+        print(f"\nci.yml env applied: {applied}")
+
+    # THE `qpdf` CLI, RESOLVED BEFORE ANYTHING RUNS. `needs_qpdf_cli` was declared on three
+    # jobs and read by nothing -- so on a machine without the CLI those three did not refuse,
+    # they FAILED, with five tests panicking inside a testsupport helper about a missing
+    # binary. That reads as "the change broke the leak tests" and it is not what happened.
+    # This is the same write-only-flag defect the reviewers found twice elsewhere in this
+    # batch, in a file whose entire purpose is refusing to run a sweep it cannot complete.
+    needing = [j["name"] for j in jobs if j.get("needs_qpdf_cli")]
+    if needing:
+        cli, how = qpdf_cli()
+        if cli is None:
+            print(
+                f"\nREFUSED — {len(needing)} job(s) need the `qpdf` CLI, which is not "
+                f"installed: {', '.join(needing)}",
+                file=sys.stderr,
+            )
+            print(
+                "\n  Two leak suites and the subsetting gate decompress output with\n"
+                "  `qpdf --qdf` before scanning it; without it a marker inside a flate\n"
+                "  stream is invisible and the scan reports silence for the wrong reason.\n"
+                "\n  Either install it (apt-get install qpdf), or run\n"
+                "  engines/build-native.sh, which builds the pinned one this would prefer.\n"
+                "\n  Refusing rather than running: a sweep that cannot complete must not\n"
+                "  report a failure that looks like the change's fault.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"\nqpdf CLI: {cli} ({how})")
+        env["PATH"] = f"{os.path.dirname(cli)}{os.pathsep}{env.get('PATH', '')}"
+
+    failed = [j["name"] for j in jobs if not run(j, env)]
     print("\n" + "=" * 60)
     if failed:
         print(f"FAILED — {len(failed)} of {len(jobs)}: {', '.join(failed)}", file=sys.stderr)

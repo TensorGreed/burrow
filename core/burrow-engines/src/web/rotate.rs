@@ -362,7 +362,12 @@ impl Keys {
 /// The handle for page `index`, bounds-checked first.
 ///
 /// The caller releases it.
-fn page_handle(engine: &WebQpdf, session: &Session, index: u64, pages: u64) -> Result<u32> {
+pub(super) fn page_handle(
+    engine: &WebQpdf,
+    session: &Session,
+    index: u64,
+    pages: u64,
+) -> Result<u32> {
     if index >= pages {
         return Err(Error::InvalidArgument(
             "page is not in the document".to_owned(),

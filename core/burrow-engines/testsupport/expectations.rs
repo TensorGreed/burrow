@@ -213,16 +213,40 @@ pub enum Operation {
     /// point on either side. On a fixture where every page shares a rotation it degrades to
     /// "nothing was lost", which is worth having and is not pretended to be more.
     Reorder,
+    /// `burrow_ops::split`, over qpdf. **Cut after the first page.**
+    ///
+    /// Fixed, like `Rotate` and `Reorder`, and for the same reason.
+    ///
+    /// # This case exists to catch ONE path failing to prune at all
+    ///
+    /// `split`'s pruning policy is shared between the native and web implementations
+    /// (`crate::prune`), which is deliberate and is argued there: a divergence between two
+    /// prunings would be a leak on one platform and not the other, and this corpus compares
+    /// typed outcomes and page counts -- neither of which can see an object that should not
+    /// have travelled.
+    ///
+    /// **What that trades away is the thing this corpus is for**, so the risk it leaves has to
+    /// be caught by something. The remaining failure is not two policies disagreeing, it is one
+    /// path never reaching the policy: a `prune_output` call dropped from `qpdf/extract.rs` or
+    /// from `web/extract.rs` while the other keeps it.
+    ///
+    /// That is observable through a typed outcome and needs no new expectation shape. The
+    /// refusal for optional content lives INSIDE the policy, so a path that skips pruning does
+    /// not refuse -- it succeeds. On a layered fixture the expectation is `Unsupported`, and a
+    /// path that stopped pruning reports `Ok` and diverges. Verified by mutation on both sides;
+    /// see `tools/test-prune-is-reached.sh`.
+    Split,
 }
 
 impl Operation {
     /// Every operation, in a stable order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::PageCount,
         Self::StructureCheck,
         Self::Merge,
         Self::Rotate,
         Self::Reorder,
+        Self::Split,
     ];
 
     /// The name used in the JSON and in the harness's records.
@@ -234,6 +258,7 @@ impl Operation {
             Self::Merge => "merge",
             Self::Rotate => "rotate",
             Self::Reorder => "reorder",
+            Self::Split => "split",
         }
     }
 }

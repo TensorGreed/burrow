@@ -9,6 +9,8 @@
 export interface Reply {
   /** Bytes of the document an operation produced, or 0. The harness does not return it. */
   outputBytes?: number;
+  /** How many parts a multi-output operation produced. Zero for every single-output one. */
+  partCount?: number;
   ok: boolean;
   kind: string;
   /** Computed in Rust, not derived from `kind`. ADR 0009. */
@@ -134,6 +136,22 @@ export interface BurrowHarness {
     options?: {
       password?: string | null;
       limits?: Partial<HarnessLimits>;
+    },
+  ): Promise<Reply>;
+
+  /**
+   * Split after the given one-based pages and report how many parts came out.
+   *
+   * `pages` on the reply carries the PART COUNT, the way `merge`'s carries a page count — see
+   * `Operation::Split` on the Rust side, and ADR 0023 for why the parts themselves never reach
+   * a test.
+   */
+  splitAt(
+    base64: string,
+    options?: {
+      password?: string | null;
+      limits?: Partial<HarnessLimits>;
+      cuts?: number[];
     },
   ): Promise<Reply>;
 

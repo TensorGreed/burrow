@@ -96,6 +96,12 @@ fn qpdf() -> WebQpdf {
 ///
 /// Every field is a value Rust decided. The worker forwards them; it does not interpret
 /// them.
+/// `Clone` so a session can hand back the outcome of *starting* a split without consuming it.
+///
+/// **That reply never carries output** — it is a success with no bytes, or a failure. Cloning a
+/// reply that did carry output would duplicate a whole document in a heap with a fixed ceiling,
+/// which is why nothing else in this file clones one.
+#[derive(Clone)]
 #[wasm_bindgen]
 pub struct Reply {
     ok: bool,
@@ -891,6 +897,183 @@ pub fn reorder(
         Err(error) => Reply::failure(&error),
     }
     .with_lifecycle(&limits)
+}
+
+/// A split in progress: the source held open, parts pulled one at a time.
+///
+/// **ADR 0023.** `split` is the first operation whose output is more than one document, and
+/// returning them in one `Reply` would hold the whole output in the engine heap and then copy it
+/// all again on the way out — resident twice, for a fifty-way split of a large file. The worker
+/// pulls one part, posts it, and drops it.
+///
+/// # Pull, not push
+///
+/// There is no callback into JS. A callback would be Rust invoking a JS function mid-operation: a
+/// new place for an unwind to cross the binding boundary, and a branch on engine state living in
+/// JS, which ADR 0009 §2 forbids. The worker drives the loop instead, which is also how
+/// `PageAssembler` is shaped and for the same reason.
+///
+/// # The session owns its password
+///
+/// `OpenOptions` borrows one, and every call needs the same options — so a session that borrowed
+/// them would be self-referential. It keeps the password and builds the options per call, which is
+/// what the engine traits do anyway: `extract`, `rotations` and `verify` each take `options`.
+#[wasm_bindgen]
+pub struct SplitSession {
+    /// `None` when `begin` failed, or once every part has been produced.
+    inner: Option<burrow_core::ops::Split<WebQpdf>>,
+    /// Kept alive for the life of the session; `OpenOptions` borrows it per call.
+    password: Option<Password>,
+    limits: Limits,
+    /// How many parts this split produces. Known before the first one is.
+    parts: u32,
+    /// The failure that ended this split, if one did.
+    ///
+    /// **Held so that a call after a failure is that failure again**, rather than the empty
+    /// success that means "exhausted". `inner` is cleared on both, so on its own it could not
+    /// tell the two apart -- and a caller that asked once more after a failure would have read
+    /// the split as having finished normally, which is the one thing ADR 0023 §3 requires it
+    /// not to conclude. Found by code review, which also found the counter that used to sit
+    /// here: `delivered` was written on every part and read by nothing.
+    failed: Option<Reply>,
+    /// The failure `begin` reported, if it failed. The session IS the reply for that phase.
+    began: Reply,
+}
+
+#[wasm_bindgen]
+impl SplitSession {
+    /// Whether the split could be started at all.
+    ///
+    /// When this is false the session yields no parts and [`SplitSession::begin_reply`] carries
+    /// why — the typed kind, the message, and whether the instance is poisoned.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn ok(&self) -> bool {
+        self.began.ok
+    }
+
+    /// How many parts this split will produce.
+    ///
+    /// **Known before the first part is**, which is what lets the worker report "part 1 of 10"
+    /// rather than counting as they arrive. Zero when `begin` failed.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn parts(&self) -> u32 {
+        self.parts
+    }
+
+    /// The outcome of starting the split: the failure, or an empty success.
+    ///
+    /// A copy, because `wasm_bindgen` moves what it returns into JS and the session outlives
+    /// the call: the worker reads this to decide whether to pull any parts at all, and a
+    /// `begin_reply` that emptied the session would make asking twice a different answer.
+    /// It carries no output, so the copy is three small fields.
+    #[must_use]
+    pub fn begin_reply(&self) -> Reply {
+        self.began.clone()
+    }
+
+    /// Produce, verify and return the next part.
+    ///
+    /// **Each part is verified before it is returned** (ADR 0023 §4), so nothing unverified leaves
+    /// the engine heap. `Reply::pages` is that part's page count and `Reply::output` its bytes.
+    ///
+    /// A reply with `ok == false` means the **whole split has failed**: the caller must discard any
+    /// part it already holds and deliver nothing (ADR 0023 §3). `split` is defined as a partition,
+    /// and a subset of the parts is not a partition of anything.
+    ///
+    /// Returns a reply with no output and `pages == 0` once every part has been produced; the
+    /// worker stops on the count rather than on that, which is why `parts` is known up front.
+    #[must_use]
+    pub fn next_part(&mut self) -> Reply {
+        let clock: Arc<dyn Clock> = Arc::new(WebClock);
+        let mut options = OpenOptions::new(self.limits, clock);
+        options.password = self.password.as_ref();
+
+        // A FAILED SPLIT STAYS FAILED. Answering the empty success here would say "exhausted",
+        // and the caller's rule for the two is opposite: one delivers the parts it holds, the
+        // other discards them.
+        if let Some(failed) = &self.failed {
+            return failed.clone();
+        }
+
+        let Some(session) = self.inner.as_mut() else {
+            return Reply::success(0).with_lifecycle(&self.limits);
+        };
+
+        match session.next_part(&qpdf(), &options) {
+            Ok(Some(output)) => {
+                let pages = output_page_count(&output);
+                Reply::produced(pages, output).with_lifecycle(&self.limits)
+            }
+            Ok(None) => {
+                // EXHAUSTED. The source is dropped here rather than held until the session is,
+                // because the worker posts the last part and then does other things -- and the
+                // source is a whole parsed document sitting in a heap with a fixed ceiling.
+                self.inner = None;
+                Reply::success(0).with_lifecycle(&self.limits)
+            }
+            Err(error) => {
+                // THE SOURCE GOES ON FAILURE TOO, and the session yields nothing further: the
+                // split has failed, and holding a parsed document open for a caller that must
+                // discard everything anyway is the worst of both.
+                self.inner = None;
+                let reply = Reply::failure(&error).with_lifecycle(&self.limits);
+                self.failed = Some(reply.clone());
+                reply
+            }
+        }
+    }
+}
+
+/// Begin a split, returning a session the caller pulls parts from.
+///
+/// Everything that can fail for a reason the caller could have avoided happens here: the cuts are
+/// validated against the real page count, the ceilings are applied, and the promise each part will
+/// be verified against is computed from the source. See [`SplitSession`].
+#[wasm_bindgen]
+#[must_use]
+pub fn split_begin(
+    bytes: Box<[u8]>,
+    cuts: &[u32],
+    password: Option<Box<[u8]>>,
+    limits: WebLimits,
+) -> SplitSession {
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let password = password.map(|p| Password::new(&p));
+
+    let mut options = OpenOptions::new(limits, Arc::clone(&clock));
+    options.password = password.as_ref();
+
+    let after: Vec<u64> = cuts.iter().map(|n| u64::from(*n)).collect();
+
+    match burrow_core::ops::split_begin(
+        &qpdf(),
+        bytes,
+        burrow_core::ops::Cuts::after_pages(&after),
+        &options,
+    ) {
+        Ok(session) => {
+            let parts = u32::try_from(session.parts()).unwrap_or(u32::MAX);
+            SplitSession {
+                inner: Some(session),
+                password,
+                limits,
+                parts,
+                failed: None,
+                began: Reply::success(0).with_lifecycle(&limits),
+            }
+        }
+        Err(error) => SplitSession {
+            inner: None,
+            password,
+            limits,
+            parts: 0,
+            failed: None,
+            began: Reply::failure(&error).with_lifecycle(&limits),
+        },
+    }
 }
 
 /// Turn chosen pages of a document and return the result.

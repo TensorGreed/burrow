@@ -165,6 +165,97 @@ mod measure {
         );
     }
 
+    /// Peak resident set, from the kernel rather than from an estimate.
+    ///
+    /// `VmHWM` is the high-water mark: the largest the process has ever been, which is what a
+    /// memory question about a streaming operation is actually asking. A sample taken at the end
+    /// would miss the peak by construction, since the point of streaming is that the peak is
+    /// transient.
+    fn peak_rss_bytes() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find(|line| line.starts_with("VmHWM:"))
+                    .and_then(|line| line.split_whitespace().nth(1).map(str::to_owned))
+            })
+            .and_then(|kib| kib.parse::<u64>().ok())
+            .map_or(0, |kib| kib * 1024)
+    }
+
+    /// What a ONE-WAY split costs each way round, which is the case streaming is worst at.
+    ///
+    /// **The question this answers is whether a single-part special case is worth writing.**
+    /// Streaming holds the source open while each part is produced and verified; the batching
+    /// path it replaced could drop the source before any read-back. For many parts streaming
+    /// wins easily -- the parts together are about the size of the source, and only one is
+    /// resident. For ONE part there is nothing to win and one document to lose.
+    ///
+    /// Both paths are built from the public API so neither is a reconstruction: the streaming one
+    /// is `split_begin` + `next_part`, and the batching one is `open` -> `extract` -> `drop` ->
+    /// `verify`, which is what `split` did before ADR 0023.
+    ///
+    /// # ONE PATH PER PROCESS, and the first version of this got it wrong
+    ///
+    /// `VmHWM` is a high-water mark: it never falls. Running both paths in one process meant the
+    /// second one measured the growth the FIRST had already caused, and reported roughly zero --
+    /// so the batching path looked free and the streaming path looked like the whole cost. The
+    /// numbers were confident and meaningless, which is the shape this repository keeps catching.
+    ///
+    /// So the caller names the path and runs the binary twice.
+    pub fn report_memory(label: &str, bytes: &[u8], which: &str) {
+        use burrow_engines::PageExtractor;
+
+        let engine = Qpdf::new();
+        let opts = options();
+
+        if which != "streaming" && which != "batching" {
+            // A MISTYPED ARGUMENT USED TO PRINT A NUMBER. Neither arm matched, nothing ran, and
+            // the harness reported `peak RSS growth 4096 bytes` -- which reads exactly like
+            // "this path is free". This is the harness behind ADR 0023's memory table; a
+            // confident small number out of it is worse than a crash. Found by code review.
+            eprintln!("measure-pruning: --memory takes `streaming` or `batching`, not {which:?}");
+            std::process::exit(2);
+        }
+
+        let before = peak_rss_bytes();
+        if which == "streaming" {
+            let mut session = burrow_ops::split_begin(
+                &engine,
+                bytes.to_vec().into_boxed_slice(),
+                Cuts::after_pages(&[]),
+                &opts,
+            )
+            .expect("one-way split");
+            while let Some(part) = session.next_part(&engine, &opts).expect("a part") {
+                core::hint::black_box(&part);
+            }
+        }
+        if which == "batching" {
+            let source = engine
+                .open(bytes.to_vec().into_boxed_slice(), &opts)
+                .expect("open");
+            let pages = engine.pages(&source).expect("pages");
+            let deadline = burrow_types::Deadline::start(opts.clock.as_ref(), &opts.limits);
+            let rotations =
+                PageExtractor::rotations(&engine, &source, &opts, &deadline).expect("sweep");
+            let output = engine.extract(&source, 0, pages, &opts).expect("extract");
+            drop(source);
+            burrow_ops::verify::output(
+                &engine,
+                &output,
+                &burrow_ops::verify::Expected::Split { rotations },
+                &opts,
+                &deadline,
+            )
+            .expect("verify");
+            core::hint::black_box(&output);
+        }
+        let grew = peak_rss_bytes().saturating_sub(before);
+        println!("{label}  {which:<10} peak RSS growth {grew:>10} bytes");
+    }
+
     fn percent(part: Duration, whole: Duration) -> f64 {
         if whole.as_nanos() == 0 {
             return 0.0;
@@ -177,6 +268,12 @@ mod measure {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("--memory") => {
+            let pages: usize = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(10_000);
+            let which = args.get(2).map_or("streaming", String::as_str);
+            let bytes = measure_fixtures::generated(pages);
+            measure::report_memory(&format!("--memory {pages}"), &bytes, which);
+        }
         Some("--deep") => {
             let pages: usize = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(10_000);
             let depth: usize = args.get(2).and_then(|n| n.parse().ok()).unwrap_or(60);
@@ -196,7 +293,8 @@ fn main() {
         }
         None => {
             println!(
-                "usage: measure-pruning <pdf>... | --generated <pages> | --deep <pages> <depth>"
+                "usage: measure-pruning <pdf>... | --generated <pages> | --deep <pages> <depth> \
+| --memory <pages>"
             );
         }
     }

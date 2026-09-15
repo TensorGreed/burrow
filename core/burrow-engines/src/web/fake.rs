@@ -32,6 +32,15 @@ pub(super) enum Call {
     RemovePage(u32),
     AddPageAt { page: u32, before: bool },
     OhObject(u32),
+    OhUnparse(u32),
+    OhGetName(u32),
+    OhRemoveKey { oh: u32, key: String },
+    OhArrayLen(u32),
+    OhArrayItem { oh: u32, at: i32 },
+    OhEraseItem { oh: u32, at: i32 },
+    OhGetDict(u32),
+    OhPageContent(u32),
+    OhStreamData(u32),
     Load,
     PageCount,
     CloseDocument(u32, u32, u32),
@@ -372,6 +381,21 @@ pub(super) struct QpdfScript {
     pub(super) read_grows_heap_by: u64,
     /// The bitmask `qpdf_remove_page` returns.
     pub(super) remove_page_status: i32,
+    /// What a handle's `unparse` returns, by the key that produced the handle.
+    ///
+    /// Absent means `<< >>` — an empty dictionary, which is what qpdf unparses for one and
+    /// what the policy must survive. A fake whose default were richer than the engine's would
+    /// teach the policy habits the engine will not honour.
+    pub(super) oh_unparsed: std::collections::BTreeMap<String, String>,
+    /// How many items an array has, by the key that produced it. Absent means zero.
+    pub(super) oh_array_len: std::collections::BTreeMap<String, i32>,
+    /// What `qpdf_oh_get_page_content_data` returns for any page.
+    pub(super) page_content: Vec<u8>,
+    /// What `qpdf_oh_get_stream_data` returns.
+    ///
+    /// `None` is "could not decode", which the policy turns into a refusal — a case worth
+    /// driving, and the reason this is scripted rather than defaulted.
+    pub(super) stream_data: Option<Vec<u8>>,
     /// Fail `get_page_n` from this call onwards, by latching an error.
     ///
     /// What makes an error DURING the permutation reachable. Without it the only failure a
@@ -428,6 +452,14 @@ pub(super) struct QpdfScript {
     /// whose rotation is absent but whose parent is a dictionary -- which is every page in
     /// a document that inherits.
     pub(super) oh_type_codes: std::collections::BTreeMap<String, i32>,
+    /// What a NAME object unparses to, by the key that produced the handle.
+    ///
+    /// Absent means "the key itself", which is the right answer for the common case
+    /// (`/Resources /Font /F1` is a handle whose name is `/F1`) and the wrong one for the
+    /// only place the policy reads a name it did not ask for by that name: `/Type`. An
+    /// optional-content group is a dictionary whose `/Type` is `/OCG`, so without this the
+    /// fake answers `/Type` and the refusal is unreachable from here.
+    pub(super) oh_names: std::collections::BTreeMap<String, String>,
     /// The integer `qpdf_oh_get_int_value` reports.
     pub(super) oh_int_value: i64,
     /// How many handles the fake has issued and not seen released.
@@ -466,7 +498,19 @@ impl Default for QpdfScript {
             oh_type_codes: [("/Rotate".to_owned(), 2), ("/Parent".to_owned(), 9)]
                 .into_iter()
                 .collect(),
+            oh_names: std::collections::BTreeMap::new(),
             oh_int_value: 0,
+            // EMPTY, so a page with nothing scripted prunes to nothing rather than to
+            // something. `<< >>` is what qpdf unparses for an empty dictionary, and a default
+            // richer than the engine's would teach the policy habits the engine will not
+            // honour.
+            oh_unparsed: std::collections::BTreeMap::new(),
+            oh_array_len: std::collections::BTreeMap::new(),
+            page_content: Vec::new(),
+            // SOME, not None. `None` is "qpdf could not decode this", which the policy turns
+            // into a refusal -- so a default of `None` would make every fake document refuse
+            // and every test that did not think about it pass for the wrong reason.
+            stream_data: Some(Vec::new()),
             live_handles: Arc::new(Mutex::new(0)),
         }
     }
@@ -530,6 +574,28 @@ impl FakeQpdf {
             .read_all(ptr.0);
         let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
         String::from_utf8_lossy(&bytes[..end]).into_owned()
+    }
+
+    /// The key that produced `handle`, which is how this fake tells one object from another.
+    fn handle_name(&self, handle: u32) -> String {
+        self.handle_keys
+            .lock()
+            .expect("not poisoned")
+            .get(&handle)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Put a NUL-terminated string in the fake heap and return a pointer to it.
+    ///
+    /// The real bridge hands back a pointer into qpdf's own storage that dies on the next call
+    /// returning one. This does not model that lifetime: a fake that recycled the buffer would
+    /// be testing the caller's copy-immediately discipline, which `copy_c_string` on both sides
+    /// already enforces by construction, and the cost would be a fake heap that grows per call.
+    fn stash_c_string(&self, text: &str) -> QpdfPtr {
+        let mut bytes = text.as_bytes().to_vec();
+        bytes.push(0);
+        self.copy_in(&bytes)
     }
 
     /// Issue a handle, remembering which key produced it.
@@ -939,6 +1005,80 @@ impl QpdfBridge for FakeQpdf {
         // `ot_null` (2) by default: an unknown key is an absent key, which is what qpdf
         // reports for one.
         self.script.oh_type_codes.get(&name).copied().unwrap_or(2)
+    }
+
+    // ---- split's pruning ------------------------------------------------------------
+    //
+    // Scripted like the rest of this fake: each records the call so a test can assert the
+    // SHAPE of the walk, and answers from `script` so a test can drive a particular document
+    // without a real qpdf. The defaults are the ones qpdf gives for an absent or wrong-typed
+    // object -- an empty dictionary unparses as `<< >>`, an array has no items -- because a
+    // fake whose defaults are richer than the engine's teaches the policy habits the engine
+    // will not honour.
+
+    fn oh_unparse_resolved(&self, _data: QpdfPtr, oh: u32) -> QpdfPtr {
+        self.state.record(Call::OhUnparse(oh));
+        let name = self.handle_name(oh);
+        let text = self
+            .script
+            .oh_unparsed
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| "<< >>".to_owned());
+        self.stash_c_string(&text)
+    }
+
+    fn oh_get_name(&self, _data: QpdfPtr, oh: u32) -> QpdfPtr {
+        self.state.record(Call::OhGetName(oh));
+        let key = self.handle_name(oh);
+        let name = self.script.oh_names.get(&key).cloned().unwrap_or(key);
+        self.stash_c_string(&name)
+    }
+
+    fn oh_remove_key(&self, _data: QpdfPtr, oh: u32, key: QpdfPtr) {
+        let key = self.read_c_string(key);
+        self.state.record(Call::OhRemoveKey { oh, key });
+    }
+
+    fn oh_get_array_n_items(&self, _data: QpdfPtr, oh: u32) -> i32 {
+        self.state.record(Call::OhArrayLen(oh));
+        let name = self.handle_name(oh);
+        self.script.oh_array_len.get(&name).copied().unwrap_or(0)
+    }
+
+    fn oh_get_array_item(&self, _data: QpdfPtr, oh: u32, at: i32) -> u32 {
+        self.state.record(Call::OhArrayItem { oh, at });
+        self.issue_handle(&format!("{}[{at}]", self.handle_name(oh)))
+    }
+
+    fn oh_erase_item(&self, _data: QpdfPtr, oh: u32, at: i32) {
+        self.state.record(Call::OhEraseItem { oh, at });
+    }
+
+    fn oh_get_dict(&self, _data: QpdfPtr, oh: u32) -> u32 {
+        self.state.record(Call::OhGetDict(oh));
+        self.issue_handle(&format!("{}.dict", self.handle_name(oh)))
+    }
+
+    fn oh_get_int_value_i64(&self, data: QpdfPtr, oh: u32) -> i64 {
+        self.oh_get_int_value(data, oh)
+    }
+
+    fn oh_page_content(&self, _data: QpdfPtr, page: u32) -> Option<Vec<u8>> {
+        self.state.record(Call::OhPageContent(page));
+        Some(self.script.page_content.clone())
+    }
+
+    fn oh_stream_data(&self, _data: QpdfPtr, oh: u32) -> Option<Vec<u8>> {
+        self.state.record(Call::OhStreamData(oh));
+        // `None` means "could not decode", which the policy turns into a refusal. The script
+        // says so explicitly rather than the fake guessing: an undecodable stream is a case
+        // worth driving, and a default of `None` would make every fake document refuse.
+        self.script.stream_data.clone()
+    }
+
+    fn copy_c_string(&self, ptr: QpdfPtr) -> Vec<u8> {
+        self.read_c_string(ptr).into_bytes()
     }
 
     fn oh_get_int_value(&self, _data: QpdfPtr, oh: u32) -> i64 {

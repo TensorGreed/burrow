@@ -43,7 +43,7 @@ pub mod verify;
 pub use merge::{Input, check_total_input_bytes, merge};
 pub use reorder::reorder;
 pub use rotate::{Pages, rotate};
-pub use split::{Cuts, split};
+pub use split::{Cuts, Split, begin as split_begin, split};
 
 /// Operations available in this build, in stable order.
 ///

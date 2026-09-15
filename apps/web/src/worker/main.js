@@ -136,6 +136,116 @@ function drainLimits(limits) {
 }
 
 /**
+ * A typed refusal the worker itself decided, in the shape `drainReply` produces.
+ *
+ * Extracted because the split arm needs one too, and a second hand-written literal is a second
+ * place for a field to go missing -- which `drainReply`'s own comment records as costing a
+ * confusing half-minute when a getter came back `undefined`.
+ *
+ * @param {number} id
+ * @param {string} kind
+ * @param {string} message
+ */
+function refusal(id, kind, message) {
+  return {
+    id,
+    ok: false,
+    kind,
+    fatal: false,
+    message,
+    pages: 0,
+    limit: "",
+    stage: "",
+    requested: "0",
+    allowed: "0",
+    recycle: false,
+    pdfiumHeapBytes: "0",
+    qpdfHeapBytes: "0",
+    rotations: [],
+    failedInput: -1,
+    innerKind: "",
+  };
+}
+
+/**
+ * Run a split, posting each part as it is produced.
+ *
+ * ADR 0023's protocol, and the only place in this worker that posts more than one message for
+ * one request:
+ *
+ *   `{ id, part: { index, of }, output }`  per part, then the ordinary terminal reply.
+ *
+ * The terminal reply carries **no bytes**. A consumer that reads `reply.output` and ignores the
+ * parts gets nothing rather than the first part, which is the direction to fail in.
+ *
+ * Progress is per part and that is all the core can honestly report: there is no progress hook
+ * inside an operation, so a bar that interpolated within a part would be inventing a number.
+ *
+ * @param {number} id
+ * @param {Uint8Array} bytes
+ * @param {Uint32Array} cuts
+ * @param {Uint8Array | undefined} password
+ * @param {WebLimits} limits
+ */
+function splitInto(id, bytes, cuts, password, limits) {
+  let session;
+  try {
+    session = wasm_bindgen.split_begin(bytes, cuts, password, limits);
+  } catch {
+    self.postMessage(internalFailure(id, "internal error"));
+    return;
+  }
+  try {
+    if (!session.ok) {
+      self.postMessage(drainReply(id, session.begin_reply()));
+      return;
+    }
+    const of = session.parts;
+    // THE TOTAL FIRST, before any part. A progress bar needs to know how many are coming, and
+    // a consumer that joined late needs it too -- which is why every part carries `of` as well.
+    self.postMessage({ id, progress: { part: 0, of } });
+
+    for (let index = 0; index < of; index += 1) {
+      const reply = session.next_part();
+      let flat;
+      try {
+        flat = drainReply(id, reply);
+      } catch {
+        self.postMessage(internalFailure(id, "internal error"));
+        return;
+      }
+      if (!flat.ok) {
+        // THE WHOLE SPLIT FAILS. Nothing further is posted and the host discards the parts it
+        // already holds -- ADR 0023 §3. The failure is the terminal reply, so a consumer that
+        // only watches for one still learns about it.
+        self.postMessage(flat);
+        return;
+      }
+      // A BLOB, exactly as a single-output reply carries one. Structured clone passes it BY
+      // REFERENCE, so the part never lands in the main thread's own heap -- and `drainReply`
+      // has already taken it out of the wasm heap, which is what makes pulling one at a time
+      // worth doing. No transfer list: a Blob is not transferable and does not need to be.
+      self.postMessage({ id, part: { index, of }, output: flat.output });
+      self.postMessage({ id, progress: { part: index + 1, of } });
+    }
+
+    // The terminal reply: success, no bytes.
+    self.postMessage(refusalFree(id));
+  } finally {
+    session.free();
+  }
+}
+
+/**
+ * A terminal success for a multi-output operation: every part already went, so this carries none.
+ *
+ * @param {number} id
+ */
+function refusalFree(id) {
+  return { ...refusal(id, "", ""), ok: true, message: "" };
+}
+
+/**
  * Flatten a `Reply` for `postMessage`, then release it. Reads fields; decides nothing.
  *
  * @param {number} id
@@ -257,6 +367,7 @@ self.onmessage = async (event) => {
       request.op !== "merge" &&
       request.op !== "rotate" &&
       request.op !== "reorder" &&
+      request.op !== "split" &&
       request.op !== "page_rotations"
     ) {
       // BEFORE `limits` is constructed, deliberately. An unknown op is a bug in the page, not
@@ -479,6 +590,31 @@ self.onmessage = async (event) => {
         return;
       }
       reply = wasm_bindgen.reorder(bytes, Uint32Array.from(order), password, limits);
+    } else if (request.op === "split") {
+      // THE ONLY MULTI-OUTPUT OPERATION, and the only arm that posts more than one message.
+      // ADR 0023: parts stream out one at a time so the engine heap holds one rather than all
+      // of them, each is verified before it is posted, and a failure anywhere fails the whole
+      // split -- the host discards what it has, because a subset of the parts is not a
+      // partition of anything.
+      //
+      // REFUSED, NOT COERCED, exactly as reorder's order is. A cut is a page number the page
+      // chose; `Uint32Array.from` wraps above 2^32 and floors a fraction, so a malformed
+      // request would silently partition the document somewhere else and report success.
+      const cuts = request.cuts ?? [];
+      const cutsUsable =
+        Array.isArray(cuts) &&
+        cuts.every(
+          /** @param {unknown} n */
+          (n) => typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 0xffff_ffff,
+        );
+      if (!cutsUsable) {
+        self.postMessage(
+          refusal(request.id, "InvalidArgument", "a cut is not a whole page number in range"),
+        );
+        return;
+      }
+      splitInto(request.id, bytes, Uint32Array.from(cuts), password, limits);
+      return;
     } else if (request.op === "page_rotations") {
       reply = wasm_bindgen.page_rotations(bytes, password, limits);
     } else if (request.op === "page_count") {
