@@ -45,6 +45,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CI = REPO / ".github" / "workflows" / "ci.yml"
+CI_REL = ".github/workflows/ci.yml"
+NVMRC_REL = ".nvmrc"
 
 # --- what counts as a "significant command" in a CI run block --------------------------
 #
@@ -380,6 +382,12 @@ def commands_ci_runs() -> dict[str, list[str]]:
         named = re.search(r"^\s*- name:\s*(.+?)\s*$", line)
         if named:
             step = named.group(1)
+            # A STEP NAME IS PROSE, NOT A COMMAND, and the patterns used to run over it too.
+            # A step called "The installed node and pnpm match the pins" yielded the token
+            # `pnpm:match`, which parity then reported as a gate with no local counterpart --
+            # a phantom that can only ever be satisfied by inventing a job to cover it.
+            # Nothing is lost by skipping: a gate lives in `run:` or `uses:`, never in a label.
+            continue
         stripped = line.strip()
         # A comment cannot invoke anything, and these files are heavily commented.
         if stripped.startswith("#"):
@@ -513,6 +521,20 @@ TOOLCHAIN = re.compile(r"^\+(\S+)$")
 # everything reports a perfect environment on a machine with nothing installed.
 SENTINEL = "burrow-no-such-program-preflight-canary"
 
+# One tool implying another, because it cannot run without it.
+#
+# MEASURED, NOT PRECAUTIONARY. `node` reached the requirement set only because ONE step in the
+# web job spells it literally (`node ../../tools/report-size-budget.mjs`). Rewrite that step as
+# a pnpm script -- a legitimate refactor that parity accepts once `JOBS` is updated with it --
+# and `node` leaves `required`, `due` shrinks with it, and the whole node pin goes quiet:
+# security review measured `1 of 1 pinned version(s) compared`, exit 0, on a machine running
+# node 24 against `.nvmrc` pinned at 22. The `consumer` and `conflict` guards sit inside the
+# same gate and go inert in the same move.
+#
+# This is a fact about the TOOL, not a list of jobs: pnpm is a node program and cannot run
+# without one. That is what keeps it from being the enumeration this file argues against.
+IMPLIES: dict[str, frozenset[str]] = {"pnpm": frozenset({"node"})}
+
 # The binary each derived kind is asked of. If that binary is itself missing, the derived rows
 # say nothing new -- nine "cargo subcommand missing" lines for one absent cargo is noise
 # standing in front of the finding.
@@ -592,7 +614,23 @@ def programs_used_in(text: str, candidates: frozenset[str] | set[str]) -> set[st
     what `needs_qpdf_cli` is for.
     """
     found: set[str] = set()
+    # HEREDOC BODIES ARE DATA, NOT COMMANDS, and this is where every false positive lived.
+    # `tools/test-ci-local.sh` embeds Python that rewrites ci.yml, so it contains the literal
+    # `"pnpm test && pnpm run size-budget"` -- and `&&` is a command position, so the scan
+    # reported `checker-self-tests` as needing pnpm and probed it in the wrong directory. The
+    # refusal was against a correct machine, which is the direction that makes a check
+    # useless. Skipping heredoc bodies is exact rather than heuristic: the shell does not run
+    # them either.
+    heredoc: str | None = None
     for line in text.splitlines():
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        opener = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?\s*$", line)
+        if opener:
+            heredoc = opener.group(1)
+            continue
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -604,7 +642,7 @@ def programs_used_in(text: str, candidates: frozenset[str] | set[str]) -> set[st
             # regex literal in this very file and `run: pnpm typecheck` inside a heredoc in
             # `test-ci-local.sh`, so six jobs were reported as needing pnpm and the probe then
             # ran in the wrong directory. A rule that fires on a correct machine is not a
-            # check -- the same sentence `workdir_of` is written under.
+            # check -- the same sentence the per-pin probe directory is written under.
             #
             # A command position is the start of a line, or immediately after one of the
             # operators that begins a new command. `tree="$(cargo tree ...` matches on `$(`;
@@ -688,21 +726,6 @@ def transitive_programs(direct: set[str], candidates: frozenset[str]) -> dict[st
     return out
 
 
-def workdir_of(command: str) -> str:
-    """The directory a job's commands run in, from a leading `cd`.
-
-    NOT COSMETIC. `pnpm` is resolved by corepack from `apps/web/package.json`'s
-    `packageManager` field, so `pnpm --version` answers 12.3.4 at the repository root and
-    11.26.0 inside `apps/web` -- on the same machine, at the same moment. A version probe run
-    in the wrong directory reports a mismatch that does not exist, and a rule that fires on a
-    correct machine is not a check.
-    """
-    for words in _commands(command):
-        if words and words[0] == "cd" and len(words) > 1:
-            return words[1]
-    return "."
-
-
 # EVERY PARSER RULE, WITH ITS OWN CASE AND A NEAR-MISS, CHECKED ON EVERY RUN.
 #
 # `tools/check-engine-licences.py`'s SPLIT_CASES is the shape and the reason: a parser that
@@ -733,22 +756,6 @@ PROGRAM_CASES: list[tuple[str, set[str]]] = [
     ("export ASAN_OPTIONS=detect_leaks=0", set()),
 ]
 
-# THE RULE IS "THE FIRST `cd` ANYWHERE", not "a leading `cd`", and the first version of this
-# table said the latter in a comment while pinning neither. Code review measured the gap: no
-# case had a `cd` after another command, and none had two. Both are pinned now, with the
-# answers this file actually wants.
-WORKDIR_CASES: list[tuple[str, str]] = [
-    ("cd apps/web && pnpm lint", "apps/web"),
-    ("cargo fmt --all -- --check", "."),
-    ("cd fuzz && cargo +nightly fuzz run split", "fuzz"),
-    # A `cd` that is NOT the first command still sets the directory its successors run in.
-    ("cargo fmt && cd apps/web && pnpm lint", "apps/web"),
-    # TWO `cd`s: the first wins, which is wrong for the last command and is recorded as a
-    # known limit rather than left to be discovered. No job has this shape -- all 19 checked --
-    # and a job that grows one must either be rewritten or this rule taught to fold them.
-    ("cd a && cd b && pnpm lint", "a"),
-]
-
 # A body-scan fixture per rule, with its near-misses. `programs_used_in` decides whether a job
 # needs `cargo` at all, so a rule that matched nothing here would restore the exact gap
 # security review found.
@@ -766,6 +773,20 @@ USES_CASES: list[tuple[str, set[str]]] = [
     ("echo 'cargo'\n", set()),
     # NEAR-MISS: a path ending in the tool's name is a different program.
     ("engines/cargo build\n", set()),
+    # NEAR-MISS: a heredoc body is data. This exact shape -- a Python heredoc rewriting a
+    # command string -- made `checker-self-tests` falsely require pnpm and refuse a correct
+    # machine, because `&&` is a command position even inside a quoted literal.
+    (
+        "python3 - \"$ci\" <<'PYEOF'\n"
+        "dst.write_text(text.replace(old, '\"x && cargo run size-budget\"', 1))\n"
+        "PYEOF\n",
+        set(),
+    ),
+    # And the heredoc must END: a command after the terminator is a command again.
+    (
+        "cat <<'EOF'\ncargo build\nEOF\nnode tools/x.mjs\n",
+        {"node"},
+    ),
     # NEAR-MISS: the two shapes that made the full sweep refuse. A tool named after a YAML
     # key inside a heredoc, and a tool inside a regex literal. Neither is an invocation.
     ("        run: cargo typecheck\n", set()),
@@ -787,11 +808,6 @@ def verify_parser() -> list[str]:
         for cmd, exp in PROGRAM_CASES
         if programs_in(cmd) != exp
     ]
-    problems += [
-        f"{cmd!r}: expected workdir {exp!r}, got {workdir_of(cmd)!r}"
-        for cmd, exp in WORKDIR_CASES
-        if workdir_of(cmd) != exp
-    ]
     candidates = frozenset({"cargo", "node"})
     problems += [
         f"body scan of {text!r}: expected {sorted(exp)}, got {sorted(programs_used_in(text, candidates))}"
@@ -806,7 +822,6 @@ def verify_parser() -> list[str]:
     for job in JOBS:
         try:
             programs_in(job["run"])
-            workdir_of(job["run"])
         except ValueError as error:
             problems.append(f"job {job['name']!r} has a run string the parser cannot read: {error}")
     return [f"the command parser is broken, so nothing it reports means anything -- {p}" for p in problems]
@@ -824,7 +839,11 @@ def verify_parser() -> list[str]:
 # down. A pin that cannot be RESOLVED is therefore a refusal, not a skip: a regex that stops
 # matching because a file was reformatted would otherwise silently check nothing.
 #
-# `probe` runs in the job's own working directory, which is load-bearing -- see `workdir_of`.
+# EACH PROBE RUNS IN THE DIRECTORY OF THE FILE THAT PINS IT, which is load-bearing rather than
+# tidy: `pnpm --version` answers 12.3.4 at the repository root and 11.26.0 inside `apps/web` on
+# one machine at one moment, because corepack reads `packageManager`. Deriving that directory
+# from a JOB made the answer depend on which jobs were selected and in what order, and refused
+# a correct machine. The file that states a version is where that version is authoritative.
 PINS: list[dict] = [
     {
         "program": "cargo",
@@ -836,24 +855,24 @@ PINS: list[dict] = [
     },
     {
         "program": "wasm-pack",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"cargo install wasm-pack --locked --version ([0-9][\w.+-]*)", "ci"),
+        "source": CI_REL,
+        "pin": (r"cargo install wasm-pack --locked --version ([0-9][\w.+-]*)", CI_REL),
         "probe": ["wasm-pack", "--version"],
         "field": 1,
         "match": "exact",
     },
     {
         "program": "cargo:fuzz",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"cargo install --locked --version ([0-9][\w.+-]*) cargo-fuzz", "ci"),
+        "source": CI_REL,
+        "pin": (r"cargo install --locked --version ([0-9][\w.+-]*) cargo-fuzz", CI_REL),
         "probe": ["cargo", "fuzz", "--version"],
         "field": 1,
         "match": "exact",
     },
     {
         "program": "cargo:audit",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"cargo install cargo-audit --version ([0-9][\w.+-]*)", "ci"),
+        "source": CI_REL,
+        "pin": (r"cargo install cargo-audit --version ([0-9][\w.+-]*)", CI_REL),
         "probe": ["cargo", "audit", "--version"],
         "field": 1,
         "match": "exact",
@@ -867,15 +886,30 @@ PINS: list[dict] = [
         "match": "exact",
     },
     {
-        # MAJOR ONLY, because `node-version: 22` IS a major-version pin -- that is what the
-        # setup-node field means, and CI takes whatever 22.x the runner has. Comparing the full
-        # string would refuse a machine that matches CI exactly.
+        # `.nvmrc`, WHICH IS ALSO WHAT CI AND `nvm use` READ. The pin used to be a literal
+        # `node-version: 22` in ci.yml, so a developer's shell had nothing to agree with: this
+        # check measured node 24 against CI's 22 on a machine with no way of knowing which was
+        # wanted, and the answer was "run nvm use 22", which nothing recorded. One file now
+        # answers for both sides.
+        #
+        # MAJOR ONLY, because that is what the pin says and what the runner honours. Narrowing
+        # to an exact patch would be a policy change rather than a relocation.
         "program": "node",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"node-version: ([0-9]+)", "ci"),
+        "source": NVMRC_REL,
+        "pin": (r"^\s*v?([0-9]+)", NVMRC_REL),
         "probe": ["node", "--version"],
         "field": 0,
         "match": "major",
+        # THE PIN AND THE THING THAT READS IT ARE IN DIFFERENT FILES NOW, so they are tied
+        # together here. `actions/setup-node` PREFERS `node-version` over `node-version-file`
+        # and only WARNS when both are given -- so somebody adding the literal back to test
+        # something would leave CI on their version while `.nvmrc` sat inert and this check
+        # went on comparing every developer machine against it, printing
+        # "2 of 2 pinned version(s) compared". A check that silently examines nothing reads
+        # as coverage. Code review.
+        "consumer": (r"node-version-file:\s*\.nvmrc", CI_REL),
+        "conflict": (r"^\s*node-version:\s*\S", CI_REL),
+        "fix": "run `nvm use` at the repository root, which reads the same file",
     },
 ]
 
@@ -888,7 +922,7 @@ VERSION_ALLOWANCES: dict[str, str] = {}
 
 def _pinned_version(spec: tuple[str, str]) -> str | None:
     """The expected version, read from the file that pins it."""
-    pattern, kind = spec
+    pattern, kind = spec  # `kind` is a repository-relative FILE, or a named handler
     if kind == "pnpm-package-json":
         try:
             data = json.loads((REPO / "apps/web/package.json").read_text())
@@ -897,7 +931,12 @@ def _pinned_version(spec: tuple[str, str]) -> str | None:
         field = data.get(pattern, "")
         m = re.match(r"pnpm@([0-9][\w.+-]*?)(?:\+sha|$)", field)
         return m.group(1) if m else None
-    path = CI if kind == "ci" else REPO / "rust-toolchain.toml"
+    # RELATIVE, ALWAYS. `Path.__truediv__` discards the left side when the right is absolute,
+    # so a `PINS` entry written as "/etc/..." would read outside the repository with no error.
+    # Not reachable today -- every entry is a relative literal -- and one line to keep so.
+    if Path(kind).is_absolute():
+        return None
+    path = REPO / kind
     try:
         text = path.read_text()
     except OSError:
@@ -944,7 +983,7 @@ def _reported_version(probe: list[str], field: int, cwd: Path) -> tuple[str | No
     return parts[field].lstrip("v"), "ok"
 
 
-def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tuple[list[str], str]:
+def check_versions(required: dict[str, list[str]]) -> tuple[list[str], str]:
     """Version findings, and a report of how many pins were compared against how many were due.
 
     THE COUNT IS GATED, because the expected value is knowable: it is the number of PINS whose
@@ -960,6 +999,35 @@ def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tup
         program = spec["program"]
         if program not in required:
             continue
+        # THE CONSUMER FIRST. A pin nothing reads is not a pin, and comparing against it
+        # would be the most confident kind of nothing.
+        consumer = spec.get("consumer")
+        if consumer is not None:
+            pattern, rel = consumer
+            try:
+                text = (REPO / rel).read_text()
+            except OSError:
+                text = ""
+            if not re.search(pattern, text, re.MULTILINE):
+                problems.append(
+                    f"{program}: {rel} no longer reads the pin in {spec['source']} "
+                    f"(nothing matches {pattern!r}), so the pin is inert"
+                )
+                continue
+        conflict = spec.get("conflict")
+        if conflict is not None:
+            pattern, rel = conflict
+            try:
+                text = (REPO / rel).read_text()
+            except OSError:
+                text = ""
+            if re.search(pattern, text, re.MULTILINE):
+                problems.append(
+                    f"{program}: {rel} states a version inline (matches {pattern!r}), which "
+                    f"takes precedence over {spec['source']} and makes it inert"
+                )
+                continue
+
         expected = _pinned_version(spec["pin"])
         if expected is None:
             # A PIN THAT CANNOT BE READ IS A REFUSAL. Skipping would mean this check quietly
@@ -970,7 +1038,13 @@ def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tup
                 f"so nothing was compared for it"
             )
             continue
-        workdir = Path(where.get(program, "."))
+        # PROBED WHERE ITS PIN LIVES, not where some job happens to run. `pnpm --version`
+        # answers differently per directory because corepack reads `packageManager`, and
+        # deriving the directory from a JOB made the answer depend on which jobs were selected
+        # and in what order -- `--only checker-self-tests` probed at the repository root and
+        # refused a machine whose pnpm was exactly right for `apps/web`. The file that states
+        # the version is the place that version is authoritative.
+        workdir = Path(spec["source"]).parent
         # A JOB'S `cd` STAYS INSIDE THE REPOSITORY. No job has an absolute or climbing `cd`
         # today; this makes a future one a fallback rather than a probe executed somewhere
         # nobody intended. Security review.
@@ -1008,10 +1082,11 @@ def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tup
             print(f"  version allowance: {program} {actual} against pinned {expected} "
                   f"-- {VERSION_ALLOWANCES[program]}")
             continue
+        hint = f" -- {spec['fix']}" if spec.get("fix") else ""
         problems.append(
             f"{program} is {actual}, pinned at {expected} in {spec['source']} "
             f"(asked in {cwd.relative_to(REPO) if cwd != REPO else '.'}); "
-            f"needed by: {', '.join(sorted(set(required[program])))}"
+            f"needed by: {', '.join(sorted(set(required[program])))}{hint}"
         )
 
     # EVERY PIN DUE IS ACCOUNTED FOR: compared, or absent (which the presence check reports),
@@ -1086,20 +1161,11 @@ def _rustup_toolchains() -> set[str]:
 def preflight(jobs: list[dict]) -> list[str]:
     """Refuse-worthy findings about this machine, plus a report of what was examined."""
     required: dict[str, list[str]] = {}
-    where: dict[str, str] = {}
     candidates = tool_candidates()
     for job in jobs:
-        workdir = workdir_of(job["run"])
         direct = programs_in(job["run"])
         for program in direct:
             required.setdefault(program, []).append(job["name"])
-            # A DIRECT NAMING WINS THE WORKING DIRECTORY, always, over a transitive one.
-            # `where` was first-writer-wins, and the full sweep refused because of it: jobs
-            # earlier in the table reached `pnpm` transitively with workdir `.`, so the probe
-            # ran at the repository root and read 12.3.4 where `web` -- which names pnpm
-            # directly, in `apps/web` -- would have read the pinned 11.26.0. The tool that
-            # runs a command knows where it runs it; a tool that merely mentions it does not.
-            where[program] = workdir
         # AND WHAT THOSE SCRIPTS USE FROM INSIDE. Without this, `checkers` requires `python3`
         # and four file paths while `check-no-network-deps.sh` calls `cargo tree` eight times.
         # SEEDED FROM SCRIPT PATHS IN THE RUN STRING, not only from `direct`. `python3
@@ -1111,7 +1177,12 @@ def preflight(jobs: list[dict]) -> list[str]:
         for script, used in transitive_programs(reachable, candidates).items():
             for program in used:
                 required.setdefault(program, []).append(f"{job['name']} (via {script})")
-                where.setdefault(program, workdir)
+
+        # AND WHAT THOSE TOOLS CANNOT RUN WITHOUT.
+        for program in list(required):
+            for implied in IMPLIES.get(program, ()):
+                if job["name"] in required.get(program, []):
+                    required.setdefault(implied, []).append(f"{job['name']} (needs {program})")
 
     subs = _cargo_subcommands()
     chains = _rustup_toolchains()
@@ -1138,7 +1209,7 @@ def preflight(jobs: list[dict]) -> list[str]:
                 f"{program} not found -- {how}; needed by: {', '.join(sorted(set(required[program])))}"
             )
 
-    version_problems, version_report = check_versions(required, where)
+    version_problems, version_report = check_versions(required)
     problems += version_problems
 
     print(

@@ -896,11 +896,31 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: apps/web/package.json
+      # THE PIN LIVES IN `.nvmrc`, and this reads it rather than repeating it. A literal
+      # `node-version: 22` here was the only statement of the version, so a developer's shell
+      # had nothing to agree with -- `tools/ci-local.py`'s preflight measured node 24 against
+      # CI's 22 on a machine that had no way of knowing. `.nvmrc` is read by BOTH sides: by
+      # this step, and by a bare `nvm use` at the repository root.
+      #
+      # It stays a MAJOR version, which is what `node-version: 22` meant and what the runner
+      # honoured. Narrowing it to an exact patch would be a policy change, not a relocation.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
           cache-dependency-path: apps/web/pnpm-lock.yaml
+      # WHAT THIS RUNNER ACTUALLY INSTALLED, asserted rather than assumed. `node-version-file`
+      # is read by the action, and nothing downstream checked the result -- so an empty or
+      # unreadable `.nvmrc` could leave the job on the runner's preinstalled node with every
+      # gate still green. That is the fail-OPEN direction, which is the one worth closing.
+      #
+      # The preflight already performs exactly this comparison, against the same `.nvmrc`, and
+      # it is covered by its own self-test -- so this reuses a tested gate instead of adding an
+      # inline one the parity extractor has no pattern for. It also checks pnpm against
+      # `packageManager`, and that ci.yml still READS the pin rather than stating it inline.
+      - name: The installed node and pnpm match the pins
+        run: tools/ci-local.py --preflight --only web
+
       - name: Install web dependencies
         working-directory: apps/web
         run: pnpm install --frozen-lockfile
