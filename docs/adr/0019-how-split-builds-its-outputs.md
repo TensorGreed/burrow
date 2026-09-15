@@ -234,24 +234,27 @@ on **`rotate`**, one page rotated, so its percentages are fractions of a differe
 73.5% to 112% describes nothing. What composes is the milliseconds, and those are worth setting out
 because `split` inherits the verification in the next change:
 
-| for a 10,000-page document | flat tree | 60-deep tree |
+| for a 10,000-page document, five-way split | flat tree | 60-deep tree |
 |---|--:|--:|
 | split, before pruning | 43.3 ms | 42.7 ms |
-| **+ pruning** (this change) | **91.6 ms** | **89.8 ms** |
+| + pruning | 91.6 ms | 89.8 ms |
 | + ADR 0022's promise sweep over the source | +5.5 ms | **+148.6 ms** |
-| + reading the output back, once per part | +24.5 ms | +167.7 ms |
-| **projected total after the next change** | **~122 ms** | **~406 ms** |
+| **measured total, with verification** | **123.0 ms** | **263.9 ms** |
 
-**The last two rows are measured on a document, not on a five-way split, and the total is therefore
-a projection rather than a measurement — it is labelled as one and must be replaced.** The promise
-sweep is over the *source*, so it is paid once and the row is exact. The read-back is not: `split`
-will verify each part separately, so five read-backs of 2,000 pages each replace one of 10,000,
-which is the same page count plus four extra document opens. The projection assumes those are free
-and they are not.
+**The last row was a projection and is now a measurement, and replacing it was worth doing
+because one of the two numbers was badly wrong.** The projection added a whole-document read-back
+to each column and got 122 ms and 406 ms. Flat, that was right to within 1%. Deep, it overstated
+by **54%**.
 
-`measure-pruning` gains the composed number in the change that adds the verification, and this
-table's last row is replaced by it. Recording a projection and then not replacing it is how a
-prediction becomes a remembered fact.
+The reason is structural and is the same fact ADR 0021 records from the other side: `qpdf_add_page`
+**flattens the page tree**, so the parts a split emits have flat ones whatever the source had. The
+promise sweep is over the *source* and pays the full depth — 148.6 ms, the largest single cost in
+that column. The read-backs are over the *parts*, and walk no `/Parent` chain at all: ~25 ms, the
+flat figure, not the 167.7 ms a whole-document deep read-back costs.
+
+So a deep page tree is paid for **once**, on the way in, and not again on the way out. That is not
+something the arithmetic of adding two measured rows could have produced, which is the argument for
+measuring a composition rather than summing its parts.
 
 **The shape is the part worth keeping either way.** On a flat tree pruning dominates and the
 verification is modest; on a deep tree the promise sweep costs more than everything else combined,

@@ -42,10 +42,12 @@ mod tests;
 
 use std::sync::Arc;
 
-use burrow_engines::{OpenOptions, PageExtractor};
+use burrow_engines::{OpenOptions, OutputReader, PageExtractor};
 use burrow_types::{Deadline, Error, Result};
 
 use burrow_types::{Limits, Stage};
+
+use crate::verify;
 
 /// Where to cut, as one-based page numbers **after** which a new document starts.
 ///
@@ -86,7 +88,7 @@ impl<'a> Cuts<'a> {
 /// - [`Error::LimitExceeded`] -- a ceiling in `options.limits` was reached.
 /// - [`Error::Io`] -- an output could not be written.
 /// - [`Error::Internal`] -- a number did not fit, or the engine returned something impossible.
-pub fn split<E: PageExtractor>(
+pub fn split<E: PageExtractor + OutputReader>(
     engine: &E,
     bytes: Box<[u8]>,
     cuts: Cuts<'_>,
@@ -114,12 +116,62 @@ pub fn split<E: PageExtractor>(
     // so is better than implying a limit that is checked more often than it is.
     let deadline = Deadline::start(clock.as_ref(), &limits);
 
+    // WHAT EACH PART MUST DISPLAY, computed BEFORE anything is extracted (ADR 0022): the
+    // source's rotation vector, which is then sliced per run. Once for the whole split rather
+    // than once per part -- it is a property of the source, and paying it per part would
+    // multiply the sweep ADR 0022 measured at 84% of the operation on a deep page tree.
+    let before = PageExtractor::rotations(engine, &source, options, &deadline)?;
+    if u64::try_from(before.len()).unwrap_or(u64::MAX) != pages {
+        // Unreachable: the sweep walks the page count the engine reported. A mismatch would
+        // mean the slices below could not partition the vector, and every part's promise would
+        // be built from the wrong offsets -- silently, which is the direction that matters.
+        return Err(Error::Internal(
+            "the engine reported a different page count than it has rotations for".to_owned(),
+        ));
+    }
+
     let mut outputs = Vec::with_capacity(runs.len());
+    let mut promised = Vec::with_capacity(runs.len());
     for (first, count) in runs {
         deadline.checkpoint(clock.as_ref())?;
+        let at = usize::try_from(first)
+            .map_err(|_| Error::Internal("page index does not fit in usize".to_owned()))?;
+        let run = usize::try_from(count)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let slice = at
+            .checked_add(run)
+            .and_then(|end| before.get(at..end))
+            .ok_or_else(|| {
+                Error::Internal("a validated run is not inside the rotation vector".to_owned())
+            })?;
+        promised.push(slice.to_vec());
         outputs.push(engine.extract(&source, first, count, options)?);
     }
     deadline.checkpoint(clock.as_ref())?;
+
+    // THE SOURCE GOES BEFORE ANY OUTPUT IS PARSED, for the reason `rotate` and `reorder` record:
+    // verification holds a second parsed document, and both at once is peak memory nothing
+    // bounds. Split is the worst case for it -- every part is already held in `outputs`.
+    drop(source);
+
+    // AND THE LAST THING BEFORE THE CALLER HAS THEM, each through a fresh engine.
+    //
+    // EVERY part, not the first: "one part is right" says nothing about the partition, which is
+    // the sentence ADR 0022's table used to make about page counts and which is the whole reason
+    // the promise is per part. A part that fails takes the WHOLE split with it -- there is no
+    // partial success here, because a caller handed four good parts and one refusal has no way
+    // to act on that which is not worse than being told the operation failed.
+    for (output, expected) in outputs.iter().zip(promised) {
+        verify::output(
+            engine,
+            output,
+            &verify::Expected::Split {
+                rotations: expected,
+            },
+            options,
+            &deadline,
+        )?;
+    }
 
     Ok(outputs)
 }

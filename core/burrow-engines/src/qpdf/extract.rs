@@ -160,6 +160,36 @@ impl PageExtractor for Qpdf {
         Ok(source.pages)
     }
 
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        // THE SAME WALK `rotate` AND `reorder` DO, against the document this is about to take
+        // pages out of. Reusing their helpers rather than repeating the `/Parent` climb: the
+        // depth ceiling and the type assertion live there, and a second copy of a walk over
+        // hostile input is a second place to get them wrong.
+        let capacity = usize::try_from(source.pages)
+            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+        let mut rotations = Vec::with_capacity(capacity);
+
+        // PER PAGE, and the caller's deadline rather than a new one -- see the trait's docs.
+        // This is the sweep ADR 0022 measured at 84% of the operation on a 10,000-page document
+        // with a 60-deep page tree, which is the shape it is sensitive to: it walks `/Parent`
+        // per page, where the pruning pass runs after the tree has been flattened and does not.
+        let clock = std::sync::Arc::clone(&options.clock);
+        for index in 0..source.pages {
+            deadline.checkpoint(clock.as_ref())?;
+            let page = super::reorder::page_handle(&source.document, index, source.pages)?;
+            // RECORDED, NOT JUDGED, for the reason `reorder` gives: `effective_rotation` refuses
+            // a `/Rotate` that is not a multiple of 90, and a split names no page to turn -- so
+            // normalising here would fail a whole operation over a page it only ever copies.
+            rotations.push(super::rotate::declared_rotation(&source.document, &page)?.unwrap_or(0));
+        }
+        Ok(rotations)
+    }
+
     fn extract(
         &self,
         source: &Self::Source,

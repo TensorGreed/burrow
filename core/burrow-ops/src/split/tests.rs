@@ -7,8 +7,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use burrow_engines::{OpenOptions, PageExtractor};
-use burrow_types::{Clock, Error, Limits, ManualClock, Result};
+use burrow_engines::{OpenOptions, OutputReader, PageExtractor};
+use burrow_types::{Clock, Deadline, Error, Limits, ManualClock, Result};
 
 use super::{Cuts, every, runs_from, split};
 
@@ -27,6 +27,21 @@ struct Fake {
     /// of the deadline test did that and passed three outputs through a budget of 10 ms.
     elapse_ms: u64,
     clock: Option<Arc<ManualClock>>,
+    /// Each source page's `/Rotate`, so a part's promise is a slice of something real.
+    ///
+    /// Distinct per page by default. A vector of equal values is what makes the promise
+    /// degrade to a page count, and one test asks for exactly that.
+    declares: Vec<i64>,
+    /// What the READER says the emitted bytes contain, when a test wants it to lie.
+    ///
+    /// The lie lives on the reader rather than on `extract`, for the reason `reorder`'s fake
+    /// records: an operation that emits the wrong thing and a reader that misreports the right
+    /// thing are different failures, and only the second one tests the verifier.
+    reads_back_as: Option<Vec<i64>>,
+    /// Whether this instance came from `fresh`. The writing instance is not a witness.
+    fresh: bool,
+    /// How many times `fresh` was called, so a test can assert one witness per part.
+    freshes: Arc<Mutex<usize>>,
 }
 
 impl Fake {
@@ -39,6 +54,12 @@ impl Fake {
                 fail_at: None,
                 elapse_ms: 0,
                 clock: None,
+                declares: (0..pages)
+                    .map(|n| i64::try_from(n % 4).unwrap_or(0) * 90)
+                    .collect(),
+                reads_back_as: None,
+                fresh: false,
+                freshes: Arc::new(Mutex::new(0)),
             },
             calls,
         )
@@ -60,6 +81,23 @@ impl PageExtractor for Fake {
         Ok(*source)
     }
 
+    fn rotations(
+        &self,
+        _source: &Self::Source,
+        _options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        // CHECKPOINTED PER PAGE, like the real one: the sweep is what a deep page tree makes
+        // expensive, and a fake that never checkpoints would let the deadline test pass while
+        // the real engine sat outside the budget.
+        if let Some(clock) = &self.clock {
+            for _ in &self.declares {
+                deadline.checkpoint(clock.as_ref())?;
+            }
+        }
+        Ok(self.declares.clone())
+    }
+
     fn extract(
         &self,
         _source: &Self::Source,
@@ -75,11 +113,71 @@ impl PageExtractor for Fake {
             return Err(Error::Malformed("fake: refused".to_owned()));
         }
         calls.push((first, count));
-        // The "document" is the run, so order and membership are both observable.
+        // The "document" is the run, so order and membership are both observable -- and the
+        // reader below turns it back into the rotations this part really holds, which is what
+        // makes the fake HONEST by construction. A test that wants a lie sets `reads_back_as`.
         Ok(vec![
             u8::try_from(first % 251).unwrap_or(0),
             u8::try_from(count % 251).unwrap_or(0),
         ])
+    }
+}
+
+impl OutputReader for Fake {
+    /// The rotations the part being read back holds.
+    type Read = Vec<i64>;
+
+    fn fresh(&self) -> Self {
+        *self.freshes.lock().expect("freshes") += 1;
+        Self {
+            pages: self.pages,
+            calls: Arc::clone(&self.calls),
+            fail_at: None,
+            elapse_ms: 0,
+            clock: self.clock.clone(),
+            declares: self.declares.clone(),
+            reads_back_as: self.reads_back_as.clone(),
+            fresh: true,
+            freshes: Arc::clone(&self.freshes),
+        }
+    }
+
+    fn open_output(&self, bytes: &[u8], _options: &OpenOptions<'_>) -> Result<Self::Read> {
+        if !self.fresh {
+            // THE WRITING INSTANCE IS NOT A WITNESS, and this is how the fake says so: reading
+            // through it yields nothing, so a `verify` that forgot `fresh()` fails loudly
+            // rather than agreeing with itself.
+            return Ok(Vec::new());
+        }
+        if let Some(lie) = &self.reads_back_as {
+            return Ok(lie.clone());
+        }
+        // Undo `extract`'s encoding: the part is the run it was asked for.
+        let first = usize::from(*bytes.first().unwrap_or(&0));
+        let count = usize::from(*bytes.get(1).unwrap_or(&0));
+        Ok(self
+            .declares
+            .get(first..first + count)
+            .map(<[i64]>::to_vec)
+            .unwrap_or_default())
+    }
+
+    fn page_count(&self, read: &Self::Read) -> Result<u64> {
+        Ok(u64::try_from(read.len()).unwrap_or(0))
+    }
+
+    fn rotations(
+        &self,
+        read: &Self::Read,
+        _options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        if let Some(clock) = &self.clock {
+            for _ in read {
+                deadline.checkpoint(clock.as_ref())?;
+            }
+        }
+        Ok(read.clone())
     }
 }
 
@@ -258,5 +356,137 @@ fn an_invalid_cut_is_refused_before_any_extraction() {
     assert!(
         calls.lock().expect("calls").is_empty(),
         "an unusable request still reached the engine"
+    );
+}
+
+// ---------------------------------------------------------------- the promise (ADR 0022)
+//
+// On a correct engine and an undamaged file the refusal never fires, so it is untested by
+// construction unless a fake lies. These are the tests that make it fire.
+
+// THE MUTATION THAT DELETES THE CHECK FAILS, measured rather than asserted. Replacing the
+// verification loop's `outputs.iter()` with `outputs.iter().take(0)` -- so it runs zero times --
+// fails FOUR of the tests below:
+//
+//     a_part_that_reads_back_with_the_wrong_rotations_is_refused
+//     a_part_with_the_wrong_page_count_is_refused
+//     a_part_built_from_the_wrong_run_is_caught_where_the_pages_differ
+//     every_part_is_verified_through_a_fresh_engine
+//
+// The mutation was asserted to have applied before the suite ran, because a `replace` that
+// matched nothing leaves the suite green and the green reads as "this defence works" when
+// nothing was mutated at all -- which `CLAUDE.md` records happening twice in one session.
+
+#[test]
+fn every_part_is_verified_through_a_fresh_engine() {
+    // ONE WITNESS PER PART, not one for the split. "The first part is right" says nothing about
+    // the partition, which is the whole reason the promise is per part rather than a total.
+    let (fake, _calls) = Fake::new(10);
+    let freshes = Arc::clone(&fake.freshes);
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let outputs = split(&fake, input(), Cuts::after_pages(&[3, 7]), &opts).expect("split");
+    assert_eq!(outputs.len(), 3);
+    assert_eq!(
+        *freshes.lock().expect("freshes"),
+        3,
+        "each part must be read back through its own fresh engine; the writing instance is not \
+         a witness to its own output"
+    );
+}
+
+#[test]
+fn a_part_that_reads_back_with_the_wrong_rotations_is_refused() {
+    // THE FAKE LIES ON THE WAY BACK. The engine emits the right parts and the reader reports
+    // something else -- which is the shape of the failure ADR 0022 exists for: an operation
+    // whose intent and whose output disagree.
+    let (mut fake, _calls) = Fake::new(10);
+    fake.reads_back_as = Some(vec![0, 0, 0]);
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let error = split(&fake, input(), Cuts::after_pages(&[3, 7]), &opts).expect_err("must fail");
+    assert!(
+        matches!(error, Error::OutputRejected(_)),
+        "a part whose pages read back displaying differently was returned to the caller: \
+         {error:?}"
+    );
+}
+
+#[test]
+fn a_part_with_the_wrong_page_count_is_refused() {
+    // The weaker half of the same promise, and the one that catches #61's lost page: the part
+    // reads back short.
+    let (mut fake, _calls) = Fake::new(10);
+    fake.reads_back_as = Some(vec![0]);
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let error = split(&fake, input(), Cuts::after_pages(&[3, 7]), &opts).expect_err("must fail");
+    match error {
+        Error::OutputRejected(message) => assert!(
+            message.contains("pages were expected"),
+            "the refusal does not name the two counts: {message}"
+        ),
+        other => panic!("a short part was returned to the caller: {other:?}"),
+    }
+}
+
+#[test]
+fn a_part_built_from_the_wrong_run_is_caught_where_the_pages_differ() {
+    // WHAT THE SLICE ADDS OVER A COUNT. The lie has the RIGHT NUMBER of pages and the wrong
+    // ones: it is the second part's rotations reported for the first part. A page count cannot
+    // see this, which is why ADR 0022's table was amended from one to the other.
+    let (mut fake, _calls) = Fake::new(10);
+    // Part one is pages 0-2, which the fake declares as 0, 90, 180. Report 270, 0, 90 -- the
+    // right length, the wrong run.
+    fake.reads_back_as = Some(vec![270, 0, 90]);
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let error = split(&fake, input(), Cuts::after_pages(&[3, 7]), &opts).expect_err("must fail");
+    assert!(
+        matches!(error, Error::OutputRejected(_)),
+        "a part built from the wrong run of pages was accepted: {error:?}"
+    );
+}
+
+#[test]
+fn a_partition_of_pages_that_all_display_the_same_way_is_only_a_page_count() {
+    // THE RESIDUE, ASSERTED RATHER THAN LEFT AS PROSE. `Expected::Split`'s rustdoc says the
+    // promise degrades to a per-part page count when every page displays the same way. A
+    // statement about what a check CANNOT do is worth as much as one about what it can, and it
+    // is worth exactly nothing if nobody has run it.
+    // NINE PAGES CUT INTO THREE EQUAL PARTS, so the one lie below is the right LENGTH for every
+    // part. With uneven parts it tripped the page-count check instead and the test passed for
+    // the wrong reason -- measuring the count residue rather than the rotation one, which is a
+    // different sentence in the rustdoc.
+    let (mut fake, _calls) = Fake::new(9);
+    fake.declares = vec![0; 9];
+    // Three pages that are not part one's own -- and indistinguishable from them, because every
+    // page in this document declares the same rotation.
+    fake.reads_back_as = Some(vec![0, 0, 0]);
+    let (opts, _clock) = options(Limits::DEFAULT);
+    let outputs = split(&fake, input(), Cuts::after_pages(&[3, 6]), &opts);
+    assert!(
+        outputs.is_ok(),
+        "this is the documented blind spot: on a uniform document the promise is a page count, \
+         and a test asserting otherwise would be asserting the residue away rather than \
+         measuring it"
+    );
+}
+
+#[test]
+fn one_budget_covers_the_source_sweep_and_every_read_back() {
+    // NOT A FRESH DEADLINE PER PART. `Deadline::start` resets the origin AND the budget, so a
+    // verification that started its own would hand each part a whole `max_duration_ms` -- the
+    // defect ADR 0022 records being fixed three times over in `rotations`. With three parts and
+    // a budget that the sweep plus the read-backs must share, an implementation that restarted
+    // would succeed where this must refuse.
+    let (mut fake, _calls) = Fake::new(10);
+    // `Limits` is `#[non_exhaustive]`, so it is adjusted rather than built.
+    let mut limits = Limits::DEFAULT;
+    limits.max_duration_ms = 20;
+    let (opts, clock) = options(limits);
+    fake.clock = Some(Arc::clone(&clock));
+    fake.elapse_ms = 8;
+    let error = split(&fake, input(), Cuts::after_pages(&[3, 7]), &opts).expect_err("must fail");
+    assert!(
+        matches!(error, Error::LimitExceeded { .. }),
+        "three parts at 8 ms each fitted inside a 20 ms budget, so something restarted it: \
+         {error:?}"
     );
 }

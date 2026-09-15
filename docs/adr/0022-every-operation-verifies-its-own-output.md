@@ -136,7 +136,7 @@ What each will promise is written down now rather than invented later:
 
 | operation | asserts |
 |---|---|
-| `split` | each part's page count, **and** the parts summing to the input's — one part being right says nothing about the partition |
+| `split` | **each part's slice of the source's rotation vector**, read once before any part is extracted. Amended 2026-09-14 from "each part's page count, and the parts summing to the input's": the slice subsumes both — if each part's count equals its slice's length and the slices partition the source vector, the parts sum to the input by construction — and it adds *which* pages, which a count cannot see. One part being right still says nothing about the partition, so every part is verified |
 | `compress` | page count and the full rotation vector, exactly as `rotate` does; compression may not move or reattribute a page |
 | redaction (M2) | the above **plus its own content predicate** — see *Consequences* |
 

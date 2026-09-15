@@ -22,7 +22,11 @@
 //!
 //! Two numbers per document, each the median of `RUNS` iterations:
 //!
-//!   * **whole split** — open, copy, prune, write, for every part.
+//!   * **whole split** — open, the sharing sweep, the promise sweep, copy, prune, write, and the
+//!     verification read-back of every part. Since split gained ADR 0022's promise this is the
+//!     composed number a caller actually waits through, which is why ADR 0019's cost table could
+//!     replace a projection with a measurement — and why it had to: the projection was right to
+//!     1% on a flat page tree and 54% too high on a deep one.
 //!   * **open + the sharing sweep** — `PageExtractor::open`, which is where `annots_sharing`
 //!     runs. Broken out because it is the one part of the prune that scales with the *source's*
 //!     page count rather than an output's, and because it happens once per split rather than
@@ -154,7 +158,7 @@ mod measure {
             "{label}   {pages} pages  {} bytes in  {bytes_out} out, {parts} part(s)",
             bytes.len()
         );
-        println!("  whole split (open, copy, prune, write)   {whole:>12.3?}");
+        println!("  whole split (open, prune, write, verify)  {whole:>12.3?}");
         println!(
             "  of which open + the sharing sweep        {sharing:>12.3?}   {:>5.1}%",
             percent(sharing, whole)
