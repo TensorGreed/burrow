@@ -5,10 +5,18 @@
 // `worker-host.test.ts` injects its own `initTimeoutMs`, so reverting the constant to 60 s
 // broke no test.
 //
-// The quieter failure is the one that matters. Bump the pdfium pin to a 10 MB module and the
-// doc comment still says "177 kbps", now meaning 350 — ABOVE the Slow 3G profile the ADR
-// argues it sits below, so the connection the ADR was written about would fail start-up again
-// while the number went on looking derived.
+// The quieter failure is the one that matters. Bump the engine pin to a 10 MB module and the
+// doc comment still says its old kbps figure, now meaning something far larger — ABOVE the
+// Slow 3G profile the ADR argues it sits below, so the connection the ADR was written about
+// would fail start-up again while the number went on looking derived.
+//
+// SPIKE 0004 MADE THE SLACK LARGE, and this test now says much less than it did. The largest
+// module fell from `pdfium.wasm` at 5,315,922 bytes to `qpdf.wasm` at 1,494,731, and 240 s was
+// deliberately NOT lowered to match (see `worker-host.js`), so the derived floor went from
+// 177 kbps to about 49 — the Slow 3G comparison is satisfied with room for the payload to
+// quadruple, and the upper gate that actually binds is the `<= 10 min` near-miss. Raised by
+// security review; recorded rather than tightened, because lowering a start-up bound to keep a
+// test sharp is trading a real protection for a measurement.
 //
 // It lives in its own file because `worker-host.test.ts` has an `afterEach` that requires
 // every case to have built a host and released it; these cases build nothing.

@@ -158,8 +158,10 @@ describe("the production build", () => {
 
   it("still ships the engines and the worker bundle, which are not test-only", () => {
     // The complement of the assertions above. Without this, deleting too much would pass.
+    // `pdfium.wasm` was required here until spike 0004 took it out of the payload. The
+    // absence is not asserted in this file: `tools/check-no-pdfium-on-the-web.sh` does that,
+    // with a positive control and the CSP, which is more than a filename pattern can say.
     for (const pattern of [
-      /^engines\/pdfium\.[0-9a-f]{16}\.wasm$/,
       /^engines\/qpdf\.[0-9a-f]{16}\.wasm$/,
       /^engines\/burrow_wasm_bg\.[0-9a-f]{16}\.wasm$/,
       /^engines\/burrow-worker\.[0-9a-f]{16}\.js$/,
@@ -178,17 +180,19 @@ describe("the production build", () => {
   });
 
   it("ships the worker as ONE bundle, with no glue loose beside it", () => {
-    // The Emscripten glue used to be staged as three separate files and pulled in with
-    // `importScripts`, which has no integrity mechanism — so 160 KB of third-party PDFium
-    // glue ran unverified. It is now inside the worker bundle, covered by that file's
-    // digest. A regression would look like these files reappearing.
+    // The Emscripten glue used to be staged as separate files and pulled in with
+    // `importScripts`, which has no integrity mechanism — so third-party glue ran unverified.
+    // It is now inside the worker bundle, covered by that file's digest. A regression would
+    // look like those files reappearing.
     // The only `.js` under engines/ may be the worker bundle itself.
     const scripts = files.filter((f) => f.startsWith("engines/") && f.endsWith(".js"));
     expect(scripts, `loose glue beside the bundle: ${scripts.join(", ")}`).toHaveLength(1);
     expect(scripts[0]).toMatch(/^engines\/burrow-worker\.[0-9a-f]{16}\.js$/);
 
     const source = readFileSync(join(outDir, scripts[0]), "utf8");
-    for (const marker of ["createQpdfModule", "FPDF_LoadMemDocument64", "wasm_bindgen"]) {
+    // `FPDF_LoadMemDocument64` was a marker here until spike 0004; `__burrow_qpdf_copy_in`
+    // replaces it as the proof that the BRIDGE is in the bundle and not only the glue.
+    for (const marker of ["createQpdfModule", "__burrow_qpdf_copy_in", "wasm_bindgen"]) {
       expect(source, `the bundle is missing ${marker}`).toContain(marker);
     }
   });

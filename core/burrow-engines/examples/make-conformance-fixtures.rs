@@ -101,6 +101,77 @@ fn opens(page_count: u64) -> Outcome {
     }
 }
 
+/// The shared half of both `web_page_count_*` reasons below: WHY the web's answer to
+/// `page_count` is a different engine's answer at all.
+///
+/// A constant rather than duplicated prose, because the two entries differ in their CAUSE and
+/// agree on their context, and writing it twice is how the two halves drift apart.
+const WEB_PAGE_COUNT_RUNS_ON_QPDF: &str = "`page_count` runs on qpdf on the WEB and on PDFium natively, since spike 0004 took \
+     PDFium out of the web payload -- it was 79.7% of the first load and this was the only \
+     web call into it.";
+
+/// The two engines genuinely disagree about this file, at equal posture.
+///
+/// Both open it with `attempt_recovery: false` and reach different answers: PDFium
+/// reconstructs enough to report one page, qpdf refuses. The DIRECTION is the point and is
+/// what makes the substitution acceptable at all -- qpdf is the stricter engine, and a
+/// refusal cannot hand somebody a document quietly short of a page, which is what #61 was
+/// about. `core/burrow-ops/tests/optimistic_counts.rs::\
+/// where_the_engines_differ_at_equal_posture_qpdf_is_the_stricter_one` asserts that
+/// direction over these fixtures, so the day it stops holding this entry is WRONG rather than
+/// merely stale.
+///
+/// Recorded rather than skipped: a skipped case records "untested", which is the wrong memory
+/// to leave for M2.
+fn web_page_count_engines_disagree() -> PlatformExpectation {
+    PlatformExpectation {
+        platform: Platform::Web,
+        operation: Operation::PageCount,
+        expect: malformed(),
+        reason: format!(
+            "{WEB_PAGE_COUNT_RUNS_ON_QPDF} The two engines genuinely disagree about this \
+             file at equal posture -- both open it without recovery -- and qpdf is the \
+             STRICTER one: it refuses what PDFium reads as a one-page document. That is the \
+             safe direction and the reason the substitution is acceptable at all: a refusal \
+             cannot hand somebody a document quietly short of a page, which is what #61 was \
+             about. `core/burrow-ops/tests/optimistic_counts.rs::\
+             where_the_engines_differ_at_equal_posture_qpdf_is_the_stricter_one` asserts the \
+             DIRECTION over this fixture, so the day that stops being true this entry is \
+             wrong rather than merely stale. Recorded rather than skipped: a skipped case \
+             records \"untested\", which is the wrong memory to leave for M2."
+        ),
+    }
+}
+
+/// The engines are not the cause here; the POSTURE is.
+///
+/// A separate helper rather than a second use of the one above, because the reason a reader
+/// will act on is different. This fixture's native and web halves would agree if they were
+/// asked the same question, and they are not: `burrow_wasm::page_count` sets
+/// `attempt_recovery: false` unconditionally, so the recovery this case is NAMED for never
+/// runs on the web. Saying "the two engines disagree" here would send the next person to
+/// compare engines, and send them to the wrong place.
+///
+/// It is also the entry the `optimistic_counts` guard does NOT cover, which is exactly why it
+/// must not cite it: a reason naming a test that does not watch it claims a guard it has not
+/// got.
+fn web_page_count_has_no_recovery() -> PlatformExpectation {
+    PlatformExpectation {
+        platform: Platform::Web,
+        operation: Operation::PageCount,
+        expect: malformed(),
+        reason: format!(
+            "{WEB_PAGE_COUNT_RUNS_ON_QPDF} THE ENGINE IS NOT WHAT DIFFERS HERE -- the POSTURE \
+             is. `burrow_wasm::page_count` opens with `attempt_recovery: false` \
+             unconditionally, so the recovery this case is named for never runs on the web \
+             and the file is refused rather than recovered. The web has no API through which \
+             a caller could ask for recovery, so this is the web's only answer for this file \
+             rather than one of two. Recorded rather than skipped: a skipped case records \
+             \"untested\", which is the wrong memory to leave for M2."
+        ),
+    }
+}
+
 /// Both single-document engines produce the same outcome.
 ///
 /// **Does NOT include `merge`.** A single-document fixture says nothing about merging, and
@@ -717,7 +788,7 @@ fn main() {
             // file to qpdf and an ordinary readable one to PDFium. It stays in the corpus so
             // that reintroducing an untrapped call aborts the suite rather than passing it.
             expect: differ(opens(1), malformed()),
-            platform_expectations: Vec::new(),
+            platform_expectations: vec![web_page_count_engines_disagree()],
             known_gap: None,
         },
         Fixture {
@@ -781,7 +852,7 @@ fn main() {
             // proves nothing about what failure messages contain. PDFium reconstructs enough
             // to find one page; qpdf refuses without recovery.
             expect: differ(opens(1), malformed()),
-            platform_expectations: Vec::new(),
+            platform_expectations: vec![web_page_count_engines_disagree()],
             known_gap: None,
         },
         Fixture {
@@ -792,7 +863,10 @@ fn main() {
             limits: None,
             attempt_recovery: true,
             expect: differ(opens(1), opens(1)),
-            platform_expectations: Vec::new(),
+            // THE RECOVERED HALF DIFFERS FOR A DIFFERENT REASON, which is why it gets its
+            // own helper: the engines would agree here, and the web never asks for the
+            // recovery this case is named for.
+            platform_expectations: vec![web_page_count_has_no_recovery()],
             known_gap: None,
         },
     ];

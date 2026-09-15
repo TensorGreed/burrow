@@ -240,14 +240,49 @@ fn the_object_stream_bomb_is_not_delivered_short_either() {
 /// at equal recovery posture (both declare `attempt_recovery: false`). Moving `page_count` to
 /// qpdf therefore makes the web **stricter** on these, never more optimistic — and a refusal
 /// cannot deliver a document short of a page, so #61's shape is not reachable through them.
+///
+/// **BOTH HALVES ARE ASSERTED HERE, and only qpdf's was until a code review asked.** The name
+/// promises a comparison: "where the engines DIFFER". With only the qpdf half, the day PDFium
+/// also started refusing these files the fixtures would no longer differ, the premise would
+/// have no subject, and this test would go on passing while measuring nothing — which is the
+/// failure the root `CLAUDE.md` names, and which had already happened once in this change
+/// (`e2e/engines.spec.ts`'s "both engines are live in one worker"). It is also the entry that
+/// `tests/conformance/expectations.json`'s `platform_expectations` cite as their guard, so a
+/// guard that watches one side is a citation to something weaker than claimed.
 #[test]
 fn where_the_engines_differ_at_equal_posture_qpdf_is_the_stricter_one() {
+    use burrow_engines::{DocumentEngine, pdfium::Pdfium};
+
+    let pdfium = Pdfium::new();
     for name in ["object-number-above-int-max.pdf", "canary.pdf"] {
         let bytes = fixture(name);
+
         let refused = count_with_recovery(&bytes, false);
         assert!(
             matches!(refused, Err(Error::Malformed(_))),
             "{name}: qpdf no longer refuses, so this is no longer the safe direction: {refused:?}"
         );
+
+        // THE OTHER HALF. Same posture: PDFium has no recovery switch, so this IS its
+        // `attempt_recovery: false`, and it is the posture `page_count` used before the move.
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+        let options = OpenOptions::new(Limits::DEFAULT, clock);
+        let accepted = pdfium.open(bytes.clone().into_boxed_slice(), &options);
+        match accepted {
+            Ok(document) => {
+                let pages = pdfium.page_count(&document);
+                assert!(
+                    matches!(pages, Ok(count) if count > 0),
+                    "{name}: PDFium opened it but reports no pages, so the pair no longer \
+                     differs in the direction this test is named for: {pages:?}"
+                );
+            }
+            Err(error) => panic!(
+                "{name}: PDFium now refuses this file too, so the engines no longer DIFFER \
+                 here and this test has no subject. Either the fixture changed or a PDFium \
+                 bump tightened it -- re-derive the pair rather than deleting the assertion, \
+                 and update the `platform_expectations` entries that cite this test: {error:?}"
+            ),
+        }
     }
 }

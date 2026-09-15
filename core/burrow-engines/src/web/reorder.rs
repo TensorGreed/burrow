@@ -457,8 +457,9 @@ impl crate::OutputReader for WebQpdf {
         // and a separate parse; it does not give a separate heap. A module whose heap is
         // corrupt corrupts the writer and the reader alike.
         //
-        // The alternative is a fresh worker per operation -- 6.8 MB re-fetched and three
-        // modules recompiled -- which ADR 0022 measures and declines. Natively the two handles
+        // The alternative is a fresh worker per operation -- the whole engine payload
+        // re-fetched and every module recompiled (6.8 MB and three modules when ADR 0022
+        // measured it; about 1.8 MB and two since spike 0004) -- which it declines. Natively the two handles
         // share nothing but the process allocator, so the same code is stronger there; the
         // asymmetry is real and recorded rather than smoothed over.
         //

@@ -64,7 +64,9 @@ async function runGuard(protocol: string, world: World): Promise<GuardOutcome> {
     // The manifest the bundle would otherwise have generated in above the prelude.
     BURROW_ENGINES: {
       probeOrigin: "https://example.test",
-      pdfiumWasm: { url: "https://example.test/a.wasm", integrity: "sha384-x" },
+      // NO `pdfiumWasm`. It was here for one build after spike 0004 took PDFium out of the
+      // payload, which made this fixture the wrong SHAPE -- a guard test whose manifest has a
+      // module the real one does not cannot notice a guard that iterates the manifest.
       qpdfWasm: { url: "https://example.test/b.wasm", integrity: "sha384-y" },
       burrowWasm: { url: "https://example.test/c.wasm", integrity: "sha384-z" },
       control: { url: "/engines/control.deadbeef.txt", integrity: "sha384-c" },

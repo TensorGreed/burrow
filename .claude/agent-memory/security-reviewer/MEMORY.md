@@ -4,7 +4,7 @@
 - [M1 limits: real strength](m1_limits_real_strength.md) — measured gaps in max_memory_bytes and the engine-thread deadline; a 330 kB file reaches 1.2 GB.
 - [qpdf exception boundary](m1_qpdf_exception_boundary.md) — the "catches everything" contract is false; plus the 2026-09-13 proven-helper widening and its measured rule gaps.
 - [Pre-scan key-scan bypass](m1_prescan_key_scan_bypass.md) — one decoy `/Sizes` key defeats the whole structural pre-scan; 2.5 GB measured.
-- [M1 web engine path](m1_web_engine_path.md) — the blob: worker bundle, verified no-collision concatenation, what the CSP and the fail-closed guard really cover.
+- [M1 web engine path](m1_web_engine_path.md) — the blob: worker bundle and CSP/SRI derivation; updated 2026-09-15 for spike 0004, when PDFium left the web payload.
 - [M1 web worker lifecycle](m1_web_worker_lifecycle.md) — where the ack, the pre-ack timer and the breaker actually bind; measured with the fake worker and a virtual clock.
 - [M1 differential harness](m1_differential_harness.md) — measured cost of the committed bombs, and what compare.ts's freshness check actually binds.
 - [CI artifact-check vacuity](m1_ci_check_vacuity.md) — measured ways a symbol-table check passes while reading nothing, and emsdk/llvm-nm absence in the web job.

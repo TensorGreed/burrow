@@ -42,7 +42,6 @@ export function replyShape(): Record<string, unknown> {
     failed_input: -1,
     inner_kind: "",
     output_length: 0,
-    pdfium_heap_bytes: 0n,
     qpdf_heap_bytes: 0n,
     // EVERY FIELD `drainReply` READS, or the stub is stale in exactly the way a rebuilt-Rust
     // module would be -- `Array.from(undefined)` throws, the reply arrives as `Internal`, and
@@ -65,7 +64,6 @@ export function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => voi
 }
 
 export interface Attachment {
-  pdfium: unknown;
   qpdf: unknown;
 }
 
@@ -120,11 +118,6 @@ export function load(
   const qpdfOptions: { printErr?: unknown; print?: unknown }[] = [];
   const budgetCalls: number[][] = [];
 
-  const pdfiumModule = {
-    calledRun: true,
-    _FPDF_InitLibrary: () => {},
-  };
-
   // A Reply as `drainReply` reads it. Field names match the wasm-bindgen getters.
   const reply = () => ({ ...replyShape(), pages: 1 });
 
@@ -160,7 +153,6 @@ export function load(
     POLICED: Promise.resolve(
       policed ? { policed: true, reason: "" } : { policed: false, reason: "probe-succeeded" },
     ),
-    Module: pdfiumModule,
     silent: { printErr: () => {}, print: () => {} },
     instantiateFrom: () => () => {},
     compiled: { burrowWasm: Promise.resolve({}) },
@@ -174,7 +166,7 @@ export function load(
       qpdfInstances.push(instance);
       return instance;
     },
-    __burrow_attach: (pdfium: unknown, qpdf: unknown) => attaches.push({ pdfium, qpdf }),
+    __burrow_attach: (qpdf: unknown) => attaches.push({ qpdf }),
     wasm_bindgen,
   };
   scope["self"] = scope;

@@ -193,9 +193,28 @@ the web payload** — that is its own change, and it is mechanical:
   call instead
 - `engines/licenses.toml`: **25 lines name the artifact id `pdfium-wasm`**, in `artifacts` and
   `linked_in` across ten components, under a heading that says "shipped artifacts".
-  `check-engine-licences.py` enforces the consistency, so this is bounded work
-- the credits page needs **no** change: it is generated from `linked`, which stays true
-  because native still links PDFium. It would then over-declare rather than under-declare,
-  which is the safe direction
+  ~~`check-engine-licences.py` enforces the consistency, so this is bounded work~~
+
+  **AMENDED WHEN THE WORK WAS DONE — it did not.** The script never read `artifacts` or
+  `linked_in` at all, so deleting the `[[artifact]]` block while leaving fourteen components
+  referring to it (or the reverse) would have passed silently. The bounding came from `grep`.
+  The consistency is enforced now, because the fix is to build the control rather than to
+  note the number: three rules, both directions of the artifact-id cross-check plus
+  `linked_in ⊆ artifacts` per component, each with its own planted-manifest probe in
+  `tools/test-check-engine-licences.sh`.
+- ~~the credits page needs **no** change: it is generated from `linked`, which stays true
+  because native still links PDFium~~
+
+  **AMENDED: the page's DATA moves.** The obligation is unaffected and `linked` does stay
+  true, so the direction is safe — but `generate-credits.mjs` publishes each component's
+  `artifacts` list, so the rendered page changes with those 25 lines. The residual is worth
+  stating rather than leaving as "no change": the page is generated from the whole manifest,
+  so it now over-declares **for the web** — it credits FreeType, HarfBuzz, ICU, lcms and
+  OpenJPEG to a reader whose download contains none of them, because those obligations arrive
+  through PDFium and PDFium is still linked natively and on mobile. Over-declaring breaches
+  nothing. It does loosen the page's own claim that it cannot fall behind what we ship, in the
+  other direction, and an `artifacts`-aware filter is the answer if that matters later. Raised
+  by security review; the licence surface is *stop and ask*, so it is recorded here rather
+  than changed
 - `detect-engine-components.py` is unaffected as long as pdfium is still **built** for wasm
   and merely not staged

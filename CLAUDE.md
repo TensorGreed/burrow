@@ -221,18 +221,47 @@ those at full candour is working and is not what "summarise" is asking you to sh
 - Prefer `rg` over `grep`, and the file tools over shell text editing.
 - Do not add docs, changelogs, coverage passes, or formatting sweeps that were not asked for.
 - Do not commit or push unless asked.
+- **A force-push names its branch and uses `--force-with-lease`.** `.claude/settings.json`
+  denies the bare forms (`git push --force` with no refspec pushes the *current* branch, which
+  may be `main`) and every spelling that targets `main`, including the `+main` refspec. Any
+  other branch is allowed without a prompt, because rebasing a PR branch onto a merged base is
+  routine — a squash-merge gives the base a new SHA, so a stacked PR that is only *retargeted*
+  arrives conflicting and carrying its parent's commits again. `--force-with-lease` is the part
+  that makes it safe: it refuses if the remote moved under you.
+
+  Residual, stated rather than implied: a force-push to a branch someone else is working on is
+  now permitted without a prompt. The lease catches the case where they have pushed; it does
+  not catch the case where they have not pushed yet.
 - **A CI monitor watches one run ID, and is stopped on every push.** Use
   `gh run watch <id> --exit-status`, never `gh pr checks <pr>`: the latter reports whichever
   run is *current*, so a monitor started for one commit silently begins reporting on another.
   Four of them accumulated across one PR, all polling the same endpoint — a green from any
   would have read as confirmation while saying nothing about the commit it was started for.
   Stop the previous monitor before starting the next.
-- **`gh run watch --exit-status` is not the verdict. Confirm with
-  `gh run view <id> --json conclusion`.** Measured in M1 PR 4c: the watcher exited **0** on a
-  run whose conclusion was `failure`. Had that exit code been trusted, a red run would have
-  been reported as green — the precise failure the run-ID rule above exists to prevent, one
-  layer further in. Read the run's conclusion, and read the per-job conclusions with
-  `--json jobs` when you need to know *which* job failed and whether it is yours.
+- **An exit code is not an outcome. Read the state back.** This has now been measured three
+  times, in three different tools, and each one reported success for something that had not
+  happened:
+
+  | | exit code | what was actually true |
+  |---|---|---|
+  | `gh run watch --exit-status` (M1 PR 4c) | **0** | the run's conclusion was `failure` |
+  | `gh pr edit --base main` (M1, #76) | **0**, with a warning | the base was unchanged; it had failed on an unrelated GraphQL projects-deprecation error |
+  | `grep -c` in an `&&` chain | **1** on a count of zero | the chain stopped; a successful restore read as a failed one |
+
+  A fourth, adjacent: piping a runner through `tail` makes the *pipeline's* status `tail`'s,
+  so `tools/ci-local.py … | tail -80` exited **0** over three failing jobs. Capture the status
+  of the command you care about, not of whatever ran last.
+
+  So:
+
+  - **After any `gh` mutation — `pr edit`, `pr merge`, `pr create`, `api -X PATCH`, `run
+    rerun` — read the state back and assert it.** `gh pr view <n> --json baseRefName,state`,
+    `gh run view <id> --json conclusion`. `gh` prints deprecation and partial-failure
+    warnings on stdout and still exits 0.
+  - **`gh run watch --exit-status` is not the verdict.** Confirm with
+    `gh run view <id> --json conclusion`, and read `--json jobs` when you need to know *which*
+    job failed and whether it is yours.
+  - Never put a command whose status you need on the left of a pipe.
 - **Replicate CI with `tools/ci-local.py`, not by hand.** It reads `.github/workflows/ci.yml`,
   extracts every gate CI actually invokes — including the ones that run as *actions* rather
   than shell, like `cargo deny` and `cargo audit` — and **refuses to run anything** unless each

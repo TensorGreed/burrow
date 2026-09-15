@@ -31,7 +31,8 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
     The ENGINES are still not loaded here. The tool starts a worker the first time a file is
     chosen (ADR 0018). Mounting the component is a few kilobytes; starting the engines is
-    6.8 MB.
+    about 420 KB over the wire (1.8 MB uncompressed) --- it was 6.8 MB until spike 0004 took
+    PDFium out of the payload.
   */
   }
   <div id="split-tool"></div>

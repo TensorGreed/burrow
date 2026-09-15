@@ -216,10 +216,19 @@ function buildPrologue({ captureConsole = false, logCanary = null, poison = null
     // A SYNCHRONOUS block, deliberately. An `await` would leave the worker responsive and
     // prove nothing: what the watchdog exists for is a single engine call that never returns
     // control, which ADR 0007 says checkpoint-based enforcement cannot interrupt.
+    // WRAPS `__burrow_qpdf_copy_in`, which it did not until spike 0004 --- it wrapped
+    // `__burrow_pdfium_copy_in`, and PDFium is no longer in the web payload, so that global
+    // does not exist. A wrapper over `undefined` throws on the FIRST operation instead of
+    // hanging on it, which the page reports as `Internal`: the watchdog test would have gone
+    // on passing while measuring a crash rather than a hang.
+    //
+    // `copy_in` is the right hook for the same reason it was before: it is the first engine
+    // call every operation makes, so the hang lands inside the operation rather than before
+    // it starts.
     parts.push(`
       self.addEventListener("message", () => {
-        const original = self.__burrow_pdfium_copy_in;
-        self.__burrow_pdfium_copy_in = (bytes) => {
+        const original = self.__burrow_qpdf_copy_in;
+        self.__burrow_qpdf_copy_in = (bytes) => {
           const until = Date.now() + ${hangMs};
           while (Date.now() < until) {}
           return original(bytes);

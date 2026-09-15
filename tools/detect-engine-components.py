@@ -20,7 +20,10 @@ Exits non-zero when a detected component has no entry in `engines/licenses.toml`
   clever.
 - **The wasm module has its names stripped**, so detection there is string-based and much
   weaker than the native symbol table. Native is authoritative for what PDFium contains;
-  the wasm scan is a cross-check on the artifact users actually download.
+  the wasm scan is a cross-check on the BUILT wasm artifacts. It was "the artifact users
+  actually download" until spike 0004: `pdfium.wasm` is still built -- which is what keeps
+  this detector working, and is the whole distinction between "not staged" and "not built" --
+  but it is no longer staged, so only `qpdf.wasm` is downloaded by anyone.
 - **It cannot detect a declared component whose version moved.** A PDFium bump that
   changes the bundled HarfBuzz version passes this check silently. Re-deriving the
   revisions from PDFium's `DEPS` is part of a bump — see ADR 0010.

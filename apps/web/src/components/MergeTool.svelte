@@ -83,7 +83,8 @@
       // finished" was the first version and it is false: `worker-host.js` answers `Internal`
       // when `ensureWorker()` fails and `EngineUnavailable` when the breaker has latched,
       // both without a worker ever existing. So one failed init would have hidden this line
-      // for the rest of the page -- and the next file really would download 6.8 MB in
+      // for the rest of the page -- and the next file really would download the whole
+      // engine payload in
       // silence, which is the case ADR 0018 exists to end. Found by code review.
       engineStarted = h.hasWorker();
 
@@ -178,8 +179,9 @@
    * Whether the engines have ever finished starting on this page.
    *
    * ENGINES LOAD ON FIRST USE, NOT ON PAGE LOAD, and that decision is recorded in ADR 0018.
-   * The cost of it lands here: the first file a person chooses waits for 6.8 MB, which is
-   * 7 seconds on Chrome's "Fast 4G" profile and 145 seconds on its "Slow 3G" one -- measured,
+   * The cost of it lands here: the first file a person chooses waits for the engine payload.
+   * At 6.8 MB that was 7 seconds on Chrome's "Fast 4G" profile and 145 seconds on its
+   * "Slow 3G" one -- measured,
    * both. Showing "counting…" for two and a half minutes with no explanation is the page
    * being silent about the one thing the person would want to know.
    *
@@ -441,7 +443,7 @@
 
     {#if preparing}
       <p class="preparing" role="status">
-        Getting the PDF engine ready. It is about 7 MB and it is fetched once per visit, so this
+        Getting the PDF engine ready. It is about 420 KB and it is fetched once per visit, so this
         first file takes longer than the rest.
       </p>
     {/if}

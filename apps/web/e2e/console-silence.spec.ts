@@ -195,7 +195,7 @@ test("no failure path writes anything to any console", async ({ page }, testInfo
 
   // A DELIBERATE ENGINE FAILURE, the ADR 0009 path. The exception's text must never be echoed.
   await page.evaluate(() => {
-    window.burrowHarness.arm({ captureConsole: true, poison: "__burrow_pdfium_copy_in" });
+    window.burrowHarness.arm({ captureConsole: true, poison: "__burrow_qpdf_copy_in" });
     window.burrowHarness.discardWorker();
   });
   await page.evaluate((bytes) => window.burrowHarness.run("page_count", bytes), canaryBytes);

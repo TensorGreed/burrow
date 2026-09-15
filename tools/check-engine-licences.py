@@ -278,11 +278,20 @@ def check_license_text(comp: dict, name: str) -> list[str]:
 
 
 def main() -> int:
-    if not MANIFEST.is_file():
-        print(f"error: {MANIFEST.relative_to(REPO)} not found", file=sys.stderr)
+    # AN OPTIONAL MANIFEST PATH, so the self-test can plant a defect in a COPY of the manifest
+    # rather than in the committed one. Without it the only way to probe a manifest rule was to
+    # mutate this script -- which measures the script's plumbing rather than the rule, and
+    # leaves the real file one interrupted run away from carrying a planted defect.
+    manifest = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else MANIFEST
+    if not manifest.is_file():
+        try:
+            shown = manifest.relative_to(REPO)
+        except ValueError:
+            shown = manifest
+        print(f"error: {shown} not found", file=sys.stderr)
         return 1
 
-    with MANIFEST.open("rb") as fh:
+    with manifest.open("rb") as fh:
         data = tomllib.load(fh)
 
     # FIXTURES FIRST. A parser that mis-splits an SPDX expression makes every allowlist
@@ -347,7 +356,53 @@ def main() -> int:
         elif outcome == "unresolved":
             unresolved.append(name)
 
+    # EVERY ARTIFACT ID A COMPONENT NAMES EXISTS, AND EVERY DECLARED ARTIFACT IS NAMED.
+    #
+    # This script never read `artifacts` or `linked_in` at all. Spike 0004 said removing
+    # PDFium from the web was "bounded work" because "check-engine-licences.py enforces the
+    # consistency" -- it did not, and the bounding came from `grep`. Twenty-five lines across
+    # fourteen components referred to one artifact id, and deleting the `[[artifact]]` block
+    # while leaving the references (or the reverse) would have passed silently.
+    #
+    # Both directions, because each is a different mistake: a reference to an artifact that
+    # does not exist is a component claiming to ship somewhere it does not, and an artifact
+    # nothing references is one whose licence set nothing accounts for.
+    declared_ids = {a.get("id") for a in data.get("artifact", []) if a.get("id")}
+    referenced: dict[str, set[str]] = {}
+    for comp in components:
+        for key in ("artifacts", "linked_in"):
+            for artifact_id in comp.get(key, []):
+                referenced.setdefault(artifact_id, set()).add(f"{comp.get('name')}.{key}")
+
+    dangling = sorted(set(referenced) - declared_ids)
+    for artifact_id in dangling:
+        problems.append(
+            f"artifact id {artifact_id!r} is referenced by {', '.join(sorted(referenced[artifact_id]))} "
+            f"but no [[artifact]] block declares it"
+        )
+    # AND `linked_in` MUST BE A SUBSET OF `artifacts`, per component. A component cannot be
+    # linked into an artifact it does not declare shipping in, and that is the mistake the
+    # shape of this file invites: the two lists sit next to each other and are edited by hand.
+    for comp in components:
+        stray = sorted(set(comp.get("linked_in", [])) - set(comp.get("artifacts", [])))
+        for artifact_id in stray:
+            problems.append(
+                f"component {comp.get('name')!r} claims linked_in = {artifact_id!r} without "
+                f"listing it in artifacts, so it is linked into something it does not ship in"
+            )
+
+    orphaned = sorted(declared_ids - set(referenced))
+    for artifact_id in orphaned:
+        problems.append(
+            f"artifact {artifact_id!r} is declared but no component names it, so nothing "
+            f"accounts for what it ships"
+        )
+
     print(f"engines/licenses.toml: {len(components)} components, {linked} linked")
+    print(
+        f"{len(declared_ids)} artifact(s) declared, {len(referenced)} referenced, "
+        f"cross-checked in both directions, and every linked_in is a subset of its artifacts"
+    )
     print(f"{len(SPLIT_CASES)} SPDX split case(s) + 4 path case(s) verified")
 
     # REPORT THE COMPARISON COUNT, AND FAIL ON A SHORTFALL.

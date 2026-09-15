@@ -42,7 +42,9 @@ test("the manifest pins every engine artifact by digest", async ({ page }) => {
   const engines = await readManifest(page);
 
   const ids = Object.keys(engines).sort();
-  expect(ids).toEqual(["burrowWasm", "control", "pdfiumWasm", "qpdfWasm", "worker"]);
+  // `pdfiumWasm` was here until spike 0004 took PDFium out of the payload. The list is
+  // exact rather than a subset, so an artifact appearing or disappearing is a finding.
+  expect(ids).toEqual(["burrowWasm", "control", "qpdfWasm", "worker"]);
 
   // The guard's control resource. Small on purpose: it is fetched `cache: "no-store"` at
   // every worker start, and it exists only to prove an allowlisted request succeeds.
@@ -65,14 +67,23 @@ test("the worker bundle contains all worker code, so one digest covers it", asyn
   await page.goto("/harness");
   const engines = await readManifest(page);
 
-  // The bundle carries the prelude, the bridge, both Emscripten glues, the wasm-bindgen glue
-  // and the protocol. If a future change split any of that back out into its own
+  // The bundle carries the prelude, the bridge, the qpdf Emscripten glue, the wasm-bindgen
+  // glue and the protocol. If a future change split any of that back out into its own
   // `importScripts`, this size floor would fail — and so would the guarantee, silently,
   // because `importScripts` cannot be integrity-checked.
+  //
+  // LOWERED FROM 150,000 TO 90,000, and the number matters more than it looks. PDFium's glue
+  // was ~164 KB of this bundle and spike 0004 took it out, leaving **150,178 bytes measured**
+  // — which still clears the old floor, by 178 bytes. A floor a tenth of a percent under
+  // the thing it measures is a tripwire, not a floor: the next innocuous change fires it, and
+  // whoever is holding it then will raise it rather than ask what it was for.
+  //
+  // 90,000 sits comfortably under the measured size and comfortably over any bundle missing a
+  // glue file — the qpdf glue alone is larger than the gap.
   expect(
     engines.worker.bytes,
     "the worker bundle looks too small to contain the glue",
-  ).toBeGreaterThan(150_000);
+  ).toBeGreaterThan(90_000);
 
   const source = await page.evaluate(async (url) => {
     const response = await fetch(url);
@@ -81,9 +92,8 @@ test("the worker bundle contains all worker code, so one digest covers it", asyn
 
   for (const marker of [
     "BURROW_ENGINES", // the generated manifest
-    "__burrow_pdfium_load", // the bridge
+    "__burrow_qpdf_copy_in", // the bridge
     "createQpdfModule", // the qpdf glue
-    "FPDF_LoadMemDocument64", // the pdfium glue
     "wasm_bindgen", // the Rust glue
     "INHERITS_PAGE_CSP", // the fail-closed guard
   ]) {

@@ -639,7 +639,19 @@
             "kind": "Malformed"
           }
         }
-      }
+      },
+      "platform_expectations": [
+        {
+          "platform": "web",
+          "operation": "page_count",
+          "expect": {
+            "err": {
+              "kind": "Malformed"
+            }
+          },
+          "reason": "`page_count` runs on qpdf on the WEB and on PDFium natively, since spike 0004 took PDFium out of the web payload -- it was 79.7% of the first load and this was the only web call into it. The two engines genuinely disagree about this file at equal posture -- both open it without recovery -- and qpdf is the STRICTER one: it refuses what PDFium reads as a one-page document. That is the safe direction and the reason the substitution is acceptable at all: a refusal cannot hand somebody a document quietly short of a page, which is what #61 was about. `core/burrow-ops/tests/optimistic_counts.rs::where_the_engines_differ_at_equal_posture_qpdf_is_the_stricter_one` asserts the DIRECTION over this fixture, so the day that stops being true this entry is wrong rather than merely stale. Recorded rather than skipped: a skipped case records \"untested\", which is the wrong memory to leave for M2."
+        }
+      ]
     },
     {
       "name": "truncated-mid-object",
@@ -754,7 +766,19 @@
             "kind": "Malformed"
           }
         }
-      }
+      },
+      "platform_expectations": [
+        {
+          "platform": "web",
+          "operation": "page_count",
+          "expect": {
+            "err": {
+              "kind": "Malformed"
+            }
+          },
+          "reason": "`page_count` runs on qpdf on the WEB and on PDFium natively, since spike 0004 took PDFium out of the web payload -- it was 79.7% of the first load and this was the only web call into it. The two engines genuinely disagree about this file at equal posture -- both open it without recovery -- and qpdf is the STRICTER one: it refuses what PDFium reads as a one-page document. That is the safe direction and the reason the substitution is acceptable at all: a refusal cannot hand somebody a document quietly short of a page, which is what #61 was about. `core/burrow-ops/tests/optimistic_counts.rs::where_the_engines_differ_at_equal_posture_qpdf_is_the_stricter_one` asserts the DIRECTION over this fixture, so the day that stops being true this entry is wrong rather than merely stale. Recorded rather than skipped: a skipped case records \"untested\", which is the wrong memory to leave for M2."
+        }
+      ]
     },
     {
       "name": "canary-recovered",
@@ -777,7 +801,19 @@
             "page_count": 1
           }
         }
-      }
+      },
+      "platform_expectations": [
+        {
+          "platform": "web",
+          "operation": "page_count",
+          "expect": {
+            "err": {
+              "kind": "Malformed"
+            }
+          },
+          "reason": "`page_count` runs on qpdf on the WEB and on PDFium natively, since spike 0004 took PDFium out of the web payload -- it was 79.7% of the first load and this was the only web call into it. THE ENGINE IS NOT WHAT DIFFERS HERE -- the POSTURE is. `burrow_wasm::page_count` opens with `attempt_recovery: false` unconditionally, so the recovery this case is named for never runs on the web and the file is refused rather than recovered. The web has no API through which a caller could ask for recovery, so this is the web's only answer for this file rather than one of two. Recorded rather than skipped: a skipped case records \"untested\", which is the wrong memory to leave for M2."
+        }
+      ]
     },
     {
       "name": "merge-two-ordinary",

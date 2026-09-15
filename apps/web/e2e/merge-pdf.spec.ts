@@ -222,8 +222,8 @@ test("a second merge works without emptying the list first", async ({ page }) =>
 test("it says the engine is loading, and stops saying it once it has", async ({ page }) => {
   // The one part of ADR 0018 a person actually sees, and it had no test of any kind — found
   // by code review. The decision it exists to justify is that engines load on first use
-  // rather than on page load: the cost of that lands on the first file, which is 7 seconds on
-  // Fast 4G and 145 on Slow 3G, and "counting…" for two and a half minutes with no
+  // rather than on page load: the cost of that lands on the first file, which was 7 seconds on
+  // Fast 4G and 145 on Slow 3G at the 6.8 MB payload, and "counting…" with no
   // explanation is the page being silent about the one thing the person wants to know.
   //
   // Not throttled here, so the line is brief. What is asserted is that it appears before the

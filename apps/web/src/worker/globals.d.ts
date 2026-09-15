@@ -52,12 +52,10 @@ interface EmscriptenModule extends EmscriptenConfig {
   _malloc(size: number): number;
   _free(ptr: number): void;
 
-  // --- PDFium. `fpdfview.h`. ---
-  _FPDF_InitLibrary(): void;
-  _FPDF_LoadMemDocument64(data: number, size: number, password: number): number;
-  _FPDF_GetLastError(): number;
-  _FPDF_GetPageCount(doc: number): number;
-  _FPDF_CloseDocument(doc: number): void;
+  // NO `_FPDF_*`. The five `fpdfview.h` declarations stood here until spike 0004 took PDFium
+  // out of the web payload. They were kept for exactly one build after the module stopped
+  // being loaded, which is the state in which a call to one of them TYPE-CHECKS and then
+  // fails at run time in the browser and nowhere else.
 
   // --- qpdf. Exactly the C API `core/burrow-engines/src/qpdf/ffi.rs` declares, which is
   //     the set ADR 0013 verified routes through qpdf's `trap_errors`. ---
@@ -154,7 +152,6 @@ interface EngineEntry {
  * distinction only showed up when something tried to use it.
  */
 interface BurrowEngines {
-  pdfiumWasm: EngineEntry;
   qpdfWasm: EngineEntry;
   burrowWasm: EngineEntry;
   /**
@@ -176,11 +173,10 @@ declare const BURROW_ENGINES: BurrowEngines;
 // error, and the definitions carry their own JSDoc.
 
 // --- bridge.js ---
-declare function __burrow_attach(pdfium: EmscriptenModule, qpdf: EmscriptenModule): void;
+declare function __burrow_attach(qpdf: EmscriptenModule): void;
 
 // --- the Emscripten glue, concatenated into the bundle ---
-/** The global PDFium reads at load time, and then fills in. */
-declare const Module: EmscriptenConfig;
+/** qpdf's `MODULARIZE`'d factory: the glue exports this rather than filling in a global. */
 declare function createQpdfModule(options: object): Promise<EmscriptenModule>;
 
 // --- the wasm-bindgen glue (`--target no-modules`) ---
@@ -302,7 +298,6 @@ interface Reply {
   readonly allowed: bigint;
   /** ADR 0009's lifecycle verdict, computed in Rust. See `recycle.rs`. */
   readonly recycle: boolean;
-  readonly pdfium_heap_bytes: bigint;
   readonly qpdf_heap_bytes: bigint;
   /** Which input failed, or -1. Lets a page mark a file without parsing prose. */
   readonly failedInput: number;
@@ -335,20 +330,10 @@ interface Reply {
  * so the file that computes heap offsets is checked rather than inferred as `any`.
  */
 interface WorkerGlobalScope {
-  /** Assigned as a config; populated by the glue. See {@link EmscriptenConfig}. */
-  Module: EmscriptenConfig;
-
-  // --- PDFium ---
-  __burrow_pdfium_copy_in(bytes: Uint8Array): number;
-  __burrow_pdfium_wipe_free(ptr: number, len: number): void;
-  /** Wipes before freeing: this buffer holds the user's document. */
-  __burrow_pdfium_free_input(ptr: number, len: number): void;
-  /** `(code << 32) | handle` — both values from one call. See `bridge.js`. */
-  __burrow_pdfium_load(data: number, len: number, password: number): bigint;
-  __burrow_pdfium_pages(doc: number): number;
-  /** Closes, then wipes and frees `data` — the user's document. See `bridge.js`. */
-  __burrow_pdfium_close(doc: number, data: number, len: number): void;
-  __burrow_pdfium_heap_pages(): number;
+  // NO `Module`, AND NO `__burrow_pdfium_*`. Both belonged to PDFium's glue, which left the
+  // web payload in spike 0004. `Module` in particular is gone rather than kept as a spare:
+  // Emscripten glue reads a pre-existing global of that name as its configuration, so an
+  // unused one is a trap for the next module added to this bundle.
 
   // --- qpdf ---
   __burrow_qpdf_copy_in(bytes: Uint8Array): number;

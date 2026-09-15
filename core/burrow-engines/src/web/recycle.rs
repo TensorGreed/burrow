@@ -100,10 +100,41 @@ pub const MIN_CONVERGING_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 ///
 /// Either heap alone is enough. They are separate address spaces with separate ceilings, and a
 /// worker is only as healthy as its worse half.
+///
+/// TAKES EVERY HEAP THE WORKER HOLDS, rather than one parameter per engine. It was
+/// `(pdfium_heap_bytes, qpdf_heap_bytes, …)` until PDFium left the web payload (spike 0004),
+/// and the choice then was between a parameter named for an engine that is no longer loaded
+/// and a signature that says what it means. The rule is not about which engines exist; it is
+/// that a worker is as healthy as its worst heap, which is as true of one as of two — and it
+/// stays true without another signature change if M2 puts a second module back.
+///
+/// # An ARRAY, not a slice, and the empty case cannot compile
+///
+/// The first version of this took `&[u64]`, and both reviews caught the same hole in it:
+/// `[].iter().any(…)` is `false`, so a caller that passed no heaps would silently disable
+/// recycling — and recycling failing open is unbounded worker heap growth across a session,
+/// which is the one thing this function exists to stop. The two-parameter form could not
+/// express that mistake; forgetting an engine was a compile error.
+///
+/// A fixed-size array with a `const` assertion restores exactly that. `&[x]` infers `N == 1`
+/// and costs the caller nothing; `&[]` fails to compile, naming the reason. A future caller
+/// that wants to build the list at run time — the M2 shape, "whatever engines this worker
+/// loaded" — has to come here and decide what an empty list means, which is the decision, not
+/// a default to fall into.
+///
+/// It is deliberately not a `debug_assert!`: that is compiled out of the release build, which
+/// is the only build a person ever runs.
 #[must_use]
-pub fn should_recycle(pdfium_heap_bytes: u64, qpdf_heap_bytes: u64, limits: &Limits) -> bool {
+pub fn should_recycle<const N: usize>(heap_bytes: &[u64; N], limits: &Limits) -> bool {
+    const {
+        assert!(
+            N > 0,
+            "should_recycle needs at least one heap: with none, every worker reports healthy \
+             and recycling is silently off"
+        );
+    }
     let threshold = threshold_bytes(limits);
-    pdfium_heap_bytes > threshold || qpdf_heap_bytes > threshold
+    heap_bytes.iter().any(|bytes| *bytes > threshold)
 }
 
 #[cfg(test)]
@@ -115,7 +146,10 @@ mod tests {
     #[test]
     fn an_ordinary_heap_is_not_recycled() {
         let limits = Limits::default();
-        assert!(!should_recycle(16 * 1024 * 1024, 8 * 1024 * 1024, &limits));
+        assert!(!should_recycle(
+            &[16 * 1024 * 1024, 8 * 1024 * 1024],
+            &limits
+        ));
     }
 
     /// Either heap alone is enough. Two address spaces, two ceilings; the worker is as
@@ -124,8 +158,15 @@ mod tests {
     fn either_engine_alone_triggers_recycling() {
         let limits = Limits::with(|l| l.max_memory_bytes = 100 * 1024 * 1024);
         let over = threshold_bytes(&limits) + 1;
-        assert!(should_recycle(over, 0, &limits), "pdfium alone");
-        assert!(should_recycle(0, over, &limits), "qpdf alone");
+        assert!(should_recycle(&[over, 0], &limits), "the first heap alone");
+        assert!(should_recycle(&[0, over], &limits), "the second heap alone");
+        // AND ONE HEAP IS THE WEB'S CASE NOW, so it is asserted rather than implied by the
+        // two-heap cases above.
+        assert!(should_recycle(&[over], &limits), "one heap alone");
+        // NO EMPTY CASE, because there is no empty case to assert: `should_recycle(&[], …)`
+        // does not compile. It used to, and returned `false` — recycling silently off for a
+        // caller that forgot an engine. An earlier version of this test pinned that as correct
+        // behaviour, which is how a hole becomes a documented feature.
     }
 
     /// Exactly at the threshold is not over it. Stated as a test because an off-by-one here
@@ -134,8 +175,8 @@ mod tests {
     fn the_threshold_itself_is_not_over_it() {
         let limits = Limits::default();
         let at = threshold_bytes(&limits);
-        assert!(!should_recycle(at, at, &limits));
-        assert!(should_recycle(at + 1, at, &limits));
+        assert!(!should_recycle(&[at, at], &limits));
+        assert!(should_recycle(&[at + 1, at], &limits));
     }
 
     /// A caller that sets a small `max_memory_bytes` — a mobile page, say — must get the
@@ -144,7 +185,7 @@ mod tests {
     fn a_constrained_caller_gets_a_lower_threshold() {
         let constrained = Limits::with(|l| l.max_memory_bytes = 64 * 1024 * 1024);
         assert_eq!(threshold_bytes(&constrained), 32 * 1024 * 1024);
-        assert!(should_recycle(33 * 1024 * 1024, 0, &constrained));
+        assert!(should_recycle(&[33 * 1024 * 1024, 0], &constrained));
     }
 
     /// A generous limit must not disable the protection. Without the floor, a caller passing
@@ -155,7 +196,7 @@ mod tests {
     fn a_huge_limit_is_capped_by_the_floor() {
         let generous = Limits::with(|l| l.max_memory_bytes = u64::MAX);
         assert_eq!(threshold_bytes(&generous), FLOOR_BYTES);
-        assert!(should_recycle(FLOOR_BYTES + 1, 0, &generous));
+        assert!(should_recycle(&[FLOOR_BYTES + 1, 0], &generous));
     }
 
     /// The pathological end, pinned rather than left to be discovered.
@@ -170,13 +211,13 @@ mod tests {
 
         let too_small = Limits::with(|l| l.max_memory_bytes = 16 * 1024 * 1024);
         assert!(
-            should_recycle(WORKING_HEAP, 0, &too_small),
+            should_recycle(&[WORKING_HEAP], &too_small),
             "a ceiling this low recycles a worker that has merely opened a document"
         );
 
         let workable = Limits::with(|l| l.max_memory_bytes = MIN_CONVERGING_MEMORY_BYTES);
         assert!(
-            !should_recycle(WORKING_HEAP, WORKING_HEAP, &workable),
+            !should_recycle(&[WORKING_HEAP, WORKING_HEAP], &workable),
             "at the documented minimum, ordinary work must NOT recycle"
         );
     }

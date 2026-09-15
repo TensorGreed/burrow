@@ -65,8 +65,8 @@ function deps(overrides: Partial<ToolHostDeps> = {}): {
 describe("the shared tool host", () => {
   it("builds ONE host for callers that arrive together", async () => {
     // THE DEFECT THIS MODULE EXISTS FOR. A guard flag set after an `await` let two callers
-    // inside the fetch window each build a host, each spawn a worker with its own pdfium and
-    // qpdf, and share one `workerUrl` binding so one revoked the other's -- leaving an orphan
+    // inside the fetch window each build a host, each spawn a worker with its own engine
+    // instances, and share one `workerUrl` binding so one revoked the other's -- an orphan
     // worker holding file bytes for the life of the page. Found by security review on
     // `/merge-pdf`, then copied to `/rotate-pdf` before this module existed.
     const { deps: d, release } = deps();
