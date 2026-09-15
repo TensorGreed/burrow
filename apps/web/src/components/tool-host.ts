@@ -22,7 +22,8 @@
 // which operations they run, what they say about them, and what they show.
 
 import { ENGINE_UNAVAILABLE, createWorkerHost } from "../host/worker-host.js";
-import { ENGINES } from "../generated/engines.js";
+import { ENGINES, ENGINE_ORIGIN } from "../generated/engines.js";
+import { readOrigin } from "../origin-guard.js";
 
 /**
  * The ceilings a tool page runs under.
@@ -78,6 +79,14 @@ export interface ToolHostDeps {
   now: () => number;
   setTimer: (fn: () => void, ms: number) => unknown;
   clearTimer: (handle: unknown) => void;
+  /**
+   * The origin the page is being served from.
+   *
+   * INJECTED LIKE EVERY OTHER DEPENDENCY, so `tool-host.test.ts` can drive the mismatch
+   * branch without a browser. Reading `location.origin` directly here would make the one
+   * interesting case the one case no test could reach.
+   */
+  origin: string;
 }
 
 function browserDeps(): ToolHostDeps {
@@ -89,6 +98,7 @@ function browserDeps(): ToolHostDeps {
     now: () => performance.now(),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => clearTimeout(handle as number),
+    origin: globalThis.location.origin,
   };
 }
 
@@ -108,6 +118,24 @@ export function createToolHost(deps: ToolHostDeps = browserDeps()): ToolHost {
   let disposed = false;
 
   async function build() {
+    // THE ORIGIN, BEFORE THE FETCH. `ENGINES.worker.url` is absolute and on the origin this
+    // build was made for (ADR 0014 §4), so on a wrongly-deployed copy this fetch is
+    // cross-origin and CSP refuses it -- and what the person sees is "something inside burrow
+    // failed", which is the interface blaming itself for a deployment mistake.
+    //
+    // `src/origin-guard.ts` already puts a banner at the top of every page saying the tools
+    // will not work here. This is the other half: not attempting the work, so the explanation
+    // on screen is the ONLY thing that happens rather than being followed by a generic error
+    // that contradicts it. One check here covers all four islands, because they all come
+    // through this factory.
+    const verdict = readOrigin({
+      builtFor: ENGINE_ORIGIN,
+      servedFrom: deps.origin,
+    });
+    if (verdict.kind === "mismatch") {
+      throw new Error(verdict.message);
+    }
+
     const entry = ENGINES.worker;
     const response = await deps.fetch(entry.url, { integrity: entry.integrity });
     if (!response.ok) throw new Error("worker fetch failed");

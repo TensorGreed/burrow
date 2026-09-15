@@ -5,6 +5,25 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
 import svelte from "@astrojs/svelte";
 
+import { resolveBuildOrigin } from "../../tools/build-origin.mjs";
+
+/**
+ * The origin this build is for — the SAME answer `tools/stage-web-engines.mjs` gets, from the
+ * same function, because it is the same decision.
+ *
+ * It was not configured here at all, and the consequence shipped: `BaseLayout.astro` writes
+ * `new URL(Astro.url.pathname, Astro.site ?? "http://localhost")`, so with no `site:` every
+ * page in every build carried `<link rel="canonical" href="http://localhost/...">`. Invisible
+ * in every local test, because localhost is where local tests run, and wrong on the one build
+ * that matters.
+ *
+ * ADR 0014 §4 already made the origin a build input rather than a deploy setting. This is the
+ * second consumer of that input finally reading it.
+ */
+const SITE = resolveBuildOrigin((message) => {
+  throw new Error(`astro.config: ${message}`);
+}).origin;
+
 /**
  * Keep the engine harness out of production builds.
  *
@@ -61,6 +80,10 @@ function harnessGating() {
 // deliberately no adapter and no server runtime: no server exists that could receive a
 // user's file.
 export default defineConfig({
+  // ONE INPUT. `BURROW_SITE` reaches the CSP, the worker bundle's absolute URLs and this,
+  // through `tools/build-origin.mjs`. `src/built-for-origin.test.ts` asserts the built
+  // artifacts agree rather than trusting that they must.
+  site: SITE,
   output: "static",
   integrations: [svelte(), harnessGating()],
   vite: {

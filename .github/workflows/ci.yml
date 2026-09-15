@@ -976,6 +976,22 @@ jobs:
           tools/check-no-pdfium-on-the-web.sh
           tools/test-check-no-pdfium-on-the-web.sh
 
+      # THE DEPLOY GATE'S SELF-TEST, NOT THE GATE. `check-deployable-build.sh` asks whether a
+      # build is for the origin you MEANT, and CI builds for the development default -- so
+      # invoking it here would either be a gate that cannot fail (`|| true`, which this
+      # repository does not accept) or a gate that always fails. It runs at deploy time, with
+      # the real origin, which is the half that refuses a localhost build about to be uploaded.
+      #
+      # What belongs here is the evidence that it still works: 19 adversarial cases, four of
+      # them a probe gate, including the exact regression that prompted it -- a page shipping
+      # `<link rel="canonical" href="http://localhost/...">` while the CSP named the real
+      # origin.
+      #
+      # The four generated places agreeing WITH EACH OTHER is asserted separately, over the
+      # built artifacts, by `apps/web/src/built-for-origin.test.ts` in `pnpm test`.
+      - name: The deploy origin gate still refuses every mismatch it is supposed to
+        run: tools/test-check-deployable-build.sh
+
       # Asserts what a production build contains: no harness route, no `burrowHarness`
       # identifier in any shipped file, the CSP in every page, and -- as a control -- that
       # the harness IS present when BURROW_HARNESS=1, so the gating is doing the work.

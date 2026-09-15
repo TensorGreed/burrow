@@ -160,8 +160,26 @@ describe("the first-load size budget", () => {
     // list is hundreds. It matched nothing, and the Svelte runtime -- 31 KB, a third of the
     // page's JavaScript -- was a download no budget line could see.
     const scripts = groups["page-js"].files;
-    const entry = scripts.find((f) => f.includes("astro_type_script"));
-    expect(entry, "no Astro page script in the payload").toBeDefined();
+    // THE MEASURED ROUTE'S OWN ENTRY, not "the first Astro script". There is more than one
+    // now: `BaseLayout.astro` carries a `<script>` for the run-time origin guard, and it
+    // sorts before every route's. `find` picked it, it imports nothing (Vite inlined its one
+    // module), and this cross-check reported that the entry script imports nothing -- which
+    // was true of the file it had found and said nothing about the island this test is for.
+    //
+    // A cross-check that silently changed which file it was checking is the failure this
+    // whole test exists to catch, arriving in the test itself.
+    const routeName = heaviest.page.split("/")[0] || "index";
+    const entry = scripts.find((f) => f.includes(`${routeName}.astro_astro_type_script`));
+    expect(entry, `no Astro page script for the measured route (${heaviest.page})`).toBeDefined();
+
+    // AND THE LAYOUT'S SCRIPT IS A REAL DOWNLOAD, asserted rather than assumed: it is on
+    // every page, so if it stopped being counted the budget would be blind to it everywhere
+    // at once.
+    expect(
+      scripts.some((f) => f.includes("BaseLayout.astro_astro_type_script")),
+      "the layout's script is not in the first-load payload, so the origin guard is either " +
+        "not shipping or not being weighed",
+    ).toBe(true);
 
     const source = readFileSync(join(PRODUCTION_DIR, entry as string), "utf8");
     const imported = [...source.matchAll(/\bfrom\s*["']\.\/([^"']+)["']/g)].map((m) => m[1]);
