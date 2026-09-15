@@ -186,6 +186,37 @@ fn leaked_canaries(bytes: &[u8], kept: &[u64]) -> Vec<String> {
     found
 }
 
+/// How many times `key` appears as a dictionary key in the expanded bytes.
+///
+/// `qpdf --qdf` writes one key per line, indented, so a key is `\n` + spaces + the name. Matching
+/// that rather than the bare name is what stops `/Dest` matching inside `/Destination` or inside a
+/// string somebody wrote.
+fn part_key_count(text: &[u8], key: &[u8]) -> usize {
+    let mut found = 0;
+    let mut at = 0;
+    while let Some(next) = text.get(at..).and_then(|rest| {
+        rest.windows(key.len())
+            .position(|window| window == key)
+            .map(|found_at| at + found_at)
+    }) {
+        // Preceded only by white space back to a newline, and followed by a delimiter or space.
+        let before_is_indent = text
+            .get(..next)
+            .and_then(|head| head.iter().rposition(|byte| *byte == b'\n'))
+            .is_some_and(|line| {
+                text.get(line + 1..next)
+                    .is_some_and(|gap| gap.iter().all(|byte| *byte == b' '))
+            });
+        let after = text.get(next + key.len()).copied();
+        let after_ends_it = after.is_none_or(|byte| byte == b' ' || byte == b'[' || byte == b'\n');
+        if before_is_indent && after_ends_it {
+            found += 1;
+        }
+        at = next + key.len();
+    }
+    found
+}
+
 /// Whether `text` contains `needle`, **in either encoding a producer might have written it**.
 ///
 /// A byte-literal ASCII search is not enough. Real outline titles and field names are very
@@ -407,6 +438,63 @@ fn a_stream_that_cannot_be_decoded_is_refused_rather_than_scanned_compressed() {
         matches!(result, Err(Error::Unsupported(_))),
         "a page reaching a stream qpdf could not decode was split, so its names were read from \
          compressed bytes. Got {result:?}"
+    );
+}
+
+#[test]
+fn a_link_survives_exactly_when_it_still_points_into_the_output() {
+    // THE FOUR-WAY DECISION, all in one output, because each of the four is how one of the other
+    // three could be wrong. "Drop everything" passes the two negative cases; "keep everything"
+    // passes the two positive ones. Only all four together say the rule is the rule.
+    //
+    // `split` used to drop every `/A` and `/Dest`. Measured: `qpdf_add_page`'s copier maps a
+    // destination to a page it copied and reserves a NULL for one it did not -- so a link into the
+    // output survives and works, and an outward one is already inert. Dropping the first was a
+    // fidelity loss with no privacy gain.
+    let outputs = split(
+        &Qpdf::new(),
+        fixture("destinations.pdf").into_boxed_slice(),
+        // Pages 1-2 | 3-5, so page 2 is in the same part as page 1 and page 4 is not.
+        Cuts::after_pages(&[2]),
+        &options(),
+    )
+    .expect("the destination fixture must split");
+    let text = expanded(&outputs[0]);
+
+    for (needle, why) in [
+        (
+            "BURROWMARK dest-into-part",
+            "a link whose destination is a page in this very output was dropped",
+        ),
+        (
+            "BURROWMARK-uri",
+            "a web address was dropped; it describes nothing that was excluded",
+        ),
+    ] {
+        assert!(
+            contains(&text, needle),
+            "{why} -- the rule is over-dropping, which is a fidelity loss with no privacy gain"
+        );
+    }
+
+    // AND THE TWO THAT MAY NOT SURVIVE. The named destination is ADR 0019 §2a row 5; the outward
+    // explicit one resolves to null and carries nothing, but a link that goes nowhere is not
+    // something to keep either.
+    assert!(
+        !contains(&text, "LEAKCANARY-namedest-page-4"),
+        "a named destination survived -- the name is the leak, and it names a page this output \
+         does not contain"
+    );
+    // AND THE OUTWARD EXPLICIT ONE. Counted rather than searched for: the annotation itself stays
+    // -- its `/Contents` is the kept page's own text and carries nothing -- so what has to be gone
+    // is its `/Dest` key, and exactly one `/Dest` may remain in the whole output: the inward
+    // link's. The first version of this assertion looked for the annotation's marker and found it,
+    // which said nothing about the key.
+    let remaining = part_key_count(&text, b"/Dest");
+    assert_eq!(
+        remaining, 1,
+        "the output has {remaining} `/Dest` key(s); exactly one -- the link into this output -- \
+         may survive, and the one pointing at an excluded page may not"
     );
 }
 

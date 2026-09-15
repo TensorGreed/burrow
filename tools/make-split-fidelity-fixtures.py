@@ -200,6 +200,7 @@ def main(out: Path) -> None:
     optional_content(out)
     refusal_shapes(out)
     walk_shapes(out)
+    destinations(out)
 
 
 def canary_per_page(out: Path) -> None:
@@ -420,6 +421,61 @@ def shared_objects(out: Path) -> None:
         ]
     )
     write(out, "shared-objects.pdf", build(objs, 1))
+
+
+def destinations(out: Path) -> None:
+    """Four links on page 1, one of each kind the destination rule decides between.
+
+    `split` used to drop every `/A` and `/Dest`, on the reasoning that a named destination is a
+    name and an explicit one points at a page the copier stopped at. The second half is wrong,
+    measured: `qpdf_add_page`'s copier maps a reference to a page it copied and reserves a **null**
+    for one it did not, so a link INTO the output survives and works while an outward one is
+    already inert. Dropping the first was a fidelity loss with no privacy gain.
+
+    So the fixture has to make all four cases distinguishable in the emitted bytes:
+
+      * a `/Dest` array naming page 2, which is in the same part as page 1 -- must SURVIVE;
+      * a `/Dest` array naming page 4, which is not -- must go;
+      * a NAMED destination, whose name is the leak (ADR 0019 §2a row 5) -- must go;
+      * a `/URI` action, which is the kept page's own data -- must SURVIVE.
+
+    Without the last two the rule could be "keep everything" and pass; without the first two it
+    could be "drop everything", which is what it used to be.
+    """
+    kids = " ".join(f"{3+i} 0 R" for i in range(PAGES))
+    pages, streams = [], []
+    for i in range(PAGES):
+        extra = "/Annots [13 0 R 14 0 R 15 0 R 16 0 R] " if i == 0 else ""
+        pages.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                f"{extra}/Contents {3 + PAGES + i} 0 R >>"
+            ).encode()
+        )
+        streams.append(content(i + 1))
+    objs = (
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+        ]
+        + pages
+        + streams
+        + [
+            # 13: INTO the output (page 2 is object 4, kept alongside page 1).
+            b"<< /Type /Annot /Subtype /Link /P 3 0 R /Rect [0 0 9 9] "
+            b"/Dest [4 0 R /Fit] /Contents (BURROWMARK dest-into-part) >>",
+            # 14: OUT of the output (page 4 is object 6).
+            b"<< /Type /Annot /Subtype /Link /P 3 0 R /Rect [0 9 9 18] "
+            b"/Dest [6 0 R /Fit] /Contents (BURROWMARK dest-out-of-part) >>",
+            # 15: a NAMED destination -- the name is the leak.
+            b"<< /Type /Annot /Subtype /Link /P 3 0 R /Rect [0 18 9 27] "
+            b"/A << /S /GoTo /D (LEAKCANARY-namedest-page-4) >> >>",
+            # 16: a web address, which describes nothing that was excluded.
+            b"<< /Type /Annot /Subtype /Link /P 3 0 R /Rect [0 27 9 36] "
+            b"/A << /S /URI /URI (https://example.invalid/BURROWMARK-uri) >> >>",
+        ]
+    )
+    write(out, "destinations.pdf", build(objs, 1))
 
 
 def walk_shapes(out: Path) -> None:
@@ -652,4 +708,4 @@ if __name__ == "__main__":
         sys.exit(f"usage: {sys.argv[0]} <output-dir>")
     target = Path(sys.argv[1])
     main(target)
-    print(f"split fidelity fixtures: 12 written to {target}")
+    print(f"split fidelity fixtures: 13 written to {target}")
