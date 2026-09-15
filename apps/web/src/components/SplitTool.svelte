@@ -128,7 +128,15 @@
       engineStarted = h.hasWorker();
 
       if (!watching.live()) return;
-      if (!raw.ok && raw.kind === CANCELLED) return;
+      if (!raw.ok && raw.kind === CANCELLED) {
+        // A COUNT THE PAGE CANCELLED SAYS NOTHING ABOUT THE FILE -- but leaving `pageCount`
+        // at `null` leaves `.chosen__pages` reading "counting…" for ever, with no recovery
+        // but choosing another file. Unreachable today (Stop only renders while an operation
+        // is working, and no count can be queued then), so this is a latent footgun closed
+        // for one line rather than a live defect. Code review.
+        pageCount = -1;
+        return;
+      }
       const reply = raw.ok ? raw : { ...raw, kind: hostKind(raw.kind) };
 
       if (reply.ok) {
@@ -304,7 +312,18 @@
       results = handouts;
       phase = "done";
       done = handouts.length;
-      announce(`Done. ${handouts.length} parts, ready to download.`);
+      // ANNOUNCED ONLY IF IT WILL BE SHOWN. Editing the cut box during a run does not bump the
+      // generation -- `handAll` succeeds, and the `stale` comparison is what hides the set --
+      // so the completion path used to say "N parts, ready to download" while nothing was
+      // rendered. A screen-reader user was told files were ready, found none, and got no
+      // explanation. Security review. Compared against the live `request` rather than against
+      // `stale`, which is derived and need not have settled in this continuation.
+      const shows = handouts[0]?.signature === request;
+      announce(
+        shows
+          ? `Done. ${handouts.length} parts, ready to download.`
+          : "Done, but the cuts changed while it ran, so those files are not the answer to what the box says now. Split again.",
+      );
     } catch {
       if (!run.live()) return;
       notice = messageFor({ kind: "Internal" });
@@ -331,6 +350,39 @@
     announce("Stopped.");
   }
 
+  /**
+   * A result the page has decided not to show is released, not merely hidden.
+   *
+   * `stale` takes the links out of the DOM when the cuts change, and `results` used to keep
+   * every handout alive behind them: N object URLs over N complete PDFs of the person's
+   * document, resident until the next split, the next file, or the page closing. On a
+   * forty-part split that is the whole document held a second time, after the page had
+   * decided not to offer it. Security review.
+   *
+   * IT DOES NOT COME BACK when the original cuts are typed in again, and that is the intended
+   * half of the trade: those bytes would be offered under a set of names whose provenance
+   * nobody could check from the screen. Splitting again is cheap and is the honest answer.
+   *
+   * NOT COVERED BY A TEST, AND SAID SO RATHER THAN LEFT TO LOOK COVERED. What a browser can
+   * see is that no link is offered and that the page says why, and `e2e/split-pdf.spec.ts`
+   * asserts both. The REVOCATION is invisible from the DOM, and nothing in this app can drive
+   * a Svelte effect in isolation -- there is no component-test harness, which is the same gap
+   * security review raised about the delivery calls themselves. The three browser tests it
+   * asked for exist now; this one line does not have an equivalent.
+   *
+   * READS ONLY `stale` AND `results`. The `$effect` trap this file's `request` comment records
+   * was an effect that read `phase` and so took a dependency on it, undoing the result the
+   * moment an operation finished. `phase` is written here and never read.
+   */
+  $effect(() => {
+    if (stale && results) {
+      const dropped = results;
+      results = null;
+      phase = "idle";
+      delivery.releaseAll(dropped);
+    }
+  });
+
   /** The deliberate gesture that closes the circuit breaker. */
   function startAgain() {
     host.reset();
@@ -350,6 +402,13 @@
   }
 
   onDestroy(() => {
+    // INVALIDATE FIRST. Teardown is safe today only because `host.dispose()` settles the
+    // in-flight request as a failure and there is no client router, so unmount coincides with
+    // the document going away. If either changed, the continuation after the await would run
+    // with the run still live AFTER `clearResults()`, creating object URLs nothing holds a
+    // reference to -- unrevocable for the life of the document. One line, rather than a
+    // property that lives in two other files. Security review.
+    delivery.invalidate();
     clearResults();
     // Disposes a host still being built, too -- see `tool-host.ts`.
     host.dispose();
@@ -485,20 +544,31 @@
     <button type="button" disabled={!canSplit} onclick={split}>Split</button>
     {#if phase === "working"}
       <button type="button" onclick={cancel}>Stop</button>
-      <!-- A REAL COUNT, because this operation genuinely reports one (ADR 0023 §6). It is
-           parts FINISHED out of parts coming, and it does not interpolate inside a part —
-           the core exposes no progress hook inside an operation, and a bar that moved
-           smoothly would be inventing a number. -->
-      <p class="working" role="status">
-        {#if expected > 0}
-          Part {Math.min(done + 1, expected)} of {expected}.
-        {:else}
-          Starting.
-        {/if}
-        Nothing is handed over until every part is done.
-      </p>
     {/if}
   </div>
+
+  <!-- THE READOUT IS NOT IN THE BUTTON ROW, and that is a fix rather than a layout choice.
+       It was, and this is the only page whose readout CHANGES while it is on screen — "Part 3
+       of 41" is wider than "Part 4 of 41" at some counts, so every progress message reflowed
+       the flex row and moved the Stop button. Firefox then refused the click outright:
+       "element is not stable … element was detached from the DOM". A person gets the same
+       thing as a misclick. The other three pages carry a static sentence, so their row never
+       moves and none of them met this.
+
+       A REAL COUNT, because this operation genuinely reports one (ADR 0023 §6). It is parts
+       FINISHED out of parts coming, and it does not interpolate inside a part — the core
+       exposes no progress hook inside an operation, and a bar that moved smoothly would be
+       inventing a number. -->
+  {#if phase === "working"}
+    <p class="working" role="status">
+      {#if expected > 0}
+        Part {Math.min(done + 1, expected)} of {expected}.
+      {:else}
+        Starting.
+      {/if}
+      Nothing is handed over until every part is done.
+    </p>
+  {/if}
 
   <!-- HIDDEN THE MOMENT THE REQUEST CHANGES. Links labelled for the old request are worse
        than no links: the filenames still look right. `stale` is the comparison. -->

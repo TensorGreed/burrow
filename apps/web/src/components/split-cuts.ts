@@ -132,8 +132,13 @@ export function resolveCuts(input: string, pageCount: number): Cuts {
 /**
  * The documents a validated cut list produces.
  *
- * Exported for the preview and for naming. `cuts` must already be validated — strictly
- * increasing and strictly inside the document — which `resolveCuts` is what guarantees.
+ * `cuts` must already be validated — strictly increasing and strictly inside the document —
+ * which is what `resolveCuts` guarantees.
+ *
+ * EXPORTED FOR ITS OWN TEST, and that is the whole reason. The island reads `resolved.parts`
+ * and never calls this directly; the earlier comment said "for the preview and for naming",
+ * which described a caller that does not exist. An overclaiming comment is a bug here rather
+ * than a wording preference. Code review.
  */
 export function partsFrom(cuts: readonly number[], pageCount: number): Part[] {
   const parts: Part[] = [];
