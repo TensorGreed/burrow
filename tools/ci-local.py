@@ -45,6 +45,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CI = REPO / ".github" / "workflows" / "ci.yml"
+CI_REL = ".github/workflows/ci.yml"
+NVMRC_REL = ".nvmrc"
 
 # --- what counts as a "significant command" in a CI run block --------------------------
 #
@@ -380,6 +382,12 @@ def commands_ci_runs() -> dict[str, list[str]]:
         named = re.search(r"^\s*- name:\s*(.+?)\s*$", line)
         if named:
             step = named.group(1)
+            # A STEP NAME IS PROSE, NOT A COMMAND, and the patterns used to run over it too.
+            # A step called "The installed node and pnpm match the pins" yielded the token
+            # `pnpm:match`, which parity then reported as a gate with no local counterpart --
+            # a phantom that can only ever be satisfied by inventing a job to cover it.
+            # Nothing is lost by skipping: a gate lives in `run:` or `uses:`, never in a label.
+            continue
         stripped = line.strip()
         # A comment cannot invoke anything, and these files are heavily commented.
         if stripped.startswith("#"):
@@ -512,6 +520,20 @@ TOOLCHAIN = re.compile(r"^\+(\S+)$")
 # the resolver, and required to come back missing -- a resolver that answers "present" to
 # everything reports a perfect environment on a machine with nothing installed.
 SENTINEL = "burrow-no-such-program-preflight-canary"
+
+# One tool implying another, because it cannot run without it.
+#
+# MEASURED, NOT PRECAUTIONARY. `node` reached the requirement set only because ONE step in the
+# web job spells it literally (`node ../../tools/report-size-budget.mjs`). Rewrite that step as
+# a pnpm script -- a legitimate refactor that parity accepts once `JOBS` is updated with it --
+# and `node` leaves `required`, `due` shrinks with it, and the whole node pin goes quiet:
+# security review measured `1 of 1 pinned version(s) compared`, exit 0, on a machine running
+# node 24 against `.nvmrc` pinned at 22. The `consumer` and `conflict` guards sit inside the
+# same gate and go inert in the same move.
+#
+# This is a fact about the TOOL, not a list of jobs: pnpm is a node program and cannot run
+# without one. That is what keeps it from being the enumeration this file argues against.
+IMPLIES: dict[str, frozenset[str]] = {"pnpm": frozenset({"node"})}
 
 # The binary each derived kind is asked of. If that binary is itself missing, the derived rows
 # say nothing new -- nine "cargo subcommand missing" lines for one absent cargo is noise
@@ -836,24 +858,24 @@ PINS: list[dict] = [
     },
     {
         "program": "wasm-pack",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"cargo install wasm-pack --locked --version ([0-9][\w.+-]*)", "ci"),
+        "source": CI_REL,
+        "pin": (r"cargo install wasm-pack --locked --version ([0-9][\w.+-]*)", CI_REL),
         "probe": ["wasm-pack", "--version"],
         "field": 1,
         "match": "exact",
     },
     {
         "program": "cargo:fuzz",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"cargo install --locked --version ([0-9][\w.+-]*) cargo-fuzz", "ci"),
+        "source": CI_REL,
+        "pin": (r"cargo install --locked --version ([0-9][\w.+-]*) cargo-fuzz", CI_REL),
         "probe": ["cargo", "fuzz", "--version"],
         "field": 1,
         "match": "exact",
     },
     {
         "program": "cargo:audit",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"cargo install cargo-audit --version ([0-9][\w.+-]*)", "ci"),
+        "source": CI_REL,
+        "pin": (r"cargo install cargo-audit --version ([0-9][\w.+-]*)", CI_REL),
         "probe": ["cargo", "audit", "--version"],
         "field": 1,
         "match": "exact",
@@ -867,15 +889,30 @@ PINS: list[dict] = [
         "match": "exact",
     },
     {
-        # MAJOR ONLY, because `node-version: 22` IS a major-version pin -- that is what the
-        # setup-node field means, and CI takes whatever 22.x the runner has. Comparing the full
-        # string would refuse a machine that matches CI exactly.
+        # `.nvmrc`, WHICH IS ALSO WHAT CI AND `nvm use` READ. The pin used to be a literal
+        # `node-version: 22` in ci.yml, so a developer's shell had nothing to agree with: this
+        # check measured node 24 against CI's 22 on a machine with no way of knowing which was
+        # wanted, and the answer was "run nvm use 22", which nothing recorded. One file now
+        # answers for both sides.
+        #
+        # MAJOR ONLY, because that is what the pin says and what the runner honours. Narrowing
+        # to an exact patch would be a policy change rather than a relocation.
         "program": "node",
-        "source": ".github/workflows/ci.yml",
-        "pin": (r"node-version: ([0-9]+)", "ci"),
+        "source": NVMRC_REL,
+        "pin": (r"^\s*v?([0-9]+)", NVMRC_REL),
         "probe": ["node", "--version"],
         "field": 0,
         "match": "major",
+        # THE PIN AND THE THING THAT READS IT ARE IN DIFFERENT FILES NOW, so they are tied
+        # together here. `actions/setup-node` PREFERS `node-version` over `node-version-file`
+        # and only WARNS when both are given -- so somebody adding the literal back to test
+        # something would leave CI on their version while `.nvmrc` sat inert and this check
+        # went on comparing every developer machine against it, printing
+        # "2 of 2 pinned version(s) compared". A check that silently examines nothing reads
+        # as coverage. Code review.
+        "consumer": (r"node-version-file:\s*\.nvmrc", CI_REL),
+        "conflict": (r"^\s*node-version:\s*\S", CI_REL),
+        "fix": "run `nvm use` at the repository root, which reads the same file",
     },
 ]
 
@@ -888,7 +925,7 @@ VERSION_ALLOWANCES: dict[str, str] = {}
 
 def _pinned_version(spec: tuple[str, str]) -> str | None:
     """The expected version, read from the file that pins it."""
-    pattern, kind = spec
+    pattern, kind = spec  # `kind` is a repository-relative FILE, or a named handler
     if kind == "pnpm-package-json":
         try:
             data = json.loads((REPO / "apps/web/package.json").read_text())
@@ -897,7 +934,12 @@ def _pinned_version(spec: tuple[str, str]) -> str | None:
         field = data.get(pattern, "")
         m = re.match(r"pnpm@([0-9][\w.+-]*?)(?:\+sha|$)", field)
         return m.group(1) if m else None
-    path = CI if kind == "ci" else REPO / "rust-toolchain.toml"
+    # RELATIVE, ALWAYS. `Path.__truediv__` discards the left side when the right is absolute,
+    # so a `PINS` entry written as "/etc/..." would read outside the repository with no error.
+    # Not reachable today -- every entry is a relative literal -- and one line to keep so.
+    if Path(kind).is_absolute():
+        return None
+    path = REPO / kind
     try:
         text = path.read_text()
     except OSError:
@@ -960,6 +1002,35 @@ def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tup
         program = spec["program"]
         if program not in required:
             continue
+        # THE CONSUMER FIRST. A pin nothing reads is not a pin, and comparing against it
+        # would be the most confident kind of nothing.
+        consumer = spec.get("consumer")
+        if consumer is not None:
+            pattern, rel = consumer
+            try:
+                text = (REPO / rel).read_text()
+            except OSError:
+                text = ""
+            if not re.search(pattern, text, re.MULTILINE):
+                problems.append(
+                    f"{program}: {rel} no longer reads the pin in {spec['source']} "
+                    f"(nothing matches {pattern!r}), so the pin is inert"
+                )
+                continue
+        conflict = spec.get("conflict")
+        if conflict is not None:
+            pattern, rel = conflict
+            try:
+                text = (REPO / rel).read_text()
+            except OSError:
+                text = ""
+            if re.search(pattern, text, re.MULTILINE):
+                problems.append(
+                    f"{program}: {rel} states a version inline (matches {pattern!r}), which "
+                    f"takes precedence over {spec['source']} and makes it inert"
+                )
+                continue
+
         expected = _pinned_version(spec["pin"])
         if expected is None:
             # A PIN THAT CANNOT BE READ IS A REFUSAL. Skipping would mean this check quietly
@@ -1008,10 +1079,11 @@ def check_versions(required: dict[str, list[str]], where: dict[str, str]) -> tup
             print(f"  version allowance: {program} {actual} against pinned {expected} "
                   f"-- {VERSION_ALLOWANCES[program]}")
             continue
+        hint = f" -- {spec['fix']}" if spec.get("fix") else ""
         problems.append(
             f"{program} is {actual}, pinned at {expected} in {spec['source']} "
             f"(asked in {cwd.relative_to(REPO) if cwd != REPO else '.'}); "
-            f"needed by: {', '.join(sorted(set(required[program])))}"
+            f"needed by: {', '.join(sorted(set(required[program])))}{hint}"
         )
 
     # EVERY PIN DUE IS ACCOUNTED FOR: compared, or absent (which the presence check reports),
@@ -1112,6 +1184,13 @@ def preflight(jobs: list[dict]) -> list[str]:
             for program in used:
                 required.setdefault(program, []).append(f"{job['name']} (via {script})")
                 where.setdefault(program, workdir)
+
+        # AND WHAT THOSE TOOLS CANNOT RUN WITHOUT.
+        for program in list(required):
+            for implied in IMPLIES.get(program, ()):
+                if job["name"] in required.get(program, []):
+                    required.setdefault(implied, []).append(f"{job['name']} (needs {program})")
+                    where.setdefault(implied, workdir)
 
     subs = _cargo_subcommands()
     chains = _rustup_toolchains()

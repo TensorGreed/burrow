@@ -156,6 +156,19 @@ check "a cargo-test gate CI runs that no local job covers is refused" \
 " \
   "test:brandnew_gate" 1
 
+# --- A step NAME is prose, and must not invent a gate ----------------------------------------
+#
+# The patterns used to run over `- name:` lines as well as `run:` bodies, so a step called
+# "The installed node and pnpm match the pins" yielded the token `pnpm:match` and parity
+# reported a gate with no local counterpart -- a phantom satisfiable only by inventing a job
+# to cover it. Found by adding exactly such a step. A label can never be a gate.
+check "a command-shaped step NAME does not invent a gate" \
+  "||
+      - name: Run pnpm typecheck for the web app
+        run: echo nothing
+" \
+  "" 0
+
 # --- Drift in the other direction -----------------------------------------------------------
 #
 # A local command covering something CI no longer runs is dead weight that reads as coverage.
@@ -284,6 +297,8 @@ fi
 broken=""
 tbackup=""
 allow_fixture=""
+nvmrc_backup=""
+implies_fixture=""
 # `-s`, NOT `-e`, ON THE TOOLCHAIN BACKUP. `tbackup="$(mktemp)"` creates a ZERO-BYTE file, and
 # the trap is armed before the `cp` that fills it -- so in that window `[ -e ]` was true and the
 # restore would have TRUNCATED the tracked compiler pin to nothing. Security review caught it;
@@ -297,10 +312,16 @@ allow_fixture=""
 restore_all() {
   trap - EXIT INT TERM HUP
   cp "$backup" "$ci"
-  rm -f "$backup" "$broken" "$allow_fixture"
+  rm -f "$backup" "$broken" "$allow_fixture" "$implies_fixture"
   if [ -n "$tbackup" ] && [ -s "$tbackup" ]; then
     cp "$tbackup" "$repo/rust-toolchain.toml"
     rm -f "$tbackup"
+  fi
+  # `.nvmrc` is the node pin, and a leftover `99` would make `nvm use` resolve a version
+  # nobody has. Same `-s` guard as above: `mktemp` creates it empty before the `cp` fills it.
+  if [ -n "$nvmrc_backup" ] && [ -s "$nvmrc_backup" ]; then
+    cp "$nvmrc_backup" "$repo/.nvmrc"
+    rm -f "$nvmrc_backup"
   fi
   if [ -n "$hidden" ] && [ -e "$hidden" ]; then
     mv "$hidden" "${hidden%.hidden-by-test-ci-local}"
@@ -474,22 +495,30 @@ rm -f "$tbackup"
 # runs in the `deny` job, which fetches nothing and installs nothing -- so `wasm-pack` is absent
 # there, the presence check reported it instead of the version check, and both of these cases
 # went red on a runner while passing locally. "Where a check lives in ci.yml is load-bearing",
-# arriving on a fixture. `node` is present on any runner and is pinned by `node-version`.
+# arriving on a fixture. `node` is present on any runner and is pinned by `.nvmrc`.
 #
 # ASSERTED ON THE MESSAGE, never the exit code: `--only web` also needs `pnpm`, which may be
 # absent on that runner too, so the exit status is 1 for either reason and only the text
 # distinguishes them.
-check_backup="$(mktemp)"
-cp "$ci" "$check_backup"
-python3 - "$ci" <<'PYWP'
-import pathlib, sys
+nvmrc_backup="$(mktemp)"
+cp "$repo/.nvmrc" "$nvmrc_backup"
+python3 - "$repo/.nvmrc" <<'PYWP'
+import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-old = "node-version: 22"
-assert old in text, "ci.yml no longer pins node-version"
-path.write_text(text.replace(old, "node-version: 99", 1))
+# THE SHAPE, NOT MERELY NON-EMPTY. Overwriting wholesale meant the pre-mutation content was
+# never checked against what ci-local.py can actually read -- so `.nvmrc` holding `lts/*`
+# (legal for nvm and setup-node) would leave CI green, every developer run refusing with
+# "cannot read the pinned version", and BOTH of these cases still printing ok. Code review.
+# `re.search` WITH `re.M`, matching `_pinned_version`'s own regex. `re.match` anchors at the
+# string start with no MULTILINE, so a `.nvmrc` the CHECKER can read happily -- a comment line
+# above the number -- aborted this whole suite under `set -e`, and every case after this point
+# silently did not run. An assertion about a checker must use the checker's own semantics.
+# Security review measured it.
+assert re.search(r"^\s*v?[0-9]+", text, re.M), ".nvmrc does not state a major version ci-local.py can read"
+path.write_text("99\n")
 PYWP
-if cmp -s "$ci" "$check_backup"; then
+if cmp -s "$repo/.nvmrc" "$nvmrc_backup"; then
   echo "  FAIL the node pin mutation did not apply, so this case measured nothing"
   fail=$((fail + 1))
 else
@@ -504,8 +533,7 @@ else
     fail=$((fail + 1))
   fi
 fi
-cp "$check_backup" "$ci"
-rm -f "$check_backup"
+cp "$nvmrc_backup" "$repo/.nvmrc"
 
 # --- An allowance suppresses a mismatch, and says why ----------------------------------------
 #
@@ -513,15 +541,18 @@ rm -f "$check_backup"
 # it. An untested escape hatch is one nobody can trust when they need it, so a copy of the
 # checker with one entry must accept the same mutation the case above refuses -- and print the
 # reason while doing it.
-cp "$ci" "$check_backup" 2>/dev/null || check_backup="$(mktemp)"
-cp "$ci" "$check_backup"
-python3 - "$ci" <<'PYWP2'
-import pathlib, sys
+cp "$repo/.nvmrc" "$nvmrc_backup"
+python3 - "$repo/.nvmrc" <<'PYWP2'
+import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-old = "node-version: 22"
-assert old in text, "ci.yml no longer pins node-version"
-path.write_text(text.replace(old, "node-version: 99", 1))
+# `re.search` WITH `re.M`, matching `_pinned_version`'s own regex. `re.match` anchors at the
+# string start with no MULTILINE, so a `.nvmrc` the CHECKER can read happily -- a comment line
+# above the number -- aborted this whole suite under `set -e`, and every case after this point
+# silently did not run. An assertion about a checker must use the checker's own semantics.
+# Security review measured it.
+assert re.search(r"^\s*v?[0-9]+", text, re.M), ".nvmrc does not state a major version ci-local.py can read"
+path.write_text("99\n")
 PYWP2
 allow_fixture="$here/.ci-local-allowance-fixture.py"
 python3 - "$here/ci-local.py" "$allow_fixture" <<'PYALLOW'
@@ -557,8 +588,114 @@ else
   fi
 fi
 rm -f "$allow_fixture"
-cp "$check_backup" "$ci"
-rm -f "$check_backup"
+cp "$nvmrc_backup" "$repo/.nvmrc"
+rm -f "$nvmrc_backup"
+nvmrc_backup=""
+
+# --- A pin nothing reads is inert, and saying "compared" about it is the worst answer -------
+#
+# `.nvmrc` and the step that consumes it are different files. `actions/setup-node` PREFERS
+# `node-version` over `node-version-file` and only WARNS when both are given -- so putting the
+# literal back to test something would leave CI on that version while `.nvmrc` sat inert and
+# the preflight went on comparing developer machines against it, reporting
+# "2 of 2 pinned version(s) compared". Code review found the gap; this is the regression case.
+cp "$backup" "$ci"
+python3 - "$ci" <<'PYCONSUMER'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "node-version-file: .nvmrc"
+assert old in text, "ci.yml no longer reads .nvmrc, so this case has nothing to break"
+path.write_text(text.replace(old, "node-version: 24", 1))
+PYCONSUMER
+if cmp -s "$ci" "$backup"; then
+  echo "  FAIL the consumer mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$("$here/ci-local.py" --only web --preflight 2>&1)" || status=$?
+  if grep -q "so the pin is inert" <<<"$out"; then
+    echo "  ok   a pin ci.yml has stopped reading is refused as inert"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL an inert pin was not noticed (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+cp "$backup" "$ci"
+
+# --- A version stated INLINE beside the file reference takes precedence, so it is refused ----
+#
+# The `consumer` case above replaces `node-version-file`, which trips `consumer` and returns
+# before `conflict` is ever evaluated -- so that rule had no probe of its own. This is the
+# shape that actually happens: somebody adds the literal back to test something and leaves the
+# file reference in place. `actions/setup-node` then uses the literal and only WARNS.
+cp "$backup" "$ci"
+python3 - "$ci" <<'PYCONFLICT'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "          node-version-file: .nvmrc"
+assert old in text, "ci.yml no longer reads .nvmrc, so this case has nothing to add to"
+path.write_text(text.replace(old, old + "\n          node-version: 24", 1))
+PYCONFLICT
+if cmp -s "$ci" "$backup"; then
+  echo "  FAIL the conflict mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$("$here/ci-local.py" --only web --preflight 2>&1)" || status=$?
+  if grep -q "states a version inline" <<<"$out"; then
+    echo "  ok   a version stated inline beside the file reference is refused"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL an inline version beside the file reference was not noticed (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+cp "$backup" "$ci"
+
+# --- The node pin survives the web job no longer spelling `node` -----------------------------
+#
+# MEASURED FALSE-GREEN, found by security review. `node` reached the requirement set only
+# because one command spells it literally. Rewriting it as a pnpm script -- a legitimate
+# refactor -- dropped `node` from `required`, shrank the `due` count with it, and reported
+# "1 of 1 pinned version(s) compared" and exit 0 on a machine running node 24 against a pin of
+# 22. `IMPLIES` closes it with a fact about the tool: pnpm is a node program.
+#
+# THE MUTATION GOES IN A COPY OF THE CHECKER, not in ci.yml. Removing the step from the
+# workflow also makes the local `covers` claim for `tools/report-size-budget.mjs` stale, so
+# parity refuses before the preflight ever runs -- the case would have failed for a true but
+# unrelated reason. What is under test is the job's run string, so that is what is mutated.
+implies_fixture="$here/.ci-local-implies-fixture.py"
+python3 - "$here/ci-local.py" "$implies_fixture" <<'PYIMPLIES'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = '"pnpm test && node ../../tools/report-size-budget.mjs dist"'
+assert old in text, "the web job's run string is not spelled as this case expects"
+dst.write_text(text.replace(old, '"pnpm test && pnpm run size-budget"', 1))
+PYIMPLIES
+if cmp -s "$here/ci-local.py" "$implies_fixture"; then
+  echo "  FAIL the implication mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$(python3 "$implies_fixture" --only web --preflight 2>&1)" || status=$?
+  # The COUNT is the assertion: node must still be among the pins compared, whether or not
+  # this machine happens to match it.
+  if grep -qE "2 of 2 pinned version\(s\) compared" <<<"$out"; then
+    echo "  ok   the node pin is still compared when the web job stops spelling node"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL the node pin dropped out when the literal went (status $status)"
+    echo "$out" | tail -8
+    fail=$((fail + 1))
+  fi
+fi
+rm -f "$implies_fixture"
 
 # --- The probe gate itself: break one RULE in a copy and require it to refuse, naming it -----
 #
