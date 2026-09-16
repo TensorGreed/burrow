@@ -278,6 +278,25 @@ steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
 assert not any("check-deployment-url" in str(x.get("run", "")) for x in steps), "plant did not apply"
 '
 
+# THE SECOND REQUIRED POST-UPLOAD CHECK, which had no probe of its own. `REQUIRED_POST_UPLOAD_CHECKS`
+# became a dict precisely so each entry refuses with ITS OWN reason -- and an unexercised
+# message is a message nobody has read. This plants the deletion of the live-route step and
+# requires the refusal to name what that check is for, not what the other one is for.
+expect_refusal "deleting the live-route check is refused, naming what IT is for" \
+  "check WHAT the live origin serves" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+start = next(i for i, l in enumerate(lines) if "The live origin serves the body we built" in l)
+end = next(
+    i for i in range(start + 1, len(lines))
+    if lines[i].startswith("      - name:") or lines[i].startswith("      - uses:")
+)
+p.write_text("".join(lines[:start] + lines[end:]))
+steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
+assert not any("check-live-routes" in str(x.get("run", "")) for x in steps), "plant did not apply"
+'
+
 # --- the forbidden triggers, each named ---------------------------------------------------------
 for trigger in pull_request pull_request_target workflow_call repository_dispatch issue_comment schedule; do
   expect_refusal "a \`$trigger\` trigger is refused" "triggers are" "

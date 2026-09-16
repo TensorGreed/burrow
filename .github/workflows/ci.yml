@@ -698,11 +698,12 @@ jobs:
       #
       # In `deny`, which fetches nothing: it reads two committed files and needs no vendor
       # tree, so it still runs on a clean checkout.
-      - name: The deploy workflow cannot be triggered from outside main
+      - name: The deploy workflow's gates still hold
         run: |
           python3 tools/check-deploy-workflow.py
           tools/test-check-deploy-workflow.sh
           tools/test-check-deployment-url.sh
+          tools/test-check-live-routes.sh
 
       # Compile every tool in tools/ with warnings promoted to errors.
       #

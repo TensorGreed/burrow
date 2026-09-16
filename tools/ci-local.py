@@ -283,6 +283,7 @@ JOBS: list[dict] = [
                 "tools/check-deploy-workflow.py",
                 "tools/test-check-deploy-workflow.sh",
                 "tools/test-check-deployment-url.sh",
+                "tools/test-check-live-routes.sh",
             ]
         ),
         "covers": [
@@ -301,6 +302,7 @@ JOBS: list[dict] = [
             "tools/check-deploy-workflow.py",
             "tools/test-check-deploy-workflow.sh",
             "tools/test-check-deployment-url.sh",
+            "tools/test-check-live-routes.sh",
         ],
     },
     {

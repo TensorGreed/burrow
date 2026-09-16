@@ -257,6 +257,25 @@ jobs:
           done
           echo "the live site serves robots.txt and sitemap.xml, both naming $BURROW_SITE"
 
+      # AND THE BODY IS THE ONE WE BUILT. The two steps above ask the live origin for its
+      # HEADERS; this asks it for its DOCUMENTS and diffs them against the artifact that was
+      # just uploaded.
+      #
+      # IT EXISTS BECAUSE EVERY OTHER GATE MISSED AN EDGE INJECTION. Cloudflare Web Analytics
+      # rewrote every HTML response on the custom domain to add a beacon script:
+      # `check-deployable-build.sh` reads `dist/`, where it does not exist; the zero-requests
+      # e2e test runs against a LOCAL server, so the edge is not in the picture; the live step
+      # above reads headers, and this is in the body; and plain `curl` gets the clean document,
+      # because the rewrite is conditional on the request looking like a browser. The CSP
+      # blocked the script, so nothing executed — and a person watching the network tab still
+      # saw a request to an analytics host on a site that says there are none.
+      #
+      # THE RULE IS THE DIFF, not a check for that beacon: the next edge feature will have a
+      # different name. `dist/` here is the artifact, not a rebuild, so this compares the live
+      # bytes against exactly what was uploaded.
+      - name: The live origin serves the body we built, and nothing else
+        run: tools/check-live-routes.py "$BURROW_SITE" apps/web/dist
+
       - name: Say where it went
         run: |
           {
