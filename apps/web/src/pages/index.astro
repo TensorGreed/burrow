@@ -17,7 +17,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 // over every object in the source, and each part verifies its own output before it is posted
 // (ADR 0022). `production-build.test.ts` now asserts the route SHIPS, which is the same check
 // pointing the other way.
-const plannedTools = [
+const tools = [
   {
     name: "Merge PDF",
     blurb: "Combine several PDFs into one, in the order you choose.",
@@ -52,16 +52,17 @@ const plannedTools = [
 ---
 
 <BaseLayout
-  title="burrow — file tools that run on your own computer"
-  description="Free, open-source PDF tools that run in your browser. Your files are never uploaded, because there is no server to upload them to."
+  title="Not Only PDF — file tools that run on your own computer"
+  description="Free, open-source file tools that run in your browser — PDF tools today. Your files are never uploaded, because there is no server to upload them to."
 >
   <div class="read">
     <h1>Your files stay on this computer.</h1>
 
     <p>
-      burrow is a set of PDF tools that run inside your browser. When you open a file here, it is
-      read by code running on your own machine. It is never sent anywhere, because there is nowhere
-      to send it: burrow is a static site with no server that could receive a file.
+      Not Only PDF is a set of file tools that run inside your browser. Today they work on PDFs; the
+      name is a promise about where that goes, not a claim about what is here yet. When you open a
+      file, it is read by code running on your own machine. It is never sent anywhere, because there
+      is nowhere to send it: this is a static site with no server that could receive a file.
     </p>
   </div>
 
@@ -89,7 +90,7 @@ const plannedTools = [
       <p class="boundary__label">this computer</p>
       <ol class="boundary__steps" role="list">
         <li><b>your file</b><span>stays here</span></li>
-        <li><b>burrow</b><span>WebAssembly</span></li>
+        <li><b>Not Only PDF</b><span>WebAssembly</span></li>
         <li><b>the result</b><span>you save it</span></li>
       </ol>
     </div>
@@ -110,23 +111,23 @@ const plannedTools = [
     <h2>What works today</h2>
 
     <p>
-      Four tools: merge, split, rotate and reorder. Each one is linked below, and a tool is only
-      linked here once its page ships — there is no sign-up to wait on and nothing is announced
-      before it works.
+      Every tool listed below works today. A tool is only linked here once its page ships — there is
+      no sign-up to wait on and nothing is announced before it works. The list is the count: this
+      paragraph used to say how many there were, and said four while there were five.
     </p>
 
     <p>
-      burrow is being built in the open and is not finished. Compress is still to come, and so is
-      redaction, which is the one this project is most careful about. What is here has the safety
-      work around it done: every operation checks its own output before handing it to you, and
-      refuses it rather than give you a document that is quietly wrong.
+      Not Only PDF is being built in the open and is not finished. Redaction is still to come, and
+      it is the one this project is most careful about. What is here has the safety work around it
+      done: every operation checks its own output before handing it to you, and refuses it rather
+      than give you a document that is quietly wrong.
     </p>
 
-    <h2>The tools being built</h2>
+    <h2>The tools</h2>
 
     <dl class="tools">
       {
-        plannedTools.map((tool) => (
+        tools.map((tool) => (
           <div class="tools__row">
             <dt>{tool.href ? <a href={tool.href}>{tool.name}</a> : tool.name}</dt>
             <dd>{tool.blurb}</dd>
@@ -138,10 +139,10 @@ const plannedTools = [
     <h2>How you can check any of this</h2>
 
     <p>
-      Open your browser's developer tools, go to the network tab, and use burrow. After the page and
-      its engines have loaded, you will see no further requests — not while a file is open, not when
-      one finishes. The same thing is asserted on every commit, in three browsers, by a test that
-      reads the web server's own log rather than the browser's report of it.
+      Open your browser's developer tools, go to the network tab, and use the tools. After the page
+      and its engines have loaded, you will see no further requests — not while a file is open, not
+      when one finishes. The same thing is asserted on every commit, in three browsers, by a test
+      that reads the web server's own log rather than the browser's report of it.
     </p>
 
     <p>

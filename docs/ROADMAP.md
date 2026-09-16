@@ -64,7 +64,7 @@ decides something.
 | Milestone | Scope | State |
 |---|---|---|
 | [M0](#m0--project-setup) | Project setup | **complete** |
-| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | in progress; `merge` ✅, `rotate` ✅, `reorder` ✅, `split` ✅, `compress` ✅ — all five ship, core and web. #61 discharged by ADR 0022 — see *Ship blockers*. |
+| [M1](#m1--core-operations-and-the-web-app) | Merge, split, rotate, reorder, compress — core + web | **shipped, with three commitments unmet.** All five operations ship, core and web, and the site is live at `https://notonlypdf.com`. **SBOM generation and signed releases were listed under *Before M1 ships* and were not done**; the corpus tooling is still stubs. Their state and where they now sit is recorded in [*Before M1 ships*](#before-m1-ships--three-commitments-that-were-not-met) rather than dropped. #61 discharged by ADR 0022 — see *Ship blockers*. |
 | [M2](#m2--redaction-with-verification) | Redaction with verification | not started |
 | [M3](#m3--android) | Android app | not started; **gated on #62** — native has no wasm sandbox |
 | [M4](#m4--ios) | iOS app | not started; **gated on #62**, as M3 |
@@ -97,7 +97,8 @@ vendors them.
 
 ## M1 — core operations and the web app
 
-The first usable product: five PDF operations, in the core and on the web.
+The first usable product: five PDF operations, in the core and on the web. **Shipped** — and
+what shipped is recorded honestly below, including the parts of this milestone that did not.
 
 Each operation is one vertical slice and is **not** done until every layer below is
 present. This is the `add-operation` checklist; it is not optional per-operation.
@@ -530,23 +531,63 @@ nothing, and one seed failed on the first execution.
   content**
 - Works with JavaScript disabled to the extent of explaining what the page does
 
-### Corpus tooling
+### Corpus tooling — NOT DONE, and M1 shipped without it
 
-- Implement `tools/corpus-fetch.sh`, `corpus-run.sh`, `visual-diff.sh` (currently stubs)
-- Register the first corpora in `corpus/manifest.toml` with licenses and checksums
-- A headless regression run on the self-hosted `linux-arm64` machine
+`tools/corpus-fetch.sh`, `corpus-run.sh` and `visual-diff.sh` are **still stubs that `exit 64`**,
+and `corpus/manifest.toml` registers no corpora. The headless regression run on the self-hosted
+`linux-arm64` machine does not exist.
 
-### Before M1 ships
+**What covers the ground it was meant to cover, and what it does not.** The committed
+conformance fixtures plus `tests/conformance/expectations.json` run natively and in three
+browsers on every commit; the fuzz targets run seeded against the same fixtures; and every
+operation verifies its own output at run time (ADR 0022). What is missing is *scale and
+variety*: those fixtures are ones we made, and a harness that generates its own inputs is
+measuring what it can generate — this file's own lesson, learned when unseeded fuzzing was
+found to have measured nothing for the whole of M1. A real corpus of documents nobody here
+wrote is the thing that would test the parsers against the world rather than against our
+imagination of it. Visual diffing is a separate gap and matters most for M2.
 
-Moved here from M0, because both depend on the native engines existing.
+### Before M1 ships — THREE COMMITMENTS THAT WERE NOT MET
 
-- **SBOM generation.** A CycloneDX SBOM covering Rust crates *and* the vendored C/C++
-  engines. `cargo-cyclonedx` handles the former; the latter needs the engine manifest
-  this milestone introduces. An SBOM that omits PDFium would be worse than none, because
-  it would look complete.
-- **Signed releases.** cosign keyless (OIDC) signing of artifacts and the SBOM, so
-  provenance is verifiable without us holding a key.
-- Enable `.github/workflows/release.yml`, which is currently a stub that refuses to run.
+Moved here from M0, because both depend on the native engines existing — the original note,
+kept because the provenance is part of the record too.
+
+**M1 shipped anyway. The site is live at `https://notonlypdf.com`, and none of the three was
+done.** Recorded here rather than quietly deleted, because they were real commitments and the
+honest record is that they were not met — not that they were never planned. The heading above
+is kept in its original words for the same reason.
+
+| | state |
+|---|---|
+| **SBOM generation** (CycloneDX, Rust crates *and* the vendored C/C++ engines) | not started |
+| **Signed releases** (cosign keyless/OIDC over artifacts and the SBOM) | not started |
+| **Enable `.github/workflows/release.yml`** | still a stub: `workflow_dispatch` only, `exit 1` fast, every real job behind `if: false` |
+
+#### Are they a precondition for anything later? Decided: not for M2; yes for M3/M4.
+
+**They are about distributing an artifact a person downloads and verifies, and M1 does not
+produce one.** The web app is uploaded byte-for-byte from CI straight to Cloudflare Pages
+(ADR 0024); nobody fetches a tarball, so there is nothing for a signature to attach to and no
+supply chain between us and the reader for provenance to protect. That is why their absence did
+not block the deploy, and saying so is more useful than pretending the omission was an oversight
+nobody noticed.
+
+- **M2 (redaction): not a precondition.** It ships through the same web deploy, to the same
+  origin, with no downloadable artifact.
+- **M3/M4 (Android, iOS): precondition.** Those milestones *do* produce binaries a person
+  installs. Shipping one with no SBOM and no provenance is a different proposition from
+  serving a static site, and #62 already gates those milestones for an unrelated reason —
+  so the work lands there, together, rather than being rushed now for a milestone that
+  cannot use it.
+- **Any tagged release of the core crates: precondition.** `release.yml` stays a refusing
+  stub until then, which is the correct state for a workflow whose real jobs do not exist.
+
+**What the web deploy has instead, which is adjacent and not a substitute.**
+`tools/check-live-routes.py` asserts after every deploy that every file the live origin serves
+is byte-identical to the build, and the engine payload is SRI-pinned. That is integrity of *this
+deployment*, checked by us. It is not provenance: it says the bytes did not change between our
+build and the reader's browser, and says nothing about what went into the build. An SBOM is the
+part that answers that, and it is still owed.
 
 ---
 

@@ -68,7 +68,12 @@ describe("what split says differently from the other three", () => {
     // The generic fallback says "Your file is fine … Try again". Both halves are false for
     // OutputRejected, which is the defect `error-kinds.test.ts` was written after.
     const message = messageFor({ kind: "OutputRejected" });
-    expect(message.title).not.toContain("Something inside burrow failed");
+    expect(message.title).not.toContain("Something inside Not Only PDF failed");
+    // THE POSITIVE HALF. Without it the line above is satisfied by a sentence that no longer
+    // exists anywhere -- which is what a product rename did to four assertions in this
+    // repository at once. Asserting the fallback is still worded this way is what keeps the
+    // negative meaning something.
+    expect(messageFor({ kind: "Internal" }).title).toBe("Something inside Not Only PDF failed.");
     expect(message.next).not.toContain("Your file is fine");
   });
 
@@ -116,7 +121,7 @@ describe("a split failure, as a sentence", () => {
   it("falls back to a sentence without numbers when the core gave none", () => {
     // A missing number must not render as "That file is , and burrow stops at .".
     const message = messageFor({ kind: "LimitExceeded", limit: "max_input_bytes" });
-    expect(message.title).toBe("That file is larger than burrow will open.");
+    expect(message.title).toBe("That file is larger than Not Only PDF will open.");
   });
 
   it("does not claim memory was bounded, because it was not", () => {

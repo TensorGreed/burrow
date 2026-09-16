@@ -17,7 +17,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 ---
 
 <BaseLayout
-  title="Compress PDF — make a PDF smaller on your own computer | burrow"
+  title="Compress PDF — make a PDF smaller on your own computer | Not Only PDF"
   description="Make a PDF smaller by storing it more efficiently, in your browser. Nothing is re-encoded and no image loses quality, because there is no server to upload the file to."
 >
   <div class="read">
@@ -25,14 +25,15 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
     <p>
       Make a PDF smaller by storing the same document more efficiently. The work happens in this
-      browser, on this computer: the file is not uploaded, because burrow has no server that could
-      receive it.
+      browser, on this computer: the file is not uploaded, because Not Only PDF has no server that
+      could receive it.
     </p>
 
     <p>
       <strong>Nothing is re-encoded.</strong> No image is resampled, no font is stripped, no page is redrawn.
       Every page's contents come through unaltered — only the way the document stores them changes. A
-      scan looks exactly as it did, because burrow will not make a file smaller by making it look worse.
+      scan looks exactly as it did, because Not Only PDF will not make a file smaller by making it look
+      worse.
     </p>
   </div>
 
@@ -82,9 +83,9 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     <h2>What this will and will not shrink</h2>
 
     <p>
-      burrow makes a PDF smaller by changing how it stores its <em>structure</em> — packing the thousands
-      of small pieces of bookkeeping a PDF carries into shared blocks, and dropping whatever nothing points
-      at any more. It never touches your pages.
+      Not Only PDF makes a PDF smaller by changing how it stores its <em>structure</em> — packing the
+      thousands of small pieces of bookkeeping a PDF carries into shared blocks, and dropping whatever
+      nothing points at any more. It never touches your pages.
     </p>
 
     <p>So how much a file loses depends almost entirely on what it is made of:</p>
@@ -99,42 +100,42 @@ import BaseLayout from "../layouts/BaseLayout.astro";
         stack of images. The image data is already compressed — that is what makes it a JPEG rather than
         a bitmap — and there is barely any structure around it to reorganise. The only way to make such
         a file meaningfully smaller is to re-encode the pictures, which means throwing away detail, and
-        burrow does not do that.
+        Not Only PDF does not do that.
       </li>
       <li>
         <strong>A file that has already been through a tool like this one</strong> is already stored the
-        efficient way, so there is nothing left to do. burrow will tell you so rather than hand you back
-        a copy of the same size.
+        efficient way, so there is nothing left to do. Not Only PDF will tell you so rather than hand
+        you back a copy of the same size.
       </li>
     </ul>
 
     <p>
       This is said here, before you choose anything, because the alternative is letting you wait for
-      a number that looks like a broken tool. A file that does not shrink is not a failure and
-      burrow does not report it as one — it is a fact about the file, and usually a good one.
+      a number that looks like a broken tool. A file that does not shrink is not a failure and Not
+      Only PDF does not report it as one — it is a fact about the file, and usually a good one.
     </p>
 
     <h2>What you are shown</h2>
 
     <p>
       The size before, the size after, and the percentage — measured, not estimated. If the saving
-      is too small to be worth replacing your file for, burrow says that instead of presenting a
-      rounding error as a result. The compressed document is still offered either way; the page
+      is too small to be worth replacing your file for, Not Only PDF says that instead of presenting
+      a rounding error as a result. The compressed document is still offered either way; the page
       reports what it found and leaves the choice with you.
     </p>
 
     <p>
-      If burrow's version came out no smaller than yours, it keeps yours and tells you both numbers.
-      Nothing is hidden behind a cheerful message.
+      If Not Only PDF's version came out no smaller than yours, it keeps yours and tells you both
+      numbers. Nothing is hidden behind a cheerful message.
     </p>
 
     <h2>What happens to large files</h2>
 
     <p>
       Everything is held in this browser tab's memory, so the practical limit is what your device
-      can spare rather than an upload size. burrow refuses a file larger than 512 MB before it opens
-      it, and a document of more than 10,000 pages before it compresses any of it — so an oversized
-      job is refused rather than failing part way through.
+      can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before it
+      opens it, and a document of more than 10,000 pages before it compresses any of it — so an
+      oversized job is refused rather than failing part way through.
     </p>
 
     <p>
@@ -150,26 +151,26 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     <p>
       <strong>Everything.</strong> Bookmarks, attachments, form fields, annotations, metadata and the
       page contents all come through unchanged. Compressing rewrites how the document is stored and nothing
-      about what it says, and burrow's tests check the claim rather than assuming it: every marked object
-      the document carried must still be there afterwards, and each page's drawing instructions must come
-      through unaltered.
+      about what it says, and Not Only PDF's tests check the claim rather than assuming it: every marked
+      object the document carried must still be there afterwards, and each page's drawing instructions
+      must come through unaltered.
     </p>
 
     <p>
       That is worth stating plainly because many tools called "compress PDF" do the opposite — they
       shrink a file by re-encoding its images at lower quality, which is why a scan run through one
-      comes back blurry. burrow's answer to a scan is to tell you it cannot help much, rather than
-      to help by damaging it.
+      comes back blurry. Not Only PDF's answer to a scan is to tell you it cannot help much, rather
+      than to help by damaging it.
     </p>
 
     <p>
-      A file that is encrypted, damaged, or not a PDF is refused. So is a result burrow produced but
-      could not verify: after compressing, it reopens the document it just wrote and checks that
-      every page is still there and still turned the same way. That check is deliberately narrow —
-      it is what a fresh engine can confirm about a document in the moment it is produced, and the
-      promise that your pages are untouched rests on burrow never re-encoding them in the first
-      place, which the tests above check. If the check fails, you get the refusal rather than the
-      document.
+      A file that is encrypted, damaged, or not a PDF is refused. So is a result Not Only PDF
+      produced but could not verify: after compressing, it reopens the document it just wrote and
+      checks that every page is still there and still turned the same way. That check is
+      deliberately narrow — it is what a fresh engine can confirm about a document in the moment it
+      is produced, and the promise that your pages are untouched rests on Not Only PDF never
+      re-encoding them in the first place, which the tests above check. If the check fails, you get
+      the refusal rather than the document.
     </p>
   </div>
 </BaseLayout>

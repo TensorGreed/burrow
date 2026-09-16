@@ -346,7 +346,7 @@ test("a merge over the page-count ceiling is refused with both numbers", async (
   await expect(notice).toContainText(String(MAX_PAGES));
   await expect(notice).toContainText("pages");
   await expect(notice, "the ceiling was quoted vaguely rather than exactly").not.toContainText(
-    "more than burrow will take on",
+    "more than Not Only PDF will take on",
   );
 });
 

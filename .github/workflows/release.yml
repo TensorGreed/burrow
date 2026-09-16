@@ -2,9 +2,20 @@ name: Release
 
 # STUB — deliberately not wired up yet.
 #
-# There is nothing to release: burrow is pre-alpha (M0) with no working operations. This
-# file exists to record the intended shape of the release pipeline, so the decisions get
-# made before there is pressure to ship.
+# There is nothing to release AS A DOWNLOADABLE ARTIFACT. That is no longer because the
+# project does nothing -- M1 shipped, five operations work, and the site is live at
+# https://notonlypdf.com -- but because the web app is uploaded byte-for-byte from CI
+# straight to Cloudflare Pages (ADR 0024). Nobody fetches a tarball, so there is nothing for
+# a signature to attach to.
+#
+# The header said "pre-alpha (M0) with no working operations" until 2026-09-16, which stopped
+# being true without anybody noticing, because a stub's comment is the last thing a reader
+# checks. The BEHAVIOUR below was correct throughout; only this description had rotted.
+#
+# This file exists to record the intended shape of the release pipeline, so the decisions get
+# made before there is pressure to ship. `docs/ROADMAP.md` records when the two conditions
+# below stop being deferrable: M3/M4 produce binaries a person installs, and a tagged release
+# of the core crates is a supply chain whether or not we cut a tarball.
 #
 # Two things must be true before this is enabled, and neither is yet:
 #
