@@ -46,7 +46,7 @@ cd "$repo"
 # under the wrong crate is an immediate hard failure -- "no test target named `conformance` in
 # `burrow-engines`" -- which is how the inline version found that out.
 engines_suites="parallelism limits properties structure secret_leak prescan"
-ops_suites="conformance merge optimistic_counts reorder reorder_keeps_everything rotate rotate_keeps_everything split split_no_leak subset_closure"
+ops_suites="compress compress_keeps_everything conformance merge optimistic_counts reorder reorder_keeps_everything rotate rotate_keeps_everything split split_no_leak subset_closure"
 
 # AN ARGUMENT, NOT AN ENVIRONMENT VARIABLE. It was `BURROW_SUITES_LIST_ONLY`, and an
 # environment variable can be inherited by accident: set it anywhere in CI's environment and

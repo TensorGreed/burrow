@@ -517,7 +517,7 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
           export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-          for target in qpdf_check rotate reorder merge split; do
+          for target in qpdf_check rotate reorder merge split compress; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             cargo +nightly fuzz run "$target" -- \

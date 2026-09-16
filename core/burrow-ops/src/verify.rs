@@ -136,6 +136,50 @@ pub enum Expected {
         rotations: Vec<i64>,
     },
 
+    /// The same pages came out as went in, displaying exactly as they did before.
+    ///
+    /// **`compress`** computes this from the input's own rotations, read before the
+    /// re-encoding. It is the input's vector **unchanged** — compression may not move a page,
+    /// reattribute one, or alter what any page displays at. That makes it the strictest promise
+    /// here in one narrow sense and the weakest in another, and both halves need saying.
+    ///
+    /// # Why this is a separate variant and not `Rotated` with an unchanged vector
+    ///
+    /// ADR 0022 pre-declared that compress "promises what `rotate` does", and as a *predicate*
+    /// that is right — the same page count, the same vector. Reusing `Rotated` would check
+    /// exactly the same thing.
+    ///
+    /// What differs is the **residue**, and `Rotated`'s rustdoc does not state compress's. A
+    /// rotation changes one attribute of a page dictionary and cannot touch a content stream;
+    /// compression re-encodes how every object in the document is stored. So the set of wrong
+    /// outputs that pass this check is much larger here, and a variant whose documented residue
+    /// belongs to a different operation is a variant somebody will over-trust. ADR 0022's own
+    /// step 3 asks for a new variant exactly when no existing one states what yours leaves
+    /// undetectable.
+    ///
+    /// # Undetectable, and the list is longer than any other variant's
+    ///
+    /// - **Any change to what a page contains.** A content stream re-encoded wrongly, an image
+    ///   resampled, a font dropped or subsetted — every one of them leaves the page count and
+    ///   the rotation vector identical. This is the whole of what compression touches and
+    ///   almost none of it is visible here.
+    /// - **A document that is smaller because something was thrown away.** The check cannot
+    ///   tell a well-packed document from a lossy one; what makes `compress` lossless is that
+    ///   the engine sets one storage lever and touches no content, not that this caught
+    ///   anything.
+    /// - The residues `Rotated` has: a value written to a shared ancestor rather than a page,
+    ///   on a document where every page inherits the same one.
+    ///
+    /// **So this variant carries the least of any of them, and the tests carry the rest.**
+    /// `compress_keeps_everything.rs` uses the object-closure harness's `assert_nothing_lost`
+    /// entry point and asserts every page's content stream comes out byte-identical — which is
+    /// the real check, and which is a test rather than a runtime one because ADR 0022 rejected
+    /// decompressing every output in production.
+    Compressed {
+        /// Every page's `/Rotate` as written, in page order, read before the re-encoding.
+        rotations: Vec<i64>,
+    },
+
     /// Every input contributed the pages it had, in order.
     ///
     /// **`merge`** records how many pages each input added, taken from the assembly's running
@@ -180,7 +224,8 @@ impl Expected {
         match self {
             Self::Rotated { rotations }
             | Self::Reordered { rotations }
-            | Self::Split { rotations } => u64::try_from(rotations.len()).unwrap_or(u64::MAX),
+            | Self::Split { rotations }
+            | Self::Compressed { rotations } => u64::try_from(rotations.len()).unwrap_or(u64::MAX),
             Self::Merged { contributions } => contributions.iter().sum(),
         }
     }
@@ -190,7 +235,8 @@ impl Expected {
         match self {
             Self::Rotated { rotations }
             | Self::Reordered { rotations }
-            | Self::Split { rotations } => Some(rotations),
+            | Self::Split { rotations }
+            | Self::Compressed { rotations } => Some(rotations),
             // See the variant's rustdoc: knowing it would cost a second parse of every input.
             Self::Merged { .. } => None,
         }
@@ -202,6 +248,7 @@ impl Expected {
             Self::Rotated { .. } => "rotate",
             Self::Reordered { .. } => "reorder",
             Self::Split { .. } => "split",
+            Self::Compressed { .. } => "compress",
             Self::Merged { .. } => "merge",
         }
     }
@@ -299,8 +346,22 @@ pub fn output<E: OutputReader>(
         .map_err(|error| rejected(expected, "whose pages cannot be read", error))?;
 
     if &actual != promised {
-        // THE NUMBERS ARE OURS. A rotation is a multiple of 90 the engine computed from the
-        // page tree; nothing here is a byte of the document.
+        // THE NUMBERS ARE INTEGERS THE ENGINE READ FROM THE PAGE TREE, not bytes of any
+        // stream — and that is a narrower claim than this comment used to make.
+        //
+        // It said "a rotation is a multiple of 90 the engine computed". It is not: the sweep
+        // is RECORDED, NOT JUDGED (`rotations_of` → `declared_rotation`), precisely so that an
+        // out-of-spec `/Rotate 45` on a page nobody named does not fail a whole operation. So
+        // a document's own `/Rotate 123456789` reaches this string verbatim as an `i64`.
+        //
+        // What holds, and what the message rests on: these are `i64`s the engine parsed out of
+        // a page dictionary, never text and never stream content, so no string from the file
+        // can reach a caller through here. The values are attacker-INFLUENCED, in a channel a
+        // few integers wide, on a rejection, to a caller that already holds the document.
+        //
+        // Recorded rather than reworded away, because `core/CLAUDE.md` treats an overclaiming
+        // comment as a bug and this one was load-bearing for three operations before
+        // `Expected::Compressed` made it four. Found by security review.
         return Err(Error::OutputRejected(format!(
             "{}: the pages that came out are not the pages that were promised — expected \
              {promised:?}, got {actual:?}",

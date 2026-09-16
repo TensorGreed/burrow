@@ -36,6 +36,7 @@ jobs:
         # `ci.yml`'s "every fuzz target is actually run by this job" guard did not catch it
         # because it read only `ci.yml`. It reads both workflows now.
         target:
+          - compress
           - document_open
           - prescan
           - qpdf_check
@@ -108,11 +109,30 @@ jobs:
           # an engine's own code" -- true when it was written and false from the moment
           # `merge` arrived. Both qpdf use-after-frees found on 2026-09-14 are inside qpdf,
           # which is exactly the code this flag makes visible.
-          case "${{ matrix.target }}" in
-            qpdf_check|merge|split|rotate|reorder)
-              export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
-              ;;
-          esac
+          #
+          # DERIVED FROM THE TARGET'S OWN SOURCE, NOT RESTATED. The hand-written list has now
+          # been wrong twice: it was `qpdf_check` alone until `merge` arrived, and it omitted
+          # `compress` -- the target written specifically to reach qpdf's object-stream writer,
+          # which then ran here with no coverage feedback from inside qpdf at all. Measured on
+          # that target, 60 s seeded: 6,294 covered edges instrumented against 479 plain, a 13x
+          # difference. It was a coverage-guided writer fuzzer on paper and a parser-rejection
+          # run in fact, and nothing said so. Found by security review.
+          #
+          # A target needs the instrumented archive exactly when it drives qpdf, and a target
+          # that drives qpdf names `burrow_engines::qpdf`. So ask the file. Verified to
+          # reproduce the old list exactly, plus compress: qpdf_check, merge, split, rotate,
+          # reorder, compress instrumented; document_open, prescan, pdfsyntax_names,
+          # pdfsyntax_dict_keys not.
+          #
+          # ASan's malloc interceptors work either way -- the plain build still caught #62 --
+          # so the cost of getting this wrong is silent and is coverage, which is the only
+          # reason it survived two omissions.
+          if grep -q 'burrow_engines::qpdf' "fuzz_targets/${{ matrix.target }}.rs"; then
+            export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
+            echo "instrumented qpdf archive selected for ${{ matrix.target }}"
+          else
+            echo "${{ matrix.target }} does not drive qpdf; plain build"
+          fi
           cargo +nightly fuzz run ${{ matrix.target }} -- \
             -max_total_time=600 -timeout=10 -rss_limit_mb=2048
 
