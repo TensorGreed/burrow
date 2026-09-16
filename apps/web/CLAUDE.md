@@ -118,7 +118,8 @@ page when they differ. It is not interactive and nothing on the page needs it, s
 rule above deliberately: `connect-src` names absolute engine URLs (ADR 0014 §4), so the same
 `dist/` served from another origin is a site whose every tool is dead — and a wrongly-deployed
 build is wrong on every route, so the person who notices is as likely to be on the home page as
-on a tool page. **822 brotli bytes on `page-js`**, recorded in `size-budget.json`. Do not add a
+on a tool page. **946 brotli bytes on `page-js`**, recorded in `size-budget.json` (822 until
+2026-09-16, when the banner gained a link to the origin the build is for). Do not add a
 second exception without one.
 
 **Heavy work goes in a Web Worker.** A large PDF must not freeze the tab. Report progress
@@ -419,20 +420,26 @@ re-decide. Each was a decision with a reason, not a shape that happened.
   says nothing about a route a person can visit. `e2e/merge-pdf.spec.ts` runs both against the
   page that ships, using the helpers in `e2e/request-log.ts` and `e2e/console-noise.ts`.
 - **The deploy is `.github/workflows/deploy.yml`, and production is
-  `https://burrow-f2s.pages.dev`** (Cloudflare Pages, direct upload from our CI — ADR 0024).
+  `https://notonlypdf.com`** (Cloudflare Pages, direct upload from our CI — ADR 0024, amended
+  2026-09-16). The project's generated host `burrow-f2s.pages.dev` stays live permanently and
+  **cannot redirect**, so the same bytes are served from two origins and every tool is dead on
+  the second one — by design, and visibly: the origin banner names the working origin and links
+  to it. Canonical links and the sitemap are generated from `BURROW_SITE`, so both name
+  `notonlypdf.com` from either host.
   Merging to `main` deploys; there is no separate approval step. Two jobs: `build` holds no
   secret and produces the payload, `publish` holds the Cloudflare token and only downloads,
   verifies, uploads and reads back where it went.
 - **Before any upload, run `tools/check-deployable-build.sh https://<origin>`** — the workflow
   does this for you, twice, and this is what to run by hand. It is the last gate before bytes
-  leave, and it asks a question no test does: not whether the build's four
+  leave, and it asks a question no test does: not whether the build's six
   origin-bearing places agree with each other — `src/built-for-origin.test.ts` asserts that —
   but whether they are the origin you MEANT. A build for `http://localhost:4321` is perfectly
   self-consistent, and it is the one `pnpm build` produces when nobody passed `BURROW_SITE`,
   which is exactly the build most likely to be sitting in `dist/` when somebody decides to
   deploy. It also refuses a harness build. `BURROW_SITE` is the single input, read once in
   `tools/build-origin.mjs` and consumed by the CSP, `_headers`, the worker bundle's absolute
-  URLs, Astro's `site:` and the run-time stamp `src/origin-guard.ts` checks.
+  URLs, Astro's `site:`, the run-time stamp `src/origin-guard.ts` checks, and the generated
+  `sitemap.xml` and `robots.txt`. Six consumers, one input.
 - **Serve the build on the port the CSP names** (4321). `connect-src` carries absolute engine
   URLs, so the same `dist/` on another port refuses every engine fetch — which looks exactly
   like a broken page, and cost an hour before it was recognised.

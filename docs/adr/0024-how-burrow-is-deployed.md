@@ -92,8 +92,9 @@ bound to one origin, and the same bytes served anywhere else are a site whose ev
 dead — silently, until somebody chooses a file.
 
 `tools/build-origin.mjs` is the single reader of `BURROW_SITE`. It feeds the CSP, `_headers`,
-the worker manifest, Astro's `site:` and a `<meta name="burrow-built-for">` stamp on every
-page. `apps/web/src/origin-guard.ts` compares that stamp against `location.origin` at run time
+the worker manifest, Astro's `site:`, a `<meta name="burrow-built-for">` stamp on every page,
+and — since the 2026-09-16 amendment below — `sitemap.xml` and `robots.txt`. Six consumers, one
+input. `apps/web/src/origin-guard.ts` compares that stamp against `location.origin` at run time
 and says so, visibly, when they differ; `tool-host.ts` refuses to start the engines.
 
 **A custom domain is a rebuild with one changed variable, not a rework.** Verified against
@@ -101,10 +102,11 @@ and says so, visibly, when they differ; `tool-host.ts` refuses to start the engi
 
 ## Consequences
 
-- **The production origin is `https://burrow-f2s.pages.dev`, and the Cloudflare project is
+- **The production origin was `https://burrow-f2s.pages.dev`, and the Cloudflare project is
   called `burrow`.** They differ, and that is not a mistake: Cloudflare generated the subdomain
   `burrow-f2s` because `burrow.pages.dev` was taken. Moving to a custom domain means changing
-  `BURROW_SITE` and redeploying, because the origin is baked into the build.
+  `BURROW_SITE` and redeploying, because the origin is baked into the build. **That move has
+  since happened — see the 2026-09-16 amendment, which supersedes the origin named here.**
 
   **THE PROJECT NAME WAS DERIVED FROM THE HOSTNAME AND THAT COST THE FIRST DEPLOY.** The
   reasoning was sound — Cloudflare names a project's subdomain after the project — and it is a
@@ -155,3 +157,63 @@ and says so, visibly, when they differ; `tool-host.ts` refuses to start the engi
   the final verification so the gate is the last thing to touch `dist/`; closing it properly
   means `wrangler` as a locked devDependency, which is a dependency decision rather than a
   detail. Recorded as an accepted residual, not as a solved problem.
+
+---
+
+## Amendment, 2026-09-16 — the custom domain
+
+**The production origin is now `https://notonlypdf.com`.** `BURROW_SITE` changed and the site
+was rebuilt; nothing else about the deployment design moved. The claim this ADR made above —
+"a custom domain is a rebuild with one changed variable, not a rework" — held for the build,
+and **cost one new variable and one changed gate on the deploy side**, which is the part worth
+recording because the ADR did not predict it.
+
+### `burrow-f2s.pages.dev` does not go away, and cannot redirect
+
+Cloudflare keeps a Pages project's generated subdomain for the life of the project, and a Pages
+project cannot serve a redirect from it to a custom domain. So the same bytes are served from
+two origins permanently, and the consequences are stated rather than left to be discovered:
+
+- **On `burrow-f2s.pages.dev` every tool is dead**, because a build is bound to one origin
+  (ADR 0014 §4). This is by design and it is *visible*: `origin-guard.ts` puts a banner at the
+  top of every page naming the origin the build is for, and linking to it.
+- **The mechanism is CORS, not the CSP**, and the banner used to say otherwise. `connect-src`
+  names the engine files at their absolute origin, so the policy *permits* those URLs and the
+  request is actually sent; what blocks it is that the response carries no
+  `Access-Control-Allow-Origin`. Same outcome, different cause, and the user-visible sentence
+  now says the checkable thing rather than the wrong one. Found by security review.
+- **Search traffic is consolidated by `<link rel="canonical">` and the sitemap**, both
+  generated from `BURROW_SITE`, so both name `notonlypdf.com` from *either* host. A per-host
+  `robots.txt` would be the alternative and is not available: one build, one set of files, two
+  hosts.
+
+### A third variable, because two were not enough
+
+`wrangler` reports a per-deployment alias on the **project's** `pages.dev` host, never on the
+custom domain. So the post-upload check could no longer compare that alias against
+`BURROW_SITE` — with a custom domain **no correct deploy satisfies that comparison**, which is
+the same shape as the defect this ADR already records one section up.
+
+| variable | kind | what it is |
+|---|---|---|
+| `BURROW_SITE` | build | the origin baked into the CSP, the worker's URLs, canonical, sitemap, robots |
+| `BURROW_PAGES_PROJECT` | deploy | which Cloudflare project receives the bytes |
+| `BURROW_PAGES_HOST` | fact about the project | where its deployments are addressable, and the only thing the alias can be checked against |
+
+They are stated separately because they are separately true, and none is derivable from
+another — the same lesson the project-name derivation taught, applied before it cost a deploy
+rather than after.
+
+### The honest residue
+
+**Nothing in `wrangler`'s output can confirm the custom domain is wired up.** The alias check
+now establishes only that the upload reached the right *project*. What establishes that
+`notonlypdf.com` actually serves the new bytes is the step after it, which asks the live origin
+for its headers — and that step was already there, for the reason given above: "which of the
+two is in force is a fact about the deployed site".
+
+`BURROW_PAGES_HOST` is also a new trust anchor. Once supplied it carries the whole alias
+comparison, so a value that is too short silently widens it — `pages.dev` would make every
+Pages project in the world "an alias of ours". It is validated to be a `<project>.pages.dev`
+name with a non-empty first label. Security review found this unvalidated and found no attacker
+path to it: setting it requires editing `deploy.yml` on `main`.

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { readOrigin } from "./origin-guard.js";
+import { linkableOrigin, readOrigin } from "./origin-guard.js";
 
 /**
  * The comparison, and the two ways it can be useless.
@@ -57,6 +57,33 @@ describe("the origin verdict", () => {
     ["a custom domain replacing pages.dev", "https://burrow.pages.dev", "https://burrow.example"],
   ])("%s", (_why, builtFor, servedFrom) => {
     expect(readOrigin({ builtFor, servedFrom }).kind).toBe("mismatch");
+  });
+
+  it("offers the origin that works as a link, because a visitor cannot act on the message", () => {
+    // The banner's text tells the reader to rebuild with a different BURROW_SITE, which is
+    // advice for whoever deploys and useless to somebody who just wants to rotate a PDF. The
+    // non-canonical host is permanent and cannot redirect, so the link is the only way off it.
+    expect(linkableOrigin("https://notonlypdf.com")).toBe("https://notonlypdf.com");
+    // A PATH CANNOT RIDE ALONG. `.origin` is what is linked, so a stamp carrying one cannot
+    // aim the link somewhere else on that host.
+    expect(linkableOrigin("https://notonlypdf.com/somewhere?x=1#y")).toBe("https://notonlypdf.com");
+    // Local development is a real case and http is correct there.
+    expect(linkableOrigin("http://localhost:4321")).toBe("http://localhost:4321");
+  });
+
+  it("refuses to make a link out of anything that is not an http(s) origin", () => {
+    // `href="javascript:..."` IS SCRIPT EXECUTION. The stamp is this document's own markup
+    // rather than user input, so this is defence in depth -- and it is the branch that would
+    // otherwise be reachable only through a deliberately doctored deploy, which is to say
+    // never tested at all.
+    expect(linkableOrigin("javascript:alert(1)")).toBeNull();
+    expect(linkableOrigin("JavaScript:alert(1)")).toBeNull();
+    expect(linkableOrigin("data:text/html,<script>alert(1)</script>")).toBeNull();
+    expect(linkableOrigin("vbscript:msgbox(1)")).toBeNull();
+    // And things that are not URLs at all, which a hand-edited stamp could be.
+    expect(linkableOrigin("")).toBeNull();
+    expect(linkableOrigin("notonlypdf.com")).toBeNull();
+    expect(linkableOrigin("//notonlypdf.com")).toBeNull();
   });
 
   it("says 'unknown' rather than 'match' when the build stamped nothing", () => {

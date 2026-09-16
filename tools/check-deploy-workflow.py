@@ -325,7 +325,10 @@ def check_project(workflow: dict, report: list[str]) -> None:
         one place it is written is the one place it is read.
 
     What stops a wrong project name reaching the live site is not this rule but the read-back
-    after the upload, which compares wrangler's reported URL against `BURROW_SITE`.
+    after the upload, which compares wrangler's reported alias against `BURROW_PAGES_HOST`.
+    (It compared against `BURROW_SITE` until the custom domain: wrangler reports an alias on
+    the project's pages.dev host and never on the custom domain, so that comparison could not
+    be satisfied by any correct deploy.)
     """
     env = workflow.get("env") or {}
     project = env.get("BURROW_PAGES_PROJECT")
@@ -362,6 +365,53 @@ def check_project(workflow: dict, report: list[str]) -> None:
             "a second time, which is the drift this rule exists to prevent"
         )
     report.append(f"project `{project}`, read from the variable rather than restated")
+
+
+def check_pages_host(workflow: dict, report: list[str]) -> None:
+    """The alias the read-back trusts is a project's host, and the read-back reads it.
+
+    A THIRD FACT ARRIVED WITH THE CUSTOM DOMAIN, and it is a trust anchor. `wrangler` reports a
+    per-deployment alias on the PROJECT's `pages.dev` host, never on the custom domain, so the
+    post-upload check compares the alias against `BURROW_PAGES_HOST` rather than against
+    `BURROW_SITE` -- with a custom domain, no correct deploy satisfies the old comparison.
+
+    Once that value is supplied it carries the whole comparison. A value that is too SHORT
+    silently widens it: `pages.dev` is a valid-looking hostname, and under it every Cloudflare
+    Pages project in the world is "an alias of ours". `tools/check-deployment-url.sh` validates
+    its own argument; this rule is the other half, so that a wrong value in the workflow is
+    refused before a run rather than at the point it stops catching anything.
+
+    Nothing here compares it to `BURROW_PAGES_PROJECT`. They are allowed to differ -- that is
+    the whole lesson of the rule above -- and the convention that links them is exactly what
+    must not be re-derived.
+    """
+    env = workflow.get("env") or {}
+    host = env.get("BURROW_PAGES_HOST")
+    if not host:
+        raise Refused(
+            "BURROW_PAGES_HOST is not set. The post-upload read-back compares wrangler's "
+            "reported alias against it; without it the check falls back to BURROW_SITE, which "
+            "no custom-domain deploy can satisfy."
+        )
+    host = str(host)
+    if "://" in host or "/" in host:
+        raise Refused(f"BURROW_PAGES_HOST is {host!r}, which is a URL. It is a HOST.")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,57}\.pages\.dev", host):
+        raise Refused(
+            f"BURROW_PAGES_HOST is {host!r}, which is not a <project>.pages.dev name. "
+            f"`pages.dev` alone is the zone: under it every Pages project would be accepted "
+            f"as a deployment of ours."
+        )
+
+    steps = workflow["jobs"][CREDENTIAL_JOB]["steps"]
+    if not any(
+        isinstance(step.get("run"), str) and "BURROW_PAGES_HOST" in step["run"] for step in steps
+    ):
+        raise Refused(
+            "no step reads $BURROW_PAGES_HOST, so the alias read-back is still comparing "
+            "against something else and this variable is decoration"
+        )
+    report.append(f"alias read-back anchored on `{host}`, read from the variable")
 
 
 def check_origin(workflow: dict, report: list[str]) -> None:
@@ -429,6 +479,19 @@ PROBES = [
             {True: {"push": {"branches": ["main"], "tags": ["**"]}, "workflow_dispatch": None}}, []
         ),
         lambda: check_triggers({True: {"push": {"branches": ["main"]}, "workflow_dispatch": None}}, []),
+    ),
+    (
+        "the pages-host anchor",
+        # MUST REJECT: the zone itself, under which any project's alias is "ours".
+        lambda: check_pages_host({"env": {"BURROW_PAGES_HOST": "pages.dev"}}, []),
+        # MUST ACCEPT: a real project host, read by a step in the credential job.
+        lambda: check_pages_host(
+            {
+                "env": {"BURROW_PAGES_HOST": "burrow-f2s.pages.dev"},
+                "jobs": {CREDENTIAL_JOB: {"steps": [{"run": "x \"$BURROW_PAGES_HOST\""}]}},
+            },
+            [],
+        ),
     ),
     (
         "the credential scope",
@@ -538,6 +601,7 @@ def main(argv: list[str]) -> int:
         check_no_harness(workflow, report)
         check_origin(workflow, report)
         check_project(workflow, report)
+        check_pages_host(workflow, report)
         check_no_other_workflow_holds_the_credential(report)
     except Refused as exc:
         for line in report:

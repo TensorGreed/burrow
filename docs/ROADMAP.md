@@ -49,7 +49,7 @@ something.
 
 ### Deployment
 
-The web app is deployed to **`https://burrow-f2s.pages.dev`** — Cloudflare Pages, uploaded
+The web app is deployed to **`https://notonlypdf.com`** — Cloudflare Pages, uploaded
 directly from this repository's CI, never built on Cloudflare's infrastructure.
 [ADR 0024](adr/0024-how-burrow-is-deployed.md) records why that host, why direct upload, and
 why the workflow is split so the job that compiles holds no credential.
