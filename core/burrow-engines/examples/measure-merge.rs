@@ -204,9 +204,29 @@ mod measure {
         fn qpdf_get_error(q: QpdfData) -> *mut c_void;
         fn qpdf_set_logger(q: QpdfData, logger: *mut c_void);
         fn qpdflogger_create() -> *mut c_void;
-        fn qpdflogger_set_info(logger: *mut c_void, dest: c_int, path: *const c_char);
-        fn qpdflogger_set_warn(logger: *mut c_void, dest: c_int, path: *const c_char);
-        fn qpdflogger_set_error(logger: *mut c_void, dest: c_int, path: *const c_char);
+        // FOUR PARAMETERS: `(handle, dest, qpdf_log_fn_t fn, void* udata)`
+        // (`qpdflogger-c.h:70-77`). This file carried the three-argument form, so the callee
+        // read `udata` from an uninitialised register -- benign only because `udata` is
+        // touched in the `qpdf_log_dest_custom` branch alone. `qpdf/ffi.rs` has always had the
+        // correct form. Found by security review on the harness that copied this one.
+        fn qpdflogger_set_info(
+            logger: *mut c_void,
+            dest: c_int,
+            fun: *const c_void,
+            udata: *mut c_void,
+        );
+        fn qpdflogger_set_warn(
+            logger: *mut c_void,
+            dest: c_int,
+            fun: *const c_void,
+            udata: *mut c_void,
+        );
+        fn qpdflogger_set_error(
+            logger: *mut c_void,
+            dest: c_int,
+            fun: *const c_void,
+            udata: *mut c_void,
+        );
     }
 
     /// qpdf's status is a BITMASK, never a plain success/failure code.
@@ -255,11 +275,19 @@ mod measure {
             qpdf_silence_errors(q);
             qpdf_set_suppress_warnings(q, 1);
             let logger = qpdflogger_create();
-            // 0 is `qpdf_log_dest_discard` — qpdf's own Pl_Discard, reachable by name from
+            // 3 is `qpdf_log_dest_discard` — qpdf's own Pl_Discard, reachable by name from
             // C, so no Rust code ever runs on a C++ stack.
-            qpdflogger_set_info(logger, 0, std::ptr::null());
-            qpdflogger_set_warn(logger, 0, std::ptr::null());
-            qpdflogger_set_error(logger, 0, std::ptr::null());
+            //
+            // IT WAS 0, under this same comment. 0 is `qpdf_log_dest_default`, which
+            // `set_log_dest` maps to `method(nullptr)` — and that selects stdout for info and
+            // stderr for error. So this layer was installing a logger behaviourally identical
+            // to the default, i.e. no layer at all, while the comment said otherwise.
+            // `core/burrow-engines/src/codes/qpdf.rs` has always had the right value.
+            let none = std::ptr::null();
+            let no_data = std::ptr::null_mut();
+            qpdflogger_set_info(logger, 3, none, no_data);
+            qpdflogger_set_warn(logger, 3, none, no_data);
+            qpdflogger_set_error(logger, 3, none, no_data);
             qpdf_set_logger(q, logger);
         }
     }

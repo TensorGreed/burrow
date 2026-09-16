@@ -20,3 +20,4 @@
 - [Web split page (m1-split-page)](m1_web_split_page.md) — the #69 class closed by API shape; the untested island wiring, and four Low residuals.
 - [Force-push hook + deploy gate](m1_force_push_hook_and_deploy_gate.md) — measured `git -c`/newline bypasses of the hook, and two under-checking rules in the pre-upload origin gate.
 - [Deploy workflow trigger gate](m1_deploy_workflow_gate.md) — five measured bypasses of check-deploy-workflow.sh, and the repo settings the boundary actually rests on.
+- [measure-* harness logger defect](measure_harness_logger_defect.md) — the examples install qpdf's default logger, not a discarding one; wrong arity and wrong dest constant.
