@@ -138,7 +138,10 @@ assert "tags" in yaml.safe_load(s)[True]["push"], "plant did not reach the parse
 expect_refusal "a WORKFLOW-LEVEL env: secret is refused (it reaches every job)" "OUTSIDE the jobs block" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-old = "  BURROW_SITE: https://burrow-f2s.pages.dev\n"
+import re
+m = re.search(r"^  BURROW_SITE: .*\n", s, re.M)
+assert m, "MUTATION DID NOT APPLY: no workflow-level BURROW_SITE line to anchor on"
+old = m.group(0)
 s = s.replace(old, old + "  CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}\n", 1)
 p.write_text(s)
 assert "CF_TOKEN" in yaml.safe_load(s)["env"], "plant did not reach the parsed document"
@@ -147,7 +150,10 @@ assert "CF_TOKEN" in yaml.safe_load(s)["env"], "plant did not reach the parsed d
 expect_refusal "the BRACKET spelling is refused, which carries no secrets. substring" "OUTSIDE the jobs block" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-old = "  BURROW_SITE: https://burrow-f2s.pages.dev\n"
+import re
+m = re.search(r"^  BURROW_SITE: .*\n", s, re.M)
+assert m, "MUTATION DID NOT APPLY: no workflow-level BURROW_SITE line to anchor on"
+old = m.group(0)
 s = s.replace(old, old + "  CF_TOKEN: ${{ secrets[format(\x27{0}\x27,\x27CLOUDFLARE_API_TOKEN\x27)] }}\n", 1)
 p.write_text(s)
 assert "CF_TOKEN" in yaml.safe_load(s)["env"], "plant did not reach the parsed document"
@@ -157,6 +163,39 @@ expect_pass "a COMMENT naming the gate script is not an invocation" '
 import sys, pathlib
 p = pathlib.Path(sys.argv[1])
 p.write_text(p.read_text().rstrip() + "\n      # see tools/check-deployable-build.sh for what this asserted\n")
+'
+
+# --- THE ALIAS ANCHOR, a trust anchor that arrived with the custom domain ----------------------
+#
+# Once `BURROW_PAGES_HOST` is supplied it carries the whole post-upload comparison, so a value
+# that is too SHORT silently widens it rather than breaking anything.
+expect_refusal "removing BURROW_PAGES_HOST is refused" "BURROW_PAGES_HOST is not set" '
+import sys, pathlib, yaml, re
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s, n = re.subn(r"^  BURROW_PAGES_HOST: .*\n", "", s, count=1, flags=re.M)
+assert n == 1, "MUTATION DID NOT APPLY: no BURROW_PAGES_HOST line to delete"
+p.write_text(s)
+assert "BURROW_PAGES_HOST" not in (yaml.safe_load(s).get("env") or {}), "plant did not apply"
+'
+
+expect_refusal "the pages.dev ZONE as the anchor is refused" "not a <project>.pages.dev name" '
+import sys, pathlib, yaml, re
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s, n = re.subn(r"^  BURROW_PAGES_HOST: .*$", "  BURROW_PAGES_HOST: pages.dev", s, count=1, flags=re.M)
+assert n == 1, "MUTATION DID NOT APPLY: no BURROW_PAGES_HOST line to rewrite"
+p.write_text(s)
+assert yaml.safe_load(s)["env"]["BURROW_PAGES_HOST"] == "pages.dev", "plant did not apply"
+'
+
+expect_refusal "an anchor nothing reads is refused as decoration" "this variable is decoration" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "\"$BURROW_SITE\" \"$BURROW_PAGES_HOST\""
+assert old in s, "MUTATION DID NOT APPLY: the read-back does not pass the anchor"
+s = s.replace(old, "\"$BURROW_SITE\"", 1)
+p.write_text(s)
+runs = [st.get("run", "") for st in yaml.safe_load(s)["jobs"]["publish"]["steps"]]
+assert not any("$BURROW_PAGES_HOST" in r for r in runs), "plant did not apply"
 '
 
 # --- THE PROJECT NAME, which a derivation got right for the wrong reason ------------------------
@@ -280,7 +319,10 @@ assert any("secrets." in str(x) for x in yaml.safe_load(s)["jobs"]["build"]["ste
 expect_refusal "setting BURROW_HARNESS is refused" "SETS BURROW_HARNESS" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-old = "  BURROW_SITE: https://burrow-f2s.pages.dev\n"
+import re
+m = re.search(r"^  BURROW_SITE: .*\n", s, re.M)
+assert m, "MUTATION DID NOT APPLY: no workflow-level BURROW_SITE line to anchor on"
+old = m.group(0)
 s = s.replace(old, old + "  BURROW_HARNESS: \"1\"\n", 1)
 p.write_text(s)
 assert "BURROW_HARNESS" in yaml.safe_load(s)["env"], "plant did not apply"
@@ -297,7 +339,9 @@ assert yaml.safe_load(s)["env"]["BURROW_SITE"].startswith("http://"), "plant did
 expect_refusal "a development origin is refused" "development origin" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-s = s.replace("BURROW_SITE: https://burrow-f2s.pages.dev", "BURROW_SITE: https://localhost:4321", 1)
+import re
+s, n = re.subn(r"^  BURROW_SITE: .*$", "  BURROW_SITE: https://localhost:4321", s, count=1, flags=re.M)
+assert n == 1, "MUTATION DID NOT APPLY: no BURROW_SITE line to rewrite"
 p.write_text(s)
 assert "localhost" in yaml.safe_load(s)["env"]["BURROW_SITE"], "plant did not apply"
 '
@@ -305,7 +349,9 @@ assert "localhost" in yaml.safe_load(s)["env"]["BURROW_SITE"], "plant did not ap
 expect_refusal "no origin at all is refused" "BURROW_SITE is not set" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-s = s.replace("  BURROW_SITE: https://burrow-f2s.pages.dev\n", "", 1)
+import re
+s, n = re.subn(r"^  BURROW_SITE: .*\n", "", s, count=1, flags=re.M)
+assert n == 1, "MUTATION DID NOT APPLY: no BURROW_SITE line to delete"
 p.write_text(s)
 assert "BURROW_SITE" not in (yaml.safe_load(s).get("env") or {}), "plant did not apply"
 '

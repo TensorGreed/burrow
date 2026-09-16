@@ -41,7 +41,18 @@ env:
   #
   # Changing this means rebuilding, not redeploying. `tools/check-deployable-build.sh` is
   # invoked with the same value below and refuses a build that disagrees.
-  BURROW_SITE: https://burrow-f2s.pages.dev
+  # THE CUSTOM DOMAIN, since 2026-09-16. `burrow-f2s.pages.dev` is still live and still
+  # serves these bytes -- Cloudflare keeps a project's pages.dev host permanently and it
+  # cannot carry a redirect rule -- but it is no longer the origin this build is FOR.
+  #
+  # THE CONSEQUENCE IS NOT COSMETIC AND IS STATED HERE RATHER THAN DISCOVERED: a build is
+  # bound to one origin (ADR 0014 §4), so on `burrow-f2s.pages.dev` `connect-src` names engine
+  # URLs at another origin and every tool there is DEAD. That is by design and it is visible
+  # rather than silent -- `src/origin-guard.ts` puts a banner at the top of every page saying
+  # which origin the build is for, and now links to it. The canonical link on every page
+  # points at the custom domain from the same input, so search consolidates there rather than
+  # splitting between two hosts serving identical text.
+  BURROW_SITE: https://notonlypdf.com
   # THE PROJECT NAME IS NOT THE HOSTNAME, AND ASSUMING IT WAS COST A RED DEPLOY.
   #
   # The first version derived this from `BURROW_SITE` -- `burrow-f2s.pages.dev` -> `burrow-f2s`
@@ -61,9 +72,17 @@ env:
   # project receives the bytes. A build is bound to the first and says nothing about the second.
   #
   # What stops them disagreeing is no longer a derivation but a READ-BACK: the step after the
-  # upload asserts wrangler's reported URL equals `BURROW_SITE`, so a wrong project name fails
-  # the run instead of putting a correct build somewhere nobody visits.
+  # upload checks wrangler's reported alias against `BURROW_PAGES_HOST` (see below), so a wrong
+  # project name fails the run instead of putting a correct build somewhere nobody visits.
+  # It used to compare against `BURROW_SITE`, and the custom domain ended that -- wrangler
+  # never reports the custom domain, so no correct deploy could satisfy it.
   BURROW_PAGES_PROJECT: burrow
+  # A THIRD FACT, AND IT IS NOT DERIVABLE FROM EITHER OF THE OTHER TWO. wrangler reports a
+  # per-deployment alias on the PROJECT's pages.dev host, never on the custom domain, so this
+  # is the only thing the alias can be checked against. It is not the project name
+  # (Cloudflare generated `burrow-f2s` because `burrow.pages.dev` was taken -- the comment
+  # above records what assuming otherwise cost) and it is not `BURROW_SITE` any more.
+  BURROW_PAGES_HOST: burrow-f2s.pages.dev
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
@@ -200,7 +219,7 @@ jobs:
       - name: The deployment belongs to the project this build is for
         run: |
           url="$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' wrangler.log | tail -1 || true)"
-          tools/check-deployment-url.sh "$url" "$BURROW_SITE"
+          tools/check-deployment-url.sh "$url" "$BURROW_SITE" "$BURROW_PAGES_HOST"
 
       # AND THE POLICY ARRIVES AS A REAL RESPONSE HEADER. `_headers` is a file the host chooses
       # to read; ADR 0014 §5 duplicates the CSP into a `<meta>` precisely because a static host
@@ -218,6 +237,25 @@ jobs:
           printf '%s\n' "$headers" | grep -qi '^x-content-type-options: *nosniff' ||
             { echo "no nosniff header from $BURROW_SITE" >&2; exit 1; }
           echo "the live site sends a CSP header and nosniff"
+
+      # AND THE CRAWLER FILES ARRIVE, by the same argument the step above makes: which of the
+      # two copies of the policy is in force is a fact about the deployed site, and so is
+      # whether `/robots.txt` and `/sitemap.xml` are actually served. The build gate asserts
+      # they are in `dist/` with the right origin; only the live origin can say the host serves
+      # them rather than a 404 page.
+      #
+      # THE ORIGIN IS CHECKED HERE TOO, because this is the first moment the CUSTOM DOMAIN has
+      # been confirmed to serve these bytes at all -- the alias check above establishes only
+      # which project received them.
+      - name: robots.txt and sitemap.xml are served, and name this origin
+        run: |
+          for path in robots.txt sitemap.xml; do
+            body="$(curl -sS --fail --max-time 30 "$BURROW_SITE/$path")" ||
+              { echo "$BURROW_SITE/$path is not served" >&2; exit 1; }
+            printf '%s' "$body" | grep -qF "$BURROW_SITE" ||
+              { echo "$path does not name $BURROW_SITE:" >&2; printf '%s\n' "$body" >&2; exit 1; }
+          done
+          echo "the live site serves robots.txt and sitemap.xml, both naming $BURROW_SITE"
 
       - name: Say where it went
         run: |

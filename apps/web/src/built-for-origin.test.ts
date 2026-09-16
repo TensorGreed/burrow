@@ -9,13 +9,21 @@ import { PRODUCTION_DIR } from "./build-output.js";
 /**
  * The origin reaches every place that needs it, and they all say the same thing.
  *
- * FOUR PLACES, ONE INPUT. `BURROW_SITE` is read once, in `tools/build-origin.mjs`, and comes
+ * SIX PLACES, ONE INPUT. `BURROW_SITE` is read once, in `tools/build-origin.mjs`, and comes
  * out in:
  *
  *   1. `connect-src` in the generated CSP — the `<meta>` in every page and `_headers`;
  *   2. the worker bundle's absolute engine URLs;
  *   3. `<link rel="canonical">`, via Astro's `site:`;
- *   4. `<meta name="burrow-built-for">`, which `src/origin-guard.ts` compares at run time.
+ *   4. `<meta name="burrow-built-for">`, which `src/origin-guard.ts` compares at run time;
+ *   5. `sitemap.xml`'s `<loc>` entries;
+ *   6. `robots.txt`'s `Sitemap:` line.
+ *
+ * FIVE AND SIX ARRIVED WITH THE CUSTOM DOMAIN, and they are the two where being wrong is
+ * quietest: nothing on the page breaks, and the failure is that a search engine is asked to
+ * index an origin this build is not for. The same `dist/` is served on `burrow-f2s.pages.dev`
+ * as well, permanently and with no redirect available, so these files and the canonical link
+ * are the whole of what stops one site's traffic being counted as two.
  *
  * They agree by construction now. This test exists because they did NOT: `astro.config.mjs`
  * set no `site:` at all, so every shipped page carried
@@ -134,6 +142,40 @@ describe("the origin this build is for", () => {
     for (const url of urls) {
       expect(new URL(url).origin, `${url} is not on the build's origin`).toBe(connectOrigins[0]);
     }
+  });
+
+  it("is the origin the sitemap lists, for every page and no other host", () => {
+    const sitemap = readFileSync(join(PRODUCTION_DIR, "sitemap.xml"), "utf8");
+    const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+
+    for (const loc of locs) {
+      expect(new URL(loc).origin, `${loc} is not on this build's origin`).toBe(connectOrigins[0]);
+    }
+
+    // THE SET, IN BOTH DIRECTIONS. The first version of this compared `locs.length` to
+    // `pages.length` and then checked each `<loc>` was a page that exists -- which is
+    // sitemap ⊆ build plus a count, and security review measured what that misses: replace
+    // `/credits/` with a second copy of `/` and you have the right number of entries, every
+    // one on the right origin, with a page silently absent. A count is satisfiable by
+    // duplicates, so a count is not the defence against "4 of 15" that the comment claimed.
+    //
+    // Comparing sorted sets is both directions at once, and it names the route rather than
+    // reporting that two numbers differ.
+    const built = pages
+      .map((path) => path.slice(PRODUCTION_DIR.length).replace(/index\.html$/, ""))
+      .sort();
+    const listed = locs.map((loc) => new URL(loc).pathname).sort();
+    expect(listed, "the sitemap and the built pages are not the same set").toEqual(built);
+  });
+
+  it("is the origin robots.txt points a crawler at", () => {
+    const robots = readFileSync(join(PRODUCTION_DIR, "robots.txt"), "utf8");
+    const line = /^Sitemap:\s*(\S+)$/m.exec(robots);
+    expect(line, "robots.txt names no sitemap, so nothing leads a crawler to one").not.toBeNull();
+    expect(new URL(line?.[1] ?? "http://invalid.example").origin).toBe(connectOrigins[0]);
+    // NOT `Disallow: /`. The whole site is static public pages; a build that quietly stopped
+    // itself being indexed would look exactly like a build that was never crawled.
+    expect(robots).not.toMatch(/^Disallow:\s*\/\s*$/m);
   });
 
   it("comes from ONE reader, so the ways it could disagree are not spelled out twice", () => {

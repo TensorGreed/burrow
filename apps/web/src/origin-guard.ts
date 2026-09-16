@@ -63,13 +63,52 @@ export function readOrigin({ builtFor, servedFrom }: OriginReading): OriginVerdi
     kind: "mismatch",
     builtFor,
     servedFrom,
+    // THE MECHANISM SENTENCE WAS WRONG, and security review measured it. It used to say the
+    // page's security policy "will refuse to load them from anywhere else" -- but `connect-src`
+    // names the engine files at their ABSOLUTE origin, so the CSP permits exactly those URLs
+    // and the request is sent. What blocks it is CORS: the fetch is a cross-origin one in the
+    // default `cors` mode and nothing serves `Access-Control-Allow-Origin`. The outcome is the
+    // same and the explanation was not, which in this repository is a bug rather than a
+    // wording preference -- and this is the one page where the sentence is read by people
+    // rather than by us, because the non-canonical host is permanent.
+    //
+    // So it says what is true at the level a reader can check: the files are somewhere else,
+    // and this host is not allowed to have them.
     message:
       `This copy of burrow was built for ${builtFor} and is being served from ${servedFrom}. ` +
-      `The tools will not work here: the security policy in this page names the engine files ` +
-      `at ${builtFor}, so the browser will refuse to load them from anywhere else. ` +
+      `The tools will not work here: the engine files live at ${builtFor}, and a page served ` +
+      `from ${servedFrom} is not allowed to load them. ` +
       `Nothing is wrong with your file and nothing has been sent anywhere. ` +
-      `This needs a rebuild with BURROW_SITE=${servedFrom}.`,
+      `If you are deploying this, it needs a rebuild with BURROW_SITE=${servedFrom}.`,
   };
+}
+
+/**
+ * The origin to offer as a link, or `null` if it must not be one.
+ *
+ * WHY THIS EXISTS AT ALL. The banner stopped being only a developer's warning when the custom
+ * domain arrived: Cloudflare keeps a Pages project's `*.pages.dev` host permanently and it
+ * cannot carry a redirect rule, so a real visitor can land on the non-canonical host at any
+ * time. The message ends "this needs a rebuild with BURROW_SITE=…", which is advice they
+ * cannot act on and which is not true for them — the site does not need rebuilding, they need
+ * the other origin, and the page already knows what it is.
+ *
+ * WHY IT IS GUARDED. `builtFor` is this document's own `<meta>`, so it is same-origin content
+ * rather than anything a person supplied — and it becomes an `href`, where `javascript:` is
+ * script execution. A scheme allowlist costs one branch and removes the question rather than
+ * leaving it to be re-answered by whoever next touches the stamp. `new URL` also rejects what
+ * is not a URL at all.
+ *
+ * `.origin` rather than the value, so a stamp carrying a path or a query cannot turn this into
+ * a link to somewhere else on that host.
+ */
+export function linkableOrigin(builtFor: string): string | null {
+  try {
+    const parsed = new URL(builtFor);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.origin : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The element the build stamps its origin into. */
@@ -114,6 +153,35 @@ export function announce(doc: Document, verdict: OriginVerdict): boolean {
   detail.textContent = verdict.message;
 
   banner.append(heading, detail);
+
+  // A WAY FORWARD, not just a diagnosis.
+  //
+  // This stopped being only a developer's warning when the custom domain arrived. Cloudflare
+  // keeps a Pages project's `*.pages.dev` host permanently and it cannot carry a redirect
+  // rule, so a real visitor can land on the non-canonical host at any time -- and the message
+  // above, which ends "this needs a rebuild with BURROW_SITE=...", is advice they cannot act
+  // on and is not even true for them. The site does not need rebuilding; they need the other
+  // origin, and the page already knows what it is.
+  //
+  // THE DECISION IS IN `linkableOrigin`, which is a pure function so it can be tested here
+  // rather than only in a browser -- this file's header explains why the DOM half is left to
+  // `e2e/origin-guard.spec.ts`, and a scheme allowlist is exactly the kind of rule that must
+  // not be reachable only through a real deploy.
+  // NOT A LINK TO THE PAGE THEY ARE ALREADY ON. `readOrigin` compares the RAW stamp to
+  // `location.origin` by exact string equality, while `linkableOrigin` normalises -- so a
+  // stamp of `HTTPS://EXAMPLE.COM` served from `https://example.com` is a mismatch whose
+  // "working site" link points back here. A normal build cannot produce that, because
+  // `build-origin.mjs` emits `URL.origin`; this is the cheap half of hardening against a
+  // hand-edited stamp, and it costs one comparison.
+  const canonical = linkableOrigin(verdict.builtFor);
+  if (canonical && canonical !== verdict.servedFrom) {
+    const go = doc.createElement("p");
+    const link = doc.createElement("a");
+    link.href = canonical;
+    link.textContent = canonical;
+    go.append(doc.createTextNode("The working site is at "), link, doc.createTextNode("."));
+    banner.append(go);
+  }
 
   // `document.body` MAY NOT EXIST YET. The layout runs this from a `<script>` in `<head>`,
   // and Astro emits it as `type="module"`, which is deferred — so in practice the body is

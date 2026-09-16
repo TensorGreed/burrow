@@ -110,6 +110,120 @@ expect_refusal "a build for another origin is refused, which is the whole point"
   "is stamped for $DEPLOY_ORIGIN, not https://somewhere.else" \
   "$checker" "https://somewhere.else" "$work"
 
+# --- Rule: what a crawler is told -------------------------------------------------------------
+#
+# THE QUIETEST WAY TO GET THE ORIGIN WRONG. Nothing on the page breaks; the only symptom is a
+# search engine indexing a host this build is not for. And since the same bytes are served
+# permanently on the project's pages.dev host with no redirect available, these files plus the
+# canonical links are the whole of what stops one site being counted as two.
+
+fixture
+rm -f "$work/robots.txt"
+expect_refusal "a build with no robots.txt is refused" \
+  "no robots.txt in the build" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+fixture
+rm -f "$work/sitemap.xml"
+expect_refusal "robots.txt promising a sitemap that is not there is refused" \
+  "no sitemap.xml in the build" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+fixture
+printf 'User-agent: *\nDisallow: /\n\nSitemap: %s/sitemap.xml\n' "$DEPLOY_ORIGIN" >"$work/robots.txt"
+expect_refusal "a build that tells every crawler to go away is refused, not shipped" \
+  "disallows the whole site" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+fixture
+sed -i "s|^Sitemap:.*|Sitemap: https://somewhere.else/sitemap.xml|" "$work/robots.txt"
+expect_refusal "robots.txt pointing at another origin's sitemap is refused" \
+  "a crawler must be sent to the file that was checked" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+# THE ONE A SUFFIX OR SUBSTRING RULE WOULD MISS. One <loc> on a lookalike host, the rest
+# correct -- which is what a half-finished origin change actually looks like.
+fixture
+python3 -c "
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+old = '<loc>' + sys.argv[2] + '/'
+assert old in t, 'MUTATION DID NOT APPLY: no <loc> on the expected origin'
+p.write_text(t.replace(old, '<loc>https://burrow.test.evil.example/', 1))
+" "$work/sitemap.xml" "$DEPLOY_ORIGIN"
+expect_refusal "a single sitemap entry on another host is refused, not averaged away" \
+  "lists URLs not under $DEPLOY_ORIGIN" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+# THE LOOKALIKE, IN THE SITEMAP. The `_headers` rule has this case already; the sitemap rule
+# was written with `grep -v "^$expected/"` and did not, so `.` matched any character and
+# `https://burrowxtest/` was accepted while the checker printed "all under https://burrow.test"
+# and "deployable to https://burrow.test and to nowhere else". Both lines false. This is the
+# same defect this suite already re-plants for `_headers`, caught by code review three blocks
+# below the comment describing it.
+fixture
+python3 -c "
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+origin = sys.argv[2]
+old = '<loc>' + origin + '/'
+assert old in t, 'MUTATION DID NOT APPLY: no <loc> on the expected origin'
+# Replace the dot with any other character: a registrable host that a regex dot matches.
+look = '<loc>' + origin.replace('.', 'x', 1) + '/'
+p.write_text(t.replace(old, look, 1))
+" "$work/sitemap.xml" "$DEPLOY_ORIGIN"
+expect_refusal "a sitemap entry on a lookalike differing only where a regex dot would match" \
+  "lists URLs not under $DEPLOY_ORIGIN" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+# THE DUPLICATE. Seven entries, all on the right origin, one route replaced by a second copy
+# of another -- so the COUNT is satisfied and a page is silently absent. Security review
+# measured this passing, which is why the rule compares sorted SETS rather than lengths: a
+# count is satisfiable by duplicates, and the comment claiming the count was the defence
+# against "4 of 15" was false while that was so.
+fixture
+python3 -c "
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+origin = sys.argv[2]
+victim = '<loc>' + origin + '/credits/</loc>'
+assert victim in t, 'MUTATION DID NOT APPLY: no /credits/ entry to displace'
+p.write_text(t.replace(victim, '<loc>' + origin + '/</loc>', 1))
+" "$work/sitemap.xml" "$DEPLOY_ORIGIN"
+expect_refusal "a sitemap with the right COUNT and a page missing is refused" \
+  "does not list built page(s)" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+# THE SITEMAP THE GATE VALIDATES MUST BE THE ONE A CRAWLER IS SENT TO. Pointing robots.txt at
+# a different path under the same origin passed: the gate then checked `sitemap.xml` while
+# every crawler was directed somewhere else, which is two rules that never meet.
+fixture
+sed -i "s|^Sitemap:.*|Sitemap: $DEPLOY_ORIGIN/not-the-sitemap-that-was-checked|" "$work/robots.txt"
+expect_refusal "robots.txt pointing at a different file on the right origin is refused" \
+  "a crawler must be sent to the file that was checked" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+# AND THE COUNT, which is the half that catches an empty or truncated sitemap -- the failure a
+# rule saying "every <loc> is on the right origin" cannot see, because it is satisfied by no
+# <loc> at all.
+fixture
+printf '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</urlset>\n' >"$work/sitemap.xml"
+expect_refusal "an EMPTY sitemap is refused, though every URL in it is on the right origin" \
+  "does not list built page(s)" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
+fixture
+python3 -c "
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+assert '<url>' in t, 'MUTATION DID NOT APPLY: no <url> to duplicate'
+extra = '<url><loc>' + sys.argv[2] + '/nowhere/</loc></url>'
+p.write_text(t.replace('<url>', extra + '<url>', 1))
+" "$work/sitemap.xml" "$DEPLOY_ORIGIN"
+expect_refusal "a sitemap with more entries than the build has pages is refused" \
+  "lists page(s) the build does not contain" \
+  "$checker" "$DEPLOY_ORIGIN" "$work"
+
 # --- and a development build, which is the one most likely to be sitting in dist/ -----------
 fixture
 expect_refusal "a localhost origin is refused as not deployable at all" \

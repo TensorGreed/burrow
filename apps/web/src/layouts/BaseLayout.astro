@@ -63,9 +63,11 @@ const { title, description } = Astro.props;
 
       It is worth a tag on every page because the failure is otherwise silent until somebody
       chooses a file: `connect-src` names the engine URLs at an ABSOLUTE origin (ADR 0014 §4),
-      so the same `dist/` served anywhere else has a policy forbidding every request it needs.
-      That cost an hour once on a port change, and a custom domain replacing a `pages.dev`
-      hostname is the same mistake with a longer feedback loop.
+      so the same `dist/` served anywhere else cannot load them. That cost an hour once on a
+      port change — and the custom-domain case is no longer hypothetical: since 2026-09-16 this
+      build is for `notonlypdf.com` and Cloudflare still serves it on `burrow-f2s.pages.dev`,
+      permanently and with no redirect available, so there is always a live host where this
+      stamp disagrees and the banner is the only thing that says so.
 
       `Astro.site` and the CSP above now come from ONE input through
       `tools/build-origin.mjs`, so this tag cannot disagree with the policy it is reporting

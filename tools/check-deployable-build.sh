@@ -7,7 +7,7 @@
 # before CSP is consulted. So a `dist/` is bound to one origin, and uploading the wrong one
 # produces a site that looks perfect and whose every tool is dead.
 #
-# `apps/web/src/built-for-origin.test.ts` already asserts the four places AGREE WITH EACH
+# `apps/web/src/built-for-origin.test.ts` already asserts the six places AGREE WITH EACH
 # OTHER. That is not the same question. A build for `http://localhost:4321` is perfectly
 # self-consistent, and it is the one a person gets by running `pnpm build` without thinking
 # about it -- which is the build most likely to be sitting in `dist/` at the moment somebody
@@ -140,5 +140,82 @@ for forbidden in harness host; do
     fail "$dist/$forbidden exists, so this is a HARNESS build. Rebuild without BURROW_HARNESS"
 done
 echo "  no harness route and no /host/ directory"
+
+# --- what a crawler is told ------------------------------------------------------------------
+#
+# LAST GATE BEFORE THE UPLOAD, and these two are the quietest way to get the origin wrong:
+# nothing on the page breaks, and the only symptom is a search engine being asked to index a
+# host this build is not for. They matter more since the custom domain, because the same bytes
+# are also served permanently on the project's `pages.dev` host with no redirect available --
+# so the sitemap and the canonical links are the whole of what stops one site being counted
+# as two.
+robots="$dist/robots.txt"
+[ -f "$robots" ] || fail "no robots.txt in the build, so nothing points a crawler at a sitemap"
+sitemap_line="$(grep -iE '^Sitemap:' "$robots" | head -1 | awk '{print $2}')"
+[ -n "$sitemap_line" ] || fail "robots.txt names no sitemap"
+# THE EXACT FILE THIS GATE THEN VALIDATES, not merely something under the origin. Security
+# review measured the gap: `Sitemap: $expected/not-the-one-that-was-checked` passed, so the
+# gate validated a document no crawler is directed to. A rule that checks a different file
+# from the one it points at is two rules that never meet.
+case "$sitemap_line" in
+  "$expected"/sitemap.xml) : ;;
+  *) fail "robots.txt points at $sitemap_line; this gate validates $expected/sitemap.xml and \
+a crawler must be sent to the file that was checked" ;;
+esac
+grep -qiE '^Disallow:[[:space:]]*/[[:space:]]*$' "$robots" &&
+  fail "robots.txt disallows the whole site; this build would never be indexed"
+
+sitemap="$dist/sitemap.xml"
+[ -f "$sitemap" ] || fail "no sitemap.xml in the build, though robots.txt promises one"
+
+# THE SET, NOT THE COUNT. A count was the first version of this rule and security review
+# measured what it misses: replacing `/credits/` with a second copy of `/` gives seven entries,
+# all on the right origin, with a page silently absent -- and the comment claiming the count
+# was the defence against "4 of 15" was then false, because a count is satisfiable by
+# duplicates. Comparing sorted sets says which route is missing AND which is extra, and cannot
+# be satisfied by a repeat.
+locs="$(grep -oE '<loc>[^<]*</loc>' "$sitemap" | sed -e 's|<loc>||' -e 's|</loc>||' || true)"
+loc_count="$(printf '%s\n' "$locs" | grep -c . || true)"
+
+# A CASE GLOB, NOT A GREP PATTERN, and this file already records why at the `_headers` rule
+# above: the origin was being used as a REGEX there, so `.` matched any character and
+# `https://burrow.app` accepted a stray `https://burrow-app` -- a registrable lookalike
+# satisfying the one rule that enforced exclusivity. Code review caught the identical defect
+# re-planted HERE, three blocks below the comment describing it, and measured it: with the
+# real origin, `https://notonlypdfXcom` was accepted and both success lines printed. `case`
+# does literal prefix matching on a shell pattern, and `$expected` contains no glob
+# metacharacter because `build-origin.mjs` produced it with `URL.origin`.
+stray_locs=""
+while IFS= read -r loc; do
+  [ -n "$loc" ] || continue
+  case "$loc" in
+    "$expected"/*) : ;;
+    *) stray_locs="$stray_locs $loc" ;;
+  esac
+done <<EOF
+$locs
+EOF
+[ -z "$stray_locs" ] || fail "the sitemap lists URLs not under $expected:$stray_locs"
+
+# EVERY BUILT PAGE IS LISTED, AND NOTHING ELSE IS. `pages` holds the index.html paths found by
+# scanning the build; a page's URL is its directory with a trailing slash.
+want_paths="$(for page in "${pages[@]}"; do
+  rel="${page#"$dist"}"
+  printf '%s\n' "${rel%index.html}"
+done | sort)"
+# `|| true` ON EVERY FILTER IN THIS PIPELINE. `set -e` applies inside a command substitution,
+# and `grep` returning 1 on no match is not an error here -- an EMPTY sitemap is exactly the
+# case this block must REPORT. Without it the script died silently part way through, which the
+# self-test caught as "refused, but not for the stated reason": a gate that exits non-zero with
+# no message is worse than the defect it was looking for, because the caller sees a failure
+# with nothing to act on.
+got_paths="$(printf '%s\n' "$locs" | grep -v '^$' | while IFS= read -r loc; do
+  printf '%s\n' "${loc#"$expected"}"
+done | sort || true)"
+missing="$(comm -23 <(printf '%s\n' "$want_paths") <(printf '%s\n' "$got_paths") | tr '\n' ' ')"
+extra="$(comm -13 <(printf '%s\n' "$want_paths") <(printf '%s\n' "$got_paths") | tr '\n' ' ')"
+[ -z "${missing// /}" ] || fail "the sitemap does not list built page(s): $missing"
+[ -z "${extra// /}" ] || fail "the sitemap lists page(s) the build does not contain: $extra"
+echo "  robots.txt + sitemap.xml: $loc_count URL(s), exactly the built pages, all under $expected"
 
 echo "OK -- this build is deployable to $expected and to nowhere else."

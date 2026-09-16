@@ -130,6 +130,16 @@ test("a page served from the wrong origin says so, in the page, before anything 
   // reaches — not appended below a tool that will not work.
   const firstClass = await page.evaluate(() => document.body.firstElementChild?.className ?? "");
   expect(firstClass).toBe("origin-mismatch");
+
+  // AND A WAY OFF THIS HOST. The message tells the reader to rebuild with a different
+  // BURROW_SITE, which is advice for whoever deploys and nothing a visitor can act on -- and
+  // the non-canonical host is permanent and cannot carry a redirect, so this link is the only
+  // exit. Asserted in a real browser because that is where the `href` is either a working
+  // link or a string.
+  const link = page.locator(".origin-mismatch a");
+  await expect(link, "the banner diagnoses the problem and offers no way out of it").toHaveCount(1);
+  expect(await link.getAttribute("href")).toBe(ORIGIN);
+  expect(await link.innerText()).toContain(ORIGIN);
 });
 
 test("every route carries the stamp, so the guard has something to compare on all of them", async ({
