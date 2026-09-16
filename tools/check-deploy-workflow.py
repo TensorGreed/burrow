@@ -59,7 +59,24 @@ REQUIRED_PRE_UPLOAD_GATES = ["tools/check-deployable-build.sh"]
 #: exit over something that had not happened, and this is the workflow whose outcome is a live
 #: website. Both of these were inline shell once; the first was wrong in a way nothing could
 #: catch, because an inline gate is a gate nothing can test.
-REQUIRED_POST_UPLOAD_CHECKS = ["tools/check-deployment-url.sh"]
+#: EACH WITH ITS OWN REASON, because they answer different questions and a shared message is
+#: wrong for one of them. There was one entry and one hardcoded sentence; adding a second made
+#: that sentence misdescribe the new check ("nothing would read back where the deploy went"
+#: for a check about document bodies), which in this repository is a bug rather than a wording
+#: preference -- a refusal that names the wrong reason sends the reader to the wrong place.
+REQUIRED_POST_UPLOAD_CHECKS = {
+    "tools/check-deployment-url.sh": (
+        "Nothing would then read back WHERE the deploy went, and a build uploaded to the "
+        "wrong project is green and wrong."
+    ),
+    "tools/check-live-routes.py": (
+        "Nothing would then check WHAT the live origin serves. An edge rewrote every HTML "
+        "response on this origin once -- adding a third-party beacon after the upload -- and "
+        "no other gate could see it: `dist/` does not contain it, the e2e suite serves "
+        "`dist/` locally, the header checks read headers, and a plain `curl` gets the clean "
+        "document because the rewrite is conditional on looking like a browser."
+    ),
+}
 
 #: The secret prefix that must appear in no other workflow. `deploy.yml` being airtight is
 #: worth nothing if `ci.yml` -- which DOES run on `pull_request` -- can read the same token.
@@ -262,18 +279,14 @@ def check_gates_before_upload(workflow: dict, report: list[str]) -> None:
                 f"`{gate}` runs at step {at + 1} ({step_label(steps[at])}), AFTER the upload "
                 f"at step {upload + 1}. That is a report, not a gate."
             )
-    for check in REQUIRED_POST_UPLOAD_CHECKS:
+    for check, why in REQUIRED_POST_UPLOAD_CHECKS.items():
         at = index_of(re.escape(check))
         if at is None:
-            raise Refused(
-                f"`{check}` never runs in the `{CREDENTIAL_JOB}` job. Nothing would then read "
-                f"back where the deploy went, and a build uploaded to the wrong project is "
-                f"green and wrong."
-            )
+            raise Refused(f"`{check}` never runs in the `{CREDENTIAL_JOB}` job. {why}")
         if at < upload:
             raise Refused(
                 f"`{check}` runs at step {at + 1}, BEFORE the upload at step {upload + 1}. "
-                f"It reads back what the upload reported, so it cannot precede it."
+                f"It asks what the upload produced, so it cannot precede it. {why}"
             )
     report.append(
         f"{len(REQUIRED_PRE_UPLOAD_GATES)} pre-upload gate(s) and "
