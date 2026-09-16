@@ -15,9 +15,10 @@
 // So the list is derived. Add a kind in Rust and give no page a sentence for it, and this
 // fails naming the kind.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+import { messageFor as compressMessage } from "./compress-messages.js";
 import { messageFor as mergeMessage } from "./merge-messages.js";
 import { messageFor as reorderMessage } from "./reorder-messages.js";
 import { messageFor as splitMessage } from "./split-messages.js";
@@ -60,14 +61,14 @@ const UNHANDLED = "__not_a_kind_any_binding_produces__";
  */
 const FALLBACK_IS_CORRECT: Record<string, string[]> = {
   // The fallback IS the message for these two.
-  Io: ["merge", "rotate", "reorder", "split"],
-  Internal: ["merge", "rotate", "reorder", "split"],
+  Io: ["merge", "rotate", "reorder", "split", "compress"],
+  Internal: ["merge", "rotate", "reorder", "split", "compress"],
   // `Error` is `#[non_exhaustive]`; "Unknown" is the conservative arm and has no sentence of
   // its own by design.
-  Unknown: ["merge", "rotate", "reorder", "split"],
+  Unknown: ["merge", "rotate", "reorder", "split", "compress"],
   // One input, so no input can be named. `merge` must handle it and does -- through the
   // INNER kind, which is why the probe below hands it one.
-  InputFailed: ["rotate", "reorder", "split"],
+  InputFailed: ["rotate", "reorder", "split", "compress"],
 };
 
 type Probe = { kind: string; innerKind?: string };
@@ -77,7 +78,27 @@ const PAGES = [
   { name: "rotate", messageFor: rotateMessage as (f: Probe) => { title: string } },
   { name: "reorder", messageFor: reorderMessage as (f: Probe) => { title: string } },
   { name: "split", messageFor: splitMessage as (f: Probe) => { title: string } },
+  { name: "compress", messageFor: compressMessage as (f: Probe) => { title: string } },
 ];
+
+/**
+ * THE REGISTRY IS ITSELF DERIVED, and this is the half the file was missing.
+ *
+ * `PAGES` was a hand-written list of four while a fifth `*-messages.ts` existed, which is the
+ * exact failure this file was written to retire, one level up: the kinds stopped being
+ * hand-written and the PAGES did not. A kind added in Rust would have failed here naming
+ * merge/rotate/reorder/split and said nothing about `/compress-pdf` -- the page most likely to
+ * meet `OutputRejected`, being a whole-document rewrite with a read-back verify.
+ *
+ * So the number of message modules on disk is compared against the number registered above. A
+ * sixth tool page cannot be added without either registering it or deleting this assertion.
+ */
+function messageModulesOnDisk(): string[] {
+  return readdirSync(new URL(".", import.meta.url))
+    .filter((f) => /^[a-z]+-messages\.ts$/.test(f))
+    .map((f) => f.replace("-messages.ts", ""))
+    .sort();
+}
 
 /**
  * What to hand `messageFor` for a kind.
@@ -92,6 +113,13 @@ function probe(kind: string): Probe {
 }
 
 describe("the binding's error kinds", () => {
+  it("is asked of every page that has sentences, not of a list somebody remembered", () => {
+    // REPORTED AS WELL AS GATED: naming both sides means a mismatch says WHICH page is
+    // unregistered rather than that two numbers differ.
+    expect(PAGES.map((p) => p.name).sort()).toEqual(messageModulesOnDisk());
+    expect(PAGES).toHaveLength(5);
+  });
+
   it("are all handled, on every page that can receive them", () => {
     const kinds = kindsFromRust();
 

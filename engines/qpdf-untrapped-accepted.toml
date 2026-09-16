@@ -229,6 +229,38 @@ that does not exist yet and takes the process down. Measured during ADR 0017's e
 comparison, by core dump."""
 
 [[function]]
+name = "qpdf_set_object_stream_mode"
+reason = """\
+`qpdf->qpdf_writer->setObjectStreamMode(mode)` (qpdf-c.cc:523-527), which reaches \
+`Config::object_streams` -- `object_streams_ = val; return *this;` \
+(QPDFWriter_private.hh:110-114). A plain assignment of a caller-chosen enum onto the writer. \
+It parses nothing, reads nothing from the document, and cannot see a byte of the input. \
+It meets this file's bar and is on the stronger side of it: sibling setters such as \
+`compress_streams` call `Config::usage`, which throws when `permissive_` is false, and \
+`object_streams` has no such call. \
+NOT "cannot throw at all", which an earlier version of this entry said and security review \
+corrected. `qpdf-c.cc:525` calls `QTC::TC(...)` before the forward, and `QTC::TC_real` \
+(QTC.cc:16-49) inserts into two function-local statics -- so `std::bad_alloc` is reachable, \
+the defined-abort case this file already reasons about -- and, when BOTH `TC_SCOPE=qpdf` and \
+`TC_FILENAME` are set in the environment, calls `QUtil::safe_fopen`, which throws \
+`std::runtime_error` if the file cannot be opened. Neither path is reachable from file \
+content, and the second is inert unless someone sets those variables; both are identical for \
+every setter this file already accepts. Recorded because an entry that markets itself as \
+stronger than the bar has to be exact about where it stops. \
+Worth noting alongside: `permissive_` defaults true (QPDFWriter_private.hh:319), so even the \
+`usage()`-calling siblings would not throw in burrow's configuration -- the contrast with \
+`compress_streams` is real but narrower than "cannot throw". \
+The `mode` is always one of the two constants in `qpdf/ffi.rs`, so the C enum cannot receive \
+a value it has no case for. \
+Must be called AFTER `qpdf_init_write_memory`, for the same reason \
+`qpdf_set_deterministic_ID` records -- the writer does not exist until that call succeeds and \
+this dereferences it. \
+Set to `qpdf_o_generate` only by `compress`; every other operation passes `qpdf_o_preserve`, \
+which is qpdf's own default, spelled out at the call site so the difference is visible. \
+Spike 0005 measured why this is the only compression lever burrow declares: the other four \
+the C API exposes are already the writer's defaults."""
+
+[[function]]
 name = "qpdf_oh_new_integer"
 reason = """\
 `new_object(qpdf, QPDFObjectHandle::newInteger(value))` (qpdf-c.cc:1487-1492) -- constructs \

@@ -133,6 +133,29 @@ pub struct Reply {
     /// thing the corpus is for -- the inheritance walk is where native and web would most
     /// plausibly diverge.
     rotations: Vec<i64>,
+    /// What the caller handed in, in bytes, for an operation that compares the two.
+    ///
+    /// **Both counts ride on the reply so a page needs no second round trip.** `compress` is
+    /// the only operation whose answer can be "nothing, and here is why": roughly 8.7% of
+    /// qpdf's own corpus does not get smaller (spike 0005), and a page that showed no result
+    /// without a number would be telling somebody less than it knows. With these two it can
+    /// say *"already efficiently stored — we produced 1.2 MB against your 1.1 MB, so we kept
+    /// yours"* from the reply it already has.
+    ///
+    /// The alternative was for the page to measure the input itself. It holds the `File`, so
+    /// it could — but then the numbers a person reads come from two different places, and the
+    /// one burrow actually compared is the one it cannot see. These are the bytes the decision
+    /// was made on.
+    ///
+    /// Zero for every operation that does not compare.
+    original_bytes: u64,
+    /// What the re-encoding came to, in bytes, whether or not it was kept.
+    ///
+    /// **The number that is otherwise gone.** On the not-smaller branch the produced document
+    /// is discarded — `burrow_ops::compress` returns no bytes precisely so no copy is held —
+    /// so this is the only record that it existed and what it weighed. Zero for every
+    /// operation that does not compare.
+    produced_bytes: u64,
     /// The document an operation produced, or empty for one that produces none.
     ///
     /// **The first thing a `Reply` carries that is not a scalar.** Held as `Vec<u8>` and
@@ -190,6 +213,29 @@ impl Reply {
     #[must_use]
     pub fn pages(&self) -> u64 {
         self.pages
+    }
+
+    /// What the caller handed in, in bytes, for an operation that compares the two.
+    ///
+    /// Zero for every operation that does not compare. A count this crate measured, never
+    /// anything derived from the document's content.
+    #[wasm_bindgen(getter, js_name = originalBytes)]
+    #[must_use]
+    pub fn original_bytes(&self) -> u64 {
+        self.original_bytes
+    }
+
+    /// What the re-encoding came to, in bytes, whether or not it was kept.
+    ///
+    /// **Read this rather than the output's length.** When the re-encoding was not kept there
+    /// is no output to measure, and this is the only record of what it weighed — which is the
+    /// number that makes "already efficiently stored" a report rather than a shrug.
+    ///
+    /// Zero for every operation that does not compare.
+    #[wasm_bindgen(getter, js_name = producedBytes)]
+    #[must_use]
+    pub fn produced_bytes(&self) -> u64 {
+        self.produced_bytes
     }
 
     /// Which limit was exceeded, for a `LimitExceeded` result.
@@ -370,6 +416,8 @@ impl Reply {
             failed_input: -1,
             output: Vec::new(),
             rotations: Vec::new(),
+            original_bytes: 0,
+            produced_bytes: 0,
         }
     }
 
@@ -380,6 +428,18 @@ impl Reply {
     /// a second parse of bytes we just wrote.
     fn produced(pages: u64, output: Vec<u8>) -> Self {
         let mut reply = Self::success(pages);
+        reply.output = output;
+        reply
+    }
+
+    /// A success carrying the two sizes a comparison was decided on.
+    ///
+    /// `output` is empty when the re-encoding was not kept — which is a success, not a
+    /// failure: the file was already efficiently stored, and that is a fact about the file.
+    fn compared(pages: u64, original_bytes: u64, produced_bytes: u64, output: Vec<u8>) -> Self {
+        let mut reply = Self::success(pages);
+        reply.original_bytes = original_bytes;
+        reply.produced_bytes = produced_bytes;
         reply.output = output;
         reply
     }
@@ -456,6 +516,8 @@ impl Reply {
             // exists to prevent.
             output: Vec::new(),
             rotations: Vec::new(),
+            original_bytes: 0,
+            produced_bytes: 0,
         }
     }
 }
@@ -1148,6 +1210,79 @@ pub fn rotate(
             // re-opening the document, and a cheap cross-check that the invariant held.
             let pages = output_page_count(&output);
             Reply::produced(pages, output)
+        }
+        Err(error) => Reply::failure(&error),
+    }
+    .with_lifecycle(&limits)
+}
+
+/// Re-encode a document smaller, and say so when it could not be.
+///
+/// # The reply carries both sizes, and that is the whole shape of this entry point
+///
+/// `compress` is the only operation whose successful answer can be *"nothing, and here is
+/// why"*. Measured: roughly **8.7%** of qpdf's own corpus does not get smaller — 3.4% grows
+/// strictly and 5.3% comes out byte-identical (spike 0005) — so this is a common answer rather
+/// than an edge case, and it is a **success**, not a failure. Nothing went wrong; the file was
+/// already efficiently stored, which is a fact about the file.
+///
+/// So the reply carries [`Reply::original_bytes`] and [`Reply::produced_bytes`] whichever way
+/// it went, and [`Reply::take_output`] is empty when the re-encoding was not kept. A page can
+/// report the real result from one message, with no second round trip and no measuring of its
+/// own — which matters because the number that decided it is the one burrow measured, not the
+/// one the page could measure for itself.
+///
+/// **No copy of the input crosses this boundary in either direction.** The core returns two
+/// counts rather than the caller's bytes ([ADR 0025](../../../docs/adr/0025-what-compress-does-and-what-it-refuses-to-do.md) §3),
+/// and the page still holds the `File` it sent (ADR 0015), so a page offering the original
+/// needs nothing from here.
+///
+/// # What it does, and what it will not do
+///
+/// Lossless, by construction: one storage lever, no image re-encoded, no font subsetted, no
+/// content stream's meaning changed. What it is worth varies by two orders of magnitude —
+/// 85.6% on a form of many small objects, 0.15% on a scan — and a page quoting a single figure
+/// would be averaging across incomparable documents.
+///
+/// # Errors
+///
+/// Never panics. Every failure arrives as the typed result in the [`Reply`]: a document that
+/// cannot be read, a ceiling reached, or `OutputRejected` if what burrow produced is not what
+/// it promised (ADR 0022).
+#[wasm_bindgen]
+#[must_use]
+pub fn compress(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
+    let limits = limits.to_core();
+    let clock: Arc<dyn Clock> = Arc::new(WebClock);
+    let password = password.map(|p| Password::new(&p));
+
+    let mut options = OpenOptions::new(limits, clock);
+    options.password = password.as_ref();
+
+    match burrow_core::ops::compress(&qpdf(), bytes, &options) {
+        Ok(outcome) => {
+            let original = outcome.original_bytes();
+            let produced = outcome.produced_bytes();
+            match outcome {
+                burrow_core::ops::Outcome::Smaller { document, .. } => {
+                    // The page count of what was produced. Compression cannot change it --
+                    // that is one of the operation's invariants and ADR 0022 already refused
+                    // an output where it did -- so this is a readout the page can show without
+                    // re-opening the document.
+                    let pages = output_page_count(&document);
+                    Reply::compared(pages, original, produced, document)
+                }
+                // NOT A FAILURE, and the reply says so: `ok` is true, there are simply no
+                // bytes. A page that treated an empty output as an error would tell somebody
+                // their file was broken when it was merely already efficient.
+                //
+                // The page count is 0 rather than the input's: nothing was produced to count,
+                // and reading it back off a document burrow did not return would be reporting
+                // a number about bytes the caller never receives from here.
+                burrow_core::ops::Outcome::NotSmaller { .. } => {
+                    Reply::compared(0, original, produced, Vec::new())
+                }
+            }
         }
         Err(error) => Reply::failure(&error),
     }

@@ -79,6 +79,36 @@ mod measure {
         fn qpdf_cleanup(q: *mut QpdfData);
         fn qpdf_silence_errors(q: QpdfData);
         fn qpdf_set_suppress_warnings(q: QpdfData, v: c_int);
+
+        // THE THIRD LAYER, which this harness did not have. Without a discarding logger qpdf
+        // writes warnings quoting OBJECT NUMBERS AND BYTE OFFSETS from the file to stderr --
+        // for documents that parse successfully, not only for failures. `qpdf/limits.rs`
+        // installs one for exactly this reason and says so; this file silenced two layers of
+        // three. Found by security review while the same defect was being fixed in
+        // `measure-merge`.
+        //
+        // Four parameters: `(handle, dest, qpdf_log_fn_t fn, void* udata)`
+        // (`qpdflogger-c.h:70-77`).
+        fn qpdf_set_logger(q: QpdfData, logger: *mut c_void);
+        fn qpdflogger_create() -> *mut c_void;
+        fn qpdflogger_set_info(
+            logger: *mut c_void,
+            dest: c_int,
+            fun: *const c_void,
+            udata: *mut c_void,
+        );
+        fn qpdflogger_set_warn(
+            logger: *mut c_void,
+            dest: c_int,
+            fun: *const c_void,
+            udata: *mut c_void,
+        );
+        fn qpdflogger_set_error(
+            logger: *mut c_void,
+            dest: c_int,
+            fun: *const c_void,
+            udata: *mut c_void,
+        );
         fn qpdf_read_memory(
             q: QpdfData,
             desc: *const c_char,
@@ -154,6 +184,17 @@ mod measure {
             let q = qpdf_init();
             qpdf_silence_errors(q);
             qpdf_set_suppress_warnings(q, 1);
+            // 3 is `qpdf_log_dest_discard` (`qpdflogger-c.h:58-63`) -- qpdf's own `Pl_Discard`,
+            // reachable by name from C, so no Rust code runs on a C++ stack. NOT 0, which is
+            // `qpdf_log_dest_default` and selects stdout/stderr; that mistake is what
+            // `measure-merge` and `measure-compress` carried until security review.
+            let logger = qpdflogger_create();
+            let none = std::ptr::null();
+            let no_data = std::ptr::null_mut();
+            qpdflogger_set_info(logger, 3, none, no_data);
+            qpdflogger_set_warn(logger, 3, none, no_data);
+            qpdflogger_set_error(logger, 3, none, no_data);
+            qpdf_set_logger(q, logger);
             let desc = CString::new("input").unwrap();
             let rc = qpdf_read_memory(
                 q,

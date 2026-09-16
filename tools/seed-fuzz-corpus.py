@@ -69,6 +69,11 @@ SOURCES = [
 # number against the target's own source on every run. A prefix that drifts silently turns
 # every seed for that target into a truncated document, and the run still reports clean.
 PREFIXES = {
+    # COMPRESS TAKES NO PREFIX, and that is a property of the operation rather than a choice.
+    # It has no page list, no angle and no cut, so there is nothing for a leading byte to
+    # steer -- and taking one would shift every seeded fixture by one byte, breaking the PDF
+    # header on every case. Its whole input is the document.
+    "compress": 0,
     "document_open": 0,
     "prescan": 0,
     "qpdf_check": 0,

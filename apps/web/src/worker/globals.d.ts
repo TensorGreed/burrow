@@ -91,6 +91,8 @@ interface EmscriptenModule extends EmscriptenConfig {
   _qpdf_init_write_memory(data: number): number;
   /** Note the upstream spelling: `ID` is capitalised in qpdf's C API. */
   _qpdf_set_deterministic_ID(data: number, value: number): void;
+  /** The one compression lever. 1 is preserve, 2 is generate (`Constants.h:134-138`). */
+  _qpdf_set_object_stream_mode(data: number, mode: number): void;
   _qpdf_write(data: number): number;
   _qpdf_get_buffer_length(data: number): number;
   _qpdf_get_buffer(data: number): number;
@@ -207,6 +209,14 @@ declare const wasm_bindgen: {
    * change it.
    */
   page_rotations(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
+  /**
+   * Re-encode a document smaller, and say so when it could not be.
+   *
+   * A successful reply with NO output is the ordinary "already efficiently stored"
+   * answer, not a failure. `originalBytes` and `producedBytes` carry the result either
+   * way, so a page needs no second round trip.
+   */
+  compress(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
   structure_check(
     bytes: Uint8Array,
     password: Uint8Array | undefined,
@@ -305,6 +315,17 @@ interface Reply {
   readonly rotations: BigInt64Array;
   /** What was wrong with that input, or empty. */
   readonly innerKind: string;
+  /**
+   * What the caller handed in, in bytes. `compress` only; zero elsewhere.
+   */
+  readonly originalBytes: bigint;
+  /**
+   * What the re-encoding came to, whether or not it was kept. `compress` only.
+   *
+   * Read this rather than `outputLength`: when the re-encoding was not kept there is no
+   * output to measure, and this is the only record of what it weighed.
+   */
+  readonly producedBytes: bigint;
   /** Bytes in the produced document, without taking it. Zero if there is none. */
   readonly outputLength: number;
   /**
@@ -360,6 +381,8 @@ interface WorkerGlobalScope {
   __burrow_qpdf_add_page(data: number, source: number, page: number, first: number): number;
   __burrow_qpdf_init_write_memory(data: number): number;
   __burrow_qpdf_set_deterministic_id(data: number, value: number): void;
+  /** The mode is decided in Rust and passed through unexamined. ADR 0009 §2. */
+  __burrow_qpdf_set_object_stream_mode(data: number, mode: number): void;
   __burrow_qpdf_write(data: number): number;
   __burrow_qpdf_get_buffer_length(data: number): number;
   __burrow_qpdf_get_buffer(data: number): number;

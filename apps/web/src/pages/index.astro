@@ -38,7 +38,16 @@ const plannedTools = [
     blurb: "Move pages around without losing any of them.",
     href: "/reorder-pdf",
   },
-  { name: "Compress PDF", blurb: "Make a PDF smaller to send or store." },
+  {
+    name: "Compress PDF",
+    // SAYS WHAT IT DOES, not what a person hopes. "Make a PDF smaller" is what every other
+    // tool of this name promises and then delivers by re-encoding images at lower quality.
+    // Spike 0005 measured burrow's answer at 85.6% on a form and 0.15% on a scan, so the
+    // blurb names the mechanism instead -- somebody with a scan should be able to tell from
+    // here that this is not the tool that will shrink it.
+    blurb: "Store a PDF more efficiently, without re-encoding anything.",
+    href: "/compress-pdf",
+  },
 ] as { name: string; blurb: string; href?: string }[];
 ---
 

@@ -49,6 +49,13 @@ export function replyShape(): Record<string, unknown> {
     // `rotations` was added: two suites went red on "expected LimitExceeded, got Internal".
     // The guard around `drainReply` is what turned it into a failure rather than a crash.
     rotations: new BigInt64Array(0),
+    // THE SAME LESSON, ONE OPERATION LATER. `compress` added two counts that `drainReply`
+    // calls `.toString()` on, so omitting them here throws exactly as `Array.from(undefined)`
+    // did -- and the suites go red on "expected LimitExceeded, got Internal", nowhere near
+    // what they were testing. Named as `drainReply` reads them, which is the wasm-bindgen
+    // getter spelling rather than the Rust field's.
+    originalBytes: 0n,
+    producedBytes: 0n,
     take_output: () => null,
     free: () => {},
   };

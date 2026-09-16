@@ -268,6 +268,17 @@ function drainReply(id, reply) {
       // in the file and the type that reads it is `i64`; the conversion is the only
       // arithmetic on this line and it cannot lose a quarter turn.
       rotations: Array.from(reply.rotations, (n) => Number(n)),
+      // BOTH SIZES A COMPARISON WAS DECIDED ON, for `compress`. Strings for the same reason
+      // `requested` and `allowed` are: these are `u64`, and a document above 2^53 bytes is
+      // not reachable but the type is the type -- rounding a size a person is reading would
+      // be a small lie with no upside.
+      //
+      // They ride on every reply so a page needs no second round trip: `compress` is the one
+      // operation whose successful answer can be "nothing, and here is why", and
+      // `producedBytes` is the ONLY record of what the discarded re-encoding weighed. Zero
+      // for every other operation.
+      originalBytes: reply.originalBytes.toString(),
+      producedBytes: reply.producedBytes.toString(),
       // WHICH input failed, as a number rather than something to parse out of `message`.
       // -1 when the failure is not about a particular input.
       failedInput: reply.failedInput,
@@ -349,6 +360,7 @@ self.onmessage = async (event) => {
       request.op !== "structure_check" &&
       request.op !== "merge" &&
       request.op !== "rotate" &&
+      request.op !== "compress" &&
       request.op !== "reorder" &&
       request.op !== "split" &&
       request.op !== "page_rotations"
@@ -595,6 +607,15 @@ self.onmessage = async (event) => {
       }
       splitInto(request.id, bytes, Uint32Array.from(cuts), password, limits);
       return;
+    } else if (request.op === "compress") {
+      // ONE INPUT, AND SOMETIMES NO OUTPUT. Compression takes no selection at all -- no page
+      // list, no angle, no cut -- so there is nothing here to validate or refuse: the whole
+      // request is the document.
+      //
+      // The reply carries `originalBytes` and `producedBytes` whichever way it went, so a
+      // page can report "already efficiently stored" from this one message. An empty output
+      // on a successful reply is NOT an error here; see the reply shape below.
+      reply = wasm_bindgen.compress(bytes, password, limits);
     } else if (request.op === "page_rotations") {
       reply = wasm_bindgen.page_rotations(bytes, password, limits);
     } else if (request.op === "page_count") {

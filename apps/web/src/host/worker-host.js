@@ -65,6 +65,17 @@
  *   Present only on a successful split, and only when every part arrived (ADR 0023 §3): a
  *   failed one delivers nothing, because `split` is a partition and a subset of the parts is
  *   not a partition of anything.
+ * @property {string} [originalBytes] What the input weighed, as `compress` measured it.
+ * @property {string} [producedBytes] What burrow's own version weighed.
+ *
+ *   BOTH ARE STRINGS BECAUSE THEY ARE `u64`, the same reason `requested` and `allowed` are.
+ *
+ *   They ride on the reply so the page can say "already efficiently stored" without a second
+ *   round trip, and `producedBytes` is the ONLY record of what the rewrite weighed on the
+ *   outcome where it is discarded -- `compress` returns two counts rather than a copy of the
+ *   input (ADR 0025 §3), so there is no document left to measure.
+ *
+ *   ABSENT ON EVERY OTHER OPERATION, hence optional: nothing but `compress` computes them.
  * @property {Blob | null} [output] The document an operation produced, or null.
  *
  *   A Blob rather than bytes, for the same reason the INPUT is one (ADR 0015 §4):

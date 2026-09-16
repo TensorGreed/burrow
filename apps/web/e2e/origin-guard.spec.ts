@@ -1,4 +1,4 @@
-import { createReadStream, readFileSync } from "node:fs";
+import { createReadStream, readdirSync, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
@@ -28,6 +28,25 @@ import { ORIGIN } from "../playwright.config.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(here, "..", "dist");
+
+/**
+ * Every landing route in the built site, as a URL path.
+ *
+ * Read off `dist/**` + `/index.html` rather than off `src/pages/`, because what a person can
+ * visit is what was built -- `astro.config.mjs` DELETES the harness route from production
+ * builds, so a source-derived list would demand a stamp on a page that does not ship.
+ */
+function routesInBuild(): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, prefix: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(dir, entry.name), `${prefix}${entry.name}/`);
+      else if (entry.name === "index.html") out.push(prefix === "" ? "/" : `/${prefix}`);
+    }
+  };
+  walk(dist, "");
+  return out.sort();
+}
 
 /**
  * A port no other part of the suite uses. 4321 is the site, 4322 the foreign logger.
@@ -119,14 +138,20 @@ test("every route carries the stamp, so the guard has something to compare on al
   // A per-route assertion because the stamp lives in the shared layout, and "the shared
   // layout" is a claim rather than a fact until each route is looked at. A page that opted
   // out would be a page where this guard silently returns `unknown`.
-  for (const route of [
-    "/",
-    "/merge-pdf/",
-    "/rotate-pdf/",
-    "/reorder-pdf/",
-    "/split-pdf/",
-    "/credits/",
-  ]) {
+  //
+  // THE LIST IS DERIVED FROM THE BUILD, not written here. It was six hand-written routes
+  // while the build shipped seven, so `/compress-pdf` -- the newest route and therefore the
+  // one most likely to have missed the layout -- went unasserted, and the test's own claim
+  // above stopped being true of it. A list somebody has to remember to extend is exactly what
+  // this file is checking the LAYOUT against; it should not be the thing doing the checking.
+  const routes = routesInBuild();
+
+  // GATED ON THE COUNT TOO. A glob that matched nothing would assert nothing and pass, which
+  // is this repository's "4 of 15" in a for-loop.
+  expect(routes.length, `only ${routes.length} route(s) found in dist/`).toBeGreaterThanOrEqual(7);
+  expect(routes, "the build has no home page; the scan is wrong, not the build").toContain("/");
+
+  for (const route of routes) {
     await page.goto(`${MISMATCH_ORIGIN}${route}`);
     const builtFor = await page.getAttribute('meta[name="burrow-built-for"]', "content");
     expect(builtFor, `${route} carries no build origin`).toBe(ORIGIN);

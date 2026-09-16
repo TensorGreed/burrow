@@ -282,7 +282,8 @@ impl PageExtractor for Qpdf {
             &source.deadline,
         )?;
 
-        let output = write_out(&dest, &source.document)?;
+        // PRESERVE. A split's parts are a subset of the input, not a recompression of it.
+        let output = write_out(&dest, &source.document, ObjectStreams::Preserve)?;
 
         // WHAT THE SPLIT HAS COST SO FAR. `max_memory_bytes` DETECTS rather than bounds
         // (ADR 0007's 2026-09-12 amendment), and this is the only place on the split path
@@ -315,7 +316,46 @@ impl PageExtractor for Qpdf {
 /// in place rather than copying pages between documents, so the document that must outlive the
 /// write *is* the one being written. `write_out(&doc, &doc)` reads like a mistake and is not;
 /// the parameter states a rule, and in the in-place case the same document satisfies it.
-pub(super) fn write_out(dest: &Document, _source_must_outlive_this: &Document) -> Result<Vec<u8>> {
+/// Whether the writer packs objects into object streams.
+///
+/// A typed enum rather than `ffi`'s raw `qpdf_object_stream_e`, and that is not decoration.
+/// `handle.rs`'s reachability test records which modules name the qpdf C API directly, and the
+/// property it protects is that a module reaching qpdf only through `ObjectHandle` and
+/// `open_document` names `ffi` nowhere. Passing the raw constant at each call site broke that
+/// for `rotate.rs`, which had never named `ffi` before — the test said so immediately.
+///
+/// So the C enum is confined to `write_out`, and the call sites say what they mean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ObjectStreams {
+    /// Leave the input's object streams as they are. qpdf's own writer default, and what every
+    /// operation that is not `compress` emits.
+    Preserve,
+    /// Pack non-stream objects into object streams, with a cross-reference stream.
+    ///
+    /// The one thing `compress` does that no other operation does — spike 0005.
+    Generate,
+}
+
+impl ObjectStreams {
+    /// The `qpdf_object_stream_e` value, which only `write_out` has any business seeing.
+    fn as_ffi(self) -> ffi::QpdfObjectStreamMode {
+        match self {
+            Self::Preserve => ffi::QPDF_O_PRESERVE,
+            Self::Generate => ffi::QPDF_O_GENERATE,
+        }
+    }
+}
+
+/// **`object_streams` is stated at every call site, never defaulted.** It is the only write
+/// parameter that differs between operations, and spike 0005's whole finding is that it is the
+/// only thing `compress` does that the others do not. A default here would put that difference
+/// somewhere a reader of `rotate` cannot see, and would make "does this operation compress?" a
+/// question about a function signature elsewhere.
+pub(super) fn write_out(
+    dest: &Document,
+    _source_must_outlive_this: &Document,
+    object_streams: ObjectStreams,
+) -> Result<Vec<u8>> {
     // SAFETY: `dest.data` is a live handle. Routes through `trap_errors`.
     let init = unsafe { ffi::qpdf_init_write_memory(dest.data) };
     if ffi::has_errors(init) {
@@ -330,6 +370,16 @@ pub(super) fn write_out(dest: &Document, _source_must_outlive_this: &Document) -
     // SAFETY: the writer was just created successfully. The call assigns a bool and parses
     // nothing; argued in `engines/qpdf-untrapped-accepted.toml`.
     unsafe { ffi::qpdf_set_deterministic_ID(dest.data, ffi::QPDF_TRUE) };
+
+    // THE ONE COMPRESSION LEVER. `qpdf_o_preserve` is qpdf's own default and is what every
+    // operation but `compress` passes; `qpdf_o_generate` packs non-stream objects into object
+    // streams and is what `compress` is. Spelling the default out costs one call and makes the
+    // difference between the operations legible where it happens.
+    //
+    // SAFETY: the writer was just created successfully. The call assigns an enum onto the
+    // writer and parses nothing -- argued in `engines/qpdf-untrapped-accepted.toml`, where the
+    // argument is that `Config::object_streams` has no throw path at all.
+    unsafe { ffi::qpdf_set_object_stream_mode(dest.data, object_streams.as_ffi()) };
 
     // SAFETY: `dest.data` is live with a prepared writer, and the source is alive for the
     // whole of this call because it is borrowed by it. Routes through `trap_errors`.

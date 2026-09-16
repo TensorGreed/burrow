@@ -236,17 +236,44 @@ pub enum Operation {
     /// path that stopped pruning reports `Ok` and diverges. Verified by mutation on both sides;
     /// see `tools/test-prune-is-reached.sh`.
     Split,
+    /// `burrow_ops::compress`, over qpdf. **The whole document; there is no selection.**
+    ///
+    /// # What this case can and cannot catch, because the difference is not obvious
+    ///
+    /// The observable is the page count, the rotation vector, and **whether the output came
+    /// back smaller**. The first two are ADR 0022's witness and catch what they catch
+    /// everywhere: a page lost, a page reattributed, a document one path refuses and the other
+    /// does not.
+    ///
+    /// **The third is here because without it this case would be nearly blind.** Compression's
+    /// specific divergence risk is one path setting `qpdf_o_generate` and the other not — and
+    /// that produces a valid document with an identical page count and an identical rotation
+    /// vector on both sides. A case comparing only those would pass against a web path that had
+    /// silently become a plain write, which is the exact failure this corpus exists to find.
+    ///
+    /// **It is a BOOLEAN rather than a byte count, deliberately.** Comparing sizes would assert
+    /// that native libqpdf and the same source compiled to wasm emit byte-identical output — a
+    /// much stronger claim than this corpus needs, and one that would fail the whole operation
+    /// over a single byte of difference in a build detail. "Did it get smaller" is the property
+    /// the operation actually promises, and it differs between a path that compresses and one
+    /// that does not.
+    ///
+    /// What it still cannot see: two paths that both compress but by different amounts, and
+    /// anything about what compression did to a page's *content* — which is
+    /// `compress_keeps_everything.rs`'s job and cannot be a runtime comparison (ADR 0022).
+    Compress,
 }
 
 impl Operation {
     /// Every operation, in a stable order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::PageCount,
         Self::StructureCheck,
         Self::Merge,
         Self::Rotate,
         Self::Reorder,
         Self::Split,
+        Self::Compress,
     ];
 
     /// The name used in the JSON and in the harness's records.
@@ -259,6 +286,7 @@ impl Operation {
             Self::Rotate => "rotate",
             Self::Reorder => "reorder",
             Self::Split => "split",
+            Self::Compress => "compress",
         }
     }
 }
@@ -295,6 +323,16 @@ pub enum Outcome {
         /// implementations walk that tree separately, on purpose.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotations: Option<Vec<i64>>,
+        /// Whether the output came back smaller than the input. `compress` cases.
+        ///
+        /// **Because a page count and a rotation vector cannot see compression happening.** A
+        /// path that stopped setting the object stream mode would emit a valid document with
+        /// both of those identical, and the case would pass — see [`Operation::Compress`].
+        ///
+        /// A boolean rather than a size: comparing byte counts across native libqpdf and the
+        /// same source compiled to wasm asserts far more than this corpus needs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compressed: Option<bool>,
     },
     /// The operation fails, exactly this way.
     Err(Failure),
@@ -468,6 +506,27 @@ pub fn outcome_of(result: &burrow_types::Result<u64>) -> Outcome {
     outcome_with_rotations(result, None)
 }
 
+/// The same, carrying the rotations AND whether the output got smaller — `compress` cases.
+///
+/// A third entry point rather than more arguments on the others, for the reason
+/// `outcome_with_rotations` gives about itself: an operation that has no compression verdict
+/// should not be passing `None` for one.
+#[must_use]
+pub fn outcome_with_compression(
+    result: &burrow_types::Result<u64>,
+    rotations: Option<Vec<i64>>,
+    compressed: Option<bool>,
+) -> Outcome {
+    if let Ok(pages) = result {
+        return Outcome::Ok {
+            page_count: *pages,
+            rotations,
+            compressed,
+        };
+    }
+    outcome_of_failure(result)
+}
+
 /// The same, carrying the rotations a `rotate` case compares.
 ///
 /// Separate entry point rather than a fourth argument everywhere: three of the four
@@ -482,6 +541,7 @@ pub fn outcome_with_rotations(
         return Outcome::Ok {
             page_count: *pages,
             rotations,
+            compressed: None,
         };
     }
     outcome_of_failure(result)
@@ -492,6 +552,7 @@ fn outcome_of_failure(result: &burrow_types::Result<u64>) -> Outcome {
         Ok(pages) => Outcome::Ok {
             page_count: *pages,
             rotations: None,
+            compressed: None,
         },
         Err(error) => {
             let kind = ErrorKind::of(error).unwrap_or_else(|| {

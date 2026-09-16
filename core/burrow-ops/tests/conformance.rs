@@ -45,7 +45,8 @@ use burrow_engines::{CheckOptions, DocumentEngine, OpenOptions, StructureEngine}
 use burrow_types::{Limits, ManualClock, Password};
 use expectations::{
     Case, Expectations, MILESTONES, Operation, Outcome, OutcomeRecord, Platform, RecordedOutcome,
-    conformance_dir, milestone_index, outcome_of, outcome_with_rotations, sha256_hex,
+    conformance_dir, milestone_index, outcome_of, outcome_with_compression, outcome_with_rotations,
+    sha256_hex,
 };
 
 /// The schema version this test understands. A newer file must fail, not be guessed at.
@@ -192,6 +193,53 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         };
     }
 
+    if operation == Operation::Compress {
+        // THE WHOLE DOCUMENT; compression takes no selection at all.
+        //
+        // Three things are recorded, and the third is the one this case exists for: a page
+        // count and a rotation vector are identical whether or not the object stream mode was
+        // set, so without `compressed` a path that had become a plain write would pass. See
+        // `Operation::Compress`.
+        let mut options = OpenOptions::new(limits, clock);
+        options.password = password.as_ref();
+
+        let engine = Qpdf::new();
+        let outcome = burrow_ops::compress(&engine, first(), &options).and_then(|out| {
+            // WHETHER IT GOT SMALLER, as a boolean rather than a size -- comparing byte counts
+            // across native libqpdf and the same source in wasm asserts far more than this
+            // corpus needs.
+            let smaller = matches!(out, burrow_ops::Outcome::Smaller { .. });
+            // READ BACK OUT OF THE EMITTED BYTES where there are any. On the not-smaller
+            // branch nothing is returned -- that is the operation's contract -- so the count
+            // and the vector come from the INPUT, which is what the caller still has and what
+            // compression promised not to change.
+            let document = match out {
+                burrow_ops::Outcome::Smaller { document, .. } => document,
+                burrow_ops::Outcome::NotSmaller { .. } => first().into_vec(),
+            };
+            let options = OpenOptions::new(limits, Arc::new(ManualClock::new(0)));
+            let engine = Qpdf::new();
+            let source =
+                burrow_engines::PageRotator::open(&engine, document.into_boxed_slice(), &options)?;
+            let total = burrow_engines::PageRotator::pages(&engine, &source)?;
+            let mut rotations = Vec::with_capacity(usize::try_from(total).unwrap_or(0));
+            for page in 0..total {
+                rotations.push(
+                    burrow_engines::PageRotator::effective_rotation(&engine, &source, page)?
+                        .degrees(),
+                );
+            }
+            Ok((total, rotations, smaller))
+        });
+
+        return match outcome {
+            Ok((total, rotations, smaller)) => {
+                outcome_with_compression(&Ok(total), Some(rotations), Some(smaller))
+            }
+            Err(error) => outcome_of(&Err(error)),
+        };
+    }
+
     if operation == Operation::Split {
         // CUT AFTER THE FIRST PAGE, fixed like rotate's angle and reorder's reversal.
         //
@@ -261,6 +309,7 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         Operation::Rotate => unreachable!("rotate returns before this match"),
         Operation::Reorder => unreachable!("reorder returns before this match"),
         Operation::Split => unreachable!("split returns before this match"),
+        Operation::Compress => unreachable!("compress returns before this match"),
     };
     outcome_of(&result)
 }

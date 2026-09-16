@@ -28,6 +28,7 @@
 /// than the one hop it costs.
 pub use burrow_engines as engines;
 
+pub mod compress;
 pub mod merge;
 pub mod reorder;
 pub mod rotate;
@@ -40,6 +41,7 @@ pub mod split;
 /// putting it there would read as part of the calling surface rather than of the seam.
 pub mod verify;
 
+pub use compress::{Outcome, compress};
 pub use merge::{Input, check_total_input_bytes, merge};
 pub use reorder::reorder;
 pub use rotate::{Pages, rotate};
@@ -52,14 +54,19 @@ pub use split::{Cuts, Split, begin as split_begin, split};
 ///
 /// **This is the list of operations the CORE implements, not the list any one binding exposes.**
 /// `split` is here and `bindings/burrow-wasm` has no entry point for it: there is no
-/// `impl PageExtractor for WebQpdf`, so the web cannot split at all. `rotate` was in the same
+/// `impl PageExtractor for WebQpdf`, so the web cannot split at all. **`compress` is now a
+/// second such operation** — there is no `impl DocumentCompressor for WebQpdf`, and
+/// `engines/qpdf-not-exported.toml` argues the one function it needs out of the wasm export
+/// list with the change that removes it named. That is exactly the drift this paragraph was
+/// written to stop being an example of, so it is named here rather than left for somebody to
+/// find by counting. `rotate` was in the same
 /// position until its bridge landed and now has both an `impl PageRotator for WebQpdf` and a
 /// `rotate` entry point — this sentence said otherwise for one commit, which is why it names
 /// the two operations separately rather than as a pair. Code review flagged the original
 /// divergence; it is recorded rather than hidden, because the alternative is a constant that
 /// means something different depending on which crate reads it. A caller that needs to know
 /// what a *binding* can do must ask the binding.
-pub const AVAILABLE: &[&str] = &["merge", "reorder", "rotate", "split"];
+pub const AVAILABLE: &[&str] = &["compress", "merge", "reorder", "rotate", "split"];
 
 #[cfg(test)]
 mod tests {

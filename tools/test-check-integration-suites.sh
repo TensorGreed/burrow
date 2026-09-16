@@ -88,7 +88,13 @@ planted=""
 #
 # The direction the inline version did NOT check. A renamed file left a name pointing at
 # nothing, and it surfaced as cargo's "no test target named X" rather than as this gate.
-sed 's/^ops_suites="conformance /ops_suites="conformance zz_phantom_suite /' \
+# ANCHORED ON THE ASSIGNMENT, NOT ON WHICHEVER SUITE HAPPENS TO BE FIRST. It was
+# `^ops_suites="conformance `, and adding `compress` to the front of an alphabetical list
+# stopped it matching -- so the mutation silently did nothing. The `cmp -s` guard below caught
+# that and reported it, which is the whole reason it is there: a mutation that does not apply
+# is indistinguishable from a defence that holds. Fixing the anchor rather than the list,
+# because the list will keep growing and the next suite would break it again.
+sed 's/^ops_suites="/ops_suites="zz_phantom_suite /' \
   "$checker" >"$copy"
 chmod +x "$copy"
 if cmp -s "$checker" "$copy"; then

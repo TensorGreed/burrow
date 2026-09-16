@@ -60,7 +60,7 @@ describe("the production build", () => {
     // empty and the SHIPPED list is what carries the weight now. A route that must not ship
     // goes back on `held`, and the loop below is waiting for it.
     const held: { slug: string; why: string }[] = [];
-    const shipped = ["merge-pdf", "split-pdf", "rotate-pdf", "reorder-pdf"];
+    const shipped = ["merge-pdf", "split-pdf", "rotate-pdf", "reorder-pdf", "compress-pdf"];
 
     const routesFor = (slug: string) =>
       files.filter(
@@ -73,7 +73,7 @@ describe("the production build", () => {
 
     // GATED ON THE COUNT, not merely on each one being found: a slug dropped from this list
     // would take its assertion with it and the suite would still pass.
-    expect(shipped).toHaveLength(4);
+    expect(shipped).toHaveLength(5);
     for (const slug of shipped) {
       expect(routesFor(slug), `/${slug} must ship`).not.toEqual([]);
     }
@@ -99,7 +99,22 @@ describe("the production build", () => {
     // as soon as it becomes true. Its hold was never about the bridge -- ADR 0019 §2's rule was
     // measured as unmet (#54), and #54 closed it. The ROUTE assertion above now asserts
     // `/split-pdf` SHIPS, so this list and that one agree about split for the first time.
-    const held = ["compress"];
+    // FOURTH TIME, AND COMPRESS'S TURN. Phase 3 gave `compress` a bridge -- an
+    // `impl DocumentCompressor for WebQpdf`, a wasm entry point and a worker dispatch branch
+    // -- so from that moment the worker can name the operation, and a list claiming otherwise
+    // fails as soon as it becomes true. That is the lifecycle this comment describes working,
+    // not an exception to it.
+    //
+    // **It is NOT held for a reason and never was.** It was on this list only because it was
+    // not written, which the paragraph above says is exactly the conflation to avoid. So it
+    // moves to `allowed` rather than staying with a new justification.
+    //
+    // `/compress-pdf` now ships too, so the route list above asserts it, and this list is
+    // EMPTY for the first time. An empty held list gates on nothing, so the loop below would
+    // pass over an empty set -- which is why the `allowed` loop exists and is the half that
+    // carries the measurement: each of the eight names must be found in a shipped script, so
+    // a scan that stopped finding anything fails rather than reporting no offenders.
+    const held: string[] = [];
     const allowed = [
       "page_count",
       "structure_check",
@@ -107,8 +122,14 @@ describe("the production build", () => {
       "rotate",
       "reorder",
       "split",
+      "compress",
       "page_rotations",
     ];
+
+    // GATED ON ITS OWN LENGTH, because the loop below is now the only half that measures
+    // anything: with `held` empty, a name quietly dropped from `allowed` would take its
+    // assertion with it and the scan would report no offenders over a shorter list.
+    expect(allowed).toHaveLength(8);
 
     const scripts = files.filter((f) => /\.(js|mjs)$/.test(f));
     const sources = scripts.map((f) => readFileSync(join(outDir, f), "utf8"));

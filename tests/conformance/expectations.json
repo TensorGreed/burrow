@@ -317,6 +317,211 @@
       }
     },
     {
+      "name": "compress-a-document-of-many-small-objects",
+      "inputs": [
+        {
+          "file": "fixtures/pages-137.pdf",
+          "sha256": "257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "compress": {
+          "ok": {
+            "page_count": 137,
+            "rotations": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
+      "name": "compress-a-document-where-one-page-differs",
+      "inputs": [
+        {
+          "file": "fixtures/mixed-rotation-4page.pdf",
+          "sha256": "a590a94a11cc07cc589acbe11a458007956c6b5c1243500428feff806b00d5d5"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "compress": {
+          "ok": {
+            "page_count": 4,
+            "rotations": [
+              270,
+              90,
+              90,
+              90
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
+      "name": "compress-a-document-with-nothing-to-pack",
+      "inputs": [
+        {
+          "file": "fixtures/blank-1page.pdf",
+          "sha256": "bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "compress": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ],
+            "compressed": false
+          }
+        }
+      }
+    },
+    {
       "name": "rotate-a-flat-document",
       "inputs": [
         {

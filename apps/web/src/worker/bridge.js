@@ -197,6 +197,12 @@ self.__burrow_qpdf_init_write_memory = (data) => qpdf()._qpdf_init_write_memory(
 self.__burrow_qpdf_set_deterministic_id = (data, value) =>
   qpdf()._qpdf_set_deterministic_ID(data, value);
 
+// The one compression lever (`compress`). The MODE IS DECIDED IN RUST and passed through
+// here unexamined -- 1 is preserve, 2 is generate -- exactly as every other setter on this
+// boundary works. ADR 0009 §2: no branch on engine state in JS.
+self.__burrow_qpdf_set_object_stream_mode = (data, mode) =>
+  qpdf()._qpdf_set_object_stream_mode(data, mode);
+
 self.__burrow_qpdf_write = (data) => qpdf()._qpdf_write(data);
 
 // ---- the object-handle API, added for `rotate` -------------------------------------

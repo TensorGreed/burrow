@@ -120,3 +120,17 @@ trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
 # budget) -- cheap, because the write path had already linked the machinery they lean on.
 # Merge's seven cost +53,456 by comparison, which is the number to remember when estimating
 # the next batch: the variance is in what else gets pulled in, not in the count.
+
+# =================================================================================
+# AND EMPTY AGAIN: COMPRESS'S LEVER IS EXPORTED
+# =================================================================================
+#
+# The lifecycle running forwards for the third time, and closing in the change it said it
+# would. `qpdf_set_object_stream_mode` stood here for one pull request: declared natively by
+# the change that gave `burrow-ops` a `DocumentCompressor` seam, exported by the change that
+# gave `WebQpdf` its implementation. That is what this file means by "a temporary state with
+# an owner, not an exemption".
+#
+# One function, which was the finding rather than an economy: spike 0005 measured that four of
+# the five compression levers qpdf's C API exposes are already the writer's own defaults, so
+# object stream generation is the only thing `compress` adds on either path.

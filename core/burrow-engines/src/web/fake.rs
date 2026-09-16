@@ -30,14 +30,26 @@ pub(super) enum Call {
     WipeAndFree(u32, u32),
     AbandonInput(u32, u32),
     RemovePage(u32),
-    AddPageAt { page: u32, before: bool },
+    AddPageAt {
+        page: u32,
+        before: bool,
+    },
     OhObject(u32),
     OhUnparse(u32),
     OhGetName(u32),
-    OhRemoveKey { oh: u32, key: String },
+    OhRemoveKey {
+        oh: u32,
+        key: String,
+    },
     OhArrayLen(u32),
-    OhArrayItem { oh: u32, at: i32 },
-    OhEraseItem { oh: u32, at: i32 },
+    OhArrayItem {
+        oh: u32,
+        at: i32,
+    },
+    OhEraseItem {
+        oh: u32,
+        at: i32,
+    },
     OhGetDict(u32),
     OhPageContent(u32),
     OhStreamData(u32),
@@ -57,18 +69,34 @@ pub(super) enum Call {
     LoggerCreate,
     LoggerDiscardAll(i32),
     GetPageN(u32),
-    AddPage { page: u32, first: bool },
+    AddPage {
+        page: u32,
+        first: bool,
+    },
     InitWriteMemory,
     SetDeterministicId(bool),
+    /// `set_object_stream_mode`, with the mode Rust chose. 1 is preserve, 2 is generate.
+    ///
+    /// Recorded rather than ignored so a test can assert WHICH mode an operation asked for --
+    /// the difference between `compress` and every other operation is this one number, and a
+    /// fake that swallowed it could not tell them apart.
+    SetObjectStreamMode(u32),
     Write,
     GetBufferLength,
     GetBuffer,
     CopyOut(u32),
-    OhGetKey { oh: u32, key: String },
+    OhGetKey {
+        oh: u32,
+        key: String,
+    },
     OhGetTypeCode(u32),
     OhGetIntValue(u32),
     OhNewInteger(i64),
-    OhReplaceKey { oh: u32, key: String, item: u32 },
+    OhReplaceKey {
+        oh: u32,
+        key: String,
+        item: u32,
+    },
     OhRelease(u32),
 }
 
@@ -929,6 +957,10 @@ impl QpdfBridge for FakeQpdf {
 
     fn set_deterministic_id(&self, _data: QpdfPtr, value: bool) {
         self.state.record(Call::SetDeterministicId(value));
+    }
+
+    fn set_object_stream_mode(&self, _data: QpdfPtr, mode: u32) {
+        self.state.record(Call::SetObjectStreamMode(mode));
     }
 
     fn write(&self, _data: QpdfPtr) -> i32 {
