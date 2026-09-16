@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,13 +59,40 @@ const SHOWN = [
     file: "src/components/SplitTool.svelte",
     pattern: /Starting the PDF engine — about ([\d,.]+) KB, downloaded once/,
   },
+  {
+    file: "src/components/CompressTool.svelte",
+    pattern: /Starting the PDF engine — about ([\d,.]+) KB, downloaded once/,
+  },
 ];
+
+/**
+ * Every island on disk, so the list above cannot fall behind the components.
+ *
+ * THE COMMENT ON `SHOWN` WAS RIGHT AND THE MECHANISM WAS NOT. "Naming the four means a fifth
+ * island has to be added here deliberately" is true only if something notices when it is not:
+ * the fifth island arrived carrying this exact sentence and was not added, so the one number
+ * on the newest page was the one number nothing measured -- which is the defect this file was
+ * written for, after a 16x overstatement shipped on four pages.
+ *
+ * So the naming stays (a pattern per island is the point; they do not all word it the same)
+ * and the COUNT is derived. A sixth island must be listed or this fails naming it.
+ */
+function islandsOnDisk(): string[] {
+  return readdirSync(join(webApp, "src/components"))
+    .filter((f) => /Tool\.svelte$/.test(f))
+    .map((f) => `src/components/${f}`)
+    .sort();
+}
 
 describe("the engine download figure people are shown", () => {
   it("is measured, not remembered — every tool page quotes what the budget recorded", () => {
     expect(engineLines.length, "the budget must have engine lines, or this compares nothing").toBe(
       4,
     );
+
+    // THE LIST IS COMPARED AGAINST THE COMPONENTS, not trusted. Named on both sides so a
+    // mismatch says WHICH island is unchecked rather than that two numbers differ.
+    expect(SHOWN.map((s) => s.file).sort()).toEqual(islandsOnDisk());
 
     const found: string[] = [];
     for (const { file, pattern } of SHOWN) {

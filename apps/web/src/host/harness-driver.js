@@ -521,6 +521,15 @@ const harness = {
     const done = await runOnBlob("compress", blob, options);
     if (!done.ok) return serialisable(done);
 
+    // BOTH COUNTS MUST BE THERE. They are optional on `HostReply` because only `compress`
+    // computes them, so a successful compress without them is a broken reply -- and the
+    // tempting `?? "0"` would turn that into `0 < 0`, reporting "did not compress" for every
+    // document. That is the differential harness's own verdict silently inverted, which is
+    // exactly the failure it exists to catch. Refuse instead.
+    if (done.originalBytes === undefined || done.producedBytes === undefined) {
+      return { ...serialisable(done), ok: false, kind: "Internal" };
+    }
+
     // BigInt, because `drainReply` sends both counts as strings: they are `u64` in Rust and
     // rounding a size somebody reads would be a small lie with no upside.
     const compressed = BigInt(done.producedBytes) < BigInt(done.originalBytes);

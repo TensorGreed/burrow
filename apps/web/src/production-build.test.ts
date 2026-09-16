@@ -60,7 +60,7 @@ describe("the production build", () => {
     // empty and the SHIPPED list is what carries the weight now. A route that must not ship
     // goes back on `held`, and the loop below is waiting for it.
     const held: { slug: string; why: string }[] = [];
-    const shipped = ["merge-pdf", "split-pdf", "rotate-pdf", "reorder-pdf"];
+    const shipped = ["merge-pdf", "split-pdf", "rotate-pdf", "reorder-pdf", "compress-pdf"];
 
     const routesFor = (slug: string) =>
       files.filter(
@@ -73,7 +73,7 @@ describe("the production build", () => {
 
     // GATED ON THE COUNT, not merely on each one being found: a slug dropped from this list
     // would take its assertion with it and the suite would still pass.
-    expect(shipped).toHaveLength(4);
+    expect(shipped).toHaveLength(5);
     for (const slug of shipped) {
       expect(routesFor(slug), `/${slug} must ship`).not.toEqual([]);
     }
@@ -109,8 +109,11 @@ describe("the production build", () => {
     // not written, which the paragraph above says is exactly the conflation to avoid. So it
     // moves to `allowed` rather than staying with a new justification.
     //
-    // `/compress-pdf` does not ship yet -- that is phase 4 -- but a route that merely does not
-    // exist belongs on neither list, for the same reason: absent code is absent.
+    // `/compress-pdf` now ships too, so the route list above asserts it, and this list is
+    // EMPTY for the first time. An empty held list gates on nothing, so the loop below would
+    // pass over an empty set -- which is why the `allowed` loop exists and is the half that
+    // carries the measurement: each of the eight names must be found in a shipped script, so
+    // a scan that stopped finding anything fails rather than reporting no offenders.
     const held: string[] = [];
     const allowed = [
       "page_count",
@@ -122,6 +125,11 @@ describe("the production build", () => {
       "compress",
       "page_rotations",
     ];
+
+    // GATED ON ITS OWN LENGTH, because the loop below is now the only half that measures
+    // anything: with `held` empty, a name quietly dropped from `allowed` would take its
+    // assertion with it and the scan would report no offenders over a shorter list.
+    expect(allowed).toHaveLength(8);
 
     const scripts = files.filter((f) => /\.(js|mjs)$/.test(f));
     const sources = scripts.map((f) => readFileSync(join(outDir, f), "utf8"));
