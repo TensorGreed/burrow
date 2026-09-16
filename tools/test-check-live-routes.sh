@@ -29,7 +29,7 @@ cleanup() {
   # THE PROBE COPY TOO. It sits in `tools/` beside the original (a copy in a temp directory
   # resolves its own paths wrongly), so an interrupted run would otherwise leave a deliberately
   # broken checker there, and `check-no-generated-files.sh` has no pattern for it.
-  rm -f "$here/.live-routes-probe-fixture.py"
+  rm -f "$here/.live-routes-probe-fixture.py" "$here/.live-routes-config-probe.py"
   return 0
 }
 trap cleanup EXIT INT TERM HUP
@@ -78,6 +78,12 @@ HTML
 # serving a modified island bundle is caught by this diff or by nothing.
 mkdir -p "$dist/_astro"
 printf 'console.log("island");\n' >"$dist/_astro/page.js"
+
+# A `_headers` FILE, which the host CONSUMES rather than serves. The server below models what
+# Cloudflare Pages actually does with it -- answers 200 with the site's HTML, not a 404 -- which
+# is what made the first real deploy red for a reason that was the checker's fault and not the
+# site's: it compared a config file against a web page.
+printf '/*\n  X-Content-Type-Options: nosniff\n' >"$dist/_headers"
 cat >"$dist/sitemap.xml" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -109,6 +115,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        # `_headers` IS CONFIGURATION. Pages consumes it and answers this path with the site's
+        # HTML at status 200 -- not a 404 -- so a checker that compared it would see a web page
+        # where it expected a config file.
+        if path == "/_headers":
+            body = (DIST / "index.html").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body); return
         if MODE == "redirect" and path.endswith("/"):
             self.send_response(302)
             self.send_header("Location", path + "index.html")
@@ -222,14 +237,16 @@ expect_pass "an untouched build served as-is"
 # assertion. Stated separately because a positive control that is only implicit is one that
 # disappears the next time somebody edits the fixture.
 missing=""
+[ -f "$dist/_headers" ] || missing="$missing platform-config-file"
 grep -q 'href="https://github.com' "$dist/credits/index.html" || missing="$missing outbound-hyperlink"
 grep -q 'rel="canonical" href="https://elsewhere.example/"' "$dist/index.html" ||
   missing="$missing foreign-canonical"
 grep -q "rel=\"stylesheet\" href=\"$ORIGIN/a.css\"" "$dist/index.html" ||
   missing="$missing same-origin-subresource"
 if [ -z "$missing" ]; then
-  echo "  ok   the fixture carries all three accept shapes, and the baseline accepted them:"
-  echo "       an outbound hyperlink, a canonical on ANOTHER host, and a same-origin stylesheet"
+  echo "  ok   the fixture carries all four accept shapes, and the baseline accepted them:"
+  echo "       an outbound hyperlink, a canonical on ANOTHER host, a same-origin stylesheet,"
+  echo "       and a _headers the host consumes rather than serves"
   pass=$((pass + 1))
 else
   echo "  FAIL the fixture is missing:$missing -- the baseline proves nothing about those"
@@ -359,6 +376,40 @@ else
   echo "  FAIL the inline injection is refused even with the diff disabled, so these cases"
   echo "        are measuring a different rule than the one they name"
   fail=$((fail + 1))
+fi
+rm -f "$copy"
+
+# THE SECOND PROBE GATE: the platform-config exclusion.
+#
+# Without this the exclusion is bound only by a mutation somebody ran by hand once, and the
+# fixture's `_headers` handler -- which models what Cloudflare Pages really does with that path,
+# 200 and the site's HTML rather than a 404 -- proves nothing, because an excluded path is never
+# fetched. This makes both load-bearing: the REAL checker must accept the clean fixture, and a
+# copy with the exclusion emptied must refuse it NAMING `/_headers`.
+copy="$here/.live-routes-config-probe.py"
+python3 - "$checker" "$copy" <<'PY'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = 'PLATFORM_CONFIG = frozenset({"_headers", "_redirects", "_routes.json", "_worker.js"})'
+assert old in text, "MUTATION DID NOT APPLY: the PLATFORM_CONFIG literal has moved"
+dst.write_text(text.replace(old, "PLATFORM_CONFIG = frozenset()"))
+PY
+start_server clean
+if ! python3 "$checker" "http://127.0.0.1:$PORT" "$dist" >/dev/null 2>&1; then
+  echo "  FAIL the real checker refuses the clean fixture, so the probe below proves nothing"
+  fail=$((fail + 1))
+elif out="$(python3 "$copy" "http://127.0.0.1:$PORT" "$dist" 2>&1)"; then
+  echo "  FAIL with the exclusion emptied the build still passes, so the exclusion is not"
+  echo "        what makes _headers pass -- these cases measure a different rule"
+  fail=$((fail + 1))
+elif ! grep -qF "/_headers" <<<"$out"; then
+  echo "  FAIL with the exclusion emptied it refuses, but not about _headers"
+  fail=$((fail + 1))
+else
+  echo "  ok   with the exclusion emptied, _headers is refused -- so the exclusion is what"
+  echo "       makes a host-consumed file pass, and the fixture's 200+HTML model is real"
+  pass=$((pass + 1))
 fi
 rm -f "$copy"
 

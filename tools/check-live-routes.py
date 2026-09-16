@@ -138,6 +138,34 @@ INLINE_BLOCK = re.compile(r"""<(script|style)\b[^>]*>(.*?)</\1>""", re.IGNORECAS
 ABSOLUTE_URL = re.compile(r"""https?://[^\s"'<>()]+""", re.IGNORECASE)
 
 
+#: Files the HOST consumes as configuration and never serves as themselves.
+#:
+#: `_headers` WAS MEASURED, ON A REAL DEPLOY THAT THIS CHECK FAILED. It is how the
+#: response-header policy reaches Cloudflare Pages; asking the origin for it returns **HTTP
+#: 200** with the site's HTML, not a 404 -- so the diff compared a 618-byte config file
+#: against a 6,217-byte web page and reported the origin as serving something the build did
+#: not produce. It was right that the bytes differ and wrong about what that means. (The
+#: status code is what misled the author beforehand: `curl -o /dev/null -w '%{http_code}'`
+#: says 200 and says nothing about the body.)
+#:
+#: THE OTHER THREE ARE ANTICIPATED, NOT OBSERVED. `_redirects`, `_routes.json` and
+#: `_worker.js` are consumed by the same mechanism per Cloudflare's documentation; none has
+#: ever appeared in this build, so none has been seen on this origin. They are listed so that
+#: adding one does not produce the same misleading failure, and the distinction is drawn
+#: because a comment claiming four measurements when it has one is an overclaim.
+#:
+#: WHAT THE EXCLUSION LEAVES UNDETECTABLE, AND WHAT COVERS IT INSTEAD: this check can no
+#: longer notice `_headers` failing to reach the host or being served wrongly. That is not
+#: uncovered -- the step above it in `deploy.yml` reads the CSP and `X-Content-Type-Options`
+#: back from the live origin as real response HEADERS, which is the EFFECT of the file and a
+#: stronger thing to assert than its bytes.
+#:
+#: Excluded BY NAME and only at the ROOT: a page legitimately called `_headers` in a
+#: subdirectory is a document. The exclusion is printed on every run, because a file quietly
+#: dropped from a comparison is how a check stops examining things without anybody noticing.
+PLATFORM_CONFIG = frozenset({"_headers", "_redirects", "_routes.json", "_worker.js"})
+
+
 class Refused(Exception):
     """A rule failed. The message is the reason."""
 
@@ -185,6 +213,20 @@ def files_in(dist: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
         if not path.is_file():
             continue
         relative = path.relative_to(dist).as_posix()
+        if relative in PLATFORM_CONFIG:
+            continue
+        # A CONSUMED-BY-HOST *DIRECTORY* IS NOT THE SAME SHAPE and must not be waved through.
+        # `_worker.js/` (advanced mode) and `functions/` put their children back into the
+        # compare loop as `_worker.js/index.js`, which would fail with exactly the misleading
+        # message this exclusion exists to remove. Widening the exclusion to path PREFIXES
+        # would instead create a real blind spot, so this refuses loudly and leaves the
+        # decision to a person.
+        if relative.split("/")[0] in PLATFORM_CONFIG:
+            raise Refused(
+                f"{relative} is inside `{relative.split('/')[0]}`, which the host consumes "
+                f"rather than serves. This check does not know what to compare it against; "
+                f"decide deliberately rather than letting it fail as a served file."
+            )
         if relative.endswith("index.html"):
             directory = relative[: -len("index.html")]
             found.append((f"/{directory}", path))
@@ -288,8 +330,14 @@ def main(argv: list[str]) -> int:
     # EVERY FILE IN THE BUILD IS FETCHED, and the count says so against the build's own total.
     # A scan that found some of them would otherwise print OK over the rest.
     on_disk = sum(1 for path in dist.rglob("*") if path.is_file())
-    if len(files) != on_disk:
-        fail(f"scanned {len(files)} file(s) and {dist} holds {on_disk}; the scan is wrong")
+    excluded = sorted(
+        name for name in PLATFORM_CONFIG if (dist / name).is_file()
+    )
+    if len(files) + len(excluded) != on_disk:
+        fail(
+            f"scanned {len(files)} file(s), excluded {len(excluded)}, and {dist} holds "
+            f"{on_disk}; the scan is wrong"
+        )
         return 2
 
     routes = [entry for entry in files if entry[1].name == "index.html"]
@@ -317,10 +365,26 @@ def main(argv: list[str]) -> int:
         return 2
 
     print(
-        f"check-live-routes: {len(files)} file(s) of {dist} "
+        f"check-live-routes: {len(files)} of {on_disk} file(s) in {dist} "
         f"({len(routes)} HTML route(s)), against {origin}"
     )
     print("  fetched as a BROWSER -- the rewrite that made this necessary is conditional on that")
+    # PRINTED EVERY RUN, INCLUDING WHEN IT IS EMPTY. `if excluded:` meant the check said
+    # nothing in the one case worth saying something about -- a build that had LOST its
+    # `_headers`, which is a CSP regression, would produce silence here rather than a
+    # statement. These are the only files this check does not compare, so they are the only
+    # place it could be quietly examining nothing.
+    print(
+        "  not compared, consumed by the host as configuration: "
+        + (" ".join(excluded) if excluded else "none")
+    )
+    if not (dist / "_headers").is_file():
+        fail(
+            f"{dist} has no root `_headers`. Every production build emits one -- it carries "
+            f"the response-header policy -- so its absence is a regression rather than a "
+            f"build that happens not to need it."
+        )
+        return 2
 
     problems = 0
     checked = 0
