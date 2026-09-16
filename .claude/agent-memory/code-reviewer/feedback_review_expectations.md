@@ -48,3 +48,9 @@ challenge point is the part of the review they will notice is missing.
   produce the identical result, so the tests are not at fault.
   (b) **A mutation that breaks a proptest writes `tests/<name>.proptest-regressions`** into
   the repo. Delete it before finishing — this repo fails CI on tracked generated files.
+- **Reviewing a measurement harness: mutate the harness's own baseline, not just its inputs.**
+  The controls in `core/burrow-engines/examples/measure-*.rs` compare two runs of the same
+  function; the failure mode that matters is a wrong *baseline constant*, which a same-vs-same
+  comparison cannot see. Corrupt one field of the baseline `Levers`/config, re-run, and check
+  whether the controls still print PASS. Restore from a scratchpad copy — these examples are
+  untracked, so `git checkout` will not bring them back.
