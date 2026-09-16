@@ -99,7 +99,19 @@ describe("the production build", () => {
     // as soon as it becomes true. Its hold was never about the bridge -- ADR 0019 §2's rule was
     // measured as unmet (#54), and #54 closed it. The ROUTE assertion above now asserts
     // `/split-pdf` SHIPS, so this list and that one agree about split for the first time.
-    const held = ["compress"];
+    // FOURTH TIME, AND COMPRESS'S TURN. Phase 3 gave `compress` a bridge -- an
+    // `impl DocumentCompressor for WebQpdf`, a wasm entry point and a worker dispatch branch
+    // -- so from that moment the worker can name the operation, and a list claiming otherwise
+    // fails as soon as it becomes true. That is the lifecycle this comment describes working,
+    // not an exception to it.
+    //
+    // **It is NOT held for a reason and never was.** It was on this list only because it was
+    // not written, which the paragraph above says is exactly the conflation to avoid. So it
+    // moves to `allowed` rather than staying with a new justification.
+    //
+    // `/compress-pdf` does not ship yet -- that is phase 4 -- but a route that merely does not
+    // exist belongs on neither list, for the same reason: absent code is absent.
+    const held: string[] = [];
     const allowed = [
       "page_count",
       "structure_check",
@@ -107,6 +119,7 @@ describe("the production build", () => {
       "rotate",
       "reorder",
       "split",
+      "compress",
       "page_rotations",
     ];
 

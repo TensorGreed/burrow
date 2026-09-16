@@ -98,6 +98,7 @@ fn opens(page_count: u64) -> Outcome {
     Outcome::Ok {
         page_count,
         rotations: None,
+        compressed: None,
     }
 }
 
@@ -209,6 +210,7 @@ fn rotates(page_count: u64, rotations: Vec<i64>) -> Outcomes {
         Outcome::Ok {
             page_count,
             rotations: Some(rotations),
+            compressed: None,
         },
     )])
 }
@@ -223,6 +225,25 @@ fn reorders(page_count: u64, rotations: Vec<i64>) -> Outcomes {
         Outcome::Ok {
             page_count,
             rotations: Some(rotations),
+            compressed: None,
+        },
+    )])
+}
+
+/// A `compress` outcome: the page count, the rotations, and whether it got smaller.
+///
+/// **All three, because the first two cannot see compression happening.** A path that stopped
+/// setting the object stream mode emits a valid document with an identical page count and an
+/// identical rotation vector -- so a case comparing only those would pass against a web path
+/// that had quietly become a plain write. `Operation::Compress` has the full argument, including
+/// why the third is a boolean rather than a byte count.
+fn compresses(page_count: u64, rotations: Vec<i64>, smaller: bool) -> Outcomes {
+    Outcomes::from([(
+        Operation::Compress,
+        Outcome::Ok {
+            page_count,
+            rotations: Some(rotations),
+            compressed: Some(smaller),
         },
     )])
 }
@@ -234,6 +255,7 @@ fn splits_into(parts: u64) -> Outcomes {
         Outcome::Ok {
             page_count: parts,
             rotations: None,
+            compressed: None,
         },
     )])
 }
@@ -475,6 +497,63 @@ fn main() {
             limits: None,
             attempt_recovery: false,
             expect: both(refused_by_prescan()),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        // ---- compress ----------------------------------------------------------------
+        //
+        // Three cases, and each asks a different question. The observable is the page count,
+        // the rotation vector AND whether the output got smaller -- see `Operation::Compress`
+        // for why the third is needed at all: without it a web path that had stopped setting
+        // the object stream mode would produce an identical count and an identical vector, and
+        // pass.
+        Fixture {
+            // MANY SMALL OBJECTS, which is what object streams are for. This is the case that
+            // fails if either path stops compressing: the document shrinks comfortably, so
+            // `smaller: true` is a real assertion rather than a coin flip.
+            name: "compress-a-document-of-many-small-objects",
+            filename: "pages-137.pdf",
+            bytes: Some(minimal_pdf::pdf_with_pages(137)),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: compresses(137, vec![0; 137], true),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // A DOCUMENT WHOSE PAGES DISPLAY DIFFERENTLY, so the rotation vector is a real
+            // readout rather than a run of identical numbers. Compression may not move a page
+            // or change what one displays at, and on this fixture a path that did would be
+            // visible -- on `pages-137.pdf` above it would not, because every page is at 0.
+            //
+            // Page 1 starts at 270 and the rest inherit 90, so the vector is [270, 90, 90, 90]
+            // before and must be [270, 90, 90, 90] after. Unchanged is the whole promise.
+            name: "compress-a-document-where-one-page-differs",
+            filename: "mixed-rotation-4page.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: compresses(4, vec![270, 90, 90, 90], true),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // A DOCUMENT WITH ALMOST NO STRUCTURE TO PACK, where compression is expected to
+            // achieve NOTHING -- `smaller: false`. Spike 0005 measured that outcome on 8.7% of
+            // qpdf's own corpus, so it is an ordinary answer rather than an edge case, and the
+            // never-worse rule is what produces it.
+            //
+            // It is the near-miss for the two cases above: a `compressed` field that were
+            // always `true`, or always ignored, would pass them both and fail here.
+            name: "compress-a-document-with-nothing-to-pack",
+            filename: "blank-1page.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: compresses(1, vec![0], false),
             platform_expectations: Vec::new(),
             known_gap: None,
         },

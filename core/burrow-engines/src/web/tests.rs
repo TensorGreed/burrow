@@ -15,8 +15,8 @@ use burrow_types::{
 use super::fake::{Call, FakeHeap, FakePdfium, FakeQpdf, PdfiumScript, QpdfScript};
 use super::{QpdfBridge, WebPdfium, WebQpdf};
 use crate::{
-    CheckOptions, DocumentEngine, OpenOptions, PageAssembler, PageExtractor, PageReorderer,
-    PageRotator, StructureEngine,
+    CheckOptions, DocumentCompressor, DocumentEngine, OpenOptions, PageAssembler, PageExtractor,
+    PageReorderer, PageRotator, StructureEngine,
 };
 
 /// A stopped clock, so nothing here depends on how busy the machine is.
@@ -2184,5 +2184,181 @@ fn a_page_run_outside_the_web_source_is_refused_before_a_destination_is_opened()
         state.calls().len(),
         before,
         "a refused run still crossed the bridge"
+    );
+}
+
+// ------------------------------------------------------------------ compress, on the web
+
+/// An engine, the heap its calls are recorded on, and the live-handle counter.
+///
+/// Shaped like `reorder`'s setup rather than inventing an accessor: `FakeQpdf` records onto
+/// the `FakeHeap` it is given, and the handle counter lives on the script.
+fn compress_engine(pages: i32) -> (WebQpdf, Arc<FakeHeap>, Arc<std::sync::Mutex<i64>>) {
+    let state = FakeHeap::new();
+    let script = QpdfScript {
+        // A `/Rotate` THE WALK CAN FIND ON THE PAGE, so the `/Parent` climb terminates. The
+        // default script resolves `/Parent` forever and the sweep refuses at the depth ceiling
+        // -- which is the ceiling working, and is not what these tests are about.
+        oh_int_value: 90,
+        oh_type_codes: [
+            ("/Rotate".to_owned(), 4), // ot_integer
+            ("/Parent".to_owned(), 9),
+        ]
+        .into_iter()
+        .collect(),
+        page_count: pages,
+        ..QpdfScript::default()
+    };
+    let live = Arc::clone(&script.live_handles);
+    let bridge = Arc::new(FakeQpdf::new(state.clone(), script));
+    (WebQpdf::new(bridge as Arc<dyn QpdfBridge>), state, live)
+}
+
+#[test]
+fn the_web_compress_sets_the_object_stream_mode_and_sets_it_to_generate() {
+    // THE ONE THING THAT DISTINGUISHES THIS OPERATION, asserted as a value rather than as a
+    // call. A `compress` that made the call with `qpdf_o_preserve` would produce a valid
+    // document with the right page count, the right rotations and every page intact -- and
+    // would be a plain write. The mode is the whole difference, so the mode is what is checked.
+    let (engine, state, _live) = compress_engine(4);
+    let source = DocumentCompressor::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    let _ = engine
+        .compress(&source, &rotate_options())
+        .expect("the fake compresses");
+
+    let calls = state.calls();
+    assert!(
+        calls.contains(&Call::SetObjectStreamMode(2)),
+        "compress did not ask for object stream generation: {calls:?}"
+    );
+    assert!(
+        !calls.contains(&Call::SetObjectStreamMode(1)),
+        "compress asked to PRESERVE object streams, which is a plain write: {calls:?}"
+    );
+}
+
+#[test]
+fn no_other_web_operation_asks_for_object_streams() {
+    // THE NEAR-MISS for the test above. Without it that assertion is satisfied by a bridge
+    // that records the call for everything, or by an operation that sets the mode by accident.
+    // `rotate` goes through the same write path on the same fake.
+    let (engine, state, _live) = compress_engine(4);
+    let source = PageRotator::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    let _ = engine
+        .rotate(&source, &[0], Rotation::None, &rotate_options())
+        .expect("the fake rotates");
+
+    let calls = state.calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, Call::SetObjectStreamMode(_))),
+        "an operation that is not compress set the object stream mode: {calls:?}"
+    );
+}
+
+#[test]
+fn the_web_compress_write_path_runs_in_order() {
+    // THE SETTERS COME AFTER `init_write_memory`, never before: the writer does not exist
+    // until that call succeeds, and both of them dereference it. Natively that ordering was
+    // found by core dump (ADR 0017); here the fake records the sequence so it cannot regress
+    // silently.
+    let (engine, state, _live) = compress_engine(4);
+    let source = DocumentCompressor::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+    let _ = engine
+        .compress(&source, &rotate_options())
+        .expect("the fake compresses");
+
+    let calls = state.calls();
+    let write_path: Vec<&Call> = calls
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                Call::InitWriteMemory
+                    | Call::SetDeterministicId(_)
+                    | Call::SetObjectStreamMode(_)
+                    | Call::Write
+                    | Call::GetBufferLength
+                    | Call::GetBuffer
+                    | Call::CopyOut(_)
+            )
+        })
+        .collect();
+    assert_eq!(
+        write_path,
+        vec![
+            &Call::InitWriteMemory,
+            &Call::SetDeterministicId(true),
+            &Call::SetObjectStreamMode(2),
+            &Call::Write,
+            &Call::GetBufferLength,
+            &Call::GetBuffer,
+            &Call::CopyOut(16),
+        ],
+        "the compress write path ran out of order: {calls:?}"
+    );
+}
+
+#[test]
+fn every_object_handle_the_web_compress_takes_is_released() {
+    // The rotation sweep takes one handle per page. Across the bridge a handle is a `u32`
+    // with nothing to attach a `Drop` to, so release is a discipline rather than a type --
+    // and qpdf's cache only grows, so a leak is invisible except to a count.
+    let (engine, state, live) = compress_engine(6);
+    let source = DocumentCompressor::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .expect("the fake opens");
+
+    let deadline = burrow_types::Deadline::start(
+        rotate_options().clock.as_ref(),
+        &burrow_types::Limits::DEFAULT,
+    );
+    let _ = DocumentCompressor::rotations(&engine, &source, &rotate_options(), &deadline)
+        .expect("the sweep runs");
+    let _ = engine
+        .compress(&source, &rotate_options())
+        .expect("the fake compresses");
+
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the web compression left object handles alive: {:?}",
+        state.calls()
+    );
+}
+
+#[test]
+fn the_web_and_native_object_stream_modes_agree() {
+    // TWO CONSTANTS, ONE VALUE. `web/compress.rs` spells `qpdf_o_generate` itself because the
+    // native `ffi` module is gated on the engines being linked and does not exist on that
+    // path. A divergence here would be `compress` silently not compressing on the web, with
+    // every page count and every rotation still correct -- which no differential case could
+    // see, because the corpus compares outcomes and neither would be an error.
+    //
+    // The native constant is only compiled when the engines are, so this asserts against the
+    // value from `Constants.h:134-138` directly rather than importing it.
+    assert_eq!(
+        super::compress::QPDF_O_GENERATE,
+        2,
+        "qpdf_o_generate is 2 in Constants.h:134-138"
     );
 }

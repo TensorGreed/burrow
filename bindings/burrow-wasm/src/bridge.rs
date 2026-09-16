@@ -84,6 +84,8 @@ extern "C" {
     fn qpdf_init_write_memory(data: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_set_deterministic_id)]
     fn qpdf_set_deterministic_id(data: u32, value: u32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_set_object_stream_mode)]
+    fn qpdf_set_object_stream_mode(data: u32, mode: u32);
     // The object-handle API, added for `rotate`. `key` is a pointer to a NUL-terminated
     // string already in the module's heap: the caller copies it in, so no string crosses
     // this boundary and nothing on the JS side builds one.
@@ -293,6 +295,10 @@ impl QpdfBridge for JsQpdf {
 
     fn set_deterministic_id(&self, data: QpdfPtr, value: bool) {
         qpdf_set_deterministic_id(data.0, u32::from(value));
+    }
+
+    fn set_object_stream_mode(&self, data: QpdfPtr, mode: u32) {
+        qpdf_set_object_stream_mode(data.0, mode);
     }
 
     fn write(&self, data: QpdfPtr) -> i32 {

@@ -335,6 +335,17 @@ pub trait QpdfBridge: Send + Sync {
     /// of the same inputs differ and a golden test can only assert a page count.
     fn set_deterministic_id(&self, data: QpdfPtr, value: bool);
 
+    /// `qpdf_set_object_stream_mode`. **After `init_write_memory`, never before.**
+    ///
+    /// The one compression lever, and the only write parameter burrow sets beyond the
+    /// deterministic `/ID`. Spike 0005 measured why there is exactly one: four of the five the
+    /// C API exposes are already qpdf's own writer defaults, so every operation already emits
+    /// them. `1` is `qpdf_o_preserve` and `2` is `qpdf_o_generate` (`Constants.h:134-138`).
+    ///
+    /// **Nothing on the JS side chooses the mode.** Rust passes the number; the bridge method
+    /// forwards it. ADR 0009 §2: no branch on engine state lives in JS.
+    fn set_object_stream_mode(&self, data: QpdfPtr, mode: u32);
+
     /// `qpdf_write`. Returns the bitmask.
     fn write(&self, data: QpdfPtr) -> i32;
 

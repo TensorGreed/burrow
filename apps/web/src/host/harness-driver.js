@@ -485,6 +485,51 @@ const harness = {
   },
 
   /**
+   * Compress the document and report the page count, the rotations, and whether it shrank.
+   *
+   * TWO OPERATIONS, MIRRORING `core/burrow-ops/tests/conformance.rs`, as `rotateEveryPage`
+   * does. Compression takes no selection, so there is no count to read first — but the
+   * rotations still have to come out of the EMITTED bytes, which means a second call.
+   *
+   * **`compressed` is the third observable and the one this case exists for.** A page count
+   * and a rotation vector are identical whether or not the object stream mode was set, so a
+   * comparison of only those would pass against a path that had quietly become a plain write.
+   * `Operation::Compress` carries the argument, including why it is a boolean rather than a
+   * size.
+   *
+   * It is derived from the two counts the reply carries rather than from whether an output
+   * arrived. The two are equivalent by the operation's contract — `Smaller` is the only
+   * variant that returns bytes — and taking the counts exercises the numbers a tool page will
+   * actually show, rather than a proxy for them.
+   *
+   * ON THE NOT-SMALLER BRANCH there are no emitted bytes, by design, so the rotations are read
+   * from the INPUT. That is not a fallback: the operation returned nothing precisely because
+   * it promised the caller's own document is already the better one, and what it promised not
+   * to change is what gets checked.
+   *
+   * @param {string} base64
+   * @param {{ password?: string | null, limits?: Record<string, number> }} [options]
+   */
+  async compressDocument(base64, options = {}) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "application/pdf" });
+
+    const done = await runOnBlob("compress", blob, options);
+    if (!done.ok) return serialisable(done);
+
+    // BigInt, because `drainReply` sends both counts as strings: they are `u64` in Rust and
+    // rounding a size somebody reads would be a small lie with no upside.
+    const compressed = BigInt(done.producedBytes) < BigInt(done.originalBytes);
+    const source = done.output ?? blob;
+    const read = await runOnBlob("page_rotations", source, options);
+    return { ...serialisable(read), compressed };
+  },
+
+  /**
    * Split a document after the given one-based pages and report how many parts came out.
    *
    * **The count, not the parts.** `Operation::Split` records a part count, and the conformance

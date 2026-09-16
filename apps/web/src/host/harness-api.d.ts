@@ -33,6 +33,14 @@ export interface Reply {
    * or 270, so there is no `u64` here to lose precision on.
    */
   rotations?: number[];
+  /**
+   * Whether the output came back smaller than the input. `compressDocument` only.
+   *
+   * A page count and a rotation vector are identical whether or not compression happened, so
+   * this is the only thing in a reply that can tell a path that compressed from one that
+   * quietly became a plain write. See `Operation::Compress` on the Rust side.
+   */
+  compressed?: boolean;
 }
 
 /** What a CSP probe inside a worker observed. */
@@ -131,6 +139,22 @@ export interface BurrowHarness {
    * `Operation::Reorder` on the Rust side for why the rotations are the observable.
    */
   reverseEveryPage(
+    base64: string,
+    options?: {
+      password?: string | null;
+      limits?: Partial<HarnessLimits>;
+    },
+  ): Promise<Reply>;
+
+  /**
+   * Compress the document and report the page count, the rotations, and whether it shrank.
+   *
+   * Two operations, mirroring `core/burrow-ops/tests/conformance.rs`: compression takes no
+   * selection, so there is no count to read first, but the rotations still have to come out of
+   * the EMITTED bytes. On the not-smaller branch there are none by design, so they are read
+   * from the input — which is what the operation promised not to change.
+   */
+  compressDocument(
     base64: string,
     options?: {
       password?: string | null;

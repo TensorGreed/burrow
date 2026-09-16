@@ -57,11 +57,21 @@ export type Outcome =
          * the two implementations walk it separately.
          */
         rotations?: number[];
+        /**
+         * Whether the output came back smaller than the input. `compress` cases.
+         *
+         * A page count and a rotation vector are identical whether or not compression
+         * happened, so without this a path that had stopped setting the object stream mode
+         * would pass. A boolean rather than a size: comparing byte counts across native
+         * libqpdf and the same source in wasm asserts far more than this corpus needs.
+         */
+        compressed?: boolean;
       };
     }
   | { err: Failure };
 
-export type Operation = "page_count" | "structure_check" | "merge" | "rotate" | "reorder" | "split";
+export type Operation =
+  "page_count" | "structure_check" | "merge" | "rotate" | "reorder" | "split" | "compress";
 export type Platform = "native" | "web";
 
 export interface PlatformExpectation {
@@ -181,7 +191,12 @@ export function render(outcome: Outcome | undefined): string {
   if ("ok" in outcome) {
     const rotations =
       outcome.ok.rotations === undefined ? "" : ` rotations=[${outcome.ok.rotations.join(",")}]`;
-    return `ok(${outcome.ok.page_count} pages${rotations})`;
+    // RENDERED, because a divergence that is invisible in the message is a divergence somebody
+    // has to go and reproduce. Two outcomes differing only in `compressed` would otherwise
+    // print identically and read as a harness bug.
+    const compressed =
+      outcome.ok.compressed === undefined ? "" : ` compressed=${outcome.ok.compressed}`;
+    return `ok(${outcome.ok.page_count} pages${rotations}${compressed})`;
   }
   const f = outcome.err;
   const detail = [
@@ -241,6 +256,7 @@ const OPERATIONS: Operation[] = [
   "rotate",
   "reorder",
   "split",
+  "compress",
 ];
 
 /**

@@ -94,9 +94,19 @@ function outcomeOf(reply: Reply): Outcome {
     // a case asserting only the count would pass against an implementation that did nothing.
     // Omitted rather than sent empty, so the recorded shape matches the native side's
     // `Option<Vec<i64>>` exactly.
-    return reply.rotations === undefined || reply.rotations.length === 0
-      ? { ok: { page_count: reply.pages } }
-      : { ok: { page_count: reply.pages, rotations: reply.rotations } };
+    const ok: { page_count: number; rotations?: number[]; compressed?: boolean } = {
+      page_count: reply.pages,
+    };
+    if (reply.rotations !== undefined && reply.rotations.length > 0) {
+      ok.rotations = reply.rotations;
+    }
+    // `compress` ONLY, and omitted rather than sent false elsewhere, so the recorded shape
+    // matches the native side's `Option<bool>` exactly. A page count and a rotation vector
+    // cannot see compression happening -- see `Operation::Compress`.
+    if (reply.compressed !== undefined) {
+      ok.compressed = reply.compressed;
+    }
+    return { ok };
   }
   // THE LIMIT NAME SAYS THERE IS DETAIL, NOT THE OUTER KIND.
   //
@@ -228,6 +238,34 @@ test("every corpus file produces the same typed outcome as the native path", asy
       // is shared between the two implementations, so this harness can no longer catch them
       // pruning differently. What it catches instead is one of them never reaching the policy,
       // and the optional-content refusal lives inside it.
+      // COMPRESS TAKES NO SELECTION, so unlike rotate and reorder there is no count to read
+      // first -- but the observable includes whether the document shrank, which no other
+      // operation reports and which is the only thing that can see the lever.
+      if (operation === "compress") {
+        const done = await page.evaluate(
+          ([bytes, password, limits]) =>
+            window.burrowHarness.compressDocument(bytes as string, {
+              password: password as string | null,
+              limits: limits as Record<string, number>,
+            }),
+          [
+            base64,
+            testCase.password,
+            { maxDurationMs: 600_000, ...camelCaseLimits(testCase.limits) },
+          ] as const,
+        );
+        expect(
+          done.fatal,
+          // NAMES THE FAILURE. "must not poison the instance" says a worker was lost and
+          // nothing about why, which sends whoever reads it back to the engine to find out --
+          // the same reason `OutputRejected` carries both page counts.
+          `${testCase.name} (compress): a corpus file must not poison the instance ` +
+            `(kind=${done.kind} message=${done.message})`,
+        ).toBe(false);
+        results.push({ case: testCase.name, operation, outcome: outcomeOf(done) });
+        continue;
+      }
+
       if (operation === "split") {
         const parts = await page.evaluate(
           ([bytes, password, limits]) =>
