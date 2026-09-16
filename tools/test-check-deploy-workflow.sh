@@ -215,6 +215,30 @@ steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
 assert not any("check-deployable-build" in str(x.get("run", "")) for x in steps), "plant did not apply"
 '
 
+# --- THE READ-BACK MUST EXIST, AND MUST FOLLOW THE UPLOAD -------------------------------------
+#
+# The first version of that step asserted `wrangler's URL == $BURROW_SITE`, which no correct
+# production deploy can satisfy -- wrangler prints a per-deployment alias. It failed a run whose
+# upload had succeeded. Deleting it entirely would leave nothing reading back where the bytes
+# went, which is the failure `CLAUDE.md` names three measured times.
+#
+# THE STEP IS REMOVED BY LOCATING IT, not by matching its literal text: the step body contains
+# a regex full of quotes and backslashes, and embedding that in a shell-quoted Python string is
+# how a plant silently stops applying.
+expect_refusal "deleting the post-upload read-back is refused" "never runs in the \`publish\` job" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+start = next(i for i, l in enumerate(lines) if "The deployment belongs to the project" in l)
+end = next(
+    i for i in range(start + 1, len(lines))
+    if lines[i].startswith("      - name:") or lines[i].startswith("      - uses:")
+)
+p.write_text("".join(lines[:start] + lines[end:]))
+steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
+assert not any("check-deployment-url" in str(x.get("run", "")) for x in steps), "plant did not apply"
+'
+
 # --- the forbidden triggers, each named ---------------------------------------------------------
 for trigger in pull_request pull_request_target workflow_call repository_dispatch issue_comment schedule; do
   expect_refusal "a \`$trigger\` trigger is refused" "triggers are" "

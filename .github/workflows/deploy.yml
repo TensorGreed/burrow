@@ -183,21 +183,24 @@ jobs:
 
       # AN EXIT CODE IS NOT AN OUTCOME -- READ THE STATE BACK. `CLAUDE.md` records three
       # measured cases of a green exit over something that had not happened, and this is the
-      # one workflow whose outcome is a live website. Two failures that both report success:
-      # a wrong project name deploys a correct build somewhere nobody visits, and `--branch
-      # main` produces a PREVIEW deployment if the project's production branch is not `main`.
-      - name: The deployment actually landed on the origin this build is for
+      # one workflow whose outcome is a live website.
+      #
+      # TWO DIFFERENT QUESTIONS, and the first version of this step conflated them:
+      #
+      #   * WHICH DEPLOYMENT did wrangler create? Always a per-deployment alias
+      #     (`https://f55a5097.burrow-f2s.pages.dev`), printed for production deploys too.
+      #     `tools/check-deployment-url.sh` answers this, comparing HOST LABELS rather than
+      #     characters -- `evil-burrow-f2s.pages.dev` ends with the same characters.
+      #   * DID PRODUCTION ACTUALLY UPDATE? Not knowable from wrangler's output at all. The
+      #     step below asks the live origin, which is the only honest way.
+      #
+      # Asserting `reported == $BURROW_SITE` answered neither: no correct production deploy can
+      # satisfy it, and it failed a run whose upload had succeeded -- reporting a live site as
+      # a red deploy.
+      - name: The deployment belongs to the project this build is for
         run: |
           url="$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' wrangler.log | tail -1 || true)"
-          [ -n "$url" ] || { echo "wrangler printed no deployment URL, so where this went is unknown" >&2; exit 1; }
-          echo "wrangler reported: $url"
-          [ "$url" = "$BURROW_SITE" ] || {
-            echo "Deployed to $url, NOT $BURROW_SITE. A build is bound to one origin (ADR" >&2
-            echo "0014 §4), so on that URL connect-src refuses every engine fetch and every" >&2
-            echo "tool is dead. Either the project name is wrong, or this went to a preview" >&2
-            echo "because the project's production branch is not \`main\`." >&2
-            exit 1
-          }
+          tools/check-deployment-url.sh "$url" "$BURROW_SITE"
 
       # AND THE POLICY ARRIVES AS A REAL RESPONSE HEADER. `_headers` is a file the host chooses
       # to read; ADR 0014 §5 duplicates the CSP into a `<meta>` precisely because a static host

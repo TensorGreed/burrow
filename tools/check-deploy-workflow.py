@@ -55,6 +55,12 @@ CREDENTIAL_JOB = "publish"
 #: Gates that must run in that job before the upload, by the script each one invokes.
 REQUIRED_PRE_UPLOAD_GATES = ["tools/check-deployable-build.sh"]
 
+#: And after it: reading the state back. `CLAUDE.md` records three measured cases of a green
+#: exit over something that had not happened, and this is the workflow whose outcome is a live
+#: website. Both of these were inline shell once; the first was wrong in a way nothing could
+#: catch, because an inline gate is a gate nothing can test.
+REQUIRED_POST_UPLOAD_CHECKS = ["tools/check-deployment-url.sh"]
+
 #: The secret prefix that must appear in no other workflow. `deploy.yml` being airtight is
 #: worth nothing if `ci.yml` -- which DOES run on `pull_request` -- can read the same token.
 CREDENTIAL_PREFIX = "CLOUDFLARE_"
@@ -256,9 +262,23 @@ def check_gates_before_upload(workflow: dict, report: list[str]) -> None:
                 f"`{gate}` runs at step {at + 1} ({step_label(steps[at])}), AFTER the upload "
                 f"at step {upload + 1}. That is a report, not a gate."
             )
+    for check in REQUIRED_POST_UPLOAD_CHECKS:
+        at = index_of(re.escape(check))
+        if at is None:
+            raise Refused(
+                f"`{check}` never runs in the `{CREDENTIAL_JOB}` job. Nothing would then read "
+                f"back where the deploy went, and a build uploaded to the wrong project is "
+                f"green and wrong."
+            )
+        if at < upload:
+            raise Refused(
+                f"`{check}` runs at step {at + 1}, BEFORE the upload at step {upload + 1}. "
+                f"It reads back what the upload reported, so it cannot precede it."
+            )
     report.append(
-        f"{len(REQUIRED_PRE_UPLOAD_GATES)} pre-upload gate(s) run in `{CREDENTIAL_JOB}` "
-        f"before the upload at step {upload + 1}"
+        f"{len(REQUIRED_PRE_UPLOAD_GATES)} pre-upload gate(s) and "
+        f"{len(REQUIRED_POST_UPLOAD_CHECKS)} post-upload read-back(s) in `{CREDENTIAL_JOB}`, "
+        f"around the upload at step {upload + 1}"
     )
 
 

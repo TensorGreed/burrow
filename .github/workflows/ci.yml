@@ -702,6 +702,7 @@ jobs:
         run: |
           python3 tools/check-deploy-workflow.py
           tools/test-check-deploy-workflow.sh
+          tools/test-check-deployment-url.sh
 
       # Compile every tool in tools/ with warnings promoted to errors.
       #
