@@ -98,7 +98,7 @@ function limitMessage(failure: Failure): Message {
         // NOT "burrow ran out of memory". The limit DETECTS an overrun after the fact
         // (ADR 0007); saying the tab ran out would be a stronger claim than the code makes,
         // and it would send someone to close other tabs when the file is the problem.
-        title: "One of those files needs more memory than burrow will spend on it.",
+        title: "One of those files needs more memory than Not Only PDF will spend on it.",
         next: "It is probably built in a way that expands enormously when opened. Try merging the others without it.",
         file,
         retryable: true,
@@ -116,7 +116,7 @@ function limitMessage(failure: Failure): Message {
       };
     default:
       return {
-        title: "That is more than burrow will take on.",
+        title: "That is more than Not Only PDF will take on.",
         next: "Try fewer or smaller files.",
         file,
         retryable: true,
@@ -141,20 +141,20 @@ export function messageFor(failure: Failure): Message {
     case "PasswordRequired":
       return {
         title: "That PDF is password-protected.",
-        next: "burrow cannot open it yet. Remove the password in the app that made it, then add it again.",
+        next: "Not Only PDF cannot open it yet. Remove the password in the app that made it, then add it again.",
         file,
         retryable: true,
       };
     case "Malformed":
       return {
-        title: "burrow could not read that file.",
+        title: "Not Only PDF could not read that file.",
         next: "It may be damaged, or not a PDF at all. Remove it and try the rest.",
         file,
         retryable: true,
       };
     case "Unsupported":
       return {
-        title: "That PDF uses something burrow does not handle.",
+        title: "That PDF uses something Not Only PDF does not handle.",
         next: "Remove it and try the rest.",
         file,
         retryable: true,
@@ -163,7 +163,7 @@ export function messageFor(failure: Failure): Message {
       return limitMessage(failure);
     case "InvalidArgument":
       return {
-        title: "burrow could not make sense of that request.",
+        title: "Not Only PDF could not make sense of that request.",
         next: "This is a bug in the page rather than a problem with your files. Reloading may clear it.",
         file: -1,
         retryable: true,
@@ -185,8 +185,8 @@ export function messageFor(failure: Failure): Message {
         // the page working again". `false` renders the Start again button, which clears the
         // CIRCUIT BREAKER (ADR 0015 §3) -- and the breaker has not latched, so the button
         // would do nothing and offering it would be the page lying about its own state.
-        title: "burrow checked the merged document and would not hand it over.",
-        next: "Nothing was sent anywhere and none of your files has been changed. Some of the pages did not survive the merge, so burrow refused the result rather than give you a document quietly missing part of one of them. A copy of each file saved again from the program that made it usually works.",
+        title: "Not Only PDF checked the merged document and would not hand it over.",
+        next: "Nothing was sent anywhere and none of your files has been changed. Some of the pages did not survive the merge, so Not Only PDF refused the result rather than give you a document quietly missing part of one of them. A copy of each file saved again from the program that made it usually works.",
         file: -1,
         retryable: true,
       };
@@ -195,7 +195,7 @@ export function messageFor(failure: Failure): Message {
         // The breaker has latched. It does that ON PURPOSE (ADR 0015 §3) -- retrying on a
         // timer would resume a crash loop at a slower rate rather than end it -- so the way
         // out is a person deciding to spend another worker.
-        title: "burrow has stopped after several failures in a row.",
+        title: "Not Only PDF has stopped after several failures in a row.",
         next: "Nothing is running. Choose Start again when you are ready.",
         file: -1,
         retryable: false,
@@ -207,7 +207,7 @@ export function messageFor(failure: Failure): Message {
         // NOT "an unexpected error occurred". That says nothing and sounds like an
         // apology. What a person needs to know is whether their files are the problem, and
         // here they are not.
-        title: "Something inside burrow failed.",
+        title: "Something inside Not Only PDF failed.",
         next: "Your files are fine and nothing was sent anywhere. Try again.",
         file: -1,
         retryable: true,

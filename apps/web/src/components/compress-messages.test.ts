@@ -119,7 +119,12 @@ describe("the word this page may not use about itself", () => {
   // The assertion is on the SUBJECT, not on the word: "Nothing was re-encoded" is the sentence
   // this page most wants to say, so a blanket ban on the string would forbid the right sentence
   // along with the wrong one.
-  const claimsBurrowReEncoded = /burrow\s+re-encoded|re-encoded (?:it|your|the file|the document)/i;
+  // THE PRODUCT NAME IS IN THE PATTERN, so it moved when the product was renamed. A branch
+  // naming a product that no longer appears in any sentence is a branch that can never match:
+  // the rule would keep passing while enforcing half of itself, which is the "4 of 15" failure
+  // hiding inside a regex rather than a count.
+  const claimsBurrowReEncoded =
+    /Not Only PDF\s+re-encoded|re-encoded (?:it|your|the file|the document)/i;
 
   it("never tells a person their document was re-encoded, on any of the three outcomes", () => {
     const outcomes = [
@@ -137,7 +142,7 @@ describe("the word this page may not use about itself", () => {
     // THE PROBE. Without it the pattern above could match nothing at all and the assertion
     // would pass over every future rewording, which is this repository's "4 of 15" failure in
     // a sentence.
-    expect("burrow re-encoded it and got 1.2 MB").toMatch(claimsBurrowReEncoded);
+    expect("Not Only PDF re-encoded it and got 1.2 MB").toMatch(claimsBurrowReEncoded);
     expect("re-encoded your file at lower quality").toMatch(claimsBurrowReEncoded);
     // And the sentence the page is FOR must survive it.
     expect("Nothing was re-encoded: every page's contents come through unaltered.").not.toMatch(

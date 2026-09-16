@@ -122,11 +122,11 @@ export interface Result {
  * a person would otherwise wonder about.
  */
 const WHY_NOT_SMALLER =
-  "burrow makes a PDF smaller by changing how it stores its structure — packing thousands of " +
+  "Not Only PDF makes a PDF smaller by changing how it stores its structure — packing thousands of " +
   "small pieces of bookkeeping together and dropping what nothing points at. It never touches " +
   "your pages. A document that is mostly scanned or photographed pages has almost no structure " +
   "to reorganise: the picture data is already compressed, and the only way to shrink it further " +
-  "would be to make it look worse. burrow will not do that.";
+  "would be to make it look worse. Not Only PDF will not do that.";
 
 /**
  * What to say about a successful compression.
@@ -178,7 +178,7 @@ export function resultFor(reply: {
     return {
       kind: "unchanged",
       title: "This file is already efficiently stored.",
-      detail: `burrow rewrote it and its version came to ${mb(
+      detail: `Not Only PDF rewrote it and its version came to ${mb(
         reply.producedBytes,
       )} against your ${mb(reply.originalBytes)}, so it kept yours. Nothing was re-encoded on the way — the rewrite simply had nothing left to pack. ${WHY_NOT_SMALLER}`,
       hasDocument: false,
@@ -248,8 +248,8 @@ function limitMessage(failure: Failure): Message {
       return {
         title:
           asked && allowed
-            ? `That file is ${asked}, and burrow stops at ${allowed}.`
-            : "That file is larger than burrow will open.",
+            ? `That file is ${asked}, and Not Only PDF stops at ${allowed}.`
+            : "That file is larger than Not Only PDF will open.",
         next: "Nothing was read. A smaller file, or one split into parts first, will work.",
         retryable: true,
       };
@@ -260,8 +260,8 @@ function limitMessage(failure: Failure): Message {
       return {
         title:
           asked && allowed
-            ? `That document has ${asked} pages, and burrow stops at ${allowed}.`
-            : "That document has more pages than burrow will open.",
+            ? `That document has ${asked} pages, and Not Only PDF stops at ${allowed}.`
+            : "That document has more pages than Not Only PDF will open.",
         // NOT "nothing was read": `max_pages` is enforced after the document is in the
         // engine's memory, unlike `max_input_bytes`, which is checked from `Blob.size`.
         next: "It was opened but not changed. Split it into smaller documents first.",
@@ -270,7 +270,7 @@ function limitMessage(failure: Failure): Message {
     }
     case "max_duration_ms":
       return {
-        title: "That took longer than burrow allows and was stopped.",
+        title: "That took longer than Not Only PDF allows and was stopped.",
         // WORTH SAYING HERE MORE THAN ANYWHERE ELSE. Compression is a single engine call and
         // the most expensive one burrow makes; `max_duration_ms` is cooperative and cannot
         // interrupt it, so on the web it is the worker watchdog that ends this (ADR 0015).
@@ -281,13 +281,13 @@ function limitMessage(failure: Failure): Message {
     case "max_memory_bytes":
       return {
         // DETECTED, NOT PREVENTED (ADR 0007), and the sentence says which.
-        title: "That document used more memory than burrow allows, and was stopped.",
+        title: "That document used more memory than Not Only PDF allows, and was stopped.",
         next: "It had already been read by then, so the tab may be slow for a moment. Nothing was changed.",
         retryable: true,
       };
     default:
       return {
-        title: "That document is past one of burrow's limits.",
+        title: "That document is past one of Not Only PDF's limits.",
         next: "Nothing was changed. A smaller document will work.",
         retryable: true,
       };
@@ -309,18 +309,18 @@ export function messageFor(failure: Failure): Message {
     case "PasswordRequired":
       return {
         title: "That PDF is password-protected.",
-        next: "burrow cannot open it yet. Remove the password in the app that made it, then choose it again.",
+        next: "Not Only PDF cannot open it yet. Remove the password in the app that made it, then choose it again.",
         retryable: true,
       };
     case "Malformed":
       return {
-        title: "burrow could not read that file.",
+        title: "Not Only PDF could not read that file.",
         next: "It may be damaged, or not a PDF at all. Try another copy of it.",
         retryable: true,
       };
     case "Unsupported":
       return {
-        title: "That PDF uses something burrow does not handle.",
+        title: "That PDF uses something Not Only PDF does not handle.",
         next: "Nothing was changed. Try another copy of it.",
         retryable: true,
       };
@@ -331,7 +331,7 @@ export function messageFor(failure: Failure): Message {
         // Compression takes no selection at all -- no page list, no angle, no cut -- so there
         // is nothing a person can ask for wrongly. Reaching this branch means the page sent
         // something the core would not accept, which is a bug in the page.
-        title: "burrow could not make sense of that request.",
+        title: "Not Only PDF could not make sense of that request.",
         next: "This is a bug in the page rather than a problem with your file. Reloading may clear it.",
         retryable: true,
       };
@@ -345,13 +345,13 @@ export function messageFor(failure: Failure): Message {
         // deliberate gesture is needed to get the page working again. `false` renders the
         // Start again button, which clears the CIRCUIT BREAKER (ADR 0015 §3), and the breaker
         // has not latched here.
-        title: "burrow checked the compressed document and would not hand it over.",
-        next: "Your file has not been changed and nothing was sent anywhere. Some of its pages did not survive the write, so burrow refused the result rather than give you a document quietly short of a page. A copy of the file saved again from the program that made it usually works.",
+        title: "Not Only PDF checked the compressed document and would not hand it over.",
+        next: "Your file has not been changed and nothing was sent anywhere. Some of its pages did not survive the write, so Not Only PDF refused the result rather than give you a document quietly short of a page. A copy of the file saved again from the program that made it usually works.",
         retryable: true,
       };
     case "EngineUnavailable":
       return {
-        title: "burrow has stopped after several failures in a row.",
+        title: "Not Only PDF has stopped after several failures in a row.",
         next: "Nothing is running. Choose Start again when you are ready.",
         retryable: false,
       };
@@ -359,7 +359,7 @@ export function messageFor(failure: Failure): Message {
     case "Internal":
     default:
       return {
-        title: "Something inside burrow failed.",
+        title: "Something inside Not Only PDF failed.",
         next: "Your file is fine and nothing was sent anywhere. Try again.",
         retryable: true,
       };

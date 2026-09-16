@@ -75,7 +75,7 @@ export function readOrigin({ builtFor, servedFrom }: OriginReading): OriginVerdi
     // So it says what is true at the level a reader can check: the files are somewhere else,
     // and this host is not allowed to have them.
     message:
-      `This copy of burrow was built for ${builtFor} and is being served from ${servedFrom}. ` +
+      `This copy of Not Only PDF was built for ${builtFor} and is being served from ${servedFrom}. ` +
       `The tools will not work here: the engine files live at ${builtFor}, and a page served ` +
       `from ${servedFrom} is not allowed to load them. ` +
       `Nothing is wrong with your file and nothing has been sent anywhere. ` +

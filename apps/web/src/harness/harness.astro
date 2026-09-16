@@ -38,7 +38,10 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 import { ENGINES } from "../generated/engines.js";
 ---
 
-<BaseLayout title="burrow engine harness" description="Test-only harness. Not part of the site.">
+<BaseLayout
+  title="Not Only PDF engine harness"
+  description="Test-only harness. Not part of the site."
+>
   <h1>engine harness</h1>
   <div id="engines" data-engines={JSON.stringify(ENGINES)}></div>
   <p id="status">idle</p>

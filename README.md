@@ -1,5 +1,10 @@
 # burrow
 
+**`burrow` is the codename; the product is Not Only PDF, at
+[notonlypdf.com](https://notonlypdf.com).** The repository, the crates, the workflows and the
+ADRs all keep the codename — renaming them would churn every import and every ADR for no
+reader's benefit. Only the site's copy carries the product name.
+
 Free, open-source, privacy-first file tools — PDF, image, and video — that run entirely
 on your device.
 

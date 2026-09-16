@@ -8,7 +8,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 ---
 
 <BaseLayout
-  title="Rotate PDF — turn pages on your own computer | burrow"
+  title="Rotate PDF — turn pages on your own computer | Not Only PDF"
   description="Turn pages that were scanned the wrong way up. The pages are rotated in your browser and never uploaded, because there is no server to upload them to."
 >
   <div class="read">
@@ -17,7 +17,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     <p>
       Turn some or all of a PDF's pages a quarter or a half turn — the usual fix for a scan that
       came out sideways. The rotating happens in this browser, on this computer: the file is not
-      uploaded, because burrow has no server that could receive it.
+      uploaded, because Not Only PDF has no server that could receive it.
     </p>
   </div>
 
@@ -74,23 +74,25 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
     <p>
       You can turn every page, or type the ones you want: <code>3</code>, or <code>2-5</code>, or
-      <code>1, 4, 7-9</code>. burrow shows how many pages the document has once it has opened it.
+      <code>1, 4, 7-9</code>. Not Only PDF shows how many pages the document has once it has opened
+      it.
     </p>
 
     <p>
       <strong>There are no page pictures yet.</strong> Choosing pages here means knowing their numbers,
       which is harder than pointing at a thumbnail, and it is a real limitation rather than an oversight
-      — showing pages means rendering them, and rendering a long document needs a memory ceiling burrow
-      does not have yet. It is being built; until it is, this page does not pretend to offer it.
+      — showing pages means rendering them, and rendering a long document needs a memory ceiling Not Only
+      PDF does not have yet. It is being built; until it is, this page does not pretend to offer it.
     </p>
 
     <h2>What happens to large files</h2>
 
     <p>
       Everything is held in this browser tab's memory, so the practical limit is what your device
-      can spare rather than an upload size. burrow refuses a file larger than 512 MB before it opens
-      it, and a document of more than 10,000 pages before it turns any of them — so an oversized job
-      is refused rather than failing part way through and leaving you with something incomplete.
+      can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before it
+      opens it, and a document of more than 10,000 pages before it turns any of them — so an
+      oversized job is refused rather than failing part way through and leaving you with something
+      incomplete.
     </p>
 
     <p>
@@ -113,15 +115,15 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       That is worth stating plainly because the other tools here cannot say it. <a href="/merge-pdf"
         >Merging</a
       > keeps bookmarks from the first file only; a tool that takes pages out of a document has to drop
-      what pointed at the pages it left behind. Rotating drops nothing, and burrow's tests check the claim
-      rather than assuming it: every bookmark, annotation, form field and attachment the document carried
-      must still be there afterwards, and each page's drawing instructions must come through unaltered.
+      what pointed at the pages it left behind. Rotating drops nothing, and Not Only PDF's tests check
+      the claim rather than assuming it: every bookmark, annotation, form field and attachment the document
+      carried must still be there afterwards, and each page's drawing instructions must come through unaltered.
     </p>
 
     <p>
       A file that is encrypted, damaged, or not a PDF is refused. So is one where a page you asked
-      to turn already carries a rotation that is not a whole number of quarter turns — burrow will
-      not guess at what was meant, because guessing would turn a page on a value the file never
+      to turn already carries a rotation that is not a whole number of quarter turns — Not Only PDF
+      will not guess at what was meant, because guessing would turn a page on a value the file never
       carried. A page you did not ask for is never read, so a document can carry an odd rotation
       elsewhere and still be usable here.
     </p>

@@ -78,8 +78,8 @@ function limitMessage(failure: Failure): Message {
       return {
         title:
           asked && allowed
-            ? `That file is ${asked}, and burrow stops at ${allowed}.`
-            : "That file is larger than burrow will open.",
+            ? `That file is ${asked}, and Not Only PDF stops at ${allowed}.`
+            : "That file is larger than Not Only PDF will open.",
         next: "Nothing was read. A smaller file will work.",
         retryable: true,
       };
@@ -90,8 +90,8 @@ function limitMessage(failure: Failure): Message {
       return {
         title:
           asked && allowed
-            ? `That document has ${asked} pages, and burrow stops at ${allowed}.`
-            : "That document has more pages than burrow will open.",
+            ? `That document has ${asked} pages, and Not Only PDF stops at ${allowed}.`
+            : "That document has more pages than Not Only PDF will open.",
         // NOT "nothing was read": `max_input_bytes` is checked from `Blob.size` before a byte
         // is read and can say that; `max_pages` is enforced once the document is in the
         // engine's memory.
@@ -104,7 +104,7 @@ function limitMessage(failure: Failure): Message {
         // SPLIT IS CHECKPOINTED BETWEEN PARTS, not inside one (ADR 0023 §6), so a long
         // document can be stopped part-way through producing parts -- and none of them is
         // delivered. Saying "nothing was changed" is true and is not the whole answer.
-        title: "That took longer than burrow allows and was stopped.",
+        title: "That took longer than Not Only PDF allows and was stopped.",
         next: "No parts were handed over, and the file on your computer is untouched. Fewer parts, or a smaller document, will finish.",
         retryable: true,
       };
@@ -113,13 +113,13 @@ function limitMessage(failure: Failure): Message {
         // DETECTED, NOT PREVENTED (ADR 0007), and the sentence says which. "burrow stopped
         // it" would claim a bound that does not exist: the memory was already spent when
         // this was noticed.
-        title: "That document used more memory than burrow allows, and was stopped.",
+        title: "That document used more memory than Not Only PDF allows, and was stopped.",
         next: "It had already been read by then, so the tab may be slow for a moment. Nothing was changed.",
         retryable: true,
       };
     default:
       return {
-        title: "That document is past one of burrow's limits.",
+        title: "That document is past one of Not Only PDF's limits.",
         next: "Nothing was changed. A smaller document will work.",
         retryable: true,
       };
@@ -138,12 +138,12 @@ export function messageFor(failure: Failure): Message {
     case "PasswordRequired":
       return {
         title: "That PDF is password-protected.",
-        next: "burrow cannot open it yet. Remove the password in the app that made it, then choose it again.",
+        next: "Not Only PDF cannot open it yet. Remove the password in the app that made it, then choose it again.",
         retryable: true,
       };
     case "Malformed":
       return {
-        title: "burrow could not read that file.",
+        title: "Not Only PDF could not read that file.",
         next: "It may be damaged, or not a PDF at all. Try another copy of it.",
         retryable: true,
       };
@@ -159,8 +159,8 @@ export function messageFor(failure: Failure): Message {
         // HEDGED ON PURPOSE. Layers are the only `Unsupported` split produces today, but the
         // variant is not reserved for them, so this says "usually" rather than asserting a
         // cause the page cannot see.
-        title: "burrow will not split that document.",
-        next: "This is usually a document that uses layers. Whether a layer is hidden is recorded for the document as a whole, so burrow cannot carry that setting into a part of it — and a hidden layer that arrived visible in one of the parts would be worse than refusing. Nothing was changed.",
+        title: "Not Only PDF will not split that document.",
+        next: "This is usually a document that uses layers. Whether a layer is hidden is recorded for the document as a whole, so Not Only PDF cannot carry that setting into a part of it — and a hidden layer that arrived visible in one of the parts would be worse than refusing. Nothing was changed.",
         retryable: true,
       };
     case "LimitExceeded":
@@ -170,7 +170,7 @@ export function messageFor(failure: Failure): Message {
         // `resolveCuts` refuses every bad cut list beside the box, with the page number, so
         // arriving here means the page and the core disagree about the document. That is a
         // bug in the page, and saying so is more useful than blaming the file.
-        title: "burrow could not make sense of where to cut.",
+        title: "Not Only PDF could not make sense of where to cut.",
         next: "This looks like a bug in the page rather than a problem with your file — reloading may clear it.",
         retryable: true,
       };
@@ -181,13 +181,13 @@ export function messageFor(failure: Failure): Message {
         // for it — and NOTHING is delivered, because a subset of the parts is not a
         // partition. Both halves of the generic sentence would be false: the file is not
         // fine, and trying again runs the same operation on the same bytes.
-        title: "burrow checked the parts it made and would not hand them over.",
-        next: "Your file has not been changed and nothing was sent anywhere. One part did not contain the pages it was supposed to, so burrow refused the whole split rather than give you parts that do not add up to your document. A copy of the file saved again from the program that made it usually works.",
+        title: "Not Only PDF checked the parts it made and would not hand them over.",
+        next: "Your file has not been changed and nothing was sent anywhere. One part did not contain the pages it was supposed to, so Not Only PDF refused the whole split rather than give you parts that do not add up to your document. A copy of the file saved again from the program that made it usually works.",
         retryable: true,
       };
     case "EngineUnavailable":
       return {
-        title: "burrow has stopped after several failures in a row.",
+        title: "Not Only PDF has stopped after several failures in a row.",
         next: "Nothing is running. Choose Start again when you are ready.",
         retryable: false,
       };
@@ -195,7 +195,7 @@ export function messageFor(failure: Failure): Message {
     case "Internal":
     default:
       return {
-        title: "Something inside burrow failed.",
+        title: "Something inside Not Only PDF failed.",
         next: "Your file is fine and nothing was sent anywhere. No parts were handed over. Try again.",
         retryable: true,
       };

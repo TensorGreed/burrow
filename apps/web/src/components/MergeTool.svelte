@@ -493,8 +493,8 @@
            be a measurement. The honest thing is to say what is happening and that the rest
            is not observable. -->
       <p class="working" role="status">
-        Merging {entries.length} files. This is not reportable while it runs — burrow will say when it
-        is done.
+        Merging {entries.length} files. This is not reportable while it runs — Not Only PDF will say when
+        it is done.
       </p>
       <button type="button" onclick={cancel}>Stop</button>
     {:else if notice && !notice.retryable}

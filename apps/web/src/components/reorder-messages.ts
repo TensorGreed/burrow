@@ -75,8 +75,8 @@ function limitMessage(failure: Failure): Message {
       return {
         title:
           asked && allowed
-            ? `That file is ${asked}, and burrow stops at ${allowed}.`
-            : "That file is larger than burrow will open.",
+            ? `That file is ${asked}, and Not Only PDF stops at ${allowed}.`
+            : "That file is larger than Not Only PDF will open.",
         next: "Nothing was read. A smaller file, or one split into parts first, will work.",
         retryable: true,
       };
@@ -87,8 +87,8 @@ function limitMessage(failure: Failure): Message {
       return {
         title:
           asked && allowed
-            ? `That document has ${asked} pages, and burrow stops at ${allowed}.`
-            : "That document has more pages than burrow will open.",
+            ? `That document has ${asked} pages, and Not Only PDF stops at ${allowed}.`
+            : "That document has more pages than Not Only PDF will open.",
         // NOT "nothing was read". `max_input_bytes` is checked from `Blob.size` before a byte
         // is read, so that branch can say it; `max_pages` is enforced after the document is in
         // the engine's memory. Telling somebody their file was never opened when it was is the
@@ -100,7 +100,7 @@ function limitMessage(failure: Failure): Message {
     }
     case "max_duration_ms":
       return {
-        title: "That took longer than burrow allows and was stopped.",
+        title: "That took longer than Not Only PDF allows and was stopped.",
         next: "Nothing was changed — the file on your computer is untouched. A document with fewer pages will finish.",
         retryable: true,
       };
@@ -109,13 +109,13 @@ function limitMessage(failure: Failure): Message {
         // DETECTED, NOT PREVENTED (ADR 0007), and the sentence says which. "burrow stopped
         // it" would claim a bound that does not exist: the memory was already spent when
         // this was noticed.
-        title: "That document used more memory than burrow allows, and was stopped.",
+        title: "That document used more memory than Not Only PDF allows, and was stopped.",
         next: "It had already been read by then, so the tab may be slow for a moment. Nothing was changed.",
         retryable: true,
       };
     default:
       return {
-        title: "That document is past one of burrow's limits.",
+        title: "That document is past one of Not Only PDF's limits.",
         next: "Nothing was changed. A smaller document will work.",
         retryable: true,
       };
@@ -134,18 +134,18 @@ export function messageFor(failure: Failure): Message {
     case "PasswordRequired":
       return {
         title: "That PDF is password-protected.",
-        next: "burrow cannot open it yet. Remove the password in the app that made it, then choose it again.",
+        next: "Not Only PDF cannot open it yet. Remove the password in the app that made it, then choose it again.",
         retryable: true,
       };
     case "Malformed":
       return {
-        title: "burrow could not read that file.",
+        title: "Not Only PDF could not read that file.",
         next: "It may be damaged, or not a PDF at all. Try another copy of it.",
         retryable: true,
       };
     case "Unsupported":
       return {
-        title: "That PDF uses something burrow does not handle.",
+        title: "That PDF uses something Not Only PDF does not handle.",
         next: "Nothing was changed. Try another copy of it.",
         retryable: true,
       };
@@ -158,7 +158,7 @@ export function messageFor(failure: Failure): Message {
         // refuses all three before anything is posted, and it refuses them with the page
         // number, so arriving here means the page and the core disagree about the document.
         // That is a bug in the page, and saying so is more useful than blaming the file.
-        title: "burrow could not make sense of that order.",
+        title: "Not Only PDF could not make sense of that order.",
         next: "Every page has to appear exactly once. This looks like a bug in the page rather than a problem with your file — reloading may clear it.",
         retryable: true,
       };
@@ -179,13 +179,13 @@ export function messageFor(failure: Failure): Message {
         // the page working again". `false` renders the Start again button, which clears the
         // CIRCUIT BREAKER (ADR 0015 §3) -- and the breaker has not latched, so the button
         // would do nothing and offering it would be the page lying about its own state.
-        title: "burrow checked the reordered document and would not hand it over.",
-        next: "Your file has not been changed and nothing was sent anywhere. The pages that came out were not the pages that went in, so burrow refused the result rather than give you a document quietly short of a page. A copy of the file saved again from the program that made it usually works.",
+        title: "Not Only PDF checked the reordered document and would not hand it over.",
+        next: "Your file has not been changed and nothing was sent anywhere. The pages that came out were not the pages that went in, so Not Only PDF refused the result rather than give you a document quietly short of a page. A copy of the file saved again from the program that made it usually works.",
         retryable: true,
       };
     case "EngineUnavailable":
       return {
-        title: "burrow has stopped after several failures in a row.",
+        title: "Not Only PDF has stopped after several failures in a row.",
         next: "Nothing is running. Choose Start again when you are ready.",
         retryable: false,
       };
@@ -193,7 +193,7 @@ export function messageFor(failure: Failure): Message {
     case "Internal":
     default:
       return {
-        title: "Something inside burrow failed.",
+        title: "Something inside Not Only PDF failed.",
         next: "Your file is fine and nothing was sent anywhere. Try again.",
         retryable: true,
       };

@@ -202,7 +202,10 @@ test("choosing a file on a mismatched origin does NOT say 'something inside burr
   // live region for a screen reader. Asserting both exist is the stronger claim.
   await expect(page.locator("strong", { hasText: "built for a different address" })).toBeVisible();
   await expect(page.getByRole("status")).toContainText("built for a different address");
-  await expect(page.getByText(/something inside burrow failed/i)).toHaveCount(0);
+  // THE SENTENCE THIS IS THE ABSENCE OF is asserted in `split-messages.test.ts`, beside the
+  // same negative there. A negative with no positive anywhere goes silent the moment the copy
+  // is reworded -- a rename did that to four assertions here at once.
+  await expect(page.getByText(/something inside Not Only PDF failed/i)).toHaveCount(0);
 });
 
 test("THE CONTROL: the right origin gets no banner at all", async ({ page }) => {

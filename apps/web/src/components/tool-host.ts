@@ -170,7 +170,7 @@ export const ORIGIN_MISMATCH: unique symbol = Symbol("burrow.origin-mismatch");
  */
 export function originMismatchNotice(): { title: string; next: string; retryable: boolean } {
   return {
-    title: "This copy of burrow was built for a different address.",
+    title: "This copy of Not Only PDF was built for a different address.",
     next:
       "The tools cannot run here. Nothing is wrong with your file and nothing has been sent " +
       "anywhere. The notice at the top of this page has the detail.",

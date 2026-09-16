@@ -8,7 +8,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 ---
 
 <BaseLayout
-  title="Reorder PDF pages — rearrange them on your own computer | burrow"
+  title="Reorder PDF pages — rearrange them on your own computer | Not Only PDF"
   description="Move pages around inside a PDF. The pages are rearranged in your browser and never uploaded, because there is no server to upload them to."
 >
   <div class="read">
@@ -17,8 +17,8 @@ import BaseLayout from "../layouts/BaseLayout.astro";
     <p>
       Move pages around inside a PDF — put a page first, reverse a scan that came out back to front,
       or shuffle a few into the order they should have been in. The rearranging happens in this
-      browser, on this computer: the file is not uploaded, because burrow has no server that could
-      receive it.
+      browser, on this computer: the file is not uploaded, because Not Only PDF has no server that
+      could receive it.
     </p>
   </div>
 
@@ -94,17 +94,18 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       and for reordering that is harder than it is for the other tools — turning a page you can find by
       number, but deciding where a page should go usually means looking at it. It is a real limitation
       rather than an oversight: showing pages means rendering them, and rendering a long document needs
-      a memory ceiling burrow does not have yet. It is being built; until it is, this page does not pretend
-      to offer it.
+      a memory ceiling Not Only PDF does not have yet. It is being built; until it is, this page does
+      not pretend to offer it.
     </p>
 
     <h2>What happens to large files</h2>
 
     <p>
       Everything is held in this browser tab's memory, so the practical limit is what your device
-      can spare rather than an upload size. burrow refuses a file larger than 512 MB before it opens
-      it, and a document of more than 10,000 pages before it moves any of them — so an oversized job
-      is refused rather than failing part way through and leaving you with something incomplete.
+      can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before it
+      opens it, and a document of more than 10,000 pages before it moves any of them — so an
+      oversized job is refused rather than failing part way through and leaving you with something
+      incomplete.
     </p>
 
     <p>
@@ -121,7 +122,7 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       it does not remove any. Bookmarks, attachments, form fields and annotations all come through, and
       what each page displays is unchanged — including pages that inherit their rotation or their size
       from the document rather than carrying it themselves, which is the case most likely to go wrong
-      and the one burrow's tests check directly.
+      and the one Not Only PDF's tests check directly.
     </p>
 
     <p>
@@ -140,8 +141,8 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
     <p>
       A file that is encrypted, damaged, or not a PDF is refused. So is an order that would not give
-      every page back exactly once: type a page twice and burrow says so rather than handing you a
-      document with one page duplicated and another gone.
+      every page back exactly once: type a page twice and Not Only PDF says so rather than handing
+      you a document with one page duplicated and another gone.
     </p>
   </div>
 </BaseLayout>
