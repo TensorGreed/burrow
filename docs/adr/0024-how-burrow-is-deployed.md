@@ -129,11 +129,26 @@ and says so, visibly, when they differ; `tool-host.ts` refuses to start the engi
   environment secrets on `production`, and that environment's branch rule. They are named in
   *What this does not close* above. If they are not in place, the trigger boundary is weaker
   than this document says it is.
-- **The deploy asserts its own outcome.** `wrangler`'s reported URL must equal `BURROW_SITE`,
-  or the run fails: a wrong project name uploads a correct build somewhere nobody visits, and
-  `--branch main` produces a *preview* deployment if the project's production branch is not
-  `main`. Both are green-and-wrong without the read-back, which is the failure mode
-  `CLAUDE.md` records three measured times.
+- **The deploy asserts its own outcome, and it took two goes to ask the right question.**
+  The first version asserted `wrangler`'s reported URL *equals* `BURROW_SITE`. Wrangler prints
+  a **per-deployment alias** — `https://f55a5097.burrow-f2s.pages.dev` — and prints one for a
+  production deploy too, so that assertion could never pass. It failed a run whose upload had
+  succeeded: the site was live and the deploy was reported red.
+
+  Two questions were being conflated, and they need different answers. *Which deployment did
+  wrangler create?* Always an alias; `tools/check-deployment-url.sh` checks it belongs to the
+  expected project. *Did production actually update?* Not knowable from wrangler's output at
+  all — the step after it asks the live origin for its headers, which is the only honest way.
+
+  **The match is by host LABEL, not by characters**, and that is the fourth deny-or-match rule
+  in this repository where the string form was the defect: `evil-burrow-f2s.pages.dev` ends
+  with the same characters as the expected host. The others were the force-push deny list, the
+  `_headers` origin check using its argument as a regex, and this workflow's triggers matched
+  with grep. Same shape every time — a string operation standing in for a structural
+  comparison, correct on every example anybody thought to try.
+
+  It is a script rather than inline shell for the reason `CLAUDE.md` gives about gates: an
+  inline gate is one nothing can test, and this one was inline and wrong.
 - **`npx --yes wrangler@4.132.0` is the one unpinned dependency closure** in either workflow,
   in the job that holds the credential. The version is pinned and npm forbids republish, but
   its transitive tree is not, and it is outside both licence gates. It is installed *before*

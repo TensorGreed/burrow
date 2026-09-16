@@ -282,6 +282,7 @@ JOBS: list[dict] = [
                 ".claude/hooks/test-refuse-force-push-to-main.sh",
                 "tools/check-deploy-workflow.py",
                 "tools/test-check-deploy-workflow.sh",
+                "tools/test-check-deployment-url.sh",
             ]
         ),
         "covers": [
@@ -299,6 +300,7 @@ JOBS: list[dict] = [
             ".claude/hooks/test-refuse-force-push-to-main.sh",
             "tools/check-deploy-workflow.py",
             "tools/test-check-deploy-workflow.sh",
+            "tools/test-check-deployment-url.sh",
         ],
     },
     {
