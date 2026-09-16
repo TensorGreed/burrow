@@ -102,27 +102,10 @@ impl PageRotator for Qpdf {
         options: &OpenOptions<'_>,
         deadline: &Deadline,
     ) -> Result<Vec<i64>> {
-        let capacity = usize::try_from(source.pages)
-            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
-        let mut rotations = Vec::with_capacity(capacity);
-
-        // PER PAGE. The walk is one `/Parent` climb per page, so this loop is sized by page
-        // count times tree depth -- both attacker-chosen. Measured at 147 ms against 28 ms of
-        // edit-and-write on a 10,000-page document with a 60-deep tree, which is why it is not
-        // allowed to sit outside a deadline.
-        //
-        // THE CALLER'S DEADLINE, NOT A NEW ONE -- see the trait's docs. `Deadline::start` here
-        // handed the operation a second full budget, which security review measured.
-        let clock = Arc::clone(&options.clock);
-
-        for index in 0..source.pages {
-            deadline.checkpoint(clock.as_ref())?;
-            let page = page_handle(&source.document, index, source.pages)?;
-            // RECORDED, NOT JUDGED -- see the trait's docs. `effective_rotation` would refuse
-            // an out-of-spec value on a page nobody named.
-            rotations.push(declared_rotation(&source.document, &page)?.unwrap_or(0));
-        }
-        Ok(rotations)
+        // ONE SWEEP IMPLEMENTATION -- see `rotations_of`. What stays here is which deadline
+        // is passed: the CALLER'S, never a fresh one. `Deadline::start` here handed the
+        // operation a second full budget, which security review measured.
+        super::rotations_of(&source.document, source.pages, options, deadline)
     }
 
     fn rotate(
@@ -210,7 +193,13 @@ impl PageRotator for Qpdf {
         // looking inapplicable here.
         // And once more before the write, which is the single largest piece of work here.
         deadline.checkpoint(clock.as_ref())?;
-        let output = super::extract::write_out(&source.document, &source.document)?;
+        // PRESERVE, not generate: this operation is not `compress` and must not silently
+        // become it. qpdf's own default, stated rather than defaulted -- see `write_out`.
+        let output = super::extract::write_out(
+            &source.document,
+            &source.document,
+            super::extract::ObjectStreams::Preserve,
+        )?;
 
         // `max_memory_bytes` DETECTS rather than bounds (ADR 0007). Checked after the write,
         // where the output buffer is at its largest.

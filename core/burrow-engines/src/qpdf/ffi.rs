@@ -101,6 +101,27 @@ pub(super) type QpdfObjectHandle = c_uint;
 /// `#define QPDF_TRUE 1` — `qpdf-c.h:142`.
 pub(super) const QPDF_TRUE: QpdfBool = 1;
 
+/// `enum qpdf_object_stream_e` — `Constants.h:134-138`.
+///
+/// A C enum with values 0-2, so `c_uint` and `c_int` are the same width and the same register
+/// here. Spelled unsigned because none of the three values is negative.
+pub(super) type QpdfObjectStreamMode = core::ffi::c_uint;
+
+/// `qpdf_o_preserve = 1` — keep the input's object streams as they are.
+///
+/// qpdf's **own writer default** (`QPDFWriter_private.hh:296`), so this is what every burrow
+/// operation that does not compress already emits. Passed explicitly at those call sites
+/// rather than left unset, because the whole of spike 0005's finding is that the difference
+/// between `compress` and every other operation is this one value.
+pub(super) const QPDF_O_PRESERVE: QpdfObjectStreamMode = 1;
+
+/// `qpdf_o_generate = 2` — pack non-stream objects into object streams, with an xref stream.
+///
+/// The one thing `compress` does that no other operation does. Measured worth: 85.6% on a form
+/// of many small objects, 12.0% on a text report, **0.15% on a scan** — spike 0005 has the
+/// table, and the spread is why the tool page reports the actual result rather than a claim.
+pub(super) const QPDF_O_GENERATE: QpdfObjectStreamMode = 2;
+
 /// `#define QPDF_FALSE 0` — `qpdf-c.h:141`.
 ///
 /// Spelled out rather than written as a literal `0` at the call site: `qpdf_add_page`'s
@@ -313,6 +334,35 @@ unsafe extern "C" {
     /// Without it the output `/ID` is drawn from the clock and the random pool, and a
     /// golden test could only ever assert a page count.
     pub(super) fn qpdf_set_deterministic_ID(qpdf: QpdfData, value: QpdfBool);
+
+    /// `void qpdf_set_object_stream_mode(qpdf_data qpdf, enum qpdf_object_stream_e mode)` —
+    /// `qpdf-c.h:435`.
+    ///
+    /// **The one lever `compress` has**, and the only qpdf write parameter burrow sets beyond
+    /// the deterministic `/ID`. Spike 0005 measured why there is exactly one: of the five
+    /// compression levers the C API exposes, four are already qpdf's own writer defaults
+    /// (`QPDFWriter_private.hh:296-315`), so every burrow operation has been getting them
+    /// since `merge` shipped. Object stream generation is the only thing `compress` adds.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`. The argument is
+    /// stronger than `qpdf_set_deterministic_ID`'s: the body is
+    /// `qpdf->qpdf_writer->setObjectStreamMode(mode)` (`qpdf-c.cc:523-527`) reaching
+    /// `Config::object_streams`, which is `object_streams_ = val; return *this;`
+    /// (`QPDFWriter_private.hh:110-114`) — a plain assignment with no `usage()` call, unlike
+    /// `compress_streams`.
+    ///
+    /// **Not "cannot throw at all".** `qpdf-c.cc:525` calls `QTC::TC` first, which inserts
+    /// into two function-local statics and, with `TC_SCOPE`/`TC_FILENAME` set, opens a file.
+    /// Allocation failure and that env-gated path are the residue; neither is reachable from
+    /// file content. The manifest entry carries the full argument.
+    ///
+    /// **Called after `qpdf_init_write_memory`, never before**, for the reason
+    /// [`qpdf_set_deterministic_ID`] records: the writer does not exist until that call
+    /// succeeds and this dereferences it.
+    ///
+    /// The `mode` is one of [`QPDF_O_PRESERVE`] or [`QPDF_O_GENERATE`]; no other value is
+    /// constructed anywhere in this crate, so the C enum cannot receive one it has no case for.
+    pub(super) fn qpdf_set_object_stream_mode(qpdf: QpdfData, mode: QpdfObjectStreamMode);
 
     /// `QPDF_ERROR_CODE qpdf_write(qpdf_data qpdf)` — `qpdf-c.h:436`.
     ///

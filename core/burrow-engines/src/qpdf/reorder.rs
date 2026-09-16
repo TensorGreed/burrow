@@ -99,28 +99,12 @@ impl PageReorderer for Qpdf {
         // `rotate.rs`'s helpers rather than repeating the `/Parent` climb: the depth ceiling
         // and the type assertion live there, and a second copy of a walk over hostile input
         // is a second place to get them wrong.
-        let capacity = usize::try_from(source.pages)
-            .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
-        let mut rotations = Vec::with_capacity(capacity);
-
-        // PER PAGE, like `rotate`'s own walk and for the same measured reason: on the default
-        // `max_pages` of 10,000 with a deep page tree this loop is millions of FFI calls, and
-        // without a checkpoint it sits outside every deadline. Security review measured it at
-        // 144 ms against 12 ms of edit-and-write on a 10,000-page document -- twelve times the
-        // work the cooperative limit was covering.
+        // ONE SWEEP IMPLEMENTATION -- see `rotations_of`. This module wrote the walk out
+        // again until code review counted four copies of it and pointed at the comment on
+        // `OutputReader::rotations`, which records the same duplication having already drifted.
         //
         // THE CALLER'S DEADLINE, NOT A NEW ONE -- see the trait's docs.
-        let clock = Arc::clone(&options.clock);
-
-        for index in 0..source.pages {
-            deadline.checkpoint(clock.as_ref())?;
-            let page = page_handle(&source.document, index, source.pages)?;
-            // RECORDED, NOT JUDGED. `effective_rotation` refuses a `/Rotate` that is not a
-            // multiple of 90, and a reorder names no page to turn -- so normalising here
-            // failed a whole operation over a page it was only ever going to move.
-            rotations.push(super::rotate::declared_rotation(&source.document, &page)?.unwrap_or(0));
-        }
-        Ok(rotations)
+        super::rotations_of(&source.document, source.pages, options, deadline)
     }
 
     fn reorder(
@@ -200,7 +184,13 @@ impl PageReorderer for Qpdf {
         // whatever structure it arrived with. It is recorded because it is surprising, and
         // because it caught a test that assumed one shape.
 
-        let output = super::extract::write_out(&source.document, &source.document)?;
+        // PRESERVE, not generate: this operation is not `compress` and must not silently
+        // become it. qpdf's own default, stated rather than defaulted -- see `write_out`.
+        let output = super::extract::write_out(
+            &source.document,
+            &source.document,
+            super::extract::ObjectStreams::Preserve,
+        )?;
 
         // `max_memory_bytes` DETECTS rather than bounds (ADR 0007). Checked after the write,
         // where the output buffer is at its largest.

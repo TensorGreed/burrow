@@ -120,3 +120,34 @@ trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
 # budget) -- cheap, because the write path had already linked the machinery they lean on.
 # Merge's seven cost +53,456 by comparison, which is the number to remember when estimating
 # the next batch: the variance is in what else gets pulled in, not in the count.
+
+# =================================================================================
+# AND ONE ENTRY AGAIN: COMPRESS'S SINGLE LEVER
+# =================================================================================
+#
+# The lifecycle running forwards for the third time. `qpdf_set_object_stream_mode` is declared
+# natively by the change that gives `burrow-ops` a `DocumentCompressor` seam, and it is
+# exported by the change that gives `WebQpdf` an `impl DocumentCompressor` -- which is phase 3
+# of compress, and does not exist yet.
+#
+# There is exactly one function here, and that is the finding rather than an economy. Spike
+# 0005 measured that four of the five compression levers qpdf's C API exposes are already the
+# writer's own defaults (`QPDFWriter_private.hh:296-315`), so every burrow operation has been
+# emitting them since `merge` shipped. Object stream generation is the only thing `compress`
+# adds, natively or on the web.
+
+[[function]]
+name = "qpdf_set_object_stream_mode"
+reason = """\
+Declared for `compress` (`core/burrow-engines/src/qpdf/compress.rs`), which exists on the \
+native path and not yet on the web: there is no `impl DocumentCompressor for WebQpdf`, no \
+bridge method, and no wasm entry point, so nothing on that path could call it. \
+Exporting it today would widen the worker's reachable surface for an operation with no web \
+caller, which is the opposite of what the export allowlist is for. \
+It is removed by the pull request that gives `WebQpdf` its `DocumentCompressor` \
+implementation, in the same change that adds the export -- compress phase 3. \
+`apps/web/src/production-build.test.ts` independently asserts the shipped bundle cannot name \
+the operation until then. \
+Cost when it lands is expected to be small: the write path already links `QPDFWriter`, and \
+object stream generation is code inside it rather than a new dependency -- but that is a \
+prediction, and the size-budget re-measure in phase 3 is what settles it."""

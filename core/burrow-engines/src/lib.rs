@@ -812,6 +812,126 @@ pub trait PageReorderer {
     ) -> Result<Vec<u8>>;
 }
 
+/// An engine that can re-encode a document smaller without changing what it says.
+///
+/// The seam `compress` is written against. Separate from [`PageRotator`] and
+/// [`PageReorderer`] for the reason every one of these is separate: the operations differ in
+/// what they take and in what they are allowed to change.
+///
+/// # It is not a subsetting operation, and it is not a lossy one
+///
+/// Every input page appears in the output, so
+/// [ADR 0019](../../../docs/adr/0019-how-split-builds-its-outputs.md) §2's rule has nothing to
+/// bite on and the obligation is the inverse: **nothing may be lost**. The whole point of the
+/// operation is that the bytes change while the content does not, which is a stronger claim
+/// than the other operations make and is the one an implementation must not quietly weaken.
+///
+/// So: no image is re-encoded, no font is subsetted, and no content stream's meaning changes.
+/// Only how objects are stored.
+///
+/// # There is exactly one lever, and that is a measurement rather than a simplification
+///
+/// [Spike 0005](../../../docs/spikes/0005-what-qpdf-alone-compresses.md) established that four
+/// of the five compression levers qpdf's C API exposes are already qpdf's own writer defaults
+/// (`QPDFWriter_private.hh:296-315`) — stream compression, dropping unreferenced objects, the
+/// decode level, and not linearizing. Every burrow operation has had them since `merge`
+/// shipped. **Generating object streams is the only thing this operation adds.**
+///
+/// Two consequences an implementation must respect:
+///
+/// - the other four must **not** be re-stated as configuration. Spelling a default out as a
+///   setting invites someone to tune it later, and the thing they would be tuning is what
+///   every other operation already emits;
+/// - `qpdf` has **no duplicate-object removal** and no image or font handling at any setting,
+///   so an implementation that appears to offer either is doing something this trait does not
+///   sanction.
+///
+/// # What it is worth, so nobody is surprised by a small number
+///
+/// Measured, against what the same engine writes without the lever: **85.6%** on a form of
+/// many small objects, **12.0%** on a text-heavy report, **0.15%** on a scan and **0.12%** on a
+/// photo-heavy document, with a median of **16.0%** across qpdf's own 618-file corpus.
+///
+/// The spread is the point. A document that is mostly image payload has almost nothing
+/// reachable, because object streams act on structure and qpdf does not touch DCT data.
+///
+/// # The output can be larger, and this trait does not hide it
+///
+/// Measured at **3.4%** of that corpus strictly larger, with a further 5.3% byte-identical —
+/// an object stream has a fixed overhead, so it loses on documents with little structure to
+/// pack. `compress` returns what the engine produced; **deciding that a larger output is not
+/// worth returning is the operation's job, not the engine's**, because "give the caller their
+/// own bytes back" is a policy about the request rather than a fact about the document.
+///
+/// Keeping that out of here matters for a second reason: an engine that silently returned the
+/// input when its own output was bigger would make [ADR 0022]'s read-back verify bytes burrow
+/// did not produce, without anything saying so.
+///
+/// [ADR 0022]: ../../../docs/adr/0022-every-operation-verifies-its-own-output.md
+pub trait DocumentCompressor {
+    /// A document opened once and re-encoded.
+    ///
+    /// No `Send` bound, for the reason [`PageAssembler::Assembly`] gives.
+    type Source;
+
+    /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Open the document to be compressed.
+    ///
+    /// # Errors
+    ///
+    /// The same set [`StructureEngine::check`] documents.
+    fn open(&self, bytes: Box<[u8]>, options: &OpenOptions<'_>) -> Result<Self::Source>;
+
+    /// How many pages the document has.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`](burrow_types::Error::Internal) if the engine reports a count that is
+    /// not a count.
+    fn pages(&self, source: &Self::Source) -> Result<u64>;
+
+    /// Every page's `/Rotate` **as written**, in page order, following inheritance.
+    ///
+    /// Identical in meaning to [`PageRotator::rotations`], including that it records rather
+    /// than judges, and present for the same reason: it is [ADR 0022]'s promise, and
+    /// compression must leave it untouched on every page. A compression that moved or
+    /// reattributed a page would be a different document wearing the right page count.
+    ///
+    /// [ADR 0022]: ../../../docs/adr/0022-every-operation-verifies-its-own-output.md
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — a `/Rotate` that is not an
+    ///   integer at all, or a page tree that cannot be walked.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — `max_duration_ms`,
+    ///   checkpointed **per page** and against the **caller's** deadline, for the reasons
+    ///   [`PageRotator::rotations`] gives.
+    fn rotations(
+        &self,
+        source: &Self::Source,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>>;
+
+    /// Re-encode the document and emit it.
+    ///
+    /// Returns what the engine produced, **even if it is larger than the input** — see the
+    /// trait docs for why that decision does not live here.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`](burrow_types::Error::Io) — the output could not be written.
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — the document could not be
+    ///   re-encoded.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — a ceiling was reached.
+    ///   **The ceilings are the ones the source was opened under**, not `options.limits`: a
+    ///   caller must not be able to loosen a limit after the document is already in memory.
+    ///   `options` is still read for the clock.
+    fn compress(&self, source: &Self::Source, options: &OpenOptions<'_>) -> Result<Vec<u8>>;
+}
+
 /// A paged document engine: opens a document and reports its shape.
 ///
 /// Implementors wrap an untrusted parser, so every method is fallible and every operation

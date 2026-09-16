@@ -29,6 +29,8 @@
 //! live in this module's private `ffi` submodule, and ADR 0013 §1 has the full argument.
 
 mod assemble;
+// The one compression lever, and spike 0005's finding that there is only one.
+mod compress;
 mod extract;
 mod ffi;
 mod handle;
@@ -395,6 +397,62 @@ pub(super) fn open_document(
     Ok((document, pages, rss_before, deadline))
 }
 
+/// Every page's `/Rotate` **as written**, in page order, following inheritance.
+///
+/// # One sweep implementation, and this is the second time that has had to be said
+///
+/// Every seam that promises this vector wants the same walk, and each operation writing it out
+/// is another place for the per-page checkpoint, the recorded-not-judged read and the handle
+/// discipline to drift apart.
+///
+/// **It already drifted once, at two copies.** `OutputReader::rotations`' first version wrote
+/// the loop out again and kept `effective_rotation`, so the witness refused an out-of-spec
+/// page the promise sweep had already accepted; that copy is a one-line delegation now and its
+/// comment records why. Code review found the copies multiplying again and pointed at that
+/// same comment. This is the answer, and it is the one `open_document` already gives for the
+/// ceilings: *two copies agree until they do not*.
+///
+/// What stays per module is the **commentary at the call site** about which deadline is being
+/// passed and why — that is a statement about the caller, and it differs.
+///
+/// # Errors
+///
+/// - [`Error::Malformed`] — a `/Rotate` that is not an integer, or a page tree that cannot be
+///   walked. A value that cannot be *read* is still a refusal; only the in-spec judgement is
+///   relaxed, which is what "recorded, not judged" means.
+/// - [`Error::LimitExceeded`] — `max_duration_ms`, checkpointed **per page**. The walk is one
+///   `/Parent` climb per page, so it is sized by page count times tree depth — both
+///   attacker-chosen, and measured at 147 ms against 28 ms of edit-and-write on a 10,000-page
+///   document with a 60-deep tree (ADR 0022).
+///
+/// The deadline is the **caller's**, never a fresh one: `Deadline::start` resets the origin
+/// *and* the budget, so a sweep that made its own would hand the operation another full
+/// `max_duration_ms`. ADR 0022 records that being got wrong three times.
+pub(super) fn rotations_of(
+    document: &Document,
+    pages: u64,
+    options: &crate::OpenOptions<'_>,
+    deadline: &Deadline,
+) -> Result<Vec<i64>> {
+    let capacity = usize::try_from(pages)
+        .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+    let mut rotations = Vec::with_capacity(capacity);
+
+    let clock = Arc::clone(&options.clock);
+
+    for index in 0..pages {
+        deadline.checkpoint(clock.as_ref())?;
+        let page = reorder::page_handle(document, index, pages)?;
+        // RECORDED, NOT JUDGED. `effective_rotation` would refuse an out-of-spec value on a
+        // page nobody named, which is the drift this function exists to prevent repeating.
+        rotations.push(rotate::declared_rotation(document, &page)?.unwrap_or(0));
+    }
+    Ok(rotations)
+}
+
+#[cfg(test)]
+mod compress_tests;
+
 #[cfg(test)]
 mod reorder_tests;
 
@@ -406,7 +464,7 @@ mod tests;
 
 /// Reading a document back to check what an operation produced (ADR 0022).
 ///
-/// Built on [`PageRotator`], which already opens a document and reads each page's effective
+/// Built on [`crate::PageRotator`], which already opens a document and reads each page's effective
 /// rotation. Nothing new reaches qpdf through this — it is the same three calls with a
 /// different purpose, and the purpose is the part worth naming at the call site.
 impl crate::OutputReader for Qpdf {
