@@ -101,9 +101,27 @@ and says so, visibly, when they differ; `tool-host.ts` refuses to start the engi
 
 ## Consequences
 
-- **The production origin is `https://burrow-f2s.pages.dev`.** Moving to a custom domain means
-  changing `BURROW_SITE` in the workflow and redeploying; the Cloudflare project name is
-  derived from it rather than restated, so the two cannot disagree.
+- **The production origin is `https://burrow-f2s.pages.dev`, and the Cloudflare project is
+  called `burrow`.** They differ, and that is not a mistake: Cloudflare generated the subdomain
+  `burrow-f2s` because `burrow.pages.dev` was taken. Moving to a custom domain means changing
+  `BURROW_SITE` and redeploying, because the origin is baked into the build.
+
+  **THE PROJECT NAME WAS DERIVED FROM THE HOSTNAME AND THAT COST THE FIRST DEPLOY.** The
+  reasoning was sound — Cloudflare names a project's subdomain after the project — and it is a
+  convention rather than a rule. The run failed with `The Pages project "burrow-f2s" does not
+  exist`, having uploaded nothing.
+
+  It is worth recording as more than an error, because of its shape: a derivation that is
+  **right for the wrong reason keeps looking right**, and the next person would have
+  re-derived the same wrong answer from the same sound argument. The two are stated separately
+  now — `BURROW_SITE` is a *build* input, `BURROW_PAGES_PROJECT` is a *deploy* input — and
+  `tools/check-deploy-workflow.py` asserts both are set and that the upload reads the variable
+  rather than restating the name. Nothing compares them, deliberately: they are allowed to
+  differ, and the self-test has a case asserting a checker that refused the difference would
+  be wrong.
+
+  What actually stops a wrong project name reaching people is the read-back below, not a rule
+  about names.
 - **Merging to `main` deploys.** There is no separate approval step between a merged pull
   request and the live site, by design — the ruleset requires a pull request and a passing
   `ci`, and that is the gate.

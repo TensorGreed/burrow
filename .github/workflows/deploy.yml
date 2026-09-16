@@ -42,6 +42,28 @@ env:
   # Changing this means rebuilding, not redeploying. `tools/check-deployable-build.sh` is
   # invoked with the same value below and refuses a build that disagrees.
   BURROW_SITE: https://burrow-f2s.pages.dev
+  # THE PROJECT NAME IS NOT THE HOSTNAME, AND ASSUMING IT WAS COST A RED DEPLOY.
+  #
+  # The first version derived this from `BURROW_SITE` -- `burrow-f2s.pages.dev` -> `burrow-f2s`
+  # -- on the reasoning that Cloudflare names the subdomain after the project. That is its
+  # convention and it is not a guarantee: this project is called `burrow`, and Cloudflare
+  # generated `burrow-f2s` as the subdomain because `burrow.pages.dev` was taken. The deploy
+  # failed with `The Pages project "burrow-f2s" does not exist`.
+  #
+  # IT FAILED LOUDLY, WHICH IS THE ONLY REASON THIS IS CHEAP. Nothing was uploaded and nothing
+  # reached a live site. But a derivation that is right for the wrong reason keeps looking
+  # right, and the next person to read it would have re-derived the same wrong answer from the
+  # same sound argument.
+  #
+  # So the two are stated separately, because they are separately true. `BURROW_SITE` is a
+  # BUILD input -- it is baked into the CSP and the worker's absolute URLs (ADR 0014 §4) and
+  # changing it means rebuilding. `BURROW_PAGES_PROJECT` is a DEPLOY input: which Cloudflare
+  # project receives the bytes. A build is bound to the first and says nothing about the second.
+  #
+  # What stops them disagreeing is no longer a derivation but a READ-BACK: the step after the
+  # upload asserts wrangler's reported URL equals `BURROW_SITE`, so a wrong project name fails
+  # the run instead of putting a correct build somewhere nobody visits.
+  BURROW_PAGES_PROJECT: burrow
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
@@ -122,26 +144,6 @@ jobs:
           name: production-dist
           path: apps/web/dist
 
-      # THE PROJECT NAME IS DERIVED, NOT RESTATED. `burrow-f2s.pages.dev` -> `burrow-f2s`. It
-      # was written out a second time beside `BURROW_SITE` with nothing tying them, and a
-      # wrong one uploads a correct build to a DIFFERENT project: different origin, so
-      # `connect-src` refuses every engine fetch, every tool is dead, the origin-guard banner
-      # fires -- and the run is green with a summary naming the origin it did not deploy to.
-      - name: Work out where this is going
-        id: target
-        run: |
-          host="${BURROW_SITE#https://}"
-          project="${host%%.*}"
-          case "$host" in
-            *.pages.dev) : ;;
-            *) echo "BURROW_SITE is $BURROW_SITE, which is not a *.pages.dev origin. The
-          project name is derived from it; a custom domain needs this step changed
-          deliberately rather than guessed." >&2; exit 1 ;;
-          esac
-          [ -n "$project" ] || { echo "could not derive a project name from $BURROW_SITE" >&2; exit 1; }
-          echo "project=$project" >> "$GITHUB_OUTPUT"
-          echo "derived project name: $project"
-
       # INSTALLED BEFORE THE GATE, DELIBERATELY. `npx --yes` resolves and installs wrangler's
       # whole transitive tree from the network at run time, in the only job holding the
       # credential, with write access to `apps/web/dist`. Run between the gate and the upload,
@@ -175,7 +177,7 @@ jobs:
         run: |
           set -o pipefail
           npx --yes wrangler@4.132.0 pages deploy apps/web/dist \
-            --project-name "${{ steps.target.outputs.project }}" \
+            --project-name "$BURROW_PAGES_PROJECT" \
             --branch main \
             --commit-dirty=true 2>&1 | tee wrangler.log
 
