@@ -638,6 +638,25 @@ the discharge, and it is narrow on purpose.
 **This amendment does not close §7.** It removes the strip from §7's list of unanswered
 questions and leaves the list.
 
+### Correction, 2026-09-17, later the same day: the discharge above claims too much
+
+**It says the strip's defaults "survived a long document on a real iOS device" and concludes no
+mobile-specific default is needed. Desktop WebKit says otherwise**, and the measurement is
+[#107](https://github.com/TensorGreed/burrow/issues/107): on `/split-pdf` and `/rotate-pdf` — the
+two pages that mount this strip — a WebKit tab is lost, or an operation's output never arrives,
+about **four times in 580 runs**. With the strip suppressed on the same commit, and on the commit
+before it existed, **zero in 580**. Only the strip-bearing pages have ever failed.
+
+So the mechanism §7 warned about — a memory spike taking the whole tab — is reachable with this
+strip on a desktop browser, while a tab holds qpdf for the operation and PDFium for the tiles.
+One iPhone surviving one document did not establish that it was not; it established that one
+device survived one document, which is what this record should have said and what the section
+above now has to be read against.
+
+**What stands:** the observation itself, and everything in *What it does and does not support*.
+**What does not:** "for the thumbnail strip that question is now answered". It is not answered.
+The strip is back on §7's list, and #107 is where the answer will come from.
+
 **The pages rework ([ADR 0028](0028-an-accent-colour-and-what-it-cost-the-reserved-palette.md))
 left the strip alone**, deliberately: it works and it looks right, so that change preserves its
 behaviour rather than redesigning it. The observation above therefore still describes what
