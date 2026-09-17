@@ -13,6 +13,11 @@
 import { execFileSync } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
+import {
+  CREDITS_PRESENT_MARK,
+  CREDITS_WITHDRAWN_MARK,
+  STRIP_WITHDRAWN,
+} from "./components/strip-copy.js";
 
 import { PRODUCTION_DIR, REPO, hrefsIn, readBuilt, resolveHref, walk } from "./build-output.js";
 
@@ -344,9 +349,17 @@ describe("the built credits page", () => {
       "no component is conditional, so this assertion would pass over nothing",
     ).toBeGreaterThan(0);
 
-    expect(html, "the page does not say that some components arrive only with rendering").toMatch(
-      /arrives only if you look at page pictures/i,
-    );
+    // THE SENTENCE FOLLOWS THE FLAG. Which components a visitor has received depends on
+    // whether anything on the site fetches the render bundle, and `STRIP_WITHDRAWN` decides
+    // that -- so this assertion takes its words from `strip-copy.ts` rather than pinning the
+    // wording of one state. Pinned literally, it failed the moment the strip was withdrawn,
+    // for a page that had been correctly updated. `strip-copy.test.ts` owns the agreement in
+    // both directions; this one keeps the LICENCE obligation attached to it.
+    const said = STRIP_WITHDRAWN ? CREDITS_WITHDRAWN_MARK : CREDITS_PRESENT_MARK;
+    expect(
+      html.replace(/\s+/g, " "),
+      "the page does not say what a visitor has and has not received",
+    ).toContain(said);
     for (const component of conditional) {
       expect(
         html,

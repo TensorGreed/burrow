@@ -32,6 +32,7 @@
   } from "./tool-host.js";
   import { createDelivery, type Handout } from "./tool-delivery.js";
   import PageThumbnails from "./PageThumbnails.svelte";
+  import { STRIP_WITHDRAWN } from "./strip-copy.js";
 
   let file = $state<File | null>(null);
   /** Pages, once counted. `null` while counting, `-1` if it could not be read. */
@@ -420,7 +421,15 @@
   <!-- THE STRIP, after the file line and before the controls. It is an AID: if it draws
        nothing the selection below still works by number, which is how both these pages worked
        before there were pictures at all (ADR 0020). -->
-  <PageThumbnails {file} {pageCount} />
+  <!-- WITHDRAWN, NOT REMOVED. `STRIP_WITHDRAWN` in `strip-copy.ts` carries the measurement:
+       a tab holding qpdf and PDFium at once loses itself on WebKit, about four times in 580
+       runs, and zero without the strip. Losing a tab mid-operation is worse than not seeing
+       thumbnails, and this page selected pages by number for its whole life before the strip
+       existed. The component, its tests and the render bundle are untouched; restoring it is
+       this one boolean, and `strip-copy.test.ts` makes the prose follow it. #107. -->
+  {#if !STRIP_WITHDRAWN}
+    <PageThumbnails {file} {pageCount} />
+  {/if}
 
   {#if preparing}
     <p class="preparing" role="status">
