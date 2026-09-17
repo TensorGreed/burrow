@@ -156,6 +156,61 @@ fn build(pages: usize, encrypt: Option<EncryptDict>) -> Vec<u8> {
     out
 }
 
+/// A one-page PDF with ink in **exactly one quadrant**, for testing a render.
+///
+/// 200 x 400 points, with a black rectangle over the **top-left** quarter and nothing
+/// anywhere else. Every property of it is chosen so that a render test can fail:
+///
+/// - **not square**, so a width and a height that were swapped produce a different picture
+///   rather than the same one;
+/// - **not symmetric** in either axis, so a flip, a mirror or a quarter turn is visible --
+///   a centred mark would render identically under all four rotations, which is precisely
+///   the case `/rotate-pdf` exists to distinguish;
+/// - **one solid quadrant**, so what a correct render produces can be stated exactly (one
+///   quarter of the pixels black, three quarters white) rather than compared against a
+///   golden bitmap that would differ with antialiasing between platforms.
+///
+/// PDF user space has its origin at the bottom left, so `0 200 100 200 re` is the top-left
+/// quarter of the page as a person sees it, and row 0 of the rendered bitmap.
+pub fn pdf_with_ink() -> Vec<u8> {
+    let content = b"0 0 0 rg\n0 200 100 200 re\nf\n";
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+
+    offsets.push(out.len());
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    offsets.push(out.len());
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    offsets.push(out.len());
+    out.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 400] \
+          /Resources << >> /Contents 4 0 R >>\nendobj\n",
+    );
+
+    offsets.push(out.len());
+    // `/Length` is the real length. Every other fixture here is damaged on purpose; this
+    // one must parse cleanly, because a render test of a broken file measures the error
+    // path instead.
+    out.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
+    out.extend_from_slice(content);
+    out.extend_from_slice(b"endstream\nendobj\n");
+
+    let startxref = out.len();
+    let size = offsets.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\n").as_bytes());
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+    out
+}
+
 // ---------------------------------------------------------------------------------
 // Canary fixtures, for the secret-leak test.
 // ---------------------------------------------------------------------------------

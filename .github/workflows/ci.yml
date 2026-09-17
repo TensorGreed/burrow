@@ -486,13 +486,18 @@ jobs:
           python3 tools/seed-fuzz-corpus.py --check
           tools/test-seed-fuzz-corpus.sh
 
-      - name: fuzz the pure-Rust targets for 60s each
+      # NOT ALL OF THESE ARE PURE RUST, and the step said they were until #57. `document_open`
+      # links PDFium and `render` links it and runs its rasteriser; what they have in common is
+      # that PDFium is a PREBUILT, so unlike qpdf it cannot be instrumented and there is no
+      # RUSTFLAGS override to set. That is what separates this step from the one below, so the
+      # name says it.
+      - name: fuzz the targets with no instrumented archive, for 60s each
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          for target in document_open prescan pdfsyntax_names pdfsyntax_dict_keys; do
+          for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             cargo +nightly fuzz run "$target" -- \

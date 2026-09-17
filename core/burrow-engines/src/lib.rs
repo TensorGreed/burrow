@@ -53,6 +53,11 @@ pub use estimate::estimated_open_bytes;
 // platforms -- it copies bytes and appends a NUL, which needs no engine.
 mod password;
 
+// The pixel ceiling and the BGRA-to-RGBA copy. Ungated for the same reason as `estimate`:
+// both platforms must apply the SAME ceiling and produce the SAME bytes, and the only thing
+// that differs between them is the engine call that fills the bitmap. See ADR 0027.
+mod raster;
+
 // Reading how much memory an operation actually cost. Linux-only and gated with the engine
 // modules, because procfs is where the number comes from; the web path supplies its own
 // reading through the bridge instead. Both feed the same `estimate::check_measured_memory`.
@@ -930,6 +935,200 @@ pub trait DocumentCompressor {
     ///   caller must not be able to loosen a limit after the document is already in memory.
     ///   `options` is still read for the clock.
     fn compress(&self, source: &Self::Source, options: &OpenOptions<'_>) -> Result<Vec<u8>>;
+}
+
+/// One page, rasterised.
+///
+/// **RGBA, eight bits per channel, no padding between rows.** `rgba.len()` is exactly
+/// `width * height * 4`, and that is asserted by [`PageRenderer::render`]'s implementors
+/// rather than promised — the length is a *decision* the caller made, not a fact the file
+/// stated, which is what makes it worth checking.
+///
+/// # Why RGBA, when PDFium produces BGRA
+///
+/// The swizzle happens **in Rust**, in the implementation, on both platforms. The web path
+/// could have done it in JavaScript while copying out of the engine heap and saved a pass,
+/// and that was rejected: [ADR 0009] §2 lets the bridge marshal and forbids it deciding, and
+/// a channel order is exactly the kind of "small" decision that ends up differing between the
+/// two platforms with nothing to catch it. The differential harness compares typed outcomes,
+/// and two channel orders would look identical in every one of them.
+///
+/// **PDFium may pad its rows** (`FPDFBitmap_GetStride`), so the copy is per row and the stride
+/// is read rather than assumed. A reader that computed `width * 4` would return the wrong
+/// pixels on exactly the pages where padding happens, and only on those.
+///
+/// [ADR 0009]: ../../../docs/adr/0009-web-panic-contract-and-binding-boundary.md
+#[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Raster {
+    /// Width in pixels. What was asked for, not what the page measures.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `width * height * 4` bytes, row-major, RGBA.
+    pub rgba: Vec<u8>,
+}
+
+impl core::fmt::Debug for Raster {
+    /// Hand-written so that formatting one CANNOT print page content.
+    ///
+    /// A derived `Debug` renders `rgba` in full: decoded pixels of somebody's document, into
+    /// whatever consumed the format — a log line, a panic message, an `assert_eq!` failure.
+    /// `core/CLAUDE.md` says file content must never reach any of those, and a derive is a
+    /// footgun nobody has to pull deliberately. No call site formats one today; this is so
+    /// that the next one is safe by construction. Found by security review.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Raster")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("rgba_len", &self.rgba.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Raster {
+    /// A raster, with its length checked against its dimensions.
+    ///
+    /// `#[non_exhaustive]` makes this the only way to build one from outside this crate, and
+    /// that is the point: **the length is a decision rather than a fact the file stated**, so
+    /// the invariant is enforced at construction instead of being described in a doc comment
+    /// somebody has to keep honouring. Every implementor of [`PageRenderer`] goes through
+    /// here, including the fakes in tests, so a fake cannot hold itself to a weaker rule than
+    /// the engine.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`](burrow_types::Error::Internal) if `rgba.len()` is not
+    /// `width * height * 4`, or if that product does not fit this target. Never the
+    /// document's fault, and deliberately not reported as if it were.
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self> {
+        let expected = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(raster::BYTES_PER_PIXEL))
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .ok_or_else(|| {
+                burrow_types::Error::Internal("raster byte count does not fit".to_owned())
+            })?;
+        if rgba.len() != expected {
+            return Err(burrow_types::Error::Internal(
+                "the rendered page is not the size that was asked for".to_owned(),
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+}
+
+/// An engine that draws a page.
+///
+/// **The first capability in this crate that produces PIXELS.** Everything else either reads a
+/// document ([`DocumentEngine`], [`StructureEngine`]) or produces another document
+/// ([`PageAssembler`], [`PageRotator`], [`PageReorderer`], [`DocumentCompressor`]), and the
+/// difference is not cosmetic — a raster's size is chosen by the caller rather than implied by
+/// the input, so it is the first seam here where a ceiling guards *the request*.
+///
+/// # What it promises, and the one thing it cannot
+///
+/// [ADR 0027] states the whole contract, and the residue it leaves is stated there rather than
+/// implied: the returned buffer's length is checked against `width * height * 4`, and the page
+/// index is checked against the count — but **nothing in the returned pixels identifies which
+/// page they came from**. A render is a read (like [`DocumentEngine::page_count`]), so
+/// [ADR 0022]'s read-back through a fresh engine does not apply and `verify::Expected` gains no
+/// variant for it. That is a decision, not an omission.
+///
+/// # Why it EXTENDS `DocumentEngine` rather than declaring its own `open`
+///
+/// Every other seam here ([`PageRotator`], [`PageExtractor`], [`DocumentCompressor`]) declares
+/// its own `open` and its own `Source`, because each is satisfied by qpdf, which is not a
+/// [`DocumentEngine`] at all. Rendering is different: it is PDFium's, and PDFium *is* the
+/// `DocumentEngine` — so a second `open` here would have been the same open written twice,
+/// with two places for the limit order to drift apart.
+///
+/// It also keeps [`Self::Document`](DocumentEngine::Document)'s `Send + Sync` bound as the
+/// one statement of it. **A PDFium `FPDF_PAGE` may never live in that type**: a page handle is
+/// neither, and holding one across calls is what would cost the native document its derived
+/// `Send + Sync` and force an `unsafe impl` nothing in this crate has. Every page this trait
+/// loads is closed before the call that loaded it returns.
+///
+/// # `max_pixels`, and why it is checked here rather than only in `burrow-ops`
+///
+/// The check has to sit immediately before the allocation it guards, because the thing it
+/// prevents is the allocation. `FPDFBitmap_Create` returning null for a large page is a
+/// reachable outcome, not a theoretical one — and by then the cost has already been paid.
+/// `crate::raster::check_pixels` is the one implementation both platforms call, for the same
+/// reason `crate::estimate::before_open` exists. (Not linked: both are private, which is itself
+/// the point -- a ceiling the caller could reach around would not be one.)
+///
+/// # Implementors must not panic
+///
+/// On `wasm32-unknown-unknown` a panic is an uncatchable trap that poisons the whole instance
+/// ([ADR 0009]). Return a typed error instead.
+///
+/// [ADR 0009]: ../../../docs/adr/0009-web-panic-contract-and-binding-boundary.md
+/// [ADR 0022]: ../../../docs/adr/0022-every-operation-verifies-its-own-output.md
+/// [ADR 0027]: ../../../docs/adr/0027-what-a-render-promises-and-what-it-refuses.md
+pub trait PageRenderer: DocumentEngine {
+    /// A page's size in **points**, at 72 to the inch, with its own `/Rotate` applied.
+    ///
+    /// `index` is **zero-based**, like every engine seam here; the one-based number a person
+    /// types is converted once, at `burrow-ops`' boundary.
+    ///
+    /// This is what a caller needs to preserve a page's aspect ratio, and it is a separate
+    /// call rather than a field of [`Raster`] because the caller has to know it *before* it
+    /// can choose the width and height to ask for.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — the index is past
+    ///   the end of the document.
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — the page could not be loaded.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — the deadline.
+    fn page_size(&self, doc: &Self::Document, index: u64) -> Result<(f32, f32)>;
+
+    /// Draw page `index` at exactly `width` x `height` pixels.
+    ///
+    /// The page is scaled into the box given; **the aspect ratio is the caller's to preserve**
+    /// (with [`page_size`](PageRenderer::page_size)), and deliberately not this seam's to
+    /// impose. That is also what makes the ceiling below a bound on the *request*: a
+    /// 14400-point page asked for at thumbnail size costs what a thumbnail costs.
+    ///
+    /// The page's own `/Rotate` is applied by the engine. Nothing here rotates a second time.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidArgument`](burrow_types::Error::InvalidArgument) — a zero dimension,
+    ///   or an index past the end of the document.
+    /// - [`Error::LimitExceeded`](burrow_types::Error::LimitExceeded) — `width * height`
+    ///   exceeds `max_pixels`, at [`Stage::Pixels`](burrow_types::Stage::Pixels), **before any
+    ///   raster is allocated**; or the deadline has passed.
+    ///
+    /// # `max_pixels` comes from `options`, not from the open, and that is the exception
+    ///
+    /// [`DocumentCompressor::compress`] reads the ceilings the source was opened under, so a
+    /// caller cannot loosen a limit once the document is already in memory. That argument does
+    /// not transfer here, because **`max_pixels` bounds the request rather than the
+    /// document**: the size is chosen at this call and nothing about it was decided at the
+    /// open. Reading it from the open would mean a caller could not ask for a thumbnail and a
+    /// larger view of the same document without reopening it, which is the ordinary case.
+    ///
+    /// Every ceiling that *is* about the document -- `max_input_bytes`, `max_memory_bytes`,
+    /// `max_pages` -- was applied at [`DocumentEngine::open`] and is not re-read here.
+    /// - [`Error::Malformed`](burrow_types::Error::Malformed) — the page could not be loaded.
+    /// - [`Error::Io`](burrow_types::Error::Io) — the bitmap could not be allocated.
+    /// - [`Error::Internal`](burrow_types::Error::Internal) — the engine handed back a buffer
+    ///   that is not `width * height * 4` bytes, or contradicted itself some other way.
+    fn render(
+        &self,
+        doc: &Self::Document,
+        index: u64,
+        width: u32,
+        height: u32,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Raster>;
 }
 
 /// A paged document engine: opens a document and reports its shape.

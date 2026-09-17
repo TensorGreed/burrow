@@ -170,6 +170,25 @@ runs:
         wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render --release \
           -- --no-default-features --features render
 
+    # THE WORKER IS TYPE-CHECKED AGAINST HAND-WRITTEN DECLARATIONS, NOT AGAINST THE BINDING.
+    #
+    # `apps/web/src/worker/globals*.d.ts` are ambient declarations somebody wrote, so `tsc -p
+    # src/worker` validates the worker against a file that can agree with it and disagree with
+    # what wasm-bindgen actually exports. Measured: `RenderedPage::pixel_length` was declared
+    # without a `js_name`, so the binding exposed `pixel_length` while the worker read
+    # `pixelLength`. `undefined > 0` is false, so the worker took the empty branch, threw
+    # nothing, and posted a ZERO-BYTE pixel buffer for every page of every strip while
+    # reporting success -- a blank strip indistinguishable from a working one.
+    #
+    # It runs HERE, immediately after both wasm-pack builds, because that is where the
+    # generated `.d.ts` files exist. Placed anywhere earlier it would compare against a stale
+    # `pkg/` or refuse for want of one -- the "where a check lives is load-bearing" rule.
+    - name: The worker's declarations name only members the binding exports
+      shell: bash
+      run: |
+        python3 tools/check-wasm-binding-names.py
+        tools/test-check-wasm-binding-names.sh
+
     # ---- the web app ------------------------------------------------------------
     - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       with:

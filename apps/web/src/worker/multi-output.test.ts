@@ -14,6 +14,17 @@
 // It is a source scan and it says so rather than pretending to be behavioural. What it buys is
 // that `splitInto` stays the only route to a part message, which is the property the host's
 // `partsExpected === undefined` fast path depends on.
+//
+// SINCE #57 THE CLAIM IS ABOUT TWO BUNDLES, AND THIS SCANNED ONE. `render-main.js` posts
+// `progress` messages of its own and a THIRD message shape (`page: {`), and a scan of `main.js`
+// alone said nothing about either -- while the header above claimed the protocol was opt-in
+// across the worker. A claim about two files checked against one is the shape this file exists
+// to prevent, one level up. Found by code review.
+//
+// A strip's rule is the OPPOSITE of a split's -- pages are delivered as they arrive, because a
+// thumbnail that arrived is a true picture of its page whatever happens to page 7 -- so what is
+// asserted of `render-main.js` is the same negative in its own terms: `renderStrip` is the only
+// route to a `page` message, and nothing else in that bundle posts one.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -21,6 +32,14 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const raw = readFileSync(fileURLToPath(new URL("./main.js", import.meta.url)), "utf8");
+const rawRender = readFileSync(fileURLToPath(new URL("./render-main.js", import.meta.url)), "utf8");
+
+/** Blank comments, preserving offsets. See `source`. */
+function withoutComments(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length))
+    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+}
 
 /**
  * `main.js` with its comments blanked out, offsets preserved.
@@ -29,9 +48,10 @@ const raw = readFileSync(fileURLToPath(new URL("./main.js", import.meta.url)), "
  * scan of the raw text counts the prose as a call site. Blanking rather than deleting keeps
  * every offset equal to the real file's, so a reported position still points at the line.
  */
-const source = raw
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length))
-  .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+const source = withoutComments(raw);
+
+/** The same, for the render bundle's dispatch. */
+const renderSource = withoutComments(rawRender);
 
 /**
  * The body of a top-level `function name(...)`, by brace matching.
@@ -40,16 +60,16 @@ const source = raw
  * end the span early and the scan would then report "no part message here" about a region
  * that does not contain the function at all -- a check that examines nothing.
  */
-function functionBody(name: string): string {
-  const start = source.indexOf(`function ${name}(`);
-  expect(start, `${name} is not declared in main.js`).toBeGreaterThan(-1);
-  const open = source.indexOf("{", start);
+function functionBody(name: string, text: string = source): string {
+  const start = text.indexOf(`function ${name}(`);
+  expect(start, `${name} is not declared in the scanned bundle`).toBeGreaterThan(-1);
+  const open = text.indexOf("{", start);
   let depth = 0;
-  for (let i = open; i < source.length; i += 1) {
-    if (source[i] === "{") depth += 1;
-    if (source[i] === "}") {
+  for (let i = open; i < text.length; i += 1) {
+    if (text[i] === "{") depth += 1;
+    if (text[i] === "}") {
       depth -= 1;
-      if (depth === 0) return source.slice(open, i + 1);
+      if (depth === 0) return text.slice(open, i + 1);
     }
   }
   throw new Error(`${name}'s body is unbalanced`);
@@ -131,5 +151,67 @@ describe("the multi-output protocol is opt-in", () => {
     expect(arm).not.toContain("part: {");
     expect(arm).not.toContain("progress: {");
     expect(arm).not.toContain("splitInto(");
+  });
+});
+
+describe("the render bundle's strip protocol is opt-in too", () => {
+  test("only renderStrip posts a page or a progress message", () => {
+    const body = functionBody("renderStrip", renderSource);
+    const at = renderSource.indexOf(body);
+
+    // `page: {` once, `progress: {` twice -- the total before the first tile and the one after
+    // each. THE COUNTS ARE COMPARED, not merely asserted non-zero: a marker that stopped
+    // matching would make "every occurrence is inside renderStrip" vacuously true, which is
+    // this file's own lesson applied to its second bundle.
+    for (const [marker, expected] of [
+      ["page: {", 1],
+      ["progress: {", 2],
+    ] as const) {
+      const everywhere = occurrences(renderSource, marker);
+      expect(
+        everywhere.length,
+        `${marker} does not appear in render-main.js as expected -- the scan went blind`,
+      ).toBe(expected);
+      for (const found of everywhere) {
+        expect(
+          found >= at && found < at + body.length,
+          `${marker} at offset ${found} is outside renderStrip`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  test("renderStrip is reachable from the render arm and from nothing else", () => {
+    // Two mentions: the declaration and the one call.
+    expect(occurrences(renderSource, "renderStrip(").length).toBe(2);
+
+    const declaration = "function renderStrip(";
+    const call = renderSource.indexOf(
+      "renderStrip(",
+      renderSource.indexOf(declaration) + declaration.length,
+    );
+    expect(call, "renderStrip is declared and never called").toBeGreaterThan(-1);
+
+    const arm = renderSource.indexOf('request.op === "render"');
+    expect(arm, "no render arm in the dispatch").toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(arm);
+  });
+
+  test("the base bundle posts no page message at all", () => {
+    // THE PARTITION, and it is the same argument `check-pdfium-is-render-only.sh` makes about
+    // PDFium: an absence rule with no opposite control proves nothing. The strip protocol is
+    // the render bundle's, and `main.js` must not have grown one.
+    expect(source).not.toContain("page: {");
+  });
+
+  test("page_count in the render bundle posts one terminal reply and no page", () => {
+    const body = functionBody("runOperation", renderSource);
+    const named = body.indexOf('request.op === "render"');
+    expect(named, "render is not dispatched in render-main.js").toBeGreaterThan(-1);
+    // Everything after the render arm is the `page_count` fall-through.
+    const rest = body.slice(body.indexOf("}", named));
+    expect(rest, "the page_count fall-through is not where it was").toContain("page_count(");
+    expect(rest).not.toContain("page: {");
+    expect(rest).not.toContain("renderStrip(");
   });
 });

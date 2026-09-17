@@ -31,7 +31,7 @@ describe("the render bundle's half of the protocol contract", () => {
 
     // AND THE LIST IS THIS BUNDLE'S, not the other one's. Two bundles declaring the same three
     // names is the contract; declaring the same VALUES would mean the split did nothing.
-    expect([...(declared["KNOWN_OPS"] as Set<string>)]).toEqual(["page_count"]);
+    expect([...(declared["KNOWN_OPS"] as Set<string>)]).toEqual(["page_count", "render"]);
   });
 
   it("answers page_count and refuses every operation it does not have", async () => {

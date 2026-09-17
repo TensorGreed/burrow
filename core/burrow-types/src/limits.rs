@@ -117,7 +117,10 @@ pub struct Limits {
     /// Wall-clock ceiling for one operation, in milliseconds.
     ///
     /// Cooperative: checked at page boundaries and between engine calls, so overshoot
-    /// of up to one engine call is possible. Requires a platform clock —
+    /// of up to one engine call is possible. **On the render path that overshoot is MINUTES,
+    /// not milliseconds**: one `FPDF_RenderPageBitmap` on a hostile content stream was measured
+    /// at 112 seconds, and there is no checkpoint inside it. ADR 0027 §2a records what would
+    /// bound it and why that is a decision rather than a patch. Requires a platform clock —
     /// `Instant::now()` panics on `wasm32-unknown-unknown`, so operations take an
     /// injected clock rather than reading time directly.
     ///
@@ -133,8 +136,23 @@ pub struct Limits {
     pub max_duration_ms: u64,
     /// Largest accepted page count for paged documents. Exact.
     pub max_pages: u64,
-    /// Largest accepted decoded raster, in pixels (width x height). Exact: checked
-    /// against declared dimensions before any raster is allocated.
+    /// Largest accepted decoded raster, in pixels (width x height). Exact: checked at
+    /// [`Stage::Pixels`](crate::Stage::Pixels) before any raster is allocated.
+    ///
+    /// **This is a CALLER ceiling, not a device ceiling, and the default is far looser than
+    /// anything a page should ask for.** At 4 bytes per pixel the default is exactly 1 GiB —
+    /// and exactly [`max_memory_bytes`](Self::max_memory_bytes) — so the PDF maximum page,
+    /// 14400x14400 pt rendered 1:1, is 207 Mpx and **passes**. What bounds a browser tab is
+    /// the much smaller number the web app requests;
+    /// [ADR 0027](../../../docs/adr/0027-what-a-render-promises-and-what-it-refuses.md)
+    /// records it, records that it was chosen rather than measured, and names where to revise
+    /// it.
+    ///
+    /// **IT BOUNDS THE BUFFER, NOT THE COST OF PRODUCING IT.** A rasteriser allocates its own
+    /// working set, and nothing in this struct bounds that: a 1.3 MB page of stroked paths
+    /// rendered to a 240x320 *thumbnail* was measured at 112 seconds and 2.7 GB. The exact
+    /// check this field promises is exact about the raster it names and says nothing about the
+    /// engine that filled it. ADR 0027's *What is bounded, and what is not* has the figures.
     pub max_pixels: u64,
 }
 

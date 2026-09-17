@@ -25,10 +25,11 @@ One file per decision, numbered, never rewritten. See
 | [0017](0017-merge-engine-and-failure-semantics.md) | Which engine merges, and what a merge does when one input fails | Accepted |
 | [0018](0018-when-the-engines-load.md) | When the engines load, and what bounds a start-up that is slow | Accepted |
 | [0019](0019-how-split-builds-its-outputs.md) | How a split builds its outputs, and what a subsetting operation may not carry | Accepted, amended 2026-09-14 |
-| [0020](0020-rotate-ships-without-thumbnails.md) | Rotate ships without page thumbnails | Accepted — deferred work is [0026](0026-how-rendering-loads-without-returning-to-the-old-payload.md) and #57 |
+| [0020](0020-rotate-ships-without-thumbnails.md) | Rotate ships without page thumbnails | Accepted — deferred work is [0026](0026-how-rendering-loads-without-returning-to-the-old-payload.md) and [0027](0027-what-a-render-promises-and-what-it-refuses.md) |
 | [0021](0021-how-reorder-permutes-a-page-tree.md) | Reorder permutes in place, and accepts a flattened page tree | Accepted |
 | [0022](0022-every-operation-verifies-its-own-output.md) | Every operation verifies its own output before returning it | Accepted |
 | [0023](0023-how-an-operation-delivers-more-than-one-document.md) | How an operation delivers more than one document | Accepted |
 | [0024](0024-how-burrow-is-deployed.md) | How burrow is deployed | Accepted, amended 2026-09-16 (the custom domain) |
 | [0025](0025-what-compress-does-and-what-it-refuses-to-do.md) | What `compress` does, and what it refuses to do | Accepted |
-| [0026](0026-how-rendering-loads-without-returning-to-the-old-payload.md) | How rendering loads, without returning to the old payload | Accepted — amends [spike 0004](../spikes/0004-the-first-load-budget-before-compress.md) |
+| [0026](0026-how-rendering-loads-without-returning-to-the-old-payload.md) | How rendering loads, without returning to the old payload | Accepted — amends [spike 0004](../spikes/0004-the-first-load-budget-before-compress.md), amended 2026-09-17 (the bundle renders) |
+| [0027](0027-what-a-render-promises-and-what-it-refuses.md) | What a render promises, what it refuses, and the three numbers that were chosen | Accepted — closes [0020](0020-rotate-ships-without-thumbnails.md)'s deferred ceiling, amended 2026-09-17 (progressive render required) |

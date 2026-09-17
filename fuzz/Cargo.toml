@@ -74,6 +74,16 @@ test = false
 doc = false
 bench = false
 
+# THE ONLY TARGET THAT REACHES PAST PDFIUM'S OPEN-AND-COUNT (#57). Everything behind
+# `FPDF_RenderPageBitmap` -- the content-stream interpreter, the font stack, the image
+# decoders, HarfBuzz, ICU, lcms and OpenJPEG -- is unreachable from every other target here.
+[[bin]]
+name = "render"
+path = "fuzz_targets/render.rs"
+test = false
+doc = false
+bench = false
+
 [[bin]]
 name = "compress"
 path = "fuzz_targets/compress.rs"

@@ -1263,3 +1263,159 @@ describe("multi-output delivery", () => {
     expect("parts" in reply).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------------------
+// #57, ADR 0027: a rendered strip
+//
+// The protocol is `{ page: { number, index, of, width, height }, pixels }` messages followed by
+// an ordinary terminal reply. It LOOKS like ADR 0023's parts and its rule is the opposite, which
+// is the whole reason these tests exist beside those: a split is a partition, so a failure
+// discards; a strip is a set of independent pictures, so a failure keeps what arrived.
+//
+// THE FIRST TEST HERE IS A REGRESSION TEST. Before the host had a `page` branch, the first page
+// message fell through to the terminal-reply path: the watchdog was cleared, the entry deleted,
+// and the caller settled with `ok: undefined` — every later page and the real reply dropped as
+// "no longer in flight". A blank strip reporting a failure that never happened. Found by code
+// review, with nothing driving it yet and nothing preventing it either.
+// ---------------------------------------------------------------------------------------
+
+/** A render request. The host does not interpret it; the worker's reply shape is what matters. */
+const renderOperation = {
+  op: "render",
+  blob: { size: 3 },
+  pages: [1, 2],
+  boxWidth: 4,
+  boxHeight: 4,
+};
+
+describe("a rendered strip", () => {
+  test("pages are handed over as they arrive and do not settle the request", async () => {
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const seen: Array<{ number: number; bytes: number }> = [];
+    let settled = false;
+    const running = host
+      .run(renderOperation, {
+        onPage: (page, pixels) => seen.push({ number: page.number, bytes: pixels.byteLength }),
+      })
+      .then((reply) => {
+        settled = true;
+        return reply;
+      });
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+
+    worker.reply({
+      id: request.id,
+      page: { number: 3, index: 0, of: 2, width: 4, height: 4 },
+      pixels: new ArrayBuffer(64),
+    });
+    await settle();
+    // NOT SETTLED. This is the assertion the missing branch failed: the first page used to end
+    // the request, and everything after it was dropped.
+    expect(settled).toBe(false);
+    expect(seen).toEqual([{ number: 3, bytes: 64 }]);
+
+    worker.reply({
+      id: request.id,
+      page: { number: 1, index: 1, of: 2, width: 4, height: 4 },
+      pixels: new ArrayBuffer(64),
+    });
+    worker.reply({ id: request.id, ok: true, kind: "", message: "", pages: 0 });
+
+    const reply = await running;
+    expect(reply.ok).toBe(true);
+    // THE PAGE NUMBER, NOT THE ARRIVAL ORDER. A strip is laid out by position, and matching
+    // tiles to pages by arrival is how the wrong picture ends up under the right label.
+    expect(seen.map((p) => p.number)).toEqual([3, 1]);
+  });
+
+  test("a failure part way through keeps the pages that already arrived", async () => {
+    // THE OPPOSITE OF A SPLIT'S RULE, which the test above this block asserts for parts: there,
+    // two of ten arriving and then a failure delivers nothing. Here the two that arrived are
+    // true pictures of their pages and the caller keeps them.
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const seen: number[] = [];
+    const running = host.run(renderOperation, { onPage: (page) => seen.push(page.number) });
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+
+    worker.reply({
+      id: request.id,
+      page: { number: 1, index: 0, of: 2, width: 4, height: 4 },
+      pixels: new ArrayBuffer(64),
+    });
+    worker.reply({
+      id: request.id,
+      ok: false,
+      kind: "LimitExceeded",
+      message: "max_duration_ms",
+      pages: 0,
+    });
+
+    const reply = await running;
+    expect(reply.ok).toBe(false);
+    expect(reply.kind).toBe("LimitExceeded");
+    // The host delivered page 1 before the failure and did not take it back.
+    expect(seen).toEqual([1]);
+  });
+
+  test("the watchdog is re-armed per page, so a long strip does not fire on the honest case", async () => {
+    // A strip of sixty-four thumbnails is sixty-four units of work. One budget for all of them
+    // fires on a document that is doing exactly what it was asked to -- the same reason a part
+    // re-arms, and the reason the branch is not a bare `return`.
+    const { host, factory, clock } = track(build());
+    await host.ready();
+
+    const running = host.run(renderOperation, { maxDurationMs: 100 });
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+
+    for (let index = 0; index < 8; index += 1) {
+      clock.advance(80);
+      worker.reply({
+        id: request.id,
+        page: { number: index + 1, index, of: 8, width: 4, height: 4 },
+        pixels: new ArrayBuffer(16),
+      });
+      await settle();
+    }
+    // 640 ms elapsed against a 100 ms budget, and nothing fired: each page re-armed it.
+    worker.reply({ id: request.id, ok: true, kind: "", message: "", pages: 0 });
+    const reply = await running;
+    expect(reply.ok).toBe(true);
+  });
+
+  test("a page carrying no pixels is an Internal, and the worker is discarded", async () => {
+    // The bundle violating the protocol. Delivered as an empty tile it would look exactly like
+    // a working strip of blank pages -- which is the failure a missing `js_name` on
+    // `pixelLength` actually produced, so this host refuses to be the thing that hides it.
+    const { host, factory } = track(build());
+    await host.ready();
+
+    const before = factory.instances().length;
+    const running = host.run(renderOperation, {});
+    await settle();
+    const worker = factory.latest();
+    const request = worker.received.at(-1) as { id: number };
+    worker.reply({ id: request.id, ack: true });
+    worker.reply({ id: request.id, page: { number: 1, index: 0, of: 1, width: 4, height: 4 } });
+
+    const reply = await running;
+    expect(reply.ok).toBe(false);
+    expect(reply.kind).toBe("Internal");
+    // AND THE WORKER GOES. `apps/web/CLAUDE.md`: any `Internal` result is fatal to the worker.
+    // Leaving one mid-strip holding a live `RenderSession` for a request the host has forgotten
+    // keeps `state` at "busy" for the life of the host.
+    expect(factory.instances().length).toBe(before);
+  });
+});

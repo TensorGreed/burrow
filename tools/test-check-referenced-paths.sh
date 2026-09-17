@@ -162,6 +162,44 @@ fi
 rm -f "$work/tools/planted-tool.py"
 git -C "$work" add -A >/dev/null 2>&1
 
+# --- Rule 5a: a GITIGNORED FILE is not a finding either --------------------------------------
+#
+# The second near-miss, and it is a different one from the directory above: this is a path WITH
+# an extension, which rule 4 does assert must exist. `tools/check-wasm-binding-names.py` reads
+# `bindings/burrow-wasm/pkg/burrow_wasm.d.ts`, a wasm-pack output that is gitignored and absent
+# on a clean checkout -- exactly the checkout CI's `checkers` job runs, since it fetches
+# nothing. Refusing on it made this suite's own baseline fail, which is how it was found.
+#
+# The fixture ignores the directory in the copy's own `.gitignore`, so what is being tested is
+# that the checker ASKS GIT rather than carrying a list of build directories.
+printf '%s\n' "/planted-build/" >>"$work/.gitignore"
+printf '%s' 'import pathlib
+REPO = pathlib.Path(__file__).resolve().parent.parent
+BUILT = REPO / "planted-build" / "generated.d.ts"
+' >"$work/tools/planted-tool.py"
+git -C "$work" add -A >/dev/null 2>&1
+if (cd "$work" && python3 "$work/tools/check-referenced-paths.py" >/dev/null 2>&1); then
+  echo "  ok   a constructed GITIGNORED file that does not exist is not treated as a finding"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a gitignored build output was refused, which fails on every clean checkout"
+  (cd "$work" && python3 "$work/tools/check-referenced-paths.py" 2>&1) | sed 's/^/        /' | tail -3
+  fail=$((fail + 1))
+fi
+# AND THE SKIP IS SCOPED. The same construction, NOT ignored, must still be refused -- or the
+# exemption has swallowed rule 4 whole, which is the shape that reads as coverage.
+sed -i '$ d' "$work/.gitignore"
+git -C "$work" add -A >/dev/null 2>&1
+if (cd "$work" && python3 "$work/tools/check-referenced-paths.py" >/dev/null 2>&1); then
+  echo "  FAIL the same path, no longer ignored, was still accepted -- the skip is unscoped"
+  fail=$((fail + 1))
+else
+  echo "  ok   the same path, not ignored, is still refused"
+  pass=$((pass + 1))
+fi
+rm -f "$work/tools/planted-tool.py"
+git -C "$work" add -A >/dev/null 2>&1
+
 # --- Rule 5: a DIRECTORY is not a finding -----------------------------------------------------
 #
 # THE NEAR-MISS, and the direction that decides whether this rule is usable. Plenty of

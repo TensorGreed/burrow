@@ -334,7 +334,7 @@ JOBS: list[dict] = [
             'export LD_LIBRARY_PATH="$PWD/../engines/vendor/native-$(uname -m)/lib" && '
             'export RUSTFLAGS="$RUSTFLAGS -L native=$PWD/../engines/vendor/native-$(uname -m)/lib/fuzz" && '
             "export ASAN_OPTIONS=detect_leaks=0 && "
-            "for t in document_open prescan pdfsyntax_names pdfsyntax_dict_keys "
+            "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -345,6 +345,10 @@ JOBS: list[dict] = [
         ),
         "covers": [
             "fuzz:document_open",
+            # #57's target, and the only one here that reaches past PDFium's open-and-count --
+            # the content-stream interpreter, the font stack and the image decoders are behind
+            # `FPDF_RenderPageBitmap` and behind nothing else in this list.
+            "fuzz:render",
             "fuzz:prescan",
             "fuzz:pdfsyntax_names",
             "fuzz:pdfsyntax_dict_keys",
@@ -363,10 +367,16 @@ JOBS: list[dict] = [
             "wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release"
             " && wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render"
             " --release -- --no-default-features --features render"
+            # IMMEDIATELY AFTER BOTH BUILDS, for the reason the workflow gives: this is the
+            # only point at which both generated `.d.ts` files exist.
+            " && python3 tools/check-wasm-binding-names.py"
+            " && tools/test-check-wasm-binding-names.sh"
         ),
         "covers": [
             "wasm-pack:bindings/burrow-wasm:pkg",
             "wasm-pack:bindings/burrow-wasm:pkg-render",
+            "tools/check-wasm-binding-names.py",
+            "tools/test-check-wasm-binding-names.sh",
         ],
         # BEFORE `web`, because `web` stages `pkg/` into the app and measures the result
         # against the size budget. Running them the other way round measures the previous

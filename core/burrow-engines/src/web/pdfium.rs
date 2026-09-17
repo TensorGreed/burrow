@@ -39,7 +39,7 @@ use std::sync::Arc;
 use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
 use super::bridge::{PdfiumBridge, PdfiumPtr};
-use crate::{DocumentEngine, OpenOptions};
+use crate::{DocumentEngine, OpenOptions, PageRenderer, Raster};
 
 /// The web PDFium engine.
 ///
@@ -302,5 +302,185 @@ impl DocumentEngine for WebPdfium {
 
         doc.deadline.checkpoint(doc.clock.as_ref())?;
         Ok(pages)
+    }
+}
+
+/// `FPDFBitmap_Create`'s `alpha` argument selecting `FPDFBitmap_BGRA`.
+///
+/// `1`, not `0`, for the reason the native side gives: `0` is `FPDFBitmap_BGRx`, whose fourth
+/// byte is padding PDFium does not define — and that byte becomes the alpha channel of the
+/// picture a person looks at.
+const BITMAP_BGRA: i32 = 1;
+
+/// Opaque white for `FPDFBitmap_FillRect`, as `0xAARRGGBB`.
+const OPAQUE_WHITE: u32 = 0xFFFF_FFFF;
+
+/// `FPDF_RenderPageBitmap`'s flags: none. **Not** `FPDF_ANNOT`; see the native constant.
+const RENDER_FLAGS: i32 = 0;
+
+/// `FPDF_RenderPageBitmap`'s `rotate`: always zero.
+///
+/// PDFium applies the page's own `/Rotate`, and a second rotation here would silently double
+/// it. A constant rather than a parameter so no call site can pass anything else.
+const NO_EXTRA_ROTATION: i32 = 0;
+
+/// Narrow a zero-based page index for the engine, having established it is in range.
+fn page_index(index: u64, total: u64) -> Result<i32> {
+    if index >= total {
+        return Err(Error::InvalidArgument(format!(
+            "page {} of a {total}-page document",
+            index.saturating_add(1)
+        )));
+    }
+    i32::try_from(index)
+        .map_err(|_| Error::Internal("page index does not fit in an engine index".to_owned()))
+}
+
+/// Narrow a raster dimension for the engine.
+///
+/// Reached only after `crate::raster::check_pixels`, so a failure means the caller set
+/// `max_pixels` above what the engine's own API can express — a refusal of the request.
+fn raster_dimension(value: u32) -> Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        Error::InvalidArgument("a raster dimension is larger than the engine accepts".to_owned())
+    })
+}
+
+impl PageRenderer for WebPdfium {
+    fn page_size(&self, source: &Self::Document, index: u64) -> Result<(f32, f32)> {
+        source.deadline.checkpoint(source.clock.as_ref())?;
+
+        let at = page_index(index, source.pages_at_open)?;
+        let page = self.bridge.load_page(source.doc, at);
+        if page.is_null() {
+            return Err(Error::Malformed("a page could not be loaded".to_owned()));
+        }
+        let width = self.bridge.page_width(page);
+        let height = self.bridge.page_height(page);
+        // No `?` between the load and the close: on this path there is no `Drop` on the other
+        // side of the bridge, so an early return is a page handle left open for the life of
+        // the worker. `FakeHeap::assert_empty` is what makes that a failing test rather than
+        // a slow leak.
+        self.bridge.close_page(page);
+
+        source.deadline.checkpoint(source.clock.as_ref())?;
+        Ok((width, height))
+    }
+
+    fn render(
+        &self,
+        source: &Self::Document,
+        index: u64,
+        width: u32,
+        height: u32,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Raster> {
+        let clock = Arc::clone(&options.clock);
+        deadline.checkpoint(clock.as_ref())?;
+
+        // THE CEILING BEFORE ANYTHING IS ALLOCATED. The same `check_pixels` the native path
+        // calls, not a mirror of it (ADR 0027).
+        // The returned pixel count is not needed here: `check_pixels` has already refused a
+        // product that would not fit this target, and the final length check lives in
+        // `Raster::new`, where it cannot be skipped.
+        crate::raster::check_pixels(width, height, &options.limits)?;
+
+        let at = page_index(index, source.pages_at_open)?;
+        let w = raster_dimension(width)?;
+        let h = raster_dimension(height)?;
+
+        // WHAT THE RENDER ACTUALLY COST, read either side of it -- the module's heap here,
+        // the process resident set on native, which is ADR 0007's one deliberate difference.
+        // `max_pixels` bounds the buffer handed back and nothing else: PDFium's rasteriser
+        // allocates its own working set, and on this platform a large enough content stream
+        // reaches the module's fixed 2 GiB maximum and aborts. See ADR 0027's *What is bounded
+        // and what is not*.
+        let before = self.bridge.heap_bytes();
+
+        let page = self.bridge.load_page(source.doc, at);
+        if page.is_null() {
+            return Err(Error::Malformed("a page could not be loaded".to_owned()));
+        }
+
+        // Everything fallible sits inside this closure so that the close after it runs on
+        // every exit, including the `?` paths. There is no `Drop` across the bridge to fall
+        // back on, which is why the shape is explicit rather than idiomatic.
+        let drawn = (|| -> Result<Vec<u8>> {
+            let bitmap = self.bridge.bitmap_create(w, h, BITMAP_BGRA);
+            if bitmap.is_null() {
+                // An allocation failure, NOT a ceiling: `max_pixels` was checked above.
+                return Err(Error::Io(
+                    "the pdfium module could not allocate a bitmap for the page".to_owned(),
+                ));
+            }
+
+            let filled = (|| -> Result<Vec<u8>> {
+                self.bridge
+                    .bitmap_fill_rect(bitmap, 0, 0, w, h, OPAQUE_WHITE);
+                self.bridge.render_page_bitmap(
+                    bitmap,
+                    page,
+                    0,
+                    0,
+                    w,
+                    h,
+                    NO_EXTRA_ROTATION,
+                    RENDER_FLAGS,
+                );
+
+                let buffer = self.bridge.bitmap_buffer(bitmap);
+                if buffer.is_null() {
+                    return Err(Error::Internal(
+                        "pdfium returned no buffer for a bitmap it allocated".to_owned(),
+                    ));
+                }
+                let stride = self.bridge.bitmap_stride(bitmap);
+                let stride = usize::try_from(stride)
+                    .map_err(|_| Error::Internal("pdfium reported a negative stride".to_owned()))?;
+
+                // The length is computed from what the ENGINE reported -- its stride, and the
+                // height we asked for -- and never from `width * 4`. `bgra_to_rgba` refuses a
+                // stride narrower than a row, so an engine contradicting itself is an error
+                // rather than a read past the end of its own bitmap.
+                let rows = usize::try_from(height).map_err(|_| {
+                    Error::Internal("raster height does not fit in usize".to_owned())
+                })?;
+                let span = stride.checked_mul(rows).ok_or_else(|| {
+                    Error::Internal("the bitmap does not fit in usize".to_owned())
+                })?;
+                let span = u32::try_from(span).map_err(|_| {
+                    Error::Internal(
+                        "the bitmap does not fit in the engine's address space".to_owned(),
+                    )
+                })?;
+
+                let bytes = self.bridge.copy_out(buffer, span);
+                crate::raster::bgra_to_rgba(&bytes, stride, width, height)
+            })();
+
+            self.bridge.bitmap_destroy(bitmap);
+            filled
+        })();
+
+        self.bridge.close_page(page);
+        let rgba = drawn?;
+
+        // AFTER the page and the bitmap are released. It DETECTS, it does not bound (ADR 0007):
+        // the allocation has already happened. What it buys is that the operation fails rather
+        // than returning a raster that cost more than the caller allowed.
+        crate::estimate::check_measured_memory(
+            Some(before),
+            Some(self.bridge.heap_bytes()),
+            &options.limits,
+        )?;
+
+        deadline.checkpoint(clock.as_ref())?;
+
+        // THE LENGTH IS A DECISION, SO IT IS CHECKED RATHER THAN TRUSTED. Every other buffer
+        // this crate hands back is as long as the engine said it was; this one is as long as
+        // WE said it should be, which is why the check lives in `Raster::new` -- there is no
+        // way to build one that skips it. ADR 0027 section 4.
+        Raster::new(width, height, rgba)
     }
 }

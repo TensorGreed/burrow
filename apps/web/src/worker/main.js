@@ -124,15 +124,6 @@ function splitInto(id, bytes, cuts, password, limits) {
 }
 
 /**
- * A terminal success for a multi-output operation: every part already went, so this carries none.
- *
- * @param {number} id
- */
-function refusalFree(id) {
-  return { ...refusal(id, "", ""), ok: true, message: "" };
-}
-
-/**
  * Run one document operation and hand back its reply.
  *
  * Called by `worker-protocol.js` after the policy guard, after `ensureReady()`, after the

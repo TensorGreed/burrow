@@ -90,10 +90,30 @@ def tool_files() -> list[Path]:
     return [REPO / p for p in listed]
 
 
-def constructed_paths() -> tuple[list[str], int]:
-    """Repository paths the tools build, and how many constructions were examined."""
+def is_generated(target: Path) -> bool:
+    """Whether `target` is build output this repository deliberately does not contain.
+
+    ASKED OF GIT, not of a list here. `git check-ignore` consults the same `.gitignore` rules
+    the repository already maintains, so a new build directory is covered the moment it is
+    ignored -- and an allowlist in this file would be a second statement of the same thing,
+    free to drift from the first.
+    """
+    return (
+        subprocess.run(
+            ["git", "check-ignore", "-q", target.relative_to(REPO).as_posix()],
+            cwd=REPO,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def constructed_paths() -> tuple[list[str], int, int]:
+    """Repository paths the tools build, how many were examined, and how many were skipped."""
     problems: list[str] = []
     examined = 0
+    skipped = 0
     for path in tool_files():
         rel = path.relative_to(REPO).as_posix()
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -108,11 +128,26 @@ def constructed_paths() -> tuple[list[str], int]:
                 # shape the two measured defects had.
                 if "." not in segments[-1]:
                     continue
-                examined += 1
                 target = REPO.joinpath(*segments)
+                # A GITIGNORED FILE IS NOT A FINDING EITHER, and the rule above only exempted
+                # directories. `tools/check-wasm-binding-names.py` reads
+                # `bindings/burrow-wasm/pkg/burrow_wasm.d.ts` -- a wasm-pack output, gitignored,
+                # absent on a clean checkout, and present in the job that builds it. Refusing on
+                # it would make this fail on exactly the checkout CI's `checkers` job runs, which
+                # fetches nothing.
+                #
+                # WHAT IS GIVEN UP, said rather than left to be discovered: a typo inside a
+                # generated path is no longer caught here. What catches it instead is the tool
+                # itself -- a checker that reads a generated file must refuse when it is absent
+                # rather than reporting OK over nothing, which is the "examined nothing reads as
+                # coverage" rule those tools are already held to.
+                if is_generated(target):
+                    skipped += 1
+                    continue
+                examined += 1
                 if not target.exists():
                     problems.append(f"{rel} builds {'/'.join(segments)}, which does not exist")
-    return problems, examined
+    return problems, examined, skipped
 
 
 def main() -> int:
@@ -145,7 +180,7 @@ def main() -> int:
                 elif not os.access(target, os.X_OK) and script.endswith(".sh"):
                     not_executable.append(f"{rel} runs {script}, which is not executable")
 
-    constructed, constructions = constructed_paths()
+    constructed, constructions, generated = constructed_paths()
 
     # A COUNT WITH AN EXPECTATION BESIDE IT. `CLAUDE.md`: "4 of 15" reads exactly like success,
     # so the number of workflows is compared against what git lists rather than printed alone.
@@ -153,7 +188,8 @@ def main() -> int:
     print(
         f"check-referenced-paths: {len(files)} workflow file(s) under .github/, "
         f"{len(examined)} script reference(s) to {len(unique)} distinct script(s); "
-        f"{len(tool_files())} tool(s), {constructions} constructed path(s)"
+        f"{len(tool_files())} tool(s), {constructions} constructed path(s) "
+        f"({generated} generated, skipped)"
     )
     if constructions == 0:
         print(

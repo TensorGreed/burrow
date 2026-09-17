@@ -529,10 +529,26 @@ nothing, and one seed failed on the first execution.
   mutually exclusive cargo features, per-bundle source lists and manifests, a per-bundle size
   budget, and a scan with a partition control. The base payload moved by 0.4%.
 
-  **What has NOT landed is the capability**: `PageRenderer`, the bitmap reply, and the memory
-  ceiling ADR 0020 says must be designed rather than discovered under pressure from a UI. The
-  render bundle answers `page_count` today — the first half of rendering, and what makes the
-  boundary exercisable in a browser rather than only assertable over files on disk.
+  **The capability landed next**, as #57's second merge:
+  [ADR 0027](adr/0027-what-a-render-promises-and-what-it-refuses.md). `PageRenderer` is the
+  eighth engine seam and the first that produces pixels; `burrow_ops::render` streams a strip
+  one page at a time; `max_pixels` is enforced for the first time, at `Stage::Pixels`, before
+  any raster is allocated. The ceiling ADR 0020 said must be designed rather than discovered is
+  three numbers, and ADR 0027 says plainly that all three were **chosen rather than measured**
+  and names where to revise them once somebody has an iPhone in front of them.
+
+  **What is still open there, stated because it is a real limit rather than a detail:** one
+  `FPDF_RenderPageBitmap` is unbounded in time and in engine memory — measured at 112 seconds
+  and 2.7 GB for a 1.3 MB page rendered to a *thumbnail*. `max_pixels` bounds the buffer handed
+  back, not the rasteriser that fills it. ADR 0027 §2a has the figures, and its 2026-09-17
+  amendment makes **PDFium's progressive render a precondition for the thumbnail strip** rather
+  than an improvement on it: without a checkpoint inside the page, the only way to end a runaway
+  render is to terminate the worker, which fails the whole strip and — on iOS — takes the tab.
+
+  **What has NOT landed is the UI**: the thumbnail strip on `/split-pdf` and `/rotate-pdf`, and
+  the differential conformance case for the render observable. The capability merges inert —
+  no page renders, so the render bundle reaches no visitor — which is the same shape ADR 0026's
+  own merge had.
 
   ADR 0020 remains the decision for `rotate` v1: it selects by page number and range, and
   `/split-pdf` will want thumbnails too, so they are built once for both rather than bolted onto
