@@ -527,23 +527,25 @@
     </p>
   {/if}
 
-  <!-- NOT `.visually-hidden`, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
+  <!-- NOT `.visually-hidden`, AND THE REASON RECORDED HERE FIRST WAS WRONG.
 
        `.visually-hidden` was defined in `MergeTool.svelte` only, so in this island the class
-       did nothing and this region has always rendered visibly. Moving the rule into
-       `base.css` (ADR 0028) made it real -- and made WebKit fail on this page: a split stalled
-       at "Part 1 of 4" until its 45-second budget expired, and one run ended in "Target page,
-       context or browser has been closed". It reproduced about once per suite, only under the
-       parallel load of a full run, never in isolation, and it went away when this one class
-       was removed and came back when it was restored. Both `clip-path: inset(50%)` and the
-       older `clip: rect(0 0 0 0)` do it, so it is not the clipping technique.
+       did nothing and this region has always rendered visibly. When ADR 0028 moved the rule
+       into `base.css` and made it real, a WebKit failure appeared on /split-pdf -- a split
+       stalling until its budget expired, its output never arriving -- and removing the class
+       here appeared to fix it. IT DID NOT. Measured afterwards at four WebKit suite runs per
+       tree: the same failure happens once in four runs at `e40a3a5`, the commit BEFORE that
+       ADR, where this class was inert and could not have been involved. Two clean runs after
+       the change were simply what a one-in-four failure looks like most of the time.
 
-       What is different here from the merge tool, which has hidden this region for months: a
-       split announces once per part, so this element updates repeatedly while the operation
-       runs. That is the shape that had never been exercised.
+       So the real defect is older and is not this: an operation on the qpdf worker path whose
+       output silently never arrives, on /split-pdf and /rotate-pdf alike. Issue #107 carries
+       the rate and the evidence.
 
-       So the region keeps the visibility it has had all along -- no regression against what
-       ships today -- and it is hidden once the WebKit behaviour is understood. Issue #107. -->
+       This region keeps the visibility it has had all along -- the status quo, and no
+       regression -- because nothing here has been shown to justify changing it in either
+       direction. Hiding it is the correct behaviour and wants its own change, with #107
+       understood first. -->
   <p role="status" aria-live="polite">{announcement}</p>
 </section>
 
