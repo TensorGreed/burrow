@@ -363,6 +363,31 @@ fi
 # and would exit non-zero for the wrong reason, which an exit-code-only assertion reads as a
 # pass (`CLAUDE.md`).
 echo
+echo "  the wait says which of the two things happened ----------------------------"
+
+# WHETHER IT WAITED IS A MEASUREMENT, AND IT IS PRINTED EITHER WAY.
+#
+# The wait spoke only when it actually waited, and the first real deploy after it landed went
+# green in silence -- so the log could not tell "the edge was already switched over" from "the
+# wait was deleted". Both cases are asserted here, because the SILENT one is the case that
+# would otherwise pass over a deleted wait.
+start_server clean
+out="$(python3 "$checker" "http://127.0.0.1:$PORT" "$dist" 2>&1)" || true
+if grep -qF "no wait needed" <<<"$out"; then
+  echo "  ok   a run that did not need to wait says so"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a run that did not need to wait said nothing, which reads the same as no wait"
+  fail=$((fail + 1))
+fi
+
+# AND THE OTHER HALF, from the case below: `the wait does not mask a rewrite` already requires
+# the give-up line, so between them both exits from the loop are asserted to announce
+# themselves. The only unasserted path is a wait that SUCCEEDS after retrying, which needs an
+# origin that converges on a timer -- that is what the deploy exercises, and what this suite
+# deliberately does not model, because a fixture that converges on cue proves only that the
+# fixture converges on cue.
+
 echo "  the wait does not mask a rewrite ------------------------------------------"
 
 # THE KNOB'S OWN CONTROL. The wait exists because a propagation lag converges and an edge

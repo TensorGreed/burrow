@@ -361,16 +361,31 @@ def await_propagation(origin: str, witness: tuple[str, pathlib.Path]) -> str:
     """
     route, path = witness
     built = path.read_bytes()
-    deadline = time.monotonic() + PROPAGATION_DEADLINE_S
+    started = time.monotonic()
+    deadline = started + PROPAGATION_DEADLINE_S
     attempts = 0
     while True:
         attempts += 1
         try:
             if not differences(built, fetch(f"{origin}{route}")):
+                # PRINTED EVERY RUN, INCLUDING WHEN IT WAITED FOR NOTHING.
+                #
+                # This spoke only when `attempts > 1`, and the first deploy after the wait
+                # landed went green in silence -- so the log could not distinguish "the edge
+                # was already switched over" from "the wait was deleted". That is this
+                # repository's silence-reads-as-success shape, applied to the very thing just
+                # added to stop a gate crying wolf: a wait nobody can see is a wait nobody can
+                # tell is still there, and the deploy is the only place it ever runs for real.
+                waited = time.monotonic() - started
                 if attempts > 1:
                     print(
-                        f"  waited {attempts} attempt(s) for {route} to match the build; the "
-                        f"edge was still serving the previous deployment"
+                        f"  waited {attempts} attempt(s) ({waited:.0f}s) for {route} to match "
+                        f"the build; the edge was still serving the previous deployment"
+                    )
+                else:
+                    print(
+                        f"  no wait needed: {route} matched the build on the first attempt, so "
+                        f"the edge was already serving this deployment"
                     )
                 return "matched"
         except (Refused, urllib.error.URLError, OSError):
