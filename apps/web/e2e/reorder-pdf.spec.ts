@@ -238,25 +238,69 @@ test("editing the order while it runs hides the link rather than mislabelling it
   // landed, the link was judged fresh, and it sat under a preview showing an order the bytes
   // were not in. One permutation looks exactly like another from the outside.
   //
-  // A bigger document, deliberately: the edit has to land while the operation is still
-  // running, and a four-page file finishes too quickly to be sure of that.
+  // A bigger document, and NOT for the reason this comment used to give. It said a four-page
+  // file "finishes too quickly to be sure" the edit lands mid-run — true of the old mechanism
+  // and irrelevant to this one, which guarantees the ordering whatever the operation costs.
+  // 137 pages is kept because the two 45-second budgets below were sized against it.
   await page.goto("/reorder-pdf");
   await choose(page, "pages-137.pdf");
 
-  // THE SLOW ORDER IS THE ONE POSTED. A full reversal of 137 pages is 137 removals and 137
-  // insertions; `5, 3` is two moves and finishes before an edit can land, which is how the
-  // first version of this test passed against the defect it was written for.
+  // THE TWO ORDERS MUST DIFFER, and that is now the whole requirement of this pair. It used to
+  // matter that the posted order was the SLOW one — a full reversal against two moves — because
+  // the edit had to beat the reply. It no longer does; see below.
   await page.locator(".choice__pages").fill("137-1");
-  await page.getByRole("button", { name: "Put pages in order" }).click();
-  await expect(page.locator(".working")).toBeVisible();
 
-  // Change the request while it is in flight. What arrives is for the reversal.
-  await page.locator(".choice__pages").fill("5, 3");
+  // POSTED AND EDITED IN ONE TASK, which is the only way this test is about what it claims.
+  //
+  // It used to click, then `await expect(page.locator(".working")).toBeVisible()`, then edit.
+  // That assertion was racing a state that does not last. Measured with a `requestAnimationFrame`
+  // poll around the click, ONE run per browser on a developer machine rather than on the CI
+  // runner: `.working` was observed for 26 ms on Firefox and 33 ms on Chromium here, and for
+  // 17 ms on Firefox at `e40a3a5` — the commit before #108 — where the Chromium poll never
+  // caught it at all. **"Never caught by a rAF poll" is not the same claim as "zero", and the
+  // test was green at that commit, so it was observable by Playwright there.** Single samples,
+  // no variance, not the machine CI runs on: enough to establish that the window is tens of
+  // milliseconds and NOT enough to support a claim about which commit made it shorter.
+  //
+  // Whatever its exact length, a window that size is one Playwright poll wide, and on a loaded
+  // CI runner the gap between the click resolving and the first poll exceeded it.
+  //
+  // Worse than flaky: on a browser where the reply lands first, the edit was NOT arriving mid
+  // flight, so the test was no longer exercising the defect it was written for — the same
+  // "a harness measures what it can produce" failure CLAUDE.md records. Doing both in one
+  // `evaluate` puts the edit before any worker reply can be processed, because that reply
+  // needs a message round-trip and this does not yield.
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Put pages in order",
+    );
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error("the reorder button is not on the page");
+    }
+    // ACTIONABILITY, BY HAND, BECAUSE THIS PATH GAVE IT UP. `locator.click()` waits for the
+    // control to be enabled and fails loudly if it never is; `button.click()` on a disabled
+    // button is a silent no-op that fires no event. Without this check a page where
+    // `canReorder` is false would sail through the next two assertions having run nothing at
+    // all, and fail 45 seconds later pointing at the staleness guard instead of at the button.
+    if (button.disabled) {
+      throw new Error("the reorder button is disabled, so nothing was posted");
+    }
+    button.click();
+
+    const box = document.querySelector(".choice__pages");
+    if (!(box instanceof HTMLInputElement)) throw new Error("the order box is not on the page");
+    box.value = "5, 3";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   await expect(page.locator(".choice__preview")).toContainText("5, 3, 1, 2");
 
   // The preview now describes a DIFFERENT order from the one that was posted, so there must be
   // no download offered for it. Before the fix the link appeared here, labelled as though it
   // were the order on screen.
+  // A WAIT, NOT A CHECK. With the visible-assertion gone this passes instantly on a page where
+  // nothing ever ran; it is here to let the reply land before the assertion below, and saying
+  // so keeps it from reading as coverage. What proves the run happened is the positive control
+  // at the end: the link comes back when the original order is typed in again.
   await expect(page.locator(".working")).toHaveCount(0, { timeout: 45_000 });
   await expect(page.locator(".result a.download")).toHaveCount(0);
 
