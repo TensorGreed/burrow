@@ -35,10 +35,20 @@ use burrow_types::Limits;
 /// The share of [`Limits::max_memory_bytes`] a single engine heap may reach before the worker
 /// is recycled, as a right shift.
 ///
-/// **Half.** The reasoning is not subtle: there are **two** engine heaps in a worker and they
-/// are independent address spaces, so a per-heap ceiling of the whole limit would let the pair
-/// reach twice it. Recycling at half means the pair cannot exceed `max_memory_bytes` between
-/// them, which is the ceiling the caller actually asked for.
+/// **Half**, and the pair it halves for has changed twice without the number needing to.
+///
+/// It was written when a worker held **two** engine heaps — PDFium's and qpdf's, independent
+/// address spaces, so a per-heap ceiling of the whole limit would let the pair reach twice it.
+/// Spike 0004 left one engine on the web, and this sentence went on describing two; since ADR
+/// 0026 a worker holds one engine and a **page** can hold two workers, a documents host and a
+/// render host, whose heaps are independent in exactly the way the original pair's were.
+///
+/// So halving still buys what it always bought — a caller's `max_memory_bytes` is not exceeded
+/// by the independent things running under it — and it now buys it across workers rather than
+/// within one. **That is a coincidence worth naming rather than relying on**: nothing today
+/// bounds the sum of two workers' heaps, and this constant was not chosen for that case. ADR
+/// 0015 §7's deferred mobile-defaults decision is where it belongs, and ADR 0026's consequences
+/// record it as an input to it.
 ///
 /// A shift rather than `/ 2` because the workspace denies `clippy::integer_division`: silent
 /// truncation on an attacker-controlled size is a real bug class, and the lint does not
@@ -93,7 +103,7 @@ pub fn threshold_bytes(limits: &Limits) -> u64 {
 /// default must sit above it.
 pub const MIN_CONVERGING_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Whether a worker holding these two engine heaps should be recycled after replying.
+/// Whether a worker holding these engine heaps should be recycled after replying.
 ///
 /// **After**, not instead of. Recycling is not a failure and the caller must never see it as
 /// one: the result is delivered, and only then is the worker discarded.
@@ -105,8 +115,13 @@ pub const MIN_CONVERGING_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 /// `(pdfium_heap_bytes, qpdf_heap_bytes, …)` until PDFium left the web payload (spike 0004),
 /// and the choice then was between a parameter named for an engine that is no longer loaded
 /// and a signature that says what it means. The rule is not about which engines exist; it is
-/// that a worker is as healthy as its worst heap, which is as true of one as of two — and it
-/// stays true without another signature change if M2 puts a second module back.
+/// that a worker is as healthy as its worst heap, which is as true of one as of two.
+///
+/// **That prediction has been paid out, in a shape it did not predict.** It said the
+/// signature would stay true "if M2 puts a second module back"; ADR 0026 put one back in M1,
+/// and in a SECOND WORKER rather than a second module in one worker — so each worker still
+/// holds exactly one engine and this still takes an array of one. The signature needed no
+/// change either way, which is the property that was being argued for.
 ///
 /// # An ARRAY, not a slice, and the empty case cannot compile
 ///
@@ -152,7 +167,7 @@ mod tests {
         ));
     }
 
-    /// Either heap alone is enough. Two address spaces, two ceilings; the worker is as
+    /// Any heap alone is enough. Separate address spaces, separate ceilings; a worker is as
     /// healthy as its worse half.
     #[test]
     fn either_engine_alone_triggers_recycling() {

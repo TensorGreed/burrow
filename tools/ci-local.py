@@ -80,7 +80,20 @@ PATTERNS: list[tuple[str, str]] = [
     # THE CRATE IS PART OF THE KEY, not just the verb: a second binding built by CI would
     # otherwise map to the same gate as the first and read as covered. Caught by the
     # self-test's own case, which is what that case is for.
-    (r"\bwasm-pack build (\S+)", r"wasm-pack:\1"),
+    #
+    # AND SO IS `--out-dir`, SINCE ADR 0026. The crate is now built TWICE -- once for each
+    # worker bundle, under mutually exclusive cargo features -- and both builds name the same
+    # crate. Keyed on the crate alone they collapse to one gate, so a local sweep that ran only
+    # the base build would report full coverage while staging whatever the render directory
+    # happened to hold. That is the same miss this pattern was added for, one argument along,
+    # and the output directory is the thing that distinguishes them because it is the thing
+    # that has to differ: both emit `burrow_wasm_bg.wasm`.
+    (r"\bwasm-pack build (\S+)[^\n]*?--out-dir (\S+)", r"wasm-pack:\1:\2"),
+    # A build with no `--out-dir` still gets a gate rather than vanishing. The lookahead is
+    # what stops it ALSO firing on the builds above and recording a second, ambiguous key for
+    # the same step -- which it did, and parity then demanded a local counterpart for a gate
+    # that does not exist.
+    (r"\bwasm-pack build (\S+)(?![^\n]*--out-dir)", r"wasm-pack:\1"),
     (r"\bpython3 (tools/[\w.-]+\.py)", r"\1"),
     (r"(?<![\w/])(tools/[\w.-]+\.sh)", r"\1"),
     # A GATE MAY LIVE OUTSIDE `tools/`, AND ONE DOES. `.claude/hooks/*.sh` is where a hook's
@@ -239,6 +252,7 @@ JOBS: list[dict] = [
                 "python3 tools/check-engine-licences.py",
                 "python3 tools/check-qpdf-trapped.py",
                 "python3 tools/check-handle-identity.py",
+                "python3 tools/check-referenced-paths.py",
                 "python3 tools/check-python-syntax.py",
                 "tools/check-no-generated-files.sh",
                 "tools/check-no-network-deps.sh",
@@ -251,6 +265,7 @@ JOBS: list[dict] = [
             "tools/check-engine-licences.py",
             "tools/check-qpdf-trapped.py",
             "tools/check-handle-identity.py",
+            "tools/check-referenced-paths.py",
             "tools/check-python-syntax.py",
             "tools/check-no-generated-files.sh",
             "tools/check-no-network-deps.sh",
@@ -263,6 +278,7 @@ JOBS: list[dict] = [
         "name": "checker-self-tests",
         "run": " && ".join(
             [
+                "tools/test-check-referenced-paths.sh",
                 "tools/test-check-qpdf-trapped.sh",
                 "tools/test-check-handle-identity.sh",
                 "tools/test-check-no-generated-files.sh",
@@ -287,6 +303,7 @@ JOBS: list[dict] = [
             ]
         ),
         "covers": [
+            "tools/test-check-referenced-paths.sh",
             "tools/test-check-qpdf-trapped.sh",
             "tools/test-check-handle-identity.sh",
             "tools/test-check-no-generated-files.sh",
@@ -344,8 +361,13 @@ JOBS: list[dict] = [
         "name": "wasm-pack",
         "run": (
             "wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release"
+            " && wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render"
+            " --release -- --no-default-features --features render"
         ),
-        "covers": ["wasm-pack:bindings/burrow-wasm"],
+        "covers": [
+            "wasm-pack:bindings/burrow-wasm:pkg",
+            "wasm-pack:bindings/burrow-wasm:pkg-render",
+        ],
         # BEFORE `web`, because `web` stages `pkg/` into the app and measures the result
         # against the size budget. Running them the other way round measures the previous
         # build, which is what happened when this job did not exist.
@@ -379,15 +401,15 @@ JOBS: list[dict] = [
         # AFTER `web`, because it reads the `dist/` that job produces. Its own self-test runs
         # beside it: the checker is made entirely of ABSENCE rules, which is the shape that
         # passes on an empty directory or a build that never ran.
-        "name": "no-pdfium-on-the-web",
+        "name": "pdfium-is-render-only",
         "run": (
-            "tools/check-no-pdfium-on-the-web.sh && tools/test-check-no-pdfium-on-the-web.sh"
+            "tools/check-pdfium-is-render-only.sh && tools/test-check-pdfium-is-render-only.sh"
         ),
         "covers": [
-            "tools/check-no-pdfium-on-the-web.sh",
-            "tools/test-check-no-pdfium-on-the-web.sh",
+            "tools/check-pdfium-is-render-only.sh",
+            "tools/test-check-pdfium-is-render-only.sh",
         ],
-        "why": "PDFium reaches no part of the web build (spike 0004)",
+        "why": "PDFium reaches the render bundle and no other part of the web build (ADR 0026)",
     },
     {
         # AFTER `web`, BECAUSE IT READS `apps/web/dist`. It was in `checker-self-tests` for one

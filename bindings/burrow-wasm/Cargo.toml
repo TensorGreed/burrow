@@ -11,6 +11,33 @@ authors.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# ONE ENGINE PER ARTIFACT, AND THE TWO ARE MUTUALLY EXCLUSIVE. `src/lib.rs` refuses a build
+# that enables both or neither; see ADR 0026 and the comment there for why a `compile_error!`
+# rather than a default.
+#
+# `documents` IS THE DEFAULT, AND THE EXCLUSIVITY IS ENFORCED ONLY ON `wasm32`. Both halves
+# of that were decided by what CI already runs, not by taste:
+#
+#   * `cargo build --workspace` and `cargo clippy --workspace --all-targets` build this crate
+#     with no feature flags. Without a default they would hit the "needs an engine" refusal
+#     and the whole workspace would stop compiling.
+#   * `cargo test --workspace --all-features` turns BOTH on. On a native target that is
+#     harmless -- neither bridge is reachable, the tests drive `web/fake.rs` -- so refusing it
+#     would mean deleting a CI gate to protect a property that native builds cannot violate.
+#
+# So the refusal in `src/lib.rs` is `cfg(target_arch = "wasm32")`: it fires on exactly the
+# builds that produce a shipped artifact, and on nothing else. A wasm module carrying both
+# bridges is unexpressible; a native test binary carrying both is meaningless and allowed.
+[features]
+# qpdf. merge, split, rotate, reorder, compress, and the two reads. This is the BASE payload
+# every tool page loads: it must contain no PDFium, and it does not, because `render` is off.
+default = ["documents"]
+documents = []
+# PDFium. Page rendering, and nothing else -- it does not link qpdf. Fetched only when a page
+# needs a thumbnail, so nobody who merges two files ever downloads it. Built with
+# `--no-default-features --features render`.
+render = []
+
 [dependencies]
 burrow-core.workspace = true
 

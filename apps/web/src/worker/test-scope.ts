@@ -18,8 +18,28 @@ import { runInNewContext } from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** `main.js` as shipped. Read once. */
-export const MAIN = readFileSync(join(here, "main.js"), "utf8");
+/**
+ * The base bundle's worker code, in the order `stage-web-engines.mjs` concatenates it.
+ *
+ * TWO FILES, NOT ONE, SINCE ADR 0026. `main.js` used to hold the whole protocol; it now holds
+ * this bundle's `init`, `KNOWN_OPS` and `runOperation`, while `worker-protocol.js` holds the
+ * guard, the memoised promise, the ack and the reply flattening — and is byte-identical in the
+ * render bundle.
+ *
+ * Joined here in the SAME ORDER the bundle uses, because that is what makes a case that passes
+ * a statement about what ships. A scope built from `main.js` alone would have no `onmessage` at
+ * all, which is how this was noticed rather than shipped.
+ */
+export const MAIN = [
+  readFileSync(join(here, "worker-protocol.js"), "utf8"),
+  readFileSync(join(here, "main.js"), "utf8"),
+].join("\n");
+
+/** The render bundle's worker code, same order, same reason. */
+export const RENDER_MAIN = [
+  readFileSync(join(here, "worker-protocol.js"), "utf8"),
+  readFileSync(join(here, "render-main.js"), "utf8"),
+].join("\n");
 
 /**
  * A `Reply` as `drainReply` reads it. Field names match the wasm-bindgen getters.
@@ -42,7 +62,7 @@ export function replyShape(): Record<string, unknown> {
     failed_input: -1,
     inner_kind: "",
     output_length: 0,
-    qpdf_heap_bytes: 0n,
+    engine_heap_bytes: 0n,
     // EVERY FIELD `drainReply` READS, or the stub is stale in exactly the way a rebuilt-Rust
     // module would be -- `Array.from(undefined)` throws, the reply arrives as `Internal`, and
     // the test fails somewhere unrelated to what it was testing. That is what happened when
@@ -75,6 +95,14 @@ export interface Attachment {
 }
 
 export interface Harness {
+  /**
+   * The evaluated worker scope.
+   *
+   * Exposed so a test can ask WHICH names a bundle supplied, which is the contract between
+   * `worker-protocol.js` and the file concatenated after it — three hoisted names that nothing
+   * else can assert, because the protocol is the half that does the reading.
+   */
+  scope: Record<string, unknown>;
   /** How many times a request's bytes were actually read. The guard's real question. */
   blobReads: () => number;
   /** The sizes handed to `check_input_budget`, per call. Length IS the call count. */
@@ -93,6 +121,15 @@ export interface Harness {
   ensureReady: () => Promise<unknown>;
   /** Deliver a message the way the browser would. */
   send: (request: Record<string, unknown>) => Promise<void>;
+  /**
+   * The lexically-scoped names the bundle declared, by evaluating an expression beside it.
+   *
+   * `const` and `let` in a `runInNewContext` script live in that script's own scope and never
+   * become properties of the context object -- which is exactly how the real bundle works, one
+   * concatenated script sharing a lexical scope. So asking whether `KNOWN_OPS` exists means
+   * asking from inside, and `guard.test.ts` reads `CREATED_FROM_BLOB` the same way.
+   */
+  declared: () => Record<string, unknown>;
   /** A `page_count` request wired to this harness's read counter. */
   op: (id: number) => Record<string, unknown>;
 }
@@ -162,7 +199,10 @@ export function load(
     ),
     silent: { printErr: () => {}, print: () => {} },
     instantiateFrom: () => () => {},
-    compiled: { burrowWasm: Promise.resolve({}) },
+    // BOTH BUNDLES' MODULE IDS. The base one awaits `compiled["burrowWasm"]` and the render
+    // one `compiled["burrowRenderWasm"]`; a scope with only the first makes a render case fail
+    // on an `await undefined` far from what it was testing.
+    compiled: { burrowWasm: Promise.resolve({}), burrowRenderWasm: Promise.resolve({}) },
     createQpdfModule: async (options: { printErr?: unknown; print?: unknown }) => {
       // ADR 0006 requirement 2: the glue is handed `...silent`, which is what keeps qpdf's
       // object numbers and byte offsets out of the devtools console. Asserted here because a
@@ -174,6 +214,16 @@ export function load(
       return instance;
     },
     __burrow_attach: (qpdf: unknown) => attaches.push({ qpdf }),
+    // WHAT `render-prelude.js` WOULD HAVE PUT THERE. The render bundle's `init()` awaits
+    // `pdfiumReady` and calls `_FPDF_InitLibrary` on what it resolves to; the prelude is not in
+    // this concatenation for the same reason `prelude.js` is not — the stubs above model it.
+    //
+    // `calledRun: true` models the warm-cache ordering, which is the one a real origin
+    // produces. `render-init.test.ts` is where the ORDERING itself is the subject; here it is
+    // scenery, and picking the ordering that happens in production is the right scenery.
+    Module: { calledRun: true, _FPDF_InitLibrary: () => {} },
+    pdfiumReady: Promise.resolve({ _FPDF_InitLibrary: () => {} }),
+    resolvePdfium: () => {},
     wasm_bindgen,
   };
   scope["self"] = scope;
@@ -181,11 +231,24 @@ export function load(
 
   runInNewContext(source, scope);
 
+  // Evaluated separately so a bundle that fails to declare one of them throws HERE, naming it,
+  // rather than taking the whole `load()` down.
+  const declared = () =>
+    runInNewContext(
+      `${source}\n;({ init: typeof init === "function" ? init : undefined,` +
+        ` KNOWN_OPS: typeof KNOWN_OPS !== "undefined" ? KNOWN_OPS : undefined,` +
+        ` runOperation: typeof runOperation === "function" ? runOperation : undefined,` +
+        ` ensureReady: typeof ensureReady === "function" ? ensureReady : undefined })`,
+      { ...scope, self: scope, globalThis: scope },
+    ) as Record<string, unknown>;
+
   const worker = scope as unknown as {
     onmessage: (event: { data: unknown }) => Promise<void>;
   };
 
   return {
+    scope,
+    declared,
     blobReads: () => blobReads,
     budgetCalls,
     qpdfOptions,

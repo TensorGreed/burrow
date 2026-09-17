@@ -86,9 +86,48 @@ HELPERS_LIST = REPO / "engines" / "qpdf-proven-helpers.toml"
 # Where declarations live. All three are checked, because a function reachable on ONE path
 # is reachable, and the web bridge is a separate hand-written surface from the native FFI.
 NATIVE_FFI = REPO / "core" / "burrow-engines" / "src" / "qpdf" / "ffi.rs"
-WEB_BRIDGE_JS = REPO / "apps" / "web" / "src" / "worker" / "bridge.js"
 WEB_TRAIT = REPO / "core" / "burrow-engines" / "src" / "web" / "bridge.rs"
-WASM_BINDING = REPO / "bindings" / "burrow-wasm" / "src" / "bridge.rs"
+
+# THE TWO BRIDGE SURFACES ARE GLOBBED, NOT NAMED, AND THAT IS A FIX RATHER THAN A STYLE.
+#
+# Both were a single hard-coded path -- `worker/bridge.js` and
+# `bindings/burrow-wasm/src/bridge.rs` -- until ADR 0026 split each in two, one half per
+# engine. This file then crashed with `FileNotFoundError` on a path that no longer existed,
+# which is the loud failure; the quiet one was waiting behind it, because a check that reads
+# ONE of two halves reports a clean run over half the surface. A bridge is a hand-written
+# audit surface (ADR 0009 §2) and half of it going unread is the thing this tool exists to
+# prevent.
+#
+# A glob cannot miss a third half. It can match nothing, which is the vacuity these functions
+# refuse on, and which the per-source guard in `declared_functions()` refuses on again by
+# count.
+WEB_BRIDGE_GLOB = ("apps/web/src/worker", "bridge*.js")
+WASM_BINDING_GLOB = ("bindings/burrow-wasm/src", "bridge*.rs")
+
+
+def _globbed(where: tuple[str, str]) -> list[pathlib.Path]:
+    directory, pattern = where
+    found = sorted((REPO / directory).glob(pattern))
+    if not found:
+        sys.exit(
+            f"error: no {pattern} under {directory}. This check reads the hand-written bridge "
+            f"surface, and a glob that matches nothing would report a clean run over nothing."
+        )
+    return found
+
+
+def _bridge_text(where: tuple[str, str]) -> str:
+    """Every half of one bridge surface, concatenated.
+
+    Concatenated rather than parsed per file because the patterns below are per-symbol and a
+    symbol lives in exactly one half; what matters is that no half is skipped, and the count
+    guards downstream are what say so.
+    """
+    return "\n".join(path.read_text() for path in _globbed(where))
+
+
+def _bridge_label(where: tuple[str, str]) -> str:
+    return ", ".join(p.relative_to(REPO).as_posix() for p in _globbed(where))
 # A fourth `extern "C"` block, easy to miss because it is `#[cfg(test)]`-gated and lives
 # nowhere near the qpdf module. It declared `qpdf_get_qpdf_version` invisibly to an earlier
 # version of this check, which made the stated invariant ("every qpdf C function burrow
@@ -1282,7 +1321,7 @@ def declared_functions() -> dict[str, list[str]]:
         out.setdefault(name, []).append(where)
 
     ffi_text = NATIVE_FFI.read_text()
-    bridge_text = WEB_BRIDGE_JS.read_text()
+    bridge_text = _bridge_text(WEB_BRIDGE_GLOB)
 
     for name in parse_ffi(ffi_text):
         record(name, "qpdf/ffi.rs")
@@ -1373,22 +1412,24 @@ def wasm_binding_is_covered() -> list[str]:
     check already reads. The composition is what holds; the regex only has to catch honest
     code, and the per-source guard in `declared_functions()` catches it falling silent.
     """
-    js = WEB_BRIDGE_JS.read_text()
+    js = _bridge_text(WEB_BRIDGE_GLOB)
     # Capitals included, like every other declaration pattern here. These names are ours
     # rather than qpdf's, so none has one today -- but the failure mode if one did is the
     # silent half: an import the check cannot see is reported as covered, and the worker
     # traps on `undefined` at runtime instead.
     defined = set(re.findall(r"self\.__burrow_(qpdf[A-Za-z_0-9]*)\s*=", js))
-    imported = set(re.findall(r"\b__burrow_(qpdf[A-Za-z_0-9]*)\b", WASM_BINDING.read_text()))
+    imported = set(
+        re.findall(r"\b__burrow_(qpdf[A-Za-z_0-9]*)\b", _bridge_text(WASM_BINDING_GLOB))
+    )
 
     if not imported:
         return [
             f"parsed ZERO __burrow_qpdf_* imports out of "
-            f"{WASM_BINDING.relative_to(REPO)}; this check would be vacuous"
+            f"{_bridge_label(WASM_BINDING_GLOB)}; this check would be vacuous"
         ]
     return [
-        f"{WASM_BINDING.relative_to(REPO)} imports __burrow_{name}, which "
-        f"{WEB_BRIDGE_JS.relative_to(REPO)} does not define -- so the web path calls "
+        f"{_bridge_label(WASM_BINDING_GLOB)} imports __burrow_{name}, which "
+        f"{_bridge_label(WEB_BRIDGE_GLOB)} does not define -- so the web path calls "
         f"something this check cannot see"
         for name in sorted(imported - defined)
     ]

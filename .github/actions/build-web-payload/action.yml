@@ -152,9 +152,23 @@ runs:
     # --target no-modules, NOT --target web: the worker is classic (pdfium.js is not
     # modularised and needs importScripts), and a classic worker cannot import an ES
     # module. See apps/web/CLAUDE.md.
+    #
+    # TWO BUILDS, TWO OUTPUT DIRECTORIES, AND THAT IS ADR 0026'S STRUCTURAL HALF. The crate is
+    # built once per worker bundle under mutually exclusive cargo features, so the base
+    # artifact has no `__burrow_pdfium_*` import to leave dangling and the render one has no
+    # qpdf. `src/lib.rs` refuses a wasm32 build that enables both.
+    #
+    # SEPARATE `--out-dir`s BECAUSE BOTH EMIT `burrow_wasm_bg.wasm`. One directory would mean
+    # whichever build ran last silently supplying both bundles -- the exact failure the split
+    # exists to make impossible, arriving through the build rather than through the code.
     - name: Build the wasm binding
       shell: bash
       run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+    - name: Build the render wasm binding
+      shell: bash
+      run: |
+        wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render --release \
+          -- --no-default-features --features render
 
     # ---- the web app ------------------------------------------------------------
     - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4

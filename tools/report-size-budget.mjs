@@ -20,7 +20,12 @@ import { appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { byBudgetKey, heaviestFirstLoad } from "./first-load.mjs";
+import {
+  byBudgetKey,
+  engineClosures,
+  heaviestFirstLoad,
+  renderFirstLoad,
+} from "./first-load.mjs";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webApp = join(repo, "apps", "web");
@@ -52,18 +57,34 @@ const delta = (now, then) => {
 };
 const verdict = (now, limit) => (now > limit ? "❌ over" : "✅");
 
-const rows = [];
-for (const key of Object.keys(groups).sort()) {
-  const line = budget.artifacts[key];
-  const actual = groups[key];
-  rows.push([
-    `\`${key}\``,
-    kib(actual.brotli),
-    line ? delta(actual.brotli, line.measured_brotli) : "—",
-    line ? kib(line.budget_brotli) : "**no budget**",
-    line ? verdict(actual.brotli, line.budget_brotli) : "❌ unbudgeted",
-  ]);
+/** One table body, for whichever payload's groups and budget lines it is handed. */
+function rowsFor(measured, lines) {
+  return Object.keys(measured)
+    .sort()
+    .map((key) => {
+      const line = lines[key];
+      const actual = measured[key];
+      return [
+        `\`${key}\``,
+        kib(actual.brotli),
+        line ? delta(actual.brotli, line.measured_brotli) : "—",
+        line ? kib(line.budget_brotli) : "**no budget**",
+        line ? verdict(actual.brotli, line.budget_brotli) : "❌ unbudgeted",
+      ];
+    });
 }
+
+const rows = rowsFor(groups, budget.artifacts);
+
+// THE SECOND PAYLOAD (ADR 0026). A page that needs a picture of a page fetches a second worker
+// bundle and PDFium with it, so one number stopped describing this build -- and reporting only
+// the base one would hide four fifths of what such a page costs, which is the number spike 0004
+// was about in the first place.
+const renderMeasurement = renderFirstLoad(buildDir, measuredRoute);
+const renderOnly = new Set(engineClosures(buildDir).render);
+const renderGroups = byBudgetKey({
+  entries: renderMeasurement.entries.filter((entry) => renderOnly.has(entry.path)),
+});
 
 const table = [
   "| Artifact | brotli | vs recorded | budget | |",
@@ -72,6 +93,16 @@ const table = [
   `| **Total first load** | **${kib(measurement.total.brotli)}** | ` +
     `**${delta(measurement.total.brotli, budget.total.measured_brotli)}** | ` +
     `**${kib(budget.total.budget_brotli)}** | **${verdict(measurement.total.brotli, budget.total.budget_brotli)}** |`,
+].join("\n");
+
+const renderTable = [
+  "| Artifact | brotli | vs recorded | budget | |",
+  "|---|--:|--:|--:|:--|",
+  ...rowsFor(renderGroups, budget.render.artifacts).map((r) => `| ${r.join(" | ")} |`),
+  `| **Total, with rendering** | **${kib(renderMeasurement.total.brotli)}** | ` +
+    `**${delta(renderMeasurement.total.brotli, budget.render.total.measured_brotli)}** | ` +
+    `**${kib(budget.render.total.budget_brotli)}** | ` +
+    `**${verdict(renderMeasurement.total.brotli, budget.render.total.budget_brotli)}** |`,
 ].join("\n");
 
 const report = [
@@ -86,6 +117,17 @@ const report = [
   table,
   "",
   `Raw (uncompressed, what the browser compiles): **${kib(measurement.total.raw)}**.`,
+  "",
+  "### And again, for a page that shows page pictures",
+  "",
+  "PDFium is in a second worker bundle, fetched only when a tool needs to render a page",
+  "(ADR 0026). Nobody who merges or splits a file downloads any of this; the rows below are",
+  "what it adds on top of the total above, and the last line is what such a page pays",
+  "altogether.",
+  "",
+  renderTable,
+  "",
+  `Raw, with rendering: **${kib(renderMeasurement.total.raw)}**.`,
   "",
   `_"vs recorded" compares against \`measured_brotli\` in \`apps/web/size-budget.json\`, taken`,
   `on ${budget.measured_on}. The gate is \`apps/web/src/size-budget.test.ts\`, not this report._`,

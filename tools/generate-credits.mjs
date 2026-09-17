@@ -142,10 +142,30 @@ async function main() {
   // being right -- the neighbouring column of the same hand-maintained table we just found
   // stale. The detector already knows the truth by symbol inspection; issue #81 is to make it
   // fail when a component is found in a shipped artifact and not credited for it.
-  const WEB_ARTIFACTS = ["qpdf-wasm"];
+  // TWO ARTIFACTS SINCE ADR 0026, and the second one is CONDITIONAL. `qpdf.wasm` is in every
+  // tool page's payload; `pdfium.wasm` is in the render bundle, which a page fetches only when
+  // it needs a picture of a page. So a reader who merged two files has downloaded the first and
+  // not the second.
+  //
+  // THE PAGE CREDITS BOTH, AND SAYS WHICH IS WHICH. Over-declaring breaches nothing -- an
+  // obligation is discharged by the notice being reachable, not by it being minimal -- and the
+  // alternative is worse in the direction that matters: a reader who DID render would be owed
+  // FreeType's FTL §2 and HarfBuzz's MIT-Modern-Variant and would not have been given them,
+  // because a page cannot know at build time what a visitor will do.
+  //
+  // What the page must not do is claim the reader downloaded all of it, which is the claim
+  // spike 0004 left loose in the other direction. `conditional` below is what lets it name the
+  // difference in its own words rather than leaving a reader to work it out.
+  const WEB_ARTIFACTS = ["qpdf-wasm", "pdfium-wasm"];
+  const WEB_CONDITIONAL_ARTIFACTS = ["pdfium-wasm"];
   const scopedTo = (ids) =>
     entries.filter((entry) => entry.artifacts.some((id) => ids.includes(id))).map((e) => e.name);
   const web = scopedTo(WEB_ARTIFACTS);
+  // Components that arrive ONLY with the render bundle: in PDFium's set and not in the base
+  // one. Derived rather than listed, so a component that starts shipping in both stops being
+  // described as conditional without anyone having to notice.
+  const always = scopedTo(WEB_ARTIFACTS.filter((id) => !WEB_CONDITIONAL_ARTIFACTS.includes(id)));
+  const conditional = web.filter((name) => !always.includes(name));
   if (web.length === 0) {
     // A scope matching nothing would render an empty credits page, which discharges no
     // obligation and looks like a page with nothing to declare.
@@ -164,11 +184,18 @@ async function main() {
       web: {
         artifacts: WEB_ARTIFACTS,
         components: web,
+        conditional: {
+          artifacts: WEB_CONDITIONAL_ARTIFACTS,
+          components: conditional,
+        },
         why:
-          "What a browser downloads: qpdf.wasm. `burrow_wasm_bg.wasm` is the Rust binding, " +
-          "whose dependencies are covered by THIRD_PARTY_NOTICES.md rather than by this " +
-          "manifest. PDFium left the web payload in spike 0004, and everything that reached " +
-          "us through it left with it.",
+          "What a browser CAN download: qpdf.wasm on every tool page, and pdfium.wasm with " +
+          "the render bundle a page fetches when it needs a picture of a page (ADR 0026). " +
+          "`burrow_wasm_bg.wasm` is the Rust binding, whose dependencies are covered by " +
+          "THIRD_PARTY_NOTICES.md rather than by this manifest. PDFium left the payload " +
+          "entirely in spike 0004 and came back conditionally; `conditional` names the " +
+          "components that arrive with it, because a page cannot know at build time whether " +
+          "a given visitor will render anything.",
       },
     },
   };

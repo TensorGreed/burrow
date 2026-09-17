@@ -163,7 +163,20 @@ check "a wasm-pack build CI runs but nothing local does is refused" \
       - name: Build another wasm binding
         run: wasm-pack build bindings/brandnew --target no-modules --out-dir pkg --release
 " \
-  "wasm-pack:bindings/brandnew" 1
+  "wasm-pack:bindings/brandnew:pkg" 1
+
+# THE SEVENTH OF THE CLASS, AND THE FIRST WHERE THE CRATE WAS NOT THE DISTINGUISHER. ADR 0026
+# builds `bindings/burrow-wasm` TWICE, under mutually exclusive cargo features, into two output
+# directories -- both emit `burrow_wasm_bg.wasm`, so one directory is not an option. Keyed on
+# the crate alone the two collapse to one gate, and a local sweep running only the base build
+# would report full coverage while staging whatever the render directory happened to hold: the
+# `pkg/`-is-gitignored miss that put this pattern here in the first place, one argument along.
+check "a SECOND build of a crate CI already builds is refused when only the first is covered" \
+  "||
+      - name: Build the same binding a different way
+        run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-other --release
+" \
+  "wasm-pack:bindings/burrow-wasm:pkg-other" 1
 
 # THE SIXTH, AND THE ONLY ONE THAT SLIPPED PAST THIS CHECK RATHER THAN PAST A HABIT.
 #

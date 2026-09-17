@@ -25,7 +25,7 @@ export interface Reply {
   allowed: string;
   /** The worker-lifecycle verdict, also computed in Rust. See `web/recycle.rs`. */
   recycle: boolean;
-  qpdfHeapBytes: string;
+  engineHeapBytes: string;
   /**
    * Every page's effective rotation, in page order. `page_rotations` only.
    *
@@ -200,6 +200,26 @@ export interface BurrowHarness {
   discardWorker(): void;
   fetchFromWorker(url: string): Promise<ProbeResult>;
   workerInheritsCsp(): Promise<boolean>;
+
+  /**
+   * Open a document with the RENDER bundle -- PDFium -- and report its page count.
+   *
+   * ADR 0026's second worker, driven end to end so the split is exercised in a browser rather
+   * than only asserted over files on disk.
+   */
+  renderPageCount(
+    name: string,
+    bytes: Uint8Array,
+    options?: { limits?: Partial<HarnessLimits> },
+  ): Promise<Reply>;
+  /**
+   * `"unbuilt"` until something asks for a render, which is the property under test.
+   *
+   * Two values rather than the host's five: the host is memoised as a PROMISE, so once
+   * something has asked there may not yet be a host to read a state from — and "has anything
+   * asked" is the whole question ADR 0026 puts to this harness.
+   */
+  renderState(): "unbuilt" | "built";
 }
 
 declare global {

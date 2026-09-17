@@ -521,10 +521,22 @@ nothing, and one seed failed on the first execution.
 
 - One indexable page per tool: title, description, structured data, no client-side routing
 - Drag-and-drop, drag-to-reorder, progress, cancel
-- **Page thumbnails are deferred to #57**, with the render capability, the bridge method and
-  the memory ceiling they need as its scope. ADR 0020 is the decision: `rotate` v1 selects by
-  page number and range instead, and `/split-pdf` will want thumbnails too, so they are built
-  once for both rather than bolted onto whichever page reaches for them first.
+- **Page thumbnails are #57**, and its first piece has landed: **PDFium loads on demand**, in a
+  second worker bundle a page fetches only when it needs a picture of a page
+  ([ADR 0026](adr/0026-how-rendering-loads-without-returning-to-the-old-payload.md)). Spike
+  0004's saving is intact for everyone who does not render — a visitor who merges two files
+  downloads no PDFium at all, and that is enforced by the build graph rather than by care:
+  mutually exclusive cargo features, per-bundle source lists and manifests, a per-bundle size
+  budget, and a scan with a partition control. The base payload moved by 0.4%.
+
+  **What has NOT landed is the capability**: `PageRenderer`, the bitmap reply, and the memory
+  ceiling ADR 0020 says must be designed rather than discovered under pressure from a UI. The
+  render bundle answers `page_count` today — the first half of rendering, and what makes the
+  boundary exercisable in a browser rather than only assertable over files on disk.
+
+  ADR 0020 remains the decision for `rotate` v1: it selects by page number and range, and
+  `/split-pdf` will want thumbnails too, so they are built once for both rather than bolted onto
+  whichever page reaches for them first.
 - Strict Content-Security-Policy; no third-party scripts, fonts, or analytics on any page
   that touches file content
 - Playwright tests for each tool, plus one asserting **no network request carries file

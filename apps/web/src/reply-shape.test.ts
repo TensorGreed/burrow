@@ -12,7 +12,7 @@
  *
  * and **wasm-bindgen does not camelCase a getter** — it uses the Rust name unless `js_name`
  * says otherwise, which is why `failed_input`, `inner_kind` and `output_length` all carry one
- * and `qpdf_heap_bytes` deliberately does not. So the module exposed `original_bytes`, while
+ * and `engine_heap_bytes` deliberately does not. So the module exposed `original_bytes`, while
  * `drainReply` read `reply.originalBytes`.
  *
  * That is `undefined`, `drainReply` calls `.toString()` on it, and the guard around
@@ -46,7 +46,21 @@ import { describe, expect, it } from "vitest";
 
 const repo = join(import.meta.dirname, "..", "..", "..");
 const rustPath = join(repo, "bindings", "burrow-wasm", "src", "lib.rs");
-const workerPath = join(repo, "apps", "web", "src", "worker", "main.js");
+/**
+ * EVERY WORKER SOURCE THAT READS A REPLY, not just the one that used to.
+ *
+ * `main.js` held the whole protocol until ADR 0026 split the worker into two bundles;
+ * `drainReply` — which is where every `reply.X` read lives — moved to `worker-protocol.js`,
+ * and `render-main.js` is the second bundle's dispatch. Reading only the old path would have
+ * left this check scanning a file with almost no reads in it and reporting a clean run, which
+ * is exactly the vacuous-pass shape it was written to prevent.
+ *
+ * The floor assertion below is what turns that from a hope into a failure: a set of reads
+ * smaller than eleven fails, so losing a source file is loud.
+ */
+const workerPaths = ["worker-protocol.js", "main.js", "render-main.js"].map((file) =>
+  join(repo, "apps", "web", "src", "worker", file),
+);
 
 /**
  * Every name a `Reply` exposes to JavaScript.
@@ -88,7 +102,7 @@ function readNames(worker: string): Set<string> {
 
 describe("the worker reads only names the Rust exposes", () => {
   const rust = readFileSync(rustPath, "utf8");
-  const worker = readFileSync(workerPath, "utf8");
+  const worker = workerPaths.map((path) => readFileSync(path, "utf8")).join("\n");
 
   it("finds both halves, so a silent parse failure cannot pass", () => {
     // THE PROBE. Two empty sets compare equal, and a regex that stopped matching would report
@@ -102,7 +116,7 @@ describe("the worker reads only names the Rust exposes", () => {
 
     // AND IT RECOGNISES BOTH SPELLINGS, which is the distinction the defect turned on.
     expect(exposed).toContain("failedInput"); // renamed by js_name
-    expect(exposed).toContain("qpdf_heap_bytes"); // deliberately not renamed
+    expect(exposed).toContain("engine_heap_bytes"); // deliberately not renamed
   });
 
   it("every field the worker reads is exposed under that name", () => {

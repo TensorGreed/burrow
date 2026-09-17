@@ -71,6 +71,11 @@ async function runGuard(protocol: string, world: World): Promise<GuardOutcome> {
       burrowWasm: { url: "https://example.test/c.wasm", integrity: "sha384-z" },
       control: { url: "/engines/control.deadbeef.txt", integrity: "sha384-c" },
     },
+    // GENERATED BESIDE THE MANIFEST, and it must agree with it for the same reason the
+    // comment above gives about `pdfiumWasm`: the prelude iterates THIS list, so a fixture
+    // whose list names a module the manifest does not have would fetch `undefined.url` and
+    // fail somewhere unrelated to the guard.
+    BURROW_ENGINE_MODULE_IDS: ["qpdfWasm", "burrowWasm"],
     WebAssembly: { compileStreaming: async () => ({}), instantiate: async () => ({}) },
     URL,
     fetch: async (url: string, init?: { cache?: string }) => {

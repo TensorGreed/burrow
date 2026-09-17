@@ -64,6 +64,19 @@ const ENGINES = /** @type {Record<string, EngineEntry>} */ (
   JSON.parse(required("engines").dataset.engines ?? "{}")
 );
 
+/**
+ * The worker bundles, as `createToolHost` sees them: where each one's source is, and how many
+ * `starting` messages its start-up may use.
+ *
+ * READ OFF THE GENERATED DESCRIPTORS, not written down here. `modules` is the length of the
+ * array `tools/stage-web-engines.mjs` generates into that bundle, so the count the host will
+ * honour and the count the bundle actually sends come from one place. Both are 2 today; see
+ * `EXPECTED_ENGINE_MODULES` for why that coincidence is the reason it is passed at all.
+ */
+const BUNDLES = /** @type {Record<string, { worker: EngineEntry, modules: number }>} */ (
+  JSON.parse(required("engines").dataset.bundles ?? "{}")
+);
+
 /** The default ceilings a browser test runs under, unless it says otherwise. */
 const DEFAULT_LIMITS = {
   maxInputBytes: 100 * 1024 * 1024,
@@ -167,6 +180,62 @@ const host = createWorkerHost({
   clearTimer: (handle) => clearTimeout(/** @type {number} */ (handle)),
   maxDurationMs: DEFAULT_LIMITS.maxDurationMs,
 });
+
+/**
+ * The render bundle's host, built on first use and never before.
+ *
+ * NOT BUILT AT LOAD TIME, and that is the property under test as much as any assertion: a
+ * harness that spawned it eagerly would be measuring a page that downloads PDFium on arrival,
+ * which is exactly what ADR 0026 exists to prevent. `null` until something asks.
+ *
+ * MEMOISED AS A PROMISE, NOT A RESULT, which is the same fix `tool-host.ts` carries and for
+ * the same reason: a guard read after an `await` lets two concurrent callers each build a host,
+ * each spawn a worker with its own engine instance, and share one object URL so one revokes the
+ * other's — leaving an orphan worker holding file bytes for the life of the page. Harness-only
+ * here, and written the right way anyway: a rig that models the production wiring wrongly is a
+ * rig whose green says nothing. Raised by security review.
+ *
+ * @type {Promise<ReturnType<typeof createWorkerHost>> | null}
+ */
+let renderHost = null;
+/** @type {string | null} */
+let renderUrl = null;
+
+function renderBundle() {
+  renderHost ??= buildRenderHost();
+  return renderHost;
+}
+
+async function buildRenderHost() {
+  {
+    const entry = BUNDLES.renderWorker.worker;
+    const response = await fetch(entry.url, { integrity: entry.integrity });
+    if (!response.ok) {
+      throw new Error("render worker fetch failed");
+    }
+    const source = await response.text();
+    return createWorkerHost({
+      spawn: () => {
+        if (renderUrl) URL.revokeObjectURL(renderUrl);
+        renderUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+        return new Worker(renderUrl);
+      },
+      release: () => {
+        if (renderUrl) {
+          URL.revokeObjectURL(renderUrl);
+          renderUrl = null;
+        }
+      },
+      now: () => performance.now(),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (handle) => clearTimeout(/** @type {number} */ (handle)),
+      maxDurationMs: DEFAULT_LIMITS.maxDurationMs,
+      // PER BUNDLE. Both are 2 today; see `EXPECTED_ENGINE_MODULES` for why that coincidence
+      // is the reason this is passed rather than assumed.
+      expectedEngineModules: BUNDLES.renderWorker.modules,
+    });
+  }
+}
 
 /**
  * The prologue source for the currently armed affordances.
@@ -680,6 +749,40 @@ const harness = {
   async workerInheritsCsp() {
     host.discardWorker();
     return harness.ready();
+  },
+
+  // --- the render bundle ----------------------------------------------------------------
+  //
+  // ADR 0026 ships a SECOND worker bundle: PDFium, fetched only when a page needs a picture
+  // of a page. It is driven here so that a browser test can exercise it end to end -- through
+  // the real integrity-pinned fetch, the real `blob:` construction, the real fail-closed CSP
+  // guard and the real lifecycle -- rather than the split being asserted only over files on
+  // disk. An untested worker whose guard decides whether file bytes may be touched is the
+  // thing that goes wrong quietly.
+  //
+  // ONE LIFECYCLE, TWO INSTANCES, which is the claim this exercises as much as the loading.
+  // `renderHost` is `createWorkerHost` again, with the bundle and its module count as
+  // arguments; there is no second state machine, no second watchdog and no second breaker
+  // implementation. The breaker STATE is independent because the instances are, and that is
+  // deliberate: a document that kills the renderer must not take merging offline.
+  async renderPageCount(name, bytes, options = {}) {
+    const worker = await renderBundle();
+    const reply = await worker.run(
+      {
+        op: "page_count",
+        blob: new File([new Uint8Array(bytes)], name, { type: "application/pdf" }),
+        limits: { ...DEFAULT_LIMITS, ...(options.limits ?? {}) },
+      },
+      { maxDurationMs: DEFAULT_LIMITS.maxDurationMs },
+    );
+    return reply;
+  },
+
+  renderState() {
+    // "unbuilt" is the property under test: nothing may build this host until something asks
+    // for a render. `built` rather than the host's own state once it exists, because the
+    // promise may still be in flight and a state read is not worth awaiting for.
+    return renderHost === null ? "unbuilt" : "built";
   },
 };
 

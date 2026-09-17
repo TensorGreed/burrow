@@ -42,9 +42,23 @@ test("the manifest pins every engine artifact by digest", async ({ page }) => {
   const engines = await readManifest(page);
 
   const ids = Object.keys(engines).sort();
-  // `pdfiumWasm` was here until spike 0004 took PDFium out of the payload. The list is
+  // `pdfiumWasm` left this list when spike 0004 took PDFium out of the payload, and ADR 0026
+  // brings it back — along with a second worker bundle and its own Rust module. The list is
   // exact rather than a subset, so an artifact appearing or disappearing is a finding.
-  expect(ids).toEqual(["burrowWasm", "control", "qpdfWasm", "worker"]);
+  //
+  // THE MANIFEST IS THE WHOLE SET; WHICH BUNDLE FETCHES WHAT IS A DIFFERENT QUESTION. This is
+  // the page-side map, and every artifact in it is integrity-pinned whichever bundle asks for
+  // it. What the base bundle may fetch is decided by the manifest generated INTO it, which
+  // `tools/check-pdfium-is-render-only.sh` asserts and the size budget measures.
+  expect(ids).toEqual([
+    "burrowRenderWasm",
+    "burrowWasm",
+    "control",
+    "pdfiumWasm",
+    "qpdfWasm",
+    "renderWorker",
+    "worker",
+  ]);
 
   // The guard's control resource. Small on purpose: it is fetched `cache: "no-store"` at
   // every worker start, and it exists only to prove an allowlisted request succeeds.
@@ -95,9 +109,38 @@ test("the worker bundle contains all worker code, so one digest covers it", asyn
     "__burrow_qpdf_copy_in", // the bridge
     "createQpdfModule", // the qpdf glue
     "wasm_bindgen", // the Rust glue
-    "INHERITS_PAGE_CSP", // the fail-closed guard
+    // THE FAIL-CLOSED GUARD, BY THE NAME THE CODE USES. This read `INHERITS_PAGE_CSP` until
+    // security review pointed out that the string appears in exactly four places and none of
+    // them is code: it is the guard's FORMER name, surviving in the paragraph of `prelude.js`
+    // that explains why it was renamed. So the assertion passed on a bundle from which the
+    // guard had been deleted, provided the comment survived — a marker check that was checking
+    // a comment.
+    "const POLICED",
+    '"/__csp-probe"',
   ]) {
     expect(source, `the bundle is missing ${marker}`).toContain(marker);
+  }
+
+  // AND THE RENDER BUNDLE IS COVERED THE SAME WAY. It is a second file the page fetches with
+  // `integrity` and wraps in a Blob, so "one digest covers every line of worker code" is a
+  // claim about each bundle rather than about the site. A bundle nobody checks is a bundle
+  // whose third-party Emscripten glue is exactly as unverified as `importScripts` left it.
+  const renderSource = await page.evaluate(async (url) => {
+    const response = await fetch(url);
+    return response.text();
+  }, engines.renderWorker.url);
+
+  for (const marker of [
+    "BURROW_ENGINES", // the generated manifest
+    "__burrow_pdfium_copy_in", // the bridge
+    "_FPDF_GetPageCount", // pdfium's glue
+    "wasm_bindgen", // the Rust glue
+    // The same guard, by the same name — `prelude.js` is byte-identical in both bundles, which
+    // is the claim this line is here to keep true.
+    "const POLICED",
+    '"/__csp-probe"',
+  ]) {
+    expect(renderSource, `the render bundle is missing ${marker}`).toContain(marker);
   }
 });
 

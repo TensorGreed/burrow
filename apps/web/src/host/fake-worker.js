@@ -214,7 +214,7 @@ export function workerReply(id, overrides = {}) {
     requested: "0",
     allowed: "0",
     recycle: false,
-    qpdfHeapBytes: "1048576",
+    engineHeapBytes: "1048576",
     ...overrides,
   };
 }

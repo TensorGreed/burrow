@@ -90,23 +90,87 @@ const { origin: ORIGIN } = resolveBuildOrigin((message) => {
   process.exit(1);
 });
 
-// The files the worker loads. `.js` is Emscripten glue, `.wasm` is the module.
+// The files each worker bundle is made of. `.js` is Emscripten glue, `.wasm` is the module.
 //
-// PDFIUM IS NOT HERE, and it is still BUILT. Spike 0004: it was 79.7% of the first-load
-// payload and the web called into it from one function, `page_count`, which qpdf answers
-// through `StructureEngine::check`. Dropping it from this list is what takes 1,904,807 brotli
-// bytes out of what a person downloads before their first operation can run.
+// PDFIUM IS HERE AGAIN, AND IT IS IN ONE BUNDLE ONLY. Spike 0004 removed it outright: it was
+// 79.7% of the first-load payload and the web called into it from one function, `page_count`,
+// which qpdf answers through `StructureEngine::check`. Rendering needs it back, and ADR 0026
+// is the shape that brings it back without giving up what that removal bought — it is in the
+// `renderWorker` bundle, which nothing fetches until a page needs a picture of a page.
 //
-// `engines/build-wasm.sh` still produces it, and `tools/detect-engine-components.py` still
-// fingerprints it from `engines/vendor/wasm/lib/` — that is upstream of staging, so the
-// component detector is unaffected. "Not staged" and "not built" are different things and
-// only the first of them is true.
-const ENGINE_FILES = [
-  { id: "qpdfWasm", from: "qpdf.wasm", kind: "wasm", source: "engines" },
-  // burrow's own module is staged and fetched the same way. It is not an "engine", but it
-  // is a .wasm the worker fetches, and connect-src governs that fetch identically -- so
-  // leaving it out would mean either a looser policy or a module that cannot load.
-  { id: "burrowWasm", from: "burrow_wasm_bg.wasm", kind: "wasm", source: "pkg" },
+// The saving is therefore intact for everyone who does not render: the `worker` bundle below
+// names qpdf and burrow's own module, and nothing else.
+//
+// TWO BUNDLES, AND THE SPLIT IS WHAT MAKES THE ABSENCE CLAIM STRUCTURAL.
+//
+// ADR 0026. Each bundle names its own sources and its own engine modules, and the manifest
+// generated INTO a bundle carries only that bundle's entries. So the base bundle -- the one
+// every tool page loads -- contains no PDFium glue, no PDFium bridge globals, and no PDFium
+// URL to fetch. Not because a check says so afterwards: because the file list it is built
+// from does not include any.
+//
+// The Rust half is the other structural half: `bindings/burrow-wasm` is built twice under
+// mutually exclusive cargo features, so the base module has no `__burrow_pdfium_*` import to
+// dangle. `tools/check-pdfium-is-render-only.sh` scans the result, and the first-load budget
+// weighs each bundle's own closure -- three layers, two of them in the build graph.
+//
+// `order` is the concatenation order and it is load-bearing. `prelude.js` is byte-identical
+// in both (it owns the CSP guard and the progress protocol); `render-prelude.js` exists only
+// because `pdfium.js` reads a pre-existing global `Module` AT PARSE TIME, so its assignment
+// has to already have run.
+const BUNDLES = [
+  {
+    id: "worker",
+    name: "burrow-worker",
+    // burrow's own module is staged and fetched the same way as an engine. It is not an
+    // "engine", but it is a .wasm the worker fetches, and connect-src governs that fetch
+    // identically -- so leaving it out would mean either a looser policy or a module that
+    // cannot load.
+    modules: [
+      { id: "qpdfWasm", from: "qpdf.wasm", as: "qpdf.wasm", source: "engines" },
+      { id: "burrowWasm", from: "burrow_wasm_bg.wasm", as: "burrow_wasm_bg.wasm", source: "pkg" },
+    ],
+    order: [
+      { app: "src/worker/prelude.js" },
+      { app: "src/worker/bridge-common.js" },
+      { app: "src/worker/bridge-qpdf.js" },
+      // qpdf is MODULARIZE'd: it defines one function and touches nothing else.
+      { engines: "qpdf.js" },
+      // wasm-bindgen `--target no-modules`: defines the `wasm_bindgen` global.
+      { pkg: "burrow_wasm.js" },
+      { app: "src/worker/worker-protocol.js" },
+      { app: "src/worker/main.js" },
+    ],
+  },
+  {
+    id: "renderWorker",
+    name: "burrow-render-worker",
+    modules: [
+      { id: "pdfiumWasm", from: "pdfium.wasm", as: "pdfium.wasm", source: "engines" },
+      {
+        id: "burrowRenderWasm",
+        from: "burrow_wasm_bg.wasm",
+        as: "burrow_wasm_render_bg.wasm",
+        source: "pkgRender",
+      },
+    ],
+    order: [
+      { app: "src/worker/prelude.js" },
+      // BEFORE `pdfium.js`, and that is the only reason this file exists rather than being a
+      // branch inside `prelude.js`: the glue begins instantiating as it is parsed and reads
+      // `self.Module` for its configuration at that moment.
+      { app: "src/worker/render-prelude.js" },
+      { app: "src/worker/bridge-common.js" },
+      { app: "src/worker/bridge-pdfium.js" },
+      // A prebuilt, unpacked verbatim. NOT modularised: its state lives in worker globals,
+      // which is why one evaluation per worker scope is a safety property (ADR 0006's
+      // amendment, reason 3) rather than a convenience.
+      { engines: "pdfium.js" },
+      { pkgRender: "burrow_wasm.js" },
+      { app: "src/worker/worker-protocol.js" },
+      { app: "src/worker/render-main.js" },
+    ],
+  },
 ];
 
 /** The same manifest with page-relative URLs rewritten against the build's origin. */
@@ -114,6 +178,11 @@ function absolute(manifest) {
   return Object.fromEntries(
     Object.entries(manifest).map(([id, entry]) => [id, { ...entry, url: `${ORIGIN}${entry.url}` }]),
   );
+}
+
+/** `worker` -> `BUNDLE_WORKER`, `renderWorker` -> `BUNDLE_RENDER_WORKER`. */
+function bundleExportName(id) {
+  return `BUNDLE_${id.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase()}`;
 }
 
 function sriFor(bytes) {
@@ -182,6 +251,12 @@ async function main() {
   const sources = {
     engines: join(repo, "engines", "vendor", arch, "lib"),
     pkg: join(repo, "bindings", "burrow-wasm", "pkg"),
+    // TWO wasm-pack OUTPUT DIRECTORIES, because the crate is built twice under mutually
+    // exclusive cargo features and both builds emit a file called `burrow_wasm_bg.wasm`.
+    // Separate directories rather than one with renamed files: a single directory would mean
+    // whichever build ran last silently supplying both bundles, which is the failure this
+    // whole split exists to make impossible.
+    pkgRender: join(repo, "bindings", "burrow-wasm", "pkg-render"),
   };
 
   if (!existsSync(sources.engines)) {
@@ -191,9 +266,23 @@ async function main() {
   }
   if (!existsSync(sources.pkg)) {
     console.error(`stage-web-engines: ${sources.pkg} does not exist.`);
-    console.error("  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release");
+    console.error(
+      "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release",
+    );
     console.error("  (no-modules, not web: the worker is classic -- it is one concatenated");
     console.error("   bundle under a single integrity digest -- and cannot import an ES module.)");
+    process.exit(1);
+  }
+  if (!existsSync(sources.pkgRender)) {
+    console.error(`stage-web-engines: ${sources.pkgRender} does not exist.`);
+    console.error(
+      "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render \\",
+    );
+    console.error("         --release -- --no-default-features --features render");
+    console.error("  (ADR 0026: the render bundle carries PDFium and no qpdf, and the base bundle");
+    console.error(
+      "   carries no PDFium -- the two cargo features are mutually exclusive on wasm32.)",
+    );
     process.exit(1);
   }
 
@@ -205,6 +294,7 @@ async function main() {
 
   const staged = {};
   const wasmUrls = [];
+  const bundleUrls = [];
 
   // The guard's CONTROL resource.
   //
@@ -233,75 +323,121 @@ async function main() {
   };
   console.log(`  guard control -> ${controlName}  (${controlBytes.length} bytes)`);
 
-  for (const file of ENGINE_FILES) {
-    const source = join(sources[file.source], file.from);
-    if (!existsSync(source)) {
-      console.error(`stage-web-engines: ${source} is missing.`);
-      console.error(
-        file.source === "pkg"
-          ? "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release"
-          : "  Run engines/build-wasm.sh -- it builds qpdf.js/qpdf.wasm.",
-      );
-      process.exit(1);
-    }
-    const bytes = await readFile(source);
-    const hash = contentHash(bytes);
-    const name = file.from.replace(/\.(js|wasm)$/, `.${hash}.$1`);
-    await writeFile(join(outDir, name), bytes);
+  // EACH BUNDLE'S OWN MODULES, STAGED UNDER ITS OWN NAMES.
+  //
+  // `staged` is flat -- one manifest for the page, naming every artifact -- but what is
+  // generated INTO each bundle is only that bundle's slice. That is the difference between
+  // "the base worker has no reason to fetch PDFium" and "the base worker CANNOT": its copy of
+  // the manifest has no such URL in it.
+  const moduleIdsByBundle = {};
+  for (const bundle of BUNDLES) {
+    moduleIdsByBundle[bundle.id] = [];
+    for (const file of bundle.modules) {
+      const source = join(sources[file.source], file.from);
+      if (!existsSync(source)) {
+        console.error(`stage-web-engines: ${source} is missing.`);
+        console.error(
+          file.source === "engines"
+            ? "  Run engines/build-wasm.sh -- it builds qpdf.js/qpdf.wasm and unpacks pdfium."
+            : file.source === "pkgRender"
+              ? "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render \\\n         --release -- --no-default-features --features render"
+              : "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release",
+        );
+        process.exit(1);
+      }
+      const bytes = await readFile(source);
+      const hash = contentHash(bytes);
+      // STAGED UNDER `as`, NOT UNDER THE SOURCE FILENAME. Both wasm-pack builds emit a file
+      // called `burrow_wasm_bg.wasm`, so staging by source name would put two different
+      // modules at two URLs distinguished only by their content hash -- readable by nobody,
+      // and indistinguishable in the size budget, the CSP and a network tab.
+      //
+      // Spelt out per module rather than derived from the id, because three of the four names
+      // are the ones already recorded in `apps/web/size-budget.json` and in every measurement
+      // that file carries. A derivation would have renamed them for tidiness and made this
+      // change's budget diff unreadable, which is the opposite of what a budget is for.
+      const name = file.as.replace(/\.wasm$/, `.${hash}.wasm`);
+      await writeFile(join(outDir, name), bytes);
 
-    const path = `/engines/${name}`;
-    staged[file.id] = {
-      url: path,
-      integrity: sriFor(bytes),
-      bytes: bytes.length,
-    };
-    if (file.kind === "wasm") {
+      const path = `/engines/${name}`;
+      staged[file.id] = {
+        url: path,
+        integrity: sriFor(bytes),
+        bytes: bytes.length,
+      };
       wasmUrls.push(`${ORIGIN}${path}`);
+      moduleIdsByBundle[bundle.id].push(file.id);
+      console.log(`  ${bundle.id}: ${file.from} -> ${name}  (${bytes.length} bytes)`);
     }
-    console.log(`  ${file.from} -> ${name}  (${bytes.length} bytes)`);
   }
 
-  // ---- the worker bundle ----------------------------------------------------------
+  // ---- the worker bundles ---------------------------------------------------------
   //
-  // Order is load-bearing, though less so than it was. `main.js` runs last because everything
-  // it uses must already exist. The `self.Module` assignment that had to precede `pdfium.js`
-  // is gone with PDFium (spike 0004); qpdf is MODULARIZE'd, so it defines one function and
-  // touches nothing else.
-  const workerSource = [
-    "// GENERATED by tools/stage-web-engines.mjs. Do not edit.\n",
+  // Order is load-bearing. The last file runs last because everything it uses must already
+  // exist, and in the render bundle `render-prelude.js` must precede `pdfium.js` because that
+  // glue reads a pre-existing global `Module` at parse time.
+  const sourceDirFor = {
+    app: webApp,
+    engines: sources.engines,
+    pkg: sources.pkg,
+    pkgRender: sources.pkgRender,
+  };
+  for (const bundle of BUNDLES) {
+    const parts = ["// GENERATED by tools/stage-web-engines.mjs. Do not edit.\n"];
+
+    // THIS BUNDLE'S SLICE OF THE MANIFEST, not the whole of it.
+    //
     // ABSOLUTE urls, not the page-relative ones. A blob: worker's `self.location` is an
     // opaque blob: URL with no useful base, so `fetch("/engines/...")` inside it fails with
     // "Failed to parse URL" -- it cannot resolve a relative reference at all. This is the
     // same reason `locateFile` is never allowed to run and the compiled modules are handed
     // in directly.
     //
-    // It also means the worker bundle is origin-bound in the same way the CSP is, which is
+    // It also means a worker bundle is origin-bound in the same way the CSP is, which is
     // consistent: both are generated against BURROW_SITE and neither can be relocated
     // without a rebuild.
-    `const BURROW_ENGINES = ${JSON.stringify({ ...absolute(staged), probeOrigin: ORIGIN }, null, 2)};\n`,
-    await readFile(join(webApp, "src/worker/prelude.js"), "utf8"),
-    await readFile(join(webApp, "src/worker/bridge.js"), "utf8"),
-    // qpdf is MODULARIZE'd: it defines one function and touches nothing else.
-    await readFile(join(sources.engines, "qpdf.js"), "utf8"),
-    // wasm-bindgen `--target no-modules`: defines the `wasm_bindgen` global.
-    await readFile(join(sources.pkg, "burrow_wasm.js"), "utf8"),
-    await readFile(join(webApp, "src/worker/main.js"), "utf8"),
-  ].join("\n");
+    const mine = { control: staged.control };
+    for (const id of moduleIdsByBundle[bundle.id]) mine[id] = staged[id];
+    parts.push(
+      `const BURROW_ENGINES = ${JSON.stringify({ ...absolute(mine), probeOrigin: ORIGIN }, null, 2)};\n`,
+    );
+    // THE FETCH LIST AND THE HOST'S CAP ON TRUST, FROM ONE ARRAY. `prelude.js` loops over
+    // this, and `ENGINE_MODULE_COUNTS` below is its length -- so the number of `starting`
+    // messages a bundle can send and the number the host will honour cannot disagree.
+    parts.push(
+      `const BURROW_ENGINE_MODULE_IDS = ${JSON.stringify(moduleIdsByBundle[bundle.id])};\n`,
+    );
 
-  const workerBytes = Buffer.from(workerSource, "utf8");
-  const workerName = `burrow-worker.${contentHash(workerBytes)}.js`;
-  await writeFile(join(outDir, workerName), workerBytes);
-  const workerUrl = `/engines/${workerName}`;
-  staged.worker = {
-    url: workerUrl,
-    integrity: sriFor(workerBytes),
-    bytes: workerBytes.length,
-  };
-  console.log(`  worker bundle -> ${workerName}  (${workerBytes.length} bytes)`);
+    for (const step of bundle.order) {
+      const [where, file] = Object.entries(step)[0];
+      parts.push(await readFile(join(sourceDirFor[where], file), "utf8"));
+    }
+
+    const bytes = Buffer.from(parts.join("\n"), "utf8");
+    const name = `${bundle.name}.${contentHash(bytes)}.js`;
+    await writeFile(join(outDir, name), bytes);
+    staged[bundle.id] = {
+      url: `/engines/${name}`,
+      integrity: sriFor(bytes),
+      bytes: bytes.length,
+    };
+    bundleUrls.push(`${ORIGIN}/engines/${name}`);
+    console.log(`  ${bundle.id} bundle -> ${name}  (${bytes.length} bytes)`);
+  }
 
   // The page fetches the worker's SOURCE TEXT, so its URL is a connect-src entry like any
   // engine. It is not a `script-src` entry: it is never loaded as a script from that URL.
-  const fetchable = [...wasmUrls, `${ORIGIN}${workerUrl}`, `${ORIGIN}${controlUrl}`];
+  // EVERY BUNDLE'S SOURCE TEXT, not just the base one. A bundle URL is a `connect-src`
+  // entry because the page FETCHES it; it is never a `script-src` entry, because no script
+  // is ever loaded from that URL -- the worker is constructed from a Blob of the text.
+  //
+  // BOTH BUNDLES ARE IN ONE POLICY, and that is the one place the split is not structural.
+  // A CSP is per document, so the page that merges two files is served a policy that would
+  // PERMIT fetching PDFium. What stops it is that nothing on that page asks: the base
+  // bundle's own manifest has no such URL, and `e2e/zero-requests.spec.ts` reads the
+  // server's accept log rather than the policy. Recorded rather than left for a reader to
+  // notice, because the policy is exactly where somebody would look for the guarantee.
+  const fetchable = [...wasmUrls, ...bundleUrls, `${ORIGIN}${controlUrl}`];
 
   const metaPolicy = policyFor(fetchable, { forMeta: true });
   const headerPolicy = policyFor(fetchable, { forMeta: false });
@@ -317,6 +453,30 @@ async function main() {
 export const ENGINE_ORIGIN = ${JSON.stringify(ORIGIN)};
 
 export const ENGINES = ${JSON.stringify(staged, null, 2)};
+
+/**
+ * One worker bundle, as \`createToolHost\` takes it.
+ *
+ * ONE EXPORT PER BUNDLE, NOT ONE MAP, AND THAT IS A PAYLOAD DECISION RATHER THAN A STYLE ONE.
+ * An island imports the bundle it uses; Vite tree-shakes at the level of a named export, so a
+ * page that never renders carries no reference to the render bundle at all -- not even its URL
+ * and digest. Importing a single \`ENGINES\` object would have inlined the whole manifest into
+ * every island chunk, which is a couple of hundred bytes and, more to the point, would make
+ * "this page names no PDFium artifact" false for every page on the site.
+ *
+ * \`modules\` is the length of the same array generated into that bundle as
+ * \`BURROW_ENGINE_MODULE_IDS\`, so how many \`{ starting: true }\` messages a bundle can send and
+ * how many the host will honour come from one place. See \`EXPECTED_ENGINE_MODULES\` in
+ * \`src/host/worker-host.js\` for why that is no longer a constant.
+ */
+${BUNDLES.map(
+    (b) =>
+      `export const ${bundleExportName(b.id)} = ${JSON.stringify(
+        { worker: staged[b.id], modules: moduleIdsByBundle[b.id].length },
+        null,
+        2,
+      )};`,
+  ).join("\n\n")}
 
 /** The Content-Security-Policy this build is served under. */
 export const CSP = ${JSON.stringify(metaPolicy)};
@@ -417,7 +577,10 @@ export const CSP_HEADER = ${JSON.stringify(headerPolicy)};
   // ORIGIN, and the routes are repo-controlled filenames -- but "no input can contain it" is a
   // claim about two other files, and a page named `a&b.astro` would emit malformed XML.
   const xml = (text) =>
-    text.replace(/[&<>"']/g, (c) => `&${{ "&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "apos" }[c]};`);
+    text.replace(
+      /[&<>"']/g,
+      (c) => `&${{ "&": "amp", "<": "lt", ">": "gt", '"': "quot", "'": "apos" }[c]};`,
+    );
 
   await writeFile(
     join(webApp, "public", "robots.txt"),

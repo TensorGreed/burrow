@@ -46,7 +46,17 @@ const INIT_TIMEOUT_MS = 5_000;
 const ACK_TIMEOUT_MS = 4_000;
 
 /** Everything a case needs, wired together. */
-function build(factoryOptions: Parameters<typeof createFakeWorkerFactory>[0] = {}): {
+function build(
+  factoryOptions: Parameters<typeof createFakeWorkerFactory>[0] = {},
+  /**
+   * How many `starting` messages this host will honour.
+   *
+   * A PARAMETER, because ADR 0026 made it one: there are two worker bundles and the number is
+   * a property of a bundle rather than of the host. Every existing case passes nothing and
+   * gets the default, which is what keeps them testing what they were testing.
+   */
+  expectedEngineModules: number = EXPECTED_ENGINE_MODULES,
+): {
   factory: Factory;
   clock: Clock;
   host: Host;
@@ -64,6 +74,7 @@ function build(factoryOptions: Parameters<typeof createFakeWorkerFactory>[0] = {
     ackTimeoutMs: ACK_TIMEOUT_MS,
     breakerRespawns: 3,
     breakerWindowMs: 60_000,
+    expectedEngineModules,
   });
   return { factory, clock, host };
 }
@@ -455,6 +466,49 @@ describe("initialisation", () => {
     expect(host.hasWorker()).toBe(true);
     expect(host.breakerOpen(), "a slow network was counted as a crash").toBe(false);
     expect(factory.latest().terminations).toBe(0);
+  });
+
+  test("honours a bundle's OWN module count, not a constant", async () => {
+    // ADR 0026 §4: `EXPECTED_ENGINE_MODULES` stopped being a constant because there are two
+    // bundles and both happen to fetch two modules — "a coincidence that holds is one nobody
+    // checks". Nothing checked it. Code review replaced `expectedEngineModules` at the call
+    // site with the old constant and **53 tests still passed**, because no test ever passed a
+    // different value. This is the case that mutation fails.
+    //
+    // THREE MODULES, spaced just inside the stall bound each time. Against the constant (2)
+    // the third `starting` is ignored, the clock runs past the bound, and the worker is
+    // declared dead — so a bundle that grew a module would have had its start-up bound
+    // silently halved, on exactly the slow connections the bound exists for.
+    const MODULES = 3;
+    const { host, factory, clock } = track(
+      build(
+        {
+          onMessage: (instance, message) => {
+            if (message?.type === "init") {
+              for (let i = 0; i < MODULES; i += 1) {
+                clock.advance(INIT_TIMEOUT_MS - 1_000);
+                instance.reply({ starting: true });
+              }
+              clock.advance(INIT_TIMEOUT_MS - 1_000);
+              instance.reply({ id: message.id, ready: true, ok: true });
+            }
+          },
+        },
+        MODULES,
+      ),
+    );
+
+    expect(
+      await host.ready(),
+      "a three-module bundle was declared dead, so the host used a number that is not its own",
+    ).toBe(true);
+    expect(host.breakerOpen(), "a slow three-module start-up was counted as a crash").toBe(false);
+    expect(factory.latest().terminations).toBe(0);
+
+    // AND THE CAP IS STILL A CAP at the value it was given — otherwise this case would pass
+    // against a host that had simply stopped counting, which is the other way to make the
+    // mutation invisible.
+    expect(MODULES).not.toBe(EXPECTED_ENGINE_MODULES);
   });
 
   test("a worker cannot keep itself alive by reporting progress forever", async () => {
@@ -986,7 +1040,7 @@ describe("recycling", () => {
       workerReply(request.id, {
         pages: 4,
         recycle: true,
-        qpdfHeapBytes: String(600 * 1024 * 1024),
+        engineHeapBytes: String(600 * 1024 * 1024),
       }),
     );
 

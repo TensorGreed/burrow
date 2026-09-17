@@ -41,7 +41,17 @@ apps/web/.vercel/
 apps/web/.netlify/
 
 # --- WASM build output ---
+#
+# TWO DIRECTORIES SINCE ADR 0026: the crate is built twice under mutually exclusive cargo
+# features and both builds emit a file called `burrow_wasm_bg.wasm`, so they cannot share one.
+#
+# IN THE ROOT FILE, not in the one wasm-pack writes inside each directory. wasm-pack drops a
+# `.gitignore` containing `*` in its own output, which would be enough today and is exactly the
+# shape that failed in PR #37: an ignore rule governing generated output that lives beside the
+# output is absent from the working tree the moment you check out a branch that does not have
+# it -- which is the moment it matters. `tools/check-no-generated-files.sh` is the backstop.
 bindings/burrow-wasm/pkg/
+bindings/burrow-wasm/pkg-render/
 
 # --- Corpus: the manifest is tracked, the files are never committed ---
 # Test corpora can be large and can contain third-party or sensitive documents.

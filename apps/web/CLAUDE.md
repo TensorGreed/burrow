@@ -23,32 +23,45 @@ pnpm e2e        # playwright, against a build with the harness route
 pnpm build:harness  # that build, by hand
 ```
 
-The wasm module comes from `bindings/burrow-wasm`; rebuild it from the repository root:
+The wasm modules come from `bindings/burrow-wasm`, and there are **two**; rebuild both from
+the repository root:
 
 ```bash
 wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render --release \
+  -- --no-default-features --features render
 ```
+
+**Two builds, two output directories, and the crate refuses to be both at once on `wasm32`.**
+[ADR 0026](../../docs/adr/0026-how-rendering-loads-without-returning-to-the-old-payload.md):
+the base bundle carries qpdf and the render bundle carries PDFium, and separate directories are
+not tidiness — both builds emit a file called `burrow_wasm_bg.wasm`, so one directory would mean
+whichever ran last silently supplying both bundles. That is the failure the whole split exists
+to make impossible, arriving through the build rather than through the code.
 
 **`--target no-modules`, not `--target web`.** This file said `web` until M1 PR 4a-i, and
 that does not work: `--target web` emits an ES module, and the worker is a **classic**
 worker, which cannot `import` one.
 
-**THE REASON IT IS CLASSIC HAS CHANGED, AND THE DECISION HAS NOT.** It used to be forced: the
-prebuilt `pdfium.js` was not modularised and could only be loaded by `importScripts`, which
-exists only in a classic worker. Spike 0004 took PDFium out of the payload, so that constraint
-is gone — qpdf's glue _is_ `MODULARIZE`'d. What holds the decision now is the bundle: the whole
-worker ships as one concatenated file constructed from a `Blob`, which is what lets a single
-integrity digest cover the Emscripten glue, and a module worker would mean either giving that up
-or rewriting the concatenation as a module graph. Recorded rather than left as a stale "it has
-to be", because a constraint that has quietly become a choice is the thing somebody reopens at
-the worst moment.
+**THE REASON IT IS CLASSIC WENT AWAY AND CAME BACK.** It was originally forced: the prebuilt
+`pdfium.js` is not modularised and can only be loaded by `importScripts`, which exists only in a
+classic worker. Spike 0004 took PDFium out of the payload and that constraint lapsed — qpdf's
+glue _is_ `MODULARIZE`'d — so the decision was re-argued on the bundle instead: the whole worker
+ships as one concatenated file constructed from a `Blob`, which is what lets a single integrity
+digest cover the Emscripten glue.
+
+ADR 0026 puts `pdfium.js` back, in the **render** bundle, so the original constraint is live
+again for that one — and the bundle argument still holds for both. Recorded in this shape rather
+than rewritten, because "a constraint that has quietly become a choice" turning back into a
+constraint is exactly the history a reader needs: neither reason is load-bearing alone now, and
+removing one does not free the decision.
 
 The knock-on is unchanged: the bridge's `#[wasm_bindgen]` imports carry no `module = "..."`
 attribute and resolve from the worker's global scope, because that is the only style
 `no-modules` supports. That is also what makes a leftover import fail at _instantiation_ rather
-than silently — see `bindings/burrow-wasm/src/bridge.rs`.
+than silently — see `bindings/burrow-wasm/src/bridge_qpdf.rs` and `bridge_pdfium.rs`.
 
-After rebuilding, restage — the engine URLs are content-hashed and the CSP is generated
+After rebuilding **both**, restage — the engine URLs are content-hashed and the CSP is generated
 from them, so a stale manifest means the browser refuses the new module:
 
 ```bash
@@ -125,12 +138,48 @@ second exception without one.
 **Heavy work goes in a Web Worker.** A large PDF must not freeze the tab. Report progress
 and support cancellation.
 
+**There are TWO worker bundles, and one lifecycle.**
+[ADR 0026](../../docs/adr/0026-how-rendering-loads-without-returning-to-the-old-payload.md).
+`burrow-worker.js` carries qpdf and every document operation; `burrow-render-worker.js` carries
+PDFium and is fetched only when a page needs a picture of a page. **A visitor who lands on
+`/merge-pdf` and merges two files downloads no PDFium at all** — enforced by the build graph,
+not by care:
+
+- the crate is built twice under mutually exclusive cargo features, so the base module has no
+  `__burrow_pdfium_*` import to leave dangling;
+- each bundle is concatenated from its own source list and carries its own slice of the engine
+  manifest, and a worker fetches only what its own manifest names;
+- `tools/first-load.mjs` weighs each bundle's own closure, so PDFium entering the base payload
+  fails the base size budget by roughly 400%;
+- `tools/check-pdfium-is-render-only.sh` scans the built output, with a **partition control** —
+  PDFium must be _present_ in the render bundle, or a build that staged none at all would
+  satisfy every absence rule and serve a picture strip that cannot render.
+
+**`src/worker/worker-protocol.js` is byte-identical in both bundles**, and that is the point of
+it: the fail-closed guard, the memoised init promise, the ack, the reply flattening and every
+refusal shape have one implementation. What a bundle supplies is `init`, `KNOWN_OPS` and
+`runOperation`. Adding a file to a bundle means adding it to that bundle's `order` in
+`tools/stage-web-engines.mjs` **and** to its `src/worker/tsconfig*.json` — the two lists are the
+same list twice.
+
+**The CSP is one policy per document and it names PDFium on every page**, because a document
+gets one policy. That is the one place the split is not structural; what stops a non-rendering
+page fetching it is that its bundle's manifest has no such URL. ADR 0026 says so where a reader
+would look for the guarantee.
+
 **The worker lifecycle is a state machine, and it lives in `src/host/worker-host.js`.**
 See [ADR 0015](../../docs/adr/0015-web-worker-lifecycle.md). Five states — `idle`,
 `initialising`, `busy`, `dead`, `respawning` — with every dependency injected (`spawn`, `now`,
 `setTimer`, `clearTimer`), so `worker-host.test.ts` drives every transition in milliseconds
 against a fake worker. Do not put lifecycle logic in a page or an island; put it there, with a
 test.
+
+It is **one implementation, used twice**. `createToolHost(deps, DOCUMENTS | RENDER)` builds a
+host per bundle, and the differences are arguments: which bundle, and how many `starting`
+messages its start-up may use. `EXPECTED_ENGINE_MODULES` stopped being a constant for that
+reason — both bundles fetch two modules today, and a coincidence that holds is one nobody
+checks. The circuit breakers are independent because the instances are, deliberately: a document
+that kills the renderer must not take merging offline.
 
 `src/host/*.js` are ES modules copied verbatim into `public/host/` by
 `tools/stage-web-engines.mjs` and deleted from production builds by `astro.config.mjs`. The
@@ -224,22 +273,40 @@ Recycling is not a failure and the caller must never see it as one. The verdict 
 (`core/burrow-engines/src/web/recycle.rs`), for the same reason `fatal` is: ADR 0009 forbids a
 binding enforcing any part of `Limits`. The threshold and the measurements behind it are in
 ADR 0015 §5-6 — ordinary corpus work sits at ~18 MiB per engine, and `xref-bomb.pdf` reaches
-1.9 GiB when a caller raises the ceiling far enough to let it. **That 1.9 GiB was PDFium's
-reading and is no longer reachable on the web**: qpdf's was 513 MiB on the same file, and qpdf
-is the only module in the payload since spike 0004. The threshold is unchanged and the native
-figure still stands.
+1.9 GiB when a caller raises the ceiling far enough to let it. qpdf's reading on the same file
+was 513 MiB.
 
-**One engine instance per worker, and memoise the init promise.** The rule survives spike
-0004; the hazard it was written from is worth keeping in its original form, because it is
-sharper than the one that remains.
+**THE 1.9 GiB IS REACHABLE ON THE WEB AGAIN, and this paragraph said it was not.** It read
+"that 1.9 GiB was PDFium's reading and is no longer reachable on the web… qpdf is the only
+module in the payload since spike 0004", which was true for exactly as long as PDFium was gone.
+ADR 0026 put it back in the render bundle, where it opens the documents a person asks for a
+picture of — so the larger of the two readings is live, on the payload a phone is most likely
+to be holding when it happens. Found by code review; an overclaiming doc comment is a bug here,
+and this one sits in the section a reader consults to reason about the threshold.
 
-That original was `pdfium.js`, which was not modularised: its state lived in worker-global
-`var`s and `importScripts` does not dedupe by URL, so loading it twice in one scope rebound
-every glue global while your bridge still held the first instance — an in-flight call then read
-and wrote the _other_ instance's linear memory and dispatched through its function table. The
-sandbox held, so nothing escaped, but parses came back confidently wrong.
+The threshold is unchanged, and it is unchanged **for a reason rather than by omission**:
+`should_recycle` takes every heap the worker holds, half of `max_memory_bytes` is the ceiling
+per heap, and a worker holds one engine. What is new is that a page can have **two workers**
+alive at once — a documents host and a render host — and nothing today bounds their _sum_.
+ADR 0015 §7's mobile question is unchanged and this is a second input to it.
 
-**qpdf is `MODULARIZE`'d and the shape is milder, not absent.** A second `createQpdfModule()`
+**One engine instance per worker, and memoise the init promise.** The rule survives every
+change to the payload, and since ADR 0026 **both** of its hazards are live again rather than
+one being history.
+
+The original was `pdfium.js`, which is not modularised: its state lives in worker-global `var`s
+and `importScripts` does not dedupe by URL, so loading it twice in one scope rebinds every glue
+global while your bridge still holds the first instance — an in-flight call then reads and
+writes the _other_ instance's linear memory and dispatches through its function table. The
+sandbox holds, so nothing escapes, but parses come back confidently wrong.
+
+**That hazard is closed by CONSTRUCTION, not by the memoised promise, and the distinction is
+load-bearing.** The glue is inside the render bundle and a worker scope evaluates it once;
+there is no second `importScripts` to make. ADR 0006's amendment records it that way for
+PDFium and records qpdf's as closed by the memoised promise instead. Two different mechanisms
+for two engines, and removing either one does not free the other.
+
+**qpdf's is milder, not absent, and it is the one the promise closes.** A second `createQpdfModule()`
 returns a genuinely separate instance, so the glue globals are safe — but `__burrow_attach`
 rebinds the bridge's module reference, and an in-flight call still ends up reading a different
 linear memory than the handle it holds came from. Same wrong answer, narrower cause.

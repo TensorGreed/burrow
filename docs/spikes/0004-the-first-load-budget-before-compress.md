@@ -2,6 +2,13 @@
 
 **Date:** 2026-09-15
 **Status:** decided — PDFium does not ship to the web; the total budget is not raised.
+**Amended 2026-09-16 by [ADR 0026](../adr/0026-how-rendering-loads-without-returning-to-the-old-payload.md):**
+PDFium ships to the web again, in a **second worker bundle** fetched only when a page needs to
+render. The measurement below is unchanged and so is what it bought — a visitor who merges two
+files still downloads none of it — but the decision line above is no longer true as written,
+and a reader landing here would otherwise read a falsified decision. Said on this document's
+own status line because that is where this repository puts it (ADR 0002, 0007, 0008), not only
+in the amending record.
 
 ## Why now
 

@@ -119,8 +119,8 @@ jobs:
       - name: This build is for this origin and no other
         run: tools/check-deployable-build.sh "$BURROW_SITE"
 
-      - name: PDFium reaches no part of the payload (spike 0004)
-        run: tools/check-no-pdfium-on-the-web.sh
+      - name: PDFium reaches the render bundle and nothing else (ADR 0026)
+        run: tools/check-pdfium-is-render-only.sh
 
       - name: Record what is about to be uploaded
         run: |

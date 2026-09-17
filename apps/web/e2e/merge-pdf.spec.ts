@@ -475,6 +475,44 @@ test("the tool page's console stays empty through a merge and through a refusal"
   expect(ours, `the tool page must add nothing to the console:\n${ours.join("\n")}`).toEqual([]);
 });
 
+test("a tool page that renders nothing fetches no part of the render bundle", async ({
+  page,
+}, testInfo) => {
+  // ADR 0026'S CLAIM, ON A ROUTE A PERSON CAN VISIT: "a visitor who lands on /merge-pdf and
+  // merges two files downloads no PDFium at all".
+  //
+  // THE MARKER GOES BEFORE `goto`, AND THAT IS THE WHOLE DIFFERENCE FROM THE TEST BELOW. That
+  // one marks AFTER the first file is chosen, deliberately, so that the engine fetches it is
+  // not asking about are excluded — which means a render fetch during START-UP is invisible to
+  // it. Measured: with `createToolHost` planted to fetch the render bundle, the test below
+  // stayed green. The claim is about the whole visit, so the window has to be the whole visit.
+  //
+  // `tools/check-pdfium-is-render-only.sh` asserts the same property over the FILES and the
+  // size budget asserts it as arithmetic. Neither can see what a browser asks for, which is
+  // what this adds — and it is the one of the three that would notice a page reaching for a
+  // bundle it is not supposed to have.
+  await mark(`merge-render:${testInfo.project.name}`);
+
+  await page.goto("/merge-pdf");
+  await choose(page, ["pages-10.pdf", "pages-137.pdf"]);
+  await mergeAndDownload(page);
+
+  const requested = since(`merge-render:${testInfo.project.name}`).map((entry) => entry.url);
+  const render = requested.filter((url) => /pdfium|render-worker|_render_bg/.test(url));
+  expect(
+    render,
+    "a page that renders nothing reached for the render bundle: " + render.join(", "),
+  ).toEqual([]);
+
+  // THE CONTROL, which is what stops the assertion above passing over an empty log. A visit
+  // that fetched nothing at all — a server that stopped logging, a marker taken too late —
+  // would have nothing for the filter to reject either.
+  expect(
+    requested.filter((url) => /qpdf\.[0-9a-f]{16}\.wasm/.test(url)).length,
+    "the base engine was not fetched either, so this test watched nothing",
+  ).toBeGreaterThan(0);
+});
+
 test("merging on the tool page makes no request beyond the pinned engine artifacts", async ({
   page,
 }, testInfo) => {

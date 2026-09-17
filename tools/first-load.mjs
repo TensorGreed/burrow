@@ -112,13 +112,20 @@ export function firstLoad(dir, entryPage = "index.html") {
     referenced.add(path);
   }
 
-  // The engine payload. Taken as "everything under engines/" rather than as a list of
-  // expected names: a new artifact staged into that directory is part of what a user pays
-  // whether or not anyone remembered to add it here.
-  const engines = files.filter((f) => f.startsWith("engines/"));
-  if (engines.length === 0) {
-    throw new Error(`${dir}: no engines/ artifacts; the payload cannot be right`);
-  }
+  // The engine payload -- THIS BUNDLE'S, not everything under `engines/`.
+  //
+  // IT USED TO BE EVERYTHING UNDER `engines/`, and that was right while there was one bundle:
+  // a new artifact staged into that directory was part of what a user pays whether or not
+  // anyone remembered to add it here. ADR 0026 made it wrong in a way that would have hidden
+  // the whole point of the change -- PDFium is staged, and it is NOT part of what a person
+  // who merges two files downloads. Counting it in the base payload would have reported a
+  // 5× regression for a change whose entire purpose is that nobody pays it.
+  //
+  // The property is kept rather than traded away: the closure below is derived from the
+  // manifest each bundle CARRIES, so it is what the bundle can actually fetch rather than a
+  // list somebody maintains, and `engineClosures` fails if any staged artifact belongs to no
+  // bundle. An artifact still cannot hide; it now has to be in somebody's payload.
+  const engines = engineClosures(dir).base;
 
   // AND WHAT THOSE SCRIPTS IMPORT, transitively.
   //
@@ -204,6 +211,115 @@ function normalisePath(base, specifier) {
     else parts.push(segment);
   }
   return parts.join("/");
+}
+
+/**
+ * What each worker bundle will fetch, read out of the manifest generated into it.
+ *
+ * # Why this is derived rather than listed
+ *
+ * ADR 0026 ships two bundles. A person on `/merge-pdf` downloads the base one and its two
+ * modules; a page that needs a picture of a page additionally downloads the render one and
+ * its two. Both sets sit in the same `engines/` directory, so "what is staged" stopped being
+ * the same question as "what does this person pay".
+ *
+ * A hand-written list of which artifact belongs to which payload would be a fourth place to
+ * keep in step with `tools/stage-web-engines.mjs`, and the first to go stale. This reads the
+ * `const BURROW_ENGINES = {...}` block each bundle carries -- the same object the worker
+ * itself loops over -- so the measurement and the run-time behaviour cannot disagree.
+ *
+ * # It still refuses to let an artifact hide
+ *
+ * Every file under `engines/` must belong to at least one bundle's closure. That is the
+ * property the old "everything under engines/" line had, kept: a third bundle nobody budgeted,
+ * or a stray file staged beside them, fails here rather than being quietly free.
+ *
+ * @param {string} dir
+ * @returns {{ base: string[], render: string[], byBundle: Record<string, string[]> }}
+ */
+export function engineClosures(dir) {
+  const files = walk(dir);
+  const bundles = files.filter((f) => /^engines\/[a-z-]+\.[0-9a-f]{16}\.js$/.test(f)).sort();
+  if (bundles.length === 0) {
+    throw new Error(`${dir}: no worker bundle under engines/; the payload cannot be right`);
+  }
+
+  /** @type {Record<string, string[]>} */
+  const byBundle = {};
+  const claimed = new Set();
+  for (const bundle of bundles) {
+    const source = readFileSync(join(dir, bundle), "utf8");
+    const block = /const BURROW_ENGINES = (\{[\s\S]*?\n\});/.exec(source);
+    if (block === null) {
+      throw new Error(`${bundle}: no generated BURROW_ENGINES manifest; cannot weigh it`);
+    }
+    /** @type {Record<string, unknown>} */
+    const manifest = JSON.parse(block[1]);
+    const paths = [bundle];
+    for (const entry of Object.values(manifest)) {
+      // `probeOrigin` is a bare string beside the entries; everything else is an artifact.
+      if (typeof entry !== "object" || entry === null || !("url" in entry)) continue;
+      const path = String(entry.url).replace(/^https?:\/\/[^/]+\//, "");
+      if (!files.includes(path)) {
+        throw new Error(`${bundle} names ${path}, which is not in the build`);
+      }
+      paths.push(path);
+    }
+    paths.sort();
+    byBundle[bundle] = paths;
+    for (const path of paths) claimed.add(path);
+  }
+
+  // NOTHING STAGED MAY BE UNACCOUNTED FOR. This is the half that preserves what the old
+  // "everything under engines/" line guaranteed.
+  const orphans = files.filter((f) => f.startsWith("engines/") && !claimed.has(f));
+  if (orphans.length > 0) {
+    throw new Error(
+      `${dir}: ${orphans.length} staged artifact(s) belong to no worker bundle, so nothing ` +
+        `budgets them: ${orphans.join(", ")}`,
+    );
+  }
+
+  const base = byBundle[bundles.find((b) => b.startsWith("engines/burrow-worker.")) ?? ""];
+  if (base === undefined) {
+    throw new Error(`${dir}: no engines/burrow-worker.<hash>.js; the base payload is unknown`);
+  }
+  // The render bundle's OWN cost: what it adds on top of the base, which is what a page that
+  // renders actually pays extra. The guard control is in both manifests and is counted once.
+  const render = Object.entries(byBundle)
+    .filter(([name]) => name !== bundles.find((b) => b.startsWith("engines/burrow-worker.")))
+    .flatMap(([, paths]) => paths)
+    .filter((path) => !base.includes(path))
+    .sort();
+
+  return { base, render, byBundle };
+}
+
+/**
+ * The payload a page pays when it also needs page pictures: the base, plus the render bundle.
+ *
+ * TWO NUMBERS, BOTH GATED, because one number cannot describe this build any more. The base
+ * is what every tool page costs and is the one ADR 0026 promises did not move; this is what a
+ * rendering page costs on top, and it is the larger of the two by four times. Reporting only
+ * the first would hide the cost; reporting only the total would hide the point.
+ *
+ * @param {string} dir
+ * @param {string} entryPage
+ */
+export function renderFirstLoad(dir, entryPage = "index.html") {
+  const base = firstLoad(dir, entryPage);
+  const extra = engineClosures(dir).render.map((path) => {
+    const bytes = readFileSync(join(dir, path));
+    return { path, raw: bytes.length, brotli: brotli(bytes) };
+  });
+  const entries = [...base.entries, ...extra].sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    entries,
+    total: {
+      raw: entries.reduce((n, e) => n + e.raw, 0),
+      brotli: entries.reduce((n, e) => n + e.brotli, 0),
+    },
+  };
 }
 
 /**
