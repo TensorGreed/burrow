@@ -149,7 +149,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers(); return
         body = file.read_bytes()
         browser = "Mozilla" in self.headers.get("User-Agent", "")
-        if MODE == "inject":
+        if MODE == "stale-one-route":
+            # THE DEPLOY OF #102, MODELLED. Cloudflare's edge switched some paths and not
+            # others: the route the wait sampled was current while four more were the previous
+            # deployment's.
+            #
+            # `/merge-pdf/` AND NOTHING ELSE, and WHICH route matters. The checker enumerates
+            # with `sorted(dist.rglob("*"))`, so of this fixture's three routes
+            # `credits/index.html` is `routes[0]` and `merge-pdf/index.html` is the last. The
+            # first draft staled every route but `/`, which left the witness stale too -- so
+            # the single-witness version waited, gave up, and the case passed against the very
+            # defect it was written for. Caught by mutating the checker back and finding the
+            # case still green, which is why that mutation is worth running rather than
+            # assuming.
+            if path == "/merge-pdf/":
+                body = body.replace(b"</head>", b"<!--previous deployment--></head>")
+        elif MODE == "inject":
             body = body.replace(b"</head>", BEACON + b"</head>")
         elif MODE == "inject-browser-only" and browser:
             body = body.replace(b"</head>", BEACON + b"</head>")
@@ -388,6 +403,30 @@ fi
 # deliberately does not model, because a fixture that converges on cue proves only that the
 # fixture converges on cue.
 
+echo "  the wait covers every route, not one witness ------------------------------"
+
+# THE DEFECT OF #102's DEPLOY, REPLANTED. The wait sampled `routes[0]` on the argument that
+# "every route changes together -- they come from one upload". Cloudflare's edge disproved it:
+# the witness matched on the FIRST attempt, the wait printed "no wait needed", and four other
+# routes were still the previous deployment's. The deploy went red on a site that was fine.
+#
+# The fixture leaves the first route current and makes the later ones stale, which is exactly
+# that shape. A wait that samples one witness reports "no wait needed" here; a wait that covers
+# every route does not, and gives up naming the ones that did not converge.
+start_server stale-one-route
+status=0
+out="$(BURROW_LIVE_PROPAGATION_DEADLINE_S=6 python3 "$checker" "http://127.0.0.1:$PORT" "$dist" 2>&1)" || status=$?
+if [ "$status" -ne 0 ] &&
+  ! grep -qF "no wait needed" <<<"$out" &&
+  grep -qF "still do not match the build after" <<<"$out"; then
+  echo "  ok   one current route does not end the wait while others are stale"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a single matching witness ended the wait, which is #102's deploy again (status $status)"
+  sed 's/^/        /' <<<"$out" | tail -4
+  fail=$((fail + 1))
+fi
+
 echo "  the wait does not mask a rewrite ------------------------------------------"
 
 # THE KNOB'S OWN CONTROL. The wait exists because a propagation lag converges and an edge
@@ -398,7 +437,7 @@ start_server inject
 status=0
 out="$(BURROW_LIVE_PROPAGATION_DEADLINE_S=6 python3 "$checker" "http://127.0.0.1:$PORT" "$dist" 2>&1)" || status=$?
 if [ "$status" -ne 0 ] &&
-  grep -qF "still does not match the build after" <<<"$out" &&
+  grep -qF "still do not match the build after" <<<"$out" &&
   grep -qF "the live origin serves a body the build did not produce" <<<"$out"; then
   echo "  ok   an injection is still refused after the wait, and the wait says it gave up"
   pass=$((pass + 1))

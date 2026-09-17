@@ -348,55 +348,74 @@ PROPAGATION_DEADLINE_S = float(os.environ.get(DEADLINE_ENV, "180"))
 PROPAGATION_POLL_S = 5.0
 
 
-def await_propagation(origin: str, witness: tuple[str, pathlib.Path]) -> str:
-    """Wait until one route matches the build, and say what happened either way.
+def await_propagation(origin: str, routes: list[tuple[str, pathlib.Path]]) -> str:
+    """Wait until EVERY HTML route matches the build, and say what happened either way.
 
-    ONE WITNESS, NOT ALL OF THEM. Every route changes together -- they come from one upload --
-    so one is as good an answer as forty-three and costs a fortieth of the requests. The full
-    comparison then runs over everything regardless, so this is a *wait*, never a substitute
-    for the check.
+    EVERY ROUTE, NOT ONE WITNESS, AND THAT IS A CORRECTION MEASURED ON A REAL DEPLOY.
 
-    An HTML route is the witness because HTML is what an edge feature rewrites: a `.wasm` that
-    matched would say nothing about the thing this file exists to catch.
+    This waited on `routes[0]` alone, on the argument that *"every route changes together --
+    they come from one upload -- so one is as good an answer as forty-three"*. The deploy of
+    #102 disproved it: the witness matched on the **first attempt**, the wait printed "the edge
+    was already serving this deployment", and four other routes were still the previous
+    deployment's. Cloudflare's edge does not switch every path at once.
+
+    The shape of the mistake is worth keeping: the witness was chosen well (an HTML route,
+    because HTML is what an edge feature rewrites, and a `.wasm` that matched would say nothing)
+    and the sampling was the flaw. One sample of a set that does not move together is a probe
+    that can report ready before anything is.
+
+    **Only stable URLs can be stale at all.** Every engine artifact is content-hashed, so its URL
+    is new on every build -- it either exists or 404s, and it can never serve a previous
+    deployment's bytes. So the set that has to be waited on is exactly the HTML routes, which is
+    seven requests a poll rather than forty-three.
+
+    The full comparison then runs over everything regardless: this is a *wait*, never a
+    substitute for the check.
     """
-    route, path = witness
-    built = path.read_bytes()
+    built = {route: path.read_bytes() for route, path in routes}
     started = time.monotonic()
     deadline = started + PROPAGATION_DEADLINE_S
     attempts = 0
+    stale: list[str] = [route for route, _ in routes]
+
     while True:
         attempts += 1
-        try:
-            if not differences(built, fetch(f"{origin}{route}")):
-                # PRINTED EVERY RUN, INCLUDING WHEN IT WAITED FOR NOTHING.
-                #
-                # This spoke only when `attempts > 1`, and the first deploy after the wait
-                # landed went green in silence -- so the log could not distinguish "the edge
-                # was already switched over" from "the wait was deleted". That is this
-                # repository's silence-reads-as-success shape, applied to the very thing just
-                # added to stop a gate crying wolf: a wait nobody can see is a wait nobody can
-                # tell is still there, and the deploy is the only place it ever runs for real.
-                waited = time.monotonic() - started
-                if attempts > 1:
-                    print(
-                        f"  waited {attempts} attempt(s) ({waited:.0f}s) for {route} to match "
-                        f"the build; the edge was still serving the previous deployment"
-                    )
-                else:
-                    print(
-                        f"  no wait needed: {route} matched the build on the first attempt, so "
-                        f"the edge was already serving this deployment"
-                    )
-                return "matched"
-        except (Refused, urllib.error.URLError, OSError):
-            # Not interpreted here. The full pass below fetches everything and reports a
-            # fetch failure properly; swallowing it would be this function deciding something.
-            pass
+        still: list[str] = []
+        for route in stale:
+            try:
+                if differences(built[route], fetch(f"{origin}{route}")):
+                    still.append(route)
+            except (Refused, urllib.error.URLError, OSError):
+                # Not interpreted here. The full pass below fetches everything and reports a
+                # fetch failure properly; swallowing it would be this function deciding
+                # something. Treated as "not yet matched" so the wait does not end early on it.
+                still.append(route)
+        stale = still
+
+        if not stale:
+            # PRINTED EVERY RUN, INCLUDING WHEN IT WAITED FOR NOTHING. A wait nobody can see is
+            # a wait nobody can tell is still there, and the deploy is the only place it ever
+            # runs for real.
+            waited = time.monotonic() - started
+            if attempts > 1:
+                print(
+                    f"  waited {attempts} attempt(s) ({waited:.0f}s) for all {len(routes)} "
+                    f"HTML route(s) to match the build; the edge was still serving the "
+                    f"previous deployment"
+                )
+            else:
+                print(
+                    f"  no wait needed: all {len(routes)} HTML route(s) matched the build on "
+                    f"the first attempt, so the edge was already serving this deployment"
+                )
+            return "matched"
+
         if time.monotonic() >= deadline:
             print(
-                f"  {route} still does not match the build after "
-                f"{PROPAGATION_DEADLINE_S:.0f}s and {attempts} attempt(s). Comparing anyway, "
-                f"so the failure below is the diff rather than a timeout."
+                f"  {len(stale)} of {len(routes)} HTML route(s) still do not match the build "
+                f"after {PROPAGATION_DEADLINE_S:.0f}s and {attempts} attempt(s): "
+                f"{' '.join(stale)}. Comparing anyway, so the failure below is the diff rather "
+                f"than a timeout."
             )
             return "timed-out"
         time.sleep(PROPAGATION_POLL_S)
@@ -480,8 +499,9 @@ def main(argv: list[str]) -> int:
         )
         return 2
 
-    # THE WAIT, BEFORE THE COMPARISON AND NOT INSTEAD OF IT.
-    await_propagation(origin, routes[0])
+    # THE WAIT, BEFORE THE COMPARISON AND NOT INSTEAD OF IT. Over EVERY html route:
+    # see `await_propagation` for the deploy that showed one witness is not enough.
+    await_propagation(origin, routes)
 
     problems = 0
     checked = 0
