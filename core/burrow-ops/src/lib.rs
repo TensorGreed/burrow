@@ -30,6 +30,7 @@ pub use burrow_engines as engines;
 
 pub mod compress;
 pub mod merge;
+pub mod render;
 pub mod reorder;
 pub mod rotate;
 pub mod split;
@@ -43,6 +44,7 @@ pub mod verify;
 
 pub use compress::{Outcome, compress};
 pub use merge::{Input, check_total_input_bytes, merge};
+pub use render::{Fit, Render, Rendered, begin as render_begin, render};
 pub use reorder::reorder;
 pub use rotate::{Pages, rotate};
 pub use split::{Cuts, Split, begin as split_begin, split};
@@ -66,7 +68,7 @@ pub use split::{Cuts, Split, begin as split_begin, split};
 /// divergence; it is recorded rather than hidden, because the alternative is a constant that
 /// means something different depending on which crate reads it. A caller that needs to know
 /// what a *binding* can do must ask the binding.
-pub const AVAILABLE: &[&str] = &["compress", "merge", "reorder", "rotate", "split"];
+pub const AVAILABLE: &[&str] = &["compress", "merge", "render", "reorder", "rotate", "split"];
 
 #[cfg(test)]
 mod tests {

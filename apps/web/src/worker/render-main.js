@@ -6,19 +6,16 @@
 // `main.js` owes it — `init`, `KNOWN_OPS` and `runOperation` — which is the whole of what the
 // two bundles disagree about.
 //
-// WHY THERE IS NO RENDERING IN IT YET, AND WHY IT IS NOT A PLACEHOLDER
+// WHAT THIS BUNDLE ANSWERS
 //
-// Rendering a page means opening the document first, so `open` + `page_count` is the first
-// half of the capability rather than a stand-in for it — and it is what makes this bundle
-// *exercisable* end to end, through the real fail-closed CSP guard, the real integrity fetch,
-// the real `blob:` construction and the real lifecycle, before there is a bitmap to argue
-// about. A boundary with nothing behind it is a boundary no browser test can drive, and an
-// untested worker whose guard decides whether file bytes may be touched is exactly the thing
-// that goes wrong quietly.
+// `page_count` and `render`. It answered only the first for one merge, deliberately: ADR 0026
+// shipped the loading boundary with the smallest honest payload behind it, because a boundary
+// with nothing behind it is one no browser test can drive, and an untested worker whose guard
+// decides whether file bytes may be touched is exactly the thing that goes wrong quietly.
 //
-// `PageRenderer`, the bitmap reply and the pixel ceiling are #57's second piece. They are not
-// deferred vaguely: ADR 0020 records why the ceiling has to be designed rather than
-// discovered under pressure from a UI, and that is the work, not this.
+// `render` is #57's second piece, and it arrived with its ceiling rather than before it:
+// ADR 0027 is the record, and ADR 0020 is why the ceiling had to be designed rather than
+// discovered under pressure from a UI.
 
 async function init() {
   // PDFium's glue is NOT modularised: it begins instantiating as the bundle is parsed, reading
@@ -79,7 +76,114 @@ async function init() {
  * between two *web* engines means. That is a real question — spike 0004 measured five
  * divergences between these exact two readings — and it is not this change's question.
  */
-const KNOWN_OPS = new Set(["page_count"]);
+const KNOWN_OPS = new Set(["page_count", "render"]);
+
+/**
+ * Draw a strip, posting each page as it is produced.
+ *
+ * ADR 0023's protocol, reached for ADR 0027 §2's reason: the worker pulls one page, posts it,
+ * and drops it, so the engine heap holds **at most one bitmap** however long the strip is and
+ * the main thread never receives the whole set at once.
+ *
+ *   `{ id, progress: { part, of } }`                             the total, before anything
+ *   `{ id, page: { number, index, of, width, height }, pixels }` per page
+ *   the ordinary terminal reply, carrying no pixels
+ *
+ * A consumer that reads the terminal reply and ignores the pages gets nothing rather than the
+ * first page, which is the direction to fail in.
+ *
+ * ONE DIFFERENCE FROM `split`, AND IT IS THE OPPOSITE RULE. A failure part way through does
+ * **not** invalidate the pages already delivered: a split is a partition, so a subset of the
+ * parts is not a partition of anything, but a strip is a set of independent pictures and the
+ * ones that arrived are still true pictures of their pages. The host may keep them and show
+ * the gap.
+ *
+ * THE PIXELS ARE TRANSFERRED, not copied. `take_pixels()` has already moved them out of the
+ * wasm heap into a `Uint8Array`; posting its buffer in the transfer list hands that same
+ * allocation to the page and detaches it here. A thumbnail is 300 KB and a strip is dozens of
+ * them, so a structured-clone copy of each would be the largest avoidable cost on this path.
+ *
+ * WHY NOT A BLOB, WHICH IS WHAT `split` POSTS. A Blob is right for a document: the page turns
+ * it into a download and never wants the bytes. These bytes ARE wanted -- the page draws them
+ * into a canvas -- so a Blob would have to be read back asynchronously into an ArrayBuffer,
+ * which is the copy this avoids. `img-src 'self'` admits no `blob:` either, so there was never
+ * a URL to be had (ADR 0014).
+ *
+ * @param {number} id
+ * @param {Uint8Array} bytes
+ * @param {Uint32Array} pages
+ * @param {number} boxWidth
+ * @param {number} boxHeight
+ * @param {Uint8Array | undefined} password
+ * @param {WebLimits} limits
+ */
+function renderStrip(id, bytes, pages, boxWidth, boxHeight, password, limits) {
+  let session;
+  try {
+    session = wasm_bindgen.render_begin(bytes, pages, boxWidth, boxHeight, password, limits);
+  } catch {
+    self.postMessage(internalFailure(id, "internal error"));
+    return;
+  }
+  try {
+    if (!session.ok) {
+      self.postMessage(drainReply(id, session.begin_reply()));
+      return;
+    }
+    const of = session.pages;
+    // THE TOTAL FIRST, before any page. A strip needs to know how many tiles to lay out, and
+    // a consumer that joined late needs it too -- which is why every page carries `of` as well.
+    self.postMessage({ id, progress: { part: 0, of } });
+
+    for (let index = 0; index < of; index += 1) {
+      const drawn = session.next_page();
+      try {
+        let flat;
+        try {
+          flat = drainReply(id, drawn.reply());
+        } catch {
+          self.postMessage(internalFailure(id, "internal error"));
+          return;
+        }
+        if (!flat.ok) {
+          // The strip ends here. The failure IS the terminal reply, so a consumer that only
+          // watches for one still learns about it -- and the pages already posted stand.
+          self.postMessage(flat);
+          return;
+        }
+
+        // `pixelLength` is read before taking, because both "no pixels" and "already taken"
+        // come back as an empty array and only the length can tell them apart. Nothing here
+        // decides anything from it: it is the same read `drainReply` makes of `outputLength`.
+        const pixels = drawn.pixelLength > 0 ? drawn.takePixels() : new Uint8Array(0);
+        self.postMessage(
+          {
+            id,
+            page: {
+              number: Number(drawn.page),
+              index,
+              of,
+              width: drawn.width,
+              height: drawn.height,
+            },
+            pixels: pixels.buffer,
+          },
+          [pixels.buffer],
+        );
+        self.postMessage({ id, progress: { part: index + 1, of } });
+      } finally {
+        // A wasm-bindgen object is a boxed Rust value in a heap that never shrinks. One leaked
+        // page per tile is a worker that grows with the length of the strip.
+        drawn.free();
+      }
+    }
+
+    // The terminal reply: success, no pixels.
+    self.postMessage(refusalFree(id));
+  } finally {
+    session.free();
+  }
+}
 
 /**
  * Run one render-bundle operation and hand back its reply.
@@ -142,6 +246,22 @@ async function runOperation(request) {
     BigInt(request.limits.maxPages),
     BigInt(request.limits.maxPixels),
   );
+
+  if (request.op === "render") {
+    // Every number that shapes the request comes from the page and is validated in RUST: the
+    // page list against the real page count, the box against `max_pixels`, both inside
+    // `render_begin`. Nothing here compares anything (ADR 0009 §2).
+    renderStrip(
+      request.id,
+      bytes,
+      Uint32Array.from(request.pages),
+      request.boxWidth,
+      request.boxHeight,
+      password,
+      limits,
+    );
+    return null;
+  }
 
   return wasm_bindgen.page_count(bytes, password, limits);
 }

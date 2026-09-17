@@ -78,8 +78,8 @@ fi
 # One byte short is a PDF without its `%`. It parses as nothing, teaches libFuzzer nothing,
 # and looks exactly like a seeded corpus from the outside.
 mutate_and_check "a truncated seed is refused" \
-  'seed = bytes([5] * prefix) + body' \
-  'seed = bytes([5] * prefix) + body[1:]' \
+  'seed = bytes([SEED_PREFIX_BYTE] * prefix) + body' \
+  'seed = bytes([SEED_PREFIX_BYTE] * prefix) + body[1:]' \
   "does not survive"
 
 # --- Case 2: a merge seed that splits somewhere other than the boundary -------------------
@@ -139,6 +139,48 @@ mutate_and_check "a carving that skips most fixtures is refused" \
   'start = body.find(b"<<", at)' \
   'start = body.find(b"<<ONLYINNOFIXTURE", at)' \
   "carved nothing from"
+
+# --- Case 8: a seed prefix that decodes to a request the target throws away ---------------
+#
+# MEASURED, AND THE REASON THIS RULE EXISTS. `render`'s first version took `data[2] % 5` pages
+# and returned early on zero; the prefix byte is 5, so all twenty of its seeds returned before
+# PDFium was opened. The run was clean because nothing ran. `verify_prefixes` could not see it:
+# the DOCUMENT survived the prefix, which is all it checks.
+mutate_and_check "a prefix that decodes to an empty request is refused" \
+  'lambda prefix: 1 + prefix[2] % 4,' \
+  'lambda prefix: prefix[2] % 5,' \
+  "decodes to an empty request"
+
+# --- Case 9: a live-request rule that no longer mirrors its target ------------------------
+#
+# The decode is only worth anything if it is the expression the target actually evaluates. A
+# rule describing an expression the target has lost reports a live seed for a target that
+# discards it -- the stale-mirror shape, which is why the needle is checked against the source
+# rather than trusted.
+mutate_and_check "a live-request rule that has drifted from its target is refused" \
+  '"1 + usize::from(data[2] % 4)",' \
+  '"1 + usize::from(data[9] % 7)",' \
+  "is not in the target"
+
+# --- Case 10: the guard scan itself, broken ------------------------------------------------
+#
+# No committed target carries a parameter guard today, so the scan finds zero -- and "zero
+# found" reads exactly like "the rule works". Its positive fixture and near-miss run on every
+# invocation; breaking the pattern must refuse, naming which half failed.
+mutate_and_check "a guard scan that catches nothing is refused by its own probe" \
+  'if re.search(rf"\b{re.escape(name)}\s*==\s*0\b", text)' \
+  'if re.search(rf"\b{re.escape(name)}\s*==\s*99999\b", text)' \
+  "does not catch its own positive fixture"
+
+# --- Case 11: a guard scan that matches everything ----------------------------------------
+#
+# The opposite failure, and it is not the same bug: a pattern that matches any target would
+# demand a rule for every one of them, and a rule that is demanded everywhere is one nobody
+# reads. The near-miss is what separates the two.
+mutate_and_check "a guard scan that matches its near-miss is refused" \
+  'if re.search(rf"\b{re.escape(name)}\s*==\s*0\b", text)' \
+  'if name == name' \
+  "flags its near-miss"
 
 echo
 if [ "$fail" -ne 0 ]; then

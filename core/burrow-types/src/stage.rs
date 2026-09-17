@@ -57,10 +57,23 @@ pub enum Stage {
     PageCount,
     /// The decoded raster size, against `max_pixels`.
     ///
-    /// **Reserved.** Nothing constructs this yet: no operation decodes a raster, so there is no
-    /// `max_pixels` check to attribute. It is here so the enum describes the limit set rather
-    /// than today's subset of it, and so adding the check later is not a `#[non_exhaustive]`
-    /// change for every matcher.
+    /// **Constructed by `render`, and by nothing else.** It was reserved for the whole of M1 —
+    /// the enum described the limit set rather than today's subset of it — and
+    /// [ADR 0027](../../../docs/adr/0027-what-a-render-promises-and-what-it-refuses.md) is
+    /// where it became real.
+    ///
+    /// It is checked on `width x height` **before `FPDFBitmap_Create` is called**, not after
+    /// it returns null. That ordering is the whole value of the check: a bitmap large enough
+    /// to fail the allocation has already cost whatever it cost on the way, and on a phone a
+    /// spike of that size ends the tab rather than the operation.
+    ///
+    /// Unlike every other variant here, the number it guards is a **decision** rather than
+    /// something the file stated: the caller asks for a target size and the engine scales the
+    /// page into it. So this stage attributes a refusal of *the request*, not of the document.
+    ///
+    /// **It is therefore not a bound on what a render COSTS.** The rasteriser's own working set
+    /// is unbounded by anything in `Limits`; [`Stage::Measured`] is what notices it, after the
+    /// fact, as it notices an expensive open. ADR 0027 §2a has the measurements.
     Pixels,
     /// The **measured** cost of an open, after it happened.
     ///

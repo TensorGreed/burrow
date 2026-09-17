@@ -28,6 +28,7 @@ a truncated document:
     document_open, prescan, qpdf_check   no prefix; the whole buffer is the document
     split                                1 byte  (the cut selection)
     rotate                               2 bytes (page count selector, angle)
+    render                               3 bytes (box width, box height, page selector)
     reorder                              2 bytes (shuffle seed)
     merge                                see below -- it is not a prefix at all
 
@@ -50,6 +51,7 @@ Usage: tools/seed-fuzz-corpus.py [--check]
 from __future__ import annotations
 
 import pathlib
+import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -80,6 +82,45 @@ PREFIXES = {
     "split": 1,
     "rotate": 2,
     "reorder": 2,
+    # RENDER TAKES THREE: two for the box it asks for and one for the page selector. The box
+    # is steered by the input on purpose -- `max_pixels` is the newest code on that path, and
+    # a target that always asked for a thumbnail would never reach the refusal.
+    "render": 3,
+}
+
+# THE PREFIX BYTE EVERY SEED CARRIES. Named rather than written twice: `LIVE_REQUESTS` below
+# decodes it and the writer emits it, and the whole point of that check is that the two agree.
+SEED_PREFIX_BYTE = 5
+
+# A PREFIX BYTE THAT DECODES TO A REQUEST THE TARGET THROWS AWAY.
+#
+# WHY THIS EXISTS, measured. `render`'s first version took `usize::from(data[2] % 5)` pages and
+# returned early on zero. The prefix byte is 5, and `5 % 5` is zero -- so all twenty of its
+# seeds returned before PDFium was opened: no page load, no rasteriser, no ceiling. The run was
+# clean, the CI step passed, and the definition of done's "runs clean for 60 s against a seeded
+# corpus" was hollow for that target. `verify_prefixes` could not see it: it checks that the
+# DOCUMENT survives the prefix, and the document did.
+#
+# It is the failure CLAUDE.md already records for the unseeded corpus -- "a defect planted in
+# `reorder` survived 577,209 unseeded executions and died on the first seeded one" -- arriving
+# through the PARAMETER byte rather than through the document. Writing the rule down again was
+# not going to work; this is the control.
+#
+# IT IS NOT A LIST SOMEBODY HAS TO KEEP UP TO DATE. `verify_live_requests` reads each target's
+# source, finds the names bound from its prefix bytes, and looks for a guard that discards a
+# request on one of them. A target that HAS such a guard must have an entry here; a target that
+# does not need none, and today only `render` does -- which the scan establishes rather than
+# this comment asserting it.
+#
+# Each entry is `(needle, decode)`. `needle` must appear VERBATIM in the target's source, so a
+# decoder describing an expression the target no longer has fails rather than passing on a
+# stale mirror. `decode` is that expression in Python, applied to the seed's prefix bytes, and
+# must not return the value the guard discards.
+LIVE_REQUESTS = {
+    "render": (
+        "1 + usize::from(data[2] % 4)",
+        lambda prefix: 1 + prefix[2] % 4,
+    ),
 }
 
 # `merge` is not in the table: its parameters are not a prefix. See the module docstring.
@@ -256,6 +297,124 @@ def merge_pairing(first: bytes, second: bytes) -> bytes | None:
     return None
 
 
+def parameter_names(text: str, prefix: int) -> set[str]:
+    """Names a target binds from its PREFIX bytes.
+
+    Crude on purpose, like `verify_prefixes`: a regular expression over `let NAME = ... data[i]`
+    for `i` inside the prefix. What it has to be right about is the direction of its failure --
+    a name it misses means a guard it cannot see, so the scan below is a floor on coverage
+    rather than a proof of it, and that is said rather than implied.
+    """
+    names = set()
+    for match in re.finditer(r"let\s+(\w+)\s*=\s*([^;]+);", text):
+        name, expression = match.group(1), match.group(2)
+        for index in re.findall(r"data\[(\d+)\]", expression):
+            if int(index) < prefix:
+                names.add(name)
+    return names
+
+
+# A synthetic target that DOES discard a request on a parameter, and one that does not.
+#
+# THE SCAN NEEDS A POSITIVE FIXTURE OR IT IS NOT A CHECK. Today no committed target carries
+# such a guard -- `render`'s was removed, which is the fix -- so the scan examines four targets
+# and finds zero, and "zero found" reads exactly like "the rule works". These two strings are
+# run through the same code on every invocation: the first must be caught, the second must not.
+# A rule that matches nothing passes everything; one that matches everything fails everything.
+PROBE_GUARDED = """
+    let wanted = usize::from(data[0] % 5);
+    let document = &data[1..];
+    if document.is_empty() || wanted == 0 {
+        return;
+    }
+"""
+
+PROBE_UNGUARDED = """
+    let wanted = 1 + usize::from(data[0] % 4);
+    let document = &data[1..];
+    if document.is_empty() {
+        return;
+    }
+"""
+
+
+def guarded_parameters(text: str, prefix: int) -> list[str]:
+    """Names bound from the prefix that a `== 0` test can discard a request on."""
+    return sorted(
+        name
+        for name in parameter_names(text, prefix)
+        if re.search(rf"\b{re.escape(name)}\s*==\s*0\b", text)
+    )
+
+
+def probe_live_request_scan() -> list[str]:
+    """The scan must catch its own positive fixture and clear its near-miss, every run."""
+    problems = []
+    if guarded_parameters(PROBE_GUARDED, 1) != ["wanted"]:
+        problems.append(
+            "the guard scan does not catch its own positive fixture -- it would report every "
+            "target clean whatever they contained"
+        )
+    if guarded_parameters(PROBE_UNGUARDED, 1) != []:
+        problems.append(
+            "the guard scan flags its near-miss -- it matches a target with no guard at all, "
+            "so every target would need a rule and the rules would mean nothing"
+        )
+    return problems
+
+
+def verify_live_requests() -> list[str]:
+    """A guard that discards a request on a prefix-derived value must have a live-request rule.
+
+    Two halves, and both are needed. The SCAN finds targets that can throw a request away on a
+    parameter; the RULE proves the constant prefix byte does not produce that value. A scan
+    with no rule reports a hazard and cannot say whether it fires; a rule with no scan is a
+    list somebody has to remember to add to.
+    """
+    problems = []
+    checked = 0
+    for target, prefix in sorted(PREFIXES.items()):
+        if prefix == 0:
+            continue
+        source = REPO / "fuzz" / "fuzz_targets" / f"{target}.rs"
+        if not source.exists():
+            problems.append(f"{target}: no such fuzz target")
+            continue
+        text = source.read_text(encoding="utf-8")
+
+        guarded = guarded_parameters(text, prefix)
+        rule = LIVE_REQUESTS.get(target)
+
+        if guarded and rule is None:
+            problems.append(
+                f"{target}: discards a request when {' or '.join(guarded)} is zero, and has no "
+                f"live-request rule -- so nothing establishes that a seed reaches the engine"
+            )
+            continue
+        if rule is None:
+            continue
+
+        needle, decode = rule
+        checked += 1
+        if needle not in text:
+            problems.append(
+                f"{target}: the live-request rule mirrors {needle!r}, which is not in the "
+                f"target -- either the target changed or this rule is stale, and a stale "
+                f"mirror reports a live seed for a target that discards it"
+            )
+            continue
+        if decode(bytes([SEED_PREFIX_BYTE] * prefix)) == 0:
+            problems.append(
+                f"{target}: a seed prefix of {SEED_PREFIX_BYTE} decodes to an empty request, "
+                f"so every seed for it returns before the engine is touched -- the run is "
+                f"clean because nothing ran"
+            )
+    for target in LIVE_REQUESTS:
+        if target not in PREFIXES:
+            problems.append(f"{target}: has a live-request rule but no declared prefix")
+    return problems
+
+
 def decodes_back(target: str, prefix: int, seed: bytes, document: bytes) -> str | None:
     """Re-derive the document from the seed the way the TARGET will, and compare.
 
@@ -297,6 +456,25 @@ def main(argv: list[str]) -> int:
         return 1
     print(f"  prefix table verified against {len(PREFIXES)} target source(s)")
 
+    problems = probe_live_request_scan()
+    if problems:
+        print("\nFAILED — the guard scan's own probes did not behave:", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
+    print("  guard scan probes: 1 positive fixture caught, 1 near-miss cleared")
+
+    problems = verify_live_requests()
+    if problems:
+        print("\nFAILED — a seed prefix produces a request its target discards:", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
+    print(
+        f"  {len(PREFIXES) - sum(1 for p in PREFIXES.values() if p == 0)} prefixed target(s) "
+        f"scanned for a guard on a parameter; {len(LIVE_REQUESTS)} carry one and were decoded"
+    )
+
     files = sources()
     if not files:
         print("error: no fixtures found, so this run would seed nothing", file=sys.stderr)
@@ -315,7 +493,7 @@ def main(argv: list[str]) -> int:
             # A fixed, boring prefix. libFuzzer mutates it freely from there; what the seed
             # has to get right is that the DOCUMENT is intact, not that the parameters are
             # interesting.
-            seed = bytes([5] * prefix) + body
+            seed = bytes([SEED_PREFIX_BYTE] * prefix) + body
             if problem := decodes_back(target, prefix, seed, body):
                 print(f"\nFAILED — {problem}", file=sys.stderr)
                 return 1

@@ -76,7 +76,41 @@ export const LIMITS = {
    */
   maxDurationMs: 12_000,
   maxPages: 10_000,
-  maxPixels: 256 * 1024 * 1024,
+  /**
+   * 4 Mpx (2048 x 2048), and it is the first number in this project that was CHOSEN.
+   *
+   * `Limits::DEFAULT.max_pixels` is 256 Mpx and stays there. That is a CALLER ceiling -- the
+   * outer bound on any raster the core will produce for anyone -- and it is far too loose to
+   * be a device ceiling: the PDF maximum page, 14400 x 14400 points rendered 1:1, is 207 Mpx
+   * and 791 MiB, and it PASSES the default. Enforcing `max_pixels` at its default would be
+   * enforcing nothing that matters on the platform where it matters most.
+   *
+   * What 4 Mpx allows, which is the honest way to state a ceiling:
+   *
+   *   a thumbnail, 120x160 CSS px at DPR 2   0.077 Mpx     1/54th of it
+   *   a full page at 150 dpi (A4)            2.17  Mpx     fits twice over
+   *   a full page at 200 dpi (A4)            3.87  Mpx     fits
+   *   a full page at 300 dpi (A4)            8.70  Mpx     REFUSED
+   *   any 1:1 render of A0 or larger                       REFUSED
+   *
+   * Those are print resolutions and this is a screen. At the ceiling one bitmap is 16 MiB,
+   * and ADR 0027 §2 is why there is never more than one: the worker is serialised and Rust
+   * orchestrates the loop, so the engine heap holds a single raster whatever the strip's
+   * length.
+   *
+   * CHOSEN, NOT MEASURED, and it was NOT measured on a phone. It was computed on a desktop
+   * from page geometry and bytes per pixel; the only device evidence behind it is ADR 0015
+   * §7's still-open observation that on iOS a memory spike kills the whole TAB rather than
+   * the worker. ADR 0027's *"The three revision points"* names this constant, what would move
+   * it, and what it would become -- and the same record says plainly that no number in it was
+   * measured on a phone, so nobody can mistake these for measurements the way every other
+   * number in this file is one.
+   *
+   * A person cannot reach this ceiling through the thumbnail strip: the caller states the box
+   * and PDFium scales the page into it, so a 14400-point page at thumbnail size costs what a
+   * thumbnail costs. It guards our own code and other callers of the core.
+   */
+  maxPixels: 4 * 1024 * 1024,
 } as const;
 
 /**

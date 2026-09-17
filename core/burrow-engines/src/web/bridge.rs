@@ -166,6 +166,108 @@ pub trait PdfiumBridge: Send + Sync {
     /// it measures this engine rather than the whole process — but it only ever grows, so
     /// only the *difference* across an operation is meaningful.
     fn heap_bytes(&self) -> u64;
+
+    // ------------------------------------------------------------------- the render path
+    //
+    // Added for #57. These are the first bridge methods that carry PIXELS, and the audit
+    // question for each is the one this trait's docs pose: does it decide anything? None of
+    // them does. Rust loads the page, checks `max_pixels`, allocates, fills, renders, reads
+    // the stride, copies out, frees, and closes -- eleven straight-line JavaScript functions
+    // and every branch on this side of the boundary (ADR 0009 §2).
+    //
+    // The temptation is real and is named so it is refused rather than rediscovered: ONE
+    // `render(doc, index, w, h) -> bytes` method would be a single round trip instead of
+    // nine, and it would move the whole cleanup order, the null checks and the stride
+    // arithmetic into the one place `cargo test` cannot reach and iOS and Android cannot
+    // reuse. The native path would then be the only implementation anybody could review.
+
+    /// `FPDF_LoadPage`. [`PdfiumPtr::NULL`] if the page could not be loaded.
+    ///
+    /// Zero-based, like the C API. **Returns no error code**, for the reason
+    /// [`get_page_count`](PdfiumBridge::get_page_count) returns none: `fpdfview.h:625` makes
+    /// the global meaningful only for APIs whose own documentation names
+    /// `FPDF_GetLastError`, and this one's does not.
+    fn load_page(&self, doc: PdfiumPtr, index: i32) -> PdfiumPtr;
+
+    /// `FPDF_ClosePage`. Must happen before the document is closed.
+    fn close_page(&self, page: PdfiumPtr);
+
+    /// `FPDF_GetPageWidthF`, in points at 72 to the inch, with the page's `/Rotate` applied.
+    fn page_width(&self, page: PdfiumPtr) -> f32;
+
+    /// `FPDF_GetPageHeightF`.
+    ///
+    /// Two methods rather than one returning a pair, because there are two C functions. A
+    /// combined one would be the JavaScript deciding what a page's size *is*, which is a
+    /// small decision and therefore exactly the kind that diverges between platforms unseen.
+    fn page_height(&self, page: PdfiumPtr) -> f32;
+
+    /// `FPDFBitmap_Create`. [`PdfiumPtr::NULL`] if the allocation failed.
+    ///
+    /// **`max_pixels` is checked in Rust before this is called**, so a null return here is an
+    /// allocation failure and not a ceiling. Treating null as the ceiling would mean the
+    /// ceiling only ever fired after the cost had been paid (ADR 0027).
+    fn bitmap_create(&self, width: i32, height: i32, alpha: i32) -> PdfiumPtr;
+
+    /// `FPDFBitmap_FillRect`.
+    ///
+    /// Not cosmetic: a fresh bitmap's contents are undefined and the render composites onto
+    /// them, so without this the picture carries uninitialised engine heap.
+    fn bitmap_fill_rect(
+        &self,
+        bitmap: PdfiumPtr,
+        left: i32,
+        top: i32,
+        width: i32,
+        height: i32,
+        color: u32,
+    );
+
+    /// `FPDF_RenderPageBitmap`.
+    ///
+    /// `rotate` and `flags` are passed from Rust rather than hardcoded in the bridge. They
+    /// are protocol constants, not decisions — and having the JavaScript carry its own copy
+    /// is how two definitions of one constant come to disagree, which is the argument
+    /// [`QpdfBridge::logger_discard_all`] already makes about `qpdf_log_dest_e`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one method per C function; FPDF_RenderPageBitmap takes eight"
+    )]
+    fn render_page_bitmap(
+        &self,
+        bitmap: PdfiumPtr,
+        page: PdfiumPtr,
+        start_x: i32,
+        start_y: i32,
+        size_x: i32,
+        size_y: i32,
+        rotate: i32,
+        flags: i32,
+    );
+
+    /// `FPDFBitmap_GetBuffer`. A pointer into the module's heap, owned by the bitmap.
+    ///
+    /// Dies with the bitmap, so the caller copies out of it immediately via
+    /// [`copy_out`](PdfiumBridge::copy_out) and never stores it.
+    fn bitmap_buffer(&self, bitmap: PdfiumPtr) -> PdfiumPtr;
+
+    /// `FPDFBitmap_GetStride`. Bytes per row, which PDFium **may pad**.
+    ///
+    /// Separate from the buffer for one reason and it is worth stating: a reader that had the
+    /// buffer without the stride would compute `width * 4`, which is right on every unpadded
+    /// page and wrong on the rest.
+    fn bitmap_stride(&self, bitmap: PdfiumPtr) -> i32;
+
+    /// `FPDFBitmap_Destroy`.
+    fn bitmap_destroy(&self, bitmap: PdfiumPtr);
+
+    /// Copy `len` bytes out of the module's heap.
+    ///
+    /// **The first PDFium method that carries bytes OUT.** Everything before it sends bytes in
+    /// or returns a number. `len` is computed in Rust from the stride and the height the
+    /// engine reported, never from the request, so a shorter bitmap than asked for is read as
+    /// what it is rather than read past.
+    fn copy_out(&self, ptr: PdfiumPtr, len: u32) -> Vec<u8>;
 }
 
 /// The qpdf Emscripten module, as seen from Rust.

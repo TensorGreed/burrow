@@ -197,7 +197,10 @@ operation per platform, and a second web answer would mean deciding what a disag
 between two *web* engines means — a real question, with five divergences already measured in
 spike 0004, and not this change's question.
 
-**The render bundle does not render yet.** It answers `page_count`, which is the first half of
+**The render bundle does not render yet.** *(Superseded — see the 2026-09-17 amendment at the
+end of this record. Left in place rather than edited, per
+[ADR 0001](0001-record-architecture-decisions.md): a record is never rewritten. The sentence was
+true of the merge this ADR describes.)* It answers `page_count`, which is the first half of
 the capability rather than a stand-in for it: rendering a page means opening the document
 first. It is there because a loading boundary with nothing behind it is one no browser test can
 drive, and an untested `blob:` worker whose fail-closed guard decides whether file bytes may be
@@ -268,3 +271,23 @@ arithmetic is the strongest of the three layers. Rejected as *sufficient*: a bud
 many bytes arrived, not which bytes, and the failure this is aimed at — glue or a bridge global
 in the wrong bundle — is small enough to pass a budget while being exactly the thing that makes
 the split untrue.
+
+---
+
+## Amendment, 2026-09-17 — the bundle renders
+
+**[ADR 0027](0027-what-a-render-promises-and-what-it-refuses.md) filled it in**, which is what
+the paragraph above called #57's second piece. `burrow-render-worker.js` now answers `render` as
+well as `page_count`, and `burrow_wasm_render_bg.wasm` carries `PageRenderer`, the strip session
+and the pixel ceiling.
+
+**Nothing this record decided has moved.** The two bundles, the mutually exclusive cargo
+features, the per-bundle manifests and the partition control are all unchanged, and
+`tools/check-pdfium-is-render-only.sh` passes over the new build. What changed is a number: the
+render module grew from 14,979 to 22,675 brotli bytes, its budget was raised with the growth
+named artifact by artifact in `size-budget.json`, and **the base payload moved +102 brotli
+(+0.02%)** — which is this record's central promise, re-measured rather than re-asserted.
+
+The sentence this amends is left standing above for the reason ADR 0001 gives. It is marked
+rather than corrected in place, because a reader arriving at that paragraph from a search needs
+to know both that it was true and that it is not.

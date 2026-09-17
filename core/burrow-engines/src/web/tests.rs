@@ -2362,3 +2362,313 @@ fn the_web_and_native_object_stream_modes_agree() {
         "qpdf_o_generate is 2 in Constants.h:134-138"
     );
 }
+
+// ---------------------------------------------------------------------------------
+// Rendering on the web path (#57, ADR 0027).
+//
+// The native tests drive real PDFium and prove the pixels are right. These prove the
+// things a browser will not reproduce on demand: that the page handle and the bitmap are
+// released on EVERY exit, that the stride is asked for rather than assumed, and that
+// `max_pixels` fires before anything is allocated.
+// ---------------------------------------------------------------------------------
+
+use crate::{PageRenderer, Raster};
+
+fn open_for_render(
+    script: PdfiumScript,
+    limits: Limits,
+) -> (WebPdfium, Arc<FakeHeap>, super::pdfium::WebDocument) {
+    let (engine, state) = document_engine(script);
+    let doc = engine
+        .open(
+            ordinary_pdf().into_boxed_slice(),
+            &OpenOptions::new(limits, stopped()),
+        )
+        .expect("an ordinary document should open");
+    (engine, state, doc)
+}
+
+fn render(
+    engine: &WebPdfium,
+    doc: &super::pdfium::WebDocument,
+    width: u32,
+    height: u32,
+    limits: Limits,
+) -> Result<Raster> {
+    let options = OpenOptions::new(limits, stopped());
+    let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
+    PageRenderer::render(engine, doc, 0, width, height, &options, &deadline)
+}
+
+#[test]
+fn a_web_render_returns_rgba_at_the_size_that_was_asked_for_and_leaks_nothing() {
+    let (engine, state, doc) = open_for_render(PdfiumScript::default(), Limits::default());
+    let raster = render(&engine, &doc, 4, 4, Limits::default()).expect("a page should render");
+
+    assert_eq!((raster.width, raster.height), (4, 4));
+    assert_eq!(raster.rgba.len(), 4 * 4 * 4);
+    // The fake inks the top-left quadrant and the fill made the rest opaque white. Both
+    // halves matter: the ink proves the render ran, the white proves the fill did.
+    assert_eq!(&raster.rgba[0..4], &[0, 0, 0, 255]);
+    assert_eq!(&raster.rgba[12..16], &[255, 255, 255, 255]);
+
+    drop(doc);
+    // The page handle AND the bitmap. Neither has a `Drop` on the other side of a real
+    // bridge, so a missing release is a worker that grows until it is recycled.
+    state.assert_empty();
+}
+
+#[test]
+fn a_padded_stride_is_read_from_the_engine_rather_than_computed_from_the_width() {
+    // Four bytes of padding per row. A reader that assumed `width * 4` would walk into the
+    // padding on every row after the first and return a picture sheared by one pixel a row
+    // -- correct on every unpadded bitmap, which is most of them.
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            stride_padding: 4,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    let raster = render(&engine, &doc, 4, 4, Limits::default()).expect("a page should render");
+
+    assert_eq!(raster.rgba.len(), 4 * 4 * 4);
+
+    // THESE FOUR PROBES WERE NOT ENOUGH, AND THAT WAS MEASURED. The test originally checked
+    // row 0 and row 2 only, and code review replaced `bitmap_stride(bitmap)` with `width * 4`
+    // -- the exact assumption this test is named after -- and it PASSED: with a stride of 20
+    // and a row of 16, the misread row 0 is still ink and the misread row 2 is still white.
+    //
+    // What the mutation actually produces is the fake's pre-fill leaking into the picture, so
+    // that is what is asserted. 0xCD is not a colour anything here writes: the fake fills a
+    // fresh bitmap with it precisely so an unfilled or misread region is visible rather than
+    // plausible, and until now nothing read it.
+    assert!(
+        !raster.rgba.contains(&0xCD),
+        "the fake's uninitialised filler reached the picture, so the rows were misread"
+    );
+    assert_eq!(&raster.rgba[0..4], &[0, 0, 0, 255], "row 0 is inked");
+    // ROW 1, which the four-corner version skipped. Under the `width * 4` mutation this is
+    // where the shear first lands: the read walks into row 0's padding.
+    let row1 = 4 * 4;
+    assert_eq!(
+        &raster.rgba[row1..row1 + 4],
+        &[0, 0, 0, 255],
+        "row 1 is inked too"
+    );
+    // Row 2 is below the inked quadrant: opaque white, not the 0xCD the fake pre-fills with
+    // and not a byte of padding.
+    let row2 = 2 * 4 * 4;
+    assert_eq!(&raster.rgba[row2..row2 + 4], &[255, 255, 255, 255]);
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn the_web_render_refuses_max_pixels_before_it_asks_for_a_page() {
+    let (engine, state, doc) = open_for_render(PdfiumScript::default(), Limits::default());
+    let tight = Limits::with(|l| l.max_pixels = 15);
+
+    match render(&engine, &doc, 4, 4, tight).expect_err("one pixel past the ceiling") {
+        Error::LimitExceeded {
+            limit,
+            stage,
+            requested,
+            allowed,
+        } => {
+            assert_eq!(
+                (limit, stage, requested, allowed),
+                ("max_pixels", Stage::Pixels, 16, 15)
+            );
+        }
+        other => panic!("expected LimitExceeded at Stage::Pixels, got {other:?}"),
+    }
+
+    // BEFORE ANYTHING WAS ALLOCATED, which is the whole value of the check -- so the bridge
+    // was never asked for a page and never asked for a bitmap.
+    let calls = state.calls();
+    assert!(
+        !calls.iter().any(|c| matches!(c, Call::LoadPage(_))),
+        "the ceiling fired after the page was loaded: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| matches!(c, Call::BitmapCreate { .. })),
+        "the ceiling fired after the bitmap was allocated: {calls:?}"
+    );
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_bitmap_that_could_not_be_allocated_is_io_and_not_a_limit() {
+    // The two are different failures and must not be reported alike: a ceiling is the
+    // caller's request being refused, an allocation failure is the engine running out. A
+    // null return read as the ceiling would mean the ceiling only ever fired after the cost
+    // had already been paid.
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            bitmap_alloc_succeeds: false,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        render(&engine, &doc, 4, 4, Limits::default()),
+        Err(Error::Io(_))
+    ));
+
+    // The page was loaded and must still have been closed on the way out.
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_page_that_will_not_load_is_malformed_and_allocates_no_bitmap() {
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            page_load_succeeds: false,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        render(&engine, &doc, 4, 4, Limits::default()),
+        Err(Error::Malformed(_))
+    ));
+    assert!(
+        !state
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::BitmapCreate { .. }))
+    );
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_buffer_the_engine_will_not_hand_over_still_destroys_the_bitmap() {
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            bitmap_buffer_is_null: true,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        render(&engine, &doc, 4, 4, Limits::default()),
+        Err(Error::Internal(_))
+    ));
+
+    let calls = state.calls();
+    assert!(calls.iter().any(|c| matches!(c, Call::BitmapDestroy(_))));
+    assert!(calls.iter().any(|c| matches!(c, Call::ClosePage(_))));
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_stride_narrower_than_a_row_is_refused_rather_than_read_past() {
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            stride_override: Some(4),
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        render(&engine, &doc, 4, 4, Limits::default()),
+        Err(Error::Internal(_))
+    ));
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_negative_stride_is_the_engine_contradicting_itself() {
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            stride_override: Some(-1),
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        render(&engine, &doc, 4, 4, Limits::default()),
+        Err(Error::Internal(_))
+    ));
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn the_fill_happens_before_the_render_and_the_rotation_is_never_doubled() {
+    // Two orderings that are silent when wrong. A fill AFTER the render erases the page and
+    // returns a blank picture; a non-zero `rotate` turns a page whose `/Rotate` PDFium has
+    // already applied, which is precisely the case `/rotate-pdf` exists to show.
+    let (engine, state, doc) = open_for_render(PdfiumScript::default(), Limits::default());
+    render(&engine, &doc, 4, 4, Limits::default()).expect("a page should render");
+
+    let calls = state.calls();
+    let fill = calls
+        .iter()
+        .position(|c| matches!(c, Call::BitmapFillRect { .. }))
+        .expect("the bitmap should be filled");
+    let drawn = calls
+        .iter()
+        .position(|c| matches!(c, Call::RenderPageBitmap { .. }))
+        .expect("the page should be drawn");
+    assert!(fill < drawn, "the fill must precede the render: {calls:?}");
+
+    match calls
+        .iter()
+        .find(|c| matches!(c, Call::RenderPageBitmap { .. }))
+    {
+        Some(Call::RenderPageBitmap { rotate, flags, .. }) => {
+            assert_eq!(*rotate, 0, "PDFium applies /Rotate itself");
+            assert_eq!(*flags, 0, "no FPDF_ANNOT; see the constant");
+        }
+        other => panic!("expected a render call, got {other:?}"),
+    }
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_page_past_the_end_never_reaches_the_bridge_on_the_web_path_either() {
+    let (engine, state, doc) = open_for_render(PdfiumScript::default(), Limits::default());
+    let options = OpenOptions::new(Limits::default(), stopped());
+    let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
+    assert!(matches!(
+        PageRenderer::render(&engine, &doc, 1, 4, 4, &options, &deadline),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        PageRenderer::page_size(&engine, &doc, 1),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(
+        !state.calls().iter().any(|c| matches!(c, Call::LoadPage(_))),
+        "an out-of-range index must not reach the engine"
+    );
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn page_size_closes_the_page_it_opened() {
+    let (engine, state, doc) = open_for_render(PdfiumScript::default(), Limits::default());
+    let (width, height) =
+        PageRenderer::page_size(&engine, &doc, 0).expect("a page should report its size");
+    assert_eq!((width, height), (200.0, 400.0));
+
+    drop(doc);
+    state.assert_empty();
+}

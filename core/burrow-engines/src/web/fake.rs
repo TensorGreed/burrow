@@ -98,6 +98,39 @@ pub(super) enum Call {
         item: u32,
     },
     OhRelease(u32),
+
+    // ---- the PDFium render path (#57) ----------------------------------------------
+    //
+    // Distinct variants rather than reuse of `CopyOut` above, which is qpdf's: one `Call`
+    // enum serves both fakes, and a shared variant would make a test asserting "the render
+    // copied out" indistinguishable from one asserting a document was written.
+    LoadPage(i32),
+    ClosePage(u32),
+    PageWidth(u32),
+    PageHeight(u32),
+    BitmapCreate {
+        width: i32,
+        height: i32,
+        alpha: i32,
+    },
+    BitmapFillRect {
+        bitmap: u32,
+        width: i32,
+        height: i32,
+        color: u32,
+    },
+    RenderPageBitmap {
+        bitmap: u32,
+        page: u32,
+        size_x: i32,
+        size_y: i32,
+        rotate: i32,
+        flags: i32,
+    },
+    BitmapBuffer(u32),
+    BitmapStride(u32),
+    BitmapDestroy(u32),
+    PdfiumCopyOut(u32, u32),
 }
 
 /// A stand-in for an Emscripten module's linear memory.
@@ -277,6 +310,26 @@ pub(super) struct PdfiumScript {
     pub(super) page_count: i32,
     /// Extra heap growth attributed to the load, in bytes — a declared-size bomb's cost.
     pub(super) load_grows_heap_by: u64,
+
+    // ---- the render path (#57) -------------------------------------------------------
+    /// Whether `FPDF_LoadPage` succeeds. `false` returns null, as a damaged page does.
+    pub(super) page_load_succeeds: bool,
+    /// Whether `FPDFBitmap_Create` succeeds.
+    ///
+    /// **An allocation failure, never a ceiling.** `max_pixels` is checked in Rust before the
+    /// bitmap is created, so a test that scripts this false is driving the out-of-memory path
+    /// and not the limit path — and the two must reach different typed errors.
+    pub(super) bitmap_alloc_succeeds: bool,
+    /// Extra bytes per row, on top of `width * 4`.
+    ///
+    /// **The padding PDFium is entitled to add**, and the reason `FPDFBitmap_GetStride`
+    /// exists. Scripted rather than always zero because a reader that assumed `width * 4` is
+    /// correct on every unpadded bitmap, which is most of them.
+    pub(super) stride_padding: u32,
+    /// Report this stride instead of the real one, for the engine-contradicts-itself cases.
+    pub(super) stride_override: Option<i32>,
+    /// Whether `FPDFBitmap_GetBuffer` returns a pointer at all.
+    pub(super) bitmap_buffer_is_null: bool,
 }
 
 impl Default for PdfiumScript {
@@ -286,6 +339,11 @@ impl Default for PdfiumScript {
             load_succeeds: true,
             page_count: 1,
             load_grows_heap_by: 0,
+            page_load_succeeds: true,
+            bitmap_alloc_succeeds: true,
+            stride_padding: 0,
+            stride_override: None,
+            bitmap_buffer_is_null: false,
         }
     }
 }
@@ -298,6 +356,30 @@ pub(super) struct FakePdfium {
     /// Handed out as the document handle. Not an allocation: PDFium's handle is opaque and
     /// is released by `FPDF_CloseDocument`, not by `free`.
     doc_handle: u32,
+    /// Geometry for every bitmap handed out, by handle: `(width, height, stride)`.
+    ///
+    /// The fake has to remember this because `FPDFBitmap_GetStride` and
+    /// `FPDFBitmap_GetBuffer` take only a handle — the caller no longer has the dimensions
+    /// at those call sites, which is exactly why the stride has to be asked for rather than
+    /// computed.
+    bitmaps: Mutex<Vec<Bitmap>>,
+}
+
+/// One bitmap the fake has handed out.
+///
+/// **`id`, NOT `handle`, and the name is load-bearing.** `tools/check-handle-identity.py`
+/// refuses a raw `handle` compared for equality anywhere in a file that deals in qpdf object
+/// handles -- and this file does, because `FakeQpdf` lives in it. That rule is right for
+/// `qpdf_oh`, which qpdf reissues on every call so that two handles to one object never
+/// compare equal. A PDFium `FPDF_BITMAP` is the opposite: a stable pointer for the life of the
+/// bitmap, and comparing it is how this table finds anything. Renamed rather than exempted,
+/// so the rule keeps its meaning and nobody has to read an argument to see why this is fine.
+#[derive(Debug, Clone, Copy)]
+struct Bitmap {
+    id: u32,
+    width: i32,
+    height: i32,
+    stride: usize,
 }
 
 impl FakePdfium {
@@ -306,7 +388,21 @@ impl FakePdfium {
             state,
             script,
             doc_handle: 0xD0C0_0001,
+            bitmaps: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The geometry of a bitmap this fake handed out.
+    ///
+    /// **Panics on an id it does not know**, for the reason `Heap::read` panics on a stray
+    /// pointer: a fake that invented an answer for a destroyed bitmap would let a
+    /// use-after-free read as an ordinary render.
+    fn bitmap(&self, id: u32) -> Bitmap {
+        let bitmaps = self.bitmaps.lock().expect("not poisoned");
+        *bitmaps
+            .iter()
+            .find(|b| b.id == id)
+            .unwrap_or_else(|| panic!("bitmap {id:#x} was never created, or was destroyed"))
     }
 }
 
@@ -386,6 +482,178 @@ impl PdfiumBridge for FakePdfium {
 
     fn heap_bytes(&self) -> u64 {
         self.state.heap.lock().expect("not poisoned").bytes_grown
+    }
+
+    // ---- the render path (#57) -----------------------------------------------------------
+    //
+    // What is modelled here is what the orchestration has to get right and a browser will not
+    // reproduce on demand: that a page handle is closed on EVERY exit, that a bitmap is
+    // destroyed on every exit, that the stride is asked for rather than assumed, and that the
+    // fill happens before the render. PDF parsing is still not modelled -- `render_page_bitmap`
+    // paints a fixed quadrant, which is a model of the BITMAP contract rather than of PDFium.
+
+    fn load_page(&self, _doc: PdfiumPtr, index: i32) -> PdfiumPtr {
+        self.state.record(Call::LoadPage(index));
+        if !self.script.page_load_succeeds {
+            return PdfiumPtr::NULL;
+        }
+        // A real allocation, so a page left open by an early return is a live entry
+        // `assert_empty` fails on. There is no `Drop` across a real bridge either.
+        PdfiumPtr(self.state.heap.lock().expect("not poisoned").alloc(b"page"))
+    }
+
+    fn close_page(&self, page: PdfiumPtr) {
+        self.state.record(Call::ClosePage(page.0));
+        self.state.heap.lock().expect("not poisoned").free(page.0);
+    }
+
+    fn page_width(&self, page: PdfiumPtr) -> f32 {
+        self.state.record(Call::PageWidth(page.0));
+        200.0
+    }
+
+    fn page_height(&self, page: PdfiumPtr) -> f32 {
+        self.state.record(Call::PageHeight(page.0));
+        400.0
+    }
+
+    fn bitmap_create(&self, width: i32, height: i32, alpha: i32) -> PdfiumPtr {
+        self.state.record(Call::BitmapCreate {
+            width,
+            height,
+            alpha,
+        });
+        if !self.script.bitmap_alloc_succeeds {
+            return PdfiumPtr::NULL;
+        }
+        let w = usize::try_from(width).expect("a non-negative width");
+        let h = usize::try_from(height).expect("a non-negative height");
+        let stride = w * 4 + usize::try_from(self.script.stride_padding).expect("padding fits");
+
+        // 0xCD everywhere, NOT zero. A fresh bitmap's contents are undefined, and a fake that
+        // handed back zeroes would make a missing `FPDFBitmap_FillRect` look like a black
+        // page -- plausible enough to pass a test that only checked the length. 0xCD is not a
+        // colour anything here produces, so it shows up.
+        let id = self
+            .state
+            .heap
+            .lock()
+            .expect("not poisoned")
+            .alloc(&vec![0xCD_u8; stride * h]);
+        self.bitmaps.lock().expect("not poisoned").push(Bitmap {
+            id,
+            width,
+            height,
+            stride,
+        });
+        PdfiumPtr(id)
+    }
+
+    fn bitmap_fill_rect(
+        &self,
+        bitmap: PdfiumPtr,
+        _left: i32,
+        _top: i32,
+        width: i32,
+        height: i32,
+        color: u32,
+    ) {
+        self.state.record(Call::BitmapFillRect {
+            bitmap: bitmap.0,
+            width,
+            height,
+            color,
+        });
+        let geometry = self.bitmap(bitmap.0);
+        // `color` is 0xAARRGGBB; the bytes in memory are B, G, R, A.
+        let pixel = [
+            u8::try_from(color & 0xFF).expect("a byte"),
+            u8::try_from((color >> 8) & 0xFF).expect("a byte"),
+            u8::try_from((color >> 16) & 0xFF).expect("a byte"),
+            u8::try_from((color >> 24) & 0xFF).expect("a byte"),
+        ];
+        let mut heap = self.state.heap.lock().expect("not poisoned");
+        if let Some((_, bytes)) = heap.live.iter_mut().find(|(at, _)| *at == bitmap.0) {
+            for row in 0..usize::try_from(geometry.height).expect("a non-negative height") {
+                for column in 0..usize::try_from(geometry.width).expect("a non-negative width") {
+                    let at = row * geometry.stride + column * 4;
+                    bytes[at..at + 4].copy_from_slice(&pixel);
+                }
+            }
+        }
+    }
+
+    fn render_page_bitmap(
+        &self,
+        bitmap: PdfiumPtr,
+        page: PdfiumPtr,
+        _start_x: i32,
+        _start_y: i32,
+        size_x: i32,
+        size_y: i32,
+        rotate: i32,
+        flags: i32,
+    ) {
+        self.state.record(Call::RenderPageBitmap {
+            bitmap: bitmap.0,
+            page: page.0,
+            size_x,
+            size_y,
+            rotate,
+            flags,
+        });
+        let geometry = self.bitmap(bitmap.0);
+        // Ink in the top-left quadrant and nowhere else -- the same shape as the native
+        // fixture `minimal_pdf::pdf_with_ink`, so a test can tell a correct render from a
+        // flip, a mirror, or a quarter turn. Not a model of PDF content; a model of "the
+        // engine writes into the bitmap it was given, in row-major order, top row first".
+        let mut heap = self.state.heap.lock().expect("not poisoned");
+        if let Some((_, bytes)) = heap.live.iter_mut().find(|(at, _)| *at == bitmap.0) {
+            let height = usize::try_from(geometry.height).expect("a non-negative height");
+            let width = usize::try_from(geometry.width).expect("a non-negative width");
+            for row in 0..height / 2 {
+                for column in 0..width / 2 {
+                    let at = row * geometry.stride + column * 4;
+                    bytes[at..at + 4].copy_from_slice(&[0, 0, 0, 0xFF]);
+                }
+            }
+        }
+    }
+
+    fn bitmap_buffer(&self, bitmap: PdfiumPtr) -> PdfiumPtr {
+        self.state.record(Call::BitmapBuffer(bitmap.0));
+        if self.script.bitmap_buffer_is_null {
+            return PdfiumPtr::NULL;
+        }
+        // The bitmap's own allocation. A real `FPDFBitmap_GetBuffer` returns a pointer INTO
+        // the bitmap, which is why nothing frees this separately: `bitmap_destroy` does.
+        bitmap
+    }
+
+    fn bitmap_stride(&self, bitmap: PdfiumPtr) -> i32 {
+        self.state.record(Call::BitmapStride(bitmap.0));
+        if let Some(stride) = self.script.stride_override {
+            return stride;
+        }
+        i32::try_from(self.bitmap(bitmap.0).stride).expect("a stride that fits")
+    }
+
+    fn bitmap_destroy(&self, bitmap: PdfiumPtr) {
+        self.state.record(Call::BitmapDestroy(bitmap.0));
+        self.bitmaps
+            .lock()
+            .expect("not poisoned")
+            .retain(|b| b.id != bitmap.0);
+        self.state.heap.lock().expect("not poisoned").free(bitmap.0);
+    }
+
+    fn copy_out(&self, ptr: PdfiumPtr, len: u32) -> Vec<u8> {
+        self.state.record(Call::PdfiumCopyOut(ptr.0, len));
+        self.state
+            .heap
+            .lock()
+            .expect("not poisoned")
+            .read(ptr.0, usize::try_from(len).expect("a length that fits"))
     }
 }
 

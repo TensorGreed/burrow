@@ -154,6 +154,19 @@ function refusal(id, kind, message) {
 }
 
 /**
+ * A terminal success for a multi-output operation: every part already went, so this carries none.
+ *
+ * It lived in `main.js` while `split` was the only operation with more than one output. #57's
+ * strip is the second, and a second hand-written literal is a second place for a field to go
+ * missing -- which is the note `refusal` above already carries. One definition, both bundles.
+ *
+ * @param {number} id
+ */
+function refusalFree(id) {
+  return { ...refusal(id, "", ""), ok: true, message: "" };
+}
+
+/**
  * Flatten a `Reply` for `postMessage`, then release it. Reads fields; decides nothing.
  *
  * @param {number} id

@@ -224,3 +224,185 @@ fn the_engine_is_not_poisoned_by_any_of_the_errors_above() {
     );
     assert!(open(minimal_pdf::pdf_with_pages(1)).is_ok());
 }
+
+// ---------------------------------------------------------------------------------
+// Rendering (#57, ADR 0027). The first capability here that produces pixels.
+// ---------------------------------------------------------------------------------
+
+use crate::{PageRenderer, Raster};
+
+/// A deadline over the stopped clock, as `PageRenderer::render` takes.
+fn render_options(limits: Limits) -> OpenOptions<'static> {
+    OpenOptions::new(limits, stopped())
+}
+
+fn render_at(doc: &PdfiumDocument, index: u64, w: u32, h: u32, limits: Limits) -> Result<Raster> {
+    let options = render_options(limits);
+    let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
+    PageRenderer::render(&Pdfium::new(), doc, index, w, h, &options, &deadline)
+}
+
+#[test]
+fn a_page_renders_at_exactly_the_size_that_was_asked_for() {
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+    let raster = render_at(&doc, 0, 40, 80, generous()).expect("a page should render");
+
+    assert_eq!(raster.width, 40);
+    assert_eq!(raster.height, 80);
+    // THE LENGTH IS A DECISION, NOT A FACT THE FILE STATED, which is why it is asserted
+    // rather than described. ADR 0027 section 4.
+    assert_eq!(raster.rgba.len(), 40 * 80 * 4);
+}
+
+#[test]
+fn the_ink_lands_where_the_page_puts_it_and_the_rest_is_opaque_white() {
+    // The fixture is black over the top-left quarter and nothing elsewhere. Four probes,
+    // one per quadrant, which is the smallest set that can tell apart a correct render, a
+    // vertical flip, a horizontal mirror, and a quarter turn.
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+    let raster = render_at(&doc, 0, 40, 80, generous()).expect("a page should render");
+
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let at = (y * 40 + x) * 4;
+        [
+            raster.rgba[at],
+            raster.rgba[at + 1],
+            raster.rgba[at + 2],
+            raster.rgba[at + 3],
+        ]
+    };
+
+    assert_eq!(pixel(10, 20), [0, 0, 0, 255], "top left should be inked");
+    assert_eq!(pixel(30, 20), [255, 255, 255, 255], "top right should not");
+    assert_eq!(
+        pixel(10, 60),
+        [255, 255, 255, 255],
+        "bottom left should not"
+    );
+    assert_eq!(
+        pixel(30, 60),
+        [255, 255, 255, 255],
+        "bottom right should not"
+    );
+}
+
+#[test]
+fn every_pixel_of_a_blank_page_is_opaque_white_rather_than_whatever_was_in_the_heap() {
+    // This is the `FPDFBitmap_FillRect` test. A fresh bitmap's contents are UNDEFINED, so
+    // without the fill this would be uninitialised engine heap in a picture handed to the
+    // page -- and it would usually be zeros, which is why it needs asserting rather than
+    // looking at. The alpha byte is the other half: `FPDFBitmap_BGRx` would leave it
+    // undefined too, which is why `BITMAP_BGRA` is not `0`.
+    let doc = open(crate::minimal_pdf::pdf_with_pages(1)).expect("a blank page should open");
+    let raster = render_at(&doc, 0, 16, 16, generous()).expect("a blank page should render");
+    assert!(
+        raster
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| *p == [255, 255, 255, 255]),
+        "a blank page should render as opaque white everywhere"
+    );
+}
+
+#[test]
+fn rendering_the_same_page_twice_produces_the_same_bytes() {
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+    let first = render_at(&doc, 0, 24, 48, generous()).expect("first render");
+    let second = render_at(&doc, 0, 24, 48, generous()).expect("second render");
+    assert_eq!(first, second);
+}
+
+#[test]
+fn a_render_one_pixel_past_max_pixels_is_refused_at_the_pixels_stage() {
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+
+    // At the boundary: accepted.
+    let at = Limits::with(|l| l.max_pixels = 40 * 80);
+    assert!(render_at(&doc, 0, 40, 80, at).is_ok());
+
+    // One past it: refused, and refused BEFORE anything was allocated.
+    let past = Limits::with(|l| l.max_pixels = 40 * 80 - 1);
+    match render_at(&doc, 0, 40, 80, past).expect_err("one pixel past the ceiling") {
+        Error::LimitExceeded {
+            limit,
+            stage,
+            requested,
+            allowed,
+        } => {
+            assert_eq!(limit, "max_pixels");
+            assert_eq!(stage, Stage::Pixels);
+            assert_eq!(requested, 3200);
+            assert_eq!(allowed, 3199);
+        }
+        other => panic!("expected LimitExceeded at Stage::Pixels, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_page_past_the_end_is_an_invalid_argument_and_not_a_malformed_document() {
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+    assert!(matches!(
+        render_at(&doc, 1, 8, 8, generous()),
+        Err(Error::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        PageRenderer::page_size(&Pdfium::new(), &doc, 1),
+        Err(Error::InvalidArgument(_))
+    ));
+}
+
+#[test]
+fn a_zero_dimension_is_refused_before_the_engine_is_asked_for_a_page() {
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+    assert!(matches!(
+        render_at(&doc, 0, 0, 8, generous()),
+        Err(Error::InvalidArgument(_))
+    ));
+}
+
+#[test]
+fn a_page_reports_its_size_in_points() {
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+    let (width, height) =
+        PageRenderer::page_size(&Pdfium::new(), &doc, 0).expect("a page should report its size");
+    assert!((width - 200.0).abs() < 0.01, "width was {width}");
+    assert!((height - 400.0).abs() < 0.01, "height was {height}");
+}
+
+#[test]
+fn a_spent_budget_stops_a_render_before_it_starts() {
+    let clock = Arc::new(ManualClock::new(0));
+    let mut options = OpenOptions::new(
+        Limits::with(|l| l.max_duration_ms = 10),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    );
+    options.password = None;
+    let doc = Pdfium::new()
+        .open(
+            crate::minimal_pdf::pdf_with_ink().into_boxed_slice(),
+            &options,
+        )
+        .expect("the ink fixture should open");
+
+    let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &options.limits);
+    clock.advance(11);
+    assert!(matches!(
+        PageRenderer::render(&Pdfium::new(), &doc, 0, 8, 8, &options, &deadline),
+        Err(Error::LimitExceeded {
+            stage: Stage::Deadline,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn the_engine_is_still_usable_after_every_render_refusal_above() {
+    // The same assertion `the_engine_is_not_poisoned_by_any_of_the_errors_above` makes for
+    // the open path. A refused render is an ORDINARY outcome (ADR 0027) and must not cost
+    // the engine -- on the web the equivalent is that it must not cost a worker.
+    assert!(!super::thread::is_poisoned());
+    let doc = open(crate::minimal_pdf::pdf_with_ink()).expect("the ink fixture should open");
+    assert!(render_at(&doc, 0, 8, 8, generous()).is_ok());
+}

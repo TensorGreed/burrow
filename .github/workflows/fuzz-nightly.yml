@@ -38,6 +38,7 @@ jobs:
         target:
           - compress
           - document_open
+          - render
           - prescan
           - qpdf_check
           - merge

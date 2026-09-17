@@ -31,6 +31,41 @@ interface EmscriptenModule {
    * call: fetching it in a second round trip could attach a different operation's error.
    */
   _FPDF_GetLastError(): number;
+
+  // --- rendering (#57) --------------------------------------------------------------
+  //
+  // The ten `fpdfview.h` declarations `core/burrow-engines/src/pdfium/ffi.rs` mirrors for the
+  // render path. Every one is already exported by the prebuilt `pdfium.wasm`: ADR 0020
+  // measured 429 `FPDF_*` exports and no `EXPORTED_FUNCTIONS` allowlist, which is why
+  // rendering costs no engine rebuild and no new content hash.
+  _FPDF_LoadPage(doc: number, index: number): number;
+  _FPDF_ClosePage(page: number): void;
+  /** Points, at 72 to the inch, with the page's own `/Rotate` applied. */
+  _FPDF_GetPageWidthF(page: number): number;
+  _FPDF_GetPageHeightF(page: number): number;
+  _FPDFBitmap_Create(width: number, height: number, alpha: number): number;
+  _FPDFBitmap_FillRect(
+    bitmap: number,
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+    color: number,
+  ): void;
+  _FPDF_RenderPageBitmap(
+    bitmap: number,
+    page: number,
+    startX: number,
+    startY: number,
+    sizeX: number,
+    sizeY: number,
+    rotate: number,
+    flags: number,
+  ): void;
+  _FPDFBitmap_GetBuffer(bitmap: number): number;
+  /** Bytes per row, which PDFium MAY pad. Never assume `width * 4`. */
+  _FPDFBitmap_GetStride(bitmap: number): number;
+  _FPDFBitmap_Destroy(bitmap: number): void;
 }
 
 // `render-prelude.js` DEFINES `pdfiumReady` and `resolvePdfium`, so they are not declared
@@ -60,4 +95,85 @@ interface WorkerGlobalScope {
   __burrow_pdfium_pages(doc: number): number;
   __burrow_pdfium_close(doc: number, data: number, len: number): void;
   __burrow_pdfium_heap_pages(): number;
+
+  // The render half. Eleven names, one per Emscripten export, mirroring the eleven methods
+  // #57 added to `PdfiumBridge`.
+  __burrow_pdfium_load_page(doc: number, index: number): number;
+  __burrow_pdfium_close_page(page: number): void;
+  __burrow_pdfium_page_width(page: number): number;
+  __burrow_pdfium_page_height(page: number): number;
+  __burrow_pdfium_bitmap_create(width: number, height: number, alpha: number): number;
+  __burrow_pdfium_bitmap_fill_rect(
+    bitmap: number,
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+    color: number,
+  ): void;
+  __burrow_pdfium_render_page_bitmap(
+    bitmap: number,
+    page: number,
+    startX: number,
+    startY: number,
+    sizeX: number,
+    sizeY: number,
+    rotate: number,
+    flags: number,
+  ): void;
+  __burrow_pdfium_bitmap_buffer(bitmap: number): number;
+  __burrow_pdfium_bitmap_stride(bitmap: number): number;
+  __burrow_pdfium_bitmap_destroy(bitmap: number): void;
+  /** A COPY, not a view: wasm memory growth detaches every view of the engine heap. */
+  __burrow_pdfium_copy_out(ptr: number, len: number): Uint8Array;
+}
+
+/** The operations the render artifact exports. `page_count` is in `globals.d.ts`: both have one. */
+interface BurrowWasm {
+  /**
+   * ADR 0023's shape for ADR 0027 §2's reason: a strip in progress, pulled one page at a time,
+   * so the engine heap holds at most one bitmap however long the strip is.
+   *
+   * `boxWidth` x `boxHeight` is the box each page is fitted INSIDE, keeping its proportions —
+   * so what comes back is usually smaller in one dimension, which is why every
+   * {@link RenderedPage} carries its own size. The aspect-ratio arithmetic is in Rust
+   * (ADR 0009 §2), and `max_pixels` is checked against the box before the document is opened.
+   */
+  render_begin(
+    bytes: Uint8Array,
+    pages: Uint32Array,
+    boxWidth: number,
+    boxHeight: number,
+    password: Uint8Array | undefined,
+    limits: WebLimits,
+  ): RenderSession;
+}
+
+/**
+ * A strip in progress. `pages` is known before the first page is; `next_page` draws one.
+ *
+ * A reply with `ok === false` ends the strip and does **not** invalidate the pages already
+ * delivered — the opposite of `SplitSession`'s rule, because a strip is a set of independent
+ * pictures rather than a partition (ADR 0027).
+ */
+interface RenderSession {
+  readonly ok: boolean;
+  readonly pages: number;
+  begin_reply(): Reply;
+  next_page(): RenderedPage;
+  free(): void;
+}
+
+/** One page, drawn. Returned owned, so it MUST be freed. */
+interface RenderedPage {
+  reply(): Reply;
+  /** The ONE-BASED page number these pixels are of. Carried, never inferred from arrival order. */
+  readonly page: bigint;
+  readonly width: number;
+  readonly height: number;
+  /** Read before taking: "no pixels" and "already taken" both come back empty. */
+  readonly pixelLength: number;
+  /** MOVES the pixels out. A getter would copy them, and this is the largest thing the boundary carries. */
+  takePixels(): Uint8Array;
+  free(): void;
 }

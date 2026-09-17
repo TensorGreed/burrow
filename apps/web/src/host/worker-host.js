@@ -340,7 +340,9 @@ export function createWorkerHost(options) {
    *
    * @type {Map<number, { settle: (reply: HostReply) => void, timer: unknown, budgetMs: number,
    *   isInit: boolean, acked: boolean, parts?: Blob[], partsExpected?: number,
-   *   onProgress?: (progress: { part: number, of: number }) => void }>}
+   *   onProgress?: (progress: { part: number, of: number }) => void,
+   *   onPage?: (page: { number: number, index: number, of: number, width: number,
+   *     height: number }, pixels: ArrayBuffer) => void }>}
    */
   let pending = new Map();
 
@@ -683,6 +685,8 @@ export function createWorkerHost(options) {
    *   minConvergingMemoryBytes?: string,
    *   defaultLimits?: Record<string, number>,
    *   part?: { index: number, of: number }, progress?: { part: number, of: number },
+   *   page?: { number: number, index: number, of: number, width: number, height: number },
+   *   pixels?: ArrayBuffer,
    *   }} data
    */
   function handleMessage(data) {
@@ -738,6 +742,48 @@ export function createWorkerHost(options) {
       }
       entry.parts[data.part.index] = data.output;
       if (entry.acked) {
+        clearTimer(entry.timer);
+        entry.timer = setTimer(() => {
+          watchdogFired(id, entry.budgetMs);
+        }, entry.budgetMs + WATCHDOG_GRACE_MS);
+      }
+      return;
+    }
+
+    // A RENDERED PAGE (#57, ADR 0027). Like a part, it does not settle the request — but the
+    // rule for what happens on a later failure is the OPPOSITE of a part's, so the two branches
+    // are separate rather than one with a flag.
+    //
+    // A split is a partition: fail on part 3 of 10 and the caller must deliver nothing, which is
+    // why parts are held here until the terminal reply. A strip is a set of independent
+    // pictures: a thumbnail that arrived is a true picture of its page whatever happens to page
+    // 7, so pages are DELIVERED AS THEY ARRIVE, through `onPage`, and the caller keeps them.
+    //
+    // WITHOUT THIS BRANCH a `render` run fell through to the terminal-reply path below: the
+    // first page message cleared the watchdog, deleted the entry, and settled the caller with
+    // `ok: undefined` — every later page and the real reply were then dropped as "no longer in
+    // flight". A blank strip reporting a failure that never happened. Nothing drove it yet, and
+    // nothing prevented it either. Found by code review.
+    if (data.page !== undefined) {
+      if (data.pixels === undefined) {
+        // A PAGE WITH NO PIXELS. The worker posts a buffer with every page or posts a failure
+        // instead, so this is the bundle doing something this host does not model. Named here
+        // rather than delivered as an empty tile, which is what a blank strip looks like from
+        // the outside -- and a blank strip is exactly the failure `pixelLength`'s missing
+        // `js_name` produced, so this host refuses to be the thing that hides it twice.
+        entry.settle(hostFailure("Internal", "a page of the strip carried no pixels"));
+        clearTimer(entry.timer);
+        pending.delete(id);
+        // AND THE WORKER GOES, for the reason the part branch above gives: an `Internal` is
+        // fatal, and a worker left mid-strip holding a live `RenderSession` for a request this
+        // host has forgotten keeps `state` at "busy" for the life of the host.
+        discard("Internal", "worker discarded", { crash: true });
+        return;
+      }
+      entry.onPage?.(data.page, data.pixels);
+      if (entry.acked) {
+        // RE-ARMED PER PAGE, for the reason a part re-arms: a strip of sixty-four thumbnails
+        // is sixty-four units of work, and one budget for all of them fires on the honest case.
         clearTimer(entry.timer);
         entry.timer = setTimer(() => {
           watchdogFired(id, entry.budgetMs);
@@ -881,7 +927,9 @@ export function createWorkerHost(options) {
    *
    * @param {object} message
    * @param {{ maxDurationMs?: number,
-   *   onProgress?: (progress: { part: number, of: number }) => void }} options
+   *   onProgress?: (progress: { part: number, of: number }) => void,
+   *   onPage?: (page: { number: number, index: number, of: number, width: number,
+   *     height: number }, pixels: ArrayBuffer) => void }} options
    * @returns {Promise<HostReply>}
    */
   async function runOne(message, options) {
@@ -936,6 +984,9 @@ export function createWorkerHost(options) {
         isInit: false,
         acked: false,
         onProgress: options.onProgress,
+        // DELIVERED AS THEY ARRIVE, unlike `parts`. See the `data.page` branch in
+        // `handleMessage` for why a strip's rule is the opposite of a split's.
+        onPage: options.onPage,
       });
       live.postMessage({ ...message, id });
     });
@@ -996,7 +1047,9 @@ export function createWorkerHost(options) {
      *
      * @param {object} message
      * @param {{ maxDurationMs?: number,
-     *   onProgress?: (progress: { part: number, of: number }) => void }} [options]
+     *   onProgress?: (progress: { part: number, of: number }) => void,
+     *   onPage?: (page: { number: number, index: number, of: number, width: number,
+     *     height: number }, pixels: ArrayBuffer) => void }} [options]
      * @returns {Promise<HostReply>}
      */
     run(message, options = {}) {

@@ -21,7 +21,7 @@ use core::ffi::{c_char, c_int, c_void};
 
 use burrow_types::{Clock, Deadline, Error, Limits, Result, Stage};
 
-use crate::{DocumentEngine, OpenOptions};
+use crate::{DocumentEngine, OpenOptions, PageRenderer, Raster};
 
 /// Re-exported for the link check, which proves `FPDF_DestroyLibrary` binds without ever
 /// calling it. The only part of [`ffi`] visible outside this module.
@@ -250,6 +250,217 @@ impl DocumentEngine for Pdfium {
 
         doc.deadline.checkpoint(doc.clock.as_ref())?;
         Ok(pages)
+    }
+}
+
+/// Narrow a zero-based page index for PDFium's `int`, having established it is in range.
+///
+/// `total` is the count the document was opened with, so "in range" is checked against the
+/// number `max_pages` was applied to rather than against a fresh read.
+fn page_index(index: u64, total: u64) -> Result<c_int> {
+    if index >= total {
+        return Err(Error::InvalidArgument(format!(
+            "page {} of a {total}-page document",
+            index.saturating_add(1)
+        )));
+    }
+    c_int::try_from(index)
+        .map_err(|_| Error::Internal("page index does not fit in an engine index".to_owned()))
+}
+
+/// Narrow a raster dimension for PDFium's `int`.
+///
+/// Reached only after `crate::raster::check_pixels`, so a failure here means the caller set
+/// `max_pixels` above what the engine's own API can express -- a refusal of the request, which
+/// is why it is `InvalidArgument` and not `Internal`.
+fn raster_dimension(value: u32) -> Result<c_int> {
+    c_int::try_from(value).map_err(|_| {
+        Error::InvalidArgument("a raster dimension is larger than the engine accepts".to_owned())
+    })
+}
+
+impl PageRenderer for Pdfium {
+    fn page_size(&self, source: &Self::Document, index: u64) -> Result<(f32, f32)> {
+        source.deadline.checkpoint(source.clock.as_ref())?;
+
+        let id = source.id;
+        let page_index = page_index(index, source.pages_at_open)?;
+        let size = thread::submit(move |registry| {
+            let handle = registry.handle(id)?;
+
+            // SAFETY: `handle` came from the registry, so the document is open and its buffer
+            // is alive. Inside a job, so on the engine thread.
+            let page = unsafe { ffi::load_page(handle, page_index) };
+            if page.is_null() {
+                return Err(Error::Malformed("a page could not be loaded".to_owned()));
+            }
+
+            // SAFETY: `page` is non-null and was loaded on the line above; still on the
+            // engine thread.
+            let size = unsafe { ffi::page_size(page) };
+
+            // SAFETY: `page` is live, this is its only close, the document is still open, and
+            // we are on the engine thread. It happens before this closure returns, so no page
+            // handle ever leaves the registry's thread -- which is what keeps `PdfiumDocument`
+            // `Send + Sync` with no `unsafe impl`.
+            unsafe { ffi::close_page(page) };
+
+            Ok(size)
+        })?;
+
+        source.deadline.checkpoint(source.clock.as_ref())?;
+        Ok(size)
+    }
+
+    fn render(
+        &self,
+        source: &Self::Document,
+        index: u64,
+        width: u32,
+        height: u32,
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Raster> {
+        let clock = Arc::clone(&options.clock);
+        deadline.checkpoint(clock.as_ref())?;
+
+        // THE CEILING BEFORE ANYTHING IS ALLOCATED, and before the engine is even asked for
+        // the page. `check_pixels` is the one implementation both platforms call (ADR 0027).
+        // The returned pixel count is not needed here: `check_pixels` has already refused a
+        // product that would not fit this target, and the final length check lives in
+        // `Raster::new`, where it cannot be skipped.
+        crate::raster::check_pixels(width, height, &options.limits)?;
+
+        let page_index = page_index(index, source.pages_at_open)?;
+        let w = raster_dimension(width)?;
+        let h = raster_dimension(height)?;
+        let id = source.id;
+
+        let limits = options.limits;
+        let rgba = thread::submit(move |registry| {
+            let handle = registry.handle(id)?;
+
+            // WHAT THE RENDER ACTUALLY COST, read either side of it. `max_pixels` bounds the
+            // BUFFER WE HAND BACK and nothing else -- PDFium's rasteriser allocates its own
+            // working set, and a content stream of three million stroked paths reaches 819 MB
+            // while producing a 0.077 Mpx thumbnail (measured; ADR 0027's *What is bounded and
+            // what is not*). Without this the render path was the one engine call in this crate
+            // with no memory reading at all, not even the weak after-the-fact one.
+            //
+            // It DETECTS, it does not bound -- ADR 0007, and the whole of `Limits`' caveat. The
+            // allocation has already happened by the time this fires. What it buys is that the
+            // operation fails rather than returning a raster that cost more than the caller
+            // allowed, and that a caller sees the overrun at all.
+            let before = crate::rss::resident_bytes();
+
+            // SAFETY: `handle` came from the registry, so the document is open. Engine thread.
+            let page = unsafe { ffi::load_page(handle, page_index) };
+            if page.is_null() {
+                return Err(Error::Malformed("a page could not be loaded".to_owned()));
+            }
+
+            // Everything fallible happens inside this closure so that the page is closed on
+            // every exit by the single call after it -- including the `?` paths. There is no
+            // arrangement of these calls in which a `return` skips the close.
+            let drawn = (|| -> Result<Vec<u8>> {
+                // SAFETY: engine thread; the dimensions are plain integers. `max_pixels` was
+                // checked above, so this is not the null-return-as-ceiling path the API makes
+                // tempting.
+                let bitmap = unsafe { ffi::create_bitmap(w, h, ffi::BITMAP_BGRA) };
+                if bitmap.is_null() {
+                    return Err(Error::Io(
+                        "pdfium could not allocate a bitmap for the page".to_owned(),
+                    ));
+                }
+
+                let filled = (|| -> Result<Vec<u8>> {
+                    // SAFETY: `bitmap` is live and `w`/`h` are the extent it was created with.
+                    // A fresh bitmap's contents are undefined, so this is what keeps
+                    // uninitialised engine heap out of the picture the page displays.
+                    unsafe { ffi::fill_bitmap(bitmap, w, h, ffi::OPAQUE_WHITE) };
+
+                    // SAFETY: both handles are live, from the same document, and the extent is
+                    // the bitmap's own. PDFium writes only inside the bitmap it was given.
+                    unsafe { ffi::render_page(bitmap, page, w, h) };
+
+                    // SAFETY: `bitmap` is live; the pointer it returns is owned by the bitmap
+                    // and is read before the destroy below.
+                    let (buffer, stride) = unsafe { ffi::bitmap_buffer(bitmap) };
+                    if buffer.is_null() {
+                        return Err(Error::Internal(
+                            "pdfium returned no buffer for a bitmap it allocated".to_owned(),
+                        ));
+                    }
+                    let stride = usize::try_from(stride).map_err(|_| {
+                        Error::Internal("pdfium reported a negative stride".to_owned())
+                    })?;
+                    let rows = usize::try_from(height).map_err(|_| {
+                        Error::Internal("raster height does not fit in usize".to_owned())
+                    })?;
+
+                    // THE STRIDE IS BOUNDED BEFORE THE SLICE EXISTS, not inside `bgra_to_rgba`.
+                    //
+                    // `bgra_to_rgba` checks `stride >= row_bytes` and `src.len() >= span`, and
+                    // both of those run AFTER `from_raw_parts` has already built a slice of
+                    // `stride * rows` bytes -- so an engine reporting a stride wider than its
+                    // own buffer is undefined behaviour that has happened before any check
+                    // runs. Not reachable today: for `FPDFBitmap_BGRA` PDFium's pitch is
+                    // exactly `width * 4`. But "not reachable today" is an assumption about
+                    // PDFium, and the SAFETY comment below used to state it as established
+                    // fact. Found by security review; these six lines are what make it one.
+                    //
+                    // The upper bound is the pitch PDFium documents, plus a row: a padded
+                    // stride is legitimate and an unbounded one is not.
+                    let row_bytes = usize::try_from(width)
+                        .ok()
+                        .and_then(|w| w.checked_mul(4))
+                        .ok_or_else(|| {
+                            Error::Internal("raster row does not fit in usize".to_owned())
+                        })?;
+                    if stride < row_bytes || stride > row_bytes.saturating_add(row_bytes) {
+                        return Err(Error::Internal(
+                            "pdfium reported a stride its own bitmap cannot have".to_owned(),
+                        ));
+                    }
+                    let span = stride.checked_mul(rows).ok_or_else(|| {
+                        Error::Internal("pdfium's bitmap does not fit in usize".to_owned())
+                    })?;
+
+                    // SAFETY: `buffer` is non-null and points at the bitmap's pixels. `stride`
+                    // has just been bounded to `[width * 4, 2 * width * 4]`, so `span` is at
+                    // most twice the bitmap's minimum size and cannot exceed an allocation
+                    // PDFium made for a bitmap of these dimensions. The bitmap is alive for the
+                    // whole of this borrow -- it is destroyed below, after `bgra_to_rgba` has
+                    // returned an owned `Vec` -- nothing else on this thread writes to it, and
+                    // `u8` has no alignment requirement.
+                    let src = unsafe { core::slice::from_raw_parts(buffer, span) };
+                    crate::raster::bgra_to_rgba(src, stride, width, height)
+                })();
+
+                // SAFETY: `bitmap` is live, this is its only destroy, and every read of its
+                // buffer finished above -- `filled` owns its bytes.
+                unsafe { ffi::destroy_bitmap(bitmap) };
+                filled
+            })();
+
+            // SAFETY: `page` is live, this is its only close, and the document is still open.
+            // No page handle escapes this closure or this thread.
+            unsafe { ffi::close_page(page) };
+
+            let rgba = drawn?;
+            // AFTER the page and the bitmap are released, so what is measured is what the
+            // render left behind rather than what it was holding mid-call.
+            crate::estimate::check_measured_memory(before, crate::rss::resident_bytes(), &limits)?;
+            Ok(rgba)
+        })?;
+
+        deadline.checkpoint(clock.as_ref())?;
+
+        // THE LENGTH IS A DECISION, SO IT IS CHECKED RATHER THAN TRUSTED. Every other buffer
+        // this crate hands back is as long as the engine said it was; this one is as long as
+        // WE said it should be, which is why the check lives in `Raster::new` -- there is no
+        // way to build one that skips it. ADR 0027 section 4.
+        Raster::new(width, height, rgba)
     }
 }
 
