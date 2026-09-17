@@ -199,7 +199,7 @@ test("engine heap growth across the corpus, and what the bombs cost", async ({
         file: name,
         op,
         kind: reply.ok ? "ok" : reply.kind,
-        qpdfMiB: Math.round((Number(reply.qpdfHeapBytes) / MIB) * 10) / 10,
+        qpdfMiB: Math.round((Number(reply.engineHeapBytes) / MIB) * 10) / 10,
       });
     }
   }

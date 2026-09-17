@@ -90,11 +90,23 @@ const silent = { print: () => {}, printErr: () => {} };
 // Kick the engine fetches off immediately: they are the long pole, and the glue below will
 // wait on `instantiateWasm` regardless of how long they take.
 //
-// `BURROW_ENGINES` is generated into the bundle above this file by
-// tools/stage-web-engines.mjs.
+// `BURROW_ENGINES` and `BURROW_ENGINE_MODULE_IDS` are generated into the bundle above this
+// file by tools/stage-web-engines.mjs.
+//
+// THE LIST IS GENERATED, NOT WRITTEN HERE, AND THAT IS WHAT MAKES THIS FILE SHARED.
+// It read `["qpdfWasm", "burrowWasm"]` as a literal until ADR 0026, when this prelude started
+// serving two bundles with different engines — the base one (qpdf) and the render one
+// (PDFium). A literal would have had to become a `cfg`-like branch on which bundle this is,
+// which is a decision living in the one file that must be identical in both.
+//
+// It is also the only definition of how many `{ starting: true }` messages a page should
+// expect: `stage-web-engines.mjs` emits this list and derives `expectedEngineModules` for the
+// host from the same array, so the two cannot disagree. They were one constant
+// (`EXPECTED_ENGINE_MODULES = 2`) and a separate literal before, and the two bundles happening
+// to need the same number is exactly the coincidence that would have held until it did not.
 /** @type {Record<string, Promise<WebAssembly.Module>>} */
 const compiled = {};
-for (const id of /** @type {const} */ (["qpdfWasm", "burrowWasm"])) {
+for (const id of BURROW_ENGINE_MODULE_IDS) {
   const entry = BURROW_ENGINES[id];
   compiled[id] = fetch(entry.url, { integrity: entry.integrity }).then((response) => {
     if (!response.ok) {
@@ -276,10 +288,16 @@ const POLICED = (async () => {
   }
 })();
 
-// NO `self.Module`. It existed for PDFium's glue, which reads a pre-existing global `Module`
-// for its configuration at load time --- the one reason the load ORDER in the generated bundle
-// was load-bearing. PDFium left the payload in spike 0004, and qpdf is MODULARIZE'd: it is
-// configured through the object passed to `createQpdfModule()`, not through a global.
+// NO `self.Module` IN THIS FILE, AND IT IS NOT MISSING.
 //
-// Leaving an unused `self.Module` behind would be worse than untidy: the next Emscripten glue
-// added to this bundle would silently pick it up as its configuration.
+// It existed for PDFium's glue, which reads a pre-existing global `Module` for its
+// configuration at load time --- the one reason the load ORDER in the generated bundle is
+// load-bearing. Spike 0004 removed it along with PDFium; ADR 0026 brings PDFium back in a
+// SECOND bundle, and the assignment goes there, in `render-prelude.js`, which is
+// concatenated between this file and `pdfium.js`.
+//
+// It does not come back here, because the reason it was deleted rather than left harmlessly
+// in place still stands: an unused `self.Module` is silently picked up as its configuration
+// by the next Emscripten glue added to the bundle. In the base bundle there is no PDFium to
+// configure, so a `Module` global here would be a configuration waiting for the wrong engine.
+// qpdf is MODULARIZE'd and takes its options from the object passed to `createQpdfModule()`.

@@ -57,7 +57,7 @@
  * @property {string} requested
  * @property {string} allowed
  * @property {boolean} recycle
- * @property {string} qpdfHeapBytes
+ * @property {string} engineHeapBytes
  * @property {number} [failedInput] Which input failed, or -1.
  * @property {string} [innerKind] What was wrong with that input, or empty.
  * @property {Blob[]} [parts] The documents a MULTI-OUTPUT operation produced, in order.
@@ -143,16 +143,28 @@ export const WATCHDOG_GRACE_MS = 500;
 export const DEFAULT_INIT_TIMEOUT_MS = 240_000;
 
 /**
- * How many `starting` messages a start-up may use to push its bound out.
+ * How many `starting` messages a start-up may use to push its bound out, by default.
  *
- * One per engine module — `qpdf.wasm` and `burrow_wasm_bg.wasm`, the two `prelude.js` fetches.
- * It was three until spike 0004 took `pdfium.wasm` out of the payload. It is a **cap on
- * trust**, not a count of what must arrive: a start-up that reports fewer still succeeds, and
- * one that reports more is ignored past this point.
+ * One per engine module. It is a **cap on trust**, not a count of what must arrive: a start-up
+ * that reports fewer still succeeds, and one that reports more is ignored past this point.
  *
- * Stated as a constant rather than hard-coded at the call site because the day an engine is
- * added or removed, the number that has to change is this one and the test that pins it —
- * which is how this line came to be edited rather than forgotten.
+ * # It is a DEFAULT now, and the reason is worth reading before changing it back
+ *
+ * It was a plain constant — three modules, then two after spike 0004 — and the comment here
+ * said the day an engine is added or removed, this is the number that has to change. ADR 0026
+ * is that day, and it arrived in a shape the constant could not express: there are now **two
+ * bundles**, the base one fetching `qpdf.wasm` + `burrow_wasm_bg.wasm` and the render one
+ * fetching `pdfium.wasm` + `burrow_wasm_render_bg.wasm`.
+ *
+ * Both happen to be 2. That is exactly why this became an option rather than staying a
+ * constant that "still works": a coincidence that holds is one nobody checks, and the day one
+ * bundle gained a third module the other bundle's host would have started ignoring its second
+ * `starting` message — a start-up bound quietly halved, on the slow connections it exists for,
+ * with every test green.
+ *
+ * So `tools/stage-web-engines.mjs` derives it per bundle from the same array it generates into
+ * that bundle as `BURROW_ENGINE_MODULE_IDS`, and the two cannot disagree. This default is what
+ * a caller gets when it says nothing, and `createToolHost` always says something.
  */
 export const EXPECTED_ENGINE_MODULES = 2;
 
@@ -219,7 +231,7 @@ function hostFailure(kind, message, detail = {}) {
     requested: detail.requested ?? "0",
     allowed: detail.allowed ?? "0",
     recycle: false,
-    qpdfHeapBytes: "0",
+    engineHeapBytes: "0",
   };
 }
 
@@ -240,7 +252,7 @@ function hostSuccess() {
     requested: "0",
     allowed: "0",
     recycle: false,
-    qpdfHeapBytes: "0",
+    engineHeapBytes: "0",
   };
 }
 
@@ -270,6 +282,8 @@ export const ENGINE_UNAVAILABLE = "EngineUnavailable";
  * @param {number} [options.ackTimeoutMs]
  * @param {number} [options.breakerRespawns]
  * @param {number} [options.breakerWindowMs]
+ * @param {number} [options.expectedEngineModules] how many `starting` messages this
+ *   bundle's start-up may use to push its bound out; see {@link EXPECTED_ENGINE_MODULES}
  */
 export function createWorkerHost(options) {
   const {
@@ -283,6 +297,7 @@ export function createWorkerHost(options) {
     ackTimeoutMs = DEFAULT_ACK_TIMEOUT_MS,
     breakerRespawns = DEFAULT_BREAKER_RESPAWNS,
     breakerWindowMs = DEFAULT_BREAKER_WINDOW_MS,
+    expectedEngineModules = EXPECTED_ENGINE_MODULES,
   } = options;
 
   /** @type {HostState} */
@@ -594,7 +609,7 @@ export function createWorkerHost(options) {
         //   `pending`    -- `discard` swaps in a fresh map, so a discarded start-up's entry
         //                   is gone even if the two above somehow passed.
         if (generation !== mine || settled) return;
-        if (rearms >= EXPECTED_ENGINE_MODULES) return;
+        if (rearms >= expectedEngineModules) return;
         const entry = pending.get(id);
         if (!entry) return;
         rearms += 1;

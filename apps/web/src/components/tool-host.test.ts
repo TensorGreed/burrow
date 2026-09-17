@@ -8,7 +8,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ENGINE_UNAVAILABLE } from "../host/worker-host.js";
-import { LIMITS, ORIGIN_MISMATCH, createToolHost, hostKind } from "./tool-host.js";
+import {
+  DOCUMENTS,
+  LIMITS,
+  ORIGIN_MISMATCH,
+  RENDER,
+  createToolHost,
+  hostKind,
+} from "./tool-host.js";
 import type { ToolHostDeps } from "./tool-host.js";
 import { ENGINE_ORIGIN } from "../generated/engines.js";
 
@@ -200,6 +207,51 @@ describe("the ceilings a tool page runs under", () => {
     // which is the state this whole guard exists to replace.
     expect(fetched, "it fetched the worker source anyway").toBe(0);
     expect(host.hasWorker()).toBe(false);
+  });
+
+  it("builds the bundle it was asked for, and the base one by default", async () => {
+    // THE SECOND BUNDLE HAD NO CALLER AND NO TEST, which code review raised as new public
+    // surface nothing exercises. ADR 0026's claim is that there is one lifecycle and the
+    // bundle is an argument to it; an argument nothing ever passes is a claim, not a property.
+    //
+    // The URL is the observable, because it is the one thing that differs at this layer: a
+    // host's whole job here is to fetch ONE bundle's source and build a worker from it.
+    const asked: string[] = [];
+    const watching = (): Partial<ToolHostDeps> => ({
+      fetch: (async (url: string) => {
+        asked.push(String(url));
+        return { ok: true, text: async () => "// worker source" } as Response;
+      }) as unknown as typeof globalThis.fetch,
+    });
+
+    const base = deps(watching());
+    await createToolHost(base.deps).ensure();
+    const render = deps(watching());
+    await createToolHost(render.deps, RENDER).ensure();
+
+    expect(asked, "each host fetched exactly one bundle").toHaveLength(2);
+    expect(asked[0], "the default is the documents bundle").toBe(DOCUMENTS.worker.url);
+    expect(asked[1], "RENDER did not reach the fetch").toBe(RENDER.worker.url);
+    // AND THEY ARE DIFFERENT, which is what makes the two assertions above worth anything: if
+    // the generator ever emitted one descriptor twice, both would pass and mean nothing.
+    expect(DOCUMENTS.worker.url).not.toBe(RENDER.worker.url);
+  });
+
+  it("passes each bundle's own module count to the lifecycle", async () => {
+    // `EXPECTED_ENGINE_MODULES` stopped being a constant because both bundles happen to fetch
+    // two modules, and ADR 0026 §4 argues a coincidence that holds is one nobody checks.
+    // Nothing checked it: code review replaced the option with the old constant and 53 tests
+    // still passed. This is the assertion that mutation fails.
+    //
+    // Asserted on the DESCRIPTORS rather than by reaching into the host, because that is where
+    // the value comes from — the generated manifest — and a host that ignored it would fail
+    // `worker-host.test.ts`'s own rearm case instead.
+    for (const bundle of [DOCUMENTS, RENDER]) {
+      expect(
+        bundle.modules,
+        `${bundle.worker.url} declares no module count, so the host would fall back to a default`,
+      ).toBeGreaterThan(0);
+    }
   });
 
   it("starts normally on the origin it WAS built for", async () => {

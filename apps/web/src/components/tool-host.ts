@@ -22,7 +22,7 @@
 // which operations they run, what they say about them, and what they show.
 
 import { ENGINE_UNAVAILABLE, createWorkerHost } from "../host/worker-host.js";
-import { ENGINES, ENGINE_ORIGIN } from "../generated/engines.js";
+import { BUNDLE_RENDER_WORKER, BUNDLE_WORKER, ENGINE_ORIGIN } from "../generated/engines.js";
 import { readOrigin } from "../origin-guard.js";
 
 /**
@@ -178,7 +178,45 @@ export function originMismatchNotice(): { title: string; next: string; retryable
   };
 }
 
-export function createToolHost(deps: ToolHostDeps = browserDeps()): ToolHost {
+/**
+ * Which worker bundle a host builds, and how many modules it will report on the way up.
+ *
+ * TWO BUNDLES SINCE ADR 0026, and this type is the whole of their difference as far as the
+ * page is concerned. `DOCUMENTS` is what every tool page has always loaded — qpdf, the seven
+ * document operations. `RENDER` is PDFium, fetched only when something needs a picture of a
+ * page, so a person who merges two files downloads none of it.
+ *
+ * **Both are driven through the same `createWorkerHost`.** A second lifecycle written by
+ * copying the first would start without the fixes this one accumulated — the memoised
+ * promise, crash-counting rather than respawn-counting, the ack-based watchdog clock — each
+ * of which was a measured failure. What differs between the two hosts is this object and
+ * nothing else; see ADR 0026 for the full table, including the two policies that are
+ * deliberately the same (the start-up bound) and the one that is deliberately independent
+ * (the circuit breaker, so a document that kills the renderer cannot take merging offline).
+ */
+export interface WorkerBundle {
+  /** Where the bundle's source text is, and what it must hash to. */
+  worker: { url: string; integrity: string; bytes: number };
+  /** How many `starting` messages its start-up may use. Generated, never written by hand. */
+  modules: number;
+}
+
+/**
+ * The base bundle: qpdf, and every operation that produces or reads a document.
+ *
+ * IMPORTED AS A NAMED EXPORT RATHER THAN LOOKED UP IN A MAP, which is what keeps the render
+ * bundle's URL and digest out of an island that never renders. Vite tree-shakes named exports;
+ * it cannot tree-shake a property off an object literal somebody indexed.
+ */
+export const DOCUMENTS: WorkerBundle = BUNDLE_WORKER;
+
+/** The render bundle: PDFium. Built on first use, by a page that needs a page picture. */
+export const RENDER: WorkerBundle = BUNDLE_RENDER_WORKER;
+
+export function createToolHost(
+  deps: ToolHostDeps = browserDeps(),
+  bundle: WorkerBundle = DOCUMENTS,
+): ToolHost {
   let host: ReturnType<typeof createWorkerHost> | null = null;
   let workerUrl: string | null = null;
   let building: Promise<ReturnType<typeof createWorkerHost>> | null = null;
@@ -213,12 +251,18 @@ export function createToolHost(deps: ToolHostDeps = browserDeps()): ToolHost {
       throw ORIGIN_MISMATCH;
     }
 
-    const entry = ENGINES.worker;
+    const entry = bundle.worker;
     const response = await deps.fetch(entry.url, { integrity: entry.integrity });
     if (!response.ok) throw new Error("worker fetch failed");
     const source = await response.text();
 
     const built = createWorkerHost({
+      // PER BUNDLE, NOT A CONSTANT. Both bundles fetch two modules today; see
+      // `EXPECTED_ENGINE_MODULES` for why that coincidence is exactly the reason this is
+      // passed. The number comes from the generated manifest, which is also what the bundle
+      // itself loops over, so the host's cap on trust and the worker's fetch list have one
+      // source.
+      expectedEngineModules: bundle.modules,
       spawn: () => {
         if (workerUrl) deps.revokeObjectURL(workerUrl);
         workerUrl = deps.createObjectURL(new Blob([source], { type: "text/javascript" }));

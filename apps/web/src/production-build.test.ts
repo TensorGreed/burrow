@@ -180,7 +180,7 @@ describe("the production build", () => {
   it("still ships the engines and the worker bundle, which are not test-only", () => {
     // The complement of the assertions above. Without this, deleting too much would pass.
     // `pdfium.wasm` was required here until spike 0004 took it out of the payload. The
-    // absence is not asserted in this file: `tools/check-no-pdfium-on-the-web.sh` does that,
+    // absence is not asserted in this file: `tools/check-pdfium-is-render-only.sh` does that,
     // with a positive control and the CSP, which is more than a filename pattern can say.
     for (const pattern of [
       /^engines\/qpdf\.[0-9a-f]{16}\.wasm$/,
@@ -200,21 +200,64 @@ describe("the production build", () => {
     expect(files, "the credits page must ship").toContain("credits/index.html");
   });
 
-  it("ships the worker as ONE bundle, with no glue loose beside it", () => {
+  it("ships each worker as ONE bundle, with no glue loose beside them", () => {
     // The Emscripten glue used to be staged as separate files and pulled in with
     // `importScripts`, which has no integrity mechanism — so third-party glue ran unverified.
-    // It is now inside the worker bundle, covered by that file's digest. A regression would
+    // It is now inside a worker bundle, covered by that file's digest. A regression would
     // look like those files reappearing.
-    // The only `.js` under engines/ may be the worker bundle itself.
-    const scripts = files.filter((f) => f.startsWith("engines/") && f.endsWith(".js"));
-    expect(scripts, `loose glue beside the bundle: ${scripts.join(", ")}`).toHaveLength(1);
-    expect(scripts[0]).toMatch(/^engines\/burrow-worker\.[0-9a-f]{16}\.js$/);
+    //
+    // TWO BUNDLES SINCE ADR 0026, AND THE COUNT IS EXACT RATHER THAN AN UPPER BOUND. Each is
+    // one file the page fetches with `integrity` and wraps in a Blob, so "one digest covers
+    // every line of worker code" holds per bundle. A third `.js` under `engines/` is either
+    // loose glue or a bundle nobody declared, and both are worth failing on.
+    const scripts = files.filter((f) => f.startsWith("engines/") && f.endsWith(".js")).sort();
+    expect(scripts, `loose glue beside the bundles: ${scripts.join(", ")}`).toHaveLength(2);
 
-    const source = readFileSync(join(outDir, scripts[0]), "utf8");
-    // `FPDF_LoadMemDocument64` was a marker here until spike 0004; `__burrow_qpdf_copy_in`
-    // replaces it as the proof that the BRIDGE is in the bundle and not only the glue.
-    for (const marker of ["createQpdfModule", "__burrow_qpdf_copy_in", "wasm_bindgen"]) {
-      expect(source, `the bundle is missing ${marker}`).toContain(marker);
+    // Named, not counted. Two files of the right shape could still be the wrong two.
+    const expected = [
+      {
+        pattern: /^engines\/burrow-render-worker\.[0-9a-f]{16}\.js$/,
+        // The render bundle's proof that the BRIDGE is in it and not only the glue, and that
+        // it is the PDFium one. `_FPDF_LoadMemDocument64` is the glue's export; the bridge
+        // global is ours.
+        markers: ["self.__burrow_pdfium_", "_FPDF_GetPageCount(", "wasm_bindgen"],
+        // AND WHAT MUST NOT BE THERE. The render bundle does not link qpdf: its Rust module
+        // is built `--no-default-features --features render`, so a qpdf bridge global here
+        // would mean the wrong artifact was staged.
+        //
+        // NEEDLES THAT ONLY OCCUR AS CODE, because `prelude.js` and `worker-protocol.js` are
+        // shared by both bundles and their comments legitimately discuss both engines — a
+        // bare `createQpdfModule` matches the sentence in `render-main.js` explaining what
+        // the OTHER bundle does. `tools/check-pdfium-is-render-only.sh` can stay exact in the
+        // other direction because no shared file spells `FPDF_` or `__burrow_pdfium_` in
+        // prose; here it cannot, and picking a call shape is better than teaching a scanner
+        // to strip comments out of 240 KB of third-party glue.
+        absent: ["self.__burrow_qpdf_", "_qpdf_read_memory("],
+      },
+      {
+        pattern: /^engines\/burrow-worker\.[0-9a-f]{16}\.js$/,
+        markers: ["createQpdfModule(", "self.__burrow_qpdf_", "wasm_bindgen"],
+        // THE CLAIM THE BASE PAYLOAD MAKES: a person who merges two files downloads no
+        // PDFium. `tools/check-pdfium-is-render-only.sh` is the full check over the whole
+        // build; this is the same property asserted where the bundle is assembled, because
+        // the bundle is the thing whose source list decides it.
+        absent: ["__burrow_pdfium_", "FPDF_"],
+      },
+    ];
+
+    for (const { pattern, markers, absent } of expected) {
+      const name = scripts.find((f) => pattern.test(f));
+      expect(name, `no bundle matched ${pattern}`).toBeDefined();
+      const source = readFileSync(join(outDir, name as string), "utf8");
+      for (const marker of markers) {
+        expect(source, `${name} is missing ${marker}`).toContain(marker);
+      }
+      for (const marker of absent) {
+        expect(
+          source,
+          `${name} contains ${marker}, which belongs to the other bundle`,
+        ).not.toContain(marker);
+      }
     }
   });
 

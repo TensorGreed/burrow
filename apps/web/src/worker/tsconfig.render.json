@@ -33,11 +33,12 @@
   // values. Found by code review.
   "include": [
     "globals.d.ts",
-    "globals-qpdf.d.ts",
+    "globals-render.d.ts",
     "prelude.js",
+    "render-prelude.js",
     "bridge-common.js",
-    "bridge-qpdf.js",
+    "bridge-pdfium.js",
     "worker-protocol.js",
-    "main.js"
+    "render-main.js"
   ]
 }

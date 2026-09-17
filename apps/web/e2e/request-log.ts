@@ -55,13 +55,26 @@ export function since(marker: string): LogEntry[] {
  * engine-ish, or an engine URL carrying a query string, is still caught. The query string is
  * the entire point of `e2e/zero-requests.spec.ts`.
  */
-export function isPinnedArtifact(url: string): boolean {
+export function isPinnedArtifact(url: string, bundles: "base" | "all" = "base"): boolean {
   return (
-    // `pdfium` was in this alternation until spike 0004 took it out of the payload. The
-    // allowlist is EXACT, so leaving it would have meant a fetch of an artifact that no
-    // longer ships reading as expected rather than as a finding.
     /^\/engines\/(qpdf|burrow_wasm_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
     /^\/engines\/burrow-worker\.[0-9a-f]{16}\.js$/.test(url) ||
-    /^\/engines\/control\.[0-9a-f]{16}\.txt$/.test(url)
+    /^\/engines\/control\.[0-9a-f]{16}\.txt$/.test(url) ||
+    // THE RENDER SET IS ONLY PINNED FOR A PAGE THAT RENDERS, and that default is the whole
+    // point of the parameter.
+    //
+    // `pdfium` left this alternation when spike 0004 took it out of the payload, and ADR 0026
+    // brings it back in a bundle a page fetches only when it needs a picture of a page. Adding
+    // it unconditionally -- which is what the first version of this change did -- would have
+    // made a `/merge-pdf` that fetched 1.9 MB of PDFium **pass every one of the five tool-page
+    // "no unexpected request" assertions**, because "expected" would have included it.
+    //
+    // So the default is the base set, and the five existing call sites get a STRONGER
+    // assertion than they had before this change with no edit: they now fail if the page they
+    // drive reaches for the render bundle at all. Only a test that is deliberately driving a
+    // render passes `"all"`.
+    (bundles === "all" &&
+      (/^\/engines\/(pdfium|burrow_wasm_render_bg)\.[0-9a-f]{16}\.wasm$/.test(url) ||
+        /^\/engines\/burrow-render-worker\.[0-9a-f]{16}\.js$/.test(url)))
   );
 }

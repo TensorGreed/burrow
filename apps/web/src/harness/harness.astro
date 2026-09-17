@@ -35,7 +35,7 @@
 // `worker-host.test.ts` can import the state machine directly and drive every transition
 // against a fake worker.
 import BaseLayout from "../layouts/BaseLayout.astro";
-import { ENGINES } from "../generated/engines.js";
+import { BUNDLE_RENDER_WORKER, BUNDLE_WORKER, ENGINES } from "../generated/engines.js";
 ---
 
 <BaseLayout
@@ -43,7 +43,12 @@ import { ENGINES } from "../generated/engines.js";
   description="Test-only harness. Not part of the site."
 >
   <h1>engine harness</h1>
-  <div id="engines" data-engines={JSON.stringify(ENGINES)}></div>
+  <div
+    id="engines"
+    data-engines={JSON.stringify(ENGINES)}
+    data-bundles={JSON.stringify({ worker: BUNDLE_WORKER, renderWorker: BUNDLE_RENDER_WORKER })}
+  >
+  </div>
   <p id="status">idle</p>
   <pre id="result"></pre>
   <script type="module" src="/host/harness-driver.js" is:inline></script>
