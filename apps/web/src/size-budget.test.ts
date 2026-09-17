@@ -33,8 +33,10 @@ import { describe, expect, it } from "vitest";
 import {
   byBudgetKey,
   digestsByBudgetKey,
+  engineClosures,
   heaviestFirstLoad,
   normaliseEngineHashes,
+  renderFirstLoad,
 } from "../../../tools/first-load.mjs";
 import {
   HASH_COUPLING_BYTES,
@@ -61,6 +63,11 @@ const budget: {
   headroom: { per_artifact: number; page: number; total: number; why: string[] };
   artifacts: Record<string, Line>;
   total: Line;
+  render: {
+    artifacts: Record<string, Line>;
+    total: Line;
+    not_byte_reproducible: Record<string, string>;
+  };
   not_byte_reproducible: Record<string, string>;
   drift_tolerance: number;
 } = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));
@@ -83,6 +90,28 @@ const live: Record<string, Live> = Object.fromEntries(
       brotli: group.brotli,
       sha256: digests[key].raw,
       sha256Normalised: digests[key].normalised,
+    },
+  ]),
+);
+
+// THE SECOND PAYLOAD. ADR 0026: a page that needs a picture of a page fetches a second worker
+// bundle and PDFium with it, so one number stopped describing this build. `renderGroups` is the
+// DELTA -- what that page pays on top of the base -- while `renderMeasurement.total` is what it
+// pays altogether.
+const renderMeasurement = renderFirstLoad(PRODUCTION_DIR, heaviest.page);
+const renderOnly = new Set(engineClosures(PRODUCTION_DIR).render);
+const renderGroups = byBudgetKey({
+  entries: renderMeasurement.entries.filter((entry) => renderOnly.has(entry.path)),
+});
+const renderDigests = digestsByBudgetKey(PRODUCTION_DIR, renderGroups);
+const renderLive: Record<string, Live> = Object.fromEntries(
+  Object.entries(renderGroups).map(([key, group]) => [
+    key,
+    {
+      raw: group.raw,
+      brotli: group.brotli,
+      sha256: renderDigests[key].raw,
+      sha256Normalised: renderDigests[key].normalised,
     },
   ]),
 );
@@ -327,12 +356,71 @@ describe("the first-load size budget", () => {
     ]) {
       expect(keys, `${required} is not in the measured payload`).toContain(required);
     }
-    // AND NO PDFIUM. It was 79.7% of this payload and the assertion here was that it stayed
-    // above 70% — which was the right shape of check (a payload missing its bulk is a broken
-    // measurement) pointed at an engine the web no longer loads. Spike 0004 removed it, so the
-    // same idea is now qpdf: it is the bulk, and a measurement where it is not has gone wrong.
-    expect(keys, "PDFium is not supposed to ship to the web").not.toContain("engines/pdfium.wasm");
+    // AND NO PDFIUM IN **THIS** PAYLOAD. It was 79.7% of the one payload there used to be, and
+    // the assertion here was that it stayed above 70% — the right shape of check (a payload
+    // missing its bulk is a broken measurement) pointed at an engine the web no longer loaded.
+    // Spike 0004 removed it; ADR 0026 brought it back in a SECOND bundle, so the sentence has
+    // to be about which payload rather than about the web.
+    //
+    // THIS IS ADR 0026'S CLAIM, ASSERTED AS ARITHMETIC. "A visitor who lands on /merge-pdf and
+    // merges two files downloads no PDFium at all" is exactly "pdfium.wasm is not a line in
+    // this measurement", and the measurement is derived from the manifest the base bundle
+    // carries — so it cannot be satisfied by anyone remembering to keep a list right.
+    expect(
+      keys,
+      "PDFium is in the BASE payload: every tool page would download it. ADR 0026",
+    ).not.toContain("engines/pdfium.wasm");
     expect(groups["engines/qpdf.wasm"].brotli / measurement.total.brotli).toBeGreaterThan(0.5);
+  });
+
+  it("stays within the render budget, and says what a page pays for a picture", () => {
+    expect(
+      renderMeasurement.total.brotli,
+      `a rendering page's first load is ${kb(renderMeasurement.total.brotli)} brotli, over ` +
+        `the ${kb(budget.render.total.budget_brotli)} budget`,
+    ).toBeLessThanOrEqual(budget.render.total.budget_brotli);
+
+    for (const [key, line] of Object.entries(budget.render.artifacts)) {
+      const actual = renderGroups[key];
+      if (!actual) continue; // covered by the coverage assertions below
+      expect(
+        actual.brotli,
+        `${key}: ${kb(actual.brotli)} > ${kb(line.budget_brotli)}`,
+      ).toBeLessThanOrEqual(line.budget_brotli);
+    }
+  });
+
+  it("budgets every render artifact, and none that no longer ships", () => {
+    // BOTH DIRECTIONS, as the base payload gets. Without the first, a new artifact in the
+    // render bundle is counted by the total and budgeted by nothing; without the second, a
+    // stale line reads as coverage for a file that is gone.
+    const unbudgeted = Object.keys(renderGroups).filter((key) => !(key in budget.render.artifacts));
+    expect(
+      unbudgeted,
+      `the render payload contains artifacts with no budget: ${unbudgeted.join(", ")}`,
+    ).toEqual([]);
+
+    const stale = Object.keys(budget.render.artifacts).filter((key) => !(key in renderGroups));
+    expect(
+      stale,
+      `size-budget.json budgets render files that do not ship: ${stale.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("puts PDFium in the render payload, so the cost is recorded rather than invisible", () => {
+    // THE OTHER HALF OF THE ABSENCE CLAIM. A base payload with no PDFium in it would also be
+    // what a build that failed to stage PDFium at all looks like — and that build serves a
+    // dead thumbnail strip with nothing failing. So the same partition that proves it is not
+    // in the base proves it IS in the render bundle, and that it is the bulk of it.
+    expect(Object.keys(renderGroups)).toContain("engines/pdfium.wasm");
+    expect(
+      renderGroups["engines/pdfium.wasm"].brotli / renderMeasurement.total.brotli,
+    ).toBeGreaterThan(0.5);
+
+    // AND THE TWO PAYLOADS ARE DISJOINT WHERE THEY SHOULD BE. Nothing is counted twice: the
+    // render total is the base total plus exactly the delta lines.
+    const delta = Object.values(renderGroups).reduce((n, g) => n + g.brotli, 0);
+    expect(measurement.total.brotli + delta).toBe(renderMeasurement.total.brotli);
   });
 
   it("catches a regression split across three files, which no per-file budget would", () => {
@@ -436,6 +524,40 @@ describe("the recording describes the build it claims to", () => {
       tolerance: budget.drift_tolerance,
     });
     expect(findings.map(explain)).toEqual([]);
+  });
+
+  it("finds no drift in the RENDER lines either", () => {
+    // THE RENDER LINES RECORDED DIGESTS THAT NOTHING COMPARED, which code review raised: the
+    // whole drift block read `budget.artifacts` and `live`, so three `measured_sha256` values
+    // sat in the file reading as coverage. A digest nobody compares is worse than none — it
+    // says a check happened.
+    //
+    // Two of the three are declared unreproducible for exactly the reason their base twins
+    // are: they inherit a locally-built `pkg-render/`. `engines/pdfium.wasm` is NOT, and is
+    // the control — it is a prebuilt vendored artifact whose bytes match between a local build
+    // and CI, so it takes the exact comparison and a drift in it is a real finding.
+    const findings = driftFindings({
+      recorded: budget.render.artifacts,
+      live: renderLive,
+      notByteReproducible: budget.render.not_byte_reproducible,
+      tolerance: budget.drift_tolerance,
+    });
+    expect(findings.map(explain)).toEqual([]);
+  });
+
+  it("gives every render exemption a reason, and exempts nothing it does not budget", () => {
+    for (const [key, reason] of Object.entries(budget.render.not_byte_reproducible)) {
+      expect(reason.length, `${key} is exempt with no reason given`).toBeGreaterThan(40);
+      expect(budget.render.artifacts, `${key} is exempt but is not an artifact`).toHaveProperty(
+        key,
+      );
+    }
+    // AND THE CONTROL IS NOT EXEMPT. If `pdfium.wasm` ever joined this list, the render half of
+    // the drift check would have no artifact under the exact comparison at all.
+    expect(
+      Object.keys(budget.render.not_byte_reproducible),
+      "pdfium.wasm is a vendored prebuilt; exempting it would leave nothing exactly compared",
+    ).not.toContain("engines/pdfium.wasm");
   });
 
   it("says which comparison each artifact was subject to, and examines every one", () => {

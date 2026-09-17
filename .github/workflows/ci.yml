@@ -717,6 +717,26 @@ jobs:
       - name: Python tools compile with no syntax warnings
         run: python3 tools/check-python-syntax.py
 
+      # EVERY PATH THIS REPOSITORY'S OWN TOOLING NAMES EXISTS. Here, in the job that fetches
+      # nothing, because it reads only committed files and `git ls-files` -- and running it on
+      # a clean checkout is what proves it needs no build.
+      #
+      # TWO INSTANCES IN ONE CHANGE, which is why it is a check rather than a fix. ADR 0026
+      # renamed a gate, updated `ci.yml`, and left `deploy.yml` naming the old path -- the
+      # deploy job would have died at its last gate before upload, after merge to main, with
+      # the gate itself silently gone. Then `check-qpdf-trapped.py` was found hard-coding two
+      # bridge paths the same change had split, where the quiet failure is worse than the loud
+      # one: a checker reading one of two halves of a hand-written audit surface reports a
+      # clean run over half of it.
+      #
+      # `tools/ci-local.py` could catch neither and should not be asked to: it reads `ci.yml`
+      # only, deliberately, because `deploy.yml` holds a credential and has steps that can have
+      # no local counterpart. Both found by review.
+      - name: Every path the workflows and tools name exists
+        run: |
+          python3 tools/check-referenced-paths.py
+          tools/test-check-referenced-paths.sh
+
       # Generated output must never be tracked. Twice it reached main while the ignore rule
       # that should have stopped it existed: a `.pyc` in #29, and 24 spike sweep logs in #37,
       # whose rule lived in a BRANCH-LOCAL .gitignore that checking out main removed.
@@ -845,7 +865,8 @@ jobs:
       - name: First-load size budget
         working-directory: apps/web
         run: node ../../tools/report-size-budget.mjs dist
-      # PDFIUM REACHES NO PART OF THE WEB BUILD (spike 0004). In the `web` job because it
+      # PDFIUM REACHES THE RENDER BUNDLE AND NO OTHER PART OF THE WEB BUILD (ADR 0026, which
+      # amends spike 0004's outright removal). In the `web` job because it
       # reads `apps/web/dist`, which only this job has -- the rule CLAUDE.md states about
       # where a check lives: a check that silently examines nothing reads as coverage.
       #
@@ -854,10 +875,10 @@ jobs:
       # `../../tools/check-…` is invisible to it — the gate would run in CI and parity would
       # report full coverage over it, which is the exact class of miss that runner exists for.
       # The checker defaults to `apps/web/dist`, so no argument is needed.
-      - name: PDFium reaches no part of the web build
+      - name: PDFium reaches the render bundle and nothing else
         run: |
-          tools/check-no-pdfium-on-the-web.sh
-          tools/test-check-no-pdfium-on-the-web.sh
+          tools/check-pdfium-is-render-only.sh
+          tools/test-check-pdfium-is-render-only.sh
 
       # THE DEPLOY GATE'S SELF-TEST, NOT THE GATE. `check-deployable-build.sh` asks whether a
       # build is for the origin you MEANT, and CI builds for the development default -- so
