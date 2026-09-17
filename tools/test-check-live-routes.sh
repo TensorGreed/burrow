@@ -42,6 +42,18 @@ dist="$workroot/dist"
 # A BUILD OF THREE ROUTES, written here rather than copied from `apps/web/dist`: this suite
 # must run on a clean checkout with no build, and it is testing the checker rather than the
 # site.
+# THE PROPAGATION WAIT IS SHORTENED HERE, AND NOWHERE ELSE.
+#
+# Every "must be refused" case below plants content that never converges -- that is what makes
+# it a case -- so at the production deadline each would wait three minutes before failing and
+# this suite would be unusable. Zero here means "compare immediately", which is what every case
+# was written against.
+#
+# THE ONE CASE THAT MUST NOT USE IT is `the wait does not mask a rewrite`, below: it sets a real
+# deadline deliberately, because a knob that turns a defence off needs one case proving the
+# defence still holds when the knob is not turned.
+export BURROW_LIVE_PROPAGATION_DEADLINE_S=0
+
 PORT=8734
 ORIGIN="http://127.0.0.1:$PORT"
 
@@ -350,6 +362,27 @@ fi
 # beside the original, because a copy in a temp directory resolves its own paths differently
 # and would exit non-zero for the wrong reason, which an exit-code-only assertion reads as a
 # pass (`CLAUDE.md`).
+echo
+echo "  the wait does not mask a rewrite ------------------------------------------"
+
+# THE KNOB'S OWN CONTROL. The wait exists because a propagation lag converges and an edge
+# rewrite does not -- so the rewrite must still be caught with a REAL deadline, not only with
+# the zero this suite otherwise uses. A short but non-zero one is enough to prove the shape:
+# the loop runs, polls, gives up, and compares anyway.
+start_server inject
+status=0
+out="$(BURROW_LIVE_PROPAGATION_DEADLINE_S=6 python3 "$checker" "http://127.0.0.1:$PORT" "$dist" 2>&1)" || status=$?
+if [ "$status" -ne 0 ] &&
+  grep -qF "still does not match the build after" <<<"$out" &&
+  grep -qF "the live origin serves a body the build did not produce" <<<"$out"; then
+  echo "  ok   an injection is still refused after the wait, and the wait says it gave up"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the wait masked an injection, or gave up silently (status $status)"
+  sed 's/^/        /' <<<"$out" | tail -4
+  fail=$((fail + 1))
+fi
+
 echo
 echo "  probe gate -----------------------------------------------------------------"
 copy="$here/.live-routes-probe-fixture.py"

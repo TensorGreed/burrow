@@ -74,9 +74,11 @@ Self-test:
 from __future__ import annotations
 
 import difflib
+import os
 import pathlib
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -308,6 +310,83 @@ def foreign_references(body: bytes, origin: str) -> list[str]:
     return sorted(set(found))
 
 
+
+# How long to let the edge finish switching to the deployment we just uploaded, and how often
+# to ask.
+#
+# WHY THIS EXISTS, MEASURED. `wrangler deploy` returns when the upload is accepted, not when
+# the custom domain serves it, and this check runs in the step immediately after. On the deploy
+# that brought PDFium back -- 5.3 MB and three new files -- the origin was still serving the
+# PREVIOUS deployment about two seconds later, and this check reported sixteen files whose
+# "live origin serves a body the build did not produce". The site was fine. The deployment was
+# correct and complete; verified afterwards against the run's own artifact, all 43 files
+# byte-identical, exit 0.
+#
+# A GATE THAT CRIES WOLF IS ONE PEOPLE LEARN TO RE-RUN UNTIL IT PASSES, which is exactly what
+# this file's header says about gates whose verdict depends on an unstated precondition. The
+# precondition here was "the edge has switched over", and it was neither stated nor waited for.
+#
+# WAITING DOES NOT WEAKEN IT, AND THE REASON IS THE SHAPE OF THE TWO FAILURES. A propagation
+# lag converges: the origin is serving a DIFFERENT BUILD OF OURS and will stop. An edge feature
+# that rewrites HTML never converges -- it rewrites whatever is served, so it is still wrong at
+# the deadline. So the bound turns "fails if the edge is slow" into "fails if the edge is
+# wrong", which is the question this file was always asking.
+#
+# The deadline is generous and the failure at the end of it is the full diff, unchanged.
+#
+# OVERRIDABLE, AND ONLY THE SELF-TEST MAY DO IT. Every "this must be refused" case in
+# `tools/test-check-live-routes.sh` plants content that never converges -- that is what makes
+# them cases -- so with a fixed deadline each one would wait out the full three minutes before
+# failing. The suite went from seconds to unusable the moment this wait was added, which is how
+# the knob came to exist.
+#
+# `tools/check-deploy-workflow.py` asserts no workflow sets it, because a deadline of zero in
+# the deploy is the wait silently switched off -- and a check whose bound can be removed from
+# outside is a check whose bound nobody can rely on.
+DEADLINE_ENV = "BURROW_LIVE_PROPAGATION_DEADLINE_S"
+PROPAGATION_DEADLINE_S = float(os.environ.get(DEADLINE_ENV, "180"))
+PROPAGATION_POLL_S = 5.0
+
+
+def await_propagation(origin: str, witness: tuple[str, pathlib.Path]) -> str:
+    """Wait until one route matches the build, and say what happened either way.
+
+    ONE WITNESS, NOT ALL OF THEM. Every route changes together -- they come from one upload --
+    so one is as good an answer as forty-three and costs a fortieth of the requests. The full
+    comparison then runs over everything regardless, so this is a *wait*, never a substitute
+    for the check.
+
+    An HTML route is the witness because HTML is what an edge feature rewrites: a `.wasm` that
+    matched would say nothing about the thing this file exists to catch.
+    """
+    route, path = witness
+    built = path.read_bytes()
+    deadline = time.monotonic() + PROPAGATION_DEADLINE_S
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            if not differences(built, fetch(f"{origin}{route}")):
+                if attempts > 1:
+                    print(
+                        f"  waited {attempts} attempt(s) for {route} to match the build; the "
+                        f"edge was still serving the previous deployment"
+                    )
+                return "matched"
+        except (Refused, urllib.error.URLError, OSError):
+            # Not interpreted here. The full pass below fetches everything and reports a
+            # fetch failure properly; swallowing it would be this function deciding something.
+            pass
+        if time.monotonic() >= deadline:
+            print(
+                f"  {route} still does not match the build after "
+                f"{PROPAGATION_DEADLINE_S:.0f}s and {attempts} attempt(s). Comparing anyway, "
+                f"so the failure below is the diff rather than a timeout."
+            )
+            return "timed-out"
+        time.sleep(PROPAGATION_POLL_S)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
         fail("usage: tools/check-live-routes.py <origin> <dist>")
@@ -385,6 +464,9 @@ def main(argv: list[str]) -> int:
             f"build that happens not to need it."
         )
         return 2
+
+    # THE WAIT, BEFORE THE COMPARISON AND NOT INSTEAD OF IT.
+    await_propagation(origin, routes[0])
 
     problems = 0
     checked = 0

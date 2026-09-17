@@ -82,6 +82,14 @@ REQUIRED_POST_UPLOAD_CHECKS = {
 #: worth nothing if `ci.yml` -- which DOES run on `pull_request` -- can read the same token.
 CREDENTIAL_PREFIX = "CLOUDFLARE_"
 
+# A knob that shortens the live check's propagation wait. `tools/check-live-routes.py` reads it
+# so its own self-test can compare immediately instead of waiting three minutes per case.
+#
+# NO WORKFLOW MAY SET IT. Setting it to zero in the deploy is the wait silently switched off,
+# and the wait is what separates "the edge is slow" from "the edge is wrong" -- a bound that
+# can be removed from outside the check is a bound nobody can rely on.
+PROPAGATION_ENV = "BURROW_LIVE_PROPAGATION_DEADLINE_S"
+
 
 class Refused(Exception):
     """A rule failed. The message is the reason, and it names what to do."""
@@ -470,6 +478,23 @@ def check_no_other_workflow_holds_the_credential(report: list[str]) -> None:
             "no other workflows found to check, which means this rule examined nothing"
         )
     report.append(f"{len(others)} other workflow(s), none mentioning {CREDENTIAL_PREFIX}*")
+
+    # AND NOTHING TURNS THE LIVE CHECK'S WAIT OFF. Every workflow, including the deploy: the
+    # deploy is the one that runs the check, so it is the one where switching the wait off
+    # would matter and the one place nobody would look.
+    setters = [
+        show(path)
+        for path in sorted(directory.glob("*.yml")) + sorted(directory.glob("*.yaml"))
+        if PROPAGATION_ENV in path.read_text(encoding="utf-8")
+    ]
+    if setters:
+        raise Refused(
+            f"{', '.join(setters)} sets {PROPAGATION_ENV}. That shortens the wait "
+            f"`tools/check-live-routes.py` uses to let a deployment reach the edge before it "
+            f"compares -- and the wait is what makes a slow edge different from a wrong one. "
+            f"It exists for that check's own self-test and nowhere else."
+        )
+    report.append(f"no workflow sets {PROPAGATION_ENV}")
 
 
 PROBES = [
