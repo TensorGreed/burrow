@@ -111,7 +111,16 @@ function manifestViaPython(): {
  * libjpeg-turbo carries the IJG affirmative notice, so that would be an UNDER-declaration.
  * The manifest's own header says the field "has never been re-derived per artifact".
  */
-const WEB_ARTIFACTS = ["qpdf-wasm"];
+const WEB_ARTIFACTS = ["qpdf-wasm", "pdfium-wasm"];
+
+/**
+ * The artifact a browser fetches only when a page needs a picture of a page (ADR 0026).
+ *
+ * Stated here, independently of the generator, for the reason the doc comment above gives
+ * about `WEB_ARTIFACTS`: taking the split from `CREDITS.surfaces.web.conditional` would make
+ * the assertion below agree with whatever the generator decided.
+ */
+const WEB_CONDITIONAL_ARTIFACTS = ["pdfium-wasm"];
 
 function webComponents() {
   return manifestViaPython().component.filter((c) =>
@@ -151,36 +160,42 @@ describe("the built credits page", () => {
     }
   });
 
-  it("does NOT credit FreeType, because the web no longer distributes it — and still owes it", () => {
+  it("credits FreeType again, because the render bundle distributes it — conditionally", () => {
+    // THIS TEST WAS THE OTHER WAY ROUND, AND SAID SO. Spike 0004 took PDFium out of the web
+    // payload, FreeType reached burrow only through PDFium, and the page correctly stopped
+    // crediting it. The assertion carried its own inversion condition verbatim: "if PDFium is
+    // back in the payload this test is the wrong way round and the page must credit it again".
+    // ADR 0026 is that, so it is inverted rather than deleted — a licence assertion that
+    // disappears in the change that makes it matter again is the shape nobody notices.
+    //
     // FTL section 2 says "based in part OF the work", which reads like a typo and is not ours
-    // to correct; the string is kept here verbatim because this test is what will be inverted
-    // when an artifact that carries PDFium gets its own credits screen.
+    // to correct; the string is asserted verbatim below for that reason.
     //
-    // THE OBLIGATION IS NOT GONE, IT IS NOT OURS ON THIS SURFACE. FreeType reaches burrow
-    // through PDFium, and spike 0004 took PDFium out of the web payload. A browser downloads
-    // `qpdf.wasm` and no FreeType code arrives with it. Crediting it anyway is over-
-    // declaration -- harmless to the licence, corrosive to the page, which claims it credits
-    // what you actually received.
-    //
-    // ASSERTED IN BOTH DIRECTIONS, because this is a licence surface and "we removed it" is
-    // the sentence that later turns out to mean "we lost it":
+    // ASSERTED IN BOTH DIRECTIONS, because this is a licence surface: the component is on the
+    // page, AND it is named as one that arrives only with the render bundle. Crediting it
+    // without saying which is over-declaration the reader cannot check; saying it without
+    // crediting it would be the breach.
     const manifest = manifestViaPython().component;
     const freetype = manifest.find((c) => c.name === "freetype");
-    expect(
-      freetype,
-      "freetype left the manifest entirely, which is not what was intended",
-    ).toBeDefined();
+    expect(freetype, "freetype left the manifest entirely").toBeDefined();
     expect(freetype?.notice_required, "freetype's notice obligation was dropped").toBeTruthy();
     expect(
       (freetype?.artifacts ?? []).some((id) => WEB_ARTIFACTS.includes(id)),
-      "freetype now claims a web artifact; if PDFium is back in the payload this test is the " +
-        "wrong way round and the page must credit it again",
+      "freetype claims no web artifact; if PDFium has left the payload again this test is the " +
+        "wrong way round and the page must stop crediting it",
+    ).toBe(true);
+    expect(
+      (freetype?.artifacts ?? []).some(
+        (id) => WEB_ARTIFACTS.includes(id) && !WEB_CONDITIONAL_ARTIFACTS.includes(id),
+      ),
+      "freetype now claims an UNCONDITIONAL web artifact, so the page's 'only if you look at " +
+        "page pictures' sentence has become false for it",
     ).toBe(false);
-    // ...and it is absent from the page a browser gets.
-    expect(rosterInPage()).not.toContain("freetype");
 
-    // M3/M4: the Android and iOS screens scope to THEIR artifacts from the same data, and
-    // this obligation is theirs. `CREDITS.components` still carries it.
+    expect(rosterInPage()).toContain("freetype");
+    expect(pageText(), "FTL §2's credit line is not on the page").toContain(
+      "based in part of the work of the FreeType Team",
+    );
   });
 
   it("carries the Independent JPEG Group's credit line", () => {
@@ -189,21 +204,26 @@ describe("the built credits page", () => {
     expect(pageText()).toContain("based in part on the work of the Independent JPEG Group");
   });
 
-  it("does NOT credit HarfBuzz either, and its obligation is likewise still declared", () => {
+  it("credits HarfBuzz again, on the same condition and for the same reason", () => {
     // MIT-Modern-Variant requires the notice AND both disclaimer paragraphs. PDFium's package
     // ships no HarfBuzz licence at all, which is why the text is committed at
     // docs/adr/licences/harfbuzz-14.3.1-COPYING.txt (ADR 0010) -- and why losing track of this
-    // one would be easy. Same shape as the FreeType case above: it arrives through PDFium,
-    // which the web has not distributed since spike 0004.
+    // one would be easy. Same shape as the FreeType case above, inverted by the same change.
     const harfbuzz = manifestViaPython().component.find((c) => c.name.startsWith("harfbuzz"));
     expect(harfbuzz, "harfbuzz left the manifest").toBeDefined();
     expect(harfbuzz?.notice_required, "harfbuzz's notice obligation was dropped").toBeTruthy();
     expect(harfbuzz?.license_text, "harfbuzz's committed licence text was dropped").toBeTruthy();
     expect(
       (harfbuzz?.artifacts ?? []).some((id) => WEB_ARTIFACTS.includes(id)),
-      "harfbuzz now claims a web artifact",
+      "harfbuzz claims no web artifact",
+    ).toBe(true);
+    expect(
+      (harfbuzz?.artifacts ?? []).some(
+        (id) => WEB_ARTIFACTS.includes(id) && !WEB_CONDITIONAL_ARTIFACTS.includes(id),
+      ),
+      "harfbuzz now claims an UNCONDITIONAL web artifact",
     ).toBe(false);
-    expect(rosterInPage().some((n) => n.startsWith("harfbuzz"))).toBe(false);
+    expect(rosterInPage().some((n) => n.startsWith("harfbuzz"))).toBe(true);
   });
 
   it("carries every notice obligation the manifest declares, verbatim", () => {
@@ -298,6 +318,40 @@ describe("the built credits page", () => {
       // licence, or rendered only its first paragraph, fails here.
       const text = readBuilt(REPO, component.license_text as string).trim();
       expect(html, `${component.name}'s licence text is not on the page in full`).toContain(text);
+    }
+  });
+
+  it("says which components arrive only with the render bundle, and names them", () => {
+    // ADR 0026 put PDFium back on the web in a SECOND bundle, so this page now credits more
+    // than any one visitor has necessarily downloaded. That is the right direction to be wrong
+    // in -- a reader who DOES render is owed FreeType's FTL §2 and HarfBuzz's
+    // MIT-Modern-Variant, and a build cannot know in advance whether they will -- but a page
+    // that quietly claimed they had downloaded all of it would be a page nobody can check,
+    // which is the thing spike 0004 left loose in the other direction.
+    //
+    // So the page has to SAY it, and it has to say WHICH. Both halves are asserted, because a
+    // sentence with no names is the version that survives a component being added.
+    const html = pageText();
+    const conditional = manifestViaPython().component.filter(
+      (c) =>
+        (c.artifacts ?? []).some((id) => WEB_CONDITIONAL_ARTIFACTS.includes(id)) &&
+        !(c.artifacts ?? []).some(
+          (id) => WEB_ARTIFACTS.includes(id) && !WEB_CONDITIONAL_ARTIFACTS.includes(id),
+        ),
+    );
+    expect(
+      conditional.length,
+      "no component is conditional, so this assertion would pass over nothing",
+    ).toBeGreaterThan(0);
+
+    expect(html, "the page does not say that some components arrive only with rendering").toMatch(
+      /arrives only if you look at page pictures/i,
+    );
+    for (const component of conditional) {
+      expect(
+        html,
+        `${component.name} arrives only with the render bundle and the page does not say so`,
+      ).toContain(component.name);
     }
   });
 

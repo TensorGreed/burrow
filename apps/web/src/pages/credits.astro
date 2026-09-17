@@ -54,6 +54,12 @@ import { CREDITS } from "../generated/credits.js";
 const scope = CREDITS.surfaces.web;
 const shipped = CREDITS.components.filter((c) => scope.components.includes(c.name));
 
+// COMPONENTS THAT ARRIVE ONLY WITH THE RENDER BUNDLE (ADR 0026). Derived in
+// `generate-credits.mjs` from the artifact sets rather than listed here, so a component that
+// starts shipping in both stops being described as conditional without anyone noticing.
+const conditional = shipped.filter((c) => scope.conditional.components.includes(c.name));
+const conditionalNames = conditional.map((c) => c.name).join(", ");
+
 const notices = shipped.filter((c) => c.noticeRequired !== null);
 const withText = shipped.filter((c) => c.licenseText !== null);
 
@@ -84,11 +90,25 @@ const slug = (name: string) =>
   </p>
 
   <p>
-    <strong>This page credits what your browser downloaded</strong> — the PDF engine that runs in this
-    tab, and the components inside it. Not Only PDF's Android and iOS apps and its command-line builds
+    <strong>This page credits what your browser can download</strong> — the PDF engines that run in this
+    tab, and the components inside them. Not Only PDF's Android and iOS apps and its command-line builds
     carry more than this, and each of those credits its own. If you are comparing this list against the
     project's licence manifest, that is why it is shorter: the manifest covers every build, and this page
-    covers yours.
+    covers the web.
+  </p>
+
+  <p>
+    <strong>Some of it arrives only if you look at page pictures.</strong> Most tools here need one PDF
+    engine; showing you a picture of a page needs a second one, and your browser fetches it the first
+    time a page asks for one. So this list is deliberately longer than what you have necessarily received:
+    {conditional.length} of the {shipped.length} components below — {conditionalNames} — come with that
+    second engine, and if you have only merged or split a file you do not have them.
+  </p>
+
+  <p>
+    It is listed this way round on purpose. A page that credited only the first engine would owe you
+    these notices the moment you looked at a page picture, and it cannot know in advance whether you
+    will. Crediting more than you downloaded breaks no licence; crediting less would.
   </p>
 
   <h2 id="required-notices">Required notices</h2>

@@ -71,6 +71,21 @@ resolved_by = "docs/adr/0010-harfbuzz-and-icu-in-pdfium.md"
 # ---------------------------------------------------------------------------------
 
 [[artifact]]
+id = "pdfium-wasm"
+files = "vendor/wasm/lib/pdfium.js + vendor/wasm/lib/pdfium.wasm"
+source = "prebuilt, pdfium-binaries chromium/8044, pdfium-wasm.tgz"
+licences_dir = "vendor/wasm/licenses-pdfium/"
+note = """Finished Emscripten module; no static archive is published. args.gn: \
+pdf_enable_v8=false, pdf_enable_xfa=false, use_custom_libcxx=false (so it uses Emscripten's \
+libc++, not Chromium's).
+
+STAGED AGAIN SINCE ADR 0026, and only into the RENDER worker bundle, which a page fetches \
+when it needs a picture of a page. Spike 0004 removed this block when PDFium left the web \
+payload; what came back is the same artifact under the same pin, so the block is restored \
+rather than rewritten. The obligations below are unchanged and were always true of the \
+native builds anyway."""
+
+[[artifact]]
 id = "pdfium-linux-arm64"
 files = "vendor/native-aarch64/lib/libpdfium.so"
 source = "prebuilt, pdfium-binaries chromium/8044, pdfium-linux-arm64.tgz"
@@ -192,7 +207,7 @@ name = "pdfium-binaries (packaging)"
 version = "chromium/8044"
 license = "MIT"
 license_file = "vendor/native-aarch64/licenses-pdfium/PACKAGING-LICENSE.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = []
 linked = false
 notes = """The package's TOP-LEVEL LICENSE is the packager's MIT (Benoit Blanchon), not \
@@ -206,8 +221,8 @@ version = "chromium/8044"
 license = "BSD-3-Clause AND Apache-2.0"
 license_file = "vendor/native-aarch64/licenses-pdfium/pdfium.txt"
 license_text = "engines/licences/pdfium.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = "pdfium.txt is BSD-3-Clause (lines 1-27) followed by the full Apache-2.0 text (lines 28-230). Both, not either."
 
@@ -217,8 +232,8 @@ version = "bundled with pdfium chromium/8044"
 license = "FTL"
 license_file = "vendor/native-aarch64/licenses-pdfium/freetype.txt"
 license_text = "engines/licences/freetype.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notice_required = "Binary distribution must state that the software is based in part of the work of the FreeType Team. FTL section 2."
 notes = """Confirmed in pdfium.wasm via FREETYPE_PROPERTIES, tt-glyf, tt-cmaps strings, and in \
@@ -232,7 +247,7 @@ version = "bundled with pdfium chromium/8044"
 license = "IJG AND BSD-3-Clause AND Zlib"
 license_file = "vendor/native-aarch64/licenses-pdfium/libjpeg_turbo.ijg"
 license_text = "engines/licences/libjpeg-turbo-pdfium.ijg"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notice_required = "Documentation must state: this software is based in part on the work of the Independent JPEG Group. IJG LEGAL ISSUES condition 2."
@@ -248,7 +263,7 @@ version = "2.3"
 license = "LicenseRef-AGG-2.3"
 license_file = "docs/adr/licences/LicenseRef-AGG-2.3.txt"
 license_text = "docs/adr/licences/LicenseRef-AGG-2.3.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = """No SPDX identifier exists; named locally by ADR 0008 with the grant text committed. \
@@ -264,7 +279,7 @@ name = "libpng (bundled in pdfium)"
 version = "bundled with pdfium chromium/8044"
 license = "libpng-2.0"
 license_file = "vendor/native-aarch64/licenses-pdfium/libpng.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = []
 linked = false
 notes = """Ships in all three packages. No libpng symbols found: libpdfium.so (arm64) has \
@@ -279,8 +294,8 @@ version = "bundled with pdfium chromium/8044"
 license = "BSD-2-Clause"
 license_file = "vendor/native-aarch64/licenses-pdfium/libopenjpeg.txt"
 license_text = "engines/licences/libopenjpeg.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = "opj_create_decompress in libpdfium.so (arm64); 25 opj_ strings plus JPEG-2000 box error messages in pdfium.wasm."
 
@@ -290,8 +305,8 @@ version = "bundled with pdfium chromium/8044"
 license = "Apache-2.0"
 license_file = "vendor/native-aarch64/licenses-pdfium/abseil.txt"
 license_text = "engines/licences/abseil-cpp.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = "43 absl:: symbols in libpdfium.so (arm64); ../third_party/abseil-cpp/absl/base/throw_delegate.cc assertion path in pdfium.wasm."
 
@@ -301,8 +316,8 @@ version = "2.19"
 license = "MIT"
 license_file = "vendor/native-aarch64/licenses-pdfium/lcms.txt"
 license_text = "engines/licences/lcms.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = "cmsCreateTransform / cmsOpenProfileFromMem in libpdfium.so (arm64); cmsWhitePointFromTemp error string in pdfium.wasm."
 
@@ -311,7 +326,7 @@ name = "simdutf"
 version = "bundled with pdfium chromium/8044"
 license = "MIT"
 license_file = "vendor/native-aarch64/licenses-pdfium/simdutf.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = []
 linked = false
 notes = """CHANGED FROM linked = true (spike 0001 assumed it). Zero simdutf symbols in \
@@ -325,7 +340,7 @@ version = "bundled with pdfium chromium/8044"
 license = "MIT"
 license_file = "vendor/native-aarch64/licenses-pdfium/fast_float.txt"
 license_text = "engines/licences/fast_float.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = "17 fast_float symbols in libpdfium.so (arm64). Not separately confirmable in pdfium.wasm: the module carries no name section, and a header-only numeric parser leaves no data strings."
@@ -336,7 +351,7 @@ version = "1.3.2.1"
 license = "Zlib"
 license_file = "vendor/native-aarch64/licenses-pdfium/zlib.txt"
 license_text = "engines/licences/zlib-pdfium.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = """inflateInit2 / deflateInit2 in libpdfium.so (arm64). Version 1.3.2.1 per the shipped \
@@ -373,8 +388,8 @@ version = "14.3.1"
 license = "MIT-Modern-Variant"
 license_file = "docs/adr/licences/harfbuzz-14.3.1-COPYING.txt"
 license_text = "docs/adr/licences/harfbuzz-14.3.1-COPYING.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notice_required = "Reproduce the copyright notice and both disclaimer paragraphs in all copies. MIT-Modern-Variant."
 notes = """DETERMINED by ADR 0010; was previously LicenseRef-UNDETERMINED.
@@ -408,8 +423,8 @@ version = "78.2"
 license = "Unicode-3.0 AND ICU"
 license_file = "vendor/native-aarch64/licenses-pdfium/icu.txt"
 license_text = "engines/licences/icu.txt"
-artifacts = ["pdfium-linux-arm64", "pdfium-linux-x64"]
-linked_in = ["pdfium-linux-arm64", "pdfium-linux-x64"]
+artifacts = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
+linked_in = ["pdfium-wasm", "pdfium-linux-arm64", "pdfium-linux-x64"]
 linked = true
 notes = """Version pinned, not inferred: PDFium's DEPS on chromium/8044 pins icu_revision \
 to 8cc91d9b6ab9991802fd208ee03a69714fd0251c, whose source/common/unicode/uvernum.h reads \
@@ -595,8 +610,8 @@ version = "6.0.9"
 license = "MIT AND Apache-2.0 WITH LLVM-exception"
 license_file = "emsdk:upstream/emscripten/LICENSE"
 license_text = "engines/licences/emscripten.txt"
-artifacts = ["qpdf-wasm", "zlib-wasm", "jpeg-wasm"]
-linked_in = ["qpdf-wasm", "jpeg-wasm"]
+artifacts = ["pdfium-wasm", "qpdf-wasm", "zlib-wasm", "jpeg-wasm"]
+linked_in = ["pdfium-wasm", "qpdf-wasm", "jpeg-wasm"]
 linked = true
 notes = """RETAINED, unlike the zlib and libjpeg port entries: Emscripten still contributes \
 musl-derived libc, libc++/libc++abi and compiler-rt to every wasm artifact, plus the 164 KB \
