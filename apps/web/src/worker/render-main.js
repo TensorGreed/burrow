@@ -89,6 +89,11 @@ const KNOWN_OPS = new Set(["page_count", "render"]);
  *   `{ id, page: { number, index, of, width, height }, pixels }` per page
  *   the ordinary terminal reply, carrying no pixels
  *
+ * The terminal reply may carry `recycle: true` and a `pages` count, which means the strip
+ * STOPPED EARLY because the engine heap grew past the recycling threshold. It is not a failure:
+ * every tile up to `pages` is good, the host replaces the worker, and the caller re-requests
+ * the rest. See the note beside it for why a strip cannot leave that verdict to the end.
+ *
  * A consumer that reads the terminal reply and ignores the pages gets nothing rather than the
  * first page, which is the direction to fail in.
  *
@@ -171,6 +176,24 @@ function renderStrip(id, bytes, pages, boxWidth, boxHeight, password, limits) {
           [pixels.buffer],
         );
         self.postMessage({ id, progress: { part: index + 1, of } });
+
+        // THE RECYCLE VERDICT, ACTED ON MID-STRIP RATHER THAN AT THE END.
+        //
+        // `Reply::recycle` is computed in Rust from `max_memory_bytes` for every reply,
+        // including each page's. On a single-output operation the host reads it off the
+        // terminal reply and replaces the worker; on a STRIP the terminal reply carries no
+        // bytes and no verdict, so a strip that grew the heap past the threshold would have
+        // carried on loading pages into it until the whole document was drawn. Measured why it
+        // matters: `FPDF_LoadPage` is 757 MiB on one adversarial page, and the wasm module's
+        // ceiling is a fixed 2 GiB.
+        //
+        // So the strip STOPS here and says so. The page has every tile up to this one and
+        // re-requests the rest, which arrive in a fresh worker -- which is what "the previous
+        // page has freed" means on a platform whose heap never shrinks.
+        if (flat.recycle) {
+          self.postMessage({ ...refusalFree(id), recycle: true, pages: index + 1 });
+          return;
+        }
       } finally {
         // A wasm-bindgen object is a boxed Rust value in a heap that never shrinks. One leaked
         // page per tile is a worker that grows with the length of the strip.

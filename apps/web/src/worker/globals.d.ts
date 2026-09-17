@@ -49,6 +49,8 @@ interface EmscriptenModule extends EmscriptenConfig {
   HEAPU8: Uint8Array;
   /** The same memory as 32-bit words, for writing an out-parameter. */
   HEAPU32: Uint32Array;
+  /** The same memory as 32-bit floats, for reading an `FS_SIZEF` back out of the C stack. */
+  HEAPF32: Float32Array;
   _malloc(size: number): number;
   _free(ptr: number): void;
 
@@ -61,10 +63,24 @@ interface EmscriptenModule extends EmscriptenConfig {
   // of them TYPE-CHECKS and then fails at run time in the browser and nowhere else. Splitting
   // them per bundle means the checker sees the same set of exports the bundle actually has.
 
-  // --- the C stack, for an out-parameter that lives for one call. ---
-  stackSave(): number;
-  stackAlloc(size: number): number;
-  stackRestore(saved: number): void;
+  /**
+   * Add a JS function to the module's function table and return its index.
+   *
+   * Needs a GROWABLE table, which Emscripten emits only with `ALLOW_TABLE_GROWTH`. The
+   * vendored `pdfium.wasm` declares `min=3299` with no maximum, so it grows -- established by
+   * reading the artifact's table section rather than assumed. Throws if it cannot grow.
+   */
+  addFunction(fn: (...args: number[]) => number, signature: string): number;
+  /** Release a table entry from {@link addFunction}. Without it the table only ever grows. */
+  removeFunction(index: number): void;
+
+  // NO `stackSave`/`stackAlloc`/`stackRestore` HERE EITHER, and it is the same lesson as the
+  // `_FPDF_*` note above, learned again. The qpdf build exports them and the vendored
+  // `pdfium.wasm` does not -- 3 occurrences against 0, checked in the artifacts. While they sat
+  // in this shared interface, a call to one of them from the PDFium bridge type-checked and
+  // threw in the browser: every render came back `Internal`, the worker was discarded as
+  // poisoned, and nothing but the differential corpus noticed. They are in
+  // `globals-qpdf.d.ts`.
 }
 
 /** One staged artifact: where it is, and what it must hash to. */

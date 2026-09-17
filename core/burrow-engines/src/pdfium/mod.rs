@@ -63,6 +63,13 @@ pub struct PdfiumDocument {
     deadline: Deadline,
     clock: Arc<dyn Clock>,
     pages_at_open: u64,
+    /// The resident set when this document was opened.
+    ///
+    /// **The baseline a strip is measured against**, so `estimate::before_page_load` can refuse
+    /// to enter another uninterruptible `FPDF_LoadPage` once this document's rendering has
+    /// already spent the caller's budget. Taken at open rather than per call because the
+    /// question is what the *strip so far* cost, not what one page did.
+    memory_at_open: Option<u64>,
 }
 
 impl PdfiumDocument {
@@ -227,6 +234,7 @@ impl DocumentEngine for Pdfium {
             deadline,
             clock,
             pages_at_open: pages,
+            memory_at_open: crate::rss::resident_bytes(),
         })
     }
 
@@ -279,6 +287,116 @@ fn raster_dimension(value: u32) -> Result<c_int> {
     })
 }
 
+/// How many slices pass between memory readings.
+///
+/// The deadline is checked on EVERY slice: it is a clock read, tens of nanoseconds, and a
+/// hundred thousand of them are lost in the noise of a forty-second render. The resident-set
+/// reading is a **procfs read** -- a syscall, and an open/read/parse at that -- so doing it per
+/// slice on the 100,002-slice case would be a hundred thousand syscalls to measure something
+/// that moves by a megabyte at a time.
+///
+/// 16 is chosen from the measurement: the worst single slice grew the resident set by 1.0 MiB,
+/// so sixteen of them is at most 16 MiB between readings -- inside the 32 MiB-per-slice bar the
+/// slice measurement was held to, with the same margin.
+const SLICES_PER_MEMORY_READING: u32 = 16;
+
+/// Draw a page with a checkpoint between slices.
+///
+/// **This replaced a single `FPDF_RenderPageBitmap`**, which has no checkpoint inside it at all:
+/// one call on a hostile content stream was measured at 112 seconds and 2.7 GB while drawing a
+/// 240x320 thumbnail, and the only thing that could end it was the page terminating the worker.
+///
+/// Measured on the same two inputs, PDFium yields every ~100 paths: **30,002 and 100,002
+/// slices, p99 0.4 ms, longest 0.7 ms**. So a deadline lands within a millisecond of coming due
+/// rather than minutes, and the operation ends with a typed refusal instead of a dead instance.
+///
+/// # What this does NOT cover, and it is most of the cost
+///
+/// `FPDF_LoadPage` runs before any of this and **cannot be checkpointed**: it parses the content
+/// stream and builds the display list in one uninterruptible call, measured at **1.2 s / 757 MiB**
+/// and **3.5 s / 1,765 MiB** on those two inputs -- around 70% of the peak. Interruptibility here
+/// is a property of *rendering*, not of *loading*. ADR 0027's amendment says so in those words,
+/// and the load phase is bounded by refusing to start one at all when the process is already
+/// over budget -- see `crate::estimate::before_page_load`.
+fn render_progressively(
+    bitmap: ffi::FpdfBitmap,
+    page: ffi::FpdfPage,
+    width: c_int,
+    height: c_int,
+    deadline: &Deadline,
+    clock: &dyn Clock,
+    limits: &Limits,
+) -> Result<()> {
+    // PINNED FOR THE WHOLE RENDER, not just the first call. PDFium keeps this pointer until
+    // `render_page_close`, so a `&mut` to a local that the compiler is free to move would be a
+    // dangling callback on the second slice. The `Box` is what gives it a stable address.
+    let mut pause = Box::new(ffi::IfsdkPause::always());
+    let pause_ptr: *mut ffi::IfsdkPause = &mut *pause;
+
+    let before = crate::rss::resident_bytes();
+
+    // SAFETY: both handles are live and from the same document, the extent is the bitmap's own,
+    // `pause` outlives every call below (it is dropped after `render_page_close`), and this runs
+    // inside a job so it is on the engine thread.
+    let mut state = unsafe { ffi::render_page_start(bitmap, page, width, height, pause_ptr) };
+
+    let mut slices: u32 = 0;
+    let outcome = loop {
+        if state != ffi::FPDF_RENDER_TOBECONTINUED {
+            break Ok(state);
+        }
+
+        // THE CHECKPOINT THE WHOLE MECHANISM EXISTS FOR. Every slice, because it is cheap.
+        if let Err(error) = deadline.checkpoint(clock) {
+            break Err(error);
+        }
+
+        // A COUNTDOWN MODULO THE INTERVAL, not a total. `saturating_add` pinned at `u32::MAX`,
+        // where `is_multiple_of` is false forever and the readings silently stopped for the rest
+        // of the render. Unreachable at 0.4 ms a slice -- about twenty days -- and a counter that
+        // cannot run out costs nothing. Found by security review.
+        slices = (slices + 1) % SLICES_PER_MEMORY_READING;
+        // DETECTED BETWEEN SLICES RATHER THAN AFTER THE FACT, which is the second thing
+        // progressive render buys and the first place in this crate where a memory reading can
+        // stop work that is still going. It still DETECTS rather than bounds (ADR 0007): the
+        // megabyte that crossed the line has already been allocated.
+        if slices == 0
+            && let Err(error) =
+                crate::estimate::check_measured_memory(before, crate::rss::resident_bytes(), limits)
+        {
+            break Err(error);
+        }
+
+        // SAFETY: the page has a render in progress, started above with this same `pause`,
+        // which is still alive. Engine thread.
+        state = unsafe { ffi::render_page_continue(page, pause_ptr) };
+    };
+
+    // ON EVERY EXIT, including the refusals. PDFium holds the progressive context on the page
+    // until this runs, so a `?` that skipped it would leak for the life of the document.
+    //
+    // SAFETY: a render was started on this page above; this is its only close, and it happens
+    // before the page itself is closed by the caller.
+    unsafe { ffi::render_page_close(page) };
+    drop(pause);
+
+    match outcome? {
+        s if s == ffi::FPDF_RENDER_DONE => Ok(()),
+        // FAILED (3) is the DOCUMENT: the engine tried and gave up.
+        s if s == ffi::FPDF_RENDER_FAILED => {
+            Err(Error::Malformed("the page could not be drawn".to_owned()))
+        }
+        // READY (0) means the engine NEVER STARTED, which is our call sequence rather than
+        // anything about the file -- so it is `Internal`, not `Malformed`. Both were mapped to
+        // `Malformed` under a comment that named the distinction and then collapsed it. Found
+        // by code review. Neither is looped on: a loop that treats an unknown state as "keep
+        // going" is a hang, which is the failure this whole change exists to remove.
+        _ => Err(Error::Internal(
+            "pdfium did not begin the render it was asked for".to_owned(),
+        )),
+    }
+}
+
 impl PageRenderer for Pdfium {
     fn page_size(&self, source: &Self::Document, index: u64) -> Result<(f32, f32)> {
         source.deadline.checkpoint(source.clock.as_ref())?;
@@ -288,24 +406,19 @@ impl PageRenderer for Pdfium {
         let size = thread::submit(move |registry| {
             let handle = registry.handle(id)?;
 
-            // SAFETY: `handle` came from the registry, so the document is open and its buffer
-            // is alive. Inside a job, so on the engine thread.
-            let page = unsafe { ffi::load_page(handle, page_index) };
-            if page.is_null() {
-                return Err(Error::Malformed("a page could not be loaded".to_owned()));
-            }
-
-            // SAFETY: `page` is non-null and was loaded on the line above; still on the
-            // engine thread.
-            let size = unsafe { ffi::page_size(page) };
-
-            // SAFETY: `page` is live, this is its only close, the document is still open, and
-            // we are on the engine thread. It happens before this closure returns, so no page
-            // handle ever leaves the registry's thread -- which is what keeps `PdfiumDocument`
-            // `Send + Sync` with no `unsafe impl`.
-            unsafe { ffi::close_page(page) };
-
-            Ok(size)
+            // NO `FPDF_LoadPage` HERE, AND THAT IS THE WHOLE POINT. This used to load the page,
+            // read two floats and close it -- which builds the display list, the single most
+            // expensive uninterruptible thing on this path (1,765 MiB and 3.5 s on the 10 M-path
+            // input, #103), to answer a question the `/MediaBox` already contains. `render`
+            // then loaded the same page again, so a strip paid the dominant cost twice per
+            // page, and the first of the two went round `estimate::before_page_load` -- the
+            // guard whose entire justification is that an uninterruptible load can only be
+            // refused before it starts. Found by security review.
+            //
+            // SAFETY: `handle` came from the registry, so the document is open. Inside a job,
+            // so on the engine thread.
+            let size = unsafe { ffi::page_size_by_index(handle, page_index) };
+            size.ok_or_else(|| Error::Malformed("a page has no usable size".to_owned()))
         })?;
 
         source.deadline.checkpoint(source.clock.as_ref())?;
@@ -331,12 +444,24 @@ impl PageRenderer for Pdfium {
         // `Raster::new`, where it cannot be skipped.
         crate::raster::check_pixels(width, height, &options.limits)?;
 
+        // ONE PAGE LOAD AT A TIME IS STRUCTURAL -- the engine thread is serialised, so a second
+        // `FPDF_LoadPage` cannot begin while one is running. WHETHER TO BEGIN THE NEXT AT ALL
+        // is this check: the load cannot be checkpointed once entered, so the only lever on it
+        // is the decision to enter.
+        crate::estimate::before_page_load(
+            source.memory_at_open,
+            crate::rss::resident_bytes(),
+            &options.limits,
+        )?;
+
         let page_index = page_index(index, source.pages_at_open)?;
         let w = raster_dimension(width)?;
         let h = raster_dimension(height)?;
         let id = source.id;
 
         let limits = options.limits;
+        let deadline_in = *deadline;
+        let clock_in = Arc::clone(&clock);
         let rgba = thread::submit(move |registry| {
             let handle = registry.handle(id)?;
 
@@ -379,9 +504,15 @@ impl PageRenderer for Pdfium {
                     // uninitialised engine heap out of the picture the page displays.
                     unsafe { ffi::fill_bitmap(bitmap, w, h, ffi::OPAQUE_WHITE) };
 
-                    // SAFETY: both handles are live, from the same document, and the extent is
-                    // the bitmap's own. PDFium writes only inside the bitmap it was given.
-                    unsafe { ffi::render_page(bitmap, page, w, h) };
+                    render_progressively(
+                        bitmap,
+                        page,
+                        w,
+                        h,
+                        &deadline_in,
+                        clock_in.as_ref(),
+                        &limits,
+                    )?;
 
                     // SAFETY: `bitmap` is live; the pointer it returns is owned by the bitmap
                     // and is read before the destroy below.

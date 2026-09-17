@@ -47,15 +47,20 @@
 //! | `max_input_bytes` | the input, once, at [`Stage::InputSize`] |
 //! | `max_pages` | the input's page count, and the number of pages named, at [`Stage::PageCount`] |
 //! | `max_pixels` | the **box**, in [`begin`], and each page's raster in the engine, at [`Stage::Pixels`] |
-//! | `max_duration_ms` | the whole call, checkpointed **per page** — see the caveat below |
-//! | `max_memory_bytes` | **detected, never bounded** (ADR 0007), either side of each render |
+//! | `max_duration_ms` | the whole call, checkpointed **per page and between render slices** |
+//! | `max_memory_bytes` | **detected, never bounded** (ADR 0007): before each page load, every 16 slices, and either side of each render |
 //!
-//! **THE PER-PAGE CHECKPOINT IS BETWEEN PAGES, NOT INSIDE ONE.** Every other operation's engine
-//! call is milliseconds, so `max_duration_ms`' documented "overshoot of up to one engine call"
-//! is a rounding error. Here one `FPDF_RenderPageBitmap` on a hostile content stream was
-//! measured at **112 seconds and 2.7 GB** while producing a 240x320 thumbnail — `max_pixels`
-//! bounds the buffer handed back, not the rasteriser that fills it. ADR 0027 §2a has the
-//! figures and names the mechanism that would actually bound it.
+//! **THE CHECKPOINT IS INSIDE THE RENDER, AND NOT INSIDE THE LOAD.** This table used to say
+//! the per-page checkpoint was between pages and never inside one, which was true of the
+//! single `FPDF_RenderPageBitmap` this crate no longer calls: one such call on a hostile
+//! content stream was measured at 112 seconds and 2.7 GB while producing a 240x320 thumbnail.
+//! Rendering now drives PDFium's progressive API, and the longest slice across 100,002 of them
+//! was 0.7 ms — so a deadline lands within a millisecond of coming due.
+//!
+//! What is still outside every checkpoint is `FPDF_LoadPage`: 3.5 s and 1,765 MiB on the same
+//! input, in one call that cannot be interrupted. The only lever on it is refusing to enter
+//! one, which is what the pre-load guard does. ADR 0027's 2026-09-17 amendments have the
+//! figures.
 //!
 //! **The box check subsumes the per-page one, and that is stated rather than left to be
 //! discovered.** A page fitted into the box never has more pixels than the box, so once

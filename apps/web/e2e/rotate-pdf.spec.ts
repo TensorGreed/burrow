@@ -310,7 +310,17 @@ test("rotating on the tool page makes no request beyond the pinned engine artifa
   // events for dedicated workers are not equally complete across engines, and the worker is
   // the only place file bytes ever exist (`apps/web/CLAUDE.md`).
   const after = since(`rotate-page:${testInfo.project.name}`);
-  const unexpected = after.filter((entry) => !isPinnedArtifact(entry.url));
+  // THE WIDENED SET, DELIBERATELY, AND ONLY ON THE TWO PAGES THAT DRAW PICTURES.
+  //
+  // `isPinnedArtifact` takes the bundle as an argument precisely so this is a decision rather
+  // than a default: widening it everywhere would let `/merge-pdf` download 1.9 MB of PDFium
+  // and still pass all five tool-page assertions, which is the defect the per-bundle split was
+  // built for. `/merge-pdf`, `/reorder-pdf` and `/compress-pdf` stay on the BASE set, where a
+  // render fetch is still a failure -- and `merge-pdf.spec.ts` asserts that over a whole visit.
+  //
+  // This page renders, so the render bundle is an artifact it is entitled to. Everything else
+  // is still refused.
+  const unexpected = after.filter((entry) => !isPinnedArtifact(entry.url, "all"));
   expect(
     unexpected.map((entry) => `${entry.method} ${entry.origin}${entry.url}`),
     "the rotate page uploaded something, or fetched something it did not need — the marker is " +

@@ -597,7 +597,17 @@ test("a split makes no request beyond the pinned engine artifacts", async ({ pag
   expect(downloads).toHaveLength(3);
 
   const after = since(`split-page:${testInfo.project.name}`);
-  const unexpected = after.filter((entry) => !isPinnedArtifact(entry.url));
+  // THE WIDENED SET, DELIBERATELY, AND ONLY ON THE TWO PAGES THAT DRAW PICTURES.
+  //
+  // `isPinnedArtifact` takes the bundle as an argument precisely so this is a decision rather
+  // than a default: widening it everywhere would let `/merge-pdf` download 1.9 MB of PDFium
+  // and still pass all five tool-page assertions, which is the defect the per-bundle split was
+  // built for. `/merge-pdf`, `/reorder-pdf` and `/compress-pdf` stay on the BASE set, where a
+  // render fetch is still a failure -- and `merge-pdf.spec.ts` asserts that over a whole visit.
+  //
+  // This page renders, so the render bundle is an artifact it is entitled to. Everything else
+  // is still refused.
+  const unexpected = after.filter((entry) => !isPinnedArtifact(entry.url, "all"));
   expect(
     unexpected.map((entry) => `${entry.method} ${entry.origin}${entry.url}`),
     "the split page uploaded something, or fetched something it did not need — the marker is " +

@@ -7,9 +7,10 @@ Date: 2026-09-16
 Accepted — closes the ceiling [ADR 0020](0020-rotate-ships-without-thumbnails.md) deferred, and
 constructs [`Stage::Pixels`](../../core/burrow-types/src/stage.rs) for the first time.
 
-**Amended 2026-09-17: progressive render is required, and is a precondition for the thumbnail
-strip rather than an improvement on it.** See the amendment at the end of this record. §2a's
-closing paragraph, which files it as an open decision, is superseded there.
+**Amended 2026-09-17 twice.** First: progressive render is required, and is a precondition for
+the thumbnail strip rather than an improvement on it — §2a's closing paragraph, which files it
+as an open decision, is superseded there. Second: it was **measured**, it passed, and what it
+does *not* cover turned out to be most of the cost. Both amendments are at the end.
 
 ---
 
@@ -387,14 +388,37 @@ Two things land with it:
 
 - **A measured per-page render budget.** `LIMITS.maxDurationMs` is 12 s because
   `e2e/measure.spec.ts` timed the slowest honest *document* operation at 611 ms. A thumbnail is
-  a different workload and 12 s is not its number. `measure.spec.ts` gains render timings and
-  the budget is derived the same way. **Unlike the three numbers at the top of this record, that
-  one will be measured rather than chosen** — and it is the cheapest lever, because the spike is
-  allocation rate times budget.
+  a different workload and 12 s was not known to be its number. `measure.spec.ts` gains render
+  timings and the budget is derived the same way. **Unlike the three numbers at the top of this
+  record, that one will be measured rather than chosen** — and it was expected to be the
+  cheapest lever, because the spike is allocation rate times budget.
+
+  > **It was measured, and it is NOT that lever.** The slowest honest page render in the corpus
+  > is `objstm-bomb.pdf` at about **1.2 s** — roughly 124x the next slowest fixture, and
+  > **twice** the 611 ms the document budget was derived from. A render budget tight enough to
+  > shrink the spike meaningfully would refuse a document that is in the corpus on a device four
+  > times slower than the runner, and a premature refusal is a wrong answer where a slow one is
+  > merely slow. So **the two workloads share the 12 s budget**, which is now a measured
+  > statement rather than an inherited one, and the paragraph above is left standing with this
+  > correction beside it because what it expected is as useful as what it found.
+  >
+  > The finding only exists because the first version of that measurement asked every fixture
+  > for pages 1–4, and `render` refuses the whole request when a page is past the end — so
+  > `blank-1page.pdf` and `objstm-bomb.pdf` drew nothing and were silently dropped from the
+  > sample. It reported 10 ms. **The fixture that decides this number was the one that fell
+  > out**, and the test now asserts its sample is the whole fixture list rather than "at least
+  > one".
 - **A heap check between slices.** `check_measured_memory` currently runs either side of a whole
-  render. Between slices it can *stop* a growing render rather than report on a finished one,
-  which would be the first place in this codebase where `max_memory_bytes` bounds instead of
-  detects.
+  render. Between slices it can *stop* a growing render rather than report on a finished one.
+  It still **detects** rather than bounds: the megabyte that crossed the line has already been
+  allocated, and the reading is taken every sixteenth slice rather than continuously. What it
+  buys is that the overrun ends the render instead of being reported after it.
+
+  > **This paragraph said "bounds instead of detects" and that was wrong.** `core/CLAUDE.md`
+  > singles the word out — say "detect" where we detect and "bound" only where something is
+  > actually bounded — and records that an overclaim of exactly this kind was load-bearing in
+  > two later ADRs' reasoning before it was measured. Nothing here bounds `max_memory_bytes`;
+  > ADR 0007's amendment still holds on every path. Found by code review.
 
 ### What is still unmeasured, said plainly
 
@@ -407,3 +431,105 @@ way a 12-second budget is a bound, which is to say barely.
 And the bound this buys is still on **observed** growth: memory can grow inside one slice with
 nothing watching. That is weaker than a real ceiling and stronger than anything on this path
 today, and it is written down in those terms rather than as a solved problem.
+
+---
+
+## Amendment 2, 2026-09-17 — measured, and what it does not cover
+
+The first amendment made progressive render required on the strength of an argument. This one
+is the measurement, taken against **the acceptance bar written down before the harness existed**
+— because a bar set after the numbers is not a bar.
+
+### The bar, pre-registered
+
+| verdict | condition |
+|---|---|
+| PASS | longest slice ≤ 500 ms and p99 ≤ 250 ms — at least as fine as `WATCHDOG_GRACE_MS` |
+| MARGINAL | 500 ms < longest ≤ 1000 ms — a deadline mechanism, not a cancel one |
+| FAIL | longest > 1000 ms — stop; the design changes rather than the UI absorbing it |
+
+Plus per-slice memory growth (PASS ≤ 32 MiB, FAIL > 128 MiB), and an explicit null result: **if
+`_Start` returns `DONE` on the first call the answer is FAIL however fast it was**, because a
+mechanism that does not pause is not a pause mechanism. That is the outcome most likely to read
+as success, since the render still completes.
+
+### The numbers
+
+The two adversarial inputs from [#103](https://github.com/TensorGreed/burrow/issues/103) — 3 M
+and 10 M stroked paths in one flate content stream, 342 kB and 1.14 MB — drawn at 240x320.
+
+| | 3 M paths | 10 M paths |
+|---|--:|--:|
+| slices | **30,002** | **100,002** |
+| slice p50 / p99 | 0.3 / 0.4 ms | 0.4 / 0.4 ms |
+| **longest slice** | **0.5 ms** | **0.7 ms** |
+| worst per-slice growth | 0.7 MiB | 1.0 MiB |
+
+**PASS on both bars, by three orders of magnitude on time.** PDFium yields about every hundred
+paths. `SLICES_PER_MEMORY_READING` is 16 because of the right-hand column: sixteen slices is at
+most 16 MiB between heap readings.
+
+### `FPDF_LoadPage` is uninterruptible, and it is most of the cost
+
+| | load phase | peak |
+|---|--:|--:|
+| 3 M paths | **757 MiB in 1,166 ms** | 767 MiB |
+| 10 M paths | **1,765 MiB in 3,511 ms** | 2,537 MiB |
+
+**Interruptibility here is a property of rendering, not of loading.** Around 70% of the peak is
+allocated inside one call that has no checkpoint and no progressive variant. Progressive render
+does not shrink that; it shrinks everything after it — 40 s to 3.5 s, 2,537 MiB to 1,765 MiB.
+
+Four things follow, and they are constraints on the strip rather than caveats on this record.
+
+**1. What happens when the per-page deadline is exceeded during the load: the worker dies.**
+The Rust checkpoints cannot fire — there is nowhere to put one — so the page's watchdog fires at
+`budgetMs + WATCHDOG_GRACE_MS` while the worker is inside `FPDF_LoadPage`, and
+`worker-host.js` terminates it and counts a crash. Nothing can make that a typed refusal.
+
+So **the strip is driven as a sequence of requests, not as one**. A worker death costs the
+request in flight; the tiles already delivered stand, because the host hands each page over as
+it arrives rather than holding them the way it holds a split's parts. The page re-requests the
+pages after the one that died — **the page that killed the worker is marked, never retried**,
+which keeps `apps/web/CLAUDE.md`'s "never retry automatically". Three such pages in sixty
+seconds latch the render breaker, and the page surfaces that as something a person can act on.
+
+**What the person sees is the tool still working.** The strip is an aid: `/split-pdf` and
+`/rotate-pdf` select by page number and shipped without pictures at all (ADR 0020). A tile that
+cannot be drawn keeps its number and says so; it does not become an error banner, because
+nothing the person did is wrong and nothing they need is unavailable.
+
+**2. One page load in flight, and the next does not start until the previous is gone.** The
+first half is structural — the engine thread and the worker are both serialised, so a second
+`FPDF_LoadPage` cannot begin while one is running. The second half is
+`estimate::before_page_load`: since the load cannot be checkpointed once entered, the only lever
+on it is the decision to enter, so a strip that has already spent `max_memory_bytes` since the
+document was opened is refused **before** the next load rather than after it.
+
+On the web "the previous has freed" is not observable at all — the module's heap never shrinks.
+What makes it true there is the worker being replaced: each page's reply carries Rust's
+`recycle` verdict, and the strip now **stops on it mid-strip** and says so, rather than leaving
+the verdict to a terminal reply that carries none. The caller re-requests the rest into a fresh
+worker.
+
+**3. The pre-scan cannot cheaply refuse these files, and that is evidence for #24 from a second
+direction.** The obvious move is to refuse before loading, using what the file declares — and
+the pre-scan already reads `Declared::largest_stream`. It does not work, for a specific reason
+worth writing down: **that is the COMPRESSED `/Length`**. The 3 M-path fixture is 342 kB of file
+declaring 64 MB of drawing, a 187x amplification the declaration does not mention. Refusing on
+compressed length would fire on any image-heavy page, where a large stream is ordinary and cheap
+to skip.
+
+Modelling inflation needs an inflater, and there is **no inflate dependency anywhere in this
+workspace** — so it is a dependency decision and a licence audit, which is
+[#24](https://github.com/TensorGreed/burrow/issues/24)'s own batch and not a thumbnail strip's.
+**#24 stays open.** If the load-phase residual turns out to need a bound before the strip can
+ship, that is a decision to bring back rather than an inflater to reach for mid-change.
+
+**4. Cancel was never the thing this improved, and the first amendment implied otherwise.** A
+Stop gesture is `discardWorker()`, which terminates — immediate, and always was. A worker cannot
+observe a message mid-operation anyway: its message loop is not running while wasm is. What
+progressive render changed is the **deadline**: it now ends a runaway render without costing the
+worker, where before the only mechanism was the watchdog killing it. Stated plainly because the
+earlier framing — "a Stop that takes up to a second is a Stop somebody presses twice" — argued
+from the wrong mechanism.

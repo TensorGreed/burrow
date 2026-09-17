@@ -66,12 +66,33 @@ export type Outcome =
          * libqpdf and the same source in wasm asserts far more than this corpus needs.
          */
         compressed?: boolean;
+        /**
+         * What page 1 looks like, coarsely. `render` cases.
+         *
+         * A page count cannot see a picture — rendering does not change the document — so a
+         * case comparing only that would pass against an implementation that drew nothing.
+         *
+         * A GRID RATHER THAN A HASH, and the reason is that the two platforms run the same
+         * rasteriser from different builds: native links `libpdfium.so`, the web loads
+         * `pdfium.wasm`, both from `pdfium-binaries` at `chromium/8044`, and antialiasing may
+         * differ without anything being wrong. Four cells by four, four ink levels each, sees
+         * a wrong page and a rotation while staying coarse enough that a build difference does
+         * not move it.
+         */
+        render?: { width: number; height: number; ink_grid: number[] };
       };
     }
   | { err: Failure };
 
 export type Operation =
-  "page_count" | "structure_check" | "merge" | "rotate" | "reorder" | "split" | "compress";
+  | "page_count"
+  | "structure_check"
+  | "merge"
+  | "rotate"
+  | "reorder"
+  | "split"
+  | "compress"
+  | "render";
 export type Platform = "native" | "web";
 
 export interface PlatformExpectation {
@@ -196,7 +217,15 @@ export function render(outcome: Outcome | undefined): string {
     // print identically and read as a harness bug.
     const compressed =
       outcome.ok.compressed === undefined ? "" : ` compressed=${outcome.ok.compressed}`;
-    return `ok(${outcome.ok.page_count} pages${rotations}${compressed})`;
+    // THE WHOLE READOUT, not a summary of it. A divergence report that said "the pictures
+    // differ" would leave somebody to go and reproduce it; the grid is sixteen small numbers
+    // and printing them is what makes the report actionable on its own.
+    const render =
+      outcome.ok.render === undefined
+        ? ""
+        : ` render=${outcome.ok.render.width}x${outcome.ok.render.height}` +
+          `[${outcome.ok.render.ink_grid.join(",")}]`;
+    return `ok(${outcome.ok.page_count} pages${rotations}${compressed}${render})`;
   }
   const f = outcome.err;
   const detail = [

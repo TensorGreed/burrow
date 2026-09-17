@@ -213,6 +213,44 @@ export interface BurrowHarness {
     options?: { limits?: Partial<HarnessLimits> },
   ): Promise<Reply>;
   /**
+   * Draw a strip and report how long each page took.
+   *
+   * Per page, not per strip: the budget this measurement sets is per page, because the host
+   * re-arms its watchdog on every tile.
+   */
+  renderStrip(
+    name: string,
+    bytes: number[],
+    pages: number[],
+    options?: { boxWidth?: number; boxHeight?: number; limits?: Record<string, number> },
+  ): Promise<{ ok: boolean; kind: string; drawn: number; perPage: number[] }>;
+
+  /**
+   * Draw one page and hand back its raw pixels. The grid is computed by
+   * `src/conformance/ink-grid.ts`, which is tested against what the corpus records.
+   */
+  renderForCorpus(
+    name: string,
+    bytes: number[],
+    options?: {
+      password?: string | null;
+      limits?: Record<string, number>;
+      boxWidth?: number;
+      boxHeight?: number;
+    },
+  ): Promise<{
+    ok: boolean;
+    kind: string;
+    fatal: boolean;
+    message: string;
+    limit: string;
+    stage: string;
+    requested: string;
+    allowed: string;
+    drawn: { width: number; height: number; rgba: number[] } | null;
+  }>;
+
+  /**
    * `"unbuilt"` until something asks for a render, which is the property under test.
    *
    * Two values rather than the host's five: the host is memoised as a PROMISE, so once

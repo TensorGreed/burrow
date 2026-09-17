@@ -39,6 +39,7 @@ import {
   type Outcome,
   type RecordedOutcome,
 } from "../src/conformance/compare.js";
+import { inkGrid } from "../src/conformance/ink-grid";
 import { openHarness, type Reply } from "./harness";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -263,6 +264,46 @@ test("every corpus file produces the same typed outcome as the native path", asy
             `(kind=${done.kind} message=${done.message})`,
         ).toBe(false);
         results.push({ case: testCase.name, operation, outcome: outcomeOf(done) });
+        continue;
+      }
+
+      if (operation === "render") {
+        const done = await page.evaluate(
+          ([name, bytes, password, limits]) =>
+            window.burrowHarness.renderForCorpus(name as string, bytes as number[], {
+              password: password as string | null,
+              limits: limits as Record<string, number>,
+            }),
+          [
+            testCase.name,
+            Array.from(Buffer.from(base64, "base64")),
+            testCase.password,
+            { maxDurationMs: 600_000, ...camelCaseLimits(testCase.limits) },
+          ] as const,
+        );
+        expect(
+          done.fatal,
+          `${testCase.name} (render): a corpus file must not poison the instance ` +
+            `(kind=${done.kind} message=${done.message})`,
+        ).toBe(false);
+
+        // THE GRID IS COMPUTED HERE, by the one TypeScript implementation, which
+        // `src/conformance/ink-grid.test.ts` holds to the value the corpus records. The
+        // harness hands back raw pixels precisely so there is no second quantiser in a file
+        // no unit test can reach.
+        const outcome: Outcome = done.drawn
+          ? {
+              ok: {
+                page_count: 1,
+                render: {
+                  width: done.drawn.width,
+                  height: done.drawn.height,
+                  ink_grid: inkGrid(done.drawn.width, done.drawn.height, done.drawn.rgba),
+                },
+              },
+            }
+          : outcomeOf(done as unknown as Reply);
+        results.push({ case: testCase.name, operation, outcome });
         continue;
       }
 

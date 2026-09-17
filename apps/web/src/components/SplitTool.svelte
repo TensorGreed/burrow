@@ -40,6 +40,7 @@
     originMismatchNotice,
   } from "./tool-host.js";
   import { createDelivery, type Handout } from "./tool-delivery.js";
+  import PageThumbnails from "./PageThumbnails.svelte";
 
   /**
    * How many parts the preview lists before it says "and the rest".
@@ -516,6 +517,11 @@
       </span>
     </p>
   {/if}
+
+  <!-- THE STRIP, after the file line and before the controls. It is an AID: if it draws
+       nothing the selection below still works by number, which is how both these pages worked
+       before there were pictures at all (ADR 0020). -->
+  <PageThumbnails {file} {pageCount} />
 
   {#if preparing}
     <p class="preparing" role="status">

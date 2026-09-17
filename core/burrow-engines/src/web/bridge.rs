@@ -192,15 +192,20 @@ pub trait PdfiumBridge: Send + Sync {
     /// `FPDF_ClosePage`. Must happen before the document is closed.
     fn close_page(&self, page: PdfiumPtr);
 
-    /// `FPDF_GetPageWidthF`, in points at 72 to the inch, with the page's `/Rotate` applied.
-    fn page_width(&self, page: PdfiumPtr) -> f32;
-
-    /// `FPDF_GetPageHeightF`.
+    /// `FPDF_GetPageSizeByIndexF`, **without loading the page**.
     ///
-    /// Two methods rather than one returning a pair, because there are two C functions. A
-    /// combined one would be the JavaScript deciding what a page's size *is*, which is a
-    /// small decision and therefore exactly the kind that diverges between platforms unseen.
-    fn page_height(&self, page: PdfiumPtr) -> f32;
+    /// Returns `(width, height)` in points, or `None` when PDFium reports failure.
+    ///
+    /// Asking a loaded page for its size builds the display list — the single most expensive
+    /// uninterruptible thing on this path — to read two floats out of a `/MediaBox`. Doing it
+    /// before every render paid that cost twice per page and went round
+    /// `estimate::before_page_load`, whose whole justification is that an uninterruptible load
+    /// can only be refused before it starts.
+    ///
+    /// **This is the one PDFium method here that returns a pair**, and it is not the JavaScript
+    /// deciding anything: `FS_SIZEF` is one out-parameter of one C call, so splitting it in two
+    /// would mean calling the engine twice for one answer.
+    fn page_size_by_index(&self, doc: PdfiumPtr, index: i32) -> Option<(f32, f32)>;
 
     /// `FPDFBitmap_Create`. [`PdfiumPtr::NULL`] if the allocation failed.
     ///
@@ -221,28 +226,6 @@ pub trait PdfiumBridge: Send + Sync {
         width: i32,
         height: i32,
         color: u32,
-    );
-
-    /// `FPDF_RenderPageBitmap`.
-    ///
-    /// `rotate` and `flags` are passed from Rust rather than hardcoded in the bridge. They
-    /// are protocol constants, not decisions — and having the JavaScript carry its own copy
-    /// is how two definitions of one constant come to disagree, which is the argument
-    /// [`QpdfBridge::logger_discard_all`] already makes about `qpdf_log_dest_e`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one method per C function; FPDF_RenderPageBitmap takes eight"
-    )]
-    fn render_page_bitmap(
-        &self,
-        bitmap: PdfiumPtr,
-        page: PdfiumPtr,
-        start_x: i32,
-        start_y: i32,
-        size_x: i32,
-        size_y: i32,
-        rotate: i32,
-        flags: i32,
     );
 
     /// `FPDFBitmap_GetBuffer`. A pointer into the module's heap, owned by the bitmap.
@@ -268,6 +251,73 @@ pub trait PdfiumBridge: Send + Sync {
     /// engine reported, never from the request, so a shorter bitmap than asked for is read as
     /// what it is rather than read past.
     fn copy_out(&self, ptr: PdfiumPtr, len: u32) -> Vec<u8>;
+
+    // ---- progressive rendering (ADR 0027's 2026-09-17 amendment) -------------------------
+    //
+    // `FPDF_RenderPageBitmap` has no checkpoint inside it, and on a hostile content stream one
+    // call was measured at 112 s and 2.7 GB while drawing a thumbnail. These four let the loop
+    // live in Rust, so a deadline lands within a millisecond instead of minutes and the
+    // operation ends with a typed refusal rather than a terminated worker.
+    //
+    // **The prebuilt supports this, checked rather than assumed.** `addFunction` needs a
+    // growable function table, which Emscripten only emits with `ALLOW_TABLE_GROWTH` -- and we
+    // do not build `pdfium.wasm`, we vendor it. Its table section declares `min=3299` with **no
+    // maximum**, so it grows. That is the same shape as ADR 0020's finding that every `FPDF_*`
+    // a renderer needs was already exported: a prebuilt we do not control happening to permit
+    // what we need, established by reading the artifact.
+
+    /// Allocate an `IFSDK_PAUSE` in the module's heap whose callback always pauses.
+    ///
+    /// [`PdfiumPtr::NULL`] if the allocation or the function-table growth failed.
+    ///
+    /// **The callback is a CONSTANT, not a decision.** The obvious reading of `IFSDK_PAUSE` is
+    /// a callback that decides when to stop, which would be a branch on engine state living in
+    /// JavaScript -- [ADR 0009] §2 forbids exactly that. Returning true unconditionally makes
+    /// PDFium complete one slice and return, so *whether to continue* is decided by the Rust
+    /// loop. The native path holds the identical constant in Rust, which is what makes the two
+    /// implementations the same algorithm rather than two policies.
+    ///
+    /// What crosses the boundary here is a struct layout and a function-table entry, both of
+    /// which are ABI rather than policy.
+    ///
+    /// [ADR 0009]: https://github.com/TensorGreed/burrow/blob/main/docs/adr/0009-web-panic-contract-and-binding-boundary.md
+    fn pause_create(&self) -> PdfiumPtr;
+
+    /// Free an `IFSDK_PAUSE` and release its function-table entry.
+    ///
+    /// **Both halves, and the second is the one that leaks quietly.** `addFunction` grows the
+    /// module's function table; without `removeFunction` the table grows by one per render and
+    /// never shrinks, which is a worker that gets slower and larger for the life of a session.
+    fn pause_destroy(&self, pause: PdfiumPtr);
+
+    /// `FPDF_RenderPageBitmap_Start`. Returns an `FPDF_RENDER_*` state.
+    ///
+    /// `pause` must stay alive until [`render_page_close`](PdfiumBridge::render_page_close):
+    /// PDFium keeps the pointer for the whole progressive render, not just this call.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one method per C function; FPDF_RenderPageBitmap_Start takes nine"
+    )]
+    fn render_page_start(
+        &self,
+        bitmap: PdfiumPtr,
+        page: PdfiumPtr,
+        size_x: i32,
+        size_y: i32,
+        rotate: i32,
+        flags: i32,
+        pause: PdfiumPtr,
+    ) -> i32;
+
+    /// `FPDF_RenderPage_Continue`. Returns an `FPDF_RENDER_*` state.
+    fn render_page_continue(&self, page: PdfiumPtr, pause: PdfiumPtr) -> i32;
+
+    /// `FPDF_RenderPage_Close`.
+    ///
+    /// **Called on every exit, including the refusals.** PDFium holds the progressive context
+    /// on the page until this runs, so a path that skipped it on a deadline would leak for as
+    /// long as the document is open.
+    fn render_page_close(&self, page: PdfiumPtr);
 }
 
 /// The qpdf Emscripten module, as seen from Rust.

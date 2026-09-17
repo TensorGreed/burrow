@@ -27,6 +27,56 @@
       }
     },
     {
+      "name": "render-one-quadrant",
+      "inputs": [
+        {
+          "file": "fixtures/render-one-quadrant.pdf",
+          "sha256": "d04cb542b0a973eb658350c0f5200e03bf8c7675bae637218881213a46e2c059"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "render": {
+          "ok": {
+            "page_count": 1,
+            "render": {
+              "width": 64,
+              "height": 128,
+              "ink_grid": [
+                3,
+                3,
+                0,
+                0,
+                3,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "pages-10",
       "inputs": [
         {
@@ -112,6 +162,11 @@
           }
         },
         "structure_check": {
+          "err": {
+            "kind": "Malformed"
+          }
+        },
+        "render": {
           "err": {
             "kind": "Malformed"
           }

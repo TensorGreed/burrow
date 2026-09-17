@@ -31,6 +31,13 @@
 #[path = "../../burrow-engines/testsupport/minimal_pdf.rs"]
 mod minimal_pdf;
 
+// THE GRID IS SHARED, not copied. The conformance runner computes the same readout and the web
+// harness computes it again in TypeScript; two copies of a quantiser is two quantisers, and the
+// corpus would be comparing those rather than the engines.
+#[path = "../../burrow-engines/testsupport/ink_grid.rs"]
+mod ink_grid_support;
+use ink_grid_support::ink_grid;
+
 use std::sync::Arc;
 
 use burrow_engines::OpenOptions;
@@ -51,46 +58,6 @@ fn draw(bytes: Vec<u8>, pages: &[u64], fit: Fit, limits: Limits) -> Result<Vec<R
         fit,
         &options(limits),
     )
-}
-
-/// A 4x4 grid of ink levels, 0 (white) to 3 (solid), from a rendered page.
-///
-/// **ADR 0027 §5's proposed conformance observable, computed here first.** Dimensions alone
-/// cannot see a wrong page; a single `ink: bool` cannot see a rotation, which is the case
-/// `/rotate-pdf` exists for. A 4x4 grid quantised to four levels sees both while staying
-/// coarse enough that antialiasing differences between two builds of one rasteriser do not
-/// move it.
-///
-/// Luminance is the plain average of R, G and B. Not a perceptual weighting: this is asking
-/// "is there ink here", and a weighting would make the grid depend on the colour of the ink.
-fn ink_grid(width: u32, height: u32, rgba: &[u8]) -> [u8; 16] {
-    let mut grid = [0_u8; 16];
-    let (w, h) = (width as usize, height as usize);
-    for (cell, level) in grid.iter_mut().enumerate() {
-        let (cx, cy) = (cell % 4, cell / 4);
-        let (x0, x1) = (cx * w / 4, (cx + 1) * w / 4);
-        let (y0, y1) = (cy * h / 4, (cy + 1) * h / 4);
-        let mut total: u64 = 0;
-        let mut count: u64 = 0;
-        for y in y0..y1.max(y0 + 1) {
-            for x in x0..x1.max(x0 + 1) {
-                let at = (y * w + x) * 4;
-                let luminance =
-                    (u64::from(rgba[at]) + u64::from(rgba[at + 1]) + u64::from(rgba[at + 2])) / 3;
-                total += luminance;
-                count += 1;
-            }
-        }
-        let mean = total.checked_div(count).unwrap_or(255);
-        // Four levels, darkest first: 3 is solid ink, 0 is paper.
-        *level = match mean {
-            0..=63 => 3,
-            64..=127 => 2,
-            128..=191 => 1,
-            _ => 0,
-        };
-    }
-    grid
 }
 
 // --- the golden ----------------------------------------------------------------------
@@ -283,4 +250,41 @@ proptest! {
         ).unwrap();
         prop_assert_eq!(strip.iter().map(|r| r.page).collect::<Vec<_>>(), order);
     }
+}
+
+#[test]
+fn the_ink_grid_quantises_at_the_boundaries_it_claims() {
+    // THE BOUNDARIES ARE THE ONLY PLACE THE TWO IMPLEMENTATIONS CAN DIVERGE, and neither
+    // fixture exercises them: both are built from pure 0 and 255, so every cell mean is 0 or
+    // 255 and the three thresholds are never touched. Antialiasing on a real render produces
+    // exactly the greys in between. Found by code review, which replaced the TypeScript
+    // thresholds with 10/120/200 and saw all three of its tests still pass.
+    //
+    // These sixteen values are the contract `apps/web/src/conformance/ink-grid.test.ts` asserts
+    // against, so a divergence in either direction fails somewhere.
+    let flat = |value: u8| {
+        let mut rgba = vec![255_u8; 8 * 8 * 4];
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel[0] = value;
+            pixel[1] = value;
+            pixel[2] = value;
+        }
+        ink_grid(8, 8, &rgba)[0]
+    };
+
+    // 0..=63 is 3, 64..=127 is 2, 128..=191 is 1, above is 0 -- each side of each edge.
+    assert_eq!((flat(0), flat(63), flat(64)), (3, 3, 2));
+    assert_eq!((flat(127), flat(128)), (2, 1));
+    assert_eq!((flat(191), flat(192)), (1, 0));
+    assert_eq!(flat(255), 0);
+}
+
+#[test]
+fn the_ink_grid_fills_every_cell_on_a_raster_smaller_than_the_grid() {
+    // A 2x2 raster has fewer pixels than the grid has cells. Every cell must still get a
+    // reading: a grid with holes in it compares equal between two implementations that both
+    // produced nothing, which is the shape this observable exists to refuse.
+    let rgba = vec![0_u8; 2 * 2 * 4];
+    let grid = ink_grid(2, 2, &rgba);
+    assert_eq!(grid, [3_u8; 16], "every cell should read as solid ink");
 }

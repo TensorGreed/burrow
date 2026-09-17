@@ -117,10 +117,19 @@ pub struct Limits {
     /// Wall-clock ceiling for one operation, in milliseconds.
     ///
     /// Cooperative: checked at page boundaries and between engine calls, so overshoot
-    /// of up to one engine call is possible. **On the render path that overshoot is MINUTES,
-    /// not milliseconds**: one `FPDF_RenderPageBitmap` on a hostile content stream was measured
-    /// at 112 seconds, and there is no checkpoint inside it. ADR 0027 §2a records what would
-    /// bound it and why that is a decision rather than a patch. Requires a platform clock —
+    /// of up to one engine call is possible.
+    ///
+    /// **THE RENDER PATH USED TO BE THE EXCEPTION AND NO LONGER IS.** One
+    /// `FPDF_RenderPageBitmap` on a hostile content stream was measured at 112 seconds with no
+    /// checkpoint inside it, so the overshoot there was minutes rather than milliseconds. That
+    /// call is gone: rendering now drives PDFium's progressive API and checkpoints **between
+    /// slices**, measured at a longest slice of 0.7 ms across 100,002 of them.
+    ///
+    /// What remains outside every checkpoint is `FPDF_LoadPage`, which builds a page's display
+    /// list in one uninterruptible call — 3.5 s on the same input. So the honest statement for
+    /// this path is: bounded within a millisecond once a page is loaded, and unbounded while it
+    /// is loading. ADR 0027's 2026-09-17 amendments have the measurements and what is done
+    /// about the load phase. Requires a platform clock —
     /// `Instant::now()` panics on `wasm32-unknown-unknown`, so operations take an
     /// injected clock rather than reading time directly.
     ///
