@@ -173,22 +173,28 @@ all — which is why `/rotate-pdf` showed a "Turn your pages" heading and a raw 
 button. `.drop:focus-within` was in the same position, so four drop zones had no focus ring.
 Both moved to `base.css` and now ship once for five pages.
 
-**And making that rule real broke WebKit, which is the residual this piece ships with.** With
-`.visually-hidden` live, a split on `/split-pdf` stalled at *"Part 1 of 4"* until its
-45-second budget expired, and one run ended in `Target page, context or browser has been
-closed`. It reproduced about once per full suite, only under parallel load, never in isolation
-— so a different test failed each run and it read as a flake until `main` was measured at
-333/333 beside it. It is not the clipping technique: `clip-path: inset(50%)` and the older
-`clip: rect(0 0 0 0)` both do it. What is different from `/merge-pdf`, where this region has
-been hidden for months, is that **a split announces once per part**, so the element updates
-repeatedly while the operation runs.
+**And making that rule real appeared to break WebKit — it did not, and this paragraph is the
+correction.** With `.visually-hidden` live, a split on `/split-pdf` stalled until its 45-second
+budget expired and its output never arrived. Removing the class from the `role="status"` region
+made it stop, restoring it brought it back, and it was recorded here as cause and effect.
 
-So two of the three inert uses are fixed — the tool heading and the file input are genuinely
-hidden now — and **the `role="status"` region keeps the visibility it has had all along**, with
-the measurement recorded beside it in all four islands.
-[#107](https://github.com/TensorGreed/burrow/issues/107) is open for hiding it once the WebKit
-behaviour is understood. Shipping a rule that looks correct and takes the browser down on the
-heaviest tool page would be worse than shipping the visible region that is deployed today.
+**It was not.** Measured afterwards at four WebKit suite runs per tree, the same failure happens
+**once in four runs at [`e40a3a5`](https://github.com/TensorGreed/burrow/commit/e40a3a5)** — the
+commit before this ADR — where that class was inert in those islands and could not have been
+involved. Two clean runs after the change were what a one-in-four failure looks like three times
+out of four. **The earlier conclusion rested on three samples against a defect that fails one run
+in four, and stating it as settled was the error**, not the hypothesis.
+
+What is actually there is older and is not about this rule: an operation on the qpdf worker path
+whose output silently never arrives, on `/split-pdf` and `/rotate-pdf` alike.
+[#107](https://github.com/TensorGreed/burrow/issues/107) carries the rate and the evidence and
+has been rewritten to say so.
+
+Two of the three inert uses are fixed and stay fixed — the tool heading and the file input are
+genuinely hidden now. The `role="status"` region keeps the visibility it has had all along,
+which is the status quo and no regression, because nothing measured here justifies moving it in
+either direction. Hiding it is the correct behaviour and wants its own change, with #107
+understood first.
 
 **The thumbnail strip is untouched.** It works and it looks right; this piece preserves its
 behaviour rather than redesigning it, and the only thing that reaches it is the site-wide button
