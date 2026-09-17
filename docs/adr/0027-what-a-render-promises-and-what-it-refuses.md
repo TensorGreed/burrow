@@ -29,17 +29,23 @@ them for it.**
 | | value | how it was arrived at |
 |---|---|---|
 | the render ceiling a page asks for | **4 Mpx** | arithmetic over page geometry, then judgement |
-
 | the device-pixel-ratio cap for thumbnails | **2** | judgement: sharpness against 4x the bytes |
-| the live-thumbnail window | **64** | arithmetic over viewport sizes, then judgement |
+| the live-thumbnail window | **112** | arithmetic over viewport sizes, then judgement — corrected twice by computation (§3) |
 
-**No number in this ADR was measured on a phone.** They were computed on a desktop from page
+**No number in this ADR was measured on a phone when it was written, and one observation on one
+phone has happened since — [Amendment 3](#amendment-3-2026-09-17--one-device-one-observation).**
+The paragraph below is kept as it was written, because what it says about *provenance* is still
+true: these are policy numbers, and a single device that survives them does not turn them into
+measurements. What changed is that they are no longer supported by arithmetic alone.
+
+They were computed on a desktop from page
 geometry and bytes-per-pixel, and the only device evidence behind them is
 [ADR 0015](0015-web-worker-lifecycle.md) §7's still-open observation that *on iOS a memory spike
 kills the whole tab rather than the worker*. §7's device question was open when this was written
-and is open now. **What settles these numbers is that test, and this ADR is written to be
-revised by it** — see *[The three revision points](#the-three-revision-points)*, which names each
-constant, where it lives, and what evidence would move it.
+and is **discharged for the thumbnail strip, and only for it**, by Amendment 3. **What settles
+these numbers is that test, and this ADR is written to be revised by it** — see *[The three
+revision points](#the-three-revision-points)*, which names each constant, where it lives, and
+what evidence would move it.
 
 The reason they are chosen at all is that they answer a question measurement cannot: not *how
 much can this machine do*, but *how much should a page ask a stranger's phone for*. That is a
@@ -186,14 +192,14 @@ ADR 0015 §7 describes.
 §5 — so this is a bound on what the *next* merge may expose, and the thumbnail strip has to be
 built knowing it.
 
-### 3. A live window of 64 thumbnails on the main thread
+### 3. A live window of 112 thumbnails on the main thread
 
 120x160 CSS px, device pixel ratio capped at **2** — at most 240x320 = 307,200 B RGBA each — and
-at most **64 held at once**, about **19.7 MB**, windowed by `IntersectionObserver`: render what
-is near the viewport, release what is not. That is **26x** below ADR 0015 §5's 512 MiB recycle
+at most **112 held at once**, about **34.4 MB**, windowed by `IntersectionObserver`: render what
+is near the viewport, release what is not. That is **15x** below ADR 0015 §5's 512 MiB recycle
 threshold.
 
-**THIS NUMBER WAS 32 WHEN THIS RECORD WAS DRAFTED, AND THE ARITHMETIC BEHIND 32 WAS WRONG.** The
+**THIS NUMBER WAS 32 WHEN THIS RECORD WAS DRAFTED, AND IT WAS WRONG TWICE — 32, THEN 64.** The
 draft argued that *"a 390 px phone shows about 8 of these and a 1280 px desktop about 27, so the
 window is never the thing a person notices"*, and that *"9.8 MB sits two orders of magnitude
 below"* the recycle threshold. `thumbnail-policy.test.ts` computed both and neither holds:
@@ -212,14 +218,27 @@ something that *computed* the claim to notice. The test is now the thing that ho
 and the ADR quotes it rather than the other way round.
 
 So the floor is stated as a rule instead of as a number: **the window may not go below what a
-viewport shows.** 64 clears a 1280x800 grid with a row of margin either side.
+viewport shows.**
 
-**The residual, stated rather than implied.** A 1920x1080 grid is **112** tiles, which is
-more than 64. On such a screen the window *is* the constraint, and tiles far from the scroll
-position are redrawn when they come back — a visible cost, on a desktop. That is the direction
-to fail in: this ceiling exists because of the phone, where about 18 tiles are visible and 64 is
-three and a half times that, and raising the window to cover every desktop would spend the
-phone's budget to buy a desktop's smoothness.
+**64 was written here, and 64 broke the strip.** It cleared a 1280x800 grid and not a 1920x1080
+one, which is 112 tiles — and the gap was not cosmetic, which is what this record assumed when
+it filed the difference as "a visible cost, on a desktop". A window smaller than the viewport
+evicts a tile somebody is looking at, the strip re-requests it, and it never settles: modelled
+at 112 wanted tiles against a window of 64, **500 requests and 24,064 renders without
+converging**, on a static viewport with nobody scrolling. `CLAUDE.md` calls an unbounded loop a
+denial-of-service bug rather than a missing nicety. Both code reviews found it independently.
+
+**Two fixes, because one is the number and the other is the rule.** `strip-schedule.ts` gives a
+tile pushed out while still wanted a `released` state that is not re-requested, so **the loop
+terminates whatever this constant is** — the number is no longer load-bearing for termination.
+And the constant is 112, so on an ordinary desktop nothing is released while somebody is looking
+at it. `thumbnail-policy.ts` carries the same history beside the constant, and
+`thumbnail-policy.test.ts` computes the figures this section quotes.
+
+**The residual, stated rather than implied.** Above 112 — a 4K grid is about 448 tiles — the
+strip degrades to blank tiles beyond the window until you scroll. That is a strip doing less
+than it could rather than a strip doing harm, and it is the direction to fail in: this ceiling
+exists because of the phone, where about 18 tiles are visible and 112 is six times that.
 
 **This is not ADR 0020's rejected "first N pages only."** That was a *feature* window — pictures
 for part of a document and numbers for the rest, with nothing explaining the boundary. This is a
@@ -278,13 +297,15 @@ is stated rather than the assertion quietly weakened.
 | # | constant | file | today | what would move it |
 |---|---|---|--:|---|
 | 1 | `LIMITS.maxPixels` | `apps/web/src/components/tool-host.ts` | 4,194,304 | a 16 MiB bitmap spiking a real iPhone tab → lower it. A future "view this page properly" feature needing 300 dpi → raise it to 8,704,000, at 34 MiB per bitmap. |
-| 2 | `LIVE_THUMBNAIL_WINDOW` | `apps/web/src/components/thumbnail-policy.ts` | 64 | 19.7 MB proving too much resident on a phone → lower it, but **not below what a viewport shows** (18 tiles on a 390 px phone, 50 on a 1280 px desktop — computed in `thumbnail-policy.test.ts`, not asserted here). Raise it to 112 to cover a 1920x1080 grid, at 34 MB. |
+| 2 | `LIVE_THUMBNAIL_WINDOW` | `apps/web/src/components/thumbnail-policy.ts` | 112 | 34.4 MB proving too much resident on a phone → lower it, but **not below what a viewport shows** (18 tiles on a 390 px phone, 50 on a 1280 px desktop, 112 on a 1920x1080 one — computed in `thumbnail-policy.test.ts`). A 370-page document held at this window on an 8 GB iPhone without the tab dying — Amendment 3 — so the evidence that moves it downwards is now a *smaller* phone, not this one. |
 | 3 | `MAX_DEVICE_PIXEL_RATIO` | `apps/web/src/components/thumbnail-policy.ts` | 2 | DPR-2 thumbnails costing more than the sharpness is worth → 1, which **quarters** each thumbnail to 76,800 B and the window to 4.9 MB. The largest single lever here, and the one to pull first. |
 
 **The measurement that settles all three is ADR 0015 §7's deferred device test**: render a strip
 on a real iPhone and watch for tab termination, because on iOS a memory spike kills the tab rather
-than the worker. Until that test is run, the honest description of these numbers is the one at the
-top of this record.
+than the worker. **That test has now been run once, on one device** — Amendment 3 — which is why
+the middle column of row 2 moved and why the "what would move it" column now names a smaller
+phone. It is one observation, not a range, so the honest description of these numbers is still
+the one at the top of this record.
 
 `thumbnail-policy.ts` exists as its own module for this reason and not for tidiness: a policy
 spread across two islands is a policy nobody can revise with confidence, and these are the numbers
@@ -533,3 +554,86 @@ progressive render changed is the **deadline**: it now ends a runaway render wit
 worker, where before the only mechanism was the watchdog killing it. Stated plainly because the
 earlier framing — "a Stop that takes up to a second is a Stop somebody presses twice" — argued
 from the wrong mechanism.
+
+---
+
+## Amendment 3, 2026-09-17 — one device, one observation
+
+**The numbers at the top of this record are no longer supported by arithmetic alone.** They are
+supported by arithmetic and by **one observation on one phone**, which is a different thing from
+being measured and a different thing again from being validated across a range.
+
+### What was observed
+
+| | |
+|---|---|
+| device | **iPhone 16 Pro** (8 GB) |
+| OS | iOS — *exact version not captured at the time of the observation; to be filled in* |
+| page | `/split-pdf` on the deployed site |
+| document | **11 MB, 370 pages** |
+| what was done | opened it and **scrolled the strip to the end** |
+| outcome | **no tab termination**; thumbnails visually correct throughout |
+
+Scrolling a 370-page strip to the end is the part that makes this worth recording. The window
+holds 112 tiles, so reaching the end means roughly 370 renders and about 258 evictions, with the
+main thread repeatedly at a full window of **34.4 MB** of RGBA while the render worker held one
+bitmap and the document. That is the shape [ADR 0015](0015-web-worker-lifecycle.md) §7 warned
+about — a memory spike on iOS takes the tab, not the worker — exercised for the length of a long
+document rather than for one page.
+
+### What it does and does not support
+
+**Directly.** `LIVE_THUMBNAIL_WINDOW = 112` and `MAX_DEVICE_PIXEL_RATIO = 2` decide what is
+resident on the main thread, and residency across 370 pages is exactly what was exercised. The
+eviction path was exercised too, which the livelock in §3 shows is not the same as the happy one.
+
+**Indirectly, and this is worth being exact about.** `LIMITS.maxPixels = 4 Mpx` was never
+approached: a 240x320 thumbnail is 1/54th of it, and §1 is the argument that a person cannot
+reach the ceiling through the strip. What this observation supports is that **the ceiling was
+not in the way** — a strip drawn under it worked on a real phone. It says nothing about whether
+4 Mpx is the right ceiling for a caller that asks for a full-size render, because nothing here
+asked for one.
+
+**Not at all.** The 8 GB in the table is the reason this is one observation rather than a range.
+An iPhone 16 Pro is at the **generous end** of the devices this has to work on; a 4 GB phone —
+an iPhone SE, a mid-range Android — is **untested**, and the memory available to a tab there is
+not 8 GB minus the same overhead. **So the numbers stay conservative.** One device surviving is
+a reason not to lower them in a panic; it is not a reason to raise any of them.
+
+### What would still move these numbers
+
+- **A 4 GB device terminating the tab, or visibly thrashing, on the same document.** That lowers
+  `MAX_DEVICE_PIXEL_RATIO` to 1 first — the largest single lever, quartering each thumbnail to
+  76,800 B and the window to 8.6 MB — before `LIVE_THUMBNAIL_WINDOW` is touched, because the
+  window has the viewport floor under it and DPR does not.
+- **A device whose viewport wants more than 112 tiles.** The floor rule wins over the ceiling:
+  the window may not go below what a viewport shows.
+- **A caller that renders at full size rather than thumbnail size**, which is the only thing that
+  would put 4 Mpx under real pressure. There is no such caller today.
+- Nothing here moves the pixel ceiling upward. That needs a feature that wants 300 dpi and a
+  measurement of a 34 MiB bitmap on a phone, neither of which exists.
+
+### ADR 0015 §7: discharged for this case, and what stays open
+
+§7 deferred per-platform `Limits` defaults for mobile browsers to "a decision with the numbers in
+front of it". **For the thumbnail strip that question is now answered: no mobile-specific default
+is needed, because the strip's defaults survived a long document on a real iOS device.** That is
+the discharge, and it is narrow on purpose.
+
+**What remains open, unchanged by this observation:**
+
+1. **§7's actual exposure is not the strip.** It is *any caller that raises `max_memory_bytes`
+   above what the pre-scan would refuse* — a 330 kB file driving PDFium to 1.9 GiB in a worker.
+   The strip never raises it. Nothing here touches that path, and an iOS tab dying on it remains
+   exactly as possible as it was.
+2. **The document worker is not the render worker.** This observation covers rendering. `merge`,
+   `split` and `compress` run in the other bundle, against qpdf, with their own peaks.
+3. **The load phase is still the unbounded part.** Amendment 2 measured `FPDF_LoadPage` at
+   1,765 MiB inside one uninterruptible call on an adversarial file. A 370-page ordinary
+   document does not exercise that, and a hostile page on a 4 GB phone is the case §7 describes
+   and this does not cover.
+4. **One device is not a range**, and a second observation on a 4 GB phone is worth more than ten
+   more on this one.
+
+**This amendment does not close §7.** It removes the strip from §7's list of unanswered
+questions and leaves the list.
