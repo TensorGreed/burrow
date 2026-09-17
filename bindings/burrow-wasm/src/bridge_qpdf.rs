@@ -154,27 +154,6 @@ extern "C" {
     fn qpdf_heap_pages() -> u32;
 }
 
-/// Bytes in one WebAssembly page.
-const WASM_PAGE_BYTES: u64 = 64 * 1024;
-
-/// Convert a heap size reported in WASM pages to bytes.
-///
-/// **The heap crosses as a page count, not a byte count, and that is deliberate.** A byte
-/// count would have to arrive as a JavaScript `Number` — an `f64` — and converting a float
-/// to an integer needs exactly the casts this workspace denies (`cast_possible_truncation`,
-/// `cast_sign_loss`), because silent numeric damage to a size is a real bug class. Silencing
-/// the lint here would have been the easy fix and the wrong one.
-///
-/// A page count avoids the problem rather than suppressing it: `HEAPU8.byteLength` is always
-/// a whole number of 64 KiB pages, so `byteLength / 65536` is an exact small integer that
-/// crosses as a `u32` with nothing lost. `-sMAXIMUM_MEMORY=2GB` caps it at 32,768.
-///
-/// Saturating, so a nonsensical reading becomes a large number rather than wrapping to a
-/// small one — the safe direction for a value a limit check rejects on.
-fn pages_to_bytes(pages: u32) -> u64 {
-    u64::from(pages).saturating_mul(WASM_PAGE_BYTES)
-}
-
 /// The qpdf Emscripten module.
 pub(crate) struct JsQpdf;
 
@@ -386,28 +365,6 @@ impl QpdfBridge for JsQpdf {
     }
 
     fn heap_bytes(&self) -> u64 {
-        pages_to_bytes(qpdf_heap_pages())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_page_count_becomes_the_right_number_of_bytes() {
-        assert_eq!(pages_to_bytes(0), 0);
-        assert_eq!(pages_to_bytes(1), 65_536);
-        assert_eq!(pages_to_bytes(256), 16_777_216);
-        // -sMAXIMUM_MEMORY=2GB is 32,768 pages.
-        assert_eq!(pages_to_bytes(32_768), 2 * 1024 * 1024 * 1024);
-    }
-
-    /// A nonsensical reading must not wrap into a plausible small number: the measured
-    /// memory check rejects on this value, so under-reporting hides a real overshoot.
-    #[test]
-    fn an_absurd_page_count_saturates_rather_than_wrapping() {
-        assert_eq!(pages_to_bytes(u32::MAX), u64::from(u32::MAX) * 65_536);
-        assert!(pages_to_bytes(u32::MAX) > pages_to_bytes(32_768));
+        crate::pages_to_bytes(qpdf_heap_pages())
     }
 }

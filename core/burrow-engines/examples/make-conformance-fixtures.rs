@@ -107,9 +107,12 @@ fn opens(page_count: u64) -> Outcome {
 ///
 /// A constant rather than duplicated prose, because the two entries differ in their CAUSE and
 /// agree on their context, and writing it twice is how the two halves drift apart.
-const WEB_PAGE_COUNT_RUNS_ON_QPDF: &str = "`page_count` runs on qpdf on the WEB and on PDFium natively, since spike 0004 took \
-     PDFium out of the web payload -- it was 79.7% of the first load and this was the only \
-     web call into it.";
+const WEB_PAGE_COUNT_RUNS_ON_QPDF: &str = "`page_count` runs on qpdf in the web bundle this corpus drives, and on PDFium natively, \
+     since spike 0004 took PDFium out of the web payload -- it was 79.7% of the first load \
+     and this was the only web call into it. ADR 0026 put PDFium back in a SECOND web bundle \
+     that also answers `page_count`; no conformance case drives that one, because a \
+     disagreement between two WEB engines is a different question from a disagreement \
+     between the platforms.";
 
 /// The two engines genuinely disagree about this file, at equal posture.
 ///
