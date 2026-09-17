@@ -36,6 +36,10 @@
 #[path = "../../burrow-engines/testsupport/expectations.rs"]
 mod expectations;
 
+#[path = "../../burrow-engines/testsupport/ink_grid.rs"]
+mod ink_grid_support;
+use ink_grid_support::ink_grid;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -45,8 +49,8 @@ use burrow_engines::{CheckOptions, DocumentEngine, OpenOptions, StructureEngine}
 use burrow_types::{Limits, ManualClock, Password};
 use expectations::{
     Case, Expectations, MILESTONES, Operation, Outcome, OutcomeRecord, Platform, RecordedOutcome,
-    conformance_dir, milestone_index, outcome_of, outcome_with_compression, outcome_with_rotations,
-    sha256_hex,
+    Render, conformance_dir, milestone_index, outcome_of, outcome_with_compression,
+    outcome_with_render, outcome_with_rotations, sha256_hex,
 };
 
 /// The schema version this test understands. A newer file must fail, not be guessed at.
@@ -263,6 +267,46 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         return outcome_of(&result);
     }
 
+    if operation == Operation::Render {
+        // PAGE 1, FITTED INTO A 64x128 BOX. Fixed, as `Operation::Render` records. The box
+        // rather than an exact size because that is the shape the operation takes and the
+        // aspect-ratio arithmetic is part of what the two implementations have to agree on.
+        let mut options = OpenOptions::new(limits, clock);
+        options.password = password.as_ref();
+
+        let engine = Pdfium::new();
+        let outcome = burrow_ops::render(
+            &engine,
+            first(),
+            &[1],
+            burrow_ops::Fit::box_of(64, 128),
+            &options,
+        )
+        .and_then(|strip| {
+            let Some(rendered) = strip.into_iter().next() else {
+                return Err(burrow_types::Error::Internal(
+                    "a render of one page produced none".to_owned(),
+                ));
+            };
+            let raster = rendered.raster;
+            Ok((
+                1_u64,
+                Render {
+                    width: raster.width,
+                    height: raster.height,
+                    ink_grid: ink_grid(raster.width, raster.height, &raster.rgba).to_vec(),
+                },
+            ))
+        });
+
+        return match outcome {
+            // THE PAGE COUNT IS 1, not the document's: this case renders one page, and
+            // reporting the document's count here would be a number the case did not measure.
+            Ok((pages, render)) => outcome_with_render(&Ok(pages), Some(render)),
+            Err(error) => outcome_of(&Err(error)),
+        };
+    }
+
     let result = match operation {
         Operation::PageCount => {
             let mut options = OpenOptions::new(limits, clock);
@@ -310,6 +354,7 @@ fn run(case: &Case, operation: Operation, inputs: &[Vec<u8>]) -> Outcome {
         Operation::Reorder => unreachable!("reorder returns before this match"),
         Operation::Split => unreachable!("split returns before this match"),
         Operation::Compress => unreachable!("compress returns before this match"),
+        Operation::Render => unreachable!("render returns before this match"),
     };
     outcome_of(&result)
 }

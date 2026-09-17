@@ -75,6 +75,14 @@ pub(crate) struct FpdfBitmapOpaque {
 /// `Send + Sync` with no `unsafe impl` anywhere (ADR 0011).
 pub(crate) type FpdfPage = *mut FpdfPageOpaque;
 
+/// `FS_SIZEF`. Two floats, width then height. `fpdf_formfill.h` via `fpdfview.h:793`.
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct FsSizeF {
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+}
+
 /// `FPDF_BITMAP`. Null if the allocation failed. `fpdfview.h:76`.
 pub(crate) type FpdfBitmap = *mut FpdfBitmapOpaque;
 
@@ -135,17 +143,25 @@ unsafe extern "C" {
     /// `FPDF_EXPORT void FPDF_CALLCONV FPDF_ClosePage(FPDF_PAGE page)` — `fpdfview.h:1189`.
     fn FPDF_ClosePage(page: FpdfPage);
 
-    /// `FPDF_EXPORT float FPDF_CALLCONV FPDF_GetPageWidthF(FPDF_PAGE page)` —
-    /// `fpdfview.h:1103`. Points, at 72 per inch.
+    /// ```c
+    /// FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+    /// FPDF_GetPageSizeByIndexF(FPDF_DOCUMENT document, int page_index, FS_SIZEF* size);
+    /// ```
+    /// `fpdfview.h:793-796`. Non-zero for success.
     ///
-    /// The `F` suffix is the float form; the deprecated `double` one at `fpdfview.h:1092`
-    /// is not declared, because two spellings of one number is how a caller ends up using
-    /// whichever it happened to find.
-    fn FPDF_GetPageWidthF(page: FpdfPage) -> f32;
-
-    /// `FPDF_EXPORT float FPDF_CALLCONV FPDF_GetPageHeightF(FPDF_PAGE page)` —
-    /// `fpdfview.h:1124`.
-    fn FPDF_GetPageHeightF(page: FpdfPage) -> f32;
+    /// **THE POINT OF IT IS THAT IT DOES NOT LOAD THE PAGE.** Asking a page for its own size
+    /// through `FPDF_LoadPage` builds the display list -- 1,765 MiB and 3.5 s on the 10 M-path
+    /// input (#103) -- to read two floats out of a `/MediaBox`. Doing that before every render
+    /// paid the dominant cost of a strip TWICE per page, and did it through a path that
+    /// `estimate::before_page_load` did not guard. Found by security review.
+    ///
+    /// The `F` suffix is the float form; `fpdfview.h:810` says to prefer it over the `double`
+    /// one, which is deprecated.
+    fn FPDF_GetPageSizeByIndexF(
+        document: FpdfDocument,
+        page_index: c_int,
+        size: *mut FsSizeF,
+    ) -> c_int;
 
     /// ```c
     /// FPDF_EXPORT FPDF_BITMAP FPDF_CALLCONV
@@ -173,24 +189,6 @@ unsafe extern "C" {
         color: c_ulong,
     );
 
-    /// ```c
-    /// FPDF_EXPORT void FPDF_CALLCONV
-    /// FPDF_RenderPageBitmap(FPDF_BITMAP bitmap, FPDF_PAGE page, int start_x, int start_y,
-    ///                       int size_x, int size_y, int rotate, int flags);
-    /// ```
-    /// `fpdfview.h:1290`. `rotate` is 0 here always: the page's own `/Rotate` is applied
-    /// by PDFium, and a second rotation at this seam would silently double it.
-    fn FPDF_RenderPageBitmap(
-        bitmap: FpdfBitmap,
-        page: FpdfPage,
-        start_x: c_int,
-        start_y: c_int,
-        size_x: c_int,
-        size_y: c_int,
-        rotate: c_int,
-        flags: c_int,
-    );
-
     /// `FPDF_EXPORT void* FPDF_CALLCONV FPDFBitmap_GetBuffer(FPDF_BITMAP bitmap)` —
     /// `fpdfview.h:1568`. Valid until the bitmap is destroyed.
     fn FPDFBitmap_GetBuffer(bitmap: FpdfBitmap) -> *mut c_void;
@@ -203,6 +201,41 @@ unsafe extern "C" {
     /// `FPDF_EXPORT void FPDF_CALLCONV FPDFBitmap_Destroy(FPDF_BITMAP bitmap)` —
     /// `fpdfview.h:1601`.
     fn FPDFBitmap_Destroy(bitmap: FpdfBitmap);
+
+    // ---- fpdf_progressive.h, and it is the only header here that is not fpdfview.h ------
+
+    /// ```c
+    /// FPDF_EXPORT int FPDF_CALLCONV FPDF_RenderPageBitmap_Start(
+    ///     FPDF_BITMAP bitmap, FPDF_PAGE page, int start_x, int start_y, int size_x,
+    ///     int size_y, int rotate, int flags, IFSDK_PAUSE* pause);
+    /// ```
+    /// `fpdf_progressive.h:117-125`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one declaration per C function; this one takes nine"
+    )]
+    fn FPDF_RenderPageBitmap_Start(
+        bitmap: FpdfBitmap,
+        page: FpdfPage,
+        start_x: c_int,
+        start_y: c_int,
+        size_x: c_int,
+        size_y: c_int,
+        rotate: c_int,
+        flags: c_int,
+        pause: *mut IfsdkPause,
+    ) -> c_int;
+
+    /// ```c
+    /// FPDF_EXPORT int FPDF_CALLCONV FPDF_RenderPage_Continue(FPDF_PAGE page,
+    ///                                                        IFSDK_PAUSE* pause);
+    /// ```
+    /// `fpdf_progressive.h:138-139`.
+    fn FPDF_RenderPage_Continue(page: FpdfPage, pause: *mut IfsdkPause) -> c_int;
+
+    /// `FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPage_Close(FPDF_PAGE page)` —
+    /// `fpdf_progressive.h:149`.
+    fn FPDF_RenderPage_Close(page: FpdfPage);
 }
 
 /// Initialise the library, and return `FPDF_GetLastError()` read immediately after.
@@ -285,6 +318,118 @@ pub(crate) unsafe fn close_document(document: FpdfDocument) {
     unsafe { FPDF_CloseDocument(document) }
 }
 
+// ---- progressive rendering (#57, ADR 0027's 2026-09-17 amendment) ---------------------
+//
+// These come from `fpdf_progressive.h`, NOT `fpdfview.h` -- the only declarations in this
+// file that do, which is why their citations name a different header.
+//
+// WHAT THEY ARE FOR. `FPDF_RenderPageBitmap` has no checkpoint inside it: one call on a
+// hostile content stream was measured at 112 s and 2.7 GB while drawing a thumbnail. These
+// three let the loop live in Rust -- start, continue, continue, ..., close -- so a deadline
+// and a cancel can be honoured *within* a page rather than only between pages.
+
+/// PDFium's progressive render states. `fpdf_progressive.h:15-18`.
+///
+/// Only two are acted on: `TOBECONTINUED` means call continue again, `DONE` means the page is
+/// drawn. `READY` and `FAILED` are errors from the caller's point of view -- the first means
+/// the engine did not start, the second that it gave up -- and both are refused rather than
+/// looped on, because a loop that treats an unknown state as "keep going" is a hang.
+pub(crate) const FPDF_RENDER_TOBECONTINUED: c_int = 1;
+/// `fpdf_progressive.h:17`.
+pub(crate) const FPDF_RENDER_DONE: c_int = 2;
+/// `fpdf_progressive.h:18`. The engine tried and gave up -- the document's problem.
+pub(crate) const FPDF_RENDER_FAILED: c_int = 3;
+
+/// `IFSDK_PAUSE`. `fpdf_progressive.h:25-43`.
+///
+/// **`#[repr(C)]` and the field order is the ABI**, not a style choice: PDFium reads `version`
+/// first and calls through `need_to_pause_now` by offset.
+#[repr(C)]
+pub(crate) struct IfsdkPause {
+    /// "Currently must be 1" (`fpdf_progressive.h:27`).
+    version: c_int,
+    /// Non-zero to pause, zero to continue (`fpdf_progressive.h:38`).
+    need_to_pause_now: Option<unsafe extern "C" fn(*mut IfsdkPause) -> c_int>,
+    /// "Can be NULL" (`fpdf_progressive.h:42`). Always null here: the loop's state lives in
+    /// Rust, so there is nothing for the callback to carry.
+    user: *mut c_void,
+}
+
+/// The pause predicate: **always pause**.
+///
+/// THIS IS A CONSTANT, NOT A DECISION, AND THAT IS THE WHOLE DESIGN. The obvious reading of
+/// `IFSDK_PAUSE` is a callback that decides when to stop -- which on the web would put a branch
+/// on engine state in JavaScript, and [ADR 0009] §2 forbids that. Returning true unconditionally
+/// makes PDFium complete one slice and return, so *whether to continue* is decided by the Rust
+/// loop that called it. There is no allocation here and no path that can panic, which matters
+/// because this is called from C++ and an unwind across that boundary is undefined behaviour.
+///
+/// [ADR 0009]: ../../../docs/adr/0009-web-panic-contract-and-binding-boundary.md
+unsafe extern "C" fn always_pause(_this: *mut IfsdkPause) -> c_int {
+    1
+}
+
+impl IfsdkPause {
+    /// A pause interface that always pauses.
+    pub(crate) fn always() -> Self {
+        Self {
+            version: 1,
+            need_to_pause_now: Some(always_pause),
+            user: core::ptr::null_mut(),
+        }
+    }
+}
+
+/// Begin a progressive render. Returns one of the `FPDF_RENDER_*` states.
+///
+/// # Safety
+///
+/// Must be called on the engine thread with a live bitmap and a live page from the same
+/// document. `pause` must stay alive and at a stable address until [`render_page_close`] --
+/// PDFium keeps the pointer for the whole progressive render, not just this call. The page
+/// must be closed with [`render_page_close`] before [`close_page`], whatever the outcome.
+pub(crate) unsafe fn render_page_start(
+    bitmap: FpdfBitmap,
+    page: FpdfPage,
+    width: c_int,
+    height: c_int,
+    pause: *mut IfsdkPause,
+) -> c_int {
+    // SAFETY: the caller guarantees both handles are live, that the extent is the bitmap's own,
+    // that `pause` outlives the render, and that this is the engine thread.
+    unsafe {
+        FPDF_RenderPageBitmap_Start(bitmap, page, 0, 0, width, height, 0, RENDER_FLAGS, pause)
+    }
+}
+
+/// Continue a progressive render. Returns one of the `FPDF_RENDER_*` states.
+///
+/// # Safety
+///
+/// Must be called on the engine thread, only after [`render_page_start`] returned
+/// `FPDF_RENDER_TOBECONTINUED` for this page, with the same `pause`.
+pub(crate) unsafe fn render_page_continue(page: FpdfPage, pause: *mut IfsdkPause) -> c_int {
+    // SAFETY: the caller guarantees the page has a render in progress and that `pause` is the
+    // one it was started with, still alive.
+    unsafe { FPDF_RenderPage_Continue(page, pause) }
+}
+
+/// Release a progressive render's state.
+///
+/// **Called on every exit, including the ones that never continued.** PDFium holds the
+/// progressive context on the page until this runs; skipping it on an error path is a leak
+/// that lives as long as the document.
+///
+/// # Safety
+///
+/// Must be called on the engine thread, once per [`render_page_start`], before the page is
+/// closed.
+pub(crate) unsafe fn render_page_close(page: FpdfPage) {
+    // SAFETY: the caller guarantees single-use, that a render was started on this page, and
+    // the engine thread.
+    unsafe { FPDF_RenderPage_Close(page) }
+}
+
 /// The `alpha` argument to [`create_bitmap`] that selects `FPDFBitmap_BGRA`.
 ///
 /// `1`, not `0`. `0` selects `FPDFBitmap_BGRx`, where the fourth byte is padding whose value
@@ -331,15 +476,28 @@ pub(crate) unsafe fn close_page(page: FpdfPage) {
     unsafe { FPDF_ClosePage(page) }
 }
 
-/// A page's width and height in points, with its own `/Rotate` applied.
+/// A page's size in points **without loading the page**.
+///
+/// Returns `None` if PDFium reports failure — a page index past the end, or a document it
+/// cannot read. See the declaration for why this exists rather than `load_page` + `page_size`.
 ///
 /// # Safety
 ///
-/// Must be called on the engine thread with a live page from [`load_page`].
-pub(crate) unsafe fn page_size(page: FpdfPage) -> (f32, f32) {
-    // SAFETY: the caller guarantees the page is loaded and that this is the engine thread.
-    // Neither call takes or returns a pointer.
-    unsafe { (FPDF_GetPageWidthF(page), FPDF_GetPageHeightF(page)) }
+/// Must be called on the engine thread with a live `document`.
+pub(crate) unsafe fn page_size_by_index(
+    document: FpdfDocument,
+    index: c_int,
+) -> Option<(f32, f32)> {
+    let mut size = FsSizeF::default();
+    // SAFETY: the caller guarantees the document is open and that this is the engine thread.
+    // `size` is a live, correctly-aligned `FS_SIZEF` for the duration of the call, and PDFium
+    // writes to it only on success -- which is why the return value is checked before it is
+    // read rather than after.
+    let ok = unsafe { FPDF_GetPageSizeByIndexF(document, index, &raw mut size) };
+    if ok == 0 {
+        return None;
+    }
+    Some((size.width, size.height))
 }
 
 /// Allocate a bitmap. Null if the allocation failed.
@@ -370,21 +528,6 @@ pub(crate) unsafe fn fill_bitmap(bitmap: FpdfBitmap, width: c_int, height: c_int
     // SAFETY: the caller guarantees the bitmap is live, that the rectangle is the bitmap's own
     // extent, and that this is the engine thread.
     unsafe { FPDFBitmap_FillRect(bitmap, 0, 0, width, height, color) }
-}
-
-/// Draw `page` into `bitmap`, filling it.
-///
-/// `rotate` is **0** and is not a parameter: PDFium applies the page's own `/Rotate`, and a
-/// second rotation here would silently double it.
-///
-/// # Safety
-///
-/// Must be called on the engine thread with a live bitmap and a live page from the same
-/// document, and `width` and `height` must be the bitmap's own.
-pub(crate) unsafe fn render_page(bitmap: FpdfBitmap, page: FpdfPage, width: c_int, height: c_int) {
-    // SAFETY: the caller guarantees both handles are live, that the extent is the bitmap's,
-    // and that this is the engine thread. PDFium writes only inside the bitmap it was given.
-    unsafe { FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, RENDER_FLAGS) }
 }
 
 /// The bitmap's pixel buffer and its row stride, read together.

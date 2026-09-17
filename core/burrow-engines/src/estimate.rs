@@ -238,6 +238,62 @@ pub(crate) fn before_open(bytes: &[u8], limits: &Limits) -> Result<u64> {
     Ok(input_len)
 }
 
+/// Refuse to load another page when this document's rendering has already cost too much.
+///
+/// **An absolute guard across the document's life, not a delta across one call.** Every other
+/// memory check here brackets a single operation; this one asks whether the *strip so far* has
+/// already spent the caller's budget, and it is the thing that stops page loads stacking.
+///
+/// # Why it exists, measured
+///
+/// `FPDF_LoadPage` parses the content stream and builds the display list in one call that
+/// **cannot be checkpointed** — 757 MiB on a 3 M-path page, 1,765 MiB on a 10 M-path one
+/// ([#103](https://github.com/TensorGreed/burrow/issues/103)). Progressive render bounds what
+/// happens *after* that call and nothing about the call itself. So the only lever on the load
+/// phase is refusing to enter it, and that is what this is.
+///
+/// `at_open` is the reading taken when the document was opened, so the caller's own baseline
+/// cancels: on native the process resident set includes everything else running, and an
+/// absolute comparison there would refuse on a busy machine rather than on a costly document.
+///
+/// # Errors
+///
+/// [`Error::LimitExceeded`] at [`Stage::Measured`], naming `max_memory_bytes`. `Measured`
+/// rather than a new stage because it is the same question that variant already answers — what
+/// the work actually cost, asked after the fact — and the page load this refuses has not
+/// happened, which is the only sense in which it is early.
+pub(crate) fn before_page_load(
+    at_open: Option<u64>,
+    now: Option<u64>,
+    limits: &Limits,
+) -> Result<()> {
+    let (Some(at_open), Some(now)) = (at_open, now) else {
+        return Ok(());
+    };
+    // Saturating for the reason `check_measured_memory` saturates: a reading can legitimately
+    // fall, and that is not growth to report.
+    let grown = now.saturating_sub(at_open);
+
+    // THE SAME NOISE MARGIN as the measured check, and deliberately not a second number. Both
+    // read the same counter -- a process resident set on native, a module heap on the web -- so
+    // two different tolerances for it would mean one of them is wrong about how noisy it is.
+    // Tolerating less here would make this guard fire on documents the measured check accepts,
+    // which is a strip refusing to continue over something nothing else objects to.
+    if grown
+        <= limits
+            .max_memory_bytes
+            .saturating_add(MEASURED_NOISE_MARGIN_BYTES)
+    {
+        return Ok(());
+    }
+    Limits::check(
+        Stage::Measured,
+        "max_memory_bytes",
+        grown,
+        limits.max_memory_bytes,
+    )
+}
+
 /// Reject a document whose open actually cost more than the caller allowed.
 ///
 /// `before` and `after` are two readings of the same memory counter, taken around the

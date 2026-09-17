@@ -97,6 +97,9 @@ pub struct WebDocument {
     deadline: Deadline,
     clock: Arc<dyn Clock>,
     pages_at_open: u64,
+    /// The module's heap size when this document was opened. See
+    /// `PdfiumDocument::memory_at_open`; the counter differs, the question does not.
+    memory_at_open: Option<u64>,
     bridge: Arc<dyn PdfiumBridge>,
 }
 
@@ -253,6 +256,7 @@ impl DocumentEngine for WebPdfium {
             deadline,
             clock,
             pages_at_open: 0,
+            memory_at_open: None,
             bridge: Arc::clone(&self.bridge),
         };
 
@@ -284,6 +288,13 @@ impl DocumentEngine for WebPdfium {
         document.deadline.checkpoint(document.clock.as_ref())?;
 
         document.pages_at_open = pages;
+        // AFTER THE OPEN, MATCHING NATIVE. It was taken before `load_mem_document64`, so the
+        // document's own parse cost counted against the STRIP's budget on the web and not on
+        // native -- a platform divergence in a typed outcome, which is the one thing ADR 0016's
+        // corpus exists to catch, and the web was the side that refused first. Found by both
+        // reviews. One ceiling, one baseline: what this measures is what RENDERING has cost
+        // since the document was opened.
+        document.memory_at_open = Some(self.bridge.heap_bytes());
         Ok(document)
     }
 
@@ -318,6 +329,22 @@ const OPAQUE_WHITE: u32 = 0xFFFF_FFFF;
 /// `FPDF_RenderPageBitmap`'s flags: none. **Not** `FPDF_ANNOT`; see the native constant.
 const RENDER_FLAGS: i32 = 0;
 
+/// PDFium's progressive render states, `fpdf_progressive.h:15-18`. Only two are acted on.
+const FPDF_RENDER_TOBECONTINUED: i32 = 1;
+/// `fpdf_progressive.h:17`.
+const FPDF_RENDER_DONE: i32 = 2;
+/// `fpdf_progressive.h:18`. The engine tried and gave up -- the document's problem.
+const FPDF_RENDER_FAILED: i32 = 3;
+
+/// How many slices pass between heap readings.
+///
+/// The deadline is checked on EVERY slice -- a clock read. The heap reading crosses the bridge,
+/// so on the 100,002-slice case a per-slice reading would be a hundred thousand boundary
+/// crossings to measure something that moves a megabyte at a time. 16 matches the native path's
+/// constant and its reasoning: the worst measured slice grew the heap by 1.0 MiB, so sixteen is
+/// at most 16 MiB between readings.
+const SLICES_PER_HEAP_READING: u32 = 16;
+
 /// `FPDF_RenderPageBitmap`'s `rotate`: always zero.
 ///
 /// PDFium applies the page's own `/Rotate`, and a second rotation here would silently double
@@ -346,25 +373,124 @@ fn raster_dimension(value: u32) -> Result<i32> {
     })
 }
 
+impl WebPdfium {
+    /// Draw a page with a checkpoint between slices. The web half of the native
+    /// `render_progressively`, and deliberately the same shape.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::LimitExceeded`] — the deadline came due, or the heap grew past
+    ///   `max_memory_bytes`, **while the page was being drawn**. That is the whole point: with
+    ///   a single `FPDF_RenderPageBitmap` neither could be noticed until the page had finished,
+    ///   and on this platform the only thing that could end it was the page terminating the
+    ///   worker — which fails the whole strip and counts against the circuit breaker.
+    /// - [`Error::Io`] — the pause interface could not be allocated.
+    /// - [`Error::Malformed`] — PDFium ended in a state that is neither "continue" nor "done".
+    ///
+    /// # What this does NOT cover
+    ///
+    /// `FPDF_LoadPage` runs before any of this and cannot be checkpointed — measured at 1.2 s
+    /// and 757 MiB, and 3.5 s and 1,765 MiB, on the two adversarial inputs. **Interruptibility
+    /// here is a property of rendering, not of loading**, and ADR 0027's amendment says so in
+    /// those words.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the native counterpart takes the same set; splitting them would hide the pairing"
+    )]
+    fn render_progressively(
+        &self,
+        page: PdfiumPtr,
+        bitmap: PdfiumPtr,
+        width: i32,
+        height: i32,
+        deadline: &Deadline,
+        clock: &dyn Clock,
+        options: &OpenOptions<'_>,
+    ) -> Result<()> {
+        let pause = self.bridge.pause_create();
+        if pause.is_null() {
+            // The allocation or the function-table growth failed. Not a ceiling and not the
+            // document's fault: the module could not give us a callback slot.
+            return Err(Error::Io(
+                "the pdfium module could not allocate a pause interface".to_owned(),
+            ));
+        }
+
+        let before = self.bridge.heap_bytes();
+        let mut state = self.bridge.render_page_start(
+            bitmap,
+            page,
+            width,
+            height,
+            NO_EXTRA_ROTATION,
+            RENDER_FLAGS,
+            pause,
+        );
+
+        let mut slices: u32 = 0;
+        let outcome = loop {
+            if state != FPDF_RENDER_TOBECONTINUED {
+                break Ok(state);
+            }
+            if let Err(error) = deadline.checkpoint(clock) {
+                break Err(error);
+            }
+            // A COUNTDOWN MODULO THE INTERVAL, not a total. `saturating_add` pinned at `u32::MAX`,
+            // where `is_multiple_of` is false forever and the readings silently stopped for the rest
+            // of the render. Unreachable at 0.4 ms a slice -- about twenty days -- and a counter that
+            // cannot run out costs nothing. Found by security review.
+            slices = (slices + 1) % SLICES_PER_HEAP_READING;
+            if slices == 0
+                && let Err(error) = crate::estimate::check_measured_memory(
+                    Some(before),
+                    Some(self.bridge.heap_bytes()),
+                    &options.limits,
+                )
+            {
+                break Err(error);
+            }
+            state = self.bridge.render_page_continue(page, pause);
+        };
+
+        // ON EVERY EXIT, both of them, and in this order. The progressive context is PDFium's
+        // and the pause interface is ours; releasing ours first would leave the engine holding
+        // a pointer into freed heap for the length of one call.
+        self.bridge.render_page_close(page);
+        self.bridge.pause_destroy(pause);
+
+        match outcome? {
+            FPDF_RENDER_DONE => Ok(()),
+            // FAILED (3) is the DOCUMENT: the engine tried and gave up.
+            s if s == FPDF_RENDER_FAILED => {
+                Err(Error::Malformed("the page could not be drawn".to_owned()))
+            }
+            // READY (0) means the engine NEVER STARTED, which is our call sequence rather than
+            // anything about the file -- so it is `Internal`, not `Malformed`. Both were mapped to
+            // `Malformed` under a comment that named the distinction and then collapsed it. Found
+            // by code review. Neither is looped on: a loop that treats an unknown state as "keep
+            // going" is a hang, which is the failure this whole change exists to remove.
+            _ => Err(Error::Internal(
+                "pdfium did not begin the render it was asked for".to_owned(),
+            )),
+        }
+    }
+}
+
 impl PageRenderer for WebPdfium {
     fn page_size(&self, source: &Self::Document, index: u64) -> Result<(f32, f32)> {
         source.deadline.checkpoint(source.clock.as_ref())?;
 
         let at = page_index(index, source.pages_at_open)?;
-        let page = self.bridge.load_page(source.doc, at);
-        if page.is_null() {
-            return Err(Error::Malformed("a page could not be loaded".to_owned()));
-        }
-        let width = self.bridge.page_width(page);
-        let height = self.bridge.page_height(page);
-        // No `?` between the load and the close: on this path there is no `Drop` on the other
-        // side of the bridge, so an early return is a page handle left open for the life of
-        // the worker. `FakeHeap::assert_empty` is what makes that a failing test rather than
-        // a slow leak.
-        self.bridge.close_page(page);
+        // NO `load_page` HERE. See `PdfiumBridge::page_size_by_index`: loading a page to read
+        // its `/MediaBox` builds the display list, which is the dominant cost of a strip, and
+        // does it through a path `before_page_load` does not guard.
+        let size = self
+            .bridge
+            .page_size_by_index(source.doc, at)
+            .ok_or_else(|| Error::Malformed("a page has no usable size".to_owned()))?;
 
         source.deadline.checkpoint(source.clock.as_ref())?;
-        Ok((width, height))
+        Ok(size)
     }
 
     fn render(
@@ -385,6 +511,18 @@ impl PageRenderer for WebPdfium {
         // product that would not fit this target, and the final length check lives in
         // `Raster::new`, where it cannot be skipped.
         crate::raster::check_pixels(width, height, &options.limits)?;
+
+        // ONE PAGE LOAD AT A TIME IS STRUCTURAL -- the worker is serialised, so a second
+        // `FPDF_LoadPage` cannot begin while one is running. WHETHER TO BEGIN THE NEXT AT ALL
+        // is this check: the load cannot be checkpointed once entered, so the only lever on it
+        // is the decision to enter. On this platform the heap never shrinks, so "the previous
+        // page has freed" is not observable at all -- what makes it true is the worker being
+        // recycled, which `Reply::recycle` asks the page to do.
+        crate::estimate::before_page_load(
+            source.memory_at_open,
+            Some(self.bridge.heap_bytes()),
+            &options.limits,
+        )?;
 
         let at = page_index(index, source.pages_at_open)?;
         let w = raster_dimension(width)?;
@@ -418,16 +556,8 @@ impl PageRenderer for WebPdfium {
             let filled = (|| -> Result<Vec<u8>> {
                 self.bridge
                     .bitmap_fill_rect(bitmap, 0, 0, w, h, OPAQUE_WHITE);
-                self.bridge.render_page_bitmap(
-                    bitmap,
-                    page,
-                    0,
-                    0,
-                    w,
-                    h,
-                    NO_EXTRA_ROTATION,
-                    RENDER_FLAGS,
-                );
+
+                self.render_progressively(page, bitmap, w, h, deadline, clock.as_ref(), options)?;
 
                 let buffer = self.bridge.bitmap_buffer(bitmap);
                 if buffer.is_null() {
@@ -438,6 +568,23 @@ impl PageRenderer for WebPdfium {
                 let stride = self.bridge.bitmap_stride(bitmap);
                 let stride = usize::try_from(stride)
                     .map_err(|_| Error::Internal("pdfium reported a negative stride".to_owned()))?;
+
+                // BOUNDED LIKE THE NATIVE PATH, so the two answer the same engine misbehaviour
+                // the same way. Here an over-large stride is clamped by `HEAPU8.slice` and then
+                // refused by `bgra_to_rgba`'s short-buffer check, so it was never memory-unsafe
+                // -- but the asymmetry meant a divergence in a typed outcome, which is the one
+                // thing ADR 0016's corpus exists to catch. Found by security review.
+                let row_bytes = usize::try_from(width)
+                    .ok()
+                    .and_then(|w| w.checked_mul(4))
+                    .ok_or_else(|| {
+                        Error::Internal("raster row does not fit in usize".to_owned())
+                    })?;
+                if stride < row_bytes || stride > row_bytes.saturating_add(row_bytes) {
+                    return Err(Error::Internal(
+                        "pdfium reported a stride its own bitmap cannot have".to_owned(),
+                    ));
+                }
 
                 // The length is computed from what the ENGINE reported -- its stride, and the
                 // height we asked for -- and never from `width * 4`. `bgra_to_rgba` refuses a

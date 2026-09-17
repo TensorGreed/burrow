@@ -2621,20 +2621,183 @@ fn the_fill_happens_before_the_render_and_the_rotation_is_never_doubled() {
         .expect("the bitmap should be filled");
     let drawn = calls
         .iter()
-        .position(|c| matches!(c, Call::RenderPageBitmap { .. }))
+        .position(|c| matches!(c, Call::RenderPageStart { .. }))
         .expect("the page should be drawn");
     assert!(fill < drawn, "the fill must precede the render: {calls:?}");
 
     match calls
         .iter()
-        .find(|c| matches!(c, Call::RenderPageBitmap { .. }))
+        .find(|c| matches!(c, Call::RenderPageStart { .. }))
     {
-        Some(Call::RenderPageBitmap { rotate, flags, .. }) => {
+        Some(Call::RenderPageStart { rotate, flags, .. }) => {
             assert_eq!(*rotate, 0, "PDFium applies /Rotate itself");
             assert_eq!(*flags, 0, "no FPDF_ANNOT; see the constant");
         }
-        other => panic!("expected a render call, got {other:?}"),
+        other => panic!("expected a render start, got {other:?}"),
     }
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_render_drives_the_progressive_loop_and_releases_both_halves_of_it() {
+    // THE SHAPE OF THE LOOP, asserted rather than assumed: start once, continue until the
+    // engine says done, then close the progressive context AND destroy the pause interface.
+    //
+    // The two releases are separate calls with an order that matters -- the context is
+    // PDFium's and the pause is ours, so releasing ours first would leave the engine holding a
+    // pointer into freed heap for the length of one call.
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            render_slices: 5,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    render(&engine, &doc, 4, 4, Limits::default()).expect("a page should render");
+
+    let calls = state.calls();
+    let index = |m: fn(&Call) -> bool| calls.iter().position(m).expect("call missing");
+    let created = index(|c| matches!(c, Call::PauseCreate));
+    let started = index(|c| matches!(c, Call::RenderPageStart { .. }));
+    let closed = index(|c| matches!(c, Call::RenderPageClose(_)));
+    let destroyed = index(|c| matches!(c, Call::PauseDestroy(_)));
+
+    assert!(
+        created < started,
+        "the pause must exist before the render starts"
+    );
+    assert!(started < closed);
+    assert!(
+        closed < destroyed,
+        "the progressive context must be closed before the pause it points at is freed"
+    );
+    // FIVE SLICES MEANS FOUR CONTINUES. A fake that reported `DONE` immediately would make
+    // every checkpoint-between-slices assertion vacuous, which is why its default is not one.
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| matches!(c, Call::RenderPageContinue(_)))
+            .count(),
+        4
+    );
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_deadline_that_comes_due_between_slices_ends_the_render_and_releases_everything() {
+    // THE POINT OF THE LOOP. The clock advances inside the fake's `render_page_continue`, so
+    // the deadline comes due part way through and the refusal arrives while the engine still
+    // has work to do -- which a single `FPDF_RenderPageBitmap` could not express at all.
+    let state = FakeHeap::new();
+    let clock = Arc::new(ManualClock::new(0));
+    // A STEPPING CLOCK, advanced by the fake inside each slice. Advancing it before the call
+    // instead makes the refusal arrive at the checkpoint BEFORE the loop -- a test of the wrong
+    // checkpoint, which is how the first version of this passed while asserting nothing about
+    // the loop, and then failed on the release assertions because the render never started.
+    let bridge = Arc::new(FakePdfium::advancing(
+        Arc::clone(&state),
+        PdfiumScript {
+            render_slices: 100,
+            ..PdfiumScript::default()
+        },
+        Arc::clone(&clock),
+        4,
+    ));
+    let engine = WebPdfium::new(bridge);
+
+    let limits = Limits::with(|l| l.max_duration_ms = 10);
+    let options = OpenOptions::new(limits, Arc::clone(&clock) as Arc<dyn Clock>);
+    let doc = DocumentEngine::open(&engine, ordinary_pdf().into_boxed_slice(), &options)
+        .expect("an ordinary document should open");
+
+    let deadline = burrow_types::Deadline::start(clock.as_ref(), &limits);
+
+    let outcome = PageRenderer::render(&engine, &doc, 0, 4, 4, &options, &deadline);
+    assert!(
+        matches!(
+            outcome,
+            Err(Error::LimitExceeded {
+                stage: Stage::Deadline,
+                ..
+            })
+        ),
+        "expected a deadline refusal, got {outcome:?}"
+    );
+
+    let calls = state.calls();
+
+    // IT STOPPED EARLY, AND THIS IS THE ONLY ASSERTION THAT SAYS SO. At 4 ms a slice against a
+    // 10 ms budget the loop should give up after about three continues, not ninety-nine.
+    //
+    // WITHOUT IT THIS TEST PASSED WITH THE IN-LOOP CHECKPOINT DELETED: the loop ran to the end,
+    // the checkpoint AFTER the render reported the same `LimitExceeded`, and every release
+    // assertion below still held. Found by making that deletion and re-running -- the same way
+    // the native version of this test was found to be measuring nothing, an hour earlier.
+    let continues = calls
+        .iter()
+        .filter(|c| matches!(c, Call::RenderPageContinue(_)))
+        .count();
+    assert!(
+        continues < 10,
+        "the render ran {continues} slices before giving up, so the deadline was not noticed \
+         until after the page was drawn"
+    );
+
+    // AND EVERYTHING IS STILL RELEASED. A `?` on the refusal path that skipped the close would
+    // leak PDFium's progressive context for the life of the document, and the pause interface
+    // with it -- neither has a `Drop` on the other side of a real bridge.
+    assert!(calls.iter().any(|c| matches!(c, Call::RenderPageClose(_))));
+    assert!(calls.iter().any(|c| matches!(c, Call::PauseDestroy(_))));
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_pause_interface_that_cannot_be_allocated_is_io_and_draws_nothing() {
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            pause_alloc_succeeds: false,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        render(&engine, &doc, 4, 4, Limits::default()),
+        Err(Error::Io(_))
+    ));
+    assert!(
+        !state
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::RenderPageStart { .. })),
+        "the render must not start without a pause interface"
+    );
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn an_engine_that_gives_up_part_way_is_malformed_rather_than_a_blank_picture() {
+    // `FPDF_RENDER_FAILED` (3). The loop must not treat an unknown terminal state as "done"
+    // and hand back a half-drawn bitmap that looks like a picture of the page.
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            render_slices: 3,
+            render_final_state: 3,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        render(&engine, &doc, 4, 4, Limits::default()),
+        Err(Error::Malformed(_))
+    ));
 
     drop(doc);
     state.assert_empty();
@@ -2663,11 +2826,114 @@ fn a_page_past_the_end_never_reaches_the_bridge_on_the_web_path_either() {
 }
 
 #[test]
-fn page_size_closes_the_page_it_opened() {
+fn page_size_never_loads_a_page_at_all() {
+    // ITS NAME USED TO BE `page_size_closes_the_page_it_opened`, and the change is the point:
+    // it does not open one. Reading a `/MediaBox` through `FPDF_LoadPage` builds the display
+    // list -- 1,765 MiB and 3.5 s on the 10 M-path input (#103) -- which a strip then paid
+    // again in `render`, twice per page, through a path `before_page_load` does not guard.
     let (engine, state, doc) = open_for_render(PdfiumScript::default(), Limits::default());
+    let before = state.calls().len();
+
     let (width, height) =
         PageRenderer::page_size(&engine, &doc, 0).expect("a page should report its size");
     assert_eq!((width, height), (200.0, 400.0));
+
+    // THE ASSERTION THAT MATTERS, and the old name promised the opposite of it.
+    let after: Vec<_> = state.calls().into_iter().skip(before).collect();
+    assert!(
+        !after.iter().any(|c| matches!(c, Call::LoadPage(_))),
+        "page_size loaded a page: {after:?}"
+    );
+    assert!(after.iter().any(|c| matches!(c, Call::PageSizeByIndex(0))));
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_page_whose_size_the_engine_will_not_report_is_malformed() {
+    let (engine, state, doc) = open_for_render(
+        PdfiumScript {
+            page_size: None,
+            ..PdfiumScript::default()
+        },
+        Limits::default(),
+    );
+    assert!(matches!(
+        PageRenderer::page_size(&engine, &doc, 0),
+        Err(Error::Malformed(_))
+    ));
+
+    drop(doc);
+    state.assert_empty();
+}
+
+#[test]
+fn a_strip_that_has_already_spent_the_memory_budget_will_not_load_another_page() {
+    // ONE PAGE LOAD IN FLIGHT IS STRUCTURAL; WHETHER TO START THE NEXT IS THIS CHECK.
+    //
+    // `FPDF_LoadPage` cannot be checkpointed once entered -- 757 MiB and 1,765 MiB on the two
+    // adversarial inputs (#103) -- so the only lever on the load phase is refusing to enter it.
+    // The document's heap reading at open is the baseline, so what is measured is what this
+    // STRIP has cost rather than what the machine was already doing.
+    let state = FakeHeap::new();
+    let bridge = Arc::new(FakePdfium::new(
+        Arc::clone(&state),
+        PdfiumScript {
+            // The first render grows the heap past the ceiling, so the SECOND page load is the
+            // one that must be refused -- not the first, which is allowed to happen.
+            render_slices: 2,
+            // PAST THE TOLERANCE, NOT JUST PAST THE LIMIT. `check_measured_memory` allows a
+            // 64 MiB noise margin on top of `max_memory_bytes`, because the counter it reads is
+            // a resident set and resident sets move on their own -- and `before_page_load`
+            // uses the same margin so the two cannot disagree about one counter. A fixture that
+            // only just crossed the limit would be tolerated by both and prove nothing; this
+            // one crosses the tolerance.
+            slice_grows_heap_by: 200 * 1024 * 1024,
+            page_count: 4,
+            ..PdfiumScript::default()
+        },
+    ));
+    let engine = WebPdfium::new(bridge);
+    let limits = Limits::with(|l| l.max_memory_bytes = 32 * 1024 * 1024);
+    let options = OpenOptions::new(limits, stopped());
+    let doc = DocumentEngine::open(&engine, ordinary_pdf().into_boxed_slice(), &options)
+        .expect("an ordinary document should open");
+    let deadline = burrow_types::Deadline::start(options.clock.as_ref(), &limits);
+
+    // The first page is drawn. It ends over budget -- the render's own measured check says so.
+    let first = PageRenderer::render(&engine, &doc, 0, 4, 4, &options, &deadline);
+    assert!(
+        matches!(
+            first,
+            Err(Error::LimitExceeded {
+                stage: Stage::Measured,
+                ..
+            })
+        ),
+        "the first page should report what it cost, got {first:?}"
+    );
+
+    let before = state.calls().len();
+    let second = PageRenderer::render(&engine, &doc, 1, 4, 4, &options, &deadline);
+    assert!(
+        matches!(
+            second,
+            Err(Error::LimitExceeded {
+                stage: Stage::Measured,
+                ..
+            })
+        ),
+        "the second page should be refused before it loads, got {second:?}"
+    );
+
+    // AND IT NEVER REACHED THE ENGINE. The refusal is what stops a strip stacking page loads,
+    // so it has to happen before `load_page`, not after it.
+    let after: Vec<_> = state.calls().into_iter().skip(before).collect();
+    assert!(
+        !after.iter().any(|c| matches!(c, Call::LoadPage(_))),
+        "the second page was loaded despite the budget being spent: {after:?}"
+    );
 
     drop(doc);
     state.assert_empty();

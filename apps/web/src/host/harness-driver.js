@@ -778,6 +778,99 @@ const harness = {
     return reply;
   },
 
+  /**
+   * Draw a strip, and report how long each page took.
+   *
+   * **For `measure.spec.ts`, which is where the render watchdog budget comes from.** The
+   * document operations' budget was derived from timing the slowest honest operation in the
+   * corpus (`LIMITS.maxDurationMs`, 12 s from a 611 ms worst case); a thumbnail is a different
+   * workload and inherits that number only because nothing had measured it.
+   *
+   * Timed PER PAGE rather than for the strip, because the budget is per page: the host re-arms
+   * its watchdog on every tile.
+   *
+   * @param {string} name
+   * @param {number[]} bytes
+   * @param {number[]} pages
+   * @param {{ boxWidth?: number, boxHeight?: number, limits?: Record<string, number> }} options
+   */
+  async renderStrip(name, bytes, pages, options = {}) {
+    const worker = await renderBundle();
+    /** @type {number[]} */
+    const perPage = [];
+    let last = performance.now();
+    const reply = await worker.run(
+      {
+        op: "render",
+        blob: new File([new Uint8Array(bytes)], name, { type: "application/pdf" }),
+        pages,
+        boxWidth: options.boxWidth ?? 240,
+        boxHeight: options.boxHeight ?? 320,
+        limits: { ...DEFAULT_LIMITS, ...(options.limits ?? {}) },
+      },
+      {
+        maxDurationMs: DEFAULT_LIMITS.maxDurationMs,
+        onPage: () => {
+          const now = performance.now();
+          perPage.push(now - last);
+          last = now;
+        },
+      },
+    );
+    return { ok: reply.ok, kind: reply.kind, drawn: perPage.length, perPage };
+  },
+
+  /**
+   * Draw one page and hand back its RAW PIXELS, for the differential corpus.
+   *
+   * **The grid is computed on the other side**, by `src/conformance/ink-grid.ts`, which is
+   * tested against the value the corpus records. Computing it here would put a second copy of
+   * the quantiser in a file no unit test can reach — and a differential corpus whose two sides
+   * quantise differently is comparing its own quantisers rather than the engines.
+   *
+   * @param {string} name
+   * @param {number[]} bytes
+   * @param {{ password?: string | null, limits?: Record<string, number>, boxWidth?: number,
+   *   boxHeight?: number }} options
+   */
+  async renderForCorpus(name, bytes, options = {}) {
+    const worker = await renderBundle();
+    /** @type {{ width: number, height: number, rgba: number[] } | null} */
+    let drawn = null;
+    const reply = await worker.run(
+      {
+        op: "render",
+        blob: new File([new Uint8Array(bytes)], name, { type: "application/pdf" }),
+        pages: [1],
+        boxWidth: options.boxWidth ?? 64,
+        boxHeight: options.boxHeight ?? 128,
+        password: options.password ? Array.from(new TextEncoder().encode(options.password)) : null,
+        limits: { ...DEFAULT_LIMITS, ...(options.limits ?? {}) },
+      },
+      {
+        maxDurationMs: DEFAULT_LIMITS.maxDurationMs,
+        onPage: (page, pixels) => {
+          drawn = {
+            width: page.width,
+            height: page.height,
+            rgba: Array.from(new Uint8Array(pixels)),
+          };
+        },
+      },
+    );
+    return {
+      ok: reply.ok && drawn !== null,
+      kind: reply.kind,
+      fatal: reply.fatal,
+      message: reply.message,
+      limit: reply.limit,
+      stage: reply.stage,
+      requested: reply.requested,
+      allowed: reply.allowed,
+      drawn,
+    };
+  },
+
   renderState() {
     // "unbuilt" is the property under test: nothing may build this host until something asks
     // for a render. `built` rather than the host's own state once it exists, because the

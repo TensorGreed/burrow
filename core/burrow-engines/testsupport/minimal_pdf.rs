@@ -156,6 +156,62 @@ fn build(pages: usize, encrypt: Option<EncryptDict>) -> Vec<u8> {
     out
 }
 
+/// A one-page PDF whose single content stream draws `paths` stroked lines.
+///
+/// **For testing that a render can be interrupted**, which needs a page expensive enough that
+/// a deadline can come due while PDFium is inside it. Everything else here is a fixture about
+/// structure; this one is a fixture about *cost*.
+///
+/// The operators repeat on a short cycle, so the stream deflates the way a real amplification
+/// attack's does -- a few kB of file for tens of MB of drawing. That shape is the finding
+/// behind [#103](https://github.com/TensorGreed/burrow/issues/103): 3 M paths is 342 kB of file
+/// and 64 MB of content, and PDFium yields roughly every 100 of them.
+///
+/// **Uncompressed**, unlike the adversarial fixtures that measurement used. A committed test
+/// must not need an inflater, and at the sizes a unit test can afford the file is small either
+/// way. The cost is in the drawing, not in the bytes.
+pub fn pdf_with_paths(paths: usize) -> Vec<u8> {
+    let mut content = String::from("0.5 w\n");
+    for i in 0..paths {
+        let (x, y) = ((i * 71) % 600, (i * 137) % 780);
+        content.push_str(&format!(
+            "{x} {y} m {} {} l S\n",
+            (x + 41) % 600,
+            (y + 83) % 780
+        ));
+    }
+    let content = content.into_bytes();
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+
+    offsets.push(out.len());
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    offsets.push(out.len());
+    out.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+    offsets.push(out.len());
+    out.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+          /Resources << >> /Contents 4 0 R >>\nendobj\n",
+    );
+    offsets.push(out.len());
+    out.extend_from_slice(format!("4 0 obj\n<< /Length {} >>\nstream\n", content.len()).as_bytes());
+    out.extend_from_slice(&content);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+
+    let startxref = out.len();
+    let size = offsets.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\n").as_bytes());
+    out.extend_from_slice(format!("startxref\n{startxref}\n%%EOF\n").as_bytes());
+    out
+}
+
 /// A one-page PDF with ink in **exactly one quadrant**, for testing a render.
 ///
 /// 200 x 400 points, with a black rectangle over the **top-left** quarter and nothing

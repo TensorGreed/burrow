@@ -35,7 +35,7 @@ mod minimal_pdf;
 
 use expectations::{
     Case, CaseInput, CaseLimits, ErrorKind, Expectations, Failure, KnownGap, Operation, Outcome,
-    Outcomes, Platform, PlatformExpectation, conformance_dir, sha256_hex,
+    Outcomes, Platform, PlatformExpectation, Render, conformance_dir, sha256_hex,
 };
 
 /// One fixture to write, and what every operation on it must produce.
@@ -99,6 +99,24 @@ fn opens(page_count: u64) -> Outcome {
         page_count,
         rotations: None,
         compressed: None,
+        render: None,
+    }
+}
+
+/// What a `render` case expects: the raster's size, and its ink.
+///
+/// `page_count` is **1**, not the document's, because the case renders one page. Reporting the
+/// document's count here would be a number the case did not measure.
+fn draws(width: u32, height: u32, ink_grid: [u8; 16]) -> Outcome {
+    Outcome::Ok {
+        page_count: 1,
+        rotations: None,
+        compressed: None,
+        render: Some(Render {
+            width,
+            height,
+            ink_grid: ink_grid.to_vec(),
+        }),
     }
 }
 
@@ -214,6 +232,7 @@ fn rotates(page_count: u64, rotations: Vec<i64>) -> Outcomes {
             page_count,
             rotations: Some(rotations),
             compressed: None,
+            render: None,
         },
     )])
 }
@@ -229,6 +248,7 @@ fn reorders(page_count: u64, rotations: Vec<i64>) -> Outcomes {
             page_count,
             rotations: Some(rotations),
             compressed: None,
+            render: None,
         },
     )])
 }
@@ -247,6 +267,7 @@ fn compresses(page_count: u64, rotations: Vec<i64>, smaller: bool) -> Outcomes {
             page_count,
             rotations: Some(rotations),
             compressed: Some(smaller),
+            render: None,
         },
     )])
 }
@@ -259,6 +280,7 @@ fn splits_into(parts: u64) -> Outcomes {
             page_count: parts,
             rotations: None,
             compressed: None,
+            render: None,
         },
     )])
 }
@@ -358,6 +380,48 @@ fn main() {
             platform_expectations: Vec::new(),
             known_gap: None,
         },
+        // ---- the only fixture in this corpus with INK ON IT ----------------------------
+        //
+        // Every other well-formed fixture here is structure: a page tree, a MediaBox, and no
+        // content stream. That is right for the operations they exist for -- a page count does
+        // not care what is drawn -- and it is useless for `render`, because a grid of a blank
+        // page is all paper whether the renderer drew it or drew nothing at all.
+        //
+        // So this one has a black rectangle over exactly one quadrant. It is 200x400 points,
+        // which is not square, and the mark is in neither axis's middle, so a flip, a mirror
+        // and a quarter turn all move it. `core/burrow-ops/tests/render.rs` pins the same
+        // shape natively and asserts the grid MOVES when the page is turned -- a readout that
+        // did not would be a checksum rather than an observable.
+        Fixture {
+            name: "render-one-quadrant",
+            filename: "render-one-quadrant.pdf",
+            bytes: Some(minimal_pdf::pdf_with_ink()),
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: Outcomes::from([
+                (Operation::PageCount, opens(1)),
+                (Operation::StructureCheck, opens(1)),
+                // 200x400 points into a 64x128 box is 64x128 exactly -- the ratios match, so
+                // the fit fills the frame. The ink is the top-left quarter, which is the four
+                // cells of the grid's top-left quadrant and nothing else.
+                (
+                    Operation::Render,
+                    draws(
+                        64,
+                        128,
+                        [
+                            3, 3, 0, 0, //
+                            3, 3, 0, 0, //
+                            0, 0, 0, 0, //
+                            0, 0, 0, 0,
+                        ],
+                    ),
+                ),
+            ]),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
         Fixture {
             name: "pages-10",
             filename: "pages-10.pdf",
@@ -401,7 +465,17 @@ fn main() {
             password: None,
             limits: None,
             attempt_recovery: false,
-            expect: both(malformed()),
+            // THE RENDER REFUSAL PATH, COMPARED ACROSS PLATFORMS. The corpus declared `render`
+            // on one fixture and only its success path, so no typed refusal on this path was
+            // compared at all -- and the two implementations map their own failures (the web
+            // has an `Io` for a pause interface that will not allocate; native does not). A
+            // file that is not a PDF cannot be opened by either, so both must say `Malformed`
+            // at the same place. Found by code review.
+            expect: Outcomes::from([
+                (Operation::PageCount, malformed()),
+                (Operation::StructureCheck, malformed()),
+                (Operation::Render, malformed()),
+            ]),
             platform_expectations: Vec::new(),
             known_gap: None,
         },

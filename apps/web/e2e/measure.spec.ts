@@ -155,6 +155,100 @@ test("the slowest LEGITIMATE operation in the corpus, which sets the watchdog bu
   ).toBeLessThan(3_000);
 });
 
+test("the slowest honest PAGE RENDER, which sets the render watchdog budget", async ({
+  page,
+}, testInfo) => {
+  // THE RENDER BUDGET, MEASURED RATHER THAN INHERITED.
+  //
+  // `LIMITS.maxDurationMs` is 12 s, derived above from the slowest honest DOCUMENT operation
+  // (611 ms). A thumbnail is a different workload and was inheriting that number only because
+  // nothing had measured it -- and the number matters more here than anywhere else, because
+  // ADR 0027 §2a's arithmetic is that a hostile page's memory spike is the allocation rate
+  // times the budget. Halving the budget halves the spike.
+  //
+  // WHAT THIS DOES NOT COVER, and it is most of the cost on a hostile page: `FPDF_LoadPage`
+  // cannot be checkpointed (#103), so the budget bounds the part that can be refused and the
+  // watchdog terminating the worker bounds the rest. The strip survives that by being a
+  // sequence of requests; this measurement is about honest documents, where the load is
+  // milliseconds.
+  await openHarness(page);
+
+  const files = [
+    "blank-1page.pdf",
+    "pages-10.pdf",
+    "pages-137.pdf",
+    "inherited-rotation-6page.pdf",
+    "mixed-rotation-4page.pdf",
+    // The structure-dense one, which is the slowest honest DOCUMENT operation in the corpus.
+    // Whether it is also the slowest to draw is the question, not the assumption.
+    "objstm-bomb.pdf",
+  ];
+
+  const rows: { file: string; drawn: number; slowestMs: number }[] = [];
+  for (const name of files) {
+    // FOUR PAGES IF THERE ARE FOUR, ONE IF NOT. A fixed [1,2,3,4] silently dropped
+    // `blank-1page.pdf` and `objstm-bomb.pdf` from the sample -- `render` refuses the whole
+    // request when a page is past the end, so both came back with nothing drawn and were
+    // skipped. Losing the structure-dense fixture is losing the one most likely to be slow,
+    // which is the fixture this measurement exists for.
+    const measured = await page.evaluate(
+      async ([file, bytes]) => {
+        const many = await window.burrowHarness.renderStrip(
+          file as string,
+          bytes as number[],
+          [1, 2, 3, 4],
+        );
+        if (many.drawn > 0) return many;
+        return window.burrowHarness.renderStrip(file as string, bytes as number[], [1]);
+      },
+      [name, fixture(name)] as const,
+    );
+    expect(
+      measured.drawn,
+      `${name} drew no pages at all (${measured.kind}), so it is not in the sample`,
+    ).toBeGreaterThan(0);
+    const slowestMs = Math.round(Math.max(...measured.perPage, 0));
+    rows.push({ file: name, drawn: measured.drawn, slowestMs });
+  }
+
+  // EVERY FIXTURE IN THE LIST, not "at least one". A sample that silently shrank would report
+  // a slowest-render number from whatever happened to survive -- which is how the first version
+  // of this test lost two of its six fixtures without saying so.
+  expect(rows.length, "the sample is smaller than the fixture list").toBe(files.length);
+  const slowest = rows.reduce((worst, row) => (row.slowestMs > worst.slowestMs ? row : worst));
+
+  const table = rows
+    .map((r) => `${r.file}\t${r.drawn} page(s)\tslowest ${r.slowestMs} ms`)
+    .join("\n");
+  writeFileSync(
+    join(testInfo.project.outputDir ?? "test-results", "render-budget.txt"),
+    `slowest page render: ${slowest.file} ${slowest.slowestMs} ms\n\n${table}\n`,
+  );
+  console.log(`slowest honest page render: ${slowest.file} — ${slowest.slowestMs} ms`);
+  console.log(table);
+
+  // WHAT THIS MEASUREMENT SETTLED, and it is not what it was expected to.
+  //
+  // The slowest honest page render is `objstm-bomb.pdf` at roughly 1.2 s -- about 124x the next
+  // slowest fixture, and TWICE the 611 ms worst case the 12 s document budget was derived from.
+  // So rendering does NOT get a tighter budget than documents: one that refused a 1.2 s page on
+  // a device four times slower than this runner would refuse a file that is in the corpus, and
+  // a premature refusal is a wrong answer where a slow one is merely slow.
+  //
+  // That weakens a claim ADR 0027 §2a made, which is recorded there rather than left standing:
+  // the per-page budget was called the cheapest and largest lever on a hostile page's memory
+  // spike, and the corpus will not let it move far enough for that to be true.
+  //
+  // The assertion is the same shape the document budget uses and loose for the same reason -- a
+  // CI runner is not a benchmark. If it ever fails the answer is to re-derive the budget from
+  // the new measurement and amend ADR 0027, never to raise it quietly so the suite goes green.
+  expect(
+    slowest.slowestMs,
+    `the slowest honest page render (${slowest.file}) is ${slowest.slowestMs} ms, which is not ` +
+      `comfortably inside the 12 s budget. Re-derive it and amend ADR 0027.`,
+  ).toBeLessThan(3_000);
+});
+
 test("engine heap growth across the corpus, and what the bombs cost", async ({
   page,
 }, testInfo) => {

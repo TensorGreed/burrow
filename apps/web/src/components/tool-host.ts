@@ -68,6 +68,13 @@ export const LIMITS = {
    * measured, which leaves an ordinary document three times the margin it needs on a machine
    * far slower than the runner.
    *
+   * MEASURED FOR RENDERING TOO, SINCE #57, and it is why there is no second constant. The
+   * slowest honest PAGE RENDER in the corpus is `objstm-bomb.pdf` at about 1.2 s -- roughly
+   * 124x the next slowest fixture, and twice the 611 ms that set this number. A render budget
+   * tighter than this one would refuse a document that is in the corpus on a device four times
+   * slower than the runner, so the two workloads share a budget and that is now a measurement
+   * rather than an inheritance. `e2e/measure.spec.ts` re-derives it on every run.
+   *
    * WHAT IS NOT MEASURED, said rather than implied: no corpus fixture approaches the 512 MB
    * `maxInputBytes` ceiling, so a file near it is outside this sample. If one is slower than
    * 12 s the failure is a typed `LimitExceeded` the page explains -- `max_duration_ms` is

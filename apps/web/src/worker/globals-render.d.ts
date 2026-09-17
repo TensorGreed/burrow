@@ -40,9 +40,8 @@ interface EmscriptenModule {
   // rendering costs no engine rebuild and no new content hash.
   _FPDF_LoadPage(doc: number, index: number): number;
   _FPDF_ClosePage(page: number): void;
-  /** Points, at 72 to the inch, with the page's own `/Rotate` applied. */
-  _FPDF_GetPageWidthF(page: number): number;
-  _FPDF_GetPageHeightF(page: number): number;
+  /** `fpdfview.h:793`. Writes an `FS_SIZEF` (two floats) at `size`. Non-zero for success. */
+  _FPDF_GetPageSizeByIndexF(doc: number, index: number, size: number): number;
   _FPDFBitmap_Create(width: number, height: number, alpha: number): number;
   _FPDFBitmap_FillRect(
     bitmap: number,
@@ -52,7 +51,8 @@ interface EmscriptenModule {
     height: number,
     color: number,
   ): void;
-  _FPDF_RenderPageBitmap(
+  /** `fpdf_progressive.h:117`. Returns an `FPDF_RENDER_*` state. */
+  _FPDF_RenderPageBitmap_Start(
     bitmap: number,
     page: number,
     startX: number,
@@ -61,7 +61,12 @@ interface EmscriptenModule {
     sizeY: number,
     rotate: number,
     flags: number,
-  ): void;
+    pause: number,
+  ): number;
+  /** `fpdf_progressive.h:138`. */
+  _FPDF_RenderPage_Continue(page: number, pause: number): number;
+  /** `fpdf_progressive.h:149`. Called on EVERY exit, including the refusals. */
+  _FPDF_RenderPage_Close(page: number): void;
   _FPDFBitmap_GetBuffer(bitmap: number): number;
   /** Bytes per row, which PDFium MAY pad. Never assume `width * 4`. */
   _FPDFBitmap_GetStride(bitmap: number): number;
@@ -100,8 +105,8 @@ interface WorkerGlobalScope {
   // #57 added to `PdfiumBridge`.
   __burrow_pdfium_load_page(doc: number, index: number): number;
   __burrow_pdfium_close_page(page: number): void;
-  __burrow_pdfium_page_width(page: number): number;
-  __burrow_pdfium_page_height(page: number): number;
+  /** Points, without loading the page. `undefined` when PDFium reports failure. */
+  __burrow_pdfium_page_size_by_index(doc: number, index: number): [number, number] | undefined;
   __burrow_pdfium_bitmap_create(width: number, height: number, alpha: number): number;
   __burrow_pdfium_bitmap_fill_rect(
     bitmap: number,
@@ -111,7 +116,11 @@ interface WorkerGlobalScope {
     height: number,
     color: number,
   ): void;
-  __burrow_pdfium_render_page_bitmap(
+  /** Allocate an `IFSDK_PAUSE` whose callback always pauses. 0 if it could not be made. */
+  __burrow_pdfium_pause_create(): number;
+  /** Free it AND release its function-table entry -- the half that leaks quietly. */
+  __burrow_pdfium_pause_destroy(pause: number): void;
+  __burrow_pdfium_render_page_start(
     bitmap: number,
     page: number,
     startX: number,
@@ -120,7 +129,10 @@ interface WorkerGlobalScope {
     sizeY: number,
     rotate: number,
     flags: number,
-  ): void;
+    pause: number,
+  ): number;
+  __burrow_pdfium_render_page_continue(page: number, pause: number): number;
+  __burrow_pdfium_render_page_close(page: number): void;
   __burrow_pdfium_bitmap_buffer(bitmap: number): number;
   __burrow_pdfium_bitmap_stride(bitmap: number): number;
   __burrow_pdfium_bitmap_destroy(bitmap: number): void;

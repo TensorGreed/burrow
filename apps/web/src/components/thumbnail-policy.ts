@@ -42,7 +42,7 @@ export const THUMBNAIL_CSS_HEIGHT = 160;
  * At 2, a tile is at most 240 x 320 = 0.077 Mpx, so **307,200 bytes** of RGBA.
  *
  * **The largest single lever here, and the one to pull first.** Dropping it to 1 *quarters*
- * every thumbnail — 76,800 bytes each, and the whole window from 19.7 MB to 4.9 MB — at the cost
+ * every thumbnail — 76,800 bytes each, and the whole window from 34.4 MB to 8.6 MB — at the cost
  * of visibly softer tiles on any phone, which is most phones. 2 is a judgement that the
  * sharpness is worth four times the bytes, made without a phone in front of us. If the device
  * test says otherwise, this is the line to change.
@@ -55,36 +55,35 @@ export const MAX_DEVICE_PIXEL_RATIO = 2;
 /**
  * How many thumbnails are held in memory at once. **Revision point 2.**
  *
- * 64 x 307,200 bytes is about **19.7 MB**, which is **26x** below ADR 0015 §5's 512 MiB
+ * 112 x 307,200 bytes is about **34.4 MB**, which is **15x** below ADR 0015 §5's 512 MiB
  * recycle threshold.
  *
- * # It was 32, and the arithmetic that justified 32 was wrong
+ * # It was 32, then 64, and both were too small — measured, twice
  *
- * ADR 0027 proposed 32 on the claim that *"a 390 px phone shows about 8 tiles and a 1280 px
- * desktop about 27, so the window is never what a person notices"*. The test below computed
- * it and it is not: a 1280 x 800 grid of 120 x 160 tiles is 10 columns by 5 rows, which is
- * **50** — more than the window. A window smaller than the viewport blanks tiles while
- * somebody is looking at them, which is the one thing this policy must not do.
+ * ADR 0027 proposed **32** on the claim that a 1280 px desktop shows "about 27" tiles.
+ * `thumbnail-policy.test.ts` computed it: a 1280x800 grid is **50**.
  *
- * So the floor is stated as a rule rather than as a number: **the window may not go below what
- * a viewport shows.** 64 clears a 1280 x 800 grid with a row of margin either side.
+ * 64 cleared that and was still below a 1920x1080 grid, which is **112** — and the gap was not
+ * cosmetic. The strip evicted a tile that was still on screen, re-requested it, and never
+ * settled: modelled at 112 wanted tiles and a window of 64, **500 requests and 24,064 renders
+ * without converging**, on a static viewport with nobody scrolling. `CLAUDE.md` calls that a
+ * denial-of-service bug rather than a missing nicety, and it ran on the reader's own machine.
  *
- * # The residual, on the machine best able to absorb it
+ * Two fixes, because one of them is the number and the other is the rule. `strip-schedule.ts`
+ * gives a tile pushed out while still on screen a `released` state that is not re-requested,
+ * so **the loop terminates whatever this constant is**. And this constant clears a 1920x1080
+ * grid, so on an ordinary desktop nothing is released while somebody is looking at it.
  *
- * A 1920 x 1080 grid is 112 tiles, which is more than 64. On such a screen the window
- * *is* the constraint and the tiles furthest from the scroll position will be redrawn when
- * they come back — a visible cost, on a desktop, which is the direction to fail in: the reason
- * this ceiling exists at all is the phone, where about 18 tiles are visible and 64 is three
- * and a half times that. Raising it to cover every desktop would spend the phone's budget to
- * buy a desktop's smoothness.
+ * **The floor stands and is now enforced by a test**: the window may not go below what a
+ * viewport shows. Above 112 — a 4K screen is about 448 tiles — the strip degrades to blank
+ * tiles beyond the window until you scroll, which is a strip doing less than it could rather
+ * than a strip doing harm.
  *
  * **This is not ADR 0020's rejected "first N pages only."** That was a *feature* window —
  * pictures for part of a document and numbers for the rest, with nothing explaining the
- * boundary. This is a *viewport* window: every page gets a thumbnail when you look at it. The
- * two look alike from a distance and differ in the only way that matters to the person using
- * it.
+ * boundary. This is a *viewport* window: every page gets a thumbnail when you look at it.
  */
-export const LIVE_THUMBNAIL_WINDOW = 64;
+export const LIVE_THUMBNAIL_WINDOW = 112;
 
 /**
  * The device pixel ratio to draw at: the browser's, capped.

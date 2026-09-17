@@ -106,8 +106,7 @@ pub(super) enum Call {
     // copied out" indistinguishable from one asserting a document was written.
     LoadPage(i32),
     ClosePage(u32),
-    PageWidth(u32),
-    PageHeight(u32),
+    PageSizeByIndex(i32),
     BitmapCreate {
         width: i32,
         height: i32,
@@ -119,18 +118,20 @@ pub(super) enum Call {
         height: i32,
         color: u32,
     },
-    RenderPageBitmap {
-        bitmap: u32,
-        page: u32,
-        size_x: i32,
-        size_y: i32,
-        rotate: i32,
-        flags: i32,
-    },
     BitmapBuffer(u32),
     BitmapStride(u32),
     BitmapDestroy(u32),
     PdfiumCopyOut(u32, u32),
+    PauseCreate,
+    PauseDestroy(u32),
+    RenderPageStart {
+        bitmap: u32,
+        page: u32,
+        rotate: i32,
+        flags: i32,
+    },
+    RenderPageContinue(u32),
+    RenderPageClose(u32),
 }
 
 /// A stand-in for an Emscripten module's linear memory.
@@ -330,6 +331,21 @@ pub(super) struct PdfiumScript {
     pub(super) stride_override: Option<i32>,
     /// Whether `FPDFBitmap_GetBuffer` returns a pointer at all.
     pub(super) bitmap_buffer_is_null: bool,
+    /// What `FPDF_GetPageSizeByIndexF` reports. `None` is the engine refusing.
+    pub(super) page_size: Option<(f32, f32)>,
+    /// How many slices a progressive render takes before it reports `DONE`.
+    ///
+    /// **More than one by default**, because one slice is the shape that would make every
+    /// checkpoint-between-slices test vacuous: a render that never yields has nothing to
+    /// checkpoint between, and a fake that never yielded would agree with a loop that had no
+    /// checkpoint at all. The real engine yields 30,002 times on a 3 M-path page.
+    pub(super) render_slices: u32,
+    /// Whether the pause interface can be allocated.
+    pub(super) pause_alloc_succeeds: bool,
+    /// Report this terminal state instead of `DONE`, for the engine-gave-up path.
+    pub(super) render_final_state: i32,
+    /// Heap growth attributed to each slice, in bytes.
+    pub(super) slice_grows_heap_by: u64,
 }
 
 impl Default for PdfiumScript {
@@ -344,6 +360,11 @@ impl Default for PdfiumScript {
             stride_padding: 0,
             stride_override: None,
             bitmap_buffer_is_null: false,
+            page_size: Some((200.0, 400.0)),
+            render_slices: 4,
+            pause_alloc_succeeds: true,
+            render_final_state: 2,
+            slice_grows_heap_by: 0,
         }
     }
 }
@@ -356,6 +377,20 @@ pub(super) struct FakePdfium {
     /// Handed out as the document handle. Not an allocation: PDFium's handle is opaque and
     /// is released by `FPDF_CloseDocument`, not by `free`.
     doc_handle: u32,
+    /// A clock this fake advances as it renders, and by how much per slice.
+    ///
+    /// **The only way to drive a deadline that comes due INSIDE a render.** A stopped clock
+    /// cannot, and advancing it before the call makes the refusal arrive at the checkpoint
+    /// before the loop -- which is a test of the wrong checkpoint, and is how the first version
+    /// of `a_deadline_that_comes_due_between_slices` failed. `FakeRotator` carries the same
+    /// pair for the same reason.
+    slice_clock: Option<(Arc<burrow_types::ManualClock>, u64)>,
+    /// Slices left in the progressive render in flight. `None` when none is running.
+    ///
+    /// A cell rather than a field on the script, because it is *state* the fake mutates as the
+    /// caller drives the loop -- the script says how many slices a render takes, this says how
+    /// many are left.
+    render_remaining: Mutex<Option<u32>>,
     /// Geometry for every bitmap handed out, by handle: `(width, height, stride)`.
     ///
     /// The fake has to remember this because `FPDFBitmap_GetStride` and
@@ -388,7 +423,41 @@ impl FakePdfium {
             state,
             script,
             doc_handle: 0xD0C0_0001,
+            slice_clock: None,
+            render_remaining: Mutex::new(None),
             bitmaps: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The same fake, advancing `clock` by `ms` on every progressive slice.
+    pub(super) fn advancing(
+        state: Arc<FakeHeap>,
+        script: PdfiumScript,
+        clock: Arc<burrow_types::ManualClock>,
+        ms: u64,
+    ) -> Self {
+        let mut fake = Self::new(state, script);
+        fake.slice_clock = Some((clock, ms));
+        fake
+    }
+
+    /// Ink the top-left quadrant of `bitmap`, as both render entry points do.
+    fn paint(&self, bitmap: PdfiumPtr, _size_x: i32, _size_y: i32) {
+        let geometry = self.bitmap(bitmap.0);
+        // Ink in the top-left quadrant and nowhere else -- the same shape as the native
+        // fixture `minimal_pdf::pdf_with_ink`, so a test can tell a correct render from a
+        // flip, a mirror, or a quarter turn. Not a model of PDF content; a model of "the
+        // engine writes into the bitmap it was given, in row-major order, top row first".
+        let mut heap = self.state.heap.lock().expect("not poisoned");
+        if let Some((_, bytes)) = heap.live.iter_mut().find(|(at, _)| *at == bitmap.0) {
+            let height = usize::try_from(geometry.height).expect("a non-negative height");
+            let width = usize::try_from(geometry.width).expect("a non-negative width");
+            for row in 0..height / 2 {
+                for column in 0..width / 2 {
+                    let at = row * geometry.stride + column * 4;
+                    bytes[at..at + 4].copy_from_slice(&[0, 0, 0, 0xFF]);
+                }
+            }
         }
     }
 
@@ -507,14 +576,11 @@ impl PdfiumBridge for FakePdfium {
         self.state.heap.lock().expect("not poisoned").free(page.0);
     }
 
-    fn page_width(&self, page: PdfiumPtr) -> f32 {
-        self.state.record(Call::PageWidth(page.0));
-        200.0
-    }
-
-    fn page_height(&self, page: PdfiumPtr) -> f32 {
-        self.state.record(Call::PageHeight(page.0));
-        400.0
+    fn page_size_by_index(&self, _doc: PdfiumPtr, index: i32) -> Option<(f32, f32)> {
+        self.state.record(Call::PageSizeByIndex(index));
+        // NO ALLOCATION AND NO PAGE HANDLE, which is the property under test: a strip must be
+        // able to ask for a page's size without paying for a page load.
+        self.script.page_size
     }
 
     fn bitmap_create(&self, width: i32, height: i32, alpha: i32) -> PdfiumPtr {
@@ -583,43 +649,6 @@ impl PdfiumBridge for FakePdfium {
         }
     }
 
-    fn render_page_bitmap(
-        &self,
-        bitmap: PdfiumPtr,
-        page: PdfiumPtr,
-        _start_x: i32,
-        _start_y: i32,
-        size_x: i32,
-        size_y: i32,
-        rotate: i32,
-        flags: i32,
-    ) {
-        self.state.record(Call::RenderPageBitmap {
-            bitmap: bitmap.0,
-            page: page.0,
-            size_x,
-            size_y,
-            rotate,
-            flags,
-        });
-        let geometry = self.bitmap(bitmap.0);
-        // Ink in the top-left quadrant and nowhere else -- the same shape as the native
-        // fixture `minimal_pdf::pdf_with_ink`, so a test can tell a correct render from a
-        // flip, a mirror, or a quarter turn. Not a model of PDF content; a model of "the
-        // engine writes into the bitmap it was given, in row-major order, top row first".
-        let mut heap = self.state.heap.lock().expect("not poisoned");
-        if let Some((_, bytes)) = heap.live.iter_mut().find(|(at, _)| *at == bitmap.0) {
-            let height = usize::try_from(geometry.height).expect("a non-negative height");
-            let width = usize::try_from(geometry.width).expect("a non-negative width");
-            for row in 0..height / 2 {
-                for column in 0..width / 2 {
-                    let at = row * geometry.stride + column * 4;
-                    bytes[at..at + 4].copy_from_slice(&[0, 0, 0, 0xFF]);
-                }
-            }
-        }
-    }
-
     fn bitmap_buffer(&self, bitmap: PdfiumPtr) -> PdfiumPtr {
         self.state.record(Call::BitmapBuffer(bitmap.0));
         if self.script.bitmap_buffer_is_null {
@@ -654,6 +683,84 @@ impl PdfiumBridge for FakePdfium {
             .lock()
             .expect("not poisoned")
             .read(ptr.0, usize::try_from(len).expect("a length that fits"))
+    }
+
+    // ---- progressive rendering -----------------------------------------------------------
+
+    fn pause_create(&self) -> PdfiumPtr {
+        self.state.record(Call::PauseCreate);
+        if !self.script.pause_alloc_succeeds {
+            return PdfiumPtr::NULL;
+        }
+        // A REAL ALLOCATION, so a pause interface that is never destroyed is a live entry
+        // `assert_empty` fails on. On the real bridge it is a `_malloc` plus an `addFunction`
+        // table entry, and the table entry is the half that leaks quietly.
+        PdfiumPtr(
+            self.state
+                .heap
+                .lock()
+                .expect("not poisoned")
+                .alloc(b"pause"),
+        )
+    }
+
+    fn pause_destroy(&self, pause: PdfiumPtr) {
+        self.state.record(Call::PauseDestroy(pause.0));
+        self.state.heap.lock().expect("not poisoned").free(pause.0);
+    }
+
+    fn render_page_start(
+        &self,
+        bitmap: PdfiumPtr,
+        page: PdfiumPtr,
+        size_x: i32,
+        size_y: i32,
+        rotate: i32,
+        flags: i32,
+        _pause: PdfiumPtr,
+    ) -> i32 {
+        self.state.record(Call::RenderPageStart {
+            bitmap: bitmap.0,
+            page: page.0,
+            rotate,
+            flags,
+        });
+        // The ink goes down on the FIRST slice, as PDFium's does. A caller that abandoned the
+        // render part way must not come back with a blank bitmap that looks finished.
+        self.paint(bitmap, size_x, size_y);
+        let remaining = self.script.render_slices.saturating_sub(1);
+        *self.render_remaining.lock().expect("not poisoned") = Some(remaining);
+        if remaining == 0 {
+            self.script.render_final_state
+        } else {
+            1
+        }
+    }
+
+    fn render_page_continue(&self, page: PdfiumPtr, _pause: PdfiumPtr) -> i32 {
+        self.state.record(Call::RenderPageContinue(page.0));
+        {
+            let mut heap = self.state.heap.lock().expect("not poisoned");
+            heap.bytes_grown = heap
+                .bytes_grown
+                .saturating_add(self.script.slice_grows_heap_by);
+        }
+        if let Some((clock, ms)) = &self.slice_clock {
+            clock.advance(*ms);
+        }
+        let mut remaining = self.render_remaining.lock().expect("not poisoned");
+        let left = remaining.unwrap_or(0).saturating_sub(1);
+        *remaining = Some(left);
+        if left == 0 {
+            self.script.render_final_state
+        } else {
+            1
+        }
+    }
+
+    fn render_page_close(&self, page: PdfiumPtr) {
+        self.state.record(Call::RenderPageClose(page.0));
+        *self.render_remaining.lock().expect("not poisoned") = None;
     }
 }
 

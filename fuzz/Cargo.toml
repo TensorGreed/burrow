@@ -74,8 +74,9 @@ test = false
 doc = false
 bench = false
 
-# THE ONLY TARGET THAT REACHES PAST PDFIUM'S OPEN-AND-COUNT (#57). Everything behind
-# `FPDF_RenderPageBitmap` -- the content-stream interpreter, the font stack, the image
+# THE ONLY TARGET THAT REACHES PAST PDFIUM'S OPEN-AND-COUNT (#57), and since ADR 0027's
+# amendment the only one that drives its PROGRESSIVE render loop. Everything behind
+# `FPDF_RenderPageBitmap_Start` -- the content-stream interpreter, the font stack, the image
 # decoders, HarfBuzz, ICU, lcms and OpenJPEG -- is unreachable from every other target here.
 [[bin]]
 name = "render"

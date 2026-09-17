@@ -57,10 +57,9 @@ extern "C" {
     fn pdfium_load_page(doc: u32, index: i32) -> u32;
     #[wasm_bindgen(js_name = __burrow_pdfium_close_page)]
     fn pdfium_close_page(page: u32);
-    #[wasm_bindgen(js_name = __burrow_pdfium_page_width)]
-    fn pdfium_page_width(page: u32) -> f32;
-    #[wasm_bindgen(js_name = __burrow_pdfium_page_height)]
-    fn pdfium_page_height(page: u32) -> f32;
+    /// `FPDF_GetPageSizeByIndexF`. **Does not load the page**; see the trait method.
+    #[wasm_bindgen(js_name = __burrow_pdfium_page_size_by_index)]
+    fn pdfium_page_size_by_index(doc: u32, index: i32) -> Option<Vec<f32>>;
     #[wasm_bindgen(js_name = __burrow_pdfium_bitmap_create)]
     fn pdfium_bitmap_create(width: i32, height: i32, alpha: i32) -> u32;
     #[wasm_bindgen(js_name = __burrow_pdfium_bitmap_fill_rect)]
@@ -72,8 +71,18 @@ extern "C" {
         height: i32,
         color: u32,
     );
-    #[wasm_bindgen(js_name = __burrow_pdfium_render_page_bitmap)]
-    fn pdfium_render_page_bitmap(
+    // ---- progressive rendering (ADR 0027's 2026-09-17 amendment) --------------------
+    //
+    // The one-shot `FPDF_RenderPageBitmap` import is GONE, not kept beside these. ADR 0009 §2
+    // makes the bridge method list the audit surface, so an import for a capability nothing
+    // calls is a capability the binding still has.
+
+    #[wasm_bindgen(js_name = __burrow_pdfium_pause_create)]
+    fn pdfium_pause_create() -> u32;
+    #[wasm_bindgen(js_name = __burrow_pdfium_pause_destroy)]
+    fn pdfium_pause_destroy(pause: u32);
+    #[wasm_bindgen(js_name = __burrow_pdfium_render_page_start)]
+    fn pdfium_render_page_start(
         bitmap: u32,
         page: u32,
         start_x: i32,
@@ -82,7 +91,12 @@ extern "C" {
         size_y: i32,
         rotate: i32,
         flags: i32,
-    );
+        pause: u32,
+    ) -> i32;
+    #[wasm_bindgen(js_name = __burrow_pdfium_render_page_continue)]
+    fn pdfium_render_page_continue(page: u32, pause: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_pdfium_render_page_close)]
+    fn pdfium_render_page_close(page: u32);
     #[wasm_bindgen(js_name = __burrow_pdfium_bitmap_buffer)]
     fn pdfium_bitmap_buffer(bitmap: u32) -> u32;
     #[wasm_bindgen(js_name = __burrow_pdfium_bitmap_stride)]
@@ -148,12 +162,13 @@ impl PdfiumBridge for JsPdfium {
         pdfium_close_page(page.0);
     }
 
-    fn page_width(&self, page: PdfiumPtr) -> f32 {
-        pdfium_page_width(page.0)
-    }
-
-    fn page_height(&self, page: PdfiumPtr) -> f32 {
-        pdfium_page_height(page.0)
+    fn page_size_by_index(&self, doc: PdfiumPtr, index: i32) -> Option<(f32, f32)> {
+        // A PAIR ACROSS THE BOUNDARY, which nothing else here does: `FS_SIZEF` is one
+        // out-parameter of one C call, so splitting it would mean calling the engine twice for
+        // one answer. `None` is PDFium reporting failure -- the JS returns `undefined` rather
+        // than deciding what a failure means.
+        let size = pdfium_page_size_by_index(doc.0, index)?;
+        Some((*size.first()?, *size.get(1)?))
     }
 
     fn bitmap_create(&self, width: i32, height: i32, alpha: i32) -> PdfiumPtr {
@@ -172,20 +187,35 @@ impl PdfiumBridge for JsPdfium {
         pdfium_bitmap_fill_rect(bitmap.0, left, top, width, height, color);
     }
 
-    fn render_page_bitmap(
+    fn pause_create(&self) -> PdfiumPtr {
+        PdfiumPtr(pdfium_pause_create())
+    }
+
+    fn pause_destroy(&self, pause: PdfiumPtr) {
+        pdfium_pause_destroy(pause.0);
+    }
+
+    fn render_page_start(
         &self,
         bitmap: PdfiumPtr,
         page: PdfiumPtr,
-        start_x: i32,
-        start_y: i32,
         size_x: i32,
         size_y: i32,
         rotate: i32,
         flags: i32,
-    ) {
-        pdfium_render_page_bitmap(
-            bitmap.0, page.0, start_x, start_y, size_x, size_y, rotate, flags,
-        );
+        pause: PdfiumPtr,
+    ) -> i32 {
+        pdfium_render_page_start(
+            bitmap.0, page.0, 0, 0, size_x, size_y, rotate, flags, pause.0,
+        )
+    }
+
+    fn render_page_continue(&self, page: PdfiumPtr, pause: PdfiumPtr) -> i32 {
+        pdfium_render_page_continue(page.0, pause.0)
+    }
+
+    fn render_page_close(&self, page: PdfiumPtr) {
+        pdfium_render_page_close(page.0);
     }
 
     fn bitmap_buffer(&self, bitmap: PdfiumPtr) -> PdfiumPtr {

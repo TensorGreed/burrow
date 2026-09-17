@@ -28,15 +28,15 @@ describe("the thumbnail policy ADR 0027 chose", () => {
     expect(box.width * box.height * 4).toBe(307_200);
   });
 
-  it("holds about 19.7 MB for a full window, 26x below the 512 MiB recycle threshold", () => {
-    expect(windowBytes(2)).toBe(19_660_800);
+  it("holds about 34.4 MB for a full window, 15x below the 512 MiB recycle threshold", () => {
+    expect(windowBytes(2)).toBe(34_406_400);
     // ADR 0015 §5's threshold, and the ratio stated as a number rather than as "orders of
     // magnitude". THE FIRST DRAFT SAID "two orders below" AND THIS TEST DISPROVED IT: at 32
     // tiles the window was 9.8 MB, which is 55x below 512 MiB, not 100x. A round phrase that
     // is 45% wrong is the overclaiming-doc-comment bug the root CLAUDE.md names, and it was
     // in the ADR before it was here.
     const recycleThreshold = 512 * 1024 * 1024;
-    expect(windowBytes(2) * 26).toBeLessThan(recycleThreshold);
+    expect(windowBytes(2) * 15).toBeLessThan(recycleThreshold);
   });
 
   it("quarters to 76,800 bytes a tile at DPR 1, which is revision point 3's whole argument", () => {
@@ -46,7 +46,7 @@ describe("the thumbnail policy ADR 0027 chose", () => {
     // THE ABSOLUTE, because the DPR revision point's prose quotes it in two records and only
     // the ratio was pinned. It said "2.5 MB" -- the 32-tile figure -- after the window became
     // 64, so the two records disagreed and nothing computed either.
-    expect(windowBytes(1)).toBe(4_915_200);
+    expect(windowBytes(1)).toBe(8_601_600);
   });
 
   it("caps the ratio rather than following it", () => {
@@ -96,7 +96,6 @@ describe("the thumbnail policy ADR 0027 chose", () => {
     // THE EXACT FIGURE, not just "more than the window". The prose in two records quotes it,
     // and an unpinned number in prose is the shape the "27 tiles" claim already cost.
     expect(visible(1920, 1080)).toBe(112);
-    expect(visible(1920, 1080)).toBeGreaterThan(LIVE_THUMBNAIL_WINDOW);
   });
 });
 

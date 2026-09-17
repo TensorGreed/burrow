@@ -20,6 +20,14 @@ interface BurrowEngines {
 declare function createQpdfModule(options: object): Promise<EmscriptenModule>;
 
 interface EmscriptenModule {
+  // --- the C stack, for an out-parameter that lives for one call. ---
+  //
+  // THE QPDF MODULE'S, not both modules'. See `globals.d.ts` for what putting them in the
+  // shared interface cost.
+  stackSave(): number;
+  stackAlloc(size: number): number;
+  stackRestore(saved: number): void;
+
   // Exactly the C API `core/burrow-engines/src/qpdf/ffi.rs` declares, which is the set
   // ADR 0013 verified routes through qpdf's `trap_errors`.
   _qpdf_init(): number;

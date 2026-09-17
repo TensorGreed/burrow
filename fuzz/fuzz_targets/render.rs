@@ -15,8 +15,12 @@
 //! - **`FPDF_LoadPage` on an attacker-built page object.** A `/Type /Page` whose `/Contents`
 //!   is a string, whose `/Resources` points at itself, whose `/MediaBox` is four nulls. Open
 //!   and count never touch a page's own dictionary; loading one parses all of it.
-//! - **The rasteriser, on file-controlled content streams.** `FPDF_RenderPageBitmap` runs
-//!   PDFium's interpreter, its font code, its image decoders and its colour management — which
+//! - **The rasteriser, on file-controlled content streams**, now driven through PDFium's
+//!   PROGRESSIVE API -- `FPDF_RenderPageBitmap_Start`, `_Continue` and `_Close`, with an
+//!   `IFSDK_PAUSE` whose callback always pauses. That is new C++ surface this target reaches
+//!   and nothing else does, including the terminal-state mapping and the pause interface's
+//!   own lifetime. Behind it are PDFium's interpreter, its font code, its image decoders and
+//!   its colour management — which
 //!   is, by a wide margin, the largest body of C++ any input in this project reaches. HarfBuzz,
 //!   ICU, lcms and OpenJPEG are all behind this one call (ADR 0010).
 //! - **The stride and the copy out.** `bgra_to_rgba` reads `stride * height` bytes out of a

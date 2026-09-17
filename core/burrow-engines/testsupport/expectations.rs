@@ -262,11 +262,35 @@ pub enum Operation {
     /// anything about what compression did to a page's *content* — which is
     /// `compress_keeps_everything.rs`'s job and cannot be a runtime comparison (ADR 0022).
     Compress,
+    /// `burrow_ops::render`, over PDFium. **Page 1, fitted into a 64x128 box.**
+    ///
+    /// Fixed, like `Rotate`, `Reorder`, `Split` and `Compress`, and for the same reason: a
+    /// corpus case is a comparison between two implementations, not a place to explore a
+    /// parameter space.
+    ///
+    /// # The observable is not a pixel hash, and that is a decision
+    ///
+    /// Native links `libpdfium.so` and the web loads `pdfium.wasm`, both from `pdfium-binaries`
+    /// at `chromium/8044` — the same rasteriser on different targets, so antialiasing may
+    /// differ without anything being wrong. Comparing bytes would assert far more than this
+    /// corpus needs and would fail on a difference that means nothing.
+    ///
+    /// So the readout is a **4x4 grid of ink levels**, quantised to four. Dimensions alone
+    /// cannot see a wrong page; a single "is there ink" cannot see a rotation, which is the
+    /// case `/rotate-pdf` exists for. The grid sees both while staying coarse enough that a
+    /// build difference does not move it. `core/burrow-ops/tests/render.rs` pins its arithmetic
+    /// natively, including that it MOVES when a page is turned — a readout that did not would
+    /// be a checksum rather than an observable.
+    ///
+    /// **If the grid diverges between platforms it is recorded in `platform_expectations` with
+    /// a reason, or narrowed to dimensions plus ink — measured, not assumed.** Whichever way it
+    /// lands, the residue is stated rather than the assertion quietly weakened.
+    Render,
 }
 
 impl Operation {
     /// Every operation, in a stable order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::PageCount,
         Self::StructureCheck,
         Self::Merge,
@@ -274,6 +298,7 @@ impl Operation {
         Self::Reorder,
         Self::Split,
         Self::Compress,
+        Self::Render,
     ];
 
     /// The name used in the JSON and in the harness's records.
@@ -287,6 +312,7 @@ impl Operation {
             Self::Reorder => "reorder",
             Self::Split => "split",
             Self::Compress => "compress",
+            Self::Render => "render",
         }
     }
 }
@@ -333,9 +359,32 @@ pub enum Outcome {
         /// same source compiled to wasm asserts far more than this corpus needs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compressed: Option<bool>,
+        /// What page 1 looks like, coarsely. `render` cases.
+        ///
+        /// **Because a page count cannot see a picture.** Rendering does not change the
+        /// document, so a case comparing only `page_count` would pass against an
+        /// implementation that drew nothing at all. See [`Operation::Render`] for why this is
+        /// a grid rather than a hash.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        render: Option<Render>,
     },
     /// The operation fails, exactly this way.
     Err(Failure),
+}
+
+/// What a rendered page looks like, coarsely enough to compare across two builds of one
+/// rasteriser.
+///
+/// See [`Operation::Render`]. The grid is row-major, four cells by four, each 0 (paper) to
+/// 3 (solid ink).
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+pub struct Render {
+    /// The raster's width in pixels. What the fit produced, not the box that was asked for.
+    pub width: u32,
+    /// The raster's height in pixels.
+    pub height: u32,
+    /// Sixteen ink levels, row-major.
+    pub ink_grid: Vec<u8>,
 }
 
 /// A typed failure, in as much detail as is comparable across implementations.
@@ -522,6 +571,26 @@ pub fn outcome_with_compression(
             page_count: *pages,
             rotations,
             compressed,
+            render: None,
+        };
+    }
+    outcome_of_failure(result)
+}
+
+/// The same, carrying what a `render` case compares.
+///
+/// A fourth entry point rather than a fourth argument on the others, for the reason
+/// `outcome_with_compression` gives about itself: seven of the eight operations have no
+/// picture to report, and a `None` at every call site would read as an omission rather than
+/// as "this operation does not have one".
+#[must_use]
+pub fn outcome_with_render(result: &burrow_types::Result<u64>, render: Option<Render>) -> Outcome {
+    if let Ok(pages) = result {
+        return Outcome::Ok {
+            page_count: *pages,
+            rotations: None,
+            compressed: None,
+            render,
         };
     }
     outcome_of_failure(result)
@@ -542,6 +611,7 @@ pub fn outcome_with_rotations(
             page_count: *pages,
             rotations,
             compressed: None,
+            render: None,
         };
     }
     outcome_of_failure(result)
@@ -553,6 +623,7 @@ fn outcome_of_failure(result: &burrow_types::Result<u64>) -> Outcome {
             page_count: *pages,
             rotations: None,
             compressed: None,
+            render: None,
         },
         Err(error) => {
             let kind = ErrorKind::of(error).unwrap_or_else(|| {
