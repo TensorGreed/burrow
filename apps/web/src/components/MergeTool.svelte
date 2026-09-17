@@ -500,7 +500,9 @@
     {:else if notice && !notice.retryable}
       <button type="button" onclick={startAgain}>Start again</button>
     {:else}
-      <button type="button" onclick={merge} disabled={!canMerge}>Merge</button>
+      <button type="button" class="action--primary" onclick={merge} disabled={!canMerge}
+        >Merge</button
+      >
     {/if}
   </div>
 
@@ -526,17 +528,6 @@
     max-width: var(--track-readout);
   }
 
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-
   /* A surface you can act on, so `--edge` rather than `--rule`. See tokens.css. */
   .drop {
     display: flex;
@@ -560,12 +551,6 @@
     width: 1px;
     height: 1px;
     opacity: 0;
-  }
-
-  /* The focus ring belongs on the thing that is drawn, because the input is invisible. */
-  .drop:focus-within {
-    outline: var(--focus-width) solid var(--ink);
-    outline-offset: var(--focus-offset);
   }
 
   .drop__text {
@@ -628,23 +613,6 @@
     font-size: var(--step--1);
   }
 
-  button {
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--edge);
-    border-radius: var(--radius);
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    font-size: var(--step--1);
-    cursor: pointer;
-  }
-
-  button:disabled {
-    color: var(--ink-quiet);
-    border-color: var(--rule);
-    cursor: default;
-  }
-
   .actions {
     margin-block-start: var(--space-5);
     display: flex;
@@ -653,6 +621,10 @@
     flex-wrap: wrap;
   }
 
+  /* The secondary actions beside the primary one match its size, so the row reads as one
+     set of controls rather than as a big button with two chips next to it. The primary's
+     own size comes from `.action--primary` in `base.css`, which is where every button on
+     this site is now styled. */
   .actions button {
     font-size: var(--step-0);
     padding: var(--space-3) var(--space-5);

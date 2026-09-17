@@ -158,7 +158,19 @@ test("every route carries the stamp, so the guard has something to compare on al
 
   // GATED ON THE COUNT TOO. A glob that matched nothing would assert nothing and pass, which
   // is this repository's "4 of 15" in a for-loop.
-  expect(routes.length, `only ${routes.length} route(s) found in dist/`).toBeGreaterThanOrEqual(7);
+  //
+  // THE FLOOR IS DERIVED FROM `src/pages/`, not written here. It was `>= 7` while the build
+  // shipped eight, so a route DROPPING OUT would have passed — the same gap the route list
+  // above was rewritten to close, left behind in the number guarding it. Every `.astro` under
+  // `src/pages/` is a route, plus `/harness` in a harness build, which is why the comparison
+  // is `>=` against the page count rather than an equality.
+  const authored = readdirSync(resolve(here, "..", "src", "pages")).filter((f) =>
+    f.endsWith(".astro"),
+  ).length;
+  expect(
+    routes.length,
+    `only ${routes.length} route(s) in dist/ for ${authored} authored page(s)`,
+  ).toBeGreaterThanOrEqual(authored);
   expect(routes, "the build has no home page; the scan is wrong, not the build").toContain("/");
 
   for (const route of routes) {

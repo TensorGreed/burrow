@@ -5,28 +5,47 @@
  * are what these tokens encode; a token that does not serve one of them is decoration, and
  * decoration is what this palette is deliberately short of.
  *
- * THE SHORT VERSION: THE INTERFACE REPORTS, IT DOES NOT REASSURE.
+ * THE SHORT VERSION: AUSTERITY WHERE TRUST IS AT STAKE; THE ACCENT CARRIES INTERACTION.
  *
  * This is a site whose entire claim is that your files do not leave your computer. A design
  * that argues that with warmth and adjectives is asking to be trusted. This one is built to
- * be checked instead: prose is ink on paper and nothing else, and the two coloured values
- * are reserved for things the machine is telling you -- a count it measured, a refusal it
- * made. If a colour appears, something was measured. That is the whole system, and it only
- * works while the reservation is absolute, which is why `--signal` and `--refuse` are
- * described below in terms of what may NOT use them.
+ * be checked instead: **prose is ink on paper, a measurement is `--signal`, a refusal is
+ * `--refuse`, and the privacy claim itself stays ink.** If one of those two colours
+ * appears, the machine is telling you something it measured or refused. That reservation is
+ * absolute, which is why both are described below in terms of what may NOT use them.
  *
- * WHY THERE IS NO ACCENT COLOUR FOR LINKS OR BUTTONS
+ * THIS FILE USED TO SAY THERE WAS NO ACCENT COLOUR, AND ARGUED IT AT LENGTH.
  *
- * Because the moment a button is `--signal`, the colour means "interactive" as well as
- * "measured", and a page full of buttons is a page where the one number that was actually
- * measured no longer stands out. Links are underlined; buttons have an edge. Both are
- * ink. This is the single costliest constraint in the file and it is the point of it.
+ * The argument was: the moment a button is `--signal`, the colour means "interactive" as
+ * well as "measured", and the one number that was actually measured stops standing out.
+ * That is still true, and it is not an argument for having no accent — it is an argument
+ * for the accent not being `--signal`. The two jobs were conflated, and the cost of the
+ * conflation was measured on the built pages: the primary action on every tool page was a
+ * grey chip that read as disabled, while the heading above it was the heaviest thing on
+ * screen. A person could not tell what to press on a page that exists to be pressed.
  *
- * CONTRAST IS ASSERTED, NOT EYEBALLED. `src/styles/tokens.test.ts` parses this file and
- * computes WCAG contrast for every text pair in BOTH themes, and 3:1 for the two values
- * used as non-text boundaries. A value edited here without the ratio holding fails
- * `pnpm test`. It also fails if a token is defined in one theme and not the other, which
- * is how a dark-mode hole normally ships.
+ * So `--accent` is a third reserved value with its own job — interaction, and only
+ * interaction — and the reservation is now three-way rather than two-way. ADR 0028 records
+ * the reversal, including what it costs and the measurement that decided the hue.
+ *
+ * CONTRAST IS ASSERTED, NOT EYEBALLED, AND SO IS DISTINCTNESS.
+ * `src/styles/tokens.test.ts` parses this file and computes WCAG contrast for every text
+ * pair in BOTH themes, 3:1 for the values used as non-text boundaries, and `--accent-ink`
+ * against the `--accent` fill rather than against the paper. It also computes **CIEDE2000
+ * between every pair of `--signal`, `--refuse` and `--accent`**, because three reserved
+ * colours only work while no two of them can be mistaken for each other, and contrast
+ * against the ground says nothing about that. A value edited here without all of those
+ * holding fails `pnpm test`. It also fails if a token is defined in one theme and not the
+ * other, which is how a dark-mode hole normally ships.
+ *
+ * COLOUR IS NEVER THE ONLY THING THAT SAYS "REFUSED". Simulated, not assumed, with the model
+ * and the theme both named because the answer depends on both. Viénot–Brettel–Mollon (1999),
+ * `--accent` against `--refuse`: LIGHT theme 18.0 under deuteranopia, 12.5 under tritanopia,
+ * 13.7 in greyscale; DARK theme 17.7, **5.1** and **2.4** — against the 25 the palette clears
+ * in ordinary vision. In the dark theme they are the same colour. They collapse and no hue
+ * fixes that, so `base.css` carries a refusal three ways and only one of them is the hue: the
+ * WORD, a WEIGHT on the inline `.refusal`, and a BAR on the block refusals the other four
+ * islands render. See ADR 0028.
  */
 
 :root {
@@ -66,8 +85,40 @@
   /* REFUSALS AND LIMITS ONLY. A file we would not open, a ceiling that was hit, a
      password we do not have. Its own value rather than a tint of `--signal`, because the
      two say opposite things and a wrong colour on an error is a correctness bug here, not
-     a styling one. */
-  --refuse: #8a2b1f;
+     a styling one.
+
+     IT WAS #8a2b1f, A WARM BRICK, AND IT MOVED TO CRIMSON WHEN `--accent` ARRIVED. A brick
+     red and a warm rust are 16.6 apart in CIEDE2000; `--signal` and the brick `--refuse` —
+     the pair this palette shipped with, and already treated as un-confusable — measured 50.0
+     apart, which is where the ΔE 25 bar comes from. Past tense on purpose: that pair no
+     longer exists. Moving the refusal
+     rather than the accent was the choice, because the accent's job is to be warm and the
+     refusal's job is only to be unmistakable. It is now 25.2 from `--accent` and 56.2 from
+     `--signal`, and it gained contrast on the way (8.14:1, up from 7.78:1). ADR 0028. */
+  --refuse: #8f1733;
+
+  /* INTERACTION. The primary action on a page, and the only place a fill of this colour
+     appears. NOT a measurement, NOT a refusal, NOT a heading, NOT a link — those are the
+     three values above and ink, and the reservation is what makes any of them mean
+     anything.
+
+     It is a FILL, and that is a constraint rather than a description — a DESIGN constraint,
+     not a contrast one, which is worth being exact about because the contrast reading is the
+     tempting justification and it is false: at 4.54:1 against the paper this clears WCAG's
+     4.5 for body text. It may not be body text anyway, because the whole separation between
+     a refusal and an action in greyscale is that one is text and the other is a fill.
+     `--accent-ink` is what goes on top.
+
+     Reversing this file's own "why there is no accent colour" argument was a decision taken
+     in the open: ADR 0028 has the reasoning, and the short version is that the argument
+     conflated two jobs. Reserving colour for measurement does not require every control to
+     be grey — it requires the MEASUREMENT colour not to be spent on controls. */
+  --accent: #b4531a;
+
+  /* Text and marks on an `--accent` fill. Never text on the paper: near-white on a
+     near-white ground is 1.06:1, which is why `tokens-check.ts` checks this one against
+     the fill rather than against the ground. */
+  --accent-ink: #fffaf6;
 
   /* ------------------------------------------------------------------ type */
 
@@ -141,6 +192,9 @@
     --rule: #2c343b;
     --edge: #636f78;
     --signal: #5fd3bb;
-    --refuse: #f09a88;
+    --refuse: #f5879f;
+    --accent: #e58a43;
+    /* The roles swap: on a light fill the ink is the dark value. Same rule, inverted. */
+    --accent-ink: #12161a;
   }
 }

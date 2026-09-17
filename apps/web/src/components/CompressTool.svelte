@@ -357,7 +357,9 @@
   {/if}
 
   <div class="actions">
-    <button type="button" disabled={!canCompress} onclick={compress}>Compress</button>
+    <button type="button" class="action--primary" disabled={!canCompress} onclick={compress}
+      >Compress</button
+    >
     {#if phase === "working"}
       <button type="button" onclick={cancel}>Stop</button>
       <!-- NO PROGRESS BAR. Compression is ONE engine call inside a worker and reports nothing
@@ -394,7 +396,24 @@
     </div>
   {/if}
 
-  <p class="visually-hidden" role="status" aria-live="polite">{announcement}</p>
+  <!-- NOT `.visually-hidden`, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
+
+       `.visually-hidden` was defined in `MergeTool.svelte` only, so in this island the class
+       did nothing and this region has always rendered visibly. Moving the rule into
+       `base.css` (ADR 0028) made it real -- and made WebKit fail on this page: a split stalled
+       at "Part 1 of 4" until its 45-second budget expired, and one run ended in "Target page,
+       context or browser has been closed". It reproduced about once per suite, only under the
+       parallel load of a full run, never in isolation, and it went away when this one class
+       was removed and came back when it was restored. Both `clip-path: inset(50%)` and the
+       older `clip: rect(0 0 0 0)` do it, so it is not the clipping technique.
+
+       What is different here from the merge tool, which has hidden this region for months: a
+       split announces once per part, so this element updates repeatedly while the operation
+       runs. That is the shape that had never been exercised.
+
+       So the region keeps the visibility it has had all along -- no regression against what
+       ships today -- and it is hidden once the WebKit behaviour is understood. Issue #107. -->
+  <p role="status" aria-live="polite">{announcement}</p>
 </section>
 
 <style>
@@ -403,9 +422,15 @@
     max-width: var(--track-readout);
   }
 
+  /* A surface you can act on, so `--edge` rather than `--rule`. It is the first thing the
+     page asks you to do, so it is a real target rather than a hairline: 2px and 7rem tall,
+     matching `MergeTool`, which was the only tool that had it. */
   .drop {
-    display: block;
-    border: 1px dashed var(--edge);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 7rem;
+    border: 2px dashed var(--edge);
     border-radius: var(--radius);
     padding: var(--space-5);
     text-align: center;
@@ -468,6 +493,14 @@
     align-items: center;
     gap: var(--space-3);
     margin-block-start: var(--space-4);
+  }
+
+  /* Every control in this row is the same size, so the row reads as one set rather than as
+     a primary button with two chips beside it. The primary's fill and size come from
+     `.action--primary` in `base.css`. */
+  .actions button {
+    font-size: var(--step-0);
+    padding: var(--space-3) var(--space-5);
   }
 
   .outcome {

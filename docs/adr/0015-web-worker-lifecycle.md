@@ -258,6 +258,13 @@ Under `Limits::default()` the pre-scan refuses `xref-bomb.pdf` before PDFium all
 `e2e/engines.spec.ts` pins that. So the exposure is not the default path — it is any page that
 sets a more generous ceiling, and any bomb whose declared cost the pre-scan does not model.
 
+**Partially discharged, 2026-09-17.** A 370-page, 11 MB document was scrolled end to end on
+`/split-pdf` on an iPhone 16 Pro without the tab terminating, which answers this question **for
+the thumbnail strip and for nothing else** — the strip does not raise `max_memory_bytes`, and the
+exposure described above is the path that does.
+[ADR 0027](0027-what-a-render-promises-and-what-it-refuses.md)'s Amendment 3 has the observation
+and the list of what it leaves open, including that one 8 GB device is not a range.
+
 **Desktop WebKit is not iOS**, and no number above was measured on a phone. Proposing mobile
 defaults from these readings would be exactly the guess this ADR was asked not to make, so
 per-platform `Limits` defaults for mobile browsers are **deferred to a decision with the

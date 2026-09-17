@@ -101,58 +101,74 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       which is how this page worked before there were pictures at all.
     </p>
 
-    <h2>What happens to large files</h2>
+    <details>
+      <summary><h2>What happens to large files</h2></summary>
 
-    <p>
-      Everything is held in this browser tab's memory, so the practical limit is what your device
-      can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before it
-      opens it, and a document of more than 10,000 pages before it cuts any of it — so an oversized
-      job is refused rather than failing part way through.
-    </p>
+      <p>
+        Everything is held in this browser tab's memory, so the practical limit is what your device
+        can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before
+        it opens it, and a document of more than 10,000 pages before it cuts any of it — so an
+        oversized job is refused rather than failing part way through.
+      </p>
 
-    <p>
-      What that does not save you from, said here rather than discovered: a very large document that
-      is under both limits can still make the tab slow while it runs, and on a phone the browser may
-      stop the tab entirely. That is the device's memory ceiling, reached inside the PDF engine
-      where nothing can intervene.
-    </p>
+      <p>
+        What that does not save you from, said here rather than discovered: a very large document
+        that is under both limits can still make the tab slow while it runs, and on a phone the
+        browser may stop the tab entirely. That is the device's memory ceiling, reached inside the
+        PDF engine where nothing can intervene.
+      </p>
 
-    <p>
-      <strong>Nothing is handed to you until every part has been made and checked.</strong> A split that
-      fails on the ninth of ten parts gives you nothing at all, deliberately: the point of splitting is
-      that the parts add up to the document you started with, and nine files out of ten do not add up
-      to anything. If it stops part way, you still have your original and no half-finished set to sort
-      through.
-    </p>
+      <p>
+        <strong>Nothing is handed to you until every part has been made and checked.</strong> A split
+        that fails on the ninth of ten parts gives you nothing at all, deliberately: the point of splitting
+        is that the parts add up to the document you started with, and nine files out of ten do not add
+        up to anything. If it stops part way, you still have your original and no half-finished set to
+        sort through.
+      </p>
+    </details>
 
-    <h2>What is kept, and what is not</h2>
+    {
+      /*
+      OPEN BY DEFAULT, AND ONLY ON THIS PAGE. Every other disclosure on every other tool page
+      starts closed. This one does not, because what is inside it is not general reassurance:
+      ADR 0019 section 4 names the wording /split-pdf is held to, and it is the explanation of
+      why a part cannot carry data belonging to the pages it excluded. That is the promise
+      that lifted split's hold (issue #54). A promise a person has to click to find is a
+      weaker promise than the one the ADR describes, so the disclosure keeps the section
+      scrollable rather than hiding it.
+    */
+    }
+    <details open>
+      <summary><h2>What is kept, and what is not</h2></summary>
 
-    <p>
-      <strong>Each part contains its pages exactly as they were</strong> — their contents, their size
-      and their annotations. <strong>Links keep working when they point inside the same part</strong
-      >, and links to a page in a different part are removed rather than left to go nowhere. Web
-      links are kept.
-    </p>
+      <p>
+        <strong>Each part contains its pages exactly as they were</strong> — their contents, their size
+        and their annotations. <strong
+          >Links keep working when they point inside the same part</strong
+        >, and links to a page in a different part are removed rather than left to go nowhere. Web
+        links are kept.
+      </p>
 
-    <p>
-      Form fields keep their appearance but are no longer fillable. What makes a field a field is
-      recorded for the document as a whole, not on the page, so it cannot come with one part — and
-      carrying it would carry the names and the values typed on pages that part does not contain.
-      Bookmarks and attached files are left out for the same reason: they describe the whole
-      document, and copying them into every part would put the names of pages you did not include
-      into files you did.
-    </p>
+      <p>
+        Form fields keep their appearance but are no longer fillable. What makes a field a field is
+        recorded for the document as a whole, not on the page, so it cannot come with one part — and
+        carrying it would carry the names and the values typed on pages that part does not contain.
+        Bookmarks and attached files are left out for the same reason: they describe the whole
+        document, and copying them into every part would put the names of pages you did not include
+        into files you did.
+      </p>
 
-    <p>
-      A document that uses layers cannot be split here at all. Whether a layer is hidden is recorded
-      for the document as a whole, so Not Only PDF has no way to find out — and a hidden layer that
-      arrived visible would be worse than a refusal.
-    </p>
+      <p>
+        A document that uses layers cannot be split here at all. Whether a layer is hidden is
+        recorded for the document as a whole, so Not Only PDF has no way to find out — and a hidden
+        layer that arrived visible would be worse than a refusal.
+      </p>
 
-    <p>
-      A file that is encrypted, damaged, or not a PDF is refused. So is a cut that would produce an
-      empty file — cutting after the last page, or after the same page twice.
-    </p>
+      <p>
+        A file that is encrypted, damaged, or not a PDF is refused. So is a cut that would produce
+        an empty file — cutting after the last page, or after the same page twice.
+      </p>
+    </details>
   </div>
 </BaseLayout>
 

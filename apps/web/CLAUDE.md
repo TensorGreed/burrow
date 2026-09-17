@@ -335,30 +335,61 @@ something, the page says what the limit is instead — which is the interface fo
 the root `CLAUDE.md` states for doc comments, where an overclaim is a bug rather than a
 wording preference.
 
+**The rule that follows from it, since 2026-09-17: austerity is kept where trust is at
+stake, and the accent carries interaction.** `--signal` is measurements, `--refuse` is
+refusals, and **the privacy claim itself stays ink** — a claim in a warm colour is a claim
+asking to be believed rather than checked. `--accent` is the primary action and nothing
+else. [ADR 0028](../../docs/adr/0028-an-accent-colour-and-what-it-cost-the-reserved-palette.md)
+records the reversal of this file's previous "links and buttons are ink" rule, what it cost,
+and the measurement that decided the hue.
+
 ### The tokens
 
 `src/styles/tokens.css` is the whole palette and scale; `src/styles/base.css` applies it.
 Both are imported by `BaseLayout.astro`, so a page gets them by using the layout.
 
-Six colour values, and the two coloured ones are **reserved**:
+Nine colour values, and **three** of them are reserved — the reservation was two-way until
+2026-09-17 and is three-way now:
 
-| token         | for                                                                            |
-| ------------- | ------------------------------------------------------------------------------ |
-| `--paper`     | the ground                                                                     |
-| `--ink`       | text; never a background                                                       |
-| `--ink-quiet` | secondary text                                                                 |
-| `--rule`      | a hairline that separates. Decorative; never outlines a control                |
-| `--edge`      | a boundary you can act on — a drop zone, an input, a button. >= 3:1            |
-| `--signal`    | **machine state only**: a count we measured, a "done", a live readout          |
-| `--refuse`    | **refusals and limits only**: a file we would not open, a ceiling that was hit |
+| token          | for                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `--paper`      | the ground                                                                                                               |
+| `--ink`        | text; never a background                                                                                                 |
+| `--ink-quiet`  | secondary text                                                                                                           |
+| `--rule`       | a hairline that separates. Decorative; never outlines a control                                                          |
+| `--edge`       | a boundary you can act on — a drop zone, an input, a SECONDARY button. >= 3:1. The primary action's border is `--accent` |
+| `--signal`     | **machine state only**: a count we measured, a "done", a live readout                                                    |
+| `--refuse`     | **refusals and limits only**: a file we would not open, a ceiling that was hit                                           |
+| `--accent`     | **the primary action only**, and only ever as a FILL. Never text, never a link, never a measurement                      |
+| `--accent-ink` | text on an `--accent` fill, and nowhere else                                                                             |
 
-**Links and buttons are ink, not `--signal`.** This is the costliest rule in the system and
-the point of it. The moment a button is the signal colour, the colour means "interactive" as
-well as "measured", and the one number that was actually measured stops standing out. Links
-are underlined; controls have an `--edge`.
+**Links are still ink, and `--signal` is still not a control colour.** The old rule said
+buttons were ink too, on the argument that a coloured button makes "interactive" and
+"measured" the same signal. That argument is sound and its conclusion was too wide: it
+forbids the _measurement_ colour on a control, not every colour. Screenshotting every route
+measured the cost — on four of the five tool pages the primary action was the browser's
+default grey chip, the lightest element on a page that exists to be pressed. ADR 0028.
 
 `--refuse` is its own value rather than a tint of `--signal` because the two say opposite
-things, and a wrong colour on an error is a correctness bug here, not a styling one.
+things, and a wrong colour on an error is a correctness bug here, not a styling one. It
+**moved from `#8a2b1f` to `#8f1733`** when the accent arrived, because a warm rust and a warm
+brick are 16.6 apart in CIEDE2000 where `--signal` and `--refuse` are 50.0 — the refusal
+moved rather than the bar.
+
+**No two reserved colours may be closer than ΔE2000 25**, in either theme, and
+`tokens.test.ts` computes it. The bar is half of what `--signal` and the _old_ brick
+`--refuse` measured (50.0); it is not re-derived from the current pair, which is 56.2. Contrast answers "can this be read"; distance answers "can
+these be told apart", and a palette can pass the first while failing the second.
+
+**Colour is never the only carrier of a refusal.** Simulated under
+Viénot–Brettel–Mollon (1999), accent against refusal: light theme 18.0 deuteranopia, 12.5
+tritanopia, 13.7 greyscale; **dark theme 5.1 and 2.4**, which is the same colour. They
+collapse and no hue fixes it. So a refusal is carried by the word (every refusal says what it
+refused), by weight or a bar (`.refusal` inline is bold; `.notice`, `.choice__problem` and
+`.file__problem` carry a 2px bar, because a whole `role="alert"` paragraph set bold is not a
+design), and by form: **`--accent` is only ever a fill and `--refuse` is only ever text or a
+border**, which survives with no colour at all. All of it is asserted, over every stylesheet
+rather than over `base.css` alone.
 
 **Contrast is asserted, not eyeballed.** `src/styles/tokens.test.ts` parses `tokens.css`,
 computes WCAG contrast for every classified token against its own theme's ground in **both**
@@ -408,7 +439,11 @@ designed, and they are listed so nobody has to rediscover the list:
 - **No numbered markers** (`01 / 02 / 03`) unless the content genuinely is a sequence. The
   merge page's file list is one, because merge order is the whole point of the tool; a list
   of features is not.
-- **No accenting a single word in a headline** in a different colour or weight.
+- **No accenting a single word in a headline** in a different colour or weight. **The
+  wordmark is the one exception, and it is an exception rather than a loophole**: "Not Only"
+  at the body weight and "PDF" at the strong one, so the name has a shape a reader recognises
+  before they read it. A wordmark is a mark in a fixed place on every page, not a sentence.
+  There is no logo mark yet — one waits until the palette and the type have settled.
 - **No entrance animations and no hover transitions on everything.** Motion answers an
   action — a disclosure opening, a state changing — or it does not happen. The
   `prefers-reduced-motion` block in `base.css` governs whatever is added later.

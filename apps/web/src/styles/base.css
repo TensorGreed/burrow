@@ -185,11 +185,41 @@ a:hover {
   border-block-end: 1px solid var(--rule);
 }
 
+/*
+ * THE WORDMARK IS A BRAND, NOT A HEADING.
+ *
+ * Same four words, no logo mark, and no colour: the structure comes from weight. "Not Only"
+ * is set at the body weight and "PDF" at the strong one, so the name has a shape a reader
+ * recognises before they read it — which is what a wordmark is for, and it is the reason
+ * this is not simply a bold line of text.
+ *
+ * IT IS THE ONE EXCEPTION TO "no accenting a single word in a different weight" in
+ * `apps/web/CLAUDE.md`. That rule is about HEADLINES, where weight-accenting a word is a
+ * substitute for saying which word matters. A wordmark is not a sentence and is not read
+ * as one; it is a mark, in the same place, on every page. The rule stands for headlines and
+ * is stated with this exception rather than quietly broken by it.
+ *
+ * NO LOGO MARK YET. A drawn mark waits until the palette and the type have settled, because
+ * a mark drawn against a palette that is still moving is a mark drawn twice.
+ *
+ * The two parts are `<span>`s inside one `<a>`, so the accessible name is still the single
+ * string "Not Only PDF" and the link is one target.
+ */
 .masthead__name {
   font-size: var(--step-1);
-  font-weight: var(--weight-strong);
   letter-spacing: -0.01em;
   text-decoration: none;
+  white-space: nowrap;
+}
+
+.masthead__name-quiet {
+  font-weight: var(--weight-body);
+}
+
+.masthead__name-strong {
+  font-weight: var(--weight-strong);
+  /* Tighter than the first half: at the strong weight the same tracking reads looser. */
+  letter-spacing: -0.02em;
 }
 
 .masthead__name:hover {
@@ -237,9 +267,45 @@ code {
   font-variant-numeric: tabular-nums;
 }
 
-/* A refusal, a ceiling, a file we will not open. Never a tint of `.measure`. */
+/*
+ * A refusal, a ceiling, a file we will not open. Never a tint of `.measure`.
+ *
+ * BOLD AS WELL AS COLOURED, BECAUSE COLOUR ALONE DOES NOT SURVIVE. Simulated rather than
+ * assumed, under Viénot–Brettel–Mollon (1999): `--refuse` and `--accent` are 25.2 apart in
+ * CIEDE2000 in ordinary vision, and in the LIGHT theme 18.0 under deuteranopia, 12.5 under
+ * tritanopia and 13.7 in greyscale. **The dark theme is worse and is the number to quote:
+ * 5.1 under tritanopia and 2.4 in greyscale**, which is the same colour. The palette's
+ * distance rule is real and it is not sufficient, so a refusal is carried by three things and only
+ * one of them is the hue: the weight here, the WORD — every refusal on this site says what
+ * it refused in a sentence — and the structural rule in `tokens.css` that `--accent` is only
+ * ever a fill and `--refuse` is only ever text. A filled control and a bold phrase are not
+ * confusable in greyscale. ADR 0028 has the numbers.
+ */
 .refusal {
   color: var(--refuse);
+  font-weight: var(--weight-strong);
+}
+
+/*
+ * A refusal that is a BLOCK rather than a phrase, and the reason it is styled here.
+ *
+ * `.refusal` is an inline span inside a sentence, where bold is the right non-colour carrier.
+ * A whole `role="alert"` paragraph set bold is not — so the block form gets a bar instead: a
+ * shape ordinary prose does not have, which is what survives greyscale. The colour says which
+ * KIND of thing it is; the bar says that it is one at all.
+ *
+ * IT IS GLOBAL BECAUSE THE WEIGHT CARRIER WAS NOT. `.refusal` is used by `MergeTool.svelte`
+ * and by nothing else: the other four islands render their refusals as `.notice` and
+ * `.choice__problem`, so a defence documented as covering "a refusal" covered one island in
+ * five. Found by security review, and it is the same shape as `.visually-hidden` being defined
+ * in one component — a rule that looks site-wide and is not. Every element these match carries
+ * `role="alert"`; they are refusals, not notices in the general sense.
+ */
+.notice,
+.choice__problem,
+.file__problem {
+  border-inline-start: 2px solid var(--refuse);
+  padding-inline-start: var(--space-3);
 }
 
 /*
@@ -269,4 +335,162 @@ code {
   margin-block-start: var(--space-2);
   margin-block-end: 0;
   color: var(--ink);
+}
+
+/* ------------------------------------------------------------------ controls */
+
+/*
+ * One button style for the whole site, here rather than in five islands.
+ *
+ * It was in `MergeTool.svelte` and nowhere else, so the other four tools shipped the
+ * browser's default button: a small grey chip that reads as disabled, above the fold, on
+ * pages that exist to be pressed. Found by screenshotting every route rather than by
+ * reading the CSS.
+ */
+button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--step--1);
+  cursor: pointer;
+}
+
+button:disabled {
+  color: var(--ink-quiet);
+  border-color: var(--rule);
+  cursor: default;
+}
+
+/*
+ * THE PRIMARY ACTION. The one thing a person came to this page to press.
+ *
+ * `--accent` as a fill and `--accent-ink` on top — the only fill of this colour anywhere,
+ * which is what keeps the reservation meaningful. It is a real target: `--step-0` rather
+ * than `--step--1`, and padding that clears 44px at the default text size.
+ *
+ * DISABLED IS STILL NOT GREY-ON-GREY. A disabled primary keeps its shape and loses its
+ * fill, so the page still says where the action is while explaining, in words beside it,
+ * why it cannot be taken yet. There is no disabled control on this site that is not also
+ * explained in words — see `--ink-quiet` in tokens.css.
+ */
+.action--primary {
+  padding: var(--space-3) var(--space-5);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--step-0);
+  font-weight: var(--weight-strong);
+}
+
+.action--primary:disabled {
+  border-color: var(--edge);
+  background: transparent;
+  color: var(--ink-quiet);
+}
+
+/*
+ * Hidden from the page, present for a screen reader.
+ *
+ * IT WAS DEFINED IN `MergeTool.svelte` ONLY, AND USED BY FOUR OTHER ISLANDS. Svelte scopes
+ * a component's styles to that component, so in `RotateTool`, `SplitTool`, `ReorderTool` and
+ * `CompressTool` the class did nothing at all: the "visually hidden" tool heading and the
+ * `aria-live` announcement region were both plainly visible on the built page. That is why
+ * `/rotate-pdf` showed a "Turn your pages" heading nobody wrote into the page's prose.
+ * Moving it here is the fix and the reason it was a gap rather than a tidy-up.
+ */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  /* `clip`, DEPRECATED AND DELIBERATE, rather than `clip-path: inset(50%)`. Measured: with
+     `clip-path` this rule took WebKit down during a split -- the run ended in "Target page,
+     context or browser has been closed", and before that the operation stalled at "Part 1 of
+     4" until the 45-second budget ran out. It reproduced on /split-pdf and nowhere else,
+     about once per suite, and never in isolation, which is what a compositing path under load
+     looks like rather than a logic bug.
+
+     `MergeTool.svelte`, the one island where this rule was ever live, hid its file input with
+     `opacity: 0` and used `clip-path` only on elements that do not update -- so the shape that
+     broke here had never actually run against a live region announcing four parts in a row. */
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/*
+ * THE DROP ZONE'S FOCUS RING, for every tool rather than for one.
+ *
+ * The file input inside a drop zone is `.visually-hidden`: it is the control, and the label
+ * is what is drawn, so the ring has to be put on the thing a person can see. `MergeTool`
+ * had this and the other four did not — and until `.visually-hidden` moved into this file
+ * their inputs were not hidden at all, so the missing ring was invisible in both
+ * directions. Keyboard use of the merge tool is supported rather than an edge case, and so
+ * is keyboard use of the other four.
+ */
+.drop:focus-within {
+  outline: var(--focus-width) solid var(--ink);
+  outline-offset: var(--focus-offset);
+}
+
+/* ------------------------------------------------------------------ disclosure */
+
+/*
+ * Progressive disclosure, in the page rather than behind a route.
+ *
+ * The long explanatory sections on a tool page are not cut and they are not moved to a
+ * second URL: every word stays in the served HTML, so nothing is lost for a reader who
+ * wants it or for a search engine that indexes it. What changes is that the tool is above
+ * them instead of below them.
+ *
+ * Native `<details>`, so it needs no JavaScript and survives the `<noscript>` case. The
+ * `prefers-reduced-motion` block earlier in this file governs any motion added later; there
+ * is none here, because the disclosure is instant and an animation would only delay it.
+ */
+details {
+  border-block-start: 1px solid var(--rule);
+  padding-block: var(--space-3);
+}
+
+/*
+ * THE HEADING STAYS A HEADING. `<summary>` accepts one heading element, and the section
+ * titles are `<h2>` inside it rather than styled text.
+ *
+ * The first version of this disclosure replaced the `<h2>` with the `<summary>` itself, and
+ * that quietly took nine sections out of five pages' document outlines: `/merge-pdf` had no
+ * content `<h2>` at all. Heading navigation is a primary way a screen-reader user moves
+ * through a page, and a crawler builds its outline the same way — so "not one word was cut"
+ * was true and not sufficient. Found by both reviews.
+ */
+summary {
+  /* The marker is the browser's own triangle: it is the affordance every reader already
+     knows, and replacing it with a glyph of our own would be decoration. */
+  cursor: pointer;
+}
+
+summary h2 {
+  display: inline;
+  /* A step down from a standalone `h2`, because a disclosure title is a way in rather than
+     the start of a section you are already reading. `apps/web/CLAUDE.md`'s type rules put
+     tool-page section headings at `--step-1`. */
+  font-size: var(--step-1);
+  margin: 0;
+}
+
+summary:focus-visible {
+  outline: var(--focus-width) solid var(--ink);
+  outline-offset: var(--focus-offset);
+}
+
+details > *:not(summary) {
+  max-width: var(--track-read);
+}
+
+details > summary + * {
+  margin-block-start: var(--space-4);
 }
