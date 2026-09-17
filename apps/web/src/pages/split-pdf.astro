@@ -5,6 +5,7 @@
 // The interactive part is one island. Everything above and below it is static, so the page is
 // readable and its claim is checkable with JavaScript switched off.
 import BaseLayout from "../layouts/BaseLayout.astro";
+import { PRESENT_MARK, STRIP_WITHDRAWN, WITHDRAWN_MARK } from "../components/strip-copy.js";
 ---
 
 <BaseLayout
@@ -94,12 +95,24 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       afterwards: it is the pages that file contains.
     </p>
 
-    <p>
-      <strong>Pages are shown as pictures once you choose a file.</strong> They are drawn on your computer
-      by the same code that does the splitting, and each one is drawn when you scroll to it rather than
-      all at once. A page too complex to draw quickly says so and is skipped; the cuts still work by number,
-      which is how this page worked before there were pictures at all.
-    </p>
+    {
+      STRIP_WITHDRAWN ? (
+        <p>
+          <strong>{WITHDRAWN_MARK}.</strong> They were here briefly and were withdrawn: drawing a
+          page needs a second PDF engine in the same tab as the one doing the work, and holding both
+          could cost you the tab in the middle of an operation. Choosing pages by number is how this
+          page worked before the pictures existed, and it is what it does now. They come back when
+          the second engine no longer has to be resident while a splitte runs.
+        </p>
+      ) : (
+        <p>
+          <strong>{PRESENT_MARK} once you choose a file.</strong> They are drawn on your computer by
+          the same code that does the splitting, and each one is drawn when you scroll to it rather
+          than all at once. A page too complex to draw quickly says so and is skipped; the cuts
+          still work by number, which is how this page worked before there were pictures at all.
+        </p>
+      )
+    }
 
     <details>
       <summary><h2>What happens to large files</h2></summary>

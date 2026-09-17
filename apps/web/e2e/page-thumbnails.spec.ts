@@ -19,6 +19,20 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { isPinnedArtifact, mark, since } from "./request-log";
 
+import { STRIP_WITHDRAWN } from "../src/components/strip-copy.js";
+
+// SKIPPED WHILE THE STRIP IS WITHDRAWN, AND DERIVED FROM THE FLAG RATHER THAN COMMENTED OUT.
+//
+// `STRIP_WITHDRAWN` is true: `/split-pdf` and `/rotate-pdf` do not mount the strip, so every
+// test below would fail on an element that is deliberately absent. Deleting them, or marking
+// them `test.skip` by hand, would mean restoring the strip depends on somebody remembering
+// that these exist -- the same trap `strip-copy.ts` exists to close for the prose.
+//
+// The component, its unit tests and the render worker are untouched; `measure.spec.ts` still
+// drives the renderer through the harness, so the ENGINE path stays covered while the UI is
+// withdrawn. Flip the flag and these run again, unchanged. #107.
+test.skip(STRIP_WITHDRAWN, "the page-picture strip is withdrawn (#107)");
+
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = resolve(here, "../../../tests/conformance/fixtures");
 

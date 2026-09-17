@@ -33,6 +33,11 @@
 // "on". That is upstream's text, reproduced verbatim rather than corrected, which is what a
 // verbatim notice obligation means.
 import BaseLayout from "../layouts/BaseLayout.astro";
+import {
+  CREDITS_PRESENT_MARK,
+  CREDITS_WITHDRAWN_MARK,
+  STRIP_WITHDRAWN,
+} from "../components/strip-copy.js";
 import { CREDITS } from "../generated/credits.js";
 
 // SCOPED TO WHAT THIS BROWSER DOWNLOADS. `CREDITS.components` is every component in the
@@ -97,13 +102,27 @@ const slug = (name: string) =>
     covers the web.
   </p>
 
-  <p>
-    <strong>Some of it arrives only if you look at page pictures.</strong> Most tools here need one PDF
-    engine; showing you a picture of a page needs a second one, and your browser fetches it the first
-    time a page asks for one. So this list is deliberately longer than what you have necessarily received:
-    {conditional.length} of the {shipped.length} components below — {conditionalNames} — come with that
-    second engine, and if you have only merged or split a file you do not have them.
-  </p>
+  {
+    STRIP_WITHDRAWN ? (
+      <p>
+        <strong>{CREDITS_WITHDRAWN_MARK}.</strong> Most tools here need one PDF engine; drawing a
+        picture of a page needs a second one. The page-picture strip that asked for it is withdrawn,
+        so nothing on the site currently fetches that engine at all — which makes this list longer
+        than what anyone has received rather than shorter: {conditional.length} of the{" "}
+        {shipped.length} components below — {conditionalNames} — come with that second engine, and
+        today nobody has them. They are listed anyway, because a notices page that is wrong in the
+        direction of declaring too much is the only direction it is safe to be wrong in.
+      </p>
+    ) : (
+      <p>
+        <strong>{CREDITS_PRESENT_MARK}.</strong> Most tools here need one PDF engine; showing you a
+        picture of a page needs a second one, and your browser fetches it the first time a page asks
+        for one. So this list is deliberately longer than what you have necessarily received:
+        {conditional.length} of the {shipped.length} components below — {conditionalNames} — come
+        with that second engine, and if you have only merged or split a file you do not have them.
+      </p>
+    )
+  }
 
   <p>
     It is listed this way round on purpose. A page that credited only the first engine would owe you
