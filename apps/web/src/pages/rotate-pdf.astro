@@ -85,48 +85,53 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       by number, which is how this page worked before there were pictures at all.
     </p>
 
-    <h2>What happens to large files</h2>
+    <details>
+      <summary><h2>What happens to large files</h2></summary>
 
-    <p>
-      Everything is held in this browser tab's memory, so the practical limit is what your device
-      can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before it
-      opens it, and a document of more than 10,000 pages before it turns any of them — so an
-      oversized job is refused rather than failing part way through and leaving you with something
-      incomplete.
-    </p>
+      <p>
+        Everything is held in this browser tab's memory, so the practical limit is what your device
+        can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before
+        it opens it, and a document of more than 10,000 pages before it turns any of them — so an
+        oversized job is refused rather than failing part way through and leaving you with something
+        incomplete.
+      </p>
 
-    <p>
-      What that does not save you from, said here rather than discovered: a very large document that
-      is under both limits can still make the tab slow while it runs, and on a phone the browser may
-      stop the tab entirely. That is the device's memory ceiling, reached inside the PDF engine
-      where nothing can intervene.
-    </p>
+      <p>
+        What that does not save you from, said here rather than discovered: a very large document
+        that is under both limits can still make the tab slow while it runs, and on a phone the
+        browser may stop the tab entirely. That is the device's memory ceiling, reached inside the
+        PDF engine where nothing can intervene.
+      </p>
+    </details>
 
-    <h2>What is kept, and what is not</h2>
+    <details>
+      <summary><h2>What is kept, and what is not</h2></summary>
 
-    <p>
-      <strong>Everything.</strong> Rotating changes one attribute on the pages you chose and touches nothing
-      else: bookmarks, attachments, form fields, annotations and the page contents all come through unchanged.
-      The pages themselves are not re-encoded, so a scan is not resampled and a photograph does not lose
-      quality — the document simply records that those pages display turned.
-    </p>
+      <p>
+        <strong>Everything.</strong> Rotating changes one attribute on the pages you chose and touches
+        nothing else: bookmarks, attachments, form fields, annotations and the page contents all come
+        through unchanged. The pages themselves are not re-encoded, so a scan is not resampled and a photograph
+        does not lose quality — the document simply records that those pages display turned.
+      </p>
 
-    <p>
-      That is worth stating plainly because the other tools here cannot say it. <a href="/merge-pdf"
-        >Merging</a
-      > keeps bookmarks from the first file only; a tool that takes pages out of a document has to drop
-      what pointed at the pages it left behind. Rotating drops nothing, and Not Only PDF's tests check
-      the claim rather than assuming it: every bookmark, annotation, form field and attachment the document
-      carried must still be there afterwards, and each page's drawing instructions must come through unaltered.
-    </p>
+      <p>
+        That is worth stating plainly because the other tools here cannot say it. <a
+          href="/merge-pdf">Merging</a
+        > keeps bookmarks from the first file only; a tool that takes pages out of a document has to drop
+        what pointed at the pages it left behind. Rotating drops nothing, and Not Only PDF's tests check
+        the claim rather than assuming it: every bookmark, annotation, form field and attachment the document
+        carried must still be there afterwards, and each page's drawing instructions must come through
+        unaltered.
+      </p>
 
-    <p>
-      A file that is encrypted, damaged, or not a PDF is refused. So is one where a page you asked
-      to turn already carries a rotation that is not a whole number of quarter turns — Not Only PDF
-      will not guess at what was meant, because guessing would turn a page on a value the file never
-      carried. A page you did not ask for is never read, so a document can carry an odd rotation
-      elsewhere and still be usable here.
-    </p>
+      <p>
+        A file that is encrypted, damaged, or not a PDF is refused. So is one where a page you asked
+        to turn already carries a rotation that is not a whole number of quarter turns — Not Only
+        PDF will not guess at what was meant, because guessing would turn a page on a value the file
+        never carried. A page you did not ask for is never read, so a document can carry an odd
+        rotation elsewhere and still be usable here.
+      </p>
+    </details>
   </div>
 </BaseLayout>
 

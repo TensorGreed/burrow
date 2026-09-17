@@ -637,3 +637,8 @@ the discharge, and it is narrow on purpose.
 
 **This amendment does not close §7.** It removes the strip from §7's list of unanswered
 questions and leaves the list.
+
+**The pages rework ([ADR 0028](0028-an-accent-colour-and-what-it-cost-the-reserved-palette.md))
+left the strip alone**, deliberately: it works and it looks right, so that change preserves its
+behaviour rather than redesigning it. The observation above therefore still describes what
+ships.

@@ -3,6 +3,11 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 // The five tools, each at its own indexable URL once it exists.
 //
+// `href` IS REQUIRED NOW, and that is the same rule stated differently. The old list allowed
+// an entry without one and rendered it as plain text; the grid renders every entry as an <a>,
+// where a missing href would be an unfocusable tile rather than visibly unlinked. So the type
+// refuses the entry instead, and a tool that does not ship yet is not in this array at all.
+//
 // A `href` ONLY WHERE THE PAGE SHIPS. An early draft linked every name to `/{slug}` while no
 // route existed, so every link was a 404 — on the one page whose whole argument is that it
 // tells you the truth about itself. The rule that replaced it said each entry gains its link
@@ -48,7 +53,7 @@ const tools = [
     blurb: "Store a PDF more efficiently, without re-encoding anything.",
     href: "/compress-pdf",
   },
-] as { name: string; blurb: string; href?: string }[];
+] as { name: string; blurb: string; href: string }[];
 ---
 
 <BaseLayout
@@ -58,97 +63,67 @@ const tools = [
   <div class="read">
     <h1>Your files stay on this computer.</h1>
 
-    <p>
-      Not Only PDF is a set of file tools that run inside your browser. Today they work on PDFs; the
-      name is a promise about where that goes, not a claim about what is here yet. When you open a
-      file, it is read by code running on your own machine. It is never sent anywhere, because there
-      is nowhere to send it: this is a static site with no server that could receive a file.
+    <p class="claim">
+      Not Only PDF is a set of file tools that run inside your browser. Nothing is uploaded, because
+      there is no server to upload to.
     </p>
   </div>
 
   {
     /*
-    THE HERO IS THE BOUNDARY, DRAWN. Not an illustration standing in for evidence — it
-    names the real pieces a file passes through and the one thing that does not happen to
-    it.
+    THE TOOLS ARE THE PAGE. They used to be a definition list two thirds of the way down,
+    under an essay and a diagram — on a phone you scrolled past about one and a third screens
+    of prose before a single tool appeared. Somebody arriving from a search for "merge pdf"
+    wants the tool, and the argument for why it is safe is what they read afterwards, not
+    instead.
 
-    IT IS MARKUP, NOT AN SVG, AND THAT WAS A CORRECTION. The first version was an inline
-    <svg>, chosen because `img-src 'self'` admits no `data:` URI (ADR 0014) and a separate
-    .svg would be a second request. Both true, and both beside the point: text inside an
-    SVG scales with the drawing, so at 390px the whole diagram — the most important thing
-    on the page — rendered at about 6px and could not be read. Screenshotting it is how
-    that was found.
-
-    As markup it reflows: the row becomes a column, the dashed boundary moves from the side
-    to the top, and every word is real text at the reader's own font size, selectable and
-    translatable. The <ol> is deliberate — a file really does pass through these in order —
-    but the numbers are not shown, because a three-item flow does not need counting.
+    The essay and the diagram were not cut. They are `/how-it-works`, linked below, which is
+    the page that already existed inline.
   */
   }
-  <figure class="boundary">
-    <div class="boundary__here">
-      <p class="boundary__label">this computer</p>
-      <ol class="boundary__steps" role="list">
-        <li><b>your file</b><span>stays here</span></li>
-        <li><b>Not Only PDF</b><span>WebAssembly</span></li>
-        <li><b>the result</b><span>you save it</span></li>
-      </ol>
-    </div>
-
-    <div class="boundary__elsewhere">
-      <p class="boundary__label">everywhere else</p>
-      <p class="boundary__nothing">nothing</p>
-      <p class="boundary__note">no upload, no account, no record of what you open</p>
-    </div>
-
-    <figcaption>
-      Nothing crosses the dashed line. The page itself is downloaded from a server, like any page
-      &mdash; that happens before you choose a file, and nothing is requested afterwards.
-    </figcaption>
-  </figure>
+  <nav class="tools" aria-label="Tools">
+    {
+      tools.map((tool) => (
+        <a class="tool" href={tool.href}>
+          <span class="tool__name">{tool.name}</span>
+          <span class="tool__blurb">{tool.blurb}</span>
+        </a>
+      ))
+    }
+  </nav>
 
   <div class="read">
-    <h2>What works today</h2>
+    <h2>Why this one</h2>
+
+    {
+      /*
+      ONCE, PLAINLY, AND THE LAST ONE IS THE ONE THAT CANNOT BE COPIED. Any competitor can
+      write "your files never leave your device" on a page that uploads them. Being able to
+      read the code, and the reasoning behind it, is the only item here that a reader can
+      check for themselves — so it is the one that carries the link.
+    */
+    }
+    <ul class="why">
+      <li>Nothing is uploaded. The file is read by code running on your own machine.</li>
+      <li>No account, and nothing to sign up for.</li>
+      <li>No waiting on an upload, and no queue — the work happens here.</li>
+      <li>Free, with no paid tier and no commercial licence, ever.</li>
+      <li>
+        <strong>Open source</strong>, so the claim above is checkable rather than asserted: the <a
+          href="https://github.com/TensorGreed/burrow">code is public</a
+        >, and so is the reasoning behind it, including the decisions that turned out to be wrong.
+      </li>
+    </ul>
 
     <p>
-      Every tool listed below works today. A tool is only linked here once its page ships — there is
-      no sign-up to wait on and nothing is announced before it works. The list is the count: this
-      paragraph used to say how many there were, and said four while there were five.
+      <a href="/how-it-works">How this works, and how you can check it</a> — what crosses the boundary,
+      what does not, and how to watch for yourself in your browser's network tab.
     </p>
 
-    <p>
-      Not Only PDF is being built in the open and is not finished. Redaction is still to come, and
-      it is the one this project is most careful about. What is here has the safety work around it
-      done: every operation checks its own output before handing it to you, and refuses it rather
-      than give you a document that is quietly wrong.
-    </p>
-
-    <h2>The tools</h2>
-
-    <dl class="tools">
-      {
-        tools.map((tool) => (
-          <div class="tools__row">
-            <dt>{tool.href ? <a href={tool.href}>{tool.name}</a> : tool.name}</dt>
-            <dd>{tool.blurb}</dd>
-          </div>
-        ))
-      }
-    </dl>
-
-    <h2>How you can check any of this</h2>
-
-    <p>
-      Open your browser's developer tools, go to the network tab, and use the tools. After the page
-      and its engines have loaded, you will see no further requests — not while a file is open, not
-      when one finishes. The same thing is asserted on every commit, in three browsers, by a test
-      that reads the web server's own log rather than the browser's report of it.
-    </p>
-
-    <p>
-      The code is <a href="https://github.com/TensorGreed/burrow">public</a>, and so is the
-      reasoning behind it: the architecture decisions are written down, including the ones that
-      turned out to be wrong.
+    <p class="unfinished">
+      Not Only PDF is being built in the open and is not finished. Every tool listed above works
+      today; a tool is only linked once its page ships. Redaction is still to come, and it is the
+      one this project is most careful about.
     </p>
   </div>
 </BaseLayout>
@@ -156,134 +131,81 @@ const tools = [
 <style>
   /* Page-specific layout only. Everything else is `src/styles/base.css`. */
 
-  /* The boundary diagram. A row of steps inside a bordered area, with a dashed edge
-     separating it from what is outside. Below --bp-stack the row becomes a column and the
-     dashed edge moves to the top, because a three-across diagram at 390px is six-point
-     type. */
-  .boundary {
-    margin: var(--space-7) 0;
+  /* The h1 is the privacy claim and it is the first thing on the page, so it is allowed to
+     be large — but not so large that it costs the grid its place above the fold on a phone.
+     It scales with the viewport rather than stepping at a breakpoint, because the thing
+     being protected is a continuous quantity: how far down the first tool sits. */
+  h1 {
+    font-size: clamp(var(--step-2), 7vw, var(--step-4));
+  }
+
+  .claim {
+    max-width: 44ch;
+  }
+
+  /* A grid of targets, not a list of links. Two columns on a phone, so all five tools are
+     on screen at 390px without scrolling — checked by screenshot, which is the only way
+     that claim is checkable. */
+  .tools {
     display: grid;
-    gap: var(--space-5);
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-3);
+    margin-block: var(--space-5) var(--space-7);
     max-width: var(--track-readout);
   }
 
-  .boundary__here {
-    padding: var(--space-4);
+  /* A surface you can act on, so `--edge` rather than `--rule`. NOT a card: one hairline,
+     one 2px radius, no shadow, no lift on hover. See tokens.css. */
+  .tool {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-3);
     border: 1px solid var(--edge);
     border-radius: var(--radius);
+    text-decoration: none;
   }
 
-  .boundary__label {
-    margin: 0 0 var(--space-3);
-    color: var(--ink-quiet);
-    font-size: var(--step--1);
+  .tool:hover .tool__name {
+    text-decoration-thickness: 2px;
   }
 
-  .boundary__steps {
-    display: grid;
-    gap: var(--space-3);
-    margin: 0;
-    padding: 0;
-    /* A sequence semantically, but counting to three helps nobody read it.
-       `role="list"` is on the element because WebKit strips the list role from a list whose
-       `list-style` is `none` -- so the ordering semantics, which are the whole reason this
-       is an <ol>, would be lost in exactly the assistive technology where they mattered. */
-    list-style: none;
-  }
-
-  .boundary__steps li {
-    padding: var(--space-3);
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-  }
-
-  .boundary__steps b {
-    display: block;
-  }
-
-  .boundary__steps span {
-    display: block;
-    color: var(--ink-quiet);
-    font-size: var(--step--1);
-  }
-
-  .boundary__elsewhere {
-    /* The dashed edge IS the claim. Stacked, it sits above; side by side, it sits left. */
-    padding-block-start: var(--space-4);
-    border-block-start: 2px dashed var(--edge);
-  }
-
-  /* The one coloured value on the page, and it is the honest one: how much of your file
-     leaves this computer. */
-  .boundary__nothing {
-    margin: 0 0 var(--space-2);
-    color: var(--signal);
-    font-size: var(--step-2);
+  .tool__name {
     font-weight: var(--weight-strong);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
   }
 
-  .boundary__note {
-    margin: 0;
-    max-width: 22ch;
+  .tool__blurb {
     color: var(--ink-quiet);
     font-size: var(--step--1);
+    line-height: 1.35;
   }
 
-  .boundary figcaption {
-    max-width: var(--track-read);
-    color: var(--ink-quiet);
-    font-size: var(--step--1);
+  .why {
+    margin: 0 0 var(--space-4);
+    padding-inline-start: var(--space-5);
   }
 
-  /* 46rem is `--bp-stack`. CSS cannot interpolate a custom property into a media query, so
-     the number is repeated here; keep the two in sync. When a second page needs this
-     breakpoint, make it a checked assertion rather than a comment. */
-  @media (min-width: 46rem) {
-    .boundary {
-      grid-template-columns: 1fr auto;
-      align-items: stretch;
-    }
-
-    .boundary figcaption {
-      grid-column: 1 / -1;
-    }
-
-    .boundary__steps {
-      grid-auto-flow: column;
-      grid-auto-columns: 1fr;
-    }
-
-    .boundary__elsewhere {
-      padding-block-start: 0;
-      padding-inline-start: var(--space-5);
-      border-block-start: none;
-      border-inline-start: 2px dashed var(--edge);
-    }
+  .why li {
+    margin-block-end: var(--space-2);
   }
 
-  .tools {
-    margin: var(--space-5) 0 0;
-  }
-
-  .tools__row {
-    display: grid;
-    gap: 0 var(--space-5);
-    padding-block: var(--space-3);
-    border-block-start: 1px solid var(--rule);
-  }
-
-  .tools__row dt {
-    font-weight: var(--weight-strong);
-  }
-
-  .tools__row dd {
-    margin: 0;
+  .unfinished {
     color: var(--ink-quiet);
   }
 
+  /* 34rem is where a fifth tile stops being cramped in three columns. Below it the grid
+     stays two-up, which is what keeps all five above the fold on a phone. */
   @media (min-width: 34rem) {
-    .tools__row {
-      grid-template-columns: 10rem 1fr;
+    .tools {
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-4);
+    }
+
+    .tool {
+      padding: var(--space-4);
     }
   }
 </style>

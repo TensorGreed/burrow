@@ -76,43 +76,47 @@ import BaseLayout from "../layouts/BaseLayout.astro";
   </noscript>
 
   <div class="read">
-    <h2>What happens to large files</h2>
+    <details>
+      <summary><h2>What happens to large files</h2></summary>
 
-    <p>
-      Everything is held in this browser tab's memory, so the practical limit is what your device
-      can spare rather than an upload size. Not Only PDF refuses a set of files totalling more than
-      512 MB before it opens any of them, and refuses an output of more than 10,000 pages before it
-      writes any of them — so an oversized job is refused rather than failing part way through and
-      leaving you with something incomplete.
-    </p>
+      <p>
+        Everything is held in this browser tab's memory, so the practical limit is what your device
+        can spare rather than an upload size. Not Only PDF refuses a set of files totalling more
+        than 512 MB before it opens any of them, and refuses an output of more than 10,000 pages
+        before it writes any of them — so an oversized job is refused rather than failing part way
+        through and leaving you with something incomplete.
+      </p>
 
-    <p>
-      The size limit is applied to what you chose, not to what has been loaded — Not Only PDF adds
-      up the file sizes and refuses before it opens the first one, so an oversized selection is
-      turned away immediately rather than after it has filled the tab.
-    </p>
+      <p>
+        The size limit is applied to what you chose, not to what has been loaded — Not Only PDF adds
+        up the file sizes and refuses before it opens the first one, so an oversized selection is
+        turned away immediately rather than after it has filled the tab.
+      </p>
 
-    <p>
-      What that does not save you from, said here rather than discovered: a very large merge that is
-      under both limits can still make the tab slow while it runs, and on a phone the browser may
-      stop the tab entirely. That is the device's memory ceiling, reached inside the PDF engine
-      where nothing can intervene.
-    </p>
+      <p>
+        What that does not save you from, said here rather than discovered: a very large merge that
+        is under both limits can still make the tab slow while it runs, and on a phone the browser
+        may stop the tab entirely. That is the device's memory ceiling, reached inside the PDF
+        engine where nothing can intervene.
+      </p>
+    </details>
 
-    <h2>What is kept, and what is not</h2>
+    <details>
+      <summary><h2>What is kept, and what is not</h2></summary>
 
-    <p>
-      Pages, their contents and their sizes come across unchanged. Bookmarks, attachments and form
-      fields are kept from the <strong>first</strong> file — later files contribute their pages. Merging
-      outlines from several documents has no obviously right answer, so Not Only PDF does not guess at
-      one.
-    </p>
+      <p>
+        Pages, their contents and their sizes come across unchanged. Bookmarks, attachments and form
+        fields are kept from the <strong>first</strong> file — later files contribute their pages. Merging
+        outlines from several documents has no obviously right answer, so Not Only PDF does not guess
+        at one.
+      </p>
 
-    <p>
-      A file that is encrypted, damaged, or not a PDF stops the whole merge. Not Only PDF will not
-      quietly leave a file out: a combined document that is missing pages looks complete, and you
-      would find out when you needed them.
-    </p>
+      <p>
+        A file that is encrypted, damaged, or not a PDF stops the whole merge. Not Only PDF will not
+        quietly leave a file out: a combined document that is missing pages looks complete, and you
+        would find out when you needed them.
+      </p>
+    </details>
   </div>
 </BaseLayout>
 

@@ -200,6 +200,69 @@ describe("the production build", () => {
     expect(files, "the credits page must ship").toContain("credits/index.html");
   });
 
+  it("folds the long tool-page sections without cutting a word of them", () => {
+    // THE CLAIM IS THAT NOTHING WAS LOST, so the claim is checked rather than stated. The
+    // pages rework (ADR 0028) moved two or three sections per tool page into native
+    // `<details>`: every sentence stays in the SERVED HTML, so nothing is lost for a reader
+    // who opens it or for a search engine that indexes it. A disclosure that dropped its
+    // content, or moved it behind a second route, would look exactly like a tidier page.
+    //
+    // The sentences below are picked from INSIDE the folded sections, one per page, and each
+    // is a limit or a guarantee rather than a heading -- a `<summary>` surviving while its
+    // body vanished is the failure this is aimed at.
+    const folded: Record<string, string> = {
+      "merge-pdf/index.html": "Everything is held in this browser tab's memory",
+      "split-pdf/index.html": "A document that uses layers cannot be split here at all",
+      "rotate-pdf/index.html": "the document simply records that those pages display turned",
+      "reorder-pdf/index.html": "Everything is held in this browser tab's memory",
+      "compress-pdf/index.html": "Everything is held in this browser tab's memory",
+    };
+
+    for (const [page, sentence] of Object.entries(folded)) {
+      const html = readFileSync(join(outDir, page), "utf8");
+      // Astro stamps a scoped-style attribute onto every element it emits, so the tags are
+      // matched as patterns rather than as literals. A `toContain("<details>")` here passed
+      // nothing and failed everything -- which is the shape of check this repository keeps
+      // measuring: it would have read as "no page has a disclosure" for the same reason on a
+      // page that had five.
+      expect(html, `${page} must carry a disclosure`).toMatch(/<details[\s>]/);
+      expect(html, `${page} must still say: ${sentence}`).toContain(sentence);
+      // The title is an `<h2>` INSIDE the `<summary>`, not the summary itself — a disclosure
+      // that swallowed its heading would take the section out of the document outline while
+      // looking identical on screen. That happened here and both reviews caught it.
+      expect(html, `${page}'s disclosure needs a summary`).toMatch(
+        /<summary[^>]*><h2[^>]*>What happens to large files<\/h2><\/summary>/,
+      );
+    }
+
+    // THE LIST IS DERIVED FROM THE BUILD, IN BOTH DIRECTIONS. A hand-written map gated on its
+    // own length catches a deletion from the map and not a SIXTH tool page, which would leave
+    // the list at five, green, and the new page's disclosure unchecked — the failure this
+    // repository has already measured twice. Comparing against the routes on disk is what
+    // makes a new page fail loudly until somebody adds it here.
+    const toolPages = files.filter((f) => /^[a-z-]+-pdf\/index\.html$/.test(f)).sort();
+    expect(Object.keys(folded).sort(), "every tool page needs an entry here").toEqual(toolPages);
+  });
+
+  it("ships the page the landing page's essay moved to", () => {
+    // `/how-it-works` is the one route the pages rework added, and it is not new prose: it is
+    // the boundary diagram and the essay that used to sit inline on `/`. If it did not ship,
+    // the landing page would link to a 404 -- on the one site whose argument is that it tells
+    // you the truth about itself, which is the reason the tool list was never allowed to link
+    // a route that did not exist.
+    expect(files, "the how-it-works page must ship").toContain("how-it-works/index.html");
+
+    const page = readFileSync(join(outDir, "how-it-works/index.html"), "utf8");
+    const landing = readFileSync(join(outDir, "index.html"), "utf8");
+
+    // The diagram MOVED rather than being copied: it is here and it is not there.
+    expect(page, "the boundary diagram belongs here now").toContain("boundary__nothing");
+    expect(landing, "the diagram must not still be on the landing page").not.toContain(
+      "boundary__nothing",
+    );
+    expect(landing, "the landing page must link to it").toContain('href="/how-it-works"');
+  });
+
   it("ships each worker as ONE bundle, with no glue loose beside them", () => {
     // The Emscripten glue used to be staged as separate files and pulled in with
     // `importScripts`, which has no integrity mechanism — so third-party glue ran unverified.

@@ -115,63 +115,69 @@ import BaseLayout from "../layouts/BaseLayout.astro";
       Only PDF does not report it as one — it is a fact about the file, and usually a good one.
     </p>
 
-    <h2>What you are shown</h2>
+    <details>
+      <summary><h2>What you are shown</h2></summary>
 
-    <p>
-      The size before, the size after, and the percentage — measured, not estimated. If the saving
-      is too small to be worth replacing your file for, Not Only PDF says that instead of presenting
-      a rounding error as a result. The compressed document is still offered either way; the page
-      reports what it found and leaves the choice with you.
-    </p>
+      <p>
+        The size before, the size after, and the percentage — measured, not estimated. If the saving
+        is too small to be worth replacing your file for, Not Only PDF says that instead of
+        presenting a rounding error as a result. The compressed document is still offered either
+        way; the page reports what it found and leaves the choice with you.
+      </p>
 
-    <p>
-      If Not Only PDF's version came out no smaller than yours, it keeps yours and tells you both
-      numbers. Nothing is hidden behind a cheerful message.
-    </p>
+      <p>
+        If Not Only PDF's version came out no smaller than yours, it keeps yours and tells you both
+        numbers. Nothing is hidden behind a cheerful message.
+      </p>
+    </details>
 
-    <h2>What happens to large files</h2>
+    <details>
+      <summary><h2>What happens to large files</h2></summary>
 
-    <p>
-      Everything is held in this browser tab's memory, so the practical limit is what your device
-      can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before it
-      opens it, and a document of more than 10,000 pages before it compresses any of it — so an
-      oversized job is refused rather than failing part way through.
-    </p>
+      <p>
+        Everything is held in this browser tab's memory, so the practical limit is what your device
+        can spare rather than an upload size. Not Only PDF refuses a file larger than 512 MB before
+        it opens it, and a document of more than 10,000 pages before it compresses any of it — so an
+        oversized job is refused rather than failing part way through.
+      </p>
 
-    <p>
-      What that does not save you from, said here rather than discovered: compressing is a single
-      long operation inside the PDF engine, and unlike turning or reordering pages there is no point
-      part way through at which it can be interrupted cleanly. A very large document can make the
-      tab slow while it runs, and on a phone the browser may stop the tab entirely. Stop ends it by
-      discarding the engine, which is the only thing that can.
-    </p>
+      <p>
+        What that does not save you from, said here rather than discovered: compressing is a single
+        long operation inside the PDF engine, and unlike turning or reordering pages there is no
+        point part way through at which it can be interrupted cleanly. A very large document can
+        make the tab slow while it runs, and on a phone the browser may stop the tab entirely. Stop
+        ends it by discarding the engine, which is the only thing that can.
+      </p>
+    </details>
 
-    <h2>What is kept, and what is not</h2>
+    <details>
+      <summary><h2>What is kept, and what is not</h2></summary>
 
-    <p>
-      <strong>Everything.</strong> Bookmarks, attachments, form fields, annotations, metadata and the
-      page contents all come through unchanged. Compressing rewrites how the document is stored and nothing
-      about what it says, and Not Only PDF's tests check the claim rather than assuming it: every marked
-      object the document carried must still be there afterwards, and each page's drawing instructions
-      must come through unaltered.
-    </p>
+      <p>
+        <strong>Everything.</strong> Bookmarks, attachments, form fields, annotations, metadata and the
+        page contents all come through unchanged. Compressing rewrites how the document is stored and
+        nothing about what it says, and Not Only PDF's tests check the claim rather than assuming it:
+        every marked object the document carried must still be there afterwards, and each page's drawing
+        instructions must come through unaltered.
+      </p>
 
-    <p>
-      That is worth stating plainly because many tools called "compress PDF" do the opposite — they
-      shrink a file by re-encoding its images at lower quality, which is why a scan run through one
-      comes back blurry. Not Only PDF's answer to a scan is to tell you it cannot help much, rather
-      than to help by damaging it.
-    </p>
+      <p>
+        That is worth stating plainly because many tools called "compress PDF" do the opposite —
+        they shrink a file by re-encoding its images at lower quality, which is why a scan run
+        through one comes back blurry. Not Only PDF's answer to a scan is to tell you it cannot help
+        much, rather than to help by damaging it.
+      </p>
 
-    <p>
-      A file that is encrypted, damaged, or not a PDF is refused. So is a result Not Only PDF
-      produced but could not verify: after compressing, it reopens the document it just wrote and
-      checks that every page is still there and still turned the same way. That check is
-      deliberately narrow — it is what a fresh engine can confirm about a document in the moment it
-      is produced, and the promise that your pages are untouched rests on Not Only PDF never
-      re-encoding them in the first place, which the tests above check. If the check fails, you get
-      the refusal rather than the document.
-    </p>
+      <p>
+        A file that is encrypted, damaged, or not a PDF is refused. So is a result Not Only PDF
+        produced but could not verify: after compressing, it reopens the document it just wrote and
+        checks that every page is still there and still turned the same way. That check is
+        deliberately narrow — it is what a fresh engine can confirm about a document in the moment
+        it is produced, and the promise that your pages are untouched rests on Not Only PDF never
+        re-encoding them in the first place, which the tests above check. If the check fails, you
+        get the refusal rather than the document.
+      </p>
+    </details>
   </div>
 </BaseLayout>
 

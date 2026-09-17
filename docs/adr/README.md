@@ -33,3 +33,4 @@ One file per decision, numbered, never rewritten. See
 | [0025](0025-what-compress-does-and-what-it-refuses-to-do.md) | What `compress` does, and what it refuses to do | Accepted |
 | [0026](0026-how-rendering-loads-without-returning-to-the-old-payload.md) | How rendering loads, without returning to the old payload | Accepted — amends [spike 0004](../spikes/0004-the-first-load-budget-before-compress.md), amended 2026-09-17 (the bundle renders) |
 | [0027](0027-what-a-render-promises-and-what-it-refuses.md) | What a render promises, what it refuses, and the three numbers that were chosen | Accepted — closes [0020](0020-rotate-ships-without-thumbnails.md)'s deferred ceiling, amended 2026-09-17 twice (progressive render required; then measured) |
+| [0028](0028-an-accent-colour-and-what-it-cost-the-reserved-palette.md) | An accent colour, and what it cost the reserved palette | Accepted — reverses `tokens.css`'s no-accent argument and moves `--refuse` |
