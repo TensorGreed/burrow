@@ -252,3 +252,40 @@ fn an_unreadable_document_is_refused_rather_than_split() {
         split_at(b"not a pdf at all".to_vec(), &[], Limits::default()).expect_err("must refuse");
     assert!(matches!(err, Error::Malformed(_)), "{err:?}");
 }
+
+// ------------------------------------------- a page count is verified against itself (#111)
+
+#[test]
+#[ignore = "#111: the design hole this pins is open; the assertion states the property, not today's behaviour"]
+fn a_split_keeps_every_page_the_document_declares() {
+    // THE PROPERTY, WRITTEN DOWN WHILE IT DOES NOT HOLD.
+    //
+    // `five-pages-or-six.pdf` declares `/Count 6` and carries six `/Kids`. A textual walk of the
+    // page tree reads six; PDFium reads six; qpdf's `page_count` reads FIVE, dropping the page
+    // whose `/Resources` points above INT_MAX. So this split emits 2 + 3 = five pages and
+    // reports success, and ADR 0022's read-back verifies five against five -- because the
+    // verification asks the same source the operation asked.
+    //
+    // One page is gone and nothing says so. That is not `split` misbehaving: it is what a
+    // promise checked against its own input is worth, and every operation carrying a page count
+    // inherits it. See #111 and ADR 0022's 2026-09-17 amendment.
+    //
+    // IGNORED RATHER THAN DELETED OR WEAKENED, the way #61's reproduction was: a test asserting
+    // five would turn a known hole into recorded correct behaviour, which is the direction this
+    // repository refuses to go.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/fixtures/five-pages-or-six.pdf");
+    let source = std::fs::read(&path).expect("the divergence fixture must exist");
+
+    let parts = split_at(source, &[2], Limits::default()).expect("the document splits today");
+    let total: usize = parts
+        .iter()
+        .map(|part| pdf_reading::page_order(part).len())
+        .sum();
+
+    assert_eq!(
+        total, 6,
+        "the document declares six pages and the split handed back {total}; a page was lost and \
+         the operation reported success"
+    );
+}

@@ -658,7 +658,18 @@ fn the_schema_records_a_route_for_every_limit_failure() {
 /// constant exists to prevent: one free slot is one gap that can be added without a reviewer
 /// seeing a number change. Lowering it in the same diff that closes a gap is what keeps the
 /// constraint real. Found by code review.
-const MAX_KNOWN_GAPS: usize = 1;
+///
+/// **RAISED 1 -> 2 on 2026-09-17 for #111**, and what changed about the trade is this: the new
+/// gap is not an operation misbehaving on a hostile file, which is what `objstm-bomb` is. It is
+/// a property of VERIFICATION itself -- a promise checked against the same reading the
+/// operation used, so a wrong page count is verified against itself and satisfied by the error.
+/// Recording it as a case is the only way the corpus can state what the two engines really
+/// answer; the alternative was a case asserting five pages, which would file a known hole as
+/// recorded correct behaviour.
+///
+/// It is targeted at **M2 and no later**, because redaction's central claim is exactly this
+/// property. If it is still here when M2 opens, the ceiling is not what should give.
+const MAX_KNOWN_GAPS: usize = 2;
 
 /// A recorded gap needs somewhere to lead, and a deadline to lead there by.
 #[test]

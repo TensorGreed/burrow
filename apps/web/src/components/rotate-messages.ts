@@ -141,8 +141,14 @@ export function messageFor(failure: Failure): Message {
         // guessing would turn a page on a value the file never carried. The sentence does not
         // distinguish the two, because "damaged" is what both are and a person cannot act on
         // the difference.
-        title: "Not Only PDF could not read that file.",
-        next: "It may be damaged, or not a PDF at all. Try another copy of it.",
+        // THE VARIANT CANNOT TELL A DAMAGED FILE FROM A SHAPE BURROW DOES NOT UNDERSTAND, so
+        // this no longer asserts the first. Measured on `/split-pdf`: an ordinary 11 MB course
+        // PDF that qpdf opened, counted and compressed was reported as damaged because burrow's
+        // own lexer met a byte inside an embedded font program (#112). This page shows the
+        // document's page count before the operation runs, so "we could not read it" is a
+        // claim the page has already disproved on screen.
+        title: "Not Only PDF could not finish reading that document.",
+        next: "If it opens elsewhere, the problem is here rather than in your file — that has happened, and it is worth reporting. Nothing was changed.",
         retryable: true,
       };
     case "Unsupported":

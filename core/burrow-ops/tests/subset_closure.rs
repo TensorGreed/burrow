@@ -252,3 +252,112 @@ fn losing_a_page_is_caught_by_the_inverse_assertion() {
          assert_nothing_lost cannot detect loss and every use of it is decoration"
     );
 }
+
+// ------------------------------------------------- an embedded font is not a content stream
+
+/// The fixture `tools/make-embedded-font-fixture.py` produces, committed beside the others.
+fn font_program_fixture() -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/fixtures/font-program-with-a-paren.pdf");
+    std::fs::read(&path).expect("the embedded-font fixture must exist")
+}
+
+#[test]
+fn a_document_whose_font_is_a_real_program_splits() {
+    // THE DEFECT, AS A TEST. The resource walk went `/Font` -> the font dictionary ->
+    // `/FontDescriptor` -> `/FontFile3` and lexed a CFF program as page content, refusing with
+    // `a ')' with no string to close` -- a byte inside a charstring. It reached the person as
+    // "Not Only PDF could not read that file. It may be damaged", on a document qpdf opens,
+    // counts, and compresses without complaint.
+    //
+    // Found on an ordinary 11 MB course PDF with 37 Type1C fonts, not by anything in this
+    // corpus: every fixture here is synthesised and none had an embedded subset font. #112.
+    let parts = split(
+        &Qpdf::new(),
+        font_program_fixture().into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    )
+    .expect("a document with an embedded font program must split");
+
+    assert_eq!(parts.len(), 2, "one cut on two pages makes two parts");
+    for part in &parts {
+        assert!(!part.is_empty(), "a part must not be empty");
+    }
+}
+
+#[test]
+fn the_fixture_still_carries_the_byte_the_lexer_refused_on() {
+    // THE FIXTURE IS CHECKED, NOT ASSUMED. The test above passes against a document with no
+    // font at all, or one whose program happens to lex -- and then it would be a test of
+    // nothing, which is this repository's most-repeated failure. The `)` must still be in
+    // there, with no `(` opening it.
+    //
+    // The stream is uncompressed so this can be read without an inflater; see the generator.
+    let bytes = font_program_fixture();
+    let marker = b"/Subtype /Type1C";
+    let at = bytes
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .expect("the fixture must carry a Type1C font program");
+    let rest = &bytes[at..];
+    let start = rest
+        .windows(b"stream\n".len())
+        .position(|w| w == b"stream\n")
+        .expect("the font program stream must have a body")
+        + b"stream\n".len();
+    let end = rest
+        .windows(b"\nendstream".len())
+        .position(|w| w == b"\nendstream")
+        .expect("the font program stream must end");
+    let program = &rest[start..end];
+
+    let paren = program
+        .iter()
+        .position(|&b| b == b')')
+        .expect("the font program must still contain the byte the lexer refused on");
+    assert!(
+        !program[..paren].contains(&b'('),
+        "the `)` must have no `(` before it, or it closes a string and lexes cleanly"
+    );
+}
+
+#[test]
+fn a_glyph_that_draws_an_xobject_keeps_it() {
+    // THE UNDER-APPROXIMATION TEST, and the one that decides whether the fix above is narrow
+    // enough. `/Im1` is named in exactly one place in this document: inside a Type 3 font's
+    // glyph procedure. Not on the page, not in the page's content. A walk that stopped at the
+    // font dictionary -- the obvious over-correction for #112 -- would never collect that name,
+    // the pruning policy would delete `/Im1` as unused, and the split would hand back a page
+    // that draws a glyph whose XObject is gone. A valid PDF, silently missing its picture.
+    //
+    // This asserts the page still DRAWS, by finding the form's own bytes in the output, rather
+    // than asserting anything about which code paths ran.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf");
+    let source = std::fs::read(&path).expect("the type 3 fixture must exist");
+
+    let parts = split(
+        &Qpdf::new(),
+        source.into_boxed_slice(),
+        Cuts::after_pages(&[1]),
+        &options(),
+    )
+    .expect("a document with a type 3 font must split");
+    assert_eq!(parts.len(), 2);
+
+    let first = object_closure::pdf_reading::expanded(&parts[0]);
+    let marker = b"MARKER-THE-GLYPH-DREW-THIS";
+    assert!(
+        first.windows(marker.len()).any(|window| window == marker),
+        "the XObject the glyph draws was pruned out of the part that keeps the page"
+    );
+
+    // AND THE OTHER PART MUST NOT CARRY IT. Otherwise this test passes on a policy that prunes
+    // nothing at all, which is the failure mode the rest of this file exists to catch.
+    let second = object_closure::pdf_reading::expanded(&parts[1]);
+    assert!(
+        !second.windows(marker.len()).any(|window| window == marker),
+        "the second part draws no glyph and must not carry the glyph's XObject"
+    );
+}

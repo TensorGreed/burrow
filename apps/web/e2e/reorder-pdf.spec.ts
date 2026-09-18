@@ -348,7 +348,13 @@ test("a file burrow cannot read is refused, and nothing from it reaches the page
 
   const notice = page.locator(".notice");
   await expect(notice).toBeVisible();
-  await expect(notice).toContainText("could not read");
+  // THE WORDING IS NOT PINNED HERE ANY MORE. This asserted the substring "could not read",
+  // which is a sentence about the FILE -- and that sentence was wrong: a valid document was
+  // told it might be damaged because burrow's own lexer met an embedded font program (#112).
+  // Changing the copy to stop blaming the file then broke three e2e tests, which is a test
+  // pinning prose rather than behaviour. What matters here is that a refusal is SHOWN and that
+  // nothing from the file or the engine reaches it, which the rest of this test checks.
+  await expect(notice).toContainText("could not finish reading");
   // NO ENGINE PROSE, and no bytes from the file. The page says what the core's typed error
   // means; it never echoes what the engine said about the document.
   await expect(notice).not.toContainText("qpdf");
