@@ -31,10 +31,15 @@
  * On WebKit, `/split-pdf` and `/rotate-pdf` -- the two pages that mount this strip -- lose the
  * tab, or fail to deliver an operation's output, about **four times in 580 runs**. With the
  * strip suppressed on the same commit, and on the commit before it existed, **zero in 580**.
- * No page without the strip has ever failed this way. The mechanism is a tab resident in two
- * wasm engines at once: qpdf for the operation and PDFium for the tiles, the latter 1.9 MB
- * with a 2 GiB heap ceiling. [ADR 0015](../../../../docs/adr/0015-web-worker-lifecycle.md) §7
- * recorded that shape on iOS; this is it on desktop WebKit.
+ * No page without the strip has ever failed this way.
+ *
+ * **THE MECHANISM IS PDFIUM RESIDENT WHILE AN OPERATION RUNS, NOT "TWO ENGINES AT ONCE".** The
+ * first framing was wrong and is corrected here rather than quietly dropped: the DOCUMENTS
+ * worker persists after an operation, so qpdf and PDFium are both resident whenever the strip
+ * draws at all. What distinguishes the failing case is an operation running while PDFium is
+ * still there -- 1.9 MB with a 2 GiB heap ceiling, next to a qpdf heap doing the work.
+ * [ADR 0015](../../../../docs/adr/0015-web-worker-lifecycle.md) §7 recorded that shape on iOS;
+ * this is it on desktop WebKit.
  *
  * **Losing a tab in the middle of an operation is the worst failure this site has** -- worse
  * than not showing thumbnails, which is how both pages worked for their whole life until the
@@ -43,12 +48,42 @@
  *
  * # What brings it back
  *
- * Not a hunch and not a quiet flip: a tab that holds ONE engine at a time -- the render worker
- * released before an operation starts, or PDFium kept out while qpdf works -- and then the
- * loop in [#107](https://github.com/TensorGreed/burrow/issues/107) run clean over **at least
- * 1,160 runs**, twice the sample that exposed the defect, on the arm that currently shows it.
- * The bar is written down here, before the fix is built, for the same reason ADR 0027's
+ * Not a hunch and not a quiet flip: PDFium released for the duration of an operation, and then
+ * the loop in [#107](https://github.com/TensorGreed/burrow/issues/107) run clean over **at
+ * least 1,160 runs**, twice the sample that exposed the defect, on the arm that currently shows
+ * it. The bar is written down here, before the fix is built, for the same reason ADR 0027's
  * progressive-render bar was: a bar set after the numbers is not a bar.
+ *
+ * **AND THE BAR MEASURES THE OUTCOME, NOT THE PROPERTY.** A clean 1,160 says the failure did
+ * not occur; it does not say an engine is never acquired during an operation. No test proves
+ * that end to end -- see [#114](https://github.com/TensorGreed/burrow/issues/114), which
+ * records why the one written for it could not be made to fail and what an adequate one needs.
+ *
+ * # The bar was run on 2026-09-18 and NOT met
+ *
+ * The fix was built -- the strip paused for the duration of an operation, acquisition refused
+ * at the host, the resume deferred past the paint -- and measured against the bar above:
+ *
+ * | arm | failures / runs |
+ * |---|---|
+ * | strip mounted, before any of it | 4 / 580 |
+ * | strip mounted, WITH the fix | **4 / 1,160** |
+ * | strip absent | 0 / 1,160 |
+ *
+ * **The rate roughly halved. The failure did not go away.** Four crashes, all
+ * `Target page, context or browser has been closed`, on both pages. A twofold improvement in a
+ * crash rate is not a fix, and the bar is what caught that -- an earlier reading of "roughly
+ * eightfold" came from one clean pair of runs and was wrong.
+ *
+ * **It also undermines the mechanism this file describes.** If PDFium's absence during an
+ * operation were the whole story, gating acquisition three ways should have removed the crash.
+ * It did not, so something else is involved and nothing here names it. The description above is
+ * what the arms support; it is not an explanation of the remainder.
+ *
+ * WHAT THE NEXT ATTEMPT SHOULD DO IS NOT ANOTHER GATE. Every conclusion so far -- including the
+ * two that were wrong -- was inferred from correlation across arms, and the direct evidence has
+ * never been collected: no WebKit crash log has been captured, only Playwright reporting that
+ * the page died. That is the gap to close first.
  */
 export const STRIP_WITHDRAWN = true;
 

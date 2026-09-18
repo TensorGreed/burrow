@@ -254,14 +254,68 @@ export const DOCUMENTS: WorkerBundle = BUNDLE_WORKER;
 /** The render bundle: PDFium. Built on first use, by a page that needs a page picture. */
 export const RENDER: WorkerBundle = BUNDLE_RENDER_WORKER;
 
+/**
+ * Thrown by every acquiring call while a host is paused. Compared by identity, never read.
+ *
+ * A sentinel rather than a message, for the reason `ORIGIN_MISMATCH` is one: ADR 0009 forbids
+ * an island reading a thrown value's text, because a thrown value can carry module output.
+ */
+export const ENGINE_PAUSED = Symbol("engine paused");
+
+/**
+ * Methods that stay available while paused, because none of them can acquire an engine.
+ *
+ * **THE LIST IS OF WHAT IS ALLOWED, NOT OF WHAT IS REFUSED, AND THAT IS THE POINT.** A method
+ * added to this host later is refused while paused until somebody puts it here deliberately --
+ * so a future caller inherits the refusal instead of routing around a gate nobody remembered to
+ * extend. #107's first two fixes each closed one path and left the next one open; this closes
+ * the shape.
+ */
+export const ALLOWED_WHILE_PAUSED: ReadonlySet<string> = new Set([
+  // Releasing is the whole point of pausing.
+  "dispose",
+  "discardWorker",
+  // Asking what is held cannot build anything.
+  "hasWorker",
+  // Closing the breaker is a deliberate gesture and touches no engine.
+  "reset",
+]);
+
 export function createToolHost(
   deps: ToolHostDeps = browserDeps(),
   bundle: WorkerBundle = DOCUMENTS,
+  options: { paused?: () => boolean } = {},
 ): ToolHost {
+  const paused = options.paused ?? (() => false);
   let host: ReturnType<typeof createWorkerHost> | null = null;
   let workerUrl: string | null = null;
   let building: Promise<ReturnType<typeof createWorkerHost>> | null = null;
+  let guardedHost: Promise<ReturnType<typeof createWorkerHost>> | null = null;
   let disposed = false;
+
+  /**
+   * The built host, with every acquiring call refused while paused.
+   *
+   * A `Proxy` rather than a hand-written wrapper because the hand-written one is a list of
+   * methods somebody has to keep current, and #107 is the issue about a gate that was current
+   * for the paths its author could see. Anything not in `ALLOWED_WHILE_PAUSED` is refused,
+   * including a method that does not exist yet.
+   */
+  function guarded(
+    built: ReturnType<typeof createWorkerHost>,
+  ): ReturnType<typeof createWorkerHost> {
+    return new Proxy(built, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver) as unknown;
+        if (typeof value !== "function" || typeof property !== "string") return value;
+        if (ALLOWED_WHILE_PAUSED.has(property)) return value.bind(target);
+        return (...args: unknown[]) => {
+          if (paused()) throw ENGINE_PAUSED;
+          return (value as (...rest: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+  }
 
   async function build() {
     // THE ORIGIN, BEFORE THE FETCH. `ENGINES.worker.url` is absolute and on the origin this
@@ -331,8 +385,15 @@ export function createToolHost(
     // means a guard flag set after an `await`, and two callers inside that window each get a
     // worker while only one is reachable.
     ensure() {
+      // FAIL CLOSED. Not "do not start the pump" -- refuse to hand anything back that could
+      // acquire an engine, so no path reaches one while an operation is running (#107).
+      if (paused()) return Promise.reject(ENGINE_PAUSED);
       building ??= build();
-      return building;
+      // MEMOISED LIKE THE BUILD ITSELF. A fresh wrapper per call would hand two callers inside
+      // the fetch window two different objects, which is exactly what `builds ONE host for
+      // callers that arrive together` exists to catch -- and it did catch it.
+      guardedHost ??= building.then((built) => guarded(built));
+      return guardedHost;
     },
     hasWorker: () => host?.hasWorker() ?? false,
     discardWorker: () => host?.discardWorker(),

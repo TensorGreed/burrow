@@ -648,7 +648,14 @@ about **four times in 580 runs**. With the strip suppressed on the same commit, 
 before it existed, **zero in 580**. Only the strip-bearing pages have ever failed.
 
 So the mechanism §7 warned about — a memory spike taking the whole tab — is reachable with this
-strip on a desktop browser, while a tab holds qpdf for the operation and PDFium for the tiles.
+strip on a desktop browser.
+
+**Corrected 2026-09-18: the mechanism is PDFium resident *while an operation runs*, not "a tab
+holding two engines".** The documents worker persists after an operation, so qpdf and PDFium are
+both resident whenever this strip draws at all — before a split and again afterwards. The
+withdrawal appeared to show otherwise only because a withdrawn strip never ran. What separates
+the failing case is an operation running while PDFium is still there, which is the window the
+fix in #107 removes.
 One iPhone surviving one document did not establish that it was not; it established that one
 device survived one document, which is what this record should have said and what the section
 above now has to be read against.

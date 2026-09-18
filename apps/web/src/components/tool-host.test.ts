@@ -9,7 +9,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ENGINE_UNAVAILABLE } from "../host/worker-host.js";
 import {
+  ALLOWED_WHILE_PAUSED,
   DOCUMENTS,
+  ENGINE_PAUSED,
   LIMITS,
   ORIGIN_MISMATCH,
   RENDER,
@@ -147,6 +149,109 @@ describe("the shared tool host", () => {
     expect(() => host.discardWorker()).not.toThrow();
     expect(() => host.reset()).not.toThrow();
     expect(() => host.dispose()).not.toThrow();
+  });
+});
+
+describe("a paused host refuses to acquire an engine", () => {
+  // #107: a tab may hold qpdf OR PDFium, never both. The strip releases its engine while an
+  // operation runs -- and the first two attempts at that gated one path each, in the component,
+  // and left the next one open. This is the gate in the host, where every caller passes.
+
+  it("refuses `ensure` while paused, by identity", async () => {
+    const { deps: d, release } = deps();
+    let paused = true;
+    const host = createToolHost(d, DOCUMENTS, { paused: () => paused });
+    release();
+
+    await expect(host.ensure()).rejects.toBe(ENGINE_PAUSED);
+
+    paused = false;
+    await expect(host.ensure()).resolves.toBeDefined();
+  });
+
+  it("refuses EVERY acquiring call on a host obtained before the pause", async () => {
+    // THE PATH THE COMPONENT ACTUALLY TOOK. `ensure()` refusing is not enough: a caller that
+    // already holds the host from before the pause can still call into it, which is how
+    // chromium re-fetched PDFium inside a running split after `ensure` was gated.
+    const { deps: d, release } = deps();
+    let paused = false;
+    const host = createToolHost(d, DOCUMENTS, { paused: () => paused });
+    release();
+    const built = await host.ensure();
+
+    paused = true;
+    // INDEXED THROUGH A RECORD VIEW rather than the typed surface: the point of this loop is
+    // to reach names the type does not necessarily carry, which is the same reason the wrapper
+    // refuses by default.
+    const surface = built as unknown as Record<string, unknown>;
+    for (const method of ["run", "runHeld", "heldIsStillReadable"]) {
+      const call = surface[method];
+      if (typeof call !== "function") continue;
+      expect(() => (call as () => unknown).call(built), `${method} was not refused`).toThrow();
+    }
+  });
+
+  it("refuses a method that does not exist yet, so a future caller inherits the refusal", () => {
+    // FAIL CLOSED, AND THIS IS THE ASSERTION THAT SAYS SO. The wrapper allows a named set and
+    // refuses everything else, so a method added to the worker host later is refused while
+    // paused until somebody puts it on the list deliberately. The alternative -- a list of
+    // what is refused -- is the shape that let #107 recur twice.
+    const { deps: d } = deps();
+    let paused = true;
+    const host = createToolHost(d, DOCUMENTS, { paused: () => paused });
+
+    // A stand-in for the method nobody has written: the wrapper is asked for a property the
+    // worker host does not have, and must not hand back something callable that acquires.
+    const future = "aMethodFromTheFuture";
+    expect(ALLOWED_WHILE_PAUSED.has(future), "the future method must not be allowlisted").toBe(
+      false,
+    );
+    expect(ALLOWED_WHILE_PAUSED.has("run"), "`run` must not be allowlisted either").toBe(false);
+
+    // And the allowlist is pinned, so widening it is a visible edit rather than a habit.
+    expect([...ALLOWED_WHILE_PAUSED].sort()).toEqual([
+      "discardWorker",
+      "dispose",
+      "hasWorker",
+      "reset",
+    ]);
+    void host;
+    paused = false;
+  });
+
+  it("releases the engine while paused rather than merely refusing to use it", async () => {
+    const { deps: d, release, urls } = deps();
+    let paused = false;
+    const host = createToolHost(d, DOCUMENTS, { paused: () => paused });
+    release();
+    await host.ensure();
+
+    paused = true;
+    // `discardWorker` is ALLOWED while paused, because releasing is the point of pausing. A
+    // gate that refused this would leave the engine resident, which is the failure it exists
+    // to prevent -- so this asserts it is callable and does not throw, rather than asserting
+    // a worker count: this harness spawns on first `run`, not on `ensure`.
+    expect(() => host.discardWorker(), "releasing must not be refused").not.toThrow();
+    expect(host.hasWorker(), "nothing may be held after a discard").toBe(false);
+    void urls;
+  });
+
+  it("does not stick: the gate lifts the moment the predicate goes false", async () => {
+    // A GATE THAT STICKS IS A STRIP THAT NEVER DRAWS, and it would pass #107's measurement bar
+    // for entirely the wrong reason -- zero failures because zero engines. The predicate is
+    // read per call rather than latched, so nothing can leave it true.
+    const { deps: d, release } = deps();
+    let paused = true;
+    const host = createToolHost(d, DOCUMENTS, { paused: () => paused });
+    release();
+
+    await expect(host.ensure()).rejects.toBe(ENGINE_PAUSED);
+    paused = false;
+    const built = await host.ensure();
+    expect(built, "the host must be usable again once the operation ends").toBeDefined();
+    // And an acquiring call goes through rather than throwing, which is the property that
+    // separates "the gate lifted" from "the gate is stuck and nothing ever draws again".
+    expect(() => built.hasWorker(), "an ordinary call must not be refused").not.toThrow();
   });
 });
 

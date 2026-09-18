@@ -33,7 +33,7 @@
   import { onDestroy } from "svelte";
 
   import { CANCELLED } from "../host/worker-host.js";
-  import { LIMITS, RENDER, createToolHost, hostKind } from "./tool-host.js";
+  import { ENGINE_PAUSED, LIMITS, RENDER, createToolHost, hostKind } from "./tool-host.js";
   import { evictable, outstanding as outstandingPages, releasedState } from "./strip-schedule.js";
   import type { TileState } from "./strip-schedule.js";
   import { LIVE_THUMBNAIL_WINDOW, THUMBNAIL_CSS_HEIGHT, thumbnailBox } from "./thumbnail-policy.js";
@@ -43,9 +43,26 @@
     file: File | null;
     /** Pages, once the document operation counted them. `null` or negative means no strip. */
     pageCount: number | null;
+    /**
+     * True while the tool is running an operation, so the strip must not hold an engine.
+     *
+     * **PDFIUM IS ABSENT WHILE AN OPERATION RUNS (#107)**, which is narrower than the claim
+     * this comment used to make and is the one the measurement supports.
+     *
+     * "One engine in the tab at a time" was wrong: the DOCUMENTS worker persists after an
+     * operation, so qpdf and PDFium are both resident whenever the strip draws at all -- before
+     * a split and again afterwards. The withdrawal appeared to prove otherwise only because a
+     * withdrawn strip never ran.
+     *
+     * What the pause achieves is that PDFium is not resident DURING an operation, which is the
+     * window where the spike happens: four failures in 580 runs with the strip mounted, zero in
+     * 580 without. The strip is the one that yields, because a thumbnail is an aid and the
+     * operation is what the person came for.
+     */
+    paused: boolean;
   }
 
-  const { file, pageCount }: Props = $props();
+  const { file, pageCount, paused }: Props = $props();
 
   /** One tile. `data` is held only while the tile is inside the live window. */
   interface Tile {
@@ -62,7 +79,7 @@
   /** True once the breaker has latched: the strip stops and says so, and the tool goes on. */
   let unavailable = $state(false);
 
-  const host = createToolHost(undefined, RENDER);
+  const host = createToolHost(undefined, RENDER, { paused: () => paused });
   const box = thumbnailBox(typeof window === "undefined" ? 1 : window.devicePixelRatio);
 
   /** Which tiles the viewport has asked for, most recent last. */
@@ -155,8 +172,30 @@
    * second request would queue behind this one carrying a deadline it did not spend. ADR 0015
    * §2a; the host queues, and this simply does not ask twice.
    */
+  // THE RELEASE, AND IT IS THE WHOLE OF #107's FIX ON THIS SIDE.
+  //
+  // `discardWorker()` terminates the render worker, so PDFium's heap goes with it rather than
+  // sitting resident while qpdf does the operation. The tiles already drawn are `ImageData` on
+  // the main thread and are untouched -- what is released is the engine, not the pictures, so
+  // a person watching sees nothing change.
+  //
+  // WHAT THIS GUARANTEES, PRECISELY: the strip stops asking and its engine is released when an
+  // operation starts. It does NOT guarantee that no instant exists where both are resident --
+  // the discard runs in an effect after the flag changes, and a render already inside PDFium
+  // ends when the worker is terminated rather than before. The measurement in #107 is what
+  // says whether that residue matters; the claim here is not stronger than the mechanism.
+  $effect(() => {
+    if (paused) {
+      host.discardWorker();
+      return;
+    }
+    // Resuming is just asking again: the viewport's wants are still recorded, and tiles that
+    // survived are still drawn.
+    void pump();
+  });
+
   async function pump(): Promise<void> {
-    if (running || unavailable) return;
+    if (running || unavailable || paused) return;
     const chosen = file;
     if (!chosen) return;
     running = true;
@@ -167,11 +206,17 @@
       // and retains nothing. Three ordinary things leave work here: a page was refused and the
       // ones after it are still wanted, the reply asked for the worker to be recycled, or the
       // viewport moved while a request was in flight.
-      while (mine === generation && !unavailable) {
+      while (mine === generation && !unavailable && !paused) {
         const pages = outstanding();
         if (pages.length === 0) break;
         if (!(await drawRun(chosen, pages, mine))) break;
       }
+    } catch (error) {
+      // A REFUSAL FROM THE GATE IS NOT A FAILURE. `ensure()` and every acquiring call reject
+      // with `ENGINE_PAUSED` while an operation is running (#107) -- by identity, never by
+      // reading the value. The pages stay `waiting`; the effect below asks again when the
+      // operation ends. Anything else is rethrown rather than swallowed.
+      if (error !== ENGINE_PAUSED) throw error;
     } finally {
       running = false;
     }
@@ -183,8 +228,15 @@
       // THE ENGINES START HERE AND NOWHERE EARLIER. A page that never scrolls a strip into
       // view never downloads PDFium -- which is ADR 0026's promise, kept at the last possible
       // moment rather than at the first convenient one.
+      // ACQUISITION IS GATED, NOT JUST THE PUMP, and this line is the difference between the
+      // two versions of #107's fix. `pump` refuses to start while paused; a request that was
+      // ALREADY past that point still awaited `ensure()`, and `run` then spawned a fresh worker
+      // -- re-fetching PDFium in the middle of the operation the pause exists to protect.
+      // Measured: chromium fetched `pdfium.wasm` inside the window while firefox and webkit did
+      // not, which is what a race looks like when only one engine is fast enough to lose it.
+      if (paused) return false;
       const h = await host.ensure();
-      if (mine !== generation) return false;
+      if (mine !== generation || paused) return false;
 
       const reply = await h.run(
         {
@@ -206,6 +258,13 @@
       );
       if (mine !== generation) return false;
       if (!reply.ok && reply.kind === CANCELLED) return false;
+
+      // A WORKER THIS COMPONENT ITSELF DISCARDED IS NOT A PAGE THAT FAILED. Pausing releases
+      // the render worker mid-flight (#107), which settles this request exactly as a crash
+      // would -- and the inference below would then blame whichever page was in the queue and
+      // mark it refused for as long as the file stayed chosen. The pages stay `waiting`; the
+      // next round after the operation asks for them again.
+      if (paused) return false;
 
       if (!reply.ok) {
         if (hostKind(reply.kind) === "EngineUnavailable") {
