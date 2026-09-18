@@ -515,8 +515,24 @@ jobs:
           for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
+            # REDACTED, NEVER RAW. cargo-fuzz prints the ENTIRE crashing input as a
+            # decimal byte array (``Output of `std::fmt::Debug`:``, no size limit) and
+            # libFuzzer prints hex, ASCII and Base64 of any unit under 256 bytes. On a public
+            # repository that publishes a working reproducer in the job log -- measured: all
+            # 16,208 bytes of #119's input were recoverable from one line of the 2026-09-18
+            # nightly log. `tools/redact-fuzz-log.py` keeps an ALLOWLIST of lines known to
+            # carry no input bytes and drops the rest.
+            #
+            # Written to a file and redacted afterwards rather than streamed through process
+            # substitution: a `> >(...)` subshell is not guaranteed to flush before the step
+            # ends, and a security control must not depend on that. The cost is no live output
+            # during the run; the full log stays on the runner for the next step and dies with it.
+            status=0
             cargo +nightly fuzz run "$target" -- \
-              -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+              -max_total_time=60 -timeout=10 -rss_limit_mb=2048 \
+              > "$RUNNER_TEMP/fuzz-$target.log" 2>&1 || status=$?
+            python3 ../tools/redact-fuzz-log.py < "$RUNNER_TEMP/fuzz-$target.log"
+            [ "$status" -eq 0 ] || exit "$status"
           done
 
       # qpdf is built FROM SOURCE, so unlike PDFium it can be instrumented -- and
@@ -540,8 +556,24 @@ jobs:
           for target in qpdf_check rotate reorder merge split compress; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
+            # REDACTED, NEVER RAW. cargo-fuzz prints the ENTIRE crashing input as a
+            # decimal byte array (``Output of `std::fmt::Debug`:``, no size limit) and
+            # libFuzzer prints hex, ASCII and Base64 of any unit under 256 bytes. On a public
+            # repository that publishes a working reproducer in the job log -- measured: all
+            # 16,208 bytes of #119's input were recoverable from one line of the 2026-09-18
+            # nightly log. `tools/redact-fuzz-log.py` keeps an ALLOWLIST of lines known to
+            # carry no input bytes and drops the rest.
+            #
+            # Written to a file and redacted afterwards rather than streamed through process
+            # substitution: a `> >(...)` subshell is not guaranteed to flush before the step
+            # ends, and a security control must not depend on that. The cost is no live output
+            # during the run; the full log stays on the runner for the next step and dies with it.
+            status=0
             cargo +nightly fuzz run "$target" -- \
-              -max_total_time=60 -timeout=10 -rss_limit_mb=2048
+              -max_total_time=60 -timeout=10 -rss_limit_mb=2048 \
+              > "$RUNNER_TEMP/fuzz-$target.log" 2>&1 || status=$?
+            python3 ../tools/redact-fuzz-log.py < "$RUNNER_TEMP/fuzz-$target.log"
+            [ "$status" -eq 0 ] || exit "$status"
           done
 
       # EVERY TARGET IN fuzz/Cargo.toml MUST BE NAMED IN A STEP ABOVE, and nothing enforced
@@ -734,6 +766,21 @@ jobs:
       #
       # In `deny`, like its neighbours: it reads no vendor tree and generates its fixture in
       # memory, so it runs on a clean checkout.
+      # A PUBLIC REPOSITORY MUST NOT PUBLISH A FUZZING REPRODUCER. `fuzz-nightly.yml` did, for
+      # four days, for two unpatched qpdf use-after-frees (#62) whose minimised input is
+      # deliberately held outside this repository. The step was written in good faith to solve a
+      # real problem -- a crash is only useful if the input survives the runner -- and the answer
+      # is that it survives privately. A comment would not have prevented the original, because
+      # the original was not written by someone ignoring one.
+      #
+      # In `deny`, like its neighbours: it reads the committed workflows and nothing else.
+      - name: No workflow publishes a fuzzing reproducer
+        run: |
+          python3 tools/check-no-published-reproducers.py
+          tools/test-check-no-published-reproducers.sh
+          python3 tools/redact-fuzz-log.py --probe
+          tools/test-redact-fuzz-log.sh
+
       - name: The release notes carry the verification command
         run: |
           python3 tools/check-release-notes.py --probe

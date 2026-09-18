@@ -228,3 +228,44 @@ budget the result is a typed `LimitExceeded` the page explains, not a wrong answ
 - No mitigation is claimed for §3b. The engine's own freed memory is still there.
 - The wasm sandbox is doing the heavy lifting, and it is not ours — it is the platform's.
 - Nothing here reduces the case for the upstream fix.
+
+## 9. A third finding, 2026-09-18: unbounded recursion, not memory-unsafety (#119)
+
+**The advisory this file supports now carries three findings, not two.** The draft is held
+outside the repository, so it is not edited here; what follows is what has to be added to it, so
+that the requirement is recorded somewhere rather than remembered.
+
+**The finding.** A stack overflow in `QPDF::Doc::Pages::pushInheritedAttributesToPageInternal`,
+self-recursing without bound — roughly 250 identical frames before the guard page. Reached from
+an ordinary API call: `pushInheritedAttributesToPage`, which every operation that touches a page
+tree invokes. Confirmed on `x86_64` in CI and reproduced on `aarch64` locally, so it is not
+architecture-specific. Found by the seeded `rotate` target on the 2026-09-18 nightly.
+
+**Why it belongs in the same advisory and not a separate one.** Same engine, same pinned version,
+same entry point — a document handed to `open`. Upstream reading one report about qpdf 12.4.1's
+page-tree handling should see all three defects in it, and two of the three are already in the
+draft. It should go in **even though there is no minimised input**: `cargo fuzz tmin` failed to
+reduce below 16,208 bytes in 255 runs, and a maintainer with the function name, the recursion
+shape and the entry point can look at the code without one. Withholding a finding until it is
+tidy is how findings get lost.
+
+**It is a different class, and the advisory must say so rather than filing it under the UAFs.**
+§§1-8 above are about *memory-unsafety*, where the danger is a silent wrong read — the whole
+argument of §3b is about what sits in the heap next to a freed object. None of that applies here.
+This one crashes, always, loudly, and reads no memory it should not. In wasm it is a trap inside
+the module, which the boundary in §2 contains exactly as it contains the UAFs; natively it is a
+hard crash. For once the failure mode is the better one, and the advisory should not imply the
+severity of the other two.
+
+**What the repository's existing guard does not cover.** `core/burrow-engines/tests/structure.rs`
+proves `parser_max_nesting` stops a stack overflow from a deeply nested *object*. That bounds the
+lexer's recursion. This recursion walks `/Kids` through the page tree and `parser_max_nesting`
+does not reach it. The test is correct; its scope is narrower than its name suggests to someone
+scanning for "are we safe from stack overflows", and #119 carries the action to say so in the
+test itself.
+
+**Not established, and recorded so nobody re-derives it.** The trigger is *not* simply a cyclic
+`/Kids`: a hand-built 329-byte PDF whose `/Kids` contains itself is caught cleanly by qpdf
+(`Loop detected in /Pages structure (getAllPages)`) and does not crash the target. That was the
+first hypothesis and it is wrong. Either the loop check is not on this path, or the crashing
+shape is something else.

@@ -6,7 +6,10 @@ name: fuzz (nightly)
 #
 # Longer runs come later on the self-hosted linux-arm64 machine, with a persistent corpus.
 # This workflow deliberately starts from an empty corpus each night — it is a regression
-# guard, not a campaign — so a finding here is reproducible from the artifact alone.
+# guard, not a campaign. A finding here is NOT reproducible from anything this job publishes:
+# the crashing input stays on the runner (see "Describe the crash without publishing it"), and
+# reproducing means re-running the target locally against a seeded corpus. That is deliberate --
+# this repository is public and #62's defects are unpatched upstream.
 
 on:
   schedule:
@@ -92,13 +95,15 @@ jobs:
       #
       # `merge` and `split` are quarantined out of the pull-request job because seeded they
       # reproduce #62 and #61 respectively. Here they are seeded like everything else, because
-      # a nightly crash is a report rather than a blocked merge -- and the artifact upload
-      # below is what makes it one.
+      # a nightly crash is a report rather than a blocked merge. What makes it a report is the
+      # step below, which names the defect -- the sanitiser's verdict and the symbolised frame --
+      # without publishing the input that produced it.
       - name: Seed every corpus from the committed fixtures
         run: python3 tools/seed-fuzz-corpus.py
 
       # See fuzz/README.md for why each of these is required rather than tuning.
       - name: fuzz ${{ matrix.target }} for 10 minutes
+        id: fuzz
         working-directory: fuzz
         env:
           ASAN_OPTIONS: detect_leaks=0
@@ -134,14 +139,141 @@ jobs:
           else
             echo "${{ matrix.target }} does not drive qpdf; plain build"
           fi
+          # THE OUTPUT IS KEPT so the next step can say WHICH defect this was without
+          # publishing the input. Redirected and then printed, rather than piped through `tee`:
+          # CLAUDE.md's rule is that a command whose status you need never goes on the left of a
+          # pipe, and this status is the job's verdict.
+          # STREAMED AND KEPT. Process substitution rather than a pipe: the status stays
+          # cargo's (CLAUDE.md's rule is about the LEFT of a pipe, and there is no pipe here),
+          # the output still appears live during a ten-minute step, and the log survives a
+          # cancellation -- a `> file` plus a later `cat` loses everything if the job is killed.
+          # REDACTED, NEVER RAW -- see tools/redact-fuzz-log.py. cargo-fuzz prints the whole
+          # crashing input as a decimal byte array with no size limit, and libFuzzer prints hex,
+          # ASCII and Base64 of any unit under 256 bytes. On a public repository that is the
+          # reproducer, published. Measured: all 16,208 bytes of #119's input were recoverable
+          # from one line of this job's 2026-09-18 log.
+          #
+          # File first, redact second, rather than process substitution: a `> >(...)` subshell
+          # is not guaranteed to flush before the step ends, and a security control must not
+          # rest on that. Live output is the cost; the unredacted log stays on the runner for
+          # the next step and dies with it.
+          status=0
           cargo +nightly fuzz run ${{ matrix.target }} -- \
-            -max_total_time=600 -timeout=10 -rss_limit_mb=2048
+            -max_total_time=600 -timeout=10 -rss_limit_mb=2048 \
+            > "$RUNNER_TEMP/fuzz.log" 2>&1 || status=$?
+          python3 ../tools/redact-fuzz-log.py < "$RUNNER_TEMP/fuzz.log"
+          exit $status
 
-      # A crash is only useful if the input survives the runner.
-      - name: Upload crash artifacts
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: fuzz-artifacts-${{ matrix.target }}
-          path: fuzz/artifacts/
-          if-no-files-found: ignore
+      # THE SIGNAL, NEVER THE PAYLOAD. This step used to be `upload-artifact` over
+      # `fuzz/artifacts/`, and on a PUBLIC repository that published a working reproducer for
+      # every crash it found -- including, for five consecutive nights, the two unpatched qpdf
+      # use-after-frees of #62, whose own text says "no reproducer is attached, here or anywhere
+      # in this repository, and none should be added until upstream has had the chance to fix
+      # it". The minimised input is deliberately held outside the repository; CI was publishing
+      # an unminimised one beside it, downloadable by anyone with `gh run download`.
+      #
+      # What a reader of a red nightly actually needs is which defect it is, not the bytes that
+      # trigger it: the sanitiser's verdict, the frame it happened in, and a hash to tell one
+      # crash from another across nights. That is what this emits. The input stays on the runner
+      # and dies with it.
+      #
+      # IF A REPRODUCER IS EVER NEEDED for debugging, it is retrieved deliberately and privately
+      # -- re-run the target locally against the seeded corpus, or route it to the same place
+      # #62's minimised input already lives. It does not travel through a public artifact store
+      # as a side effect of a job failing.
+      - name: Describe the crash without publishing it
+        # ONLY WHEN THE FUZZ STEP ITSELF FAILED. `if: failure()` alone is true when checkout,
+        # the engine build, the checksum re-verification, cargo-fuzz's install or the corpus
+        # seeding failed -- and this step would then announce "crash", with a verdict, for a
+        # build break. A report that is honest only in the case it was written for is a report
+        # that misleads in every other case.
+        if: failure() && steps.fuzz.outcome == 'failure'
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/fuzz.log"
+
+          {
+            echo "### ${{ matrix.target }}"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # DID THE TARGET EVEN RUN? A missing log, or one with no sanitiser or libFuzzer marker
+          # in it, means the step died before fuzzing -- a compile error in the target, a linker
+          # failure against the instrumented archive. That is not a crash and must not be
+          # reported as one.
+          if [ ! -s "$log" ] || ! grep -qE 'ERROR: (AddressSanitizer|libFuzzer)|SUMMARY:' "$log"; then
+            {
+              echo "The fuzz step failed **without producing a sanitiser report**: this is a"
+              echo "build or infrastructure failure, not a crash. Read the step log."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "no sanitiser report; not describing this as a crash"
+            exit 0
+          fi
+
+          {
+            echo "A crash. The input is **not published**: this repository is public and #62's"
+            echo "defects are unpatched upstream. Verdict and location only; reproduce locally"
+            echo "against a seeded corpus."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # THE SANITISER'S VERDICT, AS THE WHOLE LINE. A character class was wrong here twice:
+          # `[a-z- ]` read `z- ` as a range and grep exited 2 with "Invalid range end" (hidden by
+          # a `2>/dev/null`, so every crash reported as "timeout or OOM"), and `[a-z-]` then
+          # silently dropped the UPPERCASE verdicts -- `SEGV` and `DEADLYSIGNAL`, which is how a
+          # stack overflow surfaces when ASan's own detector does not engage. That is #119's
+          # class, reported as a timeout. Take the rest of the line and trim it instead of
+          # trying to spell the set of verdicts.
+          verdict="$(grep -hoE 'ERROR: (AddressSanitizer|libFuzzer): .*' "$log" \
+            | head -1 | cut -c1-120)"
+          echo "- verdict: \`${verdict:-unknown (marker present but unparsed; read the log)}\`" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          # AND WHERE. Two shapes: a symbolised report (` in QPDF::...`), and raw offsets into
+          # the target binary, which is what a reader would otherwise download the input to
+          # resolve. Prefer the symbols when they are there. Either way this publishes a NAME,
+          # never a byte of input.
+          frame="$(grep -hoE ' in [A-Za-z_][A-Za-z0-9_:]*' "$log" | sed 's/^ in //' \
+            | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
+          if [ -n "${frame:-}" ]; then
+            echo "- hottest frame: \`$frame\` (from a symbolised report)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # `fuzz/target`, not `target`: this step runs at the repository root while the
+            # previous one runs in `fuzz/`, and cargo-fuzz writes to the fuzz crate's own target
+            # directory. The first version looked in the wrong place, so `addr2line` never ran
+            # and the step reported "no offset in the report" -- a claim about the log -- when
+            # the offset was there and the binary was not.
+            binary="fuzz/target/$(uname -m)-unknown-linux-gnu/release/${{ matrix.target }}"
+            offset="$(grep -hoE "${{ matrix.target }}\\+0x[0-9a-f]+" "$log" \
+              | sed 's/.*+//' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
+            if [ -z "${offset:-}" ]; then
+              echo "- hottest frame: no offset in the report and no symbols either" \
+                >> "$GITHUB_STEP_SUMMARY"
+            elif [ ! -f "$binary" ]; then
+              # LOUD, because it means this step is inert: the report had what it needed and
+              # the binary to resolve it against was missing.
+              echo "- hottest frame: offset \`$offset\`, but \`$binary\` is NOT on disk -- this" \
+                "step could not symbolise and is not doing its job" >> "$GITHUB_STEP_SUMMARY"
+            else
+              resolved="$(addr2line -f -C -e "$binary" "$offset" 2>/dev/null | head -1)"
+              echo "- hottest frame (\`$offset\`): \`${resolved:-unresolved}\`" \
+                >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          # THE INPUT'S FINGERPRINT, so one night's crash can be told from another's without
+          # anyone holding the bytes.
+          found=0
+          for f in fuzz/artifacts/*/*; do
+            [ -f "$f" ] || continue
+            found=$((found + 1))
+            {
+              echo "- input sha256: \`$(sha256sum "$f" | cut -d' ' -f1)\`"
+              echo "  - size: $(wc -c < "$f") bytes, NOT published"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "- no artifact on disk: libFuzzer died without writing one (timeout or OOM)" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "$found crash input(s) hashed, none published"
