@@ -291,12 +291,18 @@ for the same defect, so hashing reproducers would match nothing — and the ledg
 to carry reproducers, which on a public repository is the incident recorded in
 `docs/security/exposure-2026-09-14-published-reproducers.md`.
 
-**It was replayed against real data before being trusted — once, by hand, and not re-runnable.**
-The three crash logs are deliberately not committed (they are reproducers, and
-`docs/security/exposure-2026-09-14-published-reproducers.md` is why), and the ledger state the
-replay used — #62 entered, #119 absent — no longer exists. So this is a recorded measurement
-rather than a control a future reader can re-run, and it is written down here precisely because
-it cannot be reproduced from the repository. With the ledger as it stood on
+**It was replayed against real data before being trusted — once, by hand.** The three crash logs
+are deliberately not committed (they are reproducers, and
+`docs/security/exposure-2026-09-14-published-reproducers.md` is why), so this is a recorded
+measurement rather than a control a future reader can re-run, and it is written down here for
+that reason.
+
+*[Amended 2026-09-18: the other half of that caveat is no longer true. It said the ledger state
+the replay used — #62 entered, #119 absent — "no longer exists". It does: #119's entry was
+deliberately removed, so the committed ledger is now exactly the state the replay describes. Only
+the logs are missing, which is the half that cannot be fixed without publishing reproducers.]*
+
+With the ledger as it stood on
 2026-09-17 — #62 entered, #119 not yet filed — the three crash inputs from the 2026-09-18 nightly
 classify as: `merge` known (#62), `reorder` known (#62), **`rotate` UNMATCHED, exit 1**. That is
 the night #119 appeared, and the mechanism fails the run on it while staying quiet about the two

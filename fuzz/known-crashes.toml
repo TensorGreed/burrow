@@ -14,9 +14,14 @@
 # THE KEY IS THE PAIR (verdict, frame), AND THAT IS NOT A DETAIL.
 # `QPDF::Doc::Pages::pushInheritedAttributesToPageInternal` appears in the stack of BOTH #62's
 # page-tree use-after-free and #119's stack overflow -- measured, in this repository, from two
-# reproductions. Keyed on the frame alone, adding #62 would have silenced #119. Keyed on the
-# verdict alone, every use-after-free anywhere in qpdf would match. Only the pair distinguishes
-# them.
+# reproductions. Keyed on the frame alone, the #62 entry below would silence #119 outright.
+# Keyed on the verdict alone, every use-after-free anywhere in qpdf would match. Only the pair
+# distinguishes them.
+#
+# THAT IS STILL LIVE, EVEN THOUGH #119 IS NOT LISTED HERE. #119 is deliberately absent -- see the
+# note at the end of this header -- so the frame is currently shared between a listed entry and
+# an unlisted defect, which is the more dangerous direction: it is the #62 entry's job NOT to
+# absorb a stack overflow, and only the verdict half stops it. Do not "simplify" the matching.
 #
 # NOT KEYED ON THE INPUT. Hashing reproducers would match nothing: every night's mutation
 # produces different bytes for the same defect. The pair is stable across nights; the bytes are
@@ -41,6 +46,18 @@
 #
 # ADDING AN ENTRY IS A DECISION. It means "this crash is understood, filed, and owned". It is not
 # a way to make a red nightly go green.
+#
+# WHY #119 IS NOT HERE, THOUGH IT IS FILED AND OWNED. Being filed makes an entry PERMISSIBLE, not
+# required. #119 is an unfixed defect in a library the shipped web build embeds, and it has not
+# yet reached upstream; listing it would make the nightly green over a live defect nobody has
+# acted on. Decided deliberately: it stays out until it is fixed, or until upstream has it and
+# the exposure is a known quantity.
+#
+# The cost is accepted and stated: on any night `rotate` reproduces it, this nightly is RED. That
+# is not the old permanently-red problem -- the run now says which crash and where, the #62
+# entries keep `merge` and `reorder` green, and a new defect in any target still flips that
+# target from green to red. What is lost is only the ability to ignore rotate's red, which is
+# the point of leaving it out.
 
 [[known]]
 issue = 62
@@ -59,11 +76,3 @@ note = """The page-tree caching use-after-free, reached by OPENING a document --
 qpdf-driving target can hit it, which is why the failing set shifts from night to night. The
 stack recorded in ADR 0025 is this one."""
 
-[[known]]
-issue = 119
-verdict = "stack-overflow"
-frame = "QPDF::Doc::Pages::pushInheritedAttributesToPageInternal"
-reached_from = ["rotate"]
-note = """Unbounded recursion through /Kids, found 2026-09-18. Shares its frame with the entry
-above and is a different defect -- it is the reason this file is keyed on the pair. It was
-invisible on the night it appeared because the nightly was already red."""
