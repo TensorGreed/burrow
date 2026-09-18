@@ -242,3 +242,45 @@ and the exceptions list is empty by design.
 ADRs entirely. Rejected: it would admit licences with obligations we have not read, and the
 whole value of the constraint is that someone has read each one. The admission test gives
 most of the convenience without giving up the review.
+
+## Amendment, 2026-09-18: the SBOM exists, and it checks this file rather than restating it
+
+The body above says this manifest "is also the input for M1's SBOM" and that an SBOM covering
+only Rust crates "would be actively misleading — which is why `.github/workflows/release.yml`
+still refuses to run." **That reason is discharged.** `tools/make-sbom.py` now generates
+`sbom/burrow.cdx.json` from both halves of the dependency graph and CI verifies it on every run;
+`release.yml` is still a stub, but for the unrelated reason that nothing publishes a release
+artifact yet, not because an SBOM would mislead. The decision this ADR records — the allowlist,
+and that adding to it needs an ADR — is unchanged.
+
+Two things the SBOM adds that this file's own limits section says it cannot supply on its own.
+
+**It carries scope rather than flattening it.** The first version of the generator emitted every
+entry here as CycloneDX `scope: "required"`, which published `qtest` — `test_only = true`,
+Artistic-2.0, never in a shipped artifact — as a component burrow *requires* under a licence this
+allowlist forbids. `tools/check-engine-licences.py` exempts `test_only` for exactly the reason
+recorded beside that entry, and the SBOM now does the same: `test_only` maps to `excluded`,
+`linked = false` to `optional`, and both survive as properties. Over-declaring provenance is the
+safe direction; over-declaring a licence obligation is not, and the primary consumer of a
+CycloneDX document is a licence-policy scan.
+
+**It makes `linked_in` load-bearing, for part of the file.** The limits section above says this
+file "cannot detect a component nobody declared" and still needs a periodic audit. That is now
+false for one artifact and eight components, and still true for everything else — the scope is
+written out here rather than left to be inferred, because a review measured two separate ways the
+gate could switch itself off while the claim stayed the same. For the **native PDFium artifact**,
+for the **eight components the detector fingerprints**: `make-sbom.py --check` compares each native artifact's `linked_in` set against
+symbol inspection and requires exact equality — measured at 8 of 8 on `libpdfium.so` before the
+gate was written — so a component in the binary and absent from this file, or claimed in this
+file and absent from the binary, fails CI. For *wasm* artifacts it remains true: the module's
+names are stripped, strings are the only signal, and `lcms` and `libjpeg` are genuinely
+undetectable in `pdfium.wasm` though they are linked into it. Those divergences are reported by
+name rather than gated, because failing there would be failing on a limit of the scanner.
+
+**What is still ungated, and therefore still the audit's job.** Fifteen of the twenty-three
+components have no fingerprint at all — `pdfium` itself, abseil-cpp, fast_float, the LLVM
+runtimes, qpdf, sphlib sha2, rijndael, the Emscripten runtime among them — so their `linked_in`
+lists are verified by nothing. Nine of the ten declared artifacts are not scanned: the static
+archives (`libqpdf.a`, `libz.a`, `libjpeg.a`) and the fuzz build never reach the detector. The
+gate narrows the periodic audit; it does not discharge it, and this ADR's limits section stands
+for everything named in this paragraph.

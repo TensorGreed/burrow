@@ -96,7 +96,7 @@ describe("the page-picture strip", () => {
     // THE CALL, NOT THE IMPORT. `toContain("RENDER")` was satisfied by the import line alone,
     // so swapping the component onto the DOCUMENTS bundle left every test green -- a strip
     // that asked qpdf to render. Found by code review, with that swap run.
-    expect(source).toMatch(/createToolHost\([^)]*,\s*RENDER\)/);
+    expect(source).toMatch(/createToolHost\([^)]*,\s*RENDER[,)]/);
     expect(source).toContain("host.ensure()");
   });
 

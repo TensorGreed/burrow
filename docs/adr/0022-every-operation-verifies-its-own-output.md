@@ -42,6 +42,13 @@ looks right is a leak; it is not the only one where it is data loss.
 
 **Every operation verifies its own output before returning it, through one shared step.**
 
+**What that guarantees, precisely — added 2026-09-17 after it was measured not to be the
+stronger thing this record read as:** *the bytes we produced match what we believed when we
+produced them.* **Not** *the output matches the document you gave us.* The difference is the
+input side: every promise below is computed from the operation's OWN reading of its input, so a
+wrong reading is compared against itself. See the fifth property in *The shape*, the residue at
+the top of *What it cannot detect*, and the [#111 amendment](#amendment-2026-09-17-111-the-check-reads-its-promise-from-the-source-it-is-checking).
+
 ```
 core/burrow-ops/src/verify.rs
 ```
@@ -91,6 +98,20 @@ Four properties are load-bearing and each exists for a reason already paid for e
   "fresh" does and does not mean per platform: natively a new `QPDF`; on the web a new
   `qpdf_data` **in the same WebAssembly module**, so it is a fresh parse and a fresh page tree
   over a shared heap, and a heap-wide corruption is not what it catches.
+
+- **The PROMISE is read from the operation's own source, and that is the one property here
+  that is not independent.** Every `Expected` value is computed from the input as the operation
+  read it — `rotate` and `reorder` and `compress` from the source handle, `split` from a sweep
+  over its own source, `merge` from the running totals of the assembly it is building. So the
+  four properties above make the **output** side a neutral witness, and nothing makes the input
+  side one. A reading that was wrong before the operation started is the reading the check
+  compares against.
+
+  This was not stated when the record landed, and the record read as the stronger guarantee for
+  every operation until #111 measured it. `Expected::Merged`'s own rustdoc contains the argument
+  — it declines to take a rotation vector from the assembly because *"that is the engine state
+  that produced the output, so it is the instance agreeing with itself"* — and then takes its
+  page counts from exactly there. The reasoning was present and applied to one field.
 
 **The freshness is free and the measurement says so** — see *Consequences*.
 
@@ -160,9 +181,11 @@ one from *that is not a thing you can ask for*.
 ## What it can detect
 
 - The output is **not a document** — truncated, empty, or unopenable.
-- The output has **the wrong number of pages**. That is #61 exactly: opened 5, emitted 4,
-  refused. It is also what a copier defect that dropped or duplicated an object would most
-  plausibly produce, and what a partition bug in `split` produces.
+- The output has **a different number of pages than the operation read going in**. That is #61
+  exactly: opened 5, emitted 4, refused. It is also what a copier defect that dropped or
+  duplicated an object would most plausibly produce, and what a partition bug in `split`
+  produces. **"Than the operation read going in" is load-bearing and was missing here**: opened
+  5 and emitted 5 passes, on a document that has six — see the first residue below.
 - An operation whose engine **silently did nothing** where the page count was supposed to
   change — a merge that returned one input.
 - **A turn applied to a page nobody named**, and **a permutation that is not the one asked
@@ -174,6 +197,14 @@ one from *that is not a thing you can ask for*.
 This is the half that matters, because a verifier nobody has bounded is a verifier people
 over-trust.
 
+- **A page count that was already wrong when the operation read it.** THE LARGEST RESIDUE, and
+  the one this record did not state for the whole of its life until #111. The promise is the
+  operation's own reading; the check re-reads the output through a fresh engine and compares the
+  two. If the input reading dropped a page, the output has the same missing page, the two agree,
+  and the operation reports success. Measured: `five-pages-or-six.pdf` declares six pages, a
+  textual walk and PDFium both read six, qpdf reads five, and a split emits 2 + 3 = five pages
+  and passes this check. **Every operation carrying a page count inherits it**, which is all five.
+  `a_split_keeps_every_page_the_document_declares` states the property and is `#[ignore]`d.
 - **Wrong content on a right-numbered page.** A page displaying the wrong thing, a `/MediaBox`
   from another document, an inherited attribute resolved wrongly — all invisible to a page count
   and to a rotation vector alike. The copier defect in #62, if it ever produced a silent wrong output rather than the
@@ -399,3 +430,45 @@ operation's own source into the one feature where a mistake leaks secrets is the
 property and is `#[ignore]`d with its reason, the way #61's own reproduction was: asserting five
 would turn a known hole into recorded correct behaviour. The conformance case records what both
 engines actually say, so the day either changes is loud.
+
+### The fix was attempted, and what it ran into (2026-09-18)
+
+**A second call to the same engine is not a second reading**, and this is the clearest
+demonstration of it we have.
+
+The design was: read the page tree's `/Count` — the document's own declaration — through the
+object seam, compare it with the page list the engine resolved, and refuse on disagreement. It
+was built and wired into `open_document`, the funnel `rotate`, `reorder`, `compress` and
+`split` all pass through, so one check covered every operation. It ran on every operation and
+**refused nothing**: on `five-pages-or-six.pdf` it read a declared **5** against a resolved
+**5**, on a document whose file says six.
+
+**qpdf repairs the page tree when it resolves it, `/Count` included** — and the only entry into
+the object graph from that seam is `page(0)`, so *indexing a page is what triggers the repair*.
+Reading the declaration first does not help, because reading it goes through the same door.
+There is no ordering that gets in front of it; the two readings converge by construction.
+
+So independence has to be **structural** — a different path to the data — rather than a second
+call to the same engine, which returns the same repaired model however early it is made.
+
+**The declaration is genuinely there.** `qpdf --show-object=2` on that fixture, which never
+touches the page list, prints `<< /Count 6 /Kids [...six...] /Type /Pages >>`. It is reachable
+only through the trailer, and that is where this stops.
+
+#### Three routes, each blocked by a decision this project has deferred
+
+| route | blocked by | the decision it needs |
+|---|---|---|
+| a structural walk of the page tree, outside the engine | in an ordinary 11 MB PDF 1.6 file, `/Type/Pages`, `/Type/Page` and `/Count` appear **zero** times in the raw bytes — the tree is inside 67 object streams | an inflater, [#24](https://github.com/TensorGreed/burrow/issues/24) |
+| ask the other engine | a tab holding qpdf and PDFium at once loses the tab on WebKit | [#107](https://github.com/TensorGreed/burrow/issues/107) |
+| read the trailer through qpdf | `qpdf_get_root` and `qpdf_get_trailer` are both untrapped, and both **resolve an object** | weakening [ADR 0013](0013-qpdf-error-trapping.md)'s bar |
+
+**The third is refused rather than deferred.** `engines/qpdf-untrapped-accepted.toml` admits a
+function only when it "never touches the PDF's bytes, never resolves an object"; returning an
+object handle is exactly what these two do. That bar exists because a **356-byte PDF killed the
+process** through an untrapped function. **A page-count check is not worth trading a crash
+defence for**, and `ffi.rs` already records these two functions under *"Two functions burrow
+wanted and may NOT have, recorded so nobody looks again"* — which was accurate.
+
+So #111 stays open, and it is not "add a check": **closing it requires taking one of the three
+decisions above**, none of which belongs to a verification change.

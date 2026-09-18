@@ -1,5 +1,12 @@
 //! What an operation promised, checked against what it produced.
 //!
+//! **What this guarantees, precisely: the bytes an operation produced match what it believed
+//! when it produced them. NOT that the output matches the document the caller gave it.** Every
+//! `Expected` value below is computed from the operation's own reading of its input, so a
+//! reading that was already wrong is compared against itself and agrees. The output side is a
+//! neutral witness; the input side is not, and nothing here makes it one. See the fourth
+//! property below and `#111`.
+//!
 //! [ADR 0022](../../../docs/adr/0022-every-operation-verifies-its-own-output.md). An operation
 //! here does not return bytes; it returns bytes **that have been checked**, and this is the
 //! last thing between the engine and the caller.
@@ -10,7 +17,7 @@
 //! `output` is not in scope. A link that only resolves in the crate it was written in is a
 //! `cargo doc` failure in the crate that re-exports it, which is how CI found this.
 //!
-//! # Three properties, each load-bearing
+//! # Four properties, and the fourth is the one that is NOT independent
 //!
 //! - **It runs on the emitted bytes**, not on a source, a copy, or the engine's in-memory
 //!   state. That is ADR 0006's R10 exactly, and it is why `output` takes `&[u8]` rather than
@@ -22,6 +29,13 @@
 //!   handle that has just been edited is not a neutral witness to its own output: it holds a
 //!   parsed page tree it built, and an engine in a bad state can agree with itself. See
 //!   `OutputReader::fresh` for what "fresh" does and does not mean on each platform.
+//! - **The promise itself is read from the operation's own source**, and this is the limit of
+//!   the three above. `rotate`, `reorder` and `compress` compute it from the source handle;
+//!   `split` from a sweep over its own source; `merge` from the running totals of the assembly
+//!   it is building. So a wrong page count going in is a wrong page count on both sides of the
+//!   comparison. Measured on `five-pages-or-six.pdf`, which declares six pages, is read as five
+//!   by qpdf, and splits into five with this check agreeing. `#111` tracks closing it; the
+//!   `#[ignore]`d `a_split_keeps_every_page_the_document_declares` states the property.
 //!
 //! # The witness is each page's `/Rotate`, as written
 //!

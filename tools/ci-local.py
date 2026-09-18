@@ -259,6 +259,7 @@ JOBS: list[dict] = [
                 "tools/check-wasm-exports.sh",
                 "tools/check-qpdf-crypto.sh",
                 "python3 tools/detect-engine-components.py",
+                "python3 tools/make-sbom.py --check",
             ]
         ),
         "covers": [
@@ -272,6 +273,7 @@ JOBS: list[dict] = [
             "tools/check-wasm-exports.sh",
             "tools/check-qpdf-crypto.sh",
             "tools/detect-engine-components.py",
+            "tools/make-sbom.py",
         ],
     },
     {
@@ -285,6 +287,7 @@ JOBS: list[dict] = [
                 "tools/test-check-wasm-exports.sh",
                 "tools/test-check-qpdf-crypto.sh",
                 "tools/test-detect-engine-components.sh",
+                "tools/test-make-sbom.sh",
                 "tools/test-check-engine-licences.sh",
                 "tools/test-check-no-network-deps.sh",
                 "tools/test-check-deployable-build.sh",
@@ -310,6 +313,7 @@ JOBS: list[dict] = [
             "tools/test-check-wasm-exports.sh",
             "tools/test-check-qpdf-crypto.sh",
             "tools/test-detect-engine-components.sh",
+            "tools/test-make-sbom.sh",
             "tools/test-check-engine-licences.sh",
             "tools/test-check-no-network-deps.sh",
             "tools/test-check-deployable-build.sh",

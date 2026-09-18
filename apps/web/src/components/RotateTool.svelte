@@ -18,7 +18,7 @@
   //   * NO THUMBNAILS. ADR 0020 records the decision and issue #57 carries the work. The
   //     honest consequence is that choosing pages means knowing their numbers, and the page
   //     says so rather than leaving somebody to notice.
-  import { onDestroy } from "svelte";
+  import { onDestroy, tick } from "svelte";
 
   import { CANCELLED } from "../host/worker-host.js";
   import { parseSelection } from "./page-selection.js";
@@ -38,6 +38,13 @@
   /** Pages, once counted. `null` while counting, `-1` if it could not be read. */
   let pageCount = $state<number | null>(null);
   let phase = $state<"idle" | "working" | "done">("idle");
+  /**
+   * How many operations are in flight, which is NOT the same as `phase` (#107). See
+   * `SplitTool.svelte`, where the measurement that produced this is recorded: `choose()` resets
+   * `phase`, so a second document chosen mid-operation cleared the pause and let the strip take
+   * PDFium back while the first operation's worker was still running.
+   */
+  let inFlight = $state(0);
   let notice = $state<Message | null>(null);
   let result = $state<Handout | null>(null);
   let announcement = $state("");
@@ -242,6 +249,9 @@
     phase = "working";
     announce("Turning pages.");
 
+    // COUNTED HERE AND RELEASED IN `finally`, so it survives `choose()` resetting `phase`.
+    inFlight += 1;
+
     try {
       const h = await host.ensure();
 
@@ -309,6 +319,26 @@
       notice =
         error === ORIGIN_MISMATCH ? originMismatchNotice() : messageFor({ kind: "Internal" });
       phase = "idle";
+    } finally {
+      // RESUMED AFTER THE RESULT IS ON SCREEN, not the moment the state changes (#107).
+      //
+      // `results` is assigned inside the `try`, and Svelte flushes the DOM after the current
+      // tick -- so decrementing here without waiting let the strip re-acquire PDFium 16-34 ms
+      // BEFORE the person could see their files (measured). Re-fetching a 1.9 MB engine while
+      // the browser is still painting the result competes with the thing they are waiting for.
+      // `tick()` puts the resume after the paint, which is better for them whatever any test
+      // says -- and it also makes "the result reached the caller" observable, which is what
+      // `the render engine is not brought back while a split is running` measures.
+      await tick();
+      // AND A FRAME, WHICH IS WHAT "ON SCREEN" ACTUALLY MEANS. `tick()` flushes Svelte's DOM
+      // update; the browser has not painted it yet, and the strip was still re-acquiring
+      // PDFium ~23 ms before the person could see their files. One frame puts the resume after
+      // the paint. Guarded because a headless or detached context may not schedule frames.
+      await new Promise<void>((resolve) => {
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+        else resolve();
+      });
+      inFlight -= 1;
     }
   }
 
@@ -422,13 +452,22 @@
        nothing the selection below still works by number, which is how both these pages worked
        before there were pictures at all (ADR 0020). -->
   <!-- WITHDRAWN, NOT REMOVED. `STRIP_WITHDRAWN` in `strip-copy.ts` carries the measurement:
-       a tab holding qpdf and PDFium at once loses itself on WebKit, about four times in 580
+       a tab running an operation while PDFium is resident loses itself on WebKit, about four times in 580
        runs, and zero without the strip. Losing a tab mid-operation is worse than not seeing
        thumbnails, and this page selected pages by number for its whole life before the strip
        existed. The component, its tests and the render bundle are untouched; restoring it is
        this one boolean, and `strip-copy.test.ts` makes the prose follow it. #107. -->
+  <!-- PAUSED WHILE THE OPERATION RUNS (#107). PDFium resident DURING an operation is what
+       loses the tab on WebKit, so the strip releases its engine for the duration and picks the
+       tiles back up afterwards. Not "one engine at a time": the documents worker persists, so
+       both are resident whenever the strip draws at all. The thumbnail is the aid; the
+       operation is what the person came for, so the strip is the one that yields.
+
+       The comment is ABOVE the `{#if}` rather than inside it because `strip-copy.test.ts`
+       asserts the island gates the component with nothing between them -- which it caught
+       when this comment was written in there. -->
   {#if !STRIP_WITHDRAWN}
-    <PageThumbnails {file} {pageCount} />
+    <PageThumbnails {file} {pageCount} paused={inFlight > 0} />
   {/if}
 
   {#if preparing}

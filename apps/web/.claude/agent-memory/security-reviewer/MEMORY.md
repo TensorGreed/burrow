@@ -1,0 +1,1 @@
+- The security-reviewer memory corpus for this repository lives at the repository root, `/home/anuragj/Desktop/GitHub/burrow/.claude/agent-memory/security-reviewer/` — read its `MEMORY.md` first; write new memories there, not here, so the corpus stays in one place.

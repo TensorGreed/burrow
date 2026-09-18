@@ -56,3 +56,10 @@ challenge point is the part of the review they will notice is missing.
   comparison cannot see. Corrupt one field of the baseline `Levers`/config, re-run, and check
   whether the controls still print PASS. Restore from a scratchpad copy — these examples are
   untracked, so `git checkout` will not bring them back.
+- **A mutation is only a proxy if it fails the assertion the test exists for.** Ask which
+  assertion went red, not just "it fails and then passes again". Neutralising a captured
+  value at source (e.g. `signature: request` -> `signature: ""` in a burrow tool island)
+  fails the test's *positive control* — the "and it comes back" assertion at the end — and
+  says nothing about the negative assertion the test was written for. Mutate the guard
+  itself (`stale`), or reinstate the original defect (capture after the await), and require
+  the negative assertion to fail.

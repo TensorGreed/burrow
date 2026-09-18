@@ -166,3 +166,8 @@ tools/.*-fixture.sh
 # under `tests/` is both a `git add -A` candidate and something cargo will try to build.
 core/*/tests/zz_*.rs
 
+
+# Mutated copies a self-test writes beside the original checker it mutates. The copy is
+# removed by an EXIT trap; a hard kill leaves it in tools/, one `git add` from being committed.
+*.MUTANT.py
+*.MUTANT.sh
