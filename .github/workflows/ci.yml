@@ -725,6 +725,20 @@ jobs:
           tools/test-check-deployment-url.sh
           tools/test-check-live-routes.sh
 
+      # A SIGNATURE NOBODY CAN CHECK IS A CHECKBOX. The release notes must carry the exact
+      # `cosign verify-blob` invocation with the certificate identity and OIDC issuer filled in,
+      # and must state what the signature claims AND what it does not. The signing job reads the
+      # notes back off the published release and fails if they do not; this runs the same rules
+      # against the generator, so a wording change that breaks them fails on the PR that makes
+      # it rather than on the release that needs them.
+      #
+      # In `deny`, like its neighbours: it reads no vendor tree and generates its fixture in
+      # memory, so it runs on a clean checkout.
+      - name: The release notes carry the verification command
+        run: |
+          python3 tools/check-release-notes.py --probe
+          tools/test-check-release-notes.sh
+
       # Compile every tool in tools/ with warnings promoted to errors.
       #
       # M1 PR 4c shipped a regex in a non-raw docstring, so `check-qpdf-trapped.py` printed

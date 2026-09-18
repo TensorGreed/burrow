@@ -50,7 +50,8 @@ them in between.**
 `main`. There is no `pull_request` trigger and there must never be one — a `pull_request` run
 is started by a branch anyone can open, and this workflow can write to the site people visit.
 
-**It is two jobs, and the split is the point.** `build` compiles third-party C++, runs a
+**It is two jobs, and the split is the point.** *(Three since 2026-09-18 — see the amendment
+at the end of this ADR. The principle below is unchanged and the third job was added under it.)* `build` compiles third-party C++, runs a
 package manager, and produces the payload — with **no secret in its environment at all**.
 `publish` holds the Cloudflare token and does four things: download the artifact, verify it,
 upload it, and read back where it went. A credential that can rewrite a public website does not
@@ -217,3 +218,87 @@ comparison, so a value that is too short silently widens it — `pages.dev` woul
 Pages project in the world "an alias of ours". It is validated to be a `<project>.pages.dev`
 name with a non-empty first label. Security review found this unvalidated and found no attacker
 path to it: setting it requires editing `deploy.yml` on `main`.
+
+
+## Amendment, 2026-09-18: a third job, and why it is the same decision rather than a new one
+
+`deploy.yml` now has three jobs. The body above says "it is two jobs, and the split is the
+point", and that sentence stays true in the way that matters — the point was never the number.
+
+**What was added.** A `sign` job, a sibling of `publish`: both `needs` the payload, both consume
+the same `production-dist` artifact, and nothing in either rebuilds anything. On a manual
+dispatch with `sign: true`, from `main` only, it packs that artifact into a deterministic
+tarball, signs it with cosign keyless, and publishes a release tagged
+`deploy-YYYY-MM-DD-<short-sha>`.
+
+**Why it is a sibling rather than a step in `publish`.** The same reason `build` and `publish`
+are separate, applied once more:
+
+| job | holds | does not hold |
+|---|---|---|
+| `build` | nothing | no secret of any kind |
+| `publish` | the Cloudflare API token | **no `id-token`** |
+| `sign` | `id-token: write` (OIDC), `contents: write` | **no Cloudflare credential** |
+
+`publish` additionally runs `npx --yes wrangler`, whose dependency closure is not pinned (#115).
+Signing inside `publish` would have put an OIDC token inside the one unpinned dependency tree in
+either workflow — so the obvious implementation would have concentrated exactly what the
+original split exists to separate. Writing it as a sibling closes #115's second option by
+construction.
+
+### `needs: [build, publish]` is not incidental, and this is the finding behind it
+
+**The first version was `needs: build`, and it was fail-open.** Both reviews found this
+independently, and it is recorded here at length because the fix looks like an ordering detail
+and is not one: a future editor who reads `needs: [build, publish]` as "it needs the payload,
+and `build` already provides that" would be deleting the only thing holding up a claim published
+to the world under a signature.
+
+With `needs: build` alone, `sign` and `publish` are siblings with no ordering between them, and
+the release body is generated unconditionally. The notes assert a **deploy-time attestation** —
+that the live origin served exactly these bytes at that moment. Every one of these publishes
+that sentence while it is false:
+
+| what happens to `publish` | what `sign` publishes |
+|---|---|
+| `environment: production` has required reviewers or a wait timer, so it blocks | a signed release asserting the deploy, before the deploy has started |
+| `tools/check-deployable-build.sh` refuses the artifact round trip | a signed release of a payload that was never uploaded |
+| `check-live-routes.py` finds the edge serving something else | a signed release asserting the edge served this |
+| the unpinned `npx --yes wrangler` install fails (#115) | a signed release of a deploy that never happened |
+
+**The asymmetry is what makes it dangerous.** The certificate alone says only "this repository,
+this commit, this workflow" — true regardless. The deploy-time attestation is the half that
+carries the interesting information, and it was the half with nothing enforcing it. A signature
+makes a false statement more credible, not less, which inverts the value of the whole change.
+
+The fix costs a few minutes of serialisation and nothing else. `needs` transfers no permissions,
+so the credential split above is untouched, and both jobs still consume the same artifact with
+nothing rebuilt. **Do not relax this to `needs: build` to parallelise the run.** If signing must
+ever run without `publish`, the claim has to be generated conditionally from `publish`'s actual
+result — strictly more machinery for strictly less — or the deploy-time sentence has to come out
+of the notes entirely, in which case `tools/check-release-notes.py`'s rule for it comes out too,
+and the release stops claiming anything about the live origin.
+
+**What the signature claims, exactly.** These bytes came from this repository at this commit and
+this workflow produced them, plus the deploy-time attestation above. It is **not** a continuing
+guarantee about what the edge serves now: Cloudflare can be reconfigured and a later deploy
+replaces the payload, and neither touches the signature. `tools/check-live-routes.py` is what
+answers "what is served right now", and it runs on every deploy rather than once. That wording is
+generated by `tools/check-release-notes.py` and checked against the *published* release body, so
+it cannot be lost by an edit.
+
+**What this does NOT close.** The "what this does not close" section above still applies in full,
+and one part of it now matters more: a dispatch runs the workflow file *from the ref it is
+dispatched from*, so someone with write access can dispatch a modified `deploy.yml`. `sign` is
+restricted to `github.ref == 'refs/heads/main'`, which stops a signature being cut from a branch
+with a certificate identity that contradicts the published verification command — but it does not
+stop a modified `deploy.yml` on `main` itself, for the same reason nothing else here can. The
+`contents: write` grant is the minimum GitHub offers for creating a release; there is no
+`releases:` scope. It can move tags and edit releases, and it cannot touch
+`.github/workflows/**`, read secrets, or reach Actions or Packages.
+
+`tools/check-deploy-workflow.py` enforces the split rather than trusting this table: no job may
+hold both `id-token: write` and the Cloudflare credential, the signing job must actually hold the
+token, and the permissions are read as **effective** — a review measured the first version
+passing a workflow-level `id-token: write` that `publish` inherited, while printing that the
+separation held.

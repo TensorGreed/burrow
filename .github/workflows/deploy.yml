@@ -19,6 +19,11 @@ on:
         description: "Why this deploy is happening (recorded in the run)"
         required: false
         default: "manual"
+      sign:
+        description: "Also publish and sign a tarball of this exact payload"
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main]
 
@@ -289,3 +294,193 @@ jobs:
             echo "must match the bytes Cloudflare serves, and there must be zero requests"
             echo "after engine init."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # THE SIGNING JOB. A SIBLING OF `publish`, NOT A STEP INSIDE IT, AND THE SPLIT IS THE POINT.
+  #
+  # Both jobs consume the same `production-dist` artifact, so the bytes that get signed are the
+  # bytes that got deployed -- the artifact is the handoff either way, and nothing here rebuilds.
+  # What the split buys is that no single job holds both credentials:
+  #
+  #   publish  -> the Cloudflare API token, and NO `id-token: write`
+  #   sign     -> `id-token: write` (OIDC, for keyless cosign), and NO Cloudflare token
+  #
+  # `publish` also runs `npx --yes wrangler`, whose dependency CLOSURE is not pinned (#115).
+  # Putting the signing steps in that job would have placed an OIDC token inside the one
+  # unpinned dependency tree in either workflow. Written as a sibling instead, which costs
+  # nothing while the job is still being written and closes #115's second option by
+  # construction. `tools/check-deploy-workflow.py` asserts the credential stays in `publish`.
+  #
+  # ON DEMAND, NOT PER DEPLOY. Every merge to `main` deploys (ADR 0024), and a signed tarball
+  # per merge would be noise: dozens of releases nobody asked for, each claiming the weight of
+  # a release. This runs only on a manual dispatch with `sign: true`.
+  #
+  # `needs: [build, publish]`, AND THE SECOND ENTRY IS LOAD-BEARING. ADR 0024's 2026-09-18
+  # amendment records this finding in full, under "`needs: [build, publish]` is not incidental";
+  # read it before changing this line. The release notes assert a
+  # deploy-time attestation -- that the live origin served exactly these bytes. With `needs:
+  # build` alone the two jobs run in parallel and that sentence is published whether or not
+  # `publish` ever succeeded: a blocked `production` environment, a failed round-trip gate, a
+  # failed `check-live-routes.py`, or a failed wrangler install all leave the claim standing and
+  # false. The interesting half of the claim was the fail-open half. Serialising costs a few
+  # minutes and nothing else -- `needs` does not transfer permissions, so the credential split is
+  # untouched, and both jobs still consume the same artifact.
+  #
+  # `github.ref` IS CONSTRAINED for a reason that is not obvious. Keyless signing binds the
+  # certificate to `.github/workflows/deploy.yml@<GITHUB_REF>`, and a dispatch may name any
+  # branch. Signed from `refs/heads/feature-x`, the certificate says `feature-x`, the published
+  # notes say `main`, and the verification command fails for every reader who runs it.
+  sign:
+    name: sign and publish the payload
+    needs: [build, publish]
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.sign
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and its tag
+      id-token: write # cosign keyless signing via OIDC -- NOT granted to `publish`
+    steps:
+      # NO CHECKOUT OF THE WORKING TREE FOR THE PAYLOAD. `dist/` comes from the artifact, the
+      # same one `publish` uploads. The checkout is for the notes check below and nothing else.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the payload that was deployed
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: production-dist
+          path: payload
+
+      # THE SAME STANDARD THE SIBLING APPLIES. `publish` re-runs this on the downloaded artifact
+      # because the round trip is a place bytes go missing -- a dropped `_headers` is the whole
+      # response-header policy. Without it here the two siblings disagree about whether the same
+      # artifact is acceptable, and only one of them is allowed to say no: `publish` would refuse
+      # and deploy nothing while this job signed the broken payload and published notes saying it
+      # had been deployed.
+      - name: The payload this will sign is the payload that passed the gate
+        run: tools/check-deployable-build.sh "$BURROW_SITE" payload
+
+      # DETERMINISTIC, so the tarball is a function of the payload and not of the machine that
+      # packed it. Sorted names, fixed owner, fixed mtime from the commit, no gzip timestamp
+      # (without `-n` gzip records the pack time in the header), and NORMALISED MODES.
+      #
+      # The modes are the one a review had to measure. `tar` records permission bits, the
+      # artifact v4 zip does not carry POSIX modes, so `download-artifact` recreates them under
+      # the RUNNER'S UMASK -- making the archive a function of the host at download time, which
+      # is exactly what this step claims it is not. Two identical payloads packed under `umask
+      # 022` and `umask 002` produced different digests; with `--mode` they produce the same one.
+      # That matters for the third party this determinism exists for: reconstructing the archive
+      # on a machine with a different umask would otherwise look like tampering.
+      - name: Pack it, reproducibly
+        id: pack
+        run: |
+          set -euo pipefail
+          tag="deploy-$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%d)-$(git rev-parse --short=7 HEAD)"
+          # BEFORE ANYTHING EXPENSIVE. Re-dispatching the same commit on the same day collides
+          # with its own previous tag, and `gh release create` would fail several steps later,
+          # after signing, with a message about tags in the middle of cosign output.
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::the tag $tag already exists; this commit was already released" >&2
+            exit 1
+          fi
+          archive="burrow-web-$tag.tar.gz"
+          mtime="$(git log -1 --format=%cI)"
+          tar --format=gnu --sort=name --owner=0 --group=0 --numeric-owner \
+            --mode='go-w,a+rX' --mtime="$mtime" \
+            -C payload -cf - . | gzip -n -9 > "$archive"
+          # PACKED TWICE AND COMPARED. "Reproducibly" was a claim about flags; this makes it a
+          # measurement on the runner, which is this repository's standard for a claim. It is one
+          # extra pack of a few megabytes.
+          tar --format=gnu --sort=name --owner=0 --group=0 --numeric-owner \
+            --mode='go-w,a+rX' --mtime="$mtime" \
+            -C payload -cf - . | gzip -n -9 > second.tar.gz
+          cmp "$archive" second.tar.gz
+          rm second.tar.gz
+          echo "packed twice, byte-identical"
+          sha256sum "$archive" | tee "$archive.sha256"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # KEYLESS, AND THE TRANSPARENCY LOG IS ACCEPTED KNOWINGLY. `cosign sign-blob` without a
+      # key writes an entry to Rekor recording the repository, the commit SHA, the workflow
+      # file, the ref and the trigger. For a public repository whose deploys are already public
+      # that discloses nothing new, and it is what makes the signature verifiable by someone who
+      # holds no key of ours -- which is the entire point of signing a public artifact.
+      - name: Sign the archive
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes "${{ steps.pack.outputs.archive }}" \
+            --output-signature "${{ steps.pack.outputs.archive }}.sig" \
+            --output-certificate "${{ steps.pack.outputs.archive }}.pem"
+
+      # RUN THE COMMAND WE ARE ABOUT TO PUBLISH, BEFORE PUBLISHING IT. The notes' WORDING is
+      # gated on every CI run; without this step the notes' TRUTH is gated nowhere, and the
+      # failure it catches is the worst one available here -- a certificate whose identity does
+      # not match the instruction shipped beside it, discovered by the first reader who tries.
+      # Emitted from `check-release-notes.py` rather than retyped, so this is character for
+      # character the command the release carries; a second copy is the copy that rots.
+      - name: Verify the signature the way the notes tell a reader to
+        run: |
+          set -euo pipefail
+          python3 tools/check-release-notes.py --verify-command \
+            --archive "${{ steps.pack.outputs.archive }}" > verify.sh
+          cat verify.sh
+          bash verify.sh
+
+      # THE NOTES CARRY THE VERIFICATION COMMAND, FILLED IN. A signature a reader cannot check
+      # without first learning cosign's identity flags is a signature most readers will not
+      # check. `tools/check-release-notes.py` generates the text and is the single definition of
+      # what the claim says; the step after publishing reads the notes back off the release and
+      # fails if they do not carry it.
+      - name: Write the release notes
+        run: |
+          python3 tools/check-release-notes.py --write notes.md \
+            --archive "${{ steps.pack.outputs.archive }}" \
+            --tag "${{ steps.pack.outputs.tag }}"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.pack.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "Web payload ${{ steps.pack.outputs.tag }}" \
+            --notes-file notes.md \
+            "${{ steps.pack.outputs.archive }}" \
+            "${{ steps.pack.outputs.archive }}.sha256" \
+            "${{ steps.pack.outputs.archive }}.sig" \
+            "${{ steps.pack.outputs.archive }}.pem" \
+            sbom/burrow.cdx.json
+
+      # READ THE STATE BACK. `gh release create` prints warnings and still exits 0, and CLAUDE.md
+      # records three measured cases of a green exit over something that had not happened. The
+      # notes that matter are the PUBLISHED ones, not the file that was passed in.
+      - name: The published notes carry the verification command
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "${{ steps.pack.outputs.tag }}" \
+            --json body,targetCommitish,isDraft > release.json
+          python3 -c '
+          import json, sys
+          release = json.load(open("release.json"))
+          open("published.md", "w").write(release["body"])
+          # `--target` IS A REQUEST, NOT A FACT. GitHub ignores `target_commitish` when the tag
+          # already exists, and this tag name is derivable from any public commit -- so a tag
+          # pushed ahead of time would produce a release whose tag points elsewhere while the
+          # notes and the certificate describe the artifact commit. Read back, not assumed.
+          want = sys.argv[1]
+          if release["targetCommitish"] != want:
+              raise SystemExit(
+                  f"the release points at {release[\"targetCommitish\"]}, not {want} -- "
+                  f"the tag already existed and GitHub kept it where it was"
+              )
+          if release["isDraft"]:
+              raise SystemExit("the release was created as a draft; nobody can fetch it")
+          ' "${{ github.sha }}"
+          python3 tools/check-release-notes.py --check published.md \
+            --archive "${{ steps.pack.outputs.archive }}" \
+            --tag "${{ steps.pack.outputs.tag }}"

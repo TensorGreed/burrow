@@ -391,6 +391,42 @@ else
   fail=$((fail + 1))
 fi
 
+# --- the token/credential split, planted three ways ------------------------------------------
+# #115's concentration is an OIDC token in the job that holds the Cloudflare credential and runs
+# `npx --yes wrangler`. The in-tool probes cover this every run; these are the adversarial
+# fixtures against the REAL workflow, and the second one is the case the rule originally passed.
+expect_refusal "an OIDC token in the credential job is refused" "hold BOTH" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "    environment: production\n"
+assert old in s
+s = s.replace(old, old + "    permissions:\n      id-token: write\n", 1)
+p.write_text(s)
+assert yaml.safe_load(s)["jobs"]["publish"]["permissions"]["id-token"] == "write", "plant did not apply"
+'
+
+expect_refusal "an OIDC token INHERITED from workflow level is refused" "hold BOTH" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "permissions:\n  contents: read\n"
+assert old in s
+s = s.replace(old, "permissions:\n  contents: read\n  id-token: write\n", 1)
+p.write_text(s)
+d = yaml.safe_load(s)
+assert d["permissions"]["id-token"] == "write", "plant did not apply"
+assert "permissions" not in d["jobs"]["publish"], "publish must inherit for this case to bite"
+'
+
+expect_refusal "a signing job that cannot sign is refused" "cannot sign" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "      id-token: write # cosign keyless signing via OIDC -- NOT granted to `publish`\n"
+assert old in s
+s = s.replace(old, "", 1)
+p.write_text(s)
+assert "id-token" not in yaml.safe_load(s)["jobs"]["sign"]["permissions"], "plant did not apply"
+'
+
 # --- THE PROBE GATE ---------------------------------------------------------------------------------
 #
 # The checker runs each rule against a counter-fixture and a near-miss on every invocation.

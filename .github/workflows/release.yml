@@ -2,11 +2,15 @@ name: Release
 
 # STUB — deliberately not wired up yet.
 #
-# There is nothing to release AS A DOWNLOADABLE ARTIFACT. That is no longer because the
-# project does nothing -- M1 shipped, five operations work, and the site is live at
-# https://notonlypdf.com -- but because the web app is uploaded byte-for-byte from CI
-# straight to Cloudflare Pages (ADR 0024). Nobody fetches a tarball, so there is nothing for
-# a signature to attach to.
+# CORRECTED 2026-09-18. This said "there is nothing to release AS A DOWNLOADABLE ARTIFACT ...
+# nobody fetches a tarball, so there is nothing for a signature to attach to". That argument was
+# sound and it is no longer the situation: `deploy.yml`'s `sign` job packs the deployed payload
+# into a tarball on demand and signs it, so the web half has both an artifact and a signature.
+#
+# What is still absent is the thing THIS file is for: binaries a person downloads and installs,
+# which M3/M4 produce and which do not exist yet. The web app is still uploaded byte-for-byte
+# from CI to Cloudflare Pages (ADR 0024) and nobody has to fetch the tarball to use the site --
+# the tarball is evidence, not a distribution channel.
 #
 # The header said "pre-alpha (M0) with no working operations" until 2026-09-16, which stopped
 # being true without anybody noticing, because a stub's comment is the last thing a reader
@@ -17,16 +21,23 @@ name: Release
 # below stop being deferrable: M3/M4 produce binaries a person installs, and a tagged release
 # of the core crates is a supply chain whether or not we cut a tarball.
 #
-# Two things must be true before this is enabled, and neither is yet:
+# UPDATED 2026-09-18. Two things had to be true before this was enabled. The first is now done
+# and the second has MOVED rather than been met -- which is a different thing and is said as
+# such, because a stub whose preconditions quietly stop applying is a stub nobody re-reads.
 #
-#   1. SBOM generation. Every release carries a CycloneDX SBOM covering Rust crates AND
-#      the vendored C/C++ engines (ADR 0004). cargo-cyclonedx handles the former; the
-#      latter needs the engine manifest that M1 introduces. A release without the native
-#      engines in its SBOM would be misleading, which is worse than having none.
+#   1. SBOM generation. DONE. `tools/make-sbom.py` generates `sbom/burrow.cdx.json` from the
+#      locked Rust workspace AND `engines/licenses.toml`, and CI verifies it on every run
+#      against symbol inspection of the shipped binaries. It does NOT use `cargo-cyclonedx`:
+#      `cargo metadata` already carries everything needed, and adding a tool to describe your
+#      supply chain is itself a supply-chain change. There is no `tools/sbom-merge.sh` and
+#      there never was -- the merge happens inside the generator.
 #
-#   2. Signed artifacts. Releases are signed with cosign keyless (OIDC), so the
-#      provenance chain is verifiable without us holding a key. This requires
-#      `id-token: write`, which is why permissions below are scoped per job.
+#   2. Signed artifacts. MOVED, not met. The web payload is signed on demand by the `sign`
+#      job in `deploy.yml`, as a sibling of `publish` consuming the same `production-dist`
+#      artifact: cosign keyless, `id-token: write`, and NO Cloudflare credential in that job.
+#      That covers the thing that exists today. What is still owed HERE is the M3/M4 case --
+#      binaries a person installs -- and the core crates, which are a supply chain whether or
+#      not we cut a tarball.
 #
 # Until then: `workflow_dispatch` only, and it fails fast rather than producing an
 # unsigned, un-SBOM'd artifact that someone might mistake for a release.
@@ -56,20 +67,27 @@ jobs:
   # readable and reviewable without being runnable.
   # ---------------------------------------------------------------------------------
 
+  # NO LONGER A SKETCH. This job used to plan `cargo install cargo-cyclonedx`, `cargo cyclonedx`
+  # and a `tools/sbom-merge.sh` that was never written. All three are superseded: the SBOM is
+  # generated and verified by `tools/make-sbom.py`, committed at `sbom/burrow.cdx.json`, and
+  # checked in CI on every run rather than produced at release time. A release attaches the
+  # committed file -- which is the one CI verified -- instead of generating a second one nobody
+  # checked.
   sbom:
     name: SBOM
     if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-      # - run: cargo install --locked cargo-cyclonedx
-      # - run: cargo cyclonedx --all --format json
-      # - name: Merge in the native engine manifest (ADR 0004)
-      #   run: tools/sbom-merge.sh   # does not exist yet
+      # - run: python3 tools/make-sbom.py --check   # needs the vendor tree; see ci.yml's test job
       # - uses: actions/upload-artifact@... # pin by SHA when enabled
       - run: echo "planned; see file header"
 
+  # THE MATRIX IS A SKETCH, NOT A PLAN. Six targets are listed below and NONE of them has ever
+  # been built by this repository: M1 builds wasm and the host arch, and the Android and Apple
+  # targets belong to M3/M4, which have not started. Left in place because the shape is the
+  # useful part of a stub, and labelled because an unqualified matrix reads as a decision that
+  # was taken.
   build:
     name: build ${{ matrix.target }}
     if: false
