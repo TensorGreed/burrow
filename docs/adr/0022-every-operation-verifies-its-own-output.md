@@ -336,3 +336,66 @@ decompressing every output in production, and the ceiling it would run under is 
 Rejected *here* rather than rejected outright: it is the deeper fix for #61, it is a posture
 decision about `attempt_recovery`, and it is orthogonal to whether an operation checks its own
 output. Recorded on #61.
+
+---
+
+## Amendment, 2026-09-17 (#111): the check reads its promise from the source it is checking
+
+**This record's verification compares an operation's output against what the operation promised,
+and the promised value comes from the same reading the operation used.** When that reading is
+already wrong, the output is verified against a wrong number, the two agree, and the promise is
+satisfied by the error.
+
+### Measured
+
+`tests/conformance/fixtures/five-pages-or-six.pdf`, 1,838 bytes. Six pages, `/Count 6`, six
+`/Kids`; page three's `/Resources` points its `/XObject` above INT_MAX.
+
+| who is asked | pages |
+|---|--:|
+| a textual walk of the page tree | **6** |
+| PDFium (`page_count`, native) | **6** |
+| qpdf (`page_count`, web bundle) | **5** |
+
+Split after page 2: parts of 2 and 3 pages, **five in total**, reported as success. The read-back
+compared five against five. **A page is gone and nothing says so.**
+
+### Every operation that promises a page count inherits this
+
+`split` (the parts partition the source), `rotate` and `reorder` and `compress` (the output has
+the input's pages), `merge` (the total is the sum). Each takes the count from the engine it is
+already using, and hands that number to the check.
+
+**[#61](https://github.com/TensorGreed/burrow/issues/61)'s discharge is narrower than it reads.**
+This verification was built to close "a damaged-but-openable document silently loses a page", and
+it does close the half where the WRITER loses a page the reader saw. It cannot see the half where
+the READER lost one before the writer heard of it — which is the same sentence with the two
+halves swapped.
+
+### What would close it
+
+**A second, independent reading of the property**, from a different engine or at minimum a
+different code path than the operation used. The value of a read-back is entirely its
+independence, and on this axis it currently has none.
+
+| | catches this fixture | cost |
+|---|:--:|---|
+| a structural page-tree walk outside the operating engine (`/Count` against reachable `/Kids`) | yes | small — not a full parse |
+| ask the other engine | yes | close to a third full open, and on the web PDFium is a second bundle nothing else fetches ([#107](https://github.com/TensorGreed/burrow/issues/107)) |
+| accept and document that the count is the engine's opinion | no | none, and it leaves #61's discharge overstated |
+
+**The cost is not nothing and is stated here rather than discovered:** the read-back this record
+already requires costs about **1.7×**, because every output is reopened and re-read. An
+independent reading is on top of that.
+
+### This is settled before M2, not carried into it
+
+**Redaction depends on exactly this property.** "The pages you asked for are the pages that were
+changed, and none of them is missing" is what redaction lives or dies by, and it will be verified
+by whatever this record says verification means. Taking a check that reads its promise from the
+operation's own source into the one feature where a mistake leaks secrets is the wrong order.
+
+`core/burrow-ops/tests/split.rs::a_split_keeps_every_page_the_document_declares` states the
+property and is `#[ignore]`d with its reason, the way #61's own reproduction was: asserting five
+would turn a known hole into recorded correct behaviour. The conformance case records what both
+engines actually say, so the day either changes is loud.

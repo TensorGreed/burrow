@@ -837,7 +837,14 @@ fn used_names<G: ObjectGraph>(
         for at in 0..count {
             let annot = graph.array_item(&annots, at)?;
             let appearance = graph.key(&annot, AP_KEY)?;
-            absorb(graph, &appearance, Follow::Anything, &mut used, walk, 0)?;
+            absorb(
+                graph,
+                &appearance,
+                Follow::ContentStream,
+                &mut used,
+                walk,
+                0,
+            )?;
         }
     }
 
@@ -853,14 +860,36 @@ fn used_names<G: ObjectGraph>(
 }
 
 /// Which streams a caller is willing to follow.
+///
+/// **A stream is lexed only where it has been ESTABLISHED to be content**, and the variants say
+/// where that was established. Reaching a stream that is not content and lexing it anyway is the
+/// defect this enum exists to prevent, and it has now been measured twice:
+///
+/// * an image, because the first version followed anything in `/XObject` -- a `/DCTDecode` image
+///   refused to decode and a `/FlateDecode` image's pixels failed to lex "roughly whenever they
+///   contained an unbalanced `(`". Found by security review, on every JPEG-bearing document.
+/// * **an embedded font program**, because `Anything` was inherited through arbitrary dictionary
+///   descent: `/Font` -> a font dictionary -> `/FontDescriptor` -> `/FontFile3`, a CFF program,
+///   lexed as though it were page content. Found on an ordinary 11 MB real-world document, which
+///   refused with `a ')' with no string to close` -- a byte inside a charstring. The corpus had no
+///   document with an embedded subset font, so 22 synthesised cases never touched it. #112.
+///
+/// The second is the first with a different key, which is why the variant that permitted it is
+/// gone rather than narrowed: there is no "follow anything" any more.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Follow {
     /// Only a `/Subtype /Form` XObject.
     FormsOnly,
     /// Only a tiling pattern -- `/PatternType 1`.
     TilingOnly,
-    /// Any stream. Glyph procedures and appearance streams, which carry no distinguishing key.
-    Anything,
+    /// A stream that IS content and carries no distinguishing key: a Type 3 glyph procedure, an
+    /// annotation's appearance stream. Reached only where the key that names it says so.
+    ContentStream,
+    /// A font dictionary. Its DICTIONARIES are descended, to reach `/CharProcs`; its STREAMS are
+    /// not, because the streams hanging off a font are the font's own program, its `/ToUnicode`
+    /// CMap and its `/Metadata` -- none of which is PDF content and none of which can name a
+    /// resource.
+    FontDictionary,
 }
 
 /// Walk one `/Resources` dictionary's stream-bearing categories for the names in `selector`.
@@ -878,7 +907,7 @@ fn follow_resources<G: ObjectGraph>(
     for (category, follow) in [
         (&b"/XObject"[..], Follow::FormsOnly),
         (&b"/Pattern"[..], Follow::TilingOnly),
-        (&b"/Font"[..], Follow::Anything),
+        (&b"/Font"[..], Follow::FontDictionary),
     ] {
         let sub = graph.key(resources, category)?;
         if graph.type_code(&sub)? != object_type::DICTIONARY {
@@ -981,7 +1010,7 @@ fn absorb<G: ObjectGraph>(
 
             // A Type 3 font's glyph procedures.
             let procs = graph.key(&dictionary, CHARPROCS_KEY)?;
-            absorb(graph, &procs, Follow::Anything, used, walk, depth + 1)
+            absorb(graph, &procs, Follow::ContentStream, used, walk, depth + 1)
         }
         object_type::DICTIONARY => {
             // A Type 3 font dictionary, an `/AP` state dictionary, a `/CharProcs` map.
@@ -989,6 +1018,19 @@ fn absorb<G: ObjectGraph>(
             if graph.type_code(&own)? == object_type::DICTIONARY {
                 refuse_optional_content_in(graph, &own)?;
             }
+
+            // A FONT DICTIONARY IS DESCENDED TO `/CharProcs` AND NOWHERE ELSE.
+            //
+            // Descending every key inherited the caller's `follow` into `/FontDescriptor`, and
+            // from there into `/FontFile3` -- a CFF program, lexed as page content. Nothing is
+            // lost by stopping: names come from content streams and from `/Resources`, and a
+            // font's other streams are neither. A Type 3 font's glyph procedures ARE content,
+            // and they are reached here by name rather than by descending into everything.
+            if follow == Follow::FontDictionary {
+                let procs = graph.key(object, CHARPROCS_KEY)?;
+                return absorb(graph, &procs, Follow::ContentStream, used, walk, depth + 1);
+            }
+
             for key in top_level_keys(&graph.unparse(object)?)? {
                 if key.as_slice() == b"Resources" {
                     continue;
@@ -1021,7 +1063,11 @@ fn worth_following<G: ObjectGraph>(
     follow: Follow,
 ) -> Result<bool> {
     match follow {
-        Follow::Anything => Ok(true),
+        Follow::ContentStream => Ok(true),
+        // THE FONT'S OWN STREAMS ARE NOT CONTENT. `/FontFile3` is a CFF program, `/ToUnicode` is
+        // a CMap, `/Metadata` is XML. A font dictionary is descended for `/CharProcs` and for
+        // nothing else; see the `DICTIONARY` arm of `absorb`.
+        Follow::FontDictionary => Ok(false),
         Follow::FormsOnly => {
             let subtype = graph.key(dictionary, b"/Subtype")?;
             if graph.type_code(&subtype)? != object_type::NAME {

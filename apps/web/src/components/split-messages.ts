@@ -143,8 +143,21 @@ export function messageFor(failure: Failure): Message {
       };
     case "Malformed":
       return {
-        title: "Not Only PDF could not read that file.",
-        next: "It may be damaged, or not a PDF at all. Try another copy of it.",
+        // THE WORDING LEANS TOWARDS OUR FAULT, BECAUSE IT WAS OURS. This said "could not read
+        // that file. It may be damaged, or not a PDF at all" -- an assertion about the
+        // person's document -- and it was shown on an ordinary 11 MB course PDF that qpdf
+        // opened, counted and compressed without complaint. `split` was walking from `/Font`
+        // into `/FontDescriptor` into `/FontFile3` and lexing a CFF font program as though it
+        // were page content (#112, ADR 0019's 2026-09-17 amendment).
+        //
+        // The variant cannot tell the two apart: a genuinely damaged file and a shape burrow
+        // does not understand arrive here identically. So the sentence says what is certain --
+        // this stopped here -- and offers the one test a person can actually run, which is
+        // whether something else opens it. Telling somebody their file is broken when it is
+        // not is worse than admitting a limit, and the page had just DISPROVED its own claim by
+        // counting the document's pages on screen.
+        title: "Not Only PDF could not finish reading that document.",
+        next: "If it opens elsewhere, the problem is here rather than in your file — that has happened, and it is worth reporting. Nothing was changed.",
         retryable: true,
       };
     case "Unsupported":

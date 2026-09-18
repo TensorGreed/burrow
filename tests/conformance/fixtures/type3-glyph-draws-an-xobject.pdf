@@ -1,0 +1,63 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R /Resources << /Font << /T3 7 0 R >> /XObject << /Im1 10 0 R >> >> >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R /Resources << >> >>
+endobj
+5 0 obj
+<< /Length 33 >>
+stream
+BT /T3 12 Tf 20 100 Td (a) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Length 33 >>
+stream
+0 0 1 RG 4 w 10 10 m 190 190 l S
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type3 /FontBBox [0 0 200 200] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs 8 0 R /Encoding << /Type /Encoding /Differences [97 /glyphA] >> /FirstChar 97 /LastChar 97 /Widths [500] >>
+endobj
+8 0 obj
+<< /glyphA 9 0 R >>
+endobj
+9 0 obj
+<< /Length 40 >>
+stream
+500 0 d0
+q 100 0 0 100 0 0 cm /Im1 Do Q
+endstream
+endobj
+10 0 obj
+<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 49 >>
+stream
+MARKER-THE-GLYPH-DREW-THIS
+0 0 1 rg 0 0 1 1 re f
+endstream
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000274 00000 n 
+0000000378 00000 n 
+0000000460 00000 n 
+0000000542 00000 n 
+0000000765 00000 n 
+0000000800 00000 n 
+0000000889 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+1034
+%%EOF

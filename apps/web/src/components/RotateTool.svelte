@@ -507,26 +507,18 @@
     </p>
   {/if}
 
-  <!-- NOT `.visually-hidden`, AND THE REASON RECORDED HERE FIRST WAS WRONG.
+  <!-- `.visually-hidden`, RESTORED. This region exists to announce state changes to a screen
+       reader, and every string it announces is already on screen -- so while the class was
+       inert here it rendered a SECOND copy of the refusal, under the button, in a different
+       style. Reported from the live site as "the error renders twice".
 
-       `.visually-hidden` was defined in `MergeTool.svelte` only, so in this island the class
-       did nothing and this region has always rendered visibly. When ADR 0028 moved the rule
-       into `base.css` and made it real, a WebKit failure appeared on /split-pdf -- a split
-       stalling until its budget expired, its output never arriving -- and removing the class
-       here appeared to fix it. IT DID NOT. Measured afterwards at four WebKit suite runs per
-       tree: the same failure happens once in four runs at `e40a3a5`, the commit BEFORE that
-       ADR, where this class was inert and could not have been involved. Two clean runs after
-       the change were simply what a one-in-four failure looks like most of the time.
-
-       So the real defect is older and is not this: an operation on the qpdf worker path whose
-       output silently never arrives, on /split-pdf and /rotate-pdf alike. Issue #107 carries
-       the rate and the evidence.
-
-       This region keeps the visibility it has had all along -- the status quo, and no
-       regression -- because nothing here has been shown to justify changing it in either
-       direction. Hiding it is the correct behaviour and wants its own change, with #107
-       understood first. -->
-  <p role="status" aria-live="polite">{announcement}</p>
+       IT WAS LEFT VISIBLE FOR A DAY ON A WRONG DIAGNOSIS. Making this class real coincided
+       with a WebKit failure on /split-pdf, and removing it appeared to fix it; four runs per
+       tree later, the failure happened at the same rate on a commit where the class was inert
+       and could not have been involved. The cause was the page-picture strip holding a second
+       wasm engine in the tab, and that strip is withdrawn (#107). Nothing implicates this
+       rule, and the duplicate it caused is real, so it goes back. -->
+  <p class="visually-hidden" role="status" aria-live="polite">{announcement}</p>
 </section>
 
 <style>

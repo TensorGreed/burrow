@@ -248,6 +248,158 @@
       }
     },
     {
+      "name": "a-font-that-is-a-real-program",
+      "inputs": [
+        {
+          "file": "fixtures/font-program-with-a-paren.pdf",
+          "sha256": "7b990effc3efa904b55e07499556fe70c0f969109154cf0a4b0cd399cd927706"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              90,
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ]
+          }
+        },
+        "split": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
+      "name": "a-type3-glyph-that-draws-an-xobject",
+      "inputs": [
+        {
+          "file": "fixtures/type3-glyph-draws-an-xobject.pdf",
+          "sha256": "58c798fc57c1f8f498cd7897df5d15b72ccf225f12b3808d5021cc53e153c85f"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              90,
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ]
+          }
+        },
+        "split": {
+          "ok": {
+            "page_count": 2
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 2,
+            "rotations": [
+              0,
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
+      "name": "a-document-two-engines-count-differently",
+      "inputs": [
+        {
+          "file": "fixtures/five-pages-or-six.pdf",
+          "sha256": "c0ada3521ae2d33c91239eb6f15f6c466836de31ca09d63cfe4d4deef66ca753"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 6
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 5
+          }
+        }
+      },
+      "platform_expectations": [
+        {
+          "platform": "web",
+          "operation": "page_count",
+          "expect": {
+            "ok": {
+              "page_count": 5
+            }
+          },
+          "reason": "`page_count` runs on PDFium natively and on qpdf in the web bundle (spike 0004). PDFium reads the six pages this document declares; qpdf drops the page whose /Resources points above INT_MAX and reads five. Both are recorded because neither is a harness artefact -- the two engines really do disagree, and #111 is about what that costs a promise checked against one of them."
+        }
+      ],
+      "known_gap": {
+        "issue": "https://github.com/TensorGreed/burrow/issues/111",
+        "reason": "a page this document declares is dropped by one engine, so an operation emits five pages, reports success, and ADR 0022's verification agrees with it -- because the promise and the check read the same source.",
+        "milestone": "M2"
+      }
+    },
+    {
       "name": "xref-bomb",
       "inputs": [
         {

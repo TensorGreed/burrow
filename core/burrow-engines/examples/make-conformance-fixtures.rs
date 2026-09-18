@@ -272,6 +272,77 @@ fn compresses(page_count: u64, rotations: Vec<i64>, smaller: bool) -> Outcomes {
     )])
 }
 
+/// Every single-document operation on a document all of them accept.
+///
+/// **Listed in full rather than as `both(...)`, because the defect these fixtures exist for was
+/// visible to exactly one operation.** Only `split` tokenises; `page_count`, `structure_check`,
+/// `rotate`, `reorder` and `compress` accepted the document an embedded font program made
+/// `split` refuse. A case covering only the operation that failed would have recorded the
+/// symptom and missed the shape.
+fn every_single_document_operation(
+    page_count: u64,
+    after_rotate: Vec<i64>,
+    after_reorder: Vec<i64>,
+    parts: u64,
+) -> Outcomes {
+    let counted = Outcome::Ok {
+        page_count,
+        rotations: None,
+        compressed: None,
+        render: None,
+    };
+    Outcomes::from([
+        (Operation::PageCount, counted.clone()),
+        (Operation::StructureCheck, counted),
+        (
+            Operation::Rotate,
+            Outcome::Ok {
+                page_count,
+                rotations: Some(after_rotate),
+                compressed: None,
+                render: None,
+            },
+        ),
+        (
+            Operation::Reorder,
+            Outcome::Ok {
+                page_count,
+                rotations: Some(after_reorder.clone()),
+                compressed: None,
+                render: None,
+            },
+        ),
+        (
+            Operation::Compress,
+            Outcome::Ok {
+                page_count,
+                rotations: Some(after_reorder),
+                compressed: Some(true),
+                render: None,
+            },
+        ),
+        (
+            Operation::Split,
+            Outcome::Ok {
+                page_count: parts,
+                rotations: None,
+                compressed: None,
+                render: None,
+            },
+        ),
+    ])
+}
+
+/// A plain page count, with nothing else asserted.
+fn counted(page_count: u64) -> Outcome {
+    Outcome::Ok {
+        page_count,
+        rotations: None,
+        compressed: None,
+        render: None,
+    }
+}
+
 /// A `split` outcome: how many parts came out.
 fn splits_into(parts: u64) -> Outcomes {
     Outcomes::from([(
@@ -533,6 +604,86 @@ fn main() {
         // a one-line edit that made the pre-scan read *nothing* and treat "nothing declared"
         // as "nothing to declare". They are in the corpus rather than in one native test
         // because the web path runs the same pre-scan and had never been shown to.
+        Fixture {
+            // AN EMBEDDED FONT IS NOT A CONTENT STREAM (#112). `split` walked `/Font` ->
+            // `/FontDescriptor` -> `/FontFile3` and lexed a CFF program as page content,
+            // refusing an ordinary document with "a ')' with no string to close" -- a byte
+            // inside a charstring. It reached the person as "your file may be damaged".
+            //
+            // EVERY OPERATION, not just split, and that is the point of listing it here rather
+            // than in one test: only `split` tokenises, which is exactly why five other
+            // operations accepted these documents for months while one refused them. The corpus
+            // had no document with an embedded subset font -- every fixture is synthesised, and
+            // a synthesised font is a dictionary rather than a program.
+            name: "a-font-that-is-a-real-program",
+            filename: "font-program-with-a-paren.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: every_single_document_operation(2, vec![90, 90], vec![0, 0], 2),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // THE OPPOSITE HAZARD, and the reason the fix for #112 is narrow. `/Im1` is named
+            // ONLY inside a Type 3 glyph procedure and lives in the PAGE's resources, where the
+            // pruning policy can delete it. A fix that stopped descending font dictionaries
+            // altogether would prune it, and the page would come out drawing a glyph whose
+            // picture is gone -- a valid PDF, silently missing its content.
+            //
+            // `subset_closure.rs` asserts the drawn bytes survive; this asserts every operation
+            // still accepts the document.
+            name: "a-type3-glyph-that-draws-an-xobject",
+            filename: "type3-glyph-draws-an-xobject.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: every_single_document_operation(2, vec![90, 90], vec![0, 0], 2),
+            platform_expectations: Vec::new(),
+            known_gap: None,
+        },
+        Fixture {
+            // THE ENGINES DISAGREE ABOUT HOW MANY PAGES THIS HAS, and everything burrow
+            // promises about a page count is promised against whichever one it asked (#111).
+            //
+            // Six pages declared, six `/Kids`; page three's `/Resources` points above INT_MAX.
+            // A textual walk reads six and PDFium reads six; qpdf reads FIVE. So a split emits
+            // 2 + 3 = five pages and reports success, and ADR 0022's read-back verifies five
+            // against five -- because the check asks the same source the operation asked.
+            //
+            // THIS RECORDS WHAT HAPPENS, NOT WHAT SHOULD, which is the one thing this file says
+            // it does not do -- so it is marked as the gap it is. `split.rs` carries the
+            // `#[ignore]`d test asserting the true property.
+            name: "a-document-two-engines-count-differently",
+            filename: "five-pages-or-six.pdf",
+            bytes: None,
+            password: None,
+            limits: None,
+            attempt_recovery: false,
+            expect: differ(counted(6), counted(5)),
+            platform_expectations: vec![PlatformExpectation {
+                platform: Platform::Web,
+                operation: Operation::PageCount,
+                expect: counted(5),
+                reason: "`page_count` runs on PDFium natively and on qpdf in the web bundle \
+                     (spike 0004). PDFium reads the six pages this document declares; qpdf drops \
+                     the page whose /Resources points above INT_MAX and reads five. Both are \
+                     recorded because neither is a harness artefact -- the two engines really do \
+                     disagree, and #111 is about what that costs a promise checked against one \
+                     of them."
+                    .to_owned(),
+            }],
+            known_gap: Some(KnownGap {
+                issue: "https://github.com/TensorGreed/burrow/issues/111".to_owned(),
+                reason: "a page this document declares is dropped by one engine, so an operation \
+                     emits five pages, reports success, and ADR 0022's verification agrees with \
+                     it -- because the promise and the check read the same source."
+                    .to_owned(),
+                milestone: "M2".to_owned(),
+            }),
+        },
         Fixture {
             name: "xref-bomb",
             filename: "xref-bomb.pdf",
