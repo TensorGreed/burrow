@@ -45,7 +45,19 @@
 # whose texts are committed there because they exist NOWHERE ELSE -- AGG has no SPDX
 # identifier and PDFium's package ships no HarfBuzz licence file at all.
 #
-# This manifest is also the input for M1's SBOM (see .github/workflows/release.yml).
+# This manifest is one of the two inputs to the SBOM, which tools/make-sbom.py generates into
+# sbom/burrow.cdx.json and CI verifies on every run. `linked_in` is not decoration there: for the
+# native PDFium artifact the SBOM check gates on it matching symbol inspection EXACTLY, so an edit
+# to that artifact's linked_in which the binary does not agree with fails CI.
+#
+# THE SCOPE OF THAT GATE, because a comment claiming more than it does is a bug here. It covers
+# the native libpdfium.so this machine builds, and only the components the detector has a
+# fingerprint for -- eight of the twenty-three below. Entries with no fingerprint (pdfium itself,
+# abseil-cpp, fast_float, the LLVM runtimes, qpdf, sphlib sha2, rijndael, the Emscripten runtime)
+# have `linked_in` lists that NOTHING verifies, and the static archives (libqpdf.a, libz.a,
+# libjpeg.a) are not scanned at all. For wasm the scan is weaker by construction -- names are
+# stripped -- so divergence there is reported by name and not gated. A periodic audit is still
+# what covers the rest; this gate narrows it, it does not replace it.
 
 [meta]
 version = 2
@@ -94,7 +106,7 @@ note = "args.gn has no use_custom_libcxx, so LLVM libc++ IS statically bundled -
 
 [[artifact]]
 id = "pdfium-linux-x64"
-files = "lib/libpdfium.so inside vendor/pdfium-linux-x64.tgz"
+files = "lib/libpdfium.so inside vendor/pdfium-linux-x64.tgz, vendor/native-x86_64/lib/libpdfium.so"
 source = "prebuilt, pdfium-binaries chromium/8044, pdfium-linux-x64.tgz"
 licences_dir = "vendor/src/pdfium-x86_64-probe/licenses/"
 note = """CORRECTED 2026-09-12. The previous note said this artifact was "NOT yet staged \
@@ -106,8 +118,13 @@ this artifact there -- 2472 harfbuzz hits, 256 agg23, and the rest \
 (run 34707958020). It is the AARCH64 build that no hosted runner covers, which is the \
 opposite of what the old note implied and is tracked in issue #30. \
 \
-What IS still inherited is this artifact's `linked_in`: it was written from the aarch64 \
-audit and has never been re-derived per artifact. detect-engine-components.py checks that \
+UPDATED 2026-09-18: this artifact's `linked_in` was written from the aarch64 audit and \
+had never been re-derived per artifact. It is now DERIVED ON EVERY CI RUN: `files` names the \
+staged path above, so tools/make-sbom.py --check resolves the artifact CI actually builds to \
+this id and requires this `linked_in` list to equal what symbol inspection finds, exactly. The \
+aarch64 and x64 lists are identical, and aarch64 was measured at 8 of 8; if the x64 binary \
+disagrees, CI goes red and names the component, which is the point. The stale inheritance \
+below is what that replaces. detect-engine-components.py checks that \
 every component it RECOGNISES is declared; it does not populate or verify `linked_in`, and \
 it knows nine fingerprints (issue #15). Its licences/ directory is byte-identical to \
 pdfium-linux-arm64's (all 14 files verified by sha256), which is good evidence the DECLARED \

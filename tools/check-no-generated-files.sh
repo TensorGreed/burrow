@@ -66,6 +66,7 @@ PATTERNS=(
   '(^|/)\.astro/'
   '(^|/)src/generated/'
   '(^|/)core/[^/]+/tests/zz_[^/]*\.rs$'
+  '\.MUTANT\.(py|sh)$'
 )
 LABELS=(
   'Python bytecode'
@@ -85,6 +86,7 @@ LABELS=(
   'Astro cache'
   'generated source'
   "a self-test's planted integration suite"
+  "a self-test's mutated copy of a checker"
 )
 # One path each pattern MUST match. Both real incidents appear here by name.
 PROBES=(
@@ -105,6 +107,7 @@ PROBES=(
   'apps/web/.astro/types.d.ts'
   'apps/web/src/generated/engines.js'
   'core/burrow-ops/tests/zz_planted_by_self_test.rs'
+  'tools/make-sbom.MUTANT.py'
 )
 
 # Legitimate exceptions. Each needs a reason, because an unexplained entry here is how a

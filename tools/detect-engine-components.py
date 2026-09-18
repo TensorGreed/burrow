@@ -46,7 +46,10 @@ REPO = Path(__file__).resolve().parent.parent
 MANIFEST = Path(
     os.environ.get("BURROW_ENGINE_LICENSES", REPO / "engines" / "licenses.toml")
 )
-VENDOR = REPO / "engines" / "vendor"
+# Overridable so a test can point the scan at an empty tree and assert what the tools say when
+# there is nothing to scan -- the case that read as a pass for the whole of this tool's first
+# version. Never set this in CI.
+VENDOR = Path(os.environ.get("BURROW_ENGINE_VENDOR", REPO / "engines" / "vendor"))
 
 
 @dataclass(frozen=True)
@@ -128,7 +131,10 @@ COMPONENTS: tuple[Component, ...] = (
     ),
     Component(
         label="libjpeg",
-        manifest_names=("libjpeg", "jpeg"),
+        # NOT bare "jpeg": "libopenjpeg" contains it, so the libopenjpeg entry supplied the
+        # libjpeg label and deleting libjpeg-turbo from the manifest passed every gate. Both
+        # manifest entries are named "libjpeg-turbo ...", so "libjpeg" loses nothing.
+        manifest_names=("libjpeg",),
         symbols=(r"\bj(peg|init|copy)_[a-z_]+\b",),
         strings=(r"Bogus Huffman table", r"Unsupported JPEG", r"Independent JPEG Group"),
         note="IJG: carries a mandatory documentation credit line.",
@@ -318,7 +324,33 @@ def check_probes() -> list[str]:
                 f"{comp.label}: its fingerprints match the near-miss "
                 f"({comp.near_miss!r}) -- too loose to distinguish anything"
             )
+
+        # THE LABELS MUST BE DISTINCT FROM EACH OTHER, not just from their near-misses.
+        # `manifest_names` are substrings, so one component's names can claim another component's
+        # entry: `("libjpeg", "jpeg")` matched "libopenjpeg", which meant the manifest could lose
+        # the IJG-licensed libjpeg-turbo entry entirely -- from this tool, from the SBOM, and
+        # from the notice obligations -- while a BSD-2-Clause component stood in for it by
+        # substring and every gate stayed green. Measured, end to end, by a review.
+        others = labels_for(comp.label) - {comp.label}
+        if others:
+            problems.append(
+                f"{comp.label}: its own name also matches {', '.join(sorted(others))} -- "
+                f"manifest_names are substrings, so this label cannot identify its component"
+            )
     return problems
+
+
+def labels_for(name: str) -> set[str]:
+    """Every fingerprint label whose `manifest_names` match this manifest entry's name.
+
+    THE ONLY IMPLEMENTATION of manifest-name-to-label matching. `tools/make-sbom.py` imports
+    this module rather than shelling out to it so the fingerprints have one definition; it then
+    needs this mapping too, and a second copy of it there would be the exact duplication that
+    importing was meant to avoid. A set rather than the first match: "libopenjpeg" must not be
+    claimed by whichever fingerprint happens to be earlier in COMPONENTS.
+    """
+    lowered = name.lower()
+    return {c.label for c in COMPONENTS if any(m in lowered for m in c.manifest_names)}
 
 
 def declared_labels() -> tuple[set[str], int]:
@@ -328,10 +360,7 @@ def declared_labels() -> tuple[set[str], int]:
     entries = data.get("component", [])
     labels: set[str] = set()
     for entry in entries:
-        name = str(entry.get("name", "")).lower()
-        for comp in COMPONENTS:
-            if any(m in name for m in comp.manifest_names):
-                labels.add(comp.label)
+        labels |= labels_for(str(entry.get("name", "")))
     return labels, len(entries)
 
 

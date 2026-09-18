@@ -22,3 +22,11 @@
 - [Deploy workflow trigger gate](m1_deploy_workflow_gate.md) — five measured bypasses of check-deploy-workflow.sh, and the repo settings the boundary actually rests on.
 - [measure-* harness logger defect](measure_harness_logger_defect.md) — the examples install qpdf's default logger, not a discarding one; wrong arity and wrong dest constant.
 - [compress op (M1 phase 2)](m1_compress_op.md) — measured: compress is not worse than rotate for RSS, the nightly instrumented-archive gap, and which mutations the unit suite survives.
+- [Web page registries](m1_web_page_registries.md) — which cross-page web checks are derived and which are hand-listed and quietly examine N-1 pages.
+- [Custom-domain origin split](m1_custom_domain_origin_split.md) — the 5th regex-vs-label regression (sitemap stray rule), BURROW_PAGES_HOST as an unchecked base, and CORS-not-CSP on pages.dev.
+- [Live-route body diff](m1_live_route_diff.md) — what check-live-routes.py covers (7 HTML routes, not 34 assets), the redirect pass, and the 3 mutations the self-test survives.
+- [Render worker bundle (ADR 0026)](m1_render_worker_bundle.md) — the measured onRuntimeInitialized hang, what the two-bundle split really enforces, and the dead INHERITS_PAGE_CSP marker.
+- [Render capability (#57 2a)](m1_render_capability.md) — one render call costs 112 s / 2.7 GB from 1.3 MB; the pixel-accessor name mismatch that posts empty strips.
+- [Progressive render + strip (#57 2b)](m1_render_progressive_and_strip.md) — the modelled strip thrash loop, the ungated page_size double load, and one ceiling with three baselines.
+- [Web design tokens](m1_web_design_tokens.md) — what the reserved-colour checks actually read (base.css only), the 1-of-5 `.refusal` gap, and the measured palette distances.
+- [SBOM gate (make-sbom.py)](m1_sbom_gate.md) — 2nd pass: the libjpeg/libopenjpeg label collapse, and the native linked_in gate that does not run on an x86_64 runner.

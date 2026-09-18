@@ -323,6 +323,21 @@ jobs:
           python3 tools/detect-engine-components.py
           tools/test-detect-engine-components.sh
 
+      # ROADMAP's first unmet M1 commitment: an SBOM covering Rust crates AND the vendored
+      # C/C++ engines. It lives in THIS job because its third source is the shipped binaries --
+      # `make-sbom.py` cross-checks the document against what symbol inspection finds inside
+      # them, and a job without the vendor tree would check two hand-maintained files against
+      # each other and report success. So the tool FAILS when there is nothing to scan, rather
+      # than noting it -- passing over the one source that is not hand-maintained gives up the
+      # thing that made the check worth running. `tools/test-make-sbom.sh` asserts that
+      # behaviourally, by pointing BURROW_ENGINE_VENDOR at an empty tree and requiring a
+      # non-zero exit; its predecessor grepped this tool's source for the message instead, and
+      # a review measured that the message was reachable, printed, and false.
+      - name: The SBOM describes what actually shipped
+        run: |
+          python3 tools/make-sbom.py --check
+          tools/test-make-sbom.sh
+
       # ROADMAP M1 item 3's second half: "CI fails if ... `QPDFCrypto_gnutls` appears in
       # the link". Only the first half existed -- `engines/build-native.sh` greps qpdf's
       # CMake configure summary, which says what CMake DECIDED, not what reached the archive.
