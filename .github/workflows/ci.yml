@@ -781,6 +781,15 @@ jobs:
           python3 tools/redact-fuzz-log.py --probe
           tools/test-redact-fuzz-log.sh
 
+      # THE NIGHTLY'S KNOWN-CRASHES LEDGER, structurally. A crash the ledger owns keeps the
+      # nightly green, so a malformed or unexplained entry is a crash nobody is told about.
+      # `--check-issues` is NOT here: it asks GitHub whether each issue is still open, and it
+      # belongs in the nightly, which has a token and is not triggered by forks.
+      - name: The known-crashes ledger is well formed
+        run: |
+          python3 tools/check-known-crashes.py --check
+          tools/test-check-known-crashes.sh
+
       - name: The release notes carry the verification command
         run: |
           python3 tools/check-release-notes.py --probe
