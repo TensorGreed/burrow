@@ -49,6 +49,9 @@ DEFAULT_WORKFLOW = REPO / ".github" / "workflows" / "deploy.yml"
 #: for.
 ALLOWED_TRIGGERS = {"push", "workflow_dispatch"}
 
+#: The job that signs, and the only one that may hold an OIDC token.
+SIGNING_JOB = "sign"
+
 #: The job that may hold the credential, and the only one.
 CREDENTIAL_JOB = "publish"
 
@@ -452,6 +455,70 @@ def check_origin(workflow: dict, report: list[str]) -> None:
     report.append(f"BURROW_SITE: {site}")
 
 
+def check_token_and_credential_are_separated(workflow: dict, report: list[str]) -> None:
+    """`id-token: write` and the Cloudflare credential must never be in the same job.
+
+    The credential half is already checked above; this is the other half, and it is the half a
+    reader would assume rather than verify. The signing job needs an OIDC token to sign keylessly;
+    the publish job needs a token that can write to the live site. Neither needs the other's, and
+    `publish` additionally runs `npx --yes wrangler`, whose dependency closure is not pinned
+    (#115) -- an OIDC token inside that tree is the thing this rule exists to prevent.
+
+    Asserted on the parsed structure rather than on a comment, because the cheapest way to undo
+    the split is to move two lines while the comment explaining it stays put.
+    """
+    jobs = workflow.get("jobs") or {}
+    if not isinstance(jobs, dict):
+        return
+
+    top = workflow.get("permissions")
+
+    def effective(job: dict):
+        """The permissions this job actually runs with.
+
+        EFFECTIVE, NOT JOB-LEVEL, and a review measured why. A job with no `permissions:` block
+        inherits the workflow-level map, and `publish` has no such block -- so workflow-level
+        `id-token: write` grants the token to every job, including the one holding the Cloudflare
+        credential, while a rule reading only `jobs[*].permissions` sees nothing and prints that
+        the separation holds. That is the "4 of 15 reads as success" shape inside a rule written
+        to assert a security boundary, and workflow level is the FIRST place someone would raise
+        a permission when a job cannot mint a token.
+        """
+        permissions = job.get("permissions", top)
+        if isinstance(permissions, str):
+            # `write-all` / `read-all`. A string is not a map and indexing one used to raise an
+            # AttributeError -- a refusal for an unreadable reason rather than a finding.
+            return {"id-token": "write"} if permissions == "write-all" else {}
+        return permissions or {}
+
+    holders = [
+        name
+        for name, job in jobs.items()
+        if isinstance(job, dict) and str(effective(job).get("id-token", "")) == "write"
+    ]
+    both = [name for name in holders if name == CREDENTIAL_JOB]
+    if both:
+        raise Refused(
+            f"job(s) {both} hold BOTH `id-token: write` and the Cloudflare credential. "
+            f"Signing belongs in a sibling job consuming the same artifact, so neither "
+            f"token sits in the other's blast radius."
+        )
+
+    # GATED ON THE EXPECTED SET, not merely on "not both". The expectation is knowable: if a
+    # `sign` job exists it is the one that needs the token, and a `sign` job that has LOST it
+    # would fail at cosign rather than here -- but the report would already have said the
+    # separation holds, over a workflow where nothing can sign. "4 of 15 reads as success".
+    if SIGNING_JOB in jobs and SIGNING_JOB not in holders:
+        raise Refused(
+            f"`{SIGNING_JOB}` exists but does not hold `id-token: write`, so it cannot sign "
+            f"keylessly. Either grant it, or remove the job rather than leaving one that "
+            f"cannot do its job while this rule reports a clean separation."
+        )
+    report.append(
+        f"`id-token: write` in {holders or ['<no job>']}, never in `{CREDENTIAL_JOB}`"
+    )
+
+
 def check_no_other_workflow_holds_the_credential(report: list[str]) -> None:
     """The route this file structurally could not see.
 
@@ -501,6 +568,54 @@ PROBES = [
     # Each rule against a structure it must reject and a near-miss it must accept, every run.
     # These are the parsed-structure analogue of the pattern probes the shell version had, and
     # they exist for the same reason: a rule that accepts everything passes everything.
+    (
+        "the token/credential separation",
+        lambda: check_token_and_credential_are_separated(
+            {"jobs": {CREDENTIAL_JOB: {"permissions": {"id-token": "write"}}}}, []
+        ),
+        lambda: check_token_and_credential_are_separated(
+            {"jobs": {
+                CREDENTIAL_JOB: {"permissions": {"contents": "read"}},
+                "sign": {"permissions": {"id-token": "write"}},
+            }}, []
+        ),
+    ),
+    (
+        # THE INHERITED CASE, which the job-level-only version passed while printing that the
+        # separation held. `publish` carries no `permissions:` block, so it inherits whatever is
+        # at workflow level -- which is the easiest way to undo this split by accident.
+        "the token/credential separation, inherited from workflow level",
+        lambda: check_token_and_credential_are_separated(
+            {"permissions": {"id-token": "write"}, "jobs": {CREDENTIAL_JOB: {}}}, []
+        ),
+        lambda: check_token_and_credential_are_separated(
+            {"permissions": {"contents": "read"},
+             "jobs": {CREDENTIAL_JOB: {}, "sign": {"permissions": {"id-token": "write"}}}}, []
+        ),
+    ),
+    (
+        # `write-all` is `id-token: write` spelled as a string, and indexing a string used to
+        # raise rather than refuse.
+        "the token/credential separation, spelled write-all",
+        lambda: check_token_and_credential_are_separated(
+            {"jobs": {CREDENTIAL_JOB: {"permissions": "write-all"}}}, []
+        ),
+        lambda: check_token_and_credential_are_separated(
+            {"jobs": {CREDENTIAL_JOB: {"permissions": "read-all"},
+                      "sign": {"permissions": {"id-token": "write"}}}}, []
+        ),
+    ),
+    (
+        # The signing job present but unable to sign: the rule used to report a clean separation
+        # over a workflow where nothing could mint a token.
+        "the signing job actually holds the token",
+        lambda: check_token_and_credential_are_separated(
+            {"jobs": {CREDENTIAL_JOB: {}, SIGNING_JOB: {"permissions": {"contents": "write"}}}}, []
+        ),
+        lambda: check_token_and_credential_are_separated(
+            {"jobs": {CREDENTIAL_JOB: {}, SIGNING_JOB: {"permissions": {"id-token": "write"}}}}, []
+        ),
+    ),
     (
         "the trigger allowlist",
         lambda: check_triggers({True: {"push": {"branches": ["main"]}, "pull_request": None}}, []),
@@ -640,6 +755,7 @@ def main(argv: list[str]) -> int:
         check_origin(workflow, report)
         check_project(workflow, report)
         check_pages_host(workflow, report)
+        check_token_and_credential_are_separated(workflow, report)
         check_no_other_workflow_holds_the_credential(report)
     except Refused as exc:
         for line in report:
