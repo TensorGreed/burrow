@@ -258,3 +258,58 @@ pinned or audited; that is a separate reason and not the one that decides it.
 **Offer a lossy mode behind a switch.** Deferred rather than rejected: there is no engine to do
 it with, so it is not a choice available today. If it ever is, it must be explicitly opt-in and
 say what it is doing before it does it — not a default with a warning afterwards.
+
+## Amendment, 2026-09-18 (#119): "a report with an owner" needed a mechanism, not a convention
+
+This ADR records that a seeded crash in `fuzz-nightly.yml` is **a report with an owner** rather
+than a blocked merge, and that the pull-request gate runs unseeded while #62 is open. Both still
+hold. What was missing is that nothing implemented the first half: the nightly simply went red
+and stayed red, and "it has an owner" lived in this document rather than in the run.
+
+**What that cost, measured.** The nightly was red every night from 2026-09-14. On 2026-09-18 it
+also found #119 — a stack overflow from unbounded recursion, a different defect in a different
+class — and it was indistinguishable from the standing failure. It was noticed only because
+somebody went looking at the red for an unrelated reason. A gate that is always red carries no
+information; this one had been carrying none for five nights.
+
+**The mechanism.** `fuzz/known-crashes.toml` lists the crashes an open issue already owns.
+`tools/check-known-crashes.py` classifies each crash against it: **known → the job is green and
+the summary names the owning issue; unmatched → the run fails, because that is a new defect and
+finding one is the entire purpose of this nightly.**
+
+**The key is the pair `(verdict, frame)`, and that is not a detail.** Measured here, from two
+reproductions: `QPDF::Doc::Pages::pushInheritedAttributesToPageInternal` appears in the stack of
+**both** #62's page-tree use-after-free and #119's stack overflow. Keyed on the frame alone,
+entering #62 would have silenced #119 — the mechanism would have caused the exact failure it was
+built to prevent. Keyed on the verdict alone, every use-after-free anywhere in qpdf matches. The
+frame is matched anywhere in the stack rather than at the top, because for a use-after-free the
+modal frame is often an allocator interceptor or the entry point: `reorder`'s is
+`QPDF::processMemoryFile`, which identifies nothing.
+
+It is deliberately **not** keyed on the input. Every night's mutation produces different bytes
+for the same defect, so hashing reproducers would match nothing — and the ledger would then have
+to carry reproducers, which on a public repository is the incident recorded in
+`docs/security/exposure-2026-09-14-published-reproducers.md`.
+
+**It was replayed against real data before being trusted — once, by hand, and not re-runnable.**
+The three crash logs are deliberately not committed (they are reproducers, and
+`docs/security/exposure-2026-09-14-published-reproducers.md` is why), and the ledger state the
+replay used — #62 entered, #119 absent — no longer exists. So this is a recorded measurement
+rather than a control a future reader can re-run, and it is written down here precisely because
+it cannot be reproduced from the repository. With the ledger as it stood on
+2026-09-17 — #62 entered, #119 not yet filed — the three crash inputs from the 2026-09-18 nightly
+classify as: `merge` known (#62), `reorder` known (#62), **`rotate` UNMATCHED, exit 1**. That is
+the night #119 appeared, and the mechanism fails the run on it while staying quiet about the two
+defects that were already owned.
+
+**An entry is a claim that expires.** A separate job asserts that every entry names an issue that
+is still **open**: when the defect is fixed the crash must stop being expected, and the entry must
+go. Without that rule this is a mute button, and mute buttons accrete. The risk is stated rather
+than hidden — someone under time pressure can always add an entry, and the defences against that
+are the expiry rule, the requirement that every entry carry a written reason, and that unmatched
+is the default.
+
+**What it does not claim.** A match proves the report is *consistent with* a known defect — the
+same verdict in the same function — not that it is that defect. A second defect in the same
+function under the same verdict would be absorbed. That is the residual of any fingerprint short
+of the whole stack, and the whole stack is not stable across nights.

@@ -307,6 +307,8 @@ JOBS: list[dict] = [
                 "tools/test-check-no-published-reproducers.sh",
                 "python3 tools/redact-fuzz-log.py --probe",
                 "tools/test-redact-fuzz-log.sh",
+                "python3 tools/check-known-crashes.py --check",
+                "tools/test-check-known-crashes.sh",
                 "python3 tools/check-release-notes.py --probe",
                 "tools/test-check-release-notes.sh",
             ]
@@ -334,6 +336,8 @@ JOBS: list[dict] = [
             "tools/test-check-no-published-reproducers.sh",
             "tools/redact-fuzz-log.py",
             "tools/test-redact-fuzz-log.sh",
+            "tools/check-known-crashes.py",
+            "tools/test-check-known-crashes.sh",
             "tools/check-release-notes.py",
             "tools/test-check-release-notes.sh",
         ],

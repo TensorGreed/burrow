@@ -1,0 +1,69 @@
+# Crashes the nightly fuzzer is EXPECTED to find, because a filed issue already owns them.
+#
+# WHY THIS FILE EXISTS
+# The seeded nightly has been red continuously since 2026-09-14 because #62 is open and is
+# reachable from every qpdf-driving target. ADR 0025 records that a crash there is "a report with
+# an owner" rather than a blocked merge -- which is correct, and which cost exactly what a
+# permanently-red gate always costs: on 2026-09-18 the nightly also found #119, a DIFFERENT
+# defect in a different class, and it was indistinguishable from the standing failure. A gate
+# that is always red carries no information.
+#
+# So: a crash matching an entry here is reported and the job stays green. A crash matching
+# nothing is a NEW finding and fails the run.
+#
+# THE KEY IS THE PAIR (verdict, frame), AND THAT IS NOT A DETAIL.
+# `QPDF::Doc::Pages::pushInheritedAttributesToPageInternal` appears in the stack of BOTH #62's
+# page-tree use-after-free and #119's stack overflow -- measured, in this repository, from two
+# reproductions. Keyed on the frame alone, adding #62 would have silenced #119. Keyed on the
+# verdict alone, every use-after-free anywhere in qpdf would match. Only the pair distinguishes
+# them.
+#
+# NOT KEYED ON THE INPUT. Hashing reproducers would match nothing: every night's mutation
+# produces different bytes for the same defect. The pair is stable across nights; the bytes are
+# not. It also means this file carries no reproducer, so it can live in a public repository --
+# see docs/security/exposure-2026-09-14-published-reproducers.md for why that matters here.
+#
+# AN ENTRY IS A CLAIM THAT EXPIRES. `tools/check-known-crashes.py --check-issues` fails when an
+# entry names an issue that is closed: the defect is fixed, so the crash must stop being
+# expected, and the ledger must not keep absorbing it. Without that rule this file is a mute
+# button, and mute buttons accrete.
+#
+# WHAT A MATCH DOES NOT PROVE, stated here because this file is what a person adding an entry
+# reads. A match means the report is CONSISTENT WITH the named defect -- the same verdict in the
+# same function -- not that it is that defect. A second defect in the same function under the
+# same sanitiser verdict would be absorbed by the entry above it and nobody would be told. That
+# is the residual of any fingerprint short of the whole stack, and the whole stack is not stable
+# from night to night.
+#
+# The `verdict` is the sanitiser's phrase with spaces hyphenated -- `heap-use-after-free`,
+# `stack-overflow`, `deadly-signal`. `tools/check-known-crashes.py --check` refuses a spelling
+# the classifier could never resolve, so a typo here is a refusal rather than an inert entry.
+#
+# ADDING AN ENTRY IS A DECISION. It means "this crash is understood, filed, and owned". It is not
+# a way to make a red nightly go green.
+
+[[known]]
+issue = 62
+verdict = "heap-use-after-free"
+frame = "QPDF::Doc::Objects::Foreign::Copier::reserve_objects"
+reached_from = ["merge"]
+note = """The foreign-object copier use-after-free, recorded in
+docs/security/exposure-2026-09-14-qpdf-uaf.md section 7 as the second of #62's two defects."""
+
+[[known]]
+issue = 62
+verdict = "heap-use-after-free"
+frame = "QPDF::Doc::Pages::pushInheritedAttributesToPageInternal"
+reached_from = ["reorder", "compress", "rotate", "split", "qpdf_check"]
+note = """The page-tree caching use-after-free, reached by OPENING a document -- so every
+qpdf-driving target can hit it, which is why the failing set shifts from night to night. The
+stack recorded in ADR 0025 is this one."""
+
+[[known]]
+issue = 119
+verdict = "stack-overflow"
+frame = "QPDF::Doc::Pages::pushInheritedAttributesToPageInternal"
+reached_from = ["rotate"]
+note = """Unbounded recursion through /Kids, found 2026-09-18. Shares its frame with the entry
+above and is a different defect -- it is the reason this file is keyed on the pair. It was
+invisible on the night it appeared because the nightly was already red."""
