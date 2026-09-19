@@ -30,3 +30,4 @@
 - [Progressive render + strip (#57 2b)](m1_render_progressive_and_strip.md) — the modelled strip thrash loop, the ungated page_size double load, and one ceiling with three baselines.
 - [Web design tokens](m1_web_design_tokens.md) — what the reserved-colour checks actually read (base.css only), the 1-of-5 `.refusal` gap, and the measured palette distances.
 - [SBOM gate (make-sbom.py)](m1_sbom_gate.md) — 2nd pass: the libjpeg/libopenjpeg label collapse, and the native linked_in gate that does not run on an x86_64 runner.
+- [Spike 0006 redaction survival](spike_0006_redaction_survival.md) — verified, all five findings resolved same day; the durable one is control 5: a removal nothing observed is not a measured removal.

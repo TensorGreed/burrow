@@ -1,0 +1,30 @@
+## Finding 3 — the shipped `split`, run one-way over the same fixtures
+
+| # | channel | one-way split | page canary before | page canary after | carrier canary before | carrier canary after | what split did |
+|--:|---|---|:--:|:--:|:--:|:--:|---|
+| 1 | plain-tj | ok, 745 bytes | yes | yes | — | — | **carried the page copy** |
+| 2 | kerned-tj | ok, 775 bytes | no | no | — | — | I2 blind |
+| 3 | positioned-runs | ok, 848 bytes | no | no | — | — | I2 blind |
+| 4 | differences-encoding | ok, 2232 bytes | no | no | — | — | I2 blind |
+| 5 | cid-with-tounicode | ok, 2827 bytes | no | no | — | — | I2 blind |
+| 6 | cid-without-tounicode | ok, 2437 bytes | no | no | — | — | I2 blind |
+| 7 | form-xobject | ok, 986 bytes | yes | yes | — | — | **carried the page copy** |
+| 8 | type3-glyph | ok, 1310 bytes | yes | yes | — | — | **carried the page copy** |
+| 9 | actualtext | ok, 2262 bytes | no | no | yes | yes | I2 blind; **carried the carrier** |
+| 10 | structure-tree | ok, 2244 bytes | no | no | yes | no | I2 blind; **removed the carrier** |
+| 11 | annotation | ok, 1144 bytes | yes | yes | yes | yes | **carried the page copy**; **carried the carrier** |
+| 12 | acroform-field | ok, 1241 bytes | yes | yes | yes | yes | **carried the page copy**; **carried the carrier** |
+| 13 | optional-content | **refused**: unsupported: this document uses optional content (layers), and burrow cannot carry the setting that decides whether a layer is hidden into a part of it | — | — | — | — | **refused the document** |
+| 14 | thumbnail | ok, 745 bytes | yes | yes | no | no | **carried the page copy**; I2 blind |
+| 15 | metadata | ok, 745 bytes | yes | yes | yes | no | **carried the page copy**; **removed the carrier** |
+| 16 | attachment | ok, 745 bytes | yes | yes | yes | no | **carried the page copy**; **removed the carrier** |
+| 17 | incremental-update | ok, 715 bytes | no | no | — | — | I2 blind |
+| 18 | vector-outlines | ok, 1482 bytes | no | no | — | — | I2 blind |
+| 19 | covered-by-a-rectangle | ok, 767 bytes | yes | yes | — | — | **carried the page copy** |
+| 20 | image-pixels | ok, 4672 bytes | no | no | — | — | I2 blind |
+| 21 | cid-lying-tounicode | ok, 2825 bytes | no | no | — | — | I2 blind |
+| 22 | split-content-streams | ok, 865 bytes | yes | yes | — | — | **carried the page copy** |
+| 24 | page-level-metadata | ok, 745 bytes | yes | yes | yes | no | **carried the page copy**; **removed the carrier** |
+
+
+examined 23 of 23 channels: **1 refused outright**, **4 had the canary removed** by machinery that excluded no page, **14 carried through**, counting the page copy and the carrier separately. The rest are places I2 cannot see in any state, and are marked as such rather than counted as removals.
