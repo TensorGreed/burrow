@@ -1,0 +1,174 @@
+spike 0006 — what survives a redaction
+region (30.0, 88.0, 370.0, 132.0), render scale 4x, ink threshold 0.001, qpdf /home/anuragj/Desktop/GitHub/burrow/engines/vendor/src/build-qpdf-plain-aarch64/qpdf/qpdf
+
+control 2 (inertness): 23 of 23 canaries absent from the canary-free control
+control 1 (non-vacuity): 23 of 23 fixtures carry a canary something can find
+
+## Finding 1 — what the naive redaction leaves behind
+
+| # | channel | text objects cut | still in the file? | a person sees it? | removed by the qpdf round-trip alone? |
+|--:|---|--:|:--:|:--:|:--:|
+| 1 | plain-tj | 1/2 | **no** | **no** | no |
+| 2 | kerned-tj | 1/2 | **no** | **no** | no |
+| 3 | positioned-runs | 1/2 | **no** | **no** | no |
+| 4 | differences-encoding | 1/2 | **yes** | **no** | no |
+| 5 | cid-with-tounicode | 1/2 | **yes** | **no** | no |
+| 6 | cid-without-tounicode | 1/2 | **yes** | **no** | no |
+| 7 | form-xobject | 0/1 | **yes** | **yes** | no |
+| 8 | type3-glyph | 1/2 | **yes** | **no** | no |
+| 9 | actualtext | 1/2 | **yes** | **no** | no |
+| 10 | structure-tree | 1/2 | **yes** | **no** | no |
+| 11 | annotation | 0/1 | **yes** | **viewer only** | no |
+| 12 | acroform-field | 0/1 | **yes** | **viewer only** | no |
+| 13 | optional-content | 1/2 | **yes** | **no** | no |
+| 14 | thumbnail | 1/2 | **yes** | **viewer only** | no |
+| 15 | metadata | 1/2 | **yes** | **no** | no |
+| 16 | attachment | 1/2 | **yes** | **no** | no |
+| 17 | incremental-update | 0/1 | **no** | **no** | yes |
+| 18 | vector-outlines | 0/1 | **yes** | **yes** | no |
+| 19 | covered-by-a-rectangle | 1/2 | **no** | **no** | no |
+| 20 | image-pixels | 0/1 | **yes** | **yes** | no |
+| 21 | cid-lying-tounicode | 1/2 | **yes** | **no** | no |
+| 22 | split-content-streams | 1/2 | **no** | **no** | no |
+| 24 | page-level-metadata | 1/2 | **yes** | **no** | no |
+
+## Finding 2 — which instrument can see it, after the redaction
+
+| # | channel | I1 raw | I2 --qdf | I3 PDFium text | carrier canary | **the font (ch 23)** | I4 ink, flags=0 | I4 ink, FPDF_ANNOT | /Thumb ink |
+|--:|---|:--:|:--:|:--:|:--:|:--:|--:|--:|--:|
+| 1 | plain-tj | no | no | no | — | — | 0.0000 | 0.0000 | — |
+| 2 | kerned-tj | no | no | no | — | — | 0.0000 | 0.0000 | — |
+| 3 | positioned-runs | no | no | no | — | — | 0.0000 | 0.0000 | — |
+| 4 | differences-encoding | no | no | no | — | **alphabet** 12/12 | 0.0000 | 0.0000 | — |
+| 5 | cid-with-tounicode | no | no | no | — | **verbatim** | 0.0000 | 0.0000 | — |
+| 6 | cid-without-tounicode | no | no | no | — | **cmap alphabet** (-06BCEORSTUW) | 0.0000 | 0.0000 | — |
+| 7 | form-xobject | no | yes | yes | — | — | 0.0717 | 0.0717 | — |
+| 8 | type3-glyph | no | yes | no | — | — | 0.0000 | 0.0000 | — |
+| 9 | actualtext | no | no | no | **yes** | **alphabet** 12/12 | 0.0000 | 0.0000 | — |
+| 10 | structure-tree | no | no | no | **yes** | **alphabet** 12/12 | 0.0000 | 0.0000 | — |
+| 11 | annotation | no | yes | no | **yes** | — | 0.0000 | 0.0693 | — |
+| 12 | acroform-field | no | yes | no | **yes** | — | 0.0000 | 0.0000 | — |
+| 13 | optional-content | no | no | no | **yes** | — | 0.0000 | 0.0000 | — |
+| 14 | thumbnail | no | no | no | no | — | 0.0000 | 0.0000 | 0.360 |
+| 15 | metadata | no | no | no | **yes** | — | 0.0000 | 0.0000 | — |
+| 16 | attachment | no | no | no | **yes** | — | 0.0000 | 0.0000 | — |
+| 17 | incremental-update | no | no | no | — | — | 0.0000 | 0.0000 | — |
+| 18 | vector-outlines | no | no | no | — | — | 0.1361 | 0.1361 | — |
+| 19 | covered-by-a-rectangle | no | no | no | — | — | 1.0000 | 1.0000 | — |
+| 20 | image-pixels | no | no | no | — | — | 0.3591 | 0.3591 | — |
+| 21 | cid-lying-tounicode | no | no | no | — | **cmap alphabet** (-12BCEORSTUW) | 0.0000 | 0.0000 | — |
+| 22 | split-content-streams | no | no | no | — | — | 0.0000 | 0.0000 | — |
+| 24 | page-level-metadata | no | no | no | **yes** | — | 0.0000 | 0.0000 | — |
+
+### The same instruments on the round-trip, before any redaction
+
+| # | channel | I1 | I2 | I3 | I4 ink, flags=0 | I4 ink, FPDF_ANNOT | a person sees it | keep line survived |
+|--:|---|:--:|:--:|:--:|--:|--:|:--:|:--:|
+| 1 | plain-tj | no | yes | yes | 0.0712 | 0.0712 | yes | yes |
+| 2 | kerned-tj | no | no | yes | 0.0735 | 0.0735 | yes | yes |
+| 3 | positioned-runs | no | no | no | 0.0712 | 0.0712 | yes | yes |
+| 4 | differences-encoding | no | no | yes | 0.0644 | 0.0644 | yes | yes |
+| 5 | cid-with-tounicode | no | no | yes | 0.0652 | 0.0652 | yes | yes |
+| 6 | cid-without-tounicode | no | no | no | 0.0647 | 0.0647 | yes | yes |
+| 7 | form-xobject | no | yes | yes | 0.0717 | 0.0717 | yes | yes |
+| 8 | type3-glyph | no | yes | no | 0.0736 | 0.0736 | yes | yes |
+| 9 | actualtext | no | no | no | 0.0647 | 0.0647 | yes | yes |
+| 10 | structure-tree | no | no | yes | 0.0634 | 0.0634 | yes | yes |
+| 11 | annotation | no | yes | no | 0.0000 | 0.0693 | viewer only | yes |
+| 12 | acroform-field | no | yes | no | 0.0000 | 0.0000 | viewer only | yes |
+| 13 | optional-content | no | yes | yes | 0.0000 | 0.0000 | no | yes |
+| 14 | thumbnail | no | yes | yes | 0.0707 | 0.0707 | yes | yes |
+| 15 | metadata | no | yes | yes | 0.0711 | 0.0711 | yes | yes |
+| 16 | attachment | no | yes | yes | 0.0717 | 0.0717 | yes | yes |
+| 17 | incremental-update | no | no | no | 0.0000 | 0.0000 | no | yes |
+| 18 | vector-outlines | no | no | no | 0.1361 | 0.1361 | yes | yes |
+| 19 | covered-by-a-rectangle | no | yes | yes | 1.0000 | 1.0000 | no | yes |
+| 20 | image-pixels | no | no | no | 0.3591 | 0.3591 | yes | yes |
+| 21 | cid-lying-tounicode | no | no | no | 0.0620 | 0.0620 | yes | yes |
+| 22 | split-content-streams | no | yes | yes | 0.0723 | 0.0723 | yes | yes |
+| 24 | page-level-metadata | no | yes | yes | 0.0722 | 0.0722 | yes | yes |
+
+### What PDFium's text page reads, before and after
+
+| # | channel | before | after |
+|--:|---|---|---|
+| 1 | plain-tj | `BURROW-SECRET-01 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 2 | kerned-tj | `BURROW-SECRET-02 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 3 | positioned-runs | `BURROW- SECRET- 03 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 4 | differences-encoding | `BURROW-SECRET-04 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 5 | cid-with-tounicode | `BURROW-SECRET-05 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 6 | cid-without-tounicode | `KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 7 | form-xobject | `BURROW-SECRET-07 KEEP-THIS-LINE` | `BURROW-SECRET-07 KEEP-THIS-LINE` |
+| 8 | type3-glyph | `a KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 9 | actualtext | `BURROW-CARRIER-09 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 10 | structure-tree | `BURROW-SECRET-10 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 11 | annotation | `KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 12 | acroform-field | `KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 13 | optional-content | `BURROW-SECRET-13 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 14 | thumbnail | `BURROW-SECRET-14 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 15 | metadata | `BURROW-SECRET-15 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 16 | attachment | `BURROW-SECRET-16 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 17 | incremental-update | `KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 18 | vector-outlines | `KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 19 | covered-by-a-rectangle | `BURROW-SECRET-19 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 20 | image-pixels | `KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 21 | cid-lying-tounicode | `HAIILEES-FI-LER KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 22 | split-content-streams | `BURROW-SECRET-22 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+| 24 | page-level-metadata | `BURROW-SECRET-24 KEEP-THIS-LINE` | `KEEP-THIS-LINE` |
+
+### Writing the content stream back
+
+| # | channel | note |
+|--:|---|---|
+| 1 | plain-tj | 1 content stream, 97 -> 48 bytes |
+| 2 | kerned-tj | 1 content stream, 209 -> 48 bytes |
+| 3 | positioned-runs | 1 content stream, 523 -> 48 bytes |
+| 4 | differences-encoding | 1 content stream, 111 -> 48 bytes |
+| 5 | cid-with-tounicode | 1 content stream, 143 -> 48 bytes |
+| 6 | cid-without-tounicode | 1 content stream, 143 -> 48 bytes |
+| 7 | form-xobject | 1 content stream, 54 -> 54 bytes |
+| 8 | type3-glyph | 1 content stream, 79 -> 48 bytes |
+| 9 | actualtext | 1 content stream, 163 -> 100 bytes |
+| 10 | structure-tree | 1 content stream, 136 -> 73 bytes |
+| 11 | annotation | 1 content stream, 47 -> 47 bytes |
+| 12 | acroform-field | 1 content stream, 47 -> 47 bytes |
+| 13 | optional-content | 1 content stream, 114 -> 65 bytes |
+| 14 | thumbnail | 1 content stream, 97 -> 48 bytes |
+| 15 | metadata | 1 content stream, 97 -> 48 bytes |
+| 16 | attachment | 1 content stream, 97 -> 48 bytes |
+| 17 | incremental-update | 1 content stream, 47 -> 47 bytes |
+| 18 | vector-outlines | 1 content stream, 6801 -> 6801 bytes |
+| 19 | covered-by-a-rectangle | 1 content stream, 119 -> 70 bytes |
+| 20 | image-pixels | 1 content stream, 79 -> 79 bytes |
+| 21 | cid-lying-tounicode | 1 content stream, 143 -> 48 bytes |
+| 22 | split-content-streams | collapsed 2 content streams into one; the array structure did not survive |
+| 24 | page-level-metadata | 1 content stream, 97 -> 48 bytes |
+control 5 (a removal was observed): 6 of 6 channels scored gone were seen to go
+
+control 3 (the keep line): survived in 23 of 23 channels
+
+## Instrument cost — medians of 11
+
+| document | pages | I1 raw | I2 --qdf | I3 PDFium text | I4 render 4x |
+|---|--:|--:|--:|--:|--:|
+| 01-plain-tj.pdf, round-tripped (1 page) | 1 | 9 µs | 1.58 ms | 119 µs | 4.59 ms |
+| tests/conformance/fixtures/pages-137.pdf | 137 | 122 µs | 2.09 ms | 332 µs | 3821.83 ms |
+
+## Finding 4 — the write verb's operands
+- a missing key through the TRAPPED `qpdf_oh_get_key` yields type `null`, unparsing as `null`
+- the UNTRAPPED `qpdf_oh_new_null` yields type `null`, unparsing as `null`
+- interchangeable for `qpdf_oh_replace_stream_data`: yes
+
+### What is reachable from a page handle, and what is not
+
+| # | channel | the carrier | reachable from `qpdf_get_page_n`? |
+|--:|---|---|:--:|
+| 10 | structure-tree | `/StructTreeRoot`, on the catalogue | **no** — and `qpdf_get_root` is not callable (ADR 0013) |
+| 11 | annotation | `/Annots`, on the page | yes, as a `array` |
+| 12 | acroform-field | `/AcroForm`, on the catalogue | **no** — and `qpdf_get_root` is not callable (ADR 0013) |
+| 13 | optional-content | `/OCProperties`, on the catalogue | **no** — and `qpdf_get_root` is not callable (ADR 0013) |
+| 14 | thumbnail | `/Thumb`, on the page | yes, as a `stream` |
+| 15 | metadata | `/Metadata`, on the catalogue | **no** — and `qpdf_get_root` is not callable (ADR 0013) |
+| 16 | attachment | `/Names`, on the catalogue | **no** — and `qpdf_get_root` is not callable (ADR 0013) |
+
+artifacts in /home/anuragj/Desktop/GitHub/burrow/spikes/redaction-survival/results
