@@ -6,6 +6,13 @@ mappings that describe them**, **strip every page-level key outside a named allo
 five document shapes outright, disclose three it cannot reach, and that its verification assert
 **what it did**, never *that the secret is gone*. No ADR is amended here.
 
+**Decided by [ADR 0029](../adr/0029-what-redaction-does-and-what-it-refuses-to-do.md)**, written
+from this spike on the same day. Said on this document's own status line because that is where
+this repository puts it (ADRs 0002, 0007, 0008 and spike 0004), not only in the record that
+decides it. Two things in that ADR are not in this report and are not derivable from it: the
+per-channel assignment is stated as a decision rather than a recommendation, and control 5 is
+generalised into a project rule.
+
 Spike code: `spikes/redaction-survival/`, excluded from the cargo workspace by its own
 `[workspace]` table. Nothing is in `core/`, `bindings/` or `apps/web/`.
 
