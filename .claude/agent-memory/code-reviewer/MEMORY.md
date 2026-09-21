@@ -8,3 +8,4 @@
 - [CI diagnostic steps lie](feedback_ci_diagnostic_step_lies.md) — run a failure-describing step against a real log: wrong build path, narrow regex class, and `if: failure()` all name the wrong cause.
 - [New fuzz target registration](feedback_new_fuzz_target_registration.md) — four sites, not three; fuzz-nightly.yml's matrix is the seeded run and the one that gets missed.
 - [Gate keyed on a hand-edited id](feedback_gate_keyed_on_hand_edited_id.md) — break the identifier a gate resolves through; an unresolvable case that is only a note means the gate turned itself off.
+- [Probe that re-implements its rule](feedback_probe_reimplements_rule.md) — a source-scan test whose probe is a copied closure stays green with the real filter inert.

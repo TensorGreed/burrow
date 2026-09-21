@@ -8,21 +8,26 @@
 //! differential harness is what holds them together. Code shared between them could not
 //! diverge; code that *cannot* diverge cannot be caught diverging either.
 //!
-//! # Handles are released by hand here, and that is the real difference
+//! # Handles were released by hand here, and that is no longer the difference
 //!
-//! The native path has [`ObjectHandle`](crate::qpdf), which releases on drop and carries a
-//! lifetime tying it to its document. Across the bridge a handle is a `u32` and there is
-//! nothing to attach a `Drop` to — the value qpdf gives back is an index into a cache in
-//! *another heap*. So release is a discipline here rather than a type, and the discipline is
-//! stated once: **every function in this module that obtains a handle releases it before
-//! returning, on every path including the error paths.**
+//! **This section said the opposite until `web/handle.rs` landed**, and it is kept in this
+//! shape because the history is the argument. It read: *"Across the bridge a handle is a `u32`
+//! and there is nothing to attach a `Drop` to … So release is a discipline here rather than a
+//! type, and the discipline is stated once: every function in this module that obtains a handle
+//! releases it before returning, on every path including the error paths."*
 //!
-//! That claim was false when it was first written, in the one way a hand-written discipline
-//! always fails: two `?`s on an allocation returned past a live handle. Both are gone, and not
-//! by adding two more release calls — the two keys the walk reads are now copied into the
-//! engine heap once, in [`Keys`], so the walk cannot fail on allocation at all. Fewer paths
-//! beats more releases, and it removed roughly 1.3 million malloc/free pairs on a document at
-//! `max_pages` with a deep tree.
+//! **That claim was false when it was first written**, in the one way a hand-written discipline
+//! always fails: two `?`s on an allocation returned past a live handle. The fix then was to
+//! remove the failing paths rather than add releases — the two keys the walk reads are copied
+//! into the engine heap once, in [`Keys`], so the walk cannot fail on allocation at all, which
+//! also removed roughly 1.3 million malloc/free pairs on a document at `max_pages` with a deep
+//! tree. Fewer paths beats more releases, and that is still true.
+//!
+//! It is a type now. [`WebHandle`] releases on drop and borrows the
+//! session that issued it, so a handle can no longer outlive the `qpdf_data` its release names.
+//! This module had **ten** manual releases in the `/Parent` walk alone, one per exit; it has
+//! none. What is left of the discipline is the part a type cannot hold: the walk still means to
+//! keep one ancestor handle live at a time, and it does that by reassigning `current`.
 //!
 //! And the claim is measured rather than asserted: `web/tests.rs` counts live handles after a
 //! rotation, after a refusal, and after the depth-exhausted walk. That mattered more than it
@@ -43,6 +48,7 @@ use std::sync::Arc;
 use burrow_types::{Deadline, Error, Limits, Result, Rotation, Stage};
 
 use super::bridge::QpdfPtr;
+use super::handle::WebHandle;
 use super::qpdf::{Session, WebQpdf};
 use crate::codes::qpdf::object_type;
 use crate::{OpenOptions, PageRotator};
@@ -158,9 +164,8 @@ impl PageRotator for WebQpdf {
 
     fn effective_rotation(&self, source: &Self::Source, index: u64) -> Result<Rotation> {
         let page = page_handle(self, &source.session, index, source.pages)?;
-        let rotation = effective_rotation(self, &source.session, &source.keys, page);
-        self.bridge().oh_release(source.session.data(), page);
-        rotation
+        // The handle releases on drop, so there is no line here for a `?` to jump over.
+        effective_rotation(&page, &source.keys)
     }
 
     fn rotations(
@@ -181,10 +186,9 @@ impl PageRotator for WebQpdf {
             // BEFORE THE HANDLE IS ISSUED, so a refusal cannot leave one behind.
             deadline.checkpoint(clock.as_ref())?;
             let page = page_handle(self, &source.session, index, source.pages)?;
-            // EVERY PATH RELEASES: `?` inside the loop would return past the release.
+            // EVERY PATH RELEASES, by the handle's `Drop` rather than a line a `?` could skip.
             // RECORDED, NOT JUDGED -- see the trait's docs.
-            let outcome = declared_rotation(self, &source.session, &source.keys, page);
-            self.bridge().oh_release(source.session.data(), page);
+            let outcome = declared_rotation(&page, &source.keys);
             rotations.push(outcome?.unwrap_or(0));
         }
         Ok(rotations)
@@ -235,13 +239,11 @@ impl PageRotator for WebQpdf {
             deadline.checkpoint(clock.as_ref())?;
 
             let page = page_handle(self, &source.session, index, source.pages)?;
-            // EVERY PATH RELEASES. Written as a closure-and-release rather than `?` on each
-            // step, because `?` here would return past the release -- which is exactly the
-            // leak this module's header is about, and the native path's `Drop` is what makes
-            // it impossible over there.
-            let outcome = self.rotate_one_page(source, page, rotation);
-            self.bridge().oh_release(source.session.data(), page);
-            outcome?;
+            // EVERY PATH RELEASES, by the handle's `Drop`. This was written as a
+            // closure-and-release because a `?` here would have returned past the release --
+            // the leak this module's header is about, and the thing the native path's `Drop`
+            // made impossible over there and this one's does now.
+            self.rotate_one_page(source, &page, rotation)?;
         }
 
         deadline.checkpoint(clock.as_ref())?;
@@ -294,31 +296,36 @@ impl WebQpdf {
     ///
     /// Split out so `rotate` can release the page handle on every path: a `?` inside the loop
     /// would return past the release.
-    fn rotate_one_page(&self, source: &WebRotatable, page: u32, rotation: Rotation) -> Result<()> {
+    /// Takes the handle rather than a raw `u32`, so the `data` and the `oh` reaching qpdf are
+    /// a pair by construction. The first version took the `u32` and rebuilt the pair at the
+    /// call, which is the shape `web/handle.rs` exists to remove.
+    fn rotate_one_page(
+        &self,
+        source: &WebRotatable,
+        page: &WebHandle<'_>,
+        rotation: Rotation,
+    ) -> Result<()> {
         // READ THE EFFECTIVE VALUE, not the page's own. A page inheriting 90 that is turned
         // another 90 must end at 180; reading only its own dictionary would see nothing,
         // write 90, and quietly UNDO an inherited quarter turn.
-        let current = effective_rotation(self, &source.session, &source.keys, page)?;
+        let current = effective_rotation(page, &source.keys)?;
         let wanted = rotation.after(current);
 
-        let value = self
-            .bridge()
-            .oh_new_integer(source.session.data(), wanted.degrees());
-        if let Some(error) = source.session.take_error() {
-            self.bridge().oh_release(source.session.data(), value);
-            return Err(error);
-        }
+        // OWNED BEFORE THE DRAIN, as everywhere else: qpdf allocates a handle on the error
+        // path too, and the `Drop` releases it whichever way this returns. The two manual
+        // releases this replaced were the shape a `?` jumps over.
+        let value = WebHandle::owned(
+            self,
+            &source.session,
+            self.bridge()
+                .oh_new_integer(source.session.data(), wanted.degrees()),
+        );
+        value.drained()?;
 
         // ON THE PAGE. Never on the ancestor `current` may have come from -- that node can be
         // the parent of every page in the document.
-        self.bridge()
-            .oh_replace_key(source.session.data(), page, source.keys.rotate, value);
-        let error = source.session.take_error();
-        self.bridge().oh_release(source.session.data(), value);
-        match error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        page.replace_key(source.keys.rotate, &value);
+        page.drained()
     }
 }
 
@@ -356,13 +363,16 @@ impl Keys {
 
 /// The handle for page `index`, bounds-checked first.
 ///
-/// The caller releases it.
-pub(super) fn page_handle(
-    engine: &WebQpdf,
-    session: &Session,
+/// The returned handle releases on drop, and borrows `session` so it cannot outlive it.
+pub(super) fn page_handle<'e>(
+    engine: &'e WebQpdf,
+    // `&'e Session`, NOT `&Session`: the returned handle's `Drop` releases against this
+    // session's `qpdf_data`, so the session has to outlive it. With the borrow unconstrained
+    // this compiled, and both reviews wrote the function that frees the session first.
+    session: &'e Session,
     index: u64,
     pages: u64,
-) -> Result<u32> {
+) -> Result<WebHandle<'e>> {
     if index >= pages {
         return Err(Error::InvalidArgument(
             "page is not in the document".to_owned(),
@@ -371,34 +381,28 @@ pub(super) fn page_handle(
     let n = u32::try_from(index)
         .map_err(|_| Error::Internal("page index does not fit in u32".to_owned()))?;
     let page = engine.bridge().get_page_n(session.data(), n);
-    if let Some(error) = session.take_error() {
-        // ONLY WHAT WAS ISSUED -- qpdf numbers handles from 1, so 0 means none was created.
-        // See `web/reorder.rs`'s `page_handle` for why releasing an unissued id is worse than
-        // a no-op. The same shape, fixed in both rather than only where it was found.
-        if page != 0 {
-            engine.bridge().oh_release(session.data(), page);
-        }
-        return Err(error);
-    }
-    Ok(page)
+    // OWNED BEFORE THE DRAIN, and released by `Drop` whichever way this returns. qpdf allocates
+    // a handle on the error path too -- `trap_oh_errors`' fallback is `return_uninitialized`,
+    // which calls `new_object` -- so returning past the raw `u32` leaks one `oh_cache` entry
+    // per failure. The "only what was issued" rule lives in the type now: qpdf numbers from 1,
+    // so 0 is "no handle", and releasing an unissued id would cancel a future leak of the same
+    // id rather than doing nothing.
+    let owned = WebHandle::owned(engine, session, page);
+    owned.drained()?;
+    Ok(owned)
 }
 
 /// The rotation `page` displays at, following `/Rotate` up the page tree.
 ///
-/// Releases every handle it takes; `page` belongs to the caller.
+/// Every handle it takes releases on drop; `page` is the caller's and is only borrowed.
 ///
 /// # Errors
 ///
 /// [`Error::Malformed`] if the value is not an integer multiple of 90. Callers that only need
 /// to **record** what a page displays at want [`declared_rotation`] instead; the native
 /// module's copy of this pair carries the reasoning.
-pub(super) fn effective_rotation(
-    engine: &WebQpdf,
-    session: &Session,
-    keys: &Keys,
-    page: u32,
-) -> Result<Rotation> {
-    match declared_rotation(engine, session, keys, page)? {
+pub(super) fn effective_rotation(page: &WebHandle<'_>, keys: &Keys) -> Result<Rotation> {
+    match declared_rotation(page, keys)? {
         None => Ok(Rotation::None),
         Some(degrees) => Rotation::from_degrees(degrees)
             .map_err(|_| Error::Malformed("/Rotate is not a multiple of 90".to_owned())),
@@ -411,71 +415,49 @@ pub(super) fn effective_rotation(
 /// witness records an out-of-spec value rather than refusing it: an ADR 0022 promise about a
 /// page nobody named must not fail the operation.
 ///
-/// Releases every handle it takes; `page` belongs to the caller.
-pub(super) fn declared_rotation(
-    engine: &WebQpdf,
-    session: &Session,
-    keys: &Keys,
-    page: u32,
-) -> Result<Option<i64>> {
-    let data = session.data();
-
-    let own = read_rotate(engine, session, keys, page)?;
+/// Every handle it takes releases on drop; `page` is the caller's and is only borrowed.
+pub(super) fn declared_rotation(page: &WebHandle<'_>, keys: &Keys) -> Result<Option<i64>> {
+    let own = read_rotate(page, keys)?;
     if let Some(degrees) = own {
         return Ok(Some(degrees));
     }
 
-    let mut current = engine.bridge().oh_get_key(data, page, keys.parent);
-    if let Some(error) = session.take_error() {
-        engine.bridge().oh_release(data, current);
-        return Err(error);
-    }
+    // TEN MANUAL RELEASES USED TO LIVE IN THIS FUNCTION, one per exit, and every `?` that was
+    // ever added here had to be checked against all of them. `WebHandle`'s `Drop` is the whole
+    // of it now: the walk still holds ONE handle at a time -- reassigning `current` drops the
+    // child as its parent comes in hand, which is what keeps a deep tree from filling the cache
+    // -- and it holds it on every path out, including the ones that did not exist when the
+    // releases were written.
+    let mut current = page.key(keys.parent);
+    current.drained()?;
 
     for _ in 0..MAX_PAGE_TREE_DEPTH {
-        let parent_type = engine.bridge().oh_get_type_code(data, current);
-        if let Some(error) = session.take_error() {
-            engine.bridge().oh_release(data, current);
-            return Err(error);
-        }
+        let parent_type = current.type_code();
+        current.drained()?;
         if parent_type == object_type::NULL {
             // The top of a well-formed tree: `/Parent` absent reads as a null object.
-            engine.bridge().oh_release(data, current);
             return Ok(None);
         }
         if parent_type != object_type::DICTIONARY {
             // A `/Parent` pointing at something that cannot be a page-tree node. Malformed
             // rather than folded in with the line above: "the walk ended" and "the walk hit
             // something that should not be there" are different facts.
-            engine.bridge().oh_release(data, current);
             return Err(Error::Malformed(
                 "a page tree node's /Parent is not a dictionary".to_owned(),
             ));
         }
 
-        match read_rotate(engine, session, keys, current) {
-            Ok(Some(degrees)) => {
-                engine.bridge().oh_release(data, current);
-                return Ok(Some(degrees));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                engine.bridge().oh_release(data, current);
-                return Err(error);
-            }
+        if let Some(degrees) = read_rotate(&current, keys)? {
+            return Ok(Some(degrees));
         }
 
-        let parent = engine.bridge().oh_get_key(data, current, keys.parent);
-        // The child is released as soon as its parent is in hand: the walk holds one handle
-        // at a time, which is what keeps a deep tree from filling the cache.
-        engine.bridge().oh_release(data, current);
-        if let Some(error) = session.take_error() {
-            engine.bridge().oh_release(data, parent);
-            return Err(error);
-        }
+        let parent = current.key(keys.parent);
+        parent.drained()?;
+        // The child is released here, by the assignment: `current`'s old value drops as the new
+        // one takes its place, so the walk still holds exactly one handle at a time.
         current = parent;
     }
 
-    engine.bridge().oh_release(data, current);
     Err(Error::Malformed(
         "the page tree is deeper than this engine will walk".to_owned(),
     ))
@@ -485,35 +467,26 @@ pub(super) fn declared_rotation(
 ///
 /// **The type is asserted before the value is read.** qpdf returns 0 for every non-integer
 /// rather than raising, so without this a `/Rotate /Ninety` would read as "no rotation" and
-/// emit a page turned the wrong way. Releases the handle it takes.
+/// emit a page turned the wrong way.
 ///
 /// Whether the number is a multiple of 90 is **not** decided here; see [`declared_rotation`].
-fn read_rotate(engine: &WebQpdf, session: &Session, keys: &Keys, node: u32) -> Result<Option<i64>> {
-    let data = session.data();
-    let value = engine.bridge().oh_get_key(data, node, keys.rotate);
-    if let Some(error) = session.take_error() {
-        engine.bridge().oh_release(data, value);
-        return Err(error);
-    }
+fn read_rotate(node: &WebHandle<'_>, keys: &Keys) -> Result<Option<i64>> {
+    let value = node.key(keys.rotate);
+    value.drained()?;
 
-    let type_code = engine.bridge().oh_get_type_code(data, value);
-    if let Some(error) = session.take_error() {
-        engine.bridge().oh_release(data, value);
-        return Err(error);
-    }
+    let type_code = value.type_code();
+    value.drained()?;
 
-    let outcome = match type_code {
+    // NO RELEASE ON ANY OF THESE PATHS, because there is nothing to write: the handle drops at
+    // the end of the function whichever arm returns. The three that used to be here were
+    // identical lines a reader had to check against every `?`.
+    match type_code {
         object_type::NULL => Ok(None),
         object_type::INTEGER => {
-            let degrees = engine.bridge().oh_get_int_value(data, value);
-            match session.take_error() {
-                Some(error) => Err(error),
-                None => Ok(Some(degrees)),
-            }
+            let degrees = value.int_value();
+            value.drained()?;
+            Ok(Some(degrees))
         }
         _ => Err(Error::Malformed("/Rotate is not an integer".to_owned())),
-    };
-
-    engine.bridge().oh_release(data, value);
-    outcome
+    }
 }

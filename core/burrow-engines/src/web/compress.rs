@@ -130,11 +130,10 @@ impl DocumentCompressor for WebQpdf {
             // BEFORE THE HANDLE IS ISSUED, so a refusal cannot leave one behind.
             deadline.checkpoint(clock.as_ref())?;
             let page = super::rotate::page_handle(self, &source.session, index, source.pages)?;
-            // EVERY PATH RELEASES: `?` inside the loop would return past the release.
+            // EVERY PATH RELEASES, by the handle's `Drop` rather than a line a `?` could skip.
             // RECORDED, NOT JUDGED -- compression names no page to turn, so normalising here
             // would fail a whole operation over a page it was never going to touch.
-            let outcome = super::rotate::declared_rotation(self, &source.session, &keys, page);
-            self.bridge().oh_release(source.session.data(), page);
+            let outcome = super::rotate::declared_rotation(&page, &keys);
             rotations.push(outcome?.unwrap_or(0));
         }
         Ok(rotations)

@@ -350,10 +350,6 @@ impl QpdfBridge for JsQpdf {
         qpdf_oh_get_dict(data.0, oh)
     }
 
-    fn oh_get_int_value_i64(&self, data: QpdfPtr, oh: u32) -> i64 {
-        qpdf_oh_get_int_value(data.0, oh)
-    }
-
     fn oh_new_null(&self, data: QpdfPtr) -> u32 {
         qpdf_oh_new_null(data.0)
     }
