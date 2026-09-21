@@ -1,0 +1,237 @@
+# The redaction corpus, and the verdict ADR 0029 owes each fixture.
+#
+# THIS FILE ASSERTS DECISIONS, NOT FILES.
+#
+# A corpus that only holds documents is a pile of documents. Every placement below carries the
+# verdict `docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md` §3 assigns it —
+# `handle`, `refuse` or `disclose` — so the corpus is an executable form of that table. When the
+# operation lands, a fixture whose behaviour disagrees with its verdict fails, and the ADR and
+# the implementation cannot drift apart quietly.
+#
+# TWO KINDS OF FIXTURE, TWO LIFECYCLES
+#
+#   kind = "producer"    Committed. Made by a real word processor, typesetter or OCR program.
+#                        Cannot be regenerated in CI — see PROVENANCE.md for the exact versions.
+#   kind = "hand-built"  Not committed. Deterministic, regenerated on demand by
+#                        `tools/make-redaction-fixtures.py`.
+#
+# ADR 0029 §8'S RULE, AND THE HALF OF IT THAT IS CHECKABLE TODAY
+#
+#   > Where a check reports that something is gone, it must also show that something changed.
+#
+# Each placement therefore carries two fields, not one:
+#
+#   witness_before   how we know the canary is in this file NOW. `tools/check-redaction-corpus.py`
+#                    verifies every one of these on every run. A placement whose canary cannot be
+#                    witnessed is a placement measuring nothing, and the checker refuses.
+#   expect_after     what must be true once redaction runs. NOT verifiable yet — the operation
+#                    does not exist (#131, #132, #133). Recorded now so the assertion is written
+#                    before the code it judges, rather than fitted to whatever the code does.
+#
+# Stating that split plainly matters: half of §8's rule is live today and half is a promise. A
+# manifest that implied both were checked would be the exact failure §8 is about.
+
+[meta]
+version = 1
+adr = "docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md"
+issue = 135
+keep_line = "KEEP-THIS-LINE"
+
+# ---------------------------------------------------------------------------------------
+# Real producer output.
+#
+# Spike 0006's 23 fixtures are hand-built, and so is every file in tests/conformance/fixtures.
+# That is the right default and it is also how this repository learned twice that a synthetic
+# corpus misses what real documents contain — #112's CFF program, and spike 0006's own font
+# channel. These three are here so the corpus contains structures nobody here would think to
+# write.
+# ---------------------------------------------------------------------------------------
+
+[[fixture]]
+name = "producer-writer"
+file = "fixtures/producer-writer.pdf"
+kind = "producer"
+producer = "LibreOffice Writer 24.2.7.2"
+pages = 1
+notes = """
+A word processor's export, with the things a word processor emits: a tagged /StructTreeRoot,
+TrueType subsets carrying /ToUnicode, and document /Info the application filled in from its own
+metadata fields. The page text is in a subset font, so the canary is NOT a literal in the
+content stream — measured: zero literal occurrences in the qdf expansion.
+"""
+
+  [[fixture.placement]]
+  channel = "page text, subset font"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "handle"
+  adr = "§1, §3"
+  witness_before = "pdfium-text"
+  expect_after = "gone"
+
+  [[fixture.placement]]
+  channel = "font /ToUnicode for the removed run"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "font-mapping"
+  expect_after = "gone"
+  notes = "Channel 23. The bfchar entries for codes the output no longer draws go with the text."
+
+  [[fixture.placement]]
+  channel = "document /Info /Title and /Keywords"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "disclose"
+  adr = "§7"
+  witness_before = "raw-utf16-hex"
+  expect_after = "present"
+  notes = """
+DELIBERATELY NOT REMOVED. /Info is on the trailer and unreachable behind qpdf_get_trailer
+(ADR 0013's caller rule), so §7 discloses it and names File -> Properties as the place to look.
+This placement is why that disclosure is concrete rather than hypothetical: a real word
+processor put the document title in the metadata without being asked.
+"""
+
+  [[fixture.placement]]
+  channel = "/StructTreeRoot"
+  canary = "BURROW-SECRET-WRITER"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "structure-tree-present"
+  expect_after = "refused"
+  notes = """
+The document carries a structure tree, so §3 refuses it outright. The refusal's page-side
+signal is one of the three #125 marks OWED — the page's /StructParents is a proposal, not a
+measured trigger. This fixture is therefore also a #125 case: it is a REAL document that the
+proposed signal must be shown to catch.
+"""
+
+[[fixture]]
+name = "producer-latex"
+file = "fixtures/producer-latex.pdf"
+kind = "producer"
+producer = "pdfTeX 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian)"
+pages = 1
+notes = """
+A typesetter's output, and the most structurally unlike anything hand-built in this corpus.
+Measured in the qdf expansion:
+
+  * the canary is SPLIT BY KERNING across a TJ array — `[(BURROW-SECRET-LA)1(TEX)]TJ`. A
+    contiguous literal scan of the content stream finds `BURROW-SECRET-LA` and stops. This is
+    spike 0006's channel 2 occurring naturally, in a document nobody built to be adversarial.
+  * ligature substitution elsewhere on the page — `<6f1e6365>` and `\\034` for `ffi` — so the
+    glyphs drawn are not the characters typed.
+  * Type1 subsets with /Differences, not TrueType. Three /Differences arrays — and they use
+    SYNTHETIC glyph names, `/a66` rather than `/B`, where the number is the character code.
+    No hand-built fixture here uses that encoding, and the corpus checker refused this
+    fixture's font placement until it learned to decode it. ADR 0029 §1's "drop its
+    /Differences entry" therefore has to handle synthetic names, not only AGL ones.
+  * text extraction is LOSSY on this document even though nothing lies: PDFium reads
+    "Field oce nding" for "Field office finding", because the subset has no /ToUnicode for the
+    ligature glyphs. Real evidence for §6's refusal to treat extraction as admissible.
+"""
+
+  [[fixture.placement]]
+  channel = "page text, Type1 subset, canary split across a TJ array by kerning"
+  canary = "BURROW-SECRET-LATEX"
+  verdict = "handle"
+  adr = "§1, §3"
+  witness_before = "pdfium-text"
+  expect_after = "gone"
+  notes = "A literal scan does NOT witness this one; that is the point of the placement."
+
+  [[fixture.placement]]
+  channel = "font /Differences for the removed run"
+  canary = "BURROW-SECRET-LATEX"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "font-mapping"
+  expect_after = "gone"
+
+# ---------------------------------------------------------------------------------------
+
+[[fixture]]
+name = "producer-ocr-scan"
+file = "fixtures/producer-ocr-scan.pdf"
+kind = "producer"
+producer = "pdfTeX + PDFium raster + tesseract 5.3.4"
+pages = 1
+notes = """
+A scanned page: the text is PIXELS, and an invisible text layer sits over it. Built the way the
+real pipeline runs — typeset, rasterise through PDFium so only pixels remain, degrade the way a
+scanner does, then let tesseract read it back. The text layer is genuine OCR output.
+
+Measured in the qdf expansion:
+
+  * `q 1748.571 0 0 2262.857 0 0 cm /Im1 Do Q` — a full-page DeviceGray image, 1700x2200
+  * `BT` then `3 Tr` — text render mode 3, invisible
+  * a CID font with 2-byte hex codes and per-run `Tz` horizontal scaling, which tesseract uses
+    to stretch each word to match the image
+  * a /ToUnicode with a bfrange, so the layer IS extractable
+  * tesseract recognised both canaries exactly
+"""
+
+  [[fixture.placement]]
+  channel = "the page image — the secret as pixels"
+  canary = "BURROW-SECRET-SCAN"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "image-covers-page"
+  expect_after = "refused"
+
+  [[fixture.placement]]
+  channel = "the invisible OCR text layer (3 Tr)"
+  canary = "BURROW-SECRET-SCAN"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  expect_after = "refused"
+
+  [fixture.decision]
+  # ---------------------------------------------------------------------------------
+  # A STATED DECISION, NOT A DISCOVERY.
+  # ---------------------------------------------------------------------------------
+  summary = "Not Only PDF refuses scanned documents, and scanned documents are common."
+  body = """
+ADR 0029 §3 refuses a page whose region intersects an image. Every region on this page
+intersects one, because the page IS an image. So a scanned document is refused outright — and
+scans are among the most common things a person would bring to a redaction tool, which is
+exactly why this must be a decision somebody took rather than something the first user finds.
+
+CONFIRMED BY MEASUREMENT, not by reading the rule: this fixture has a full-page image draw and
+an invisible text layer, which is the shape §3's image rule keys on.
+
+WHY IT IS REFUSED, CORRECTED. The first draft of this entry said that removing the pixels would
+mean deciding WHICH pixels, and that deciding meant recognising text in a bitmap, and therefore
+OCR. That is wrong, and it is wrong in a way worth recording because it made a solvable problem
+look unsolvable.
+
+Redaction here is REGION-BASED. The person selects the region, so which pixels is not a
+question anybody has to answer: every pixel inside the selected rectangle is blacked out, and
+the invisible text glyphs whose boxes fall in the same region are removed by the ordinary
+content-stream path. No recognition is involved at any point.
+
+THE ACTUAL BLOCKER IS RE-ENCODING THE EDITED IMAGE, and it is per filter:
+
+  /FlateDecode, greyscale or RGB   Straightforward. Decode, black out the region's pixels,
+                                   re-deflate. zlib is already linked and the image dictionary
+                                   needs no change beyond /Length.
+  /DCTDecode                       Harder, and lossy. Re-encoding the whole image imposes
+                                   generation loss on the parts nobody touched. Editing in the
+                                   DCT domain — zeroing the coefficient blocks the region covers
+                                   — avoids that and is specialised work.
+  /JBIG2Decode                     Hardest. Symbol dictionaries are shared across pages, neither
+                                   engine decodes them here, and spike 0005 refused jbig2enc on
+                                   correctness grounds rather than licence ones.
+
+So v1 refuses because burrow cannot write the image back, not because it cannot tell what to
+remove. THIS FIXTURE IS FLATE GREYSCALE — the easy case — which makes it the right one to
+measure against when the condition is taken up.
+
+Recorded as ADR 0029's third named condition for revisiting, alongside hb-subset and the
+catalogue wall.
+
+WHAT THE PAGE OWES A PERSON. A refusal that says only "this document cannot be redacted" is a
+dead end for the commonest case there is, and it would also be misleading: the limit is
+temporary and specific. §7's voice requires the reason, and the reason is that the page is a
+picture and burrow cannot yet write a changed picture back. #136 carries the copy.
+"""
