@@ -150,6 +150,10 @@ impl Document {
     /// # Safety
     ///
     /// `data` must be a live `qpdf_data`.
+    #[allow(
+        dead_code,
+        reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
+    )]
     pub(super) unsafe fn take_error_on(data: ffi::QpdfData) -> Option<Error> {
         // SAFETY: the caller guarantees `data` is live.
         if unsafe { ffi::qpdf_has_error(data) } == 0 {
@@ -476,6 +480,9 @@ mod rotate_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "native-engines"))]
+mod write_path_tests;
 
 /// Reading a document back to check what an operation produced (ADR 0022).
 ///

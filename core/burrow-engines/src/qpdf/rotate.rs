@@ -275,7 +275,7 @@ pub(super) fn declared_rotation<'a>(
     // previous one is dropped — and therefore released — at that moment. A version of this
     // that collected ancestors into a `Vec` first would hold one handle per level, which is
     // the shape `handle.rs` is about.
-    let mut node = page.key(document, ROTATE_KEY.as_ptr().cast());
+    let mut node = page.key(ROTATE_KEY.as_ptr().cast());
     // The page's own value first, then ancestors. `node` above is the *value*; the walk below
     // moves over page-tree *nodes*, so they are kept apart deliberately.
     let own = rotation_of(document, &node)?;
@@ -284,7 +284,7 @@ pub(super) fn declared_rotation<'a>(
     }
     drop(node);
 
-    let mut current = page.key(document, PARENT_KEY.as_ptr().cast());
+    let mut current = page.key(PARENT_KEY.as_ptr().cast());
     if let Some(error) = document.take_error() {
         return Err(error);
     }
@@ -315,7 +315,7 @@ pub(super) fn declared_rotation<'a>(
             ));
         }
 
-        node = current.key(document, ROTATE_KEY.as_ptr().cast());
+        node = current.key(ROTATE_KEY.as_ptr().cast());
         if let Some(error) = document.take_error() {
             return Err(error);
         }
@@ -324,7 +324,7 @@ pub(super) fn declared_rotation<'a>(
         }
         drop(node);
 
-        let parent = current.key(document, PARENT_KEY.as_ptr().cast());
+        let parent = current.key(PARENT_KEY.as_ptr().cast());
         if let Some(error) = document.take_error() {
             return Err(error);
         }

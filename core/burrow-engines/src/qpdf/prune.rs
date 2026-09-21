@@ -75,7 +75,7 @@ impl<'a> ObjectGraph for QpdfGraph<'a> {
 
     fn key(&self, of: &Self::Handle, key: &[u8]) -> Result<Self::Handle> {
         let key = c_key(key);
-        let value = of.key(self.document, key.as_ptr().cast());
+        let value = of.key(key.as_ptr().cast());
         self.drained()?;
         Ok(value)
     }
@@ -111,7 +111,7 @@ impl<'a> ObjectGraph for QpdfGraph<'a> {
     }
 
     fn array_item(&self, of: &Self::Handle, at: i32) -> Result<Self::Handle> {
-        let item = of.array_item(self.document, at);
+        let item = of.array_item(at);
         self.drained()?;
         Ok(item)
     }
@@ -122,24 +122,24 @@ impl<'a> ObjectGraph for QpdfGraph<'a> {
     }
 
     fn stream_dict(&self, of: &Self::Handle) -> Result<Self::Handle> {
-        let dictionary = of.stream_dict(self.document);
+        let dictionary = of.stream_dict();
         self.drained()?;
         Ok(dictionary)
     }
 
     fn page_content(&self, page: &Self::Handle) -> Result<Vec<u8>> {
-        page.page_content(self.document)
+        page.page_content()
     }
 
     fn stream_data(&self, of: &Self::Handle) -> Result<Option<Vec<u8>>> {
-        of.stream_data(self.document)
+        of.stream_data()
     }
 
     fn identity(&self, of: &Self::Handle) -> Result<(i32, i32)> {
         // `object` drains the error itself, and returns `Result` rather than failing open: both
         // reads yield 0 on an internal failure and `(0, 0)` equals `(0, 0)`, so a swallowed error
         // here is two unrelated objects comparing equal. See `handle.rs`.
-        of.object(self.document)
+        of.object()
     }
 
     fn integer_value(&self, of: &Self::Handle) -> Result<i64> {

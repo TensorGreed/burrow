@@ -670,6 +670,10 @@ unsafe extern "C" {
     /// `filter` and `decode_parms` are object handles, not optional pointers: passing a **null
     /// object** is how you say "no filter", and a handle to one has to come from somewhere. See
     /// [`qpdf_oh_new_null`].
+    #[allow(
+        dead_code,
+        reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
+    )]
     pub(super) fn qpdf_oh_replace_stream_data(
         qpdf: QpdfData,
         stream_oh: QpdfObjectHandle,
@@ -692,6 +696,10 @@ unsafe extern "C" {
     /// key that is not there is cleverness in the place this repository has least appetite for
     /// it."* The trick also goes through `qpdf_oh_get_key`, which resolves an indirect object —
     /// the parser, on file-controlled bytes — to obtain a constant.
+    #[allow(
+        dead_code,
+        reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
+    )]
     pub(super) fn qpdf_oh_new_null(qpdf: QpdfData) -> QpdfObjectHandle;
 
     /// `void qpdf_oh_free_buffer(unsigned char** bufp)` — `qpdf-c.h:936`.
