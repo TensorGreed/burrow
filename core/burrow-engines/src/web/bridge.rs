@@ -569,6 +569,69 @@ pub trait QpdfBridge: Send + Sync {
     /// Returns a new handle, which the caller must release.
     fn oh_new_integer(&self, data: QpdfPtr, value: i64) -> u32;
 
+    /// `qpdf_oh_new_null`. Builds the null object, taking nothing from the document.
+    ///
+    /// It exists for [`oh_replace_stream_data`](QpdfBridge::oh_replace_stream_data)'s two
+    /// object arguments: a null is how the C API says "no filter". Returns a new handle, which
+    /// the caller must release.
+    fn oh_new_null(&self, data: QpdfPtr) -> u32;
+
+    /// `qpdf_oh_replace_stream_data`. Replaces a stream's body with `bytes`.
+    ///
+    /// **The only call in this bridge that carries bytes INTO a live object graph.**
+    /// `copy_in` carries bytes too and carries a whole document at open time; this one writes a
+    /// value into a document qpdf has already parsed, which is what redaction is (ADR 0029 §1).
+    ///
+    /// `filter` and `decode_parms` are object handles rather than optional pointers — pass
+    /// [`oh_new_null`](QpdfBridge::oh_new_null) for "none", which is what leaving a stream
+    /// uncompressed means.
+    ///
+    /// **qpdf copies `bytes` before returning**, so the slice does not need to outlive the
+    /// call. Worth stating because the other reading is a lifetime bug that would look like a
+    /// working redaction on every small document and corrupt a large one.
+    ///
+    /// # The five hazards, and why they are answered here rather than in the bridge
+    ///
+    /// #130 asked for this call to get the scrutiny `__burrow_qpdf_oh_page_content` got. It is
+    /// written here because `burrow-worker.js` is **concatenated rather than minified**, so a
+    /// comment in `apps/web/src/worker/bridge-qpdf.js` is bytes a person downloads — 1,056
+    /// brotli of them, measured, on a payload whose margin is 7.6% against a 10% policy. A
+    /// rustdoc costs nothing at run time. `bridge-write-path.test.ts` asserts each one.
+    ///
+    /// 1. **The `free(0xc0ffee)` class is absent, structurally.** That defect was an
+    ///    uninitialised OUT-PARAMETER: `_malloc` does not zero, a trapped function does not
+    ///    write its out-parameters on the throw path, and the scratch word held the previous
+    ///    call's decoded length — which the free then handed to the allocator. This call has no
+    ///    out-parameter. qpdf writes nothing back through a pointer, and nothing is read out of
+    ///    the engine heap at all; the only pointer is one the bridge allocates, fills and frees.
+    /// 2. **The heap view is read after the allocation.** `qpdf.wasm` is built with
+    ///    `-sALLOW_MEMORY_GROWTH=1`, and growing the memory replaces the buffer and detaches
+    ///    every existing view, so a `Uint8Array` captured before a `_malloc` that grew the heap
+    ///    throws on `.set`. The order is load-bearing and must not be hoisted.
+    /// 3. **The source slice lives in a different memory**, so that malloc cannot detach it:
+    ///    wasm-bindgen marshals a `&[u8]` import argument as a subarray over
+    ///    `burrow_wasm_bg.wasm`'s memory, which is not qpdf's.
+    /// 4. **`true` is not success.** See below.
+    /// 5. **`_malloc(0)` may legitimately return 0**, which is the bridge's own failure signal,
+    ///    so one byte is asked for and the real length is still passed to qpdf. Without that, a
+    ///    redaction that emptied a stream would report a refusal that did not happen.
+    ///
+    /// **`true` is not a claim that the replace succeeded.** The C function returns `void` and
+    /// is trapped, so a failure latches on the `qpdf_data` and is drained after the call like
+    /// every other engine error. What this reports is whether the bytes reached the engine at
+    /// all; `false` is an allocation failure in the engine heap, which is a refusal rather than
+    /// a panic. A caller that treats `true` as success is reading a claim this cannot make —
+    /// and for redaction that is the difference between a verified removal and an unchecked
+    /// one (ADR 0029 §6).
+    fn oh_replace_stream_data(
+        &self,
+        data: QpdfPtr,
+        stream: u32,
+        bytes: &[u8],
+        filter: u32,
+        decode_parms: u32,
+    ) -> bool;
+
     /// `qpdf_oh_replace_key`. Sets `key` on the dictionary `oh` to the object `item`.
     ///
     /// The only write burrow makes into a document qpdf parsed, rather than into a

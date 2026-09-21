@@ -92,10 +92,23 @@ pub(super) enum Call {
     OhGetTypeCode(u32),
     OhGetIntValue(u32),
     OhNewInteger(i64),
+    OhNewNull,
     OhReplaceKey {
         oh: u32,
         key: String,
         item: u32,
+    },
+    /// The bytes are recorded IN FULL, not as a length.
+    ///
+    /// This is redaction's write, and the thing a test needs to assert about it is *what was
+    /// written* -- that the stream a redaction emitted no longer holds the run it removed. A
+    /// length would let a fake pass for an operation that wrote the right number of wrong
+    /// bytes, which is the failure the whole milestone is about (ADR 0029 §8).
+    OhReplaceStreamData {
+        stream: u32,
+        bytes: Vec<u8>,
+        filter: u32,
+        decode_parms: u32,
     },
     OhRelease(u32),
 
@@ -780,6 +793,13 @@ pub(super) struct QpdfScript {
     pub(super) page_count: i32,
     /// Whether `qpdf_init` succeeds.
     pub(super) init_succeeds: bool,
+    /// Whether `qpdf_oh_replace_stream_data` gets its bytes into the engine.
+    ///
+    /// Defaults to `true`. On the web the false case is an allocation failure in the engine
+    /// heap, which is a refusal rather than a panic -- and a redaction that reports success on
+    /// a write the engine never took is the failure ADR 0029 §6 exists to make impossible, so
+    /// it needs a way to be provoked.
+    pub(super) replace_stream_data_succeeds: bool,
     /// Extra heap growth attributed to the read, in bytes — what a decompression bomb costs.
     pub(super) read_grows_heap_by: u64,
     /// The bitmask `qpdf_remove_page` returns.
@@ -893,6 +913,7 @@ impl Default for QpdfScript {
             output: b"%PDF-1.7\nmerged\n".to_vec(),
             buffer_is_null: false,
             init_succeeds: true,
+            replace_stream_data_succeeds: true,
             read_grows_heap_by: 0,
             error_reappears_once: None,
             // A page tree that INHERITS: no `/Rotate` on the page (null), and a `/Parent`
@@ -1496,6 +1517,28 @@ impl QpdfBridge for FakeQpdf {
     fn oh_new_integer(&self, _data: QpdfPtr, value: i64) -> u32 {
         self.state.record(Call::OhNewInteger(value));
         self.issue_handle("<integer>")
+    }
+
+    fn oh_new_null(&self, _data: QpdfPtr) -> u32 {
+        self.state.record(Call::OhNewNull);
+        self.issue_handle("<null>")
+    }
+
+    fn oh_replace_stream_data(
+        &self,
+        _data: QpdfPtr,
+        stream: u32,
+        bytes: &[u8],
+        filter: u32,
+        decode_parms: u32,
+    ) -> bool {
+        self.state.record(Call::OhReplaceStreamData {
+            stream,
+            bytes: bytes.to_vec(),
+            filter,
+            decode_parms,
+        });
+        self.script.replace_stream_data_succeeds
     }
 
     fn oh_replace_key(&self, _data: QpdfPtr, oh: u32, key: QpdfPtr, item: u32) {

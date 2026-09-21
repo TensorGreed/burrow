@@ -134,3 +134,35 @@ trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
 # One function, which was the finding rather than an economy: spike 0005 measured that four of
 # the five compression levers qpdf's C API exposes are already the writer's own defaults, so
 # object stream generation is the only thing `compress` adds on either path.
+
+# =================================================================================
+# THE WRITE VERB, AND A THIRD CALIBRATION POINT (#130, ADR 0029 §1)
+# =================================================================================
+#
+# `qpdf_oh_replace_stream_data` and `qpdf_oh_new_null` were declared and exported in the same
+# change, so neither ever stood in this file. The measurement is recorded here because this is
+# where the two numbers people quote when estimating an export batch already live, and two
+# points that disagree by 16x are a range rather than an estimate.
+#
+# MEASURED, NOT ESTIMATED: **+1,251 raw, +195 brotli** on `qpdf.wasm` (327,493 -> 327,688,
+# +0.060%).
+#
+# The measurement is an A/B on one machine in one session: the same `em++` link over the same
+# prebuilt `libqpdf.a`, run twice, differing only in those two entries in EXPORTED_FUNCTIONS.
+# The control came out BYTE-IDENTICAL to the shipped artifact -- same sha256 -- which is what
+# makes the delta attributable to the exports rather than to toolchain drift. `qpdf.wasm` is on
+# `not_byte_reproducible` in `apps/web/size-budget.json`, so an A/B against a recording taken
+# weeks earlier would have measured the toolchain as much as the change.
+#
+# So the three points now on record are:
+#
+#   merge's seven exports    +53,456 brotli   QPDFWriter had not been linked before
+#   split's ten exports      +3,340  brotli   the write path had already linked what they lean on
+#   redaction's two          +195    brotli   nothing new is pulled in at all
+#
+# The paragraph above says the variance is in what else gets pulled in rather than in the
+# count, and this is that sentence at its limit: `QPDFObjectHandle::replaceStreamData` and
+# `newNull` are already inside the archive members `qpdf_write` dragged in, so exporting them
+# adds two table entries and their names. **+3,340 is still not the number to quote** -- it is
+# the middle of a range that now spans 16x in one direction and 274x in the other. Measure.
+

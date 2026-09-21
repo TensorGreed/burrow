@@ -649,6 +649,51 @@ unsafe extern "C" {
         len: *mut usize,
     ) -> QpdfErrorCode;
 
+    /// ```c
+    /// void qpdf_oh_replace_stream_data(
+    ///     qpdf_data qpdf, qpdf_oh stream_oh, unsigned char const* buf, size_t len,
+    ///     qpdf_oh filter, qpdf_oh decode_parms);
+    /// ```
+    /// `qpdf-c.h:946-952`. **Trapped**, `engines/qpdf-trapped-functions.txt:82` —
+    /// `via do_with_oh_void -> do_with_oh -> trap_oh_errors`.
+    ///
+    /// **The first entry point in this module that carries bytes INTO an object.** Everything
+    /// else that writes takes a handle or a number; `qpdf_copy_in` carries bytes, and it carries
+    /// a whole document at open time rather than a value into a live object graph. This one
+    /// replaces one stream's body while the document is open, which is what redaction is.
+    ///
+    /// **qpdf copies `buf` before returning** — the header says so in those words — so the
+    /// caller's slice does not need to outlive the call. That is worth stating because the
+    /// alternative reading is a lifetime bug that would look like a working redaction on every
+    /// small document and corrupt a large one.
+    ///
+    /// `filter` and `decode_parms` are object handles, not optional pointers: passing a **null
+    /// object** is how you say "no filter", and a handle to one has to come from somewhere. See
+    /// [`qpdf_oh_new_null`].
+    pub(super) fn qpdf_oh_replace_stream_data(
+        qpdf: QpdfData,
+        stream_oh: QpdfObjectHandle,
+        buf: *const u8,
+        len: usize,
+        filter: QpdfObjectHandle,
+        decode_parms: QpdfObjectHandle,
+    );
+
+    /// `qpdf_oh qpdf_oh_new_null(qpdf_data qpdf)` — `qpdf-c.h:819`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml` on the argument
+    /// [`qpdf_oh_new_integer`] already carries there: its whole body is
+    /// `new_object(qpdf, QPDFObjectHandle::newNull())` (`qpdf-c.cc:1474-1478`) — one handle-cache
+    /// insert, no document read, no object resolved.
+    ///
+    /// It exists for [`qpdf_oh_replace_stream_data`]'s two object arguments. Spike 0006 obtained
+    /// a null handle by asking a dictionary for a key it does not have, which works and which
+    /// ADR 0029 records as a workaround rather than a design: *"Getting a null by asking for a
+    /// key that is not there is cleverness in the place this repository has least appetite for
+    /// it."* The trick also goes through `qpdf_oh_get_key`, which resolves an indirect object —
+    /// the parser, on file-controlled bytes — to obtain a constant.
+    pub(super) fn qpdf_oh_new_null(qpdf: QpdfData) -> QpdfObjectHandle;
+
     /// `void qpdf_oh_free_buffer(unsigned char** bufp)` — `qpdf-c.h:936`.
     ///
     /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`: its whole body is

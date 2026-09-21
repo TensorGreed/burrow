@@ -99,6 +99,22 @@ extern "C" {
     fn qpdf_oh_new_integer(data: u32, value: i64) -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_replace_key)]
     fn qpdf_oh_replace_key(data: u32, oh: u32, key: u32, item: u32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_new_null)]
+    fn qpdf_oh_new_null(data: u32) -> u32;
+    // REDACTION'S WRITE (#130, ADR 0029 SS1), and the only import here that carries bytes INTO
+    // a live object graph. It takes a `&[u8]`, so wasm-bindgen copies the slice into a JS
+    // `Uint8Array` at the boundary and the JS side copies that into the engine heap -- two
+    // copies of a content stream, which is the cost of not handing a raw pointer across.
+    // `false` means the engine could not take the bytes, which on the web is an allocation
+    // failure and is a refusal rather than a panic.
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_replace_stream_data)]
+    fn qpdf_oh_replace_stream_data(
+        data: u32,
+        stream: u32,
+        bytes: &[u8],
+        filter: u32,
+        decode_parms: u32,
+    ) -> bool;
     #[wasm_bindgen(js_name = __burrow_qpdf_remove_page)]
     fn qpdf_remove_page(data: u32, page: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_add_page_at)]
@@ -330,6 +346,21 @@ impl QpdfBridge for JsQpdf {
 
     fn oh_get_int_value_i64(&self, data: QpdfPtr, oh: u32) -> i64 {
         qpdf_oh_get_int_value(data.0, oh)
+    }
+
+    fn oh_new_null(&self, data: QpdfPtr) -> u32 {
+        qpdf_oh_new_null(data.0)
+    }
+
+    fn oh_replace_stream_data(
+        &self,
+        data: QpdfPtr,
+        stream: u32,
+        bytes: &[u8],
+        filter: u32,
+        decode_parms: u32,
+    ) -> bool {
+        qpdf_oh_replace_stream_data(data.0, stream, bytes, filter, decode_parms)
     }
 
     fn oh_page_content(&self, data: QpdfPtr, page: u32) -> Option<Vec<u8>> {

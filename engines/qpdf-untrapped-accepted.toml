@@ -274,6 +274,27 @@ trapped list, reached through `do_with_oh` (ADR 0013's 2026-09-13 amendment). Us
 `qpdf/rotate.rs` to build the `/Rotate` value it writes."""
 
 [[function]]
+name = "qpdf_oh_new_null"
+reason = """\
+`new_object(qpdf, QPDFObjectHandle::newNull())` (qpdf-c.cc:1474-1478) -- constructs the null \
+object and puts it in the handle cache (`++next_oh`, one map insert). The whole body, plus the \
+`QTC::TC` coverage macro. It never reads the document, never resolves an object and cannot see \
+a byte of the input, so it meets this file's bar exactly: non-parsing, never touches the PDF's \
+bytes. It can fail only by allocation, a defined abort since Rust 1.81. It is the same argument \
+as `qpdf_oh_new_integer` above, one constructor over: that one takes a `long long` this crate \
+chose, this one takes nothing at all. \
+WHY IT IS DECLARED RATHER THAN WORKED AROUND. `qpdf_oh_replace_stream_data` takes object \
+handles for `/Filter` and `/DecodeParms`, and a null object is how the C API says "no filter". \
+Spike 0006 obtained one by asking a dictionary for a key it does not have, which works; ADR \
+0029 records it as a workaround rather than a design -- "getting a null by asking for a key \
+that is not there is cleverness in the place this repository has least appetite for it". It is \
+also WORSE on this file's own bar: `qpdf_oh_get_key` resolves an indirect object, which is the \
+parser running on file-controlled bytes, and it is on the trapped list for exactly that reason. \
+Reaching a constant through the parser to avoid declaring a constructor is the expensive way \
+round. \
+Used by redaction (#130, ADR 0029 SS1) and by nothing else."""
+
+[[function]]
 name = "qpdf_oh_release"
 reason = """\
 `qpdf->oh_cache.erase(oh)` (qpdf-c.cc:847-850) -- one erase on a `std::map`, and the whole \

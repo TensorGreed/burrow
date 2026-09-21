@@ -270,6 +270,7 @@ qpdf_exports='"_malloc","_free",
   "_qpdf_oh_get_array_n_items","_qpdf_oh_get_array_item","_qpdf_oh_erase_item",
   "_qpdf_oh_get_dict","_qpdf_oh_get_page_content_data","_qpdf_oh_get_stream_data",
   "_qpdf_oh_free_buffer",
+  "_qpdf_oh_replace_stream_data","_qpdf_oh_new_null",
   "_qpdf_set_deterministic_ID","_qpdf_set_object_stream_mode",
   "_qpdf_write","_qpdf_get_buffer_length","_qpdf_get_buffer",
   "_qpdflogger_create","_qpdflogger_set_info","_qpdflogger_set_warn","_qpdflogger_set_error"'
