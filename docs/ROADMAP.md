@@ -14,9 +14,11 @@ is short on purpose: a blocker is not "important", it is "we do not ship with th
 | | what | why it blocks |
 |---|---|---|
 | **#62** | Memory-unsafety in the pinned qpdf — two distinct defects | Blocks **M3/M4 only**. Natively it is a hard crash with no sandbox, and opening an attachment is the scenario. **Does not block the web**, and the earlier conditional block on `/merge-pdf` is withdrawn: measured on every path it is a fault natively and a hang on wasm that the watchdog converts into a typed error, with **no silent wrong output observed anywhere**. The argument that blocked merge — *not observed is not cannot happen* — applies to every operation, since the defect is reachable from `open`; used as a blocker criterion it blocks everything indefinitely. The answer to *cannot be excluded* is a detector, and that is ADR 0022. Accepted and recorded: a crafted file freezes an operation for the 60 s watchdog budget before failing. `docs/security/exposure-2026-09-14-qpdf-uaf.md`. |
+| **#125** | A redaction refusal whose page-side signal does not fire | Blocks **the redaction tool reaching the site**, and nothing else — M1's five operations are live and unaffected. [ADR 0029](adr/0029-what-redaction-does-and-what-it-refuses-to-do.md) §5: *a refusal keyed on something the operation cannot see is a bypass.* Four of redaction's five refusals have no adequate page-side signal — two read only the page's content stream, so an image or a path inside a Form XObject is past them, and two have no signal at all because the carrier is on the unreachable catalogue. **A refusal that does not fire is not a missing feature.** It is the operation accepting a document it has declared it cannot redact safely and then emitting something that looks redacted, which is the one failure M2 exists to prevent. Discharged when each of the five has fired on a fixture built to evade it, with a near-miss twin that is not refused. |
 
-The remaining row does not block further M1 development. It blocks **the deployment it is
-scoped to** — M3/M4, per its own text — which is the distinction worth keeping: work continues,
+Neither row blocks further M1 development. Each blocks **the deployment it is scoped to** —
+M3/M4 for #62, the redaction route for #125, per their own text — which is the distinction worth
+keeping: work continues,
 and a build does not go in front of a person until the row is gone, or, for a conditional row,
 until its named discharge has landed.
 
@@ -54,7 +56,8 @@ directly from this repository's CI, never built on Cloudflare's infrastructure.
 [ADR 0024](adr/0024-how-burrow-is-deployed.md) records why that host, why direct upload, and
 why the workflow is split so the job that compiles holds no credential.
 
-**The blockers table above gates this.** Its one remaining row, #62, is scoped *"Blocks M3/M4
+**The blockers table above gates this.** Neither open row blocks the live site: #125 is scoped
+to a route that does not exist yet, and #62 is scoped *"Blocks M3/M4
 only… Does not block the web"*, so the web deploy is not blocked by it — and the paragraph
 under that table saying the remaining row "blocks **deployment**" is about the M3/M4
 deployment the row is scoped to, not this one. That sentence predates the row being narrowed
@@ -755,6 +758,32 @@ Under an unwind, violating R8 or R9 is recoverable: Rust returns `Err`, the buff
 the one that has nothing to do with panics: it exists because PDFium and qpdf have separate
 linear memories, so "verified" against one heap's copy says nothing about the bytes leaving the
 other.
+
+### Decided: ADR 0029, and the blocker it carries
+
+[Spike 0006](spikes/0006-what-survives-a-redaction.md) measured where a page's text can also
+live — **17 of 23 places survive a naive content-stream redaction**, three of them legible on the
+page afterwards — and [ADR 0029](adr/0029-what-redaction-does-and-what-it-refuses-to-do.md)
+(**Proposed**) turns that into decisions: what v1 rewrites, the five shapes it refuses, the three
+it discloses, and what verification is allowed to assert.
+
+**[#125](https://github.com/TensorGreed/burrow/issues/125) blocks the redaction tool from
+reaching the site**, and is in *Ship blockers* above. Four of the five refusals have no adequate
+page-side signal, and ADR 0029 §5's rule is that *a refusal keyed on something the operation
+cannot see is a bypass*. The tool does not go in front of a person until each signal has fired on
+a fixture built to evade it.
+
+**Where that blocker becomes a check rather than a note:**
+`apps/web/src/production-build.test.ts` holds two lists — routes that must not ship, and
+operation names the shipped bundle must not contain. Both are empty today and both say in their
+own comments that they are waiting. **`redact-pdf` and `redact` go on them the moment redaction
+has a route or a bridge, and come off when #125 closes.**
+
+They are deliberately **not** added now. That file records `compress` having sat on the held list
+only because it was not written, and names that as the conflation to avoid: *"HELD MEANS HELD FOR
+A REASON, not merely 'not built yet'."* Redaction has neither a route nor a bridge, so an entry
+today would assert nothing and would repeat the mistake the file argues against. The ROADMAP row
+carries the blocker until there is something to hold.
 
 ### The work
 
