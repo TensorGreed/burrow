@@ -20,25 +20,48 @@
 //! would reintroduce every objection ADR 0029's *Alternatives considered* raises against
 //! `FPDFText_*`.
 //!
-//! # The two boxes are not the same quantity, and comparing against the wrong one is useless
+//! # Three properties, because the three quantities are different
 //!
-//! | | what it returns |
-//! |---|---|
-//! | `FPDFText_GetLooseCharBox` | *"the entire glyph bounds, **without taking the actual glyph shape into account**"*, i.e. derived from the text state, the advance width, and the font's ascent and descent |
-//! | `FPDFText_GetCharBox` | the box **as inked**: narrower than the advance for most glyphs, because of side bearings, and wider for some, because of italic overhang |
+//! `fpdf_text.h` offers three, and using the wrong one for the wrong question makes the oracle
+//! either permanently red or vacuous. All three were measured on real pages before this design
+//! was settled, not read off the header:
 //!
-//! A box computed from `/Widths` or `/W` **is** the first and is **not** the second. Comparing
-//! it against `FPDFText_GetCharBox` would be permanently red for reasons that are nothing to do
-//! with burrow's arithmetic. So this module offers both, and [`assert_agrees`] asserts the two
-//! properties that are actually true:
+//! | | what it is | measured |
+//! |---|---|---|
+//! | `FPDFText_GetCharOrigin` | the pen position | Helvetica `(AV)` at `100 700 Td`: 100.00 then 108.00, exactly the advances |
+//! | `FPDFText_GetLooseCharBox` | *"the entire glyph bounds, without taking the actual glyph shape into account"* | for Helvetica its width **is** the advance (8.00 = 667/1000 × 12); for a Type 3 glyph drawn away from its origin it is **not** — 100…130 against an advance of 100…106 |
+//! | `FPDFText_GetCharBox` | the box **as inked** | for that Type 3 glyph, 124…130 — entirely **outside** the advance box |
 //!
-//! * **P1, agreement** — burrow's box equals the loose box on all four edges, within
-//!   [`TOLERANCE_PT`];
-//! * **P2, containment** — the ink box lies **inside** burrow's box, within the same tolerance.
+//! That last row is the whole reason this module has three properties instead of one:
 //!
-//! P2 is the property redaction needs: if the ink is inside the box burrow reasons about, then
-//! "this glyph intersects the region" errs in the safe direction. P1 alone would admit a box of
-//! the right size in the wrong place; P2 alone would admit a box the size of the page.
+//! * **P1, placement** — burrow's computed origin equals `FPDFText_GetCharOrigin`, within
+//!   [`TOLERANCE_PT`]. Every term #129 tests moves the origin, and nothing about ascent, descent
+//!   or bounding boxes enters into where it lands, so this is the term check with no
+//!   interpretation in it. The loose box is **not** used for this: it is the advance box for a
+//!   simple font and something wider for a Type 3, so comparing a computed advance box against
+//!   it would be right in one case and wrong in the other.
+//! * **P2, ink containment** — `FPDFText_GetCharBox` lies **inside burrow's conservative box**.
+//!   This is the correctness property: a glyph's outline can be drawn far from its origin, so a
+//!   region test against the advance box alone misses ink that is inside the region while the
+//!   advance box sits outside it. Measured above at 18 pt of separation on a 12 pt font.
+//! * **P3, tightness** — the conservative box may not be arbitrarily large, or P2 passes by
+//!   covering the page. Bounded against the loose box's area.
+//!
+//! # The conservative box, and why the runtime needs one as well as the test
+//!
+//! P2 is a **test-time** check: it catches a geometry pass whose box does not cover the ink. It
+//! cannot run at redaction time, because it needs PDFium. So the operation carries the same
+//! safety structurally: the box it reasons about is the **advance box unioned with the scaled
+//! `/FontBBox`**, so uncertainty removes more rather than less.
+//!
+//! A Type 3 `/CharProcs` entry can draw anywhere at all, and CFF and TrueType outlines overhang
+//! their advances routinely — accents, swashes, italic descenders. The advance box is where the
+//! glyph's *pen* is, not where its *ink* is, and redaction is about the ink.
+//!
+//! **What that does not cover, stated rather than implied:** a `/FontBBox` that lies. A font may
+//! declare a box its glyphs exceed, and nothing in the file contradicts it. P2 catches it in the
+//! suite; at runtime it is a residue, and the fixture that would provoke it belongs with the
+//! refusals rather than here.
 
 #![allow(
     dead_code,
@@ -83,6 +106,13 @@ use std::os::raw::{c_char, c_double, c_float, c_int, c_void};
 /// or that burrow and PDFium disagree about something real and it gets investigated and written
 /// down. Raising it to make a run pass is the one edit this constant exists to forbid.
 pub const TOLERANCE_PT: f64 = 0.05;
+
+/// How much larger than PDFium's loose box burrow's conservative box may be, by area.
+///
+/// P2 is satisfied trivially by a box the size of the page, so it needs a companion. Four is
+/// loose enough for a `/FontBBox` that genuinely covers a tall glyph set — a Type 3 font's box
+/// can be several times the advance in both axes — and tight enough that a degenerate box fails.
+pub const MAX_CONSERVATIVE_AREA_RATIO: f64 = 4.0;
 
 /// The smallest displacement a fixture's term must produce, in PDF points.
 ///
@@ -169,6 +199,12 @@ unsafe extern "C" {
         top: *mut c_double,
     ) -> c_int;
     fn FPDFText_GetLooseCharBox(text_page: *mut c_void, index: c_int, rect: *mut FsRectF) -> c_int;
+    fn FPDFText_GetCharOrigin(
+        text_page: *mut c_void,
+        index: c_int,
+        x: *mut c_double,
+        y: *mut c_double,
+    ) -> c_int;
 }
 
 /// One character as PDFium sees it: what it is, and where both of its boxes are.
@@ -179,6 +215,12 @@ pub struct OracleChar {
     /// **Not used to decide anything.** A lying `/ToUnicode` moves no glyph, which is precisely
     /// why geometry is checkable by this oracle when mapping is not — see the module header.
     pub unicode: u32,
+    /// `FPDFText_GetCharOrigin` — the pen position, in page space.
+    ///
+    /// **The instrument P1 uses**, because it is the one quantity with no font-metric
+    /// interpretation in it: every term this issue tests moves the origin, and nothing about
+    /// ascent, descent or bounding boxes enters into where it lands.
+    pub origin: (f64, f64),
     /// `FPDFText_GetLooseCharBox` — the quantity burrow's geometry computes.
     pub loose: Rect,
     /// `FPDFText_GetCharBox` — the inked box, which burrow's must contain.
@@ -286,8 +328,13 @@ fn read_chars(bytes: &[u8], index: i32) -> Vec<OracleChar> {
         assert!(ok != 0, "FPDFText_GetLooseCharBox refused character {at}");
         // SAFETY: as above.
         let unicode = unsafe { FPDFText_GetUnicode(text, at) };
+        let (mut ox, mut oy) = (0.0_f64, 0.0_f64);
+        // SAFETY: as above; both pointers are to live locals.
+        let ok = unsafe { FPDFText_GetCharOrigin(text, at, &mut ox, &mut oy) };
+        assert!(ok != 0, "FPDFText_GetCharOrigin refused character {at}");
         out.push(OracleChar {
             unicode,
+            origin: (ox, oy),
             loose: Rect {
                 left: f64::from(loose.left),
                 bottom: f64::from(loose.bottom),
@@ -312,6 +359,41 @@ fn read_chars(bytes: &[u8], index: i32) -> Vec<OracleChar> {
     out
 }
 
+/// Assert burrow's origins against PDFium's — P1, the placement property.
+///
+/// Separate from [`assert_agrees`] because it is what every term test needs and it needs no box
+/// at all. A term that is ignored moves the origin; a box comparison would fold that together
+/// with questions about metrics.
+///
+/// # Panics
+///
+/// Naming the character and the distance.
+pub fn assert_origins_agree(computed: &[(f64, f64)], oracle: &[OracleChar], what: &str) {
+    assert_eq!(
+        computed.len(),
+        oracle.len(),
+        "{what}: burrow placed {} glyph(s) and PDFium found {}",
+        computed.len(),
+        oracle.len()
+    );
+    assert!(
+        !oracle.is_empty(),
+        "{what}: the page has no characters, so this assertion examined nothing"
+    );
+    for (at, (mine, theirs)) in computed.iter().zip(oracle).enumerate() {
+        let character = char::from_u32(theirs.unicode).unwrap_or('?');
+        let apart = (mine.0 - theirs.origin.0)
+            .abs()
+            .max((mine.1 - theirs.origin.1).abs());
+        assert!(
+            apart <= TOLERANCE_PT,
+            "{what}: glyph {at} ({character:?}) is {apart:.4} pt from PDFium's origin, past the \
+             {TOLERANCE_PT} pt tolerance.\n  burrow: {mine:?}\n  pdfium: {:?}",
+            theirs.origin
+        );
+    }
+}
+
 /// Assert burrow's boxes against PDFium's, both properties, for a whole page.
 ///
 /// # Panics
@@ -334,22 +416,24 @@ pub fn assert_agrees(computed: &[Rect], oracle: &[OracleChar], what: &str) {
 
     for (at, (mine, theirs)) in computed.iter().zip(oracle).enumerate() {
         let character = char::from_u32(theirs.unicode).unwrap_or('?');
-        // P1 — the same quantity, so equality within the tolerance.
-        let apart = mine.max_edge_distance(&theirs.loose);
-        assert!(
-            apart <= TOLERANCE_PT,
-            "{what}: glyph {at} ({character:?}) is {apart:.4} pt from PDFium's loose box, past \
-             the {TOLERANCE_PT} pt tolerance.\n  burrow: {mine:?}\n  pdfium: {:?}",
-            theirs.loose
-        );
-        // P2 — the ink must be inside burrow's box, or a redaction reasoning about that box
-        // would leave ink outside what it removed.
+        // P2 -- the ink must be inside burrow's CONSERVATIVE box, or a redaction reasoning
+        // about that box leaves ink outside what it removed. This is the property that matters
+        // and the reason the box is not the advance box.
         let escaped = mine.escape_of(&theirs.ink);
         assert!(
             escaped <= TOLERANCE_PT,
-            "{what}: glyph {at} ({character:?}) has ink {escaped:.4} pt outside burrow's box.\n  \
-             burrow: {mine:?}\n  ink:    {:?}",
+            "{what}: glyph {at} ({character:?}) has ink {escaped:.4} pt OUTSIDE burrow's box -- \
+             a region test against this box would miss it.\n  burrow: {mine:?}\n  ink:    {:?}",
             theirs.ink
+        );
+        // P3 -- and the box may not be arbitrarily large, or P2 passes by covering the page.
+        let area = |r: &Rect| (r.right - r.left).max(0.0) * (r.top - r.bottom).max(0.0);
+        let (ours, loose) = (area(mine), area(&theirs.loose));
+        assert!(
+            ours <= loose * MAX_CONSERVATIVE_AREA_RATIO + 1.0,
+            "{what}: glyph {at} ({character:?})'s box is {ours:.2} pt^2 against PDFium's \
+             {loose:.2} -- more than {MAX_CONSERVATIVE_AREA_RATIO}x, so \"conservative\" has \
+             become \"covers the page\" and P2 proves nothing.\n  burrow: {mine:?}",
         );
     }
 }

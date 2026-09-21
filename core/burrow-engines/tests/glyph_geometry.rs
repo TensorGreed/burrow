@@ -228,3 +228,163 @@ fn a_char_count_mismatch_is_a_failure_rather_than_a_pairwise_comparison() {
         "assert_agrees accepted one box against two characters"
     );
 }
+
+/// A one-page PDF whose only glyph is a Type 3 procedure that draws **away from its origin**.
+///
+/// `/Widths [500]` and a `/FontMatrix` of 0.001 put the advance at half the font size; the
+/// procedure draws a square at 2000..2500 in glyph space, which is 24..30 text-space units out.
+/// So the ink is four advances to the right of the pen, and `/FontBBox [0 0 3000 3000]` is the
+/// only thing in the file that says so.
+fn page_with_off_origin_glyph() -> Vec<u8> {
+    let glyph = b"500 0 d0\n2000 2000 500 500 re f\n";
+    let content = b"BT\n/F1 12 Tf\n100 700 Td\n(a) Tj\nET\n";
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+           /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+            .to_vec(),
+        format!("<< /Length {} >>\nstream\n", content.len())
+            .into_bytes()
+            .into_iter()
+            .chain(content.iter().copied())
+            .chain(b"endstream".iter().copied())
+            .collect(),
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 3000 3000] \
+           /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /square 6 0 R >> \
+           /Encoding << /Type /Encoding /Differences [97 /square] >> \
+           /FirstChar 97 /LastChar 97 /Widths [500] /Resources << >> >>"
+            .to_vec(),
+        format!("<< /Length {} >>\nstream\n", glyph.len())
+            .into_bytes()
+            .into_iter()
+            .chain(glyph.iter().copied())
+            .chain(b"endstream".iter().copied())
+            .collect(),
+    ];
+
+    let mut out: Vec<u8> = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_at = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+#[test]
+fn a_glyphs_ink_can_sit_entirely_outside_its_advance_box() {
+    // THE LEAK THE CONSERVATIVE BOX EXISTS FOR, measured rather than argued.
+    //
+    // A region test against the advance box alone would put this glyph's box at 100..106 while
+    // its ink is at 124..130 -- so a region covering the ink contains no part of the box, the
+    // glyph is judged outside, and the operation leaves visible marks inside the area a person
+    // asked to have cleared. Type 3 makes it trivial to construct; CFF and TrueType outlines
+    // overhang their advances routinely, for accents, swashes and italic descenders.
+    let page = page_with_off_origin_glyph();
+    let chars = chars_on_page(&page, 0);
+    assert_eq!(chars.len(), 1, "the fixture should draw exactly one glyph");
+    let glyph = chars[0];
+
+    // The pen is where the text object put it.
+    assert!(
+        (glyph.origin.0 - 100.0).abs() <= TOLERANCE_PT
+            && (glyph.origin.1 - 700.0).abs() <= TOLERANCE_PT,
+        "the origin should be the Td, and is {:?}",
+        glyph.origin
+    );
+
+    // THE ADVANCE BOX, as a geometry pass computing only widths would produce it: the origin,
+    // half the font size wide, the font size tall.
+    let advance_box = Rect {
+        left: glyph.origin.0,
+        bottom: glyph.origin.1,
+        right: glyph.origin.0 + 6.0,
+        top: glyph.origin.1 + 12.0,
+    };
+    let escaped = advance_box.escape_of(&glyph.ink);
+    assert!(
+        escaped >= MIN_FIXTURE_DISPLACEMENT_PT,
+        "this fixture exists to put ink outside the advance box, and the ink escapes it by only \
+         {escaped:.4} pt -- the fixture no longer demonstrates anything.\n  advance: \
+         {advance_box:?}\n  ink:     {:?}",
+        glyph.ink
+    );
+
+    // AND THE CONSERVATIVE BOX COVERS IT. `/FontBBox [0 0 3000 3000]` scaled by the
+    // `/FontMatrix` and the font size is 0..36 in both axes from the origin; unioned with the
+    // advance box that is what the operation must reason about.
+    let scaled_font_bbox = Rect {
+        left: glyph.origin.0,
+        bottom: glyph.origin.1,
+        right: glyph.origin.0 + 36.0,
+        top: glyph.origin.1 + 36.0,
+    };
+    assert_eq!(
+        scaled_font_bbox.escape_of(&glyph.ink),
+        0.0,
+        "the scaled /FontBBox must contain the ink, or the conservative box is not conservative"
+    );
+}
+
+#[test]
+fn the_region_test_uses_the_conservative_box_and_not_the_advance_box() {
+    // THE CONSEQUENCE, stated as the question a redaction actually asks: does this glyph
+    // intersect the region? The two boxes give OPPOSITE answers on this fixture, which is why
+    // the choice is a correctness decision rather than a matter of taste.
+    let page = page_with_off_origin_glyph();
+    let glyph = chars_on_page(&page, 0)[0];
+
+    // A region drawn tightly around the ink.
+    let region = Rect {
+        left: 123.0,
+        bottom: 723.0,
+        right: 131.0,
+        top: 731.0,
+    };
+    let intersects = |a: &Rect, b: &Rect| {
+        a.left < b.right && b.left < a.right && a.bottom < b.top && b.bottom < a.top
+    };
+
+    let advance_box = Rect {
+        left: glyph.origin.0,
+        bottom: glyph.origin.1,
+        right: glyph.origin.0 + 6.0,
+        top: glyph.origin.1 + 12.0,
+    };
+    let conservative = Rect {
+        left: glyph.origin.0,
+        bottom: glyph.origin.1,
+        right: glyph.origin.0 + 36.0,
+        top: glyph.origin.1 + 36.0,
+    };
+
+    assert!(
+        intersects(&region, &glyph.ink),
+        "the fixture's region must contain the ink, or this test asks nothing"
+    );
+    assert!(
+        !intersects(&region, &advance_box),
+        "the advance box must NOT meet the region, or the two answers are not opposite"
+    );
+    assert!(
+        intersects(&region, &conservative),
+        "the conservative box must meet the region -- this is the answer the operation needs"
+    );
+}
