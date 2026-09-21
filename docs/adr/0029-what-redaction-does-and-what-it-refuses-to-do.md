@@ -4,7 +4,7 @@ Date: 2026-09-19
 
 ## Status
 
-Accepted. Decided by [spike 0006](../spikes/0006-what-survives-a-redaction.md).
+**Proposed.** Written from [spike 0006](../spikes/0006-what-survives-a-redaction.md); accepted after reading, as with the ADRs before it.
 
 Scoped to **decisions**, not design: what v1 does and refuses per channel, what the page says,
 what verification may assert, and the named conditions for revisiting. The operation's
@@ -200,6 +200,39 @@ file; a glyph-to-character mapping is the *file's* opinion about itself. The spi
 document whose `/ToUnicode` lies while the same font's `cmap` tells the truth: two halves of one
 object disagreeing, neither authoritative.
 
+**And #111's shape appears a second time, in geometry rather than in mapping.** *"No glyph remains
+inside the region"* is the strongest assertion in the list above, and it is computed by
+**re-deriving glyph positions with the same geometry code the operation used to decide what to
+remove**. A bug in that code is therefore invisible to the check that is supposed to catch it:
+the operation removes the wrong glyphs and the verification agrees they are gone, because both
+asked the same wrong question. The places it can go wrong are ordinary, not exotic —
+
+- `Tz` horizontal scaling and `Ts` rise;
+- `Tc` and `Tw`, character and word spacing, which accumulate along a run;
+- the CTM through `q`/`Q` nesting, and again through a Form XObject's `/Matrix`;
+- a Type 3 font's `/FontMatrix`, where glyph space is whatever the font says it is.
+
+Each of those moves where a glyph *is* without changing what it *says*, so nothing in the
+`/ToUnicode` half of this section touches it.
+
+**The oracle for it is `FPDFText_GetCharBox`, at TEST time, in the native suite.** For a fixture
+whose glyph positions are known, assert burrow's derived boxes against PDFium's for every
+character on the page. It is the independent second reading #111 asks for, and it is available
+here for three reasons the runtime check cannot claim:
+
+| | |
+|---|---|
+| **it is geometry, not mapping** | a lying `/ToUnicode` does not defeat it. PDFium computes a box from the text state and the font's metrics, so a document can misdescribe what its glyphs mean without moving them |
+| **it is test-only** | no payload cost, no bridge, no wasm export, and no collision with `tools/check-pdfium-is-render-only.sh` — which is a claim about what a *visitor downloads*, not about what a native test links |
+| **it is already linked** | the native test binary has `libpdfium.so`; spike 0006 called this exact function |
+
+**It is an oracle for the geometry code, not a component of the operation.** Putting it in the
+shipped path would reintroduce every objection *Alternatives considered* raises against
+`FPDFText_*`, and would make the operation depend on the engine this project deliberately keeps
+render-only. The test asserts burrow's geometry agrees with a second implementation on documents
+where both are asked; the runtime check continues to assert burrow's own rule against burrow's
+own reading, and that residue stays exactly as stated above.
+
 ### 7. The page says what is left, and names where to look
 
 In the voice [ADR 0019](0019-how-split-builds-its-outputs.md) §4 established, where every limit
@@ -213,20 +246,26 @@ redacted page cannot see metadata**, so a disclosure they cannot act on is a cav
 >
 > **Three things are outside a page and are not changed: the document's title and keywords, any
 > files attached to it, and the document's own XMP metadata.** Those describe the whole document
-> rather than any page, and burrow has no way to reach them — so if the text you removed also
+> rather than any page, and Not Only PDF has no way to reach them — so if the text you removed also
 > appears in the title, in an attached file, or in the properties your editor wrote when it
 > saved, it is still in this file. **Check File → Properties, and check the attachments panel.**
 > If either holds what you were removing, the fix is in the program you made the document with,
 > not here.
 >
 > **A font that was used only for the text you removed still says which letters that text used.**
-> Not the words, and not the order — the set of characters. Rebuilding a font is a thing burrow
-> cannot do yet, so this is stated rather than fixed.
+> Not the words, and not the order — the set of characters. Rebuilding a font is a thing Not Only
+> PDF cannot do yet, so this is stated rather than fixed.
 >
-> burrow refuses documents it cannot redact safely rather than doing its best, and says which
-> shape it found. **And burrow verifies that it did what it said, not that your secret is gone:**
-> it cannot read a secret drawn as a picture or as shapes, and it cannot tell whether a font is
-> telling the truth about what its glyphs say.
+> Not Only PDF refuses documents it cannot redact safely rather than doing its best, and says
+> which shape it found. **And it verifies that it did what it said, not that your secret is
+> gone:** it cannot read a secret drawn as a picture or as shapes, and it cannot tell whether a
+> font is telling the truth about what its glyphs say.
+
+**The copy says "Not Only PDF", never "burrow".** `burrow` is the repository and the crates;
+the product a person is using is Not Only PDF, and `apps/web/src/pages/` says so on every page it
+serves. ADR 0019 §4 drafted its copy with "burrow" and `split-pdf.astro` ships it with "Not Only
+PDF" — the page was right and the record was not, so this one is written the way it will be
+served. The rest of this ADR says "burrow", because the rest of it is about the codebase.
 
 Three sentences there carry a reason and one carries an instruction, and both kinds are the
 point. *"The title is not changed"* reads as a bug without *"those describe the whole document"*.

@@ -6,12 +6,15 @@ mappings that describe them**, **strip every page-level key outside a named allo
 five document shapes outright, disclose three it cannot reach, and that its verification assert
 **what it did**, never *that the secret is gone*. No ADR is amended here.
 
-**Decided by [ADR 0029](../adr/0029-what-redaction-does-and-what-it-refuses-to-do.md)**, written
-from this spike on the same day. Said on this document's own status line because that is where
+**[ADR 0029](../adr/0029-what-redaction-does-and-what-it-refuses-to-do.md) is written from this
+spike and is currently *Proposed*.** Said on this document's own status line because that is where
 this repository puts it (ADRs 0002, 0007, 0008 and spike 0004), not only in the record that
-decides it. Two things in that ADR are not in this report and are not derivable from it: the
-per-channel assignment is stated as a decision rather than a recommendation, and control 5 is
-generalised into a project rule.
+decides it. Three things in that ADR are not in this report and are not derivable from it: the
+per-channel assignment is stated as a decision rather than a recommendation; control 5 is
+generalised into a project rule; and **#111's shape is identified a second time, in geometry** —
+this spike measured the `/ToUnicode` half and never asked whether the code that decides *where a
+glyph is* is checked by anything other than itself. It is not, and ADR 0029 §6 names the
+test-time oracle for it.
 
 Spike code: `spikes/redaction-survival/`, excluded from the cargo workspace by its own
 `[workspace]` table. Nothing is in `core/`, `bindings/` or `apps/web/`.
