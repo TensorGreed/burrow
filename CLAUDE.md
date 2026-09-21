@@ -140,6 +140,23 @@ offline after three long operations, and a regression that silently disabled two
 turning an assertion into a tautology. Both would have been caught before anyone else could
 pull them. A review that happens after the push is a review of history.
 
+**A reviewer gets its own `git worktree`, never the tree being edited.** A review that is worth
+running plants mutations to see what survives — that is how the last four found a `_malloc(0)`
+guard nothing tested, a use-after-free the harness could not see, a scan test three offender
+shapes walked past, and a probe set built against a fixture the producer never writes. Planting
+happens in the working tree unless the reviewer is given somewhere else to stand.
+
+Two sessions running at once over one tree is the failure: they see each other's mutations, and
+so does anything else running there. Measured — one review reported methods appearing and
+vanishing in the file it was reading, which were the other reviewer's plants, and a sweep started
+in the same window was measuring a tree that changed under it. Nothing was wrong in the reports;
+the point is that nobody could have told from the reports if something had been.
+
+So: tell the reviewer to work in a throwaway worktree at `HEAD` and remove it when done, and do
+not edit the tree or start a sweep while one is running. The corollary is that the change must be
+**committed** before the review, which is the right order anyway — a reviewer reading
+uncommitted work cannot say what it is reviewing.
+
 ## Definition of done
 
 A change is done when all of these hold:
@@ -315,12 +332,19 @@ those at full candour is working and is not what "summarise" is asking you to sh
   |---|---|---|
   | PR #29 | `tools/__pycache__/…​.pyc` | The rule did not exist yet. Verifying a tool by `importlib`-ing it had written the bytecode. |
   | PR #37 | 24 Playwright sweep logs under `spikes/**/results/` | The rule existed, in a **branch-local** `.gitignore` inside the spike directory. |
+  | M2 #145 | `core/burrow-ops/tests/compress.proptest-regressions` | The rule existed and was read the same day. `cargo test --workspace` had just run **without the `qpdf` CLI on PATH**, so proptest wrote a seed for a failure that was environmental; `git add -A` staged it and it reached a commit. Caught reading the commit back, removed before any push. |
 
   The second is the instructive one. **An ignore rule that governs generated output belongs in
   the root `.gitignore`, never in a branch-local one** — checking out another branch deletes
   the tracked rule from the working tree, so it is absent at exactly the moment it matters.
   And a `.gitignore` cannot untrack what is already staged; `git rm -r --cached` is then the
   only way out.
+
+  The third one is the one to sit with: the rule was not forgotten, it was **read and then not
+  followed**, by someone who had spent that afternoon writing a checker for exactly that artifact
+  (#148). Knowing the rule is not the same as the rule being enforced, which is the whole argument
+  of this section — and `check-no-generated-files.sh` does not cover this case, because it scans
+  *tracked* files and the seed was newly added in the same commit. #149 is the class-level fix.
 
   **A habit that has failed twice is not a control**, so `tools/check-no-generated-files.sh`
   now fails CI on any tracked file matching a generated-output pattern — `*.pyc`,
