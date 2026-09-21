@@ -121,10 +121,10 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | page **`/Metadata`**, **`/PieceInfo`**, and every unlisted page key | **handle** — §2's allowlist |
 | the font's **`/ToUnicode`** and **`/Differences`** | **handle** — §1 |
 | **optional content** referenced by a kept page | **refuse** |
-| a region intersecting an **image** | **refuse** |
-| a region intersecting **vector path content** | **refuse** |
-| a document with an **`/AcroForm`** | **refuse** — see §5, this one owes work |
-| a document with a **`/StructTreeRoot`** reaching the region | **refuse** — see §5, this one owes work |
+| a region intersecting an **image** | **refuse** — see §5, the signal is owed |
+| a region intersecting **vector path content** | **refuse** — see §5, the signal is owed |
+| a document with an **`/AcroForm`** | **refuse** — see §5, the signal is owed |
+| a document with a **`/StructTreeRoot`** reaching the region | **refuse** — see §5, the signal is owed |
 | catalogue **`/Metadata`** and the trailer's **`/Info`** | **disclose** |
 | **`/EmbeddedFiles`** attachments | **disclose** |
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
@@ -142,25 +142,46 @@ puts `BT` in one parse and `ET` in another and neither parse holds a complete te
 from its own slice.** That is also what stops the operation silently collapsing a `/Contents`
 array into one stream, which the spike measured it doing.
 
-### 5. Three refusals have no page-side signal yet, and that is work this record owes
+### 5. Four of the five refusals have no adequate page-side signal yet, and that is work this record owes
 
 **A refusal keyed on something the operation cannot see is a bypass.** This is the sharpest open
 item in the spike and it is recorded here as a debt rather than a limitation, because the
 difference matters: a limitation is something a reader should accept, and this is something
 somebody has to go and do.
 
+**Corrected before this record was accepted.** The first version's heading said three refusals
+lacked a signal while its table marked only two, and the table was the more wrong of the two: it
+called the image and vector-path signals *measured* because the redactor tokenises the page's
+content stream. **That is a page-content-stream signal, and this section's own rule says a
+signal that cannot see the thing it refuses is a bypass.** An image inside a Form XObject is not
+in the page's content stream — spike 0006 channel 7 measured exactly that for text and there is
+no reason it is different for an image. So neither number was right: **one is measured, four are
+owed.**
+
 | refusal | the signal it fires on | status |
 |---|---|---|
-| optional content | a page's resources reference an OCG | **measured.** `prune/mod.rs` already does exactly this and `split` already refuses on it |
-| an image in the region | the page's own content stream | **measured.** It is the stream the redactor already tokenises |
-| vector paths in the region | the page's own content stream | **measured.** Same |
+| optional content | a page's resources reference an OCG, **followed transitively over the resource graph** | **MEASURED, and to this section's bar.** `prune/mod.rs` calls `refuse_optional_content_in` from inside `follow_resources`, so it descends nested forms and Type 3 `/CharProcs`; ADR 0019's 2026-09-14 amendment records the defect where it read the page's `/Resources` only, and the fix. The evade fixture exists and passes: `oc-nested.pdf`, an OCG one level down inside a form's own resources, and `split_no_leak.rs::a_layer_one_level_down_is_refused_like_one_on_the_page`. **One level is what is measured**; deeper nesting is walked by the code and not pinned by a fixture |
+| an image in the region | the page's own content stream | **OWED.** A `Do` of an image inside a **Form XObject**, an **inline `BI`…`ID`…`EI`** image, and an image reached as a **tiling pattern** or a **shading** fill are all past a page-content-stream signal. Spike 0006's channel 20 draws its image directly on the page, so nothing here has been measured against an evasion |
+| vector paths in the region | the page's own content stream | **OWED.** Same shape: paths inside a **Form XObject**, and inside a **Type 3 glyph procedure**, are past it. Channel 18 draws its paths directly on the page |
 | `/AcroForm` | proposed: an `/Annots` entry with `/Subtype /Widget` | **OWED.** A field whose widget sits on a *different* page walks straight through |
 | `/StructTreeRoot` | proposed: the page's `/StructParents` | **OWED.** A `/StructElem` reaching this page's MCIDs without the page carrying `/StructParents` walks straight through |
 
-**Neither owed refusal may ship on its proposed signal until that signal has been measured to
-fire on a fixture built to evade it.** That is the same bar every other check in this repository
-is held to — a rule that matches nothing passes everything — and it is stated as a condition of
-this decision rather than as advice.
+**The four are owed in two different ways, and the remedies differ.**
+
+- **Under-scoped signal** — image, vector paths. A signal exists and reads too little. The fix is
+  to key the refusal on the same **resource-graph walk** the optional-content refusal already
+  uses, rather than on the page's content stream alone. That walk is written, bounded and
+  deadline-checkpointed; this is reuse, not new machinery.
+- **No signal at all** — `/AcroForm`, `/StructTreeRoot`. The carrier is on the catalogue and
+  §*The constraint that shapes every decision below* measures it unreachable. A page-side proxy
+  has to be invented, and then shown to work.
+
+**No refusal may ship on its signal until that signal has been measured to fire on a fixture
+built to evade it** — tracked as [#125](https://github.com/TensorGreed/burrow/issues/125), which
+carries a fixture list per refusal — and that applies to all five, including the one marked measured, whose
+fixture pins one level of nesting and not the depths its code walks. That is the same bar every
+other check in this repository is held to — a rule that matches nothing passes everything — and
+it is a condition of this decision rather than advice.
 
 ### 6. What verification asserts, and what it may not be worded as
 
@@ -311,8 +332,9 @@ tokeniser ship today, and nothing in this record reopens the linking gate, needs
 document worker, or needs two engines resident in one tab. [#107](https://github.com/TensorGreed/burrow/issues/107)
 and [#111](https://github.com/TensorGreed/burrow/issues/111) are both untouched by it.
 
-**What becomes harder, and it is most of the work.** Five refusals, two of which have no
-implementable trigger yet (§5). A tokeniser that needs byte spans, string values and operator
+**What becomes harder, and it is most of the work.** Five refusals, **four of which have no
+adequate trigger yet** (§5) — two whose signal reads only the page's content stream and so misses
+a Form XObject, and two whose carrier is on the unreachable catalogue. A tokeniser that needs byte spans, string values and operator
 arity — and `pdfsyntax/names.rs` currently argues *against* an operator table, correctly for an
 over-approximating filter and backwards for a rewriter. Font-object surgery in an operation that
 had none. And a page that has to say four uncomfortable things.

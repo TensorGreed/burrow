@@ -526,13 +526,23 @@ and may NOT have, recorded so nobody looks again"*. **This is the same wall `spl
 redaction hits it harder**: `split` could answer it by dropping what it could not reach, and
 redaction cannot drop a catalogue it is meant to be editing in place.
 
-**A refusal needs a page-side signal, and three of the five do not yet have one.** This table is
-what the recommendation's refusals actually rest on, and it is the weakest part of this spike:
+**A refusal needs a page-side signal, and four of the five do not yet have an adequate one.**
+This table is what the recommendation's refusals actually rest on, and it is the weakest part of
+this spike.
+
+**Corrected 2026-09-21.** This paragraph said *three of the five* while the table below marked
+only two as unmeasured, and the table was the more wrong of the two: it called the image and
+path signal *measured* because the redactor already tokenises the page's content stream. That is
+a page-content-stream signal, and this section's own rule is that a signal which cannot see the
+thing it refuses is a bypass. **Channel 7 of this very spike measured a Form XObject's content
+being invisible to a page-content-stream scan** — the same is true of an image or a path inside
+one. One signal is measured; four are owed.
 
 | refusal | page-side signal | status |
 |---|---|---|
-| optional content | a page's resources reference an OCG | **measured** — `prune/mod.rs` does exactly this and `split` refuses on it |
-| an image or a path in the region | the page's own content stream | **measured** — it is the stream the redactor already tokenises |
+| optional content | a page's resources reference an OCG, followed **transitively over the resource graph** | **measured**, with an evade fixture: `prune/mod.rs` calls `refuse_optional_content_in` from inside `follow_resources`, and `oc-nested.pdf` plus `a_layer_one_level_down_is_refused_like_one_on_the_page` pin one level of nesting |
+| an image in the region | the page's own content stream | **NOT adequate.** Past it: a `Do` inside a Form XObject, an inline `BI` image, a tiling pattern, a shading fill. Channel 20 draws directly on the page, so no evasion was measured |
+| vector paths in the region | the page's own content stream | **NOT adequate.** Past it: paths inside a Form XObject, and inside a Type 3 glyph procedure. Channel 18 draws directly on the page |
 | `/AcroForm` | an `/Annots` entry with `/Subtype /Widget` | **proposed, not measured.** A field whose widget is on another page walks through |
 | `/StructTreeRoot` | the page's `/StructParents` | **proposed, not measured.** A `/StructElem` reaching this page's MCIDs without the page carrying `/StructParents` walks through |
 | `/Metadata`, `/Names` | **none** | there is no page-side signal at all, which is why they are disclosed rather than refused |
@@ -652,13 +662,13 @@ measured.
 ### It refuses five shapes, and the refusals are the feature
 
 Not caveats. Refusals, in the voice ADR 0019 §4 established for `split`. **Each needs the
-page-side signal finding 4's table demands; two have one and three do not yet.**
+page-side signal finding 4's table demands; one has an adequate one and four do not yet.**
 
 | # | refuse | because | page-side signal |
 |--:|---|---|---|
 | 13 | a document whose kept pages reference **optional content** | `split` already refuses this. Redaction's reason is stronger: it must not make hidden content visible | **measured** |
-| 20 | a page whose region intersects an **image** | removing text from a JPEG is re-encoding it; recognising text in one is OCR | **measured** |
-| 18 | a page whose region intersects **vector path content** | indistinguishable from a chart, a logo or a signature | **measured** |
+| 20 | a page whose region intersects an **image** | removing text from a JPEG is re-encoding it; recognising text in one is OCR | **owed** — page content stream only |
+| 18 | a page whose region intersects **vector path content** | indistinguishable from a chart, a logo or a signature | **owed** — page content stream only |
 | 12 | a document with an **`/AcroForm`** | the field `/V` is on the catalogue and unreachable. Channel 12's visibility is asserted, not measured — see finding 1 | **proposed only** |
 | 10 | a document with a **`/StructTreeRoot`** where the region carries marked content | `/ActualText` and `/Alt` are on the catalogue and unreachable | **proposed only** |
 
@@ -801,8 +811,10 @@ spike, and **nothing is amended from inside a spike.**
    inverted for a rewriter. The ADR should record the inversion.
 4. **Finding 3's three removals do not transfer.** They are properties of `split`'s build route.
    An in-place redaction keeps `/Metadata`, `/StructTreeRoot` and `/Names`.
-5. **Every refusal needs a measured page-side trigger** — finding 4's table. Three of five do not
-   have one yet, and a refusal keyed on an invisible signal is a bypass.
+5. **Every refusal needs a measured page-side trigger** — finding 4's table. **Four of five** do
+   not have an adequate one yet, and a refusal keyed on an invisible signal is a bypass. Two of
+   the four read the page's content stream and so miss a Form XObject; two have no signal at all.
+   Tracked as [#125](https://github.com/TensorGreed/burrow/issues/125).
 6. **`hb-subset` moves from a wish to a named condition.** It is what closes channel 23's residue,
    and `docs/ROADMAP.md`'s M2 list already carries it.
 7. **ADR 0027's render is not a redaction preview.** Flags are zero, so an annotation still
