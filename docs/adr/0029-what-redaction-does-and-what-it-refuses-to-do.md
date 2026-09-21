@@ -4,7 +4,7 @@ Date: 2026-09-19
 
 ## Status
 
-**Proposed.** Written from [spike 0006](../spikes/0006-what-survives-a-redaction.md); accepted after reading, as with the ADRs before it.
+**Accepted**, 2026-09-21. Written from [spike 0006](../spikes/0006-what-survives-a-redaction.md) and merged as *Proposed*; accepted after §§3, 5, 6 and 7 were read, as with the ADRs before it. No M2 implementation started before this line changed.
 
 Scoped to **decisions**, not design: what v1 does and refuses per channel, what the page says,
 what verification may assert, and the named conditions for revisiting. The operation's

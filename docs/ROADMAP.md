@@ -764,7 +764,7 @@ other.
 [Spike 0006](spikes/0006-what-survives-a-redaction.md) measured where a page's text can also
 live — **17 of 23 places survive a naive content-stream redaction**, three of them legible on the
 page afterwards — and [ADR 0029](adr/0029-what-redaction-does-and-what-it-refuses-to-do.md)
-(**Proposed**) turns that into decisions: what v1 rewrites, the five shapes it refuses, the three
+(**Accepted**, 2026-09-21) turns that into decisions: what v1 rewrites, the five shapes it refuses, the three
 it discloses, and what verification is allowed to assert.
 
 **[#125](https://github.com/TensorGreed/burrow/issues/125) blocks the redaction tool from
