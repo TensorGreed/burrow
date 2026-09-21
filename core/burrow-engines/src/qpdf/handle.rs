@@ -153,6 +153,93 @@ impl<'a> ObjectHandle<'a> {
         unsafe { ffi::qpdf_oh_replace_key(self.data, self.handle, key, item.handle) }
     }
 
+    /// Replace this stream's body with `bytes`, and report qpdf's verdict.
+    ///
+    /// # It drains the error slot itself, and that is the whole point of the wrapper
+    ///
+    /// `qpdf_oh_replace_stream_data` returns `void`. Like every other void write in the C API
+    /// it reports failure only by latching on the `qpdf_data`, so calling it and carrying on is
+    /// an unchecked write — and for redaction an unchecked write is a page that reports a
+    /// removal it did not make (ADR 0029 §6). Folding [`Document::take_error`] in here means a
+    /// caller cannot forget it, the same reason `Lexer::next_token` skips an inline image
+    /// rather than asking its caller to.
+    ///
+    /// # It takes no `Document`, and that is a correctness decision
+    ///
+    /// The first version took `&Document` alongside `&self` so it could reach the error slot.
+    /// Security review found the leak in it: `ObjectHandle` carries no document identity, and
+    /// nothing stopped a caller passing a **different** document — whereupon qpdf latches the
+    /// failure on `self.data`'s slot, the wrapper drains the other document's empty one, and
+    /// the function returns `Ok(())` **on a write that did not happen**. That is the exact
+    /// sentence this milestone exists to prevent.
+    ///
+    /// So the slot is reached through `self.data`, which is by construction the document that
+    /// issued this handle. `filter` and `decode_parms` are checked against it too: qpdf handles
+    /// are bare `++next_oh` counters (`qpdf-c.cc:833-838`), so a handle from another document
+    /// would very likely *collide* with a live one here and be written as `/Filter` with no
+    /// error at all. `core/CLAUDE.md`'s rule that a handle is not an identity, one level up.
+    ///
+    /// **qpdf copies `bytes` before returning** — `qpdf-c.h:942-944` — so the slice does not
+    /// need to outlive the call.
+    ///
+    /// # `Err` does not tell you whether the stream was written
+    ///
+    /// `qpdf_oh_replace_stream_data` is three nested trapped calls, not one: inside the outer
+    /// `do_with_oh_void` it resolves `filter` and `decode_parms` through their own `do_with_oh`
+    /// (`qpdf-c.cc:1778-1796`), and an inner failure latches on the **same** slot. So an `Err`
+    /// here may mean the write never happened, or that it happened and a later step failed.
+    /// A caller must not treat `Err` as "the document is untouched" — for redaction, retrying
+    /// or falling back on that assumption is operating on state it believes unmodified.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Internal`] if `filter` or `decode_parms` belongs to another document.
+    /// - Whatever qpdf latched, mapped at the engine boundary as everywhere else.
+    pub(super) fn replace_stream_data(
+        &self,
+        bytes: &[u8],
+        filter: &Self,
+        decode_parms: &Self,
+    ) -> Result<()> {
+        if filter.data != self.data || decode_parms.data != self.data {
+            return Err(Error::Internal(
+                "qpdf: a stream's filter came from another document".to_owned(),
+            ));
+        }
+        // SAFETY: `self.data` is live and `self.handle` was issued by it; the check above
+        // establishes that `filter` and `decode_parms` were issued by the same document.
+        // `bytes` is read for `len` bytes and copied by qpdf before the call returns. Routes
+        // through `trap_errors` via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`
+        // (engines/qpdf-trapped-functions.txt:82).
+        unsafe {
+            ffi::qpdf_oh_replace_stream_data(
+                self.data,
+                self.handle,
+                bytes.as_ptr(),
+                bytes.len(),
+                filter.handle,
+                decode_parms.handle,
+            );
+        }
+        // THE SLOT THAT BELONGS TO THIS HANDLE'S DOCUMENT. Reached through `self.data` rather
+        // than through a `Document` a caller chose; see above for what that cost.
+        // SAFETY: `self.data` is live for as long as this handle borrows its document.
+        unsafe { Document::take_error_on(self.data) }.map_or(Ok(()), Err)
+    }
+
+    /// The null object, in `document`.
+    ///
+    /// It exists for [`Self::replace_stream_data`]'s two object arguments: a null is how the C
+    /// API says "no filter".
+    pub(super) fn new_null(document: &'a Document) -> Self {
+        // SAFETY: `document.data` is live. Untrapped and argued in
+        // `engines/qpdf-untrapped-accepted.toml`: it constructs the null object and never
+        // touches the document.
+        let handle = unsafe { ffi::qpdf_oh_new_null(document.data) };
+        // SAFETY: `handle` was just issued by `document.data`.
+        unsafe { Self::owned(document, handle) }
+    }
+
     /// A new integer object in this handle's document.
     pub(super) fn new_integer(document: &'a Document, value: i64) -> Self {
         // SAFETY: `document.data` is live. Untrapped and argued in

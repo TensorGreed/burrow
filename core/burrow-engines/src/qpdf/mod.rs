@@ -137,7 +137,22 @@ impl Document {
     /// would miss half the failure modes.
     pub(super) fn take_error(&self) -> Option<Error> {
         // SAFETY: `self.data` is a live handle owned by this struct.
-        if unsafe { ffi::qpdf_has_error(self.data) } == 0 {
+        unsafe { Self::take_error_on(self.data) }
+    }
+
+    /// The same, for a caller that holds the `qpdf_data` rather than the [`Document`].
+    ///
+    /// `ObjectHandle::replace_stream_data` is the caller: it must drain the slot belonging to
+    /// the document that issued its own handle, and taking a `&Document` from the caller let
+    /// the wrong one be passed — which returns `Ok` on a write that did not happen. Security
+    /// review found that; the handle's own `data` is the only answer that cannot be wrong.
+    ///
+    /// # Safety
+    ///
+    /// `data` must be a live `qpdf_data`.
+    pub(super) unsafe fn take_error_on(data: ffi::QpdfData) -> Option<Error> {
+        // SAFETY: the caller guarantees `data` is live.
+        if unsafe { ffi::qpdf_has_error(data) } == 0 {
             return None;
         }
         // SAFETY: `qpdf_has_error` just reported an error, so `qpdf_get_error` returns a
@@ -145,8 +160,8 @@ impl Document {
         // qpdf call can invalidate it (`qpdf-c.h:180-183`), and only its *code* is read --
         // never its text, filename or byte offset. See `errors.rs`.
         let code = unsafe {
-            let error = ffi::qpdf_get_error(self.data);
-            ffi::qpdf_get_error_code(self.data, error)
+            let error = ffi::qpdf_get_error(data);
+            ffi::qpdf_get_error_code(data, error)
         };
         Some(crate::codes::qpdf::map_code(code))
     }

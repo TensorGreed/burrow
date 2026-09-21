@@ -102,11 +102,17 @@ extern "C" {
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_new_null)]
     fn qpdf_oh_new_null(data: u32) -> u32;
     // REDACTION'S WRITE (#130, ADR 0029 SS1), and the only import here that carries bytes INTO
-    // a live object graph. It takes a `&[u8]`, so wasm-bindgen copies the slice into a JS
-    // `Uint8Array` at the boundary and the JS side copies that into the engine heap -- two
-    // copies of a content stream, which is the cost of not handing a raw pointer across.
+    // a live object graph. `&[u8]` marshals as `getArrayU8FromWasm0`, which is a `subarray` --
+    // a zero-copy VIEW over this module's memory, not a copy. So there is ONE copy, made by
+    // the JS side into the engine heap.
+    //
+    // An earlier version of this comment said two, and that is not a wording slip: if the
+    // slice were already copied out, `QpdfBridge::oh_replace_stream_data`'s rule about reading
+    // `HEAPU8` after the malloc would read as belt-and-braces rather than as the requirement
+    // it is. Found by review, which read the generated glue.
+    //
     // `false` means the engine could not take the bytes, which on the web is an allocation
-    // failure and is a refusal rather than a panic.
+    // failure and is a refusal rather than a panic -- never that the replace succeeded.
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_replace_stream_data)]
     fn qpdf_oh_replace_stream_data(
         data: u32,

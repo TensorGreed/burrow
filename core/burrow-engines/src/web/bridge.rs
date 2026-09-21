@@ -586,6 +586,13 @@ pub trait QpdfBridge: Send + Sync {
     /// [`oh_new_null`](QpdfBridge::oh_new_null) for "none", which is what leaving a stream
     /// uncompressed means.
     ///
+    /// **A handle qpdf does not recognise silently becomes "no filter".** `qpdf_oh_item_internal`
+    /// resolves each of these through its own `do_with_oh`, whose fallback is `newNull()`
+    /// (`qpdf-c.cc:1581-1589`), so a stale, released or zero handle produces a stream with no
+    /// `/Filter` and no error. Today burrow only ever passes a null, so the wrong answer and
+    /// the right one coincide; the day redaction writes a `/FlateDecode` stream they stop
+    /// coinciding, and nothing here would say so.
+    ///
     /// **qpdf copies `bytes` before returning**, so the slice does not need to outlive the
     /// call. Worth stating because the other reading is a lifetime bug that would look like a
     /// working redaction on every small document and corrupt a large one.
@@ -596,7 +603,16 @@ pub trait QpdfBridge: Send + Sync {
     /// written here because `burrow-worker.js` is **concatenated rather than minified**, so a
     /// comment in `apps/web/src/worker/bridge-qpdf.js` is bytes a person downloads — 1,056
     /// brotli of them, measured, on a payload whose margin is 7.6% against a 10% policy. A
-    /// rustdoc costs nothing at run time. `bridge-write-path.test.ts` asserts each one.
+    /// rustdoc costs nothing at run time.
+    ///
+    /// **Three of the five are asserted; two are argued, and this says which.**
+    /// `bridge-write-path.test.ts` catches 1 (a free moved before the engine call — its fake
+    /// poisons what it takes back), 2 (a hoisted view, against a heap detached for real with
+    /// `ArrayBuffer.transfer`) and 5 (its fake's `_malloc(0)` returns 0, as C permits). Hazard
+    /// 3 is about wasm-bindgen's marshalling and cannot be asserted from a JS test at all.
+    /// Hazard 4 is asserted on the Rust side instead, by `Session::replace_stream_data`'s
+    /// tests. An earlier version of this sentence claimed all five and two of them could not
+    /// fail — measured by security review, which planted the mutations.
     ///
     /// 1. **The `free(0xc0ffee)` class is absent, structurally.** That defect was an
     ///    uninitialised OUT-PARAMETER: `_malloc` does not zero, a trapped function does not
@@ -611,7 +627,8 @@ pub trait QpdfBridge: Send + Sync {
     /// 3. **The source slice lives in a different memory**, so that malloc cannot detach it:
     ///    wasm-bindgen marshals a `&[u8]` import argument as a subarray over
     ///    `burrow_wasm_bg.wasm`'s memory, which is not qpdf's.
-    /// 4. **`true` is not success.** See below.
+    /// 4. **`true` is not success**, and `Err` does not mean the write did not happen. See
+    ///    below, and `Session::replace_stream_data`, which is what a caller should use.
     /// 5. **`_malloc(0)` may legitimately return 0**, which is the bridge's own failure signal,
     ///    so one byte is asked for and the real length is still passed to qpdf. Without that, a
     ///    redaction that emptied a stream would report a refusal that did not happen.

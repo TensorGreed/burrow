@@ -2938,3 +2938,133 @@ fn a_strip_that_has_already_spent_the_memory_budget_will_not_load_another_page()
     drop(doc);
     state.assert_empty();
 }
+
+// ---- the write path's error slot (#130) ---------------------------------------------------
+//
+// `qpdf_oh_replace_stream_data` returns `void`. A qpdf that REFUSES the write says nothing at
+// the call site and leaves a code on the `qpdf_data`, so a caller that reads only the bridge's
+// `true` has performed an unchecked write -- and for redaction an unchecked write is a page
+// that reports a removal it did not make (ADR 0029 §6).
+//
+// Documenting that is not checking it, so these provoke it.
+
+/// A session over the fake, for the write-path tests below.
+fn write_session(script: QpdfScript) -> (WebQpdf, Arc<FakeHeap>, super::qpdf::Session) {
+    let state = FakeHeap::new();
+    let bridge = Arc::new(FakeQpdf::new(Arc::clone(&state), script));
+    let engine = WebQpdf::new(bridge);
+    let session = super::qpdf::Session::open(&engine, b"%PDF-1.7\n", None, false)
+        .expect("the fake opens a document");
+    (engine, state, session)
+}
+
+#[test]
+fn a_replace_that_qpdf_latched_an_error_for_is_an_error_and_not_a_success() {
+    // THE POINT OF THE WRAPPER. The bridge reports `true` -- the bytes did reach the engine --
+    // and qpdf refused the write anyway. A caller reading the bridge's return value alone sees
+    // a redaction that worked.
+    let (_engine, state, session) = write_session(QpdfScript {
+        replace_stream_data_succeeds: true,
+        replace_stream_data_latches: Some(2), // qpdf_e_object
+        ..QpdfScript::default()
+    });
+
+    let refused = session.replace_stream_data(7, b"BT ET", 0, 0);
+
+    assert!(
+        refused.is_err(),
+        "a latched error after the write must surface, not be left in the slot"
+    );
+    // AND IT REACHED QPDF, so the refusal is the error slot rather than the bridge refusing
+    // earlier for some other reason. Without this the test passes on a wrapper that never
+    // called the engine at all.
+    let wrote = state
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, Call::OhReplaceStreamData { .. }))
+        .count();
+    assert_eq!(wrote, 1, "the write must have been attempted");
+}
+
+#[test]
+fn the_error_slot_is_drained_so_it_cannot_surface_on_an_unrelated_later_call() {
+    // A latched code left in place is worse than a missed error: it is a refusal attributed to
+    // whatever ran next. `take_error` clears the slot, and this asserts the clearing.
+    let (_engine, _state, session) = write_session(QpdfScript {
+        replace_stream_data_latches: Some(2),
+        ..QpdfScript::default()
+    });
+
+    assert!(session.replace_stream_data(7, b"BT ET", 0, 0).is_err());
+    assert!(
+        session.take_error().is_none(),
+        "the error slot still holds a code, which the next call would be blamed for"
+    );
+}
+
+#[test]
+fn a_bridge_that_could_not_take_the_bytes_is_an_error_too_and_a_different_one() {
+    // The other failure: the engine heap could not accept the copy, so qpdf was never called
+    // and has nothing latched. It must not read as success either.
+    let (_engine, state, session) = write_session(QpdfScript {
+        replace_stream_data_succeeds: false,
+        ..QpdfScript::default()
+    });
+
+    let refused = session.replace_stream_data(7, b"BT ET", 0, 0);
+
+    assert!(matches!(refused, Err(Error::Internal(_))));
+    // The fake records the call before reporting failure, so this says the two failure modes
+    // are distinguished rather than collapsed.
+    assert_eq!(
+        state
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::OhReplaceStreamData { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn an_accepted_replace_carries_the_bytes_through_unchanged() {
+    // The non-vacuity control for the three above: with nothing scripted to fail, the write
+    // succeeds AND the engine receives exactly what it was given. A wrapper that refused
+    // everything would pass all three refusal tests.
+    let (_engine, state, session) = write_session(QpdfScript::default());
+    let content = b"BT /F1 12 Tf (kept) Tj ET";
+
+    session
+        .replace_stream_data(7, content, 0, 0)
+        .expect("an unscripted write succeeds");
+
+    let calls = state.calls();
+    let Some(Call::OhReplaceStreamData { stream, bytes, .. }) = calls
+        .iter()
+        .find(|c| matches!(c, Call::OhReplaceStreamData { .. }))
+    else {
+        panic!("the write never reached the engine: {calls:?}");
+    };
+    assert_eq!(*stream, 7);
+    assert_eq!(bytes.as_slice(), content);
+}
+
+#[test]
+fn the_null_handle_comes_from_qpdf_rather_than_being_invented() {
+    // `Call::OhNewNull` existed and no test asserted it, which is a coverage claim nobody
+    // makes -- code review's words. The handle is what `replace_stream_data` passes as
+    // "no filter", and a bridge that answered a constant would still typecheck.
+    let state = FakeHeap::new();
+    let bridge = Arc::new(FakeQpdf::new(Arc::clone(&state), QpdfScript::default()));
+    let engine = WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>);
+    let session = super::qpdf::Session::open(&engine, b"%PDF-1.7\n", None, false)
+        .expect("the fake opens a document");
+
+    let handle = bridge.oh_new_null(session.data());
+
+    assert_ne!(handle, 0, "a null OBJECT is not a null HANDLE");
+    assert!(
+        state.calls().iter().any(|c| matches!(c, Call::OhNewNull)),
+        "the handle did not come from the engine"
+    );
+}

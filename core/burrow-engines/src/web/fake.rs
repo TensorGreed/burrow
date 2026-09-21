@@ -800,6 +800,14 @@ pub(super) struct QpdfScript {
     /// a write the engine never took is the failure ADR 0029 §6 exists to make impossible, so
     /// it needs a way to be provoked.
     pub(super) replace_stream_data_succeeds: bool,
+    /// An error code `qpdf_oh_replace_stream_data` LATCHES, as the real one does.
+    ///
+    /// Distinct from `replace_stream_data_succeeds`, and the distinction is the whole hazard:
+    /// the C function returns `void`, so a qpdf that refuses the write says nothing at the call
+    /// site and leaves a code on the `qpdf_data`. A caller that reads only the bridge's `true`
+    /// sees a successful write. `pending_error` cannot model this -- `Session::open` drains it
+    /// before any handle exists -- so the error has to be armed at the call itself.
+    pub(super) replace_stream_data_latches: Option<i32>,
     /// Extra heap growth attributed to the read, in bytes — what a decompression bomb costs.
     pub(super) read_grows_heap_by: u64,
     /// The bitmask `qpdf_remove_page` returns.
@@ -914,6 +922,7 @@ impl Default for QpdfScript {
             buffer_is_null: false,
             init_succeeds: true,
             replace_stream_data_succeeds: true,
+            replace_stream_data_latches: None,
             read_grows_heap_by: 0,
             error_reappears_once: None,
             // A page tree that INHERITS: no `/Rotate` on the page (null), and a `/Parent`
@@ -1538,6 +1547,11 @@ impl QpdfBridge for FakeQpdf {
             filter,
             decode_parms,
         });
+        // LATCHED, NOT RETURNED -- exactly as the C function does. `qpdf_oh_replace_stream_data`
+        // is `void`, so a refusal is only ever visible in the error slot.
+        if let Some(code) = self.script.replace_stream_data_latches {
+            *self.pending.lock().expect("not poisoned") = Some(code);
+        }
         self.script.replace_stream_data_succeeds
     }
 

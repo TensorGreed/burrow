@@ -28,6 +28,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const workerDir = import.meta.dirname;
@@ -45,6 +46,8 @@ type Fake = {
   module: Record<string, unknown>;
   seen: Seen[];
   live: () => number;
+  /** Detach the heap for real, the way growing it does. */
+  detach: () => void;
 };
 
 /**
@@ -54,29 +57,45 @@ type Fake = {
  * than absorbed — the shape the `free(0xc0ffee)` defect had.
  */
 function fakeQpdf(heapBytes = 1 << 16): Fake {
-  const buffer = new ArrayBuffer(heapBytes);
+  let buffer = new ArrayBuffer(heapBytes);
   const seen: Seen[] = [];
-  const outstanding = new Set<number>();
-  // Never 0: the bridge treats 0 as an allocation failure, so an allocator handing it out would
-  // make the refusal path fire on a perfectly good call.
+  /** Outstanding allocations, pointer -> size, so `_free` can poison the region. */
+  const outstanding = new Map<number, number>();
+  // Never 0 for a non-zero request: the bridge treats 0 as an allocation failure, so an
+  // allocator handing it out would make the refusal path fire on a perfectly good call.
   let next = 8;
 
   const module: Record<string, unknown> = {
     HEAPU8: new Uint8Array(buffer),
     HEAPU32: new Uint32Array(buffer),
     _malloc: (n: number) => {
+      // `malloc(0)` MAY RETURN NULL, and here it always does. C leaves it implementation
+      // defined; the bridge's guard exists for the implementations that return 0, so a fake
+      // that never does cannot test the guard. Security review measured that: with
+      // `Math.max(n, 1)` here, deleting the guard left every test green.
+      if (n === 0) {
+        return 0;
+      }
       const at = next;
-      next += Math.max(n, 1) + 8;
+      next += n + 8;
       if (next > heapBytes) {
         return 0;
       }
-      outstanding.add(at);
+      outstanding.set(at, n);
       return at;
     },
     _free: (ptr: number) => {
-      if (!outstanding.delete(ptr)) {
+      const size = outstanding.get(ptr);
+      if (size === undefined) {
         throw new Error(`free of a pointer that is not outstanding: ${ptr}`);
       }
+      outstanding.delete(ptr);
+      // POISONED, so a USE-AFTER-FREE is visible. Without this the bump allocator never
+      // reuses and the freed bytes sit there intact, so moving the free above the engine call
+      // — the textbook defect for this function — passed every test. Measured by security
+      // review, which is the second time this file's own claim ("a pointer used after a free
+      // is visible rather than absorbed") had to be made true rather than asserted.
+      (module.HEAPU8 as Uint8Array).fill(0xde, ptr, ptr + size);
     },
     _qpdf_oh_replace_stream_data: (
       data: number,
@@ -100,22 +119,71 @@ function fakeQpdf(heapBytes = 1 << 16): Fake {
     },
     _qpdf_oh_new_null: () => 77,
   };
-  return { module, seen, live: () => outstanding.size };
+  return {
+    module,
+    seen,
+    live: () => outstanding.size,
+    detach: () => {
+      // REAL DETACHMENT, not a swap for a fresh view. `ArrayBuffer.prototype.transfer`
+      // detaches the original, so every existing view over it throws on access — which is
+      // what `-sALLOW_MEMORY_GROWTH=1` does to `HEAPU8` when the heap grows. Swapping in a
+      // new view left the old buffer live, so a hoisted view wrote into stale memory and
+      // threw nothing; the test caught the hoist by content while claiming to catch it by a
+      // throw.
+      const grown = buffer.transfer(heapBytes * 2);
+      buffer = grown;
+      module.HEAPU8 = new Uint8Array(grown);
+      module.HEAPU32 = new Uint32Array(grown);
+    },
+  };
 }
 
-/** Evaluate the bridge the way the bundler concatenates it, and hand back its entry points. */
+/** Evaluate the bridge the way the bundler concatenates it, and hand back its entry points.
+ *
+ * `runInNewContext` with `self === globalThis === scope`, as `test-scope.ts` does, rather than
+ * `new Function("self", …)`. The generated wasm-bindgen glue calls these as BARE IDENTIFIERS
+ * (`__burrow_qpdf_copy_in(...)`, resolved off the worker global), and a `self` that is a plain
+ * parameter object does not model that — a bridge that forgot its `self.` prefix would pass.
+ *
+ * The file list is read from `stage-web-engines.mjs` rather than hardcoded, so a rename or a
+ * reorder there is caught here instead of silently testing the wrong pair.
+ */
 function loadBridge(qpdfSource?: string): {
   scope: Record<string, (...args: never[]) => unknown>;
   attach: (module: unknown) => void;
 } {
-  const common = readFileSync(join(workerDir, "bridge-common.js"), "utf8");
-  const qpdf = qpdfSource ?? readFileSync(join(workerDir, "bridge-qpdf.js"), "utf8");
-  const scope: Record<string, (...args: never[]) => unknown> = {};
-  // `__burrow_attach` is a bundle-scope function rather than a `self.` global, so the loader
-  // returns it explicitly. Everything else the bridge publishes lands on `scope`.
-  const load = new Function("self", `${common}\n${qpdf}\nreturn { attach: __burrow_attach };`);
-  const { attach } = load(scope) as { attach: (module: unknown) => void };
-  return { scope, attach };
+  const sources = bundleOrder().map((name) =>
+    name === "bridge-qpdf.js" && qpdfSource !== undefined
+      ? qpdfSource
+      : readFileSync(join(workerDir, name), "utf8"),
+  );
+  const scope: Record<string, unknown> = {};
+  scope.self = scope;
+  scope.globalThis = scope;
+  // `__burrow_attach` is a bundle-scope function rather than a `self.` global, so it is picked
+  // up by evaluating an expression after the sources rather than read off the scope.
+  const attach = runInNewContext(`${sources.join("\n")}\n;(__burrow_attach)`, scope) as (
+    module: unknown,
+  ) => void;
+  return { scope: scope as Record<string, (...args: never[]) => unknown>, attach };
+}
+
+/** The two bridge files this test needs, in the order the base bundle concatenates them. */
+function bundleOrder(): string[] {
+  const stager = readFileSync(
+    join(workerDir, "..", "..", "..", "..", "tools", "stage-web-engines.mjs"),
+    "utf8",
+  );
+  const base = /id:\s*"worker",[\s\S]*?order:\s*\[([\s\S]*?)\n {4}\],/.exec(stager);
+  if (!base) {
+    throw new Error("could not read the base worker bundle's order from stage-web-engines.mjs");
+  }
+  const names = [...base[1].matchAll(/\bapp:\s*"src\/worker\/([\w.-]+)"/g)].map((m) => m[1]);
+  const wanted = names.filter((n) => n === "bridge-common.js" || n === "bridge-qpdf.js");
+  if (wanted.length !== 2) {
+    throw new Error(`expected both bridge files in the bundle order, found ${wanted.join(", ")}`);
+  }
+  return wanted;
 }
 
 function replaceStreamData(
@@ -184,16 +252,16 @@ describe("the redaction write path", () => {
   });
 
   it("reads the heap view after the allocation, so a grown heap cannot detach it", () => {
-    // `-sALLOW_MEMORY_GROWTH=1` replaces the buffer and detaches every existing view. This
-    // models the growth inside `_malloc` and asserts the copy still lands: a bridge that
-    // hoisted `module.HEAPU8` above the malloc would write into the detached view and throw.
+    // `-sALLOW_MEMORY_GROWTH=1` DETACHES every view over the old buffer, and `_malloc` is
+    // where growth happens. `fake.detach()` does it for real with `ArrayBuffer.transfer`, so
+    // a bridge that hoisted `module.HEAPU8` above the malloc writes into a detached view and
+    // THROWS — which is what this test's comment used to claim while modelling a swap that
+    // could not throw.
     const fake = fakeQpdf();
-    const grown = new ArrayBuffer(1 << 17);
     const original = fake.module._malloc as (n: number) => number;
     fake.module._malloc = (n: number) => {
       const at = original(n);
-      fake.module.HEAPU8 = new Uint8Array(grown);
-      fake.module.HEAPU32 = new Uint32Array(grown);
+      fake.detach();
       return at;
     };
 
@@ -203,6 +271,37 @@ describe("the redaction write path", () => {
 
     expect(replaceStreamData(scope, 1, 2, content, 0, 0)).toBe(true);
     expect(fake.seen[0].bytes).toEqual(content);
+  });
+
+  it("does not free the buffer before the engine has read it", () => {
+    // THE USE-AFTER-FREE, which this file's fake could not see until `_free` poisoned the
+    // region it takes back. `qpdf copies before returning` is the single load-bearing
+    // assumption behind freeing in a `finally`, and it is the assumption a qpdf version bump
+    // could invalidate — so the harness has to be able to catch the free moving.
+    const source = readFileSync(join(workerDir, "bridge-qpdf.js"), "utf8");
+    const original = "module._qpdf_oh_replace_stream_data(";
+    expect(source).toContain(original);
+    const mutated = source.replace(
+      original,
+      "module._free(buf), module._qpdf_oh_replace_stream_data(",
+    );
+    expect(mutated).not.toEqual(source);
+
+    const fake = fakeQpdf();
+    const { scope, attach } = loadBridge(mutated);
+    attach(fake.module);
+
+    const content = new Uint8Array([1, 2, 3, 4]);
+    // The double free in the `finally` is itself caught by the fake, so either the poisoned
+    // bytes or the throw refuses this — both are the defect, and neither is silence.
+    let refused = false;
+    try {
+      replaceStreamData(scope, 1, 2, content, 0, 0);
+      refused = !fake.seen[0] || !Buffer.from(fake.seen[0].bytes).equals(Buffer.from(content));
+    } catch {
+      refused = true;
+    }
+    expect(refused).toBe(true);
   });
 
   it("writes the right length of wrong bytes — and the round trip refuses it", () => {

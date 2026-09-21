@@ -196,7 +196,7 @@ self.__burrow_qpdf_oh_new_null = (data) => u32(qpdf()._qpdf_oh_new_null(data));
  */
 self.__burrow_qpdf_oh_replace_stream_data = (data, stream, bytes, filter, decodeParms) => {
   const module = qpdf();
-  const buf = module._malloc(bytes.length === 0 ? 1 : bytes.length);
+  const buf = u32(module._malloc(bytes.length === 0 ? 1 : bytes.length));
   if (buf === 0) {
     return false;
   }

@@ -280,9 +280,18 @@ reason = """\
 object and puts it in the handle cache (`++next_oh`, one map insert). The whole body, plus the \
 `QTC::TC` coverage macro. It never reads the document, never resolves an object and cannot see \
 a byte of the input, so it meets this file's bar exactly: non-parsing, never touches the PDF's \
-bytes. It can fail only by allocation, a defined abort since Rust 1.81. It is the same argument \
-as `qpdf_oh_new_integer` above, one constructor over: that one takes a `long long` this crate \
-chose, this one takes nothing at all. \
+bytes. It is the same argument as `qpdf_oh_new_integer` above, one constructor over: that one \
+takes a `long long` this crate chose, this one takes nothing at all. \
+NOT "cannot throw at all", for the reason `qpdf_set_object_stream_mode` records after a \
+previous security review corrected it there: the `QTC::TC(...)` before the forward reaches \
+`QTC::TC_real` (QTC.cc:16-49), which inserts into two function-local statics -- so \
+`std::bad_alloc` is reachable, the defined-abort case this file already reasons about -- and, \
+when BOTH `TC_SCOPE=qpdf` and `TC_FILENAME` are set in the environment, calls \
+`QUtil::safe_fopen`, which throws `std::runtime_error` if the file cannot be opened. Neither \
+path is reachable from file content and the second is inert unless someone sets those \
+variables. Recorded because this file's preamble demands an entry be exact about where it \
+stops, and the first draft of this one -- like the `qpdf_oh_new_integer` entry it was modelled \
+on -- stopped one clause early. \
 WHY IT IS DECLARED RATHER THAN WORKED AROUND. `qpdf_oh_replace_stream_data` takes object \
 handles for `/Filter` and `/DecodeParms`, and a null object is how the C API says "no filter". \
 Spike 0006 obtained one by asking a dictionary for a key it does not have, which works; ADR \
