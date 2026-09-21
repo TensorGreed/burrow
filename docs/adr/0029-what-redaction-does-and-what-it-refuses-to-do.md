@@ -528,3 +528,67 @@ closed, and what is left is how many documents pay for closing it.
 Nothing §3 decided is reversed. A channel it never had is added to it, with its bucket, which is
 what §3's own rule about empty buckets demands. The three conditions for revisiting are
 unchanged.
+
+## Amendment, 2026-09-21 — redaction ships in its own lazily-loaded wasm module
+
+**The *Consequences* section costs this record's decisions in engine exports and in verification
+work, and says nothing about the web payload.** That was an omission rather than a judgement, and
+#128 turned it into a number.
+
+### What was measured
+
+#128 landed the content-stream rewriter — some two thousand lines across `ops.rs`, `contents.rs`
+and `strings.rs`. It cost **zero brotli** in `burrow_wasm_bg.wasm`, the module every tool page
+fetches on its first file. Checked against the built artifact rather than assumed: none of those
+modules' error strings are in it. LTO strips code nothing calls, and on the web nothing calls them
+yet.
+
+**That stripping stops the moment [#131] wires them in.** The rewriter, then §6's geometry pass,
+then §1's font surgery, all become reachable from a shipped entry point at once — and they land on
+the module a person downloads to rotate a PDF.
+
+The margin cannot absorb it. After #128 the first-load total is **471,205 brotli against a 509,812
+ceiling: 38,607 bytes, 7.6% against the 10% `apps/web/size-budget.json` records as its policy.**
+The gate holds and the margin does not; it has been under 10% since the page-picture strip.
+
+### The decision
+
+**Redaction's Rust is compiled into its own binding module, fetched on the first redaction and
+never by anything else.** [ADR 0026](0026-how-rendering-loads-without-returning-to-the-old-payload.md)
+§1 already established the shape for PDFium, and this is a third row of the same table:
+
+| bundle | engine | Rust module | fetched |
+|---|---|---|---|
+| `burrow-worker.js` | qpdf | `burrow_wasm_bg.wasm` | on the first file, by every tool page |
+| `burrow-render-worker.js` | PDFium | `burrow_wasm_render_bg.wasm` | on the first page picture |
+| `burrow-redact-worker.js` | qpdf | `burrow_wasm_redact_bg.wasm` | on the first redaction |
+
+So `bindings/burrow-wasm` gains a third mutually exclusive feature, `redact`, beside `documents`
+and `render`; ADR 0026 §2's refusal of a `wasm32` build enabling none or more than one extends to
+cover it. `tools/stage-web-engines.mjs` builds the bundle from its own source list and generates
+its own manifest slice into it.
+
+**The total budget is not raised for redaction.** That is the decision, not a consequence of it:
+a tool that redacts nothing must not download a redaction engine, and raising the ceiling instead
+would have spent the margin on exactly that.
+
+### What it does not cover, stated because the split reads as bigger than it is
+
+`qpdf.wasm` is one artifact shared by every tool and no feature flag divides it, so the qpdf C
+exports redaction needs — `qpdf_oh_replace_stream_data` and whatever follows it — are unavoidable
+base payload. [#130] measures that cost and reports it rather than re-recording past it. The
+calibration on record is that `split`'s ten exports cost +3,340 brotli and `merge`'s seven cost
++53,456, and `engines/qpdf-not-exported.toml` says in those words that the variance is in what
+else gets pulled in rather than in the count.
+
+### The check that keeps it true
+
+A split nothing verifies is a split that closes quietly the first time someone imports across it.
+`tools/check-pdfium-is-render-only.sh` is the precedent — three layers, asserting PDFium reaches
+the render bundle and no other part of the build — and the redaction module gets its counterpart:
+**the base bundle contains no redaction symbol.** [#137] owns both, because it owns the binding
+entry point, and the entry point is what decides which module the code is compiled into.
+
+[#130]: https://github.com/TensorGreed/burrow/issues/130
+[#131]: https://github.com/TensorGreed/burrow/issues/131
+[#137]: https://github.com/TensorGreed/burrow/issues/137
