@@ -66,6 +66,7 @@ content stream — measured: zero literal occurrences in the qdf expansion.
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "gone"
 
   [[fixture.placement]]
@@ -74,6 +75,7 @@ content stream — measured: zero literal occurrences in the qdf expansion.
   verdict = "handle"
   adr = "§1"
   witness_before = "font-mapping"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "Channel 23. The bfchar entries for codes the output no longer draws go with the text."
 
@@ -83,6 +85,7 @@ content stream — measured: zero literal occurrences in the qdf expansion.
   verdict = "disclose"
   adr = "§7"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "present"
   notes = """
 DELIBERATELY NOT REMOVED. /Info is on the trailer and unreachable behind qpdf_get_trailer
@@ -97,6 +100,7 @@ processor put the document title in the metadata without being asked.
   verdict = "refuse"
   adr = "§3, §5"
   witness_before = "structure-tree-present"
+  witness_observes = "carrier"
   expect_after = "refused"
   notes = """
 The document carries a structure tree, so §3 refuses it outright. The refusal's page-side
@@ -136,6 +140,7 @@ Measured in the qdf expansion:
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "A literal scan does NOT witness this one; that is the point of the placement."
 
@@ -145,6 +150,7 @@ Measured in the qdf expansion:
   verdict = "handle"
   adr = "§1"
   witness_before = "font-mapping"
+  witness_observes = "alphabet"
   expect_after = "gone"
 
 # ---------------------------------------------------------------------------------------
@@ -176,6 +182,7 @@ Measured in the qdf expansion:
   verdict = "refuse"
   adr = "§3"
   witness_before = "image-covers-page"
+  witness_observes = "carrier"
   expect_after = "refused"
 
   [[fixture.placement]]
@@ -184,6 +191,7 @@ Measured in the qdf expansion:
   verdict = "refuse"
   adr = "§3"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "refused"
 
   [fixture.decision]
@@ -260,6 +268,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "gone"
 
 [[fixture]]
@@ -275,6 +284,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "A contiguous literal scan does not witness this; PDFium's text page does."
 
@@ -291,6 +301,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text-loose"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "PDFium inserts separators between positioned runs, so even text extraction does not match it contiguously — spike 0006 measured `BURROW- SECRET- 03`. The font's own cmap is what witnesses it."
 
@@ -307,6 +318,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "gone"
 
   [[fixture.placement]]
@@ -315,6 +327,7 @@ pages = 1
   verdict = "handle"
   adr = "§1"
   witness_before = "font-mapping"
+  witness_observes = "alphabet"
   expect_after = "gone"
   notes = "Channel 23."
 
@@ -331,6 +344,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "gone"
 
   [[fixture.placement]]
@@ -339,6 +353,7 @@ pages = 1
   verdict = "handle"
   adr = "§1"
   witness_before = "font-mapping"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "Channel 23. Spelled the canary out verbatim in spike 0006's redacted output."
 
@@ -355,6 +370,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "font-cmap"
+  witness_observes = "alphabet"
   expect_after = "gone"
   notes = "No /ToUnicode and no /Differences, so the font program's own cmap is the only witness. One of the five channels spike 0006 measured as invisible to every scan."
 
@@ -364,6 +380,7 @@ pages = 1
   verdict = "disclose"
   adr = "§7"
   witness_before = "font-cmap"
+  witness_observes = "alphabet"
   expect_after = "present"
   notes = "The cmap residue hb-subset would close. Disclosed, not handled."
 
@@ -380,6 +397,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "Fully legible after a naive page-content-stream redaction — spike 0006 channel 7."
 
@@ -396,6 +414,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "Extraction reads the character code, never the text the glyph procedure draws."
 
@@ -412,6 +431,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "PDFium returns /ActualText INSTEAD of the glyphs, so a span can assert it says anything."
 
@@ -428,6 +448,7 @@ pages = 1
   verdict = "refuse"
   adr = "§3, §5"
   witness_before = "structure-tree-present"
+  witness_observes = "carrier"
   expect_after = "refused"
   notes = "The page-side signal for this refusal is one of the three #125 marks OWED."
 
@@ -444,6 +465,7 @@ pages = 1
   verdict = "handle"
   adr = "§2, §3"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "Removed entirely; pruning /Contents and keeping the appearance is two chances to miss one. Invisible to burrow's own render, which passes flags = 0."
 
@@ -460,6 +482,7 @@ pages = 1
   verdict = "refuse"
   adr = "§3, §5"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "refused"
   notes = "The field /V is on the catalogue and unreachable. Page-side signal OWED — #125."
 
@@ -476,6 +499,7 @@ pages = 1
   verdict = "refuse"
   adr = "§3, §5"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "refused"
   notes = "The only refusal whose page-side signal is MEASURED: prune/mod.rs walks the resource graph."
 
@@ -492,6 +516,7 @@ pages = 1
   verdict = "handle"
   adr = "§2, §3"
   witness_before = "thumb-ink"
+  witness_observes = "carrier"
   expect_after = "gone"
   notes = "Stripped unconditionally. The only channel no instrument in spike 0006 found."
 
@@ -508,6 +533,7 @@ pages = 1
   verdict = "disclose"
   adr = "§7"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "present"
   notes = "Unreachable behind qpdf_get_root. §7 names File -> Properties."
 
@@ -524,6 +550,7 @@ pages = 1
   verdict = "disclose"
   adr = "§7"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "present"
   notes = "Unreachable behind qpdf_get_root. §7 names the attachments panel."
 
@@ -540,6 +567,7 @@ pages = 1
   verdict = "refuse"
   adr = "§3"
   witness_before = "vector-fills"
+  witness_observes = "carrier"
   expect_after = "refused"
   notes = "Indistinguishable from a chart, a logo or a signature. Witnessed structurally: there is no text to witness."
 
@@ -556,6 +584,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "The anti-pattern. qpdf --qdf and PDFium both read the text straight out from under the bar."
 
@@ -572,6 +601,7 @@ pages = 1
   verdict = "refuse"
   adr = "§3"
   witness_before = "image-drawn"
+  witness_observes = "carrier"
   expect_after = "refused"
   notes = "Refused because burrow cannot write an edited image back — ADR 0029's third condition."
 
@@ -588,6 +618,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §3"
   witness_before = "font-cmap"
+  witness_observes = "alphabet"
   expect_after = "gone"
   notes = "Extraction reads a decoy while the font's cmap tells the truth. Two halves of one object disagreeing."
 
@@ -597,6 +628,7 @@ pages = 1
   verdict = "disclose"
   adr = "§7"
   witness_before = "font-cmap"
+  witness_observes = "alphabet"
   expect_after = "present"
   notes = "Same residue as channel 6."
 
@@ -613,6 +645,7 @@ pages = 1
   verdict = "handle"
   adr = "§1, §4"
   witness_before = "pdfium-text"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "Needs the span map: per-stream tokenising puts BT in one parse and ET in another."
 
@@ -629,5 +662,273 @@ pages = 1
   verdict = "handle"
   adr = "§2, §3"
   witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
   expect_after = "gone"
   notes = "The page-key allowlist reaches these, unlike their catalogue equivalents."
+
+# ---------------------------------------------------------------------------------------
+# #125's EVASION FIXTURES, and their near-miss twins.
+#
+# ADR 0029 §5: a refusal keyed on something the operation cannot see is a bypass, and no
+# refusal may ship until its signal has fired on a fixture built to evade it. Each `evade-`
+# entry puts the thing a refusal must catch where the PROPOSED signal does not look.
+#
+# Every refusal has at least one `nearmiss-` twin that must NOT be refused. Without it a signal
+# passes every evasion by refusing everything, which is an outage rather than a signal. The
+# generator refuses to run if any refusal has evasions and no twin.
+#
+# NOT COMMITTED:  python3 tools/make-evasion-fixtures.py <dir>
+# ---------------------------------------------------------------------------------------
+
+[[fixture]]
+name = "evade-image-in-form"
+file = "generated/evade-image-in-form.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-FORM"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "image-drawn"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "A `Do` inside a Form XObject. The page's content stream says only `/X1 Do`."
+
+[[fixture]]
+name = "evade-inline-image"
+file = "generated/evade-inline-image.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-INLINE"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "inline-image"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "Not an XObject at all, so a signal enumerating `/XObject` finds nothing."
+
+[[fixture]]
+name = "evade-image-as-pattern"
+file = "generated/evade-image-as-pattern.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-PATTERN"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "image-drawn"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "Reached through a tiling pattern used as a fill colour; the page draws a rectangle."
+
+[[fixture]]
+name = "evade-image-in-type3-glyph"
+file = "generated/evade-image-in-type3-glyph.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-TYPE3"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "image-drawn"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "One level further than a Form XObject."
+
+[[fixture]]
+name = "nearmiss-image-outside-region"
+file = "generated/nearmiss-image-outside-region.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — near-miss twin"
+  canary = "BURROW-EVADE-IMG-NEARMISS"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. A signal refusing any document with an image refuses most documents."
+
+[[fixture]]
+name = "evade-paths-in-form"
+file = "generated/evade-paths-in-form.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — evasion"
+  canary = "BURROW-EVADE-PATH-FORM"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "vector-fills"
+  witness_observes = "carrier"
+  expect_after = "refused"
+
+[[fixture]]
+name = "evade-paths-in-type3-glyph"
+file = "generated/evade-paths-in-type3-glyph.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — evasion"
+  canary = "BURROW-EVADE-PATH-TYPE3"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "vector-fills"
+  witness_observes = "carrier"
+  expect_after = "refused"
+
+[[fixture]]
+name = "nearmiss-paths-outside-region"
+file = "generated/nearmiss-paths-outside-region.pdf"
+kind = "hand-built"
+probes_refusal = "vector paths"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "vector paths — near-miss twin"
+  canary = "BURROW-EVADE-PATH-NEARMISS"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. A rule, a table border or a logo is in nearly every business document."
+
+[[fixture]]
+name = "evade-widget-on-another-page"
+file = "generated/evade-widget-on-another-page.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — evasion"
+  canary = "BURROW-EVADE-FORM-OTHERPAGE"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "ADR 0029 §5 names this bypass in those words: the widget is on page 2."
+
+[[fixture]]
+name = "evade-field-with-no-widget"
+file = "generated/evade-field-with-no-widget.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — evasion"
+  canary = "BURROW-EVADE-FORM-NOWIDGET"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "No `/Annots` entry on any page names the field."
+
+[[fixture]]
+name = "nearmiss-annotation-not-a-widget"
+file = "generated/nearmiss-annotation-not-a-widget.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — near-miss twin"
+  canary = "BURROW-EVADE-FORM-NEARMISS"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. An ordinary sticky note, and no `/AcroForm` at all."
+
+[[fixture]]
+name = "evade-struct-without-structparents"
+file = "generated/evade-struct-without-structparents.pdf"
+kind = "hand-built"
+probes_refusal = "/StructTreeRoot"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/StructTreeRoot — evasion"
+  canary = "BURROW-EVADE-STRUCT-NOPARENTS"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "The element points at the page through `/Pg`; the page has nothing pointing back."
+
+[[fixture]]
+name = "nearmiss-structparents-but-nothing-in-region"
+file = "generated/nearmiss-structparents-but-nothing-in-region.pdf"
+kind = "hand-built"
+probes_refusal = "/StructTreeRoot"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/StructTreeRoot — near-miss twin"
+  canary = "BURROW-EVADE-STRUCT-NEARMISS"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. Nearly every accessible PDF is tagged."
+
+[[fixture]]
+name = "evade-oc-two-levels-down"
+file = "generated/evade-oc-two-levels-down.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — evasion"
+  canary = "BURROW-EVADE-OC-DEPTH2"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "The one signal §5 marks MEASURED — and its fixture pins one level while the code walks deeper."
+
+[[fixture]]
+name = "nearmiss-nested-forms-no-oc"
+file = "generated/nearmiss-nested-forms-no-oc.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content — near-miss twin"
+  canary = "BURROW-EVADE-OC-NEARMISS"
+  verdict = "handle"
+  adr = "§5"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "MUST NOT be refused. Nested forms are ordinary; every drawing program emits them."

@@ -28,6 +28,8 @@ WITNESS KINDS, and each is a different question
                          The only witness for a CID subset with neither of the above.
   image-covers-page      The page draws an image large enough that every region intersects it.
   image-drawn            An image XObject exists and is drawn, at any size.
+  inline-image           An inline BI...ID...EI image. Not an XObject, so resource enumeration
+                         does not see it.
   thumb-ink              The page's /Thumb exists and carries ink. STRUCTURAL: the canary is
                          pixels, and no scan can read it.
   vector-fills           The page draws filled paths. Structural, for the same reason.
@@ -334,10 +336,54 @@ def witness_vector_fills(data: bytes, _canary: str) -> bool:
     return len(re.findall(rb"\bre\b", data)) >= 20 and b" f\n" in data.replace(b"\r", b"\n")
 
 
+def witness_inline_image(data: bytes, _canary: str) -> bool:
+    """An inline `BI` ... `ID` ... `EI` image in a content stream.
+
+    Deliberately separate from `image-drawn`: an inline image is not an XObject, has no
+    `/Subtype /Image`, and appears in no `/XObject` resource dictionary. A signal that
+    enumerates resources finds nothing, which is exactly why there is an evasion fixture for it.
+    """
+    return re.search(rb"(?:^|[\s])BI[\s/].{0,200}?\sID[\s]", data, re.S) is not None
+
+
 def witness_image_drawn(data: bytes, _canary: str) -> bool:
     """An image XObject exists and is drawn. Any size, unlike `image-covers-page`."""
     has_image = b"/Subtype /Image" in data or b"/Subtype/Image" in data
     return has_image and re.search(rb"/\w+\s+Do\b", data) is not None
+
+
+# ---------------------------------------------------------------------------------------
+# WHAT EACH WITNESS CAN ACTUALLY SEE.
+#
+# "Witnessed" must never read as "the secret was seen" when it was not. Three of these observe
+# the CARRIER and cannot read the canary at all -- a thumbnail's pixels, a page's filled paths,
+# a structure tree's presence. Two observe the ALPHABET a subset font was built for, which is a
+# real disclosure and is not the string.
+#
+# Every placement declares `witness_observes`, and this table is what it is checked against, so
+# a manifest cannot quietly claim more than its witness delivers. A witness kind added without
+# an entry here is an error, not a default.
+# ---------------------------------------------------------------------------------------
+WITNESS_OBSERVES = {
+    "pdfium-text": "canary",
+    "pdfium-text-loose": "canary",
+    "raw-utf16-hex": "canary",
+    "font-mapping": "canary-or-alphabet",
+    "font-cmap": "alphabet",
+    "thumb-ink": "carrier",
+    "vector-fills": "carrier",
+    "image-drawn": "carrier",
+    "inline-image": "carrier",
+    "image-covers-page": "carrier",
+    "structure-tree-present": "carrier",
+}
+
+# What a placement may declare, and what each means to a reader.
+OBSERVES_MEANING = {
+    "canary": "the canary itself was read",
+    "alphabet": "the set of characters the canary uses was found; NOT the canary",
+    "carrier": "the thing holding the canary was found; the canary itself was NOT read",
+}
 
 
 BYTE_WITNESSES = {
@@ -345,6 +391,7 @@ BYTE_WITNESSES = {
     "thumb-ink": witness_thumb_ink,
     "vector-fills": witness_vector_fills,
     "image-drawn": witness_image_drawn,
+    "inline-image": witness_inline_image,
     "raw-utf16-hex": witness_raw,
     "font-mapping": witness_font_mapping,
     "image-covers-page": witness_image_covers_page,
@@ -368,6 +415,7 @@ def main() -> int:
     checked = 0
     failures: list[str] = []
     verdicts: dict[str, int] = {}
+    observed: dict[str, int] = {}
     missing_files: list[str] = []
 
     for fixture in fixtures:
@@ -403,11 +451,41 @@ def main() -> int:
                     f"witness `{kind}` does not find `{canary}`. "
                     "A placement whose canary cannot be witnessed measures nothing."
                 )
+                continue
+
+            # WHAT THE WITNESS ACTUALLY SAW, checked rather than assumed.
+            can_see = WITNESS_OBSERVES.get(kind)
+            if can_see is None:
+                failures.append(
+                    f"{fixture['name']} / {placement['channel']}: witness `{kind}` has no entry "
+                    "in WITNESS_OBSERVES, so nobody has said what it can see."
+                )
+                continue
+            declared = placement.get("witness_observes")
+            if declared is None:
+                failures.append(
+                    f"{fixture['name']} / {placement['channel']}: no `witness_observes`. "
+                    f"`{kind}` observes {can_see}; say so, so that \"witnessed\" is never read "
+                    "as \"the secret was seen\"."
+                )
+                continue
+            allowed = {"canary", "alphabet"} if can_see == "canary-or-alphabet" else {can_see}
+            if declared not in allowed:
+                failures.append(
+                    f"{fixture['name']} / {placement['channel']}: declares "
+                    f"`witness_observes = \"{declared}\"` but `{kind}` observes {can_see}."
+                )
+                continue
+            observed[declared] = observed.get(declared, 0) + 1
 
     print(
         f"check-redaction-corpus: {len(fixtures)} fixture(s), {checked} placement(s) — "
         + ", ".join(f"{n} {v}" for v, n in sorted(verdicts.items()))
     )
+    if observed:
+        print("  what the witnesses actually saw:")
+        for what, n in sorted(observed.items()):
+            print(f"    {n:>3}  {OBSERVES_MEANING[what]}")
     for note in missing_files:
         print(f"  not generated: {note}")
     if failures:
