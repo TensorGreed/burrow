@@ -16,6 +16,24 @@ import { HARNESS_DIR, PRODUCTION_DIR as outDir, walk } from "./build-output.js";
 
 // Both builds are produced once by `vitest.global-setup.ts`, not here: three test files now
 // read them, and a `beforeAll` per file would mean one Astro build per file.
+// THE TWO HELD PREDICATES, AT MODULE SCOPE SO A PROBE CAN FEED THEM A FAKE BUILD.
+//
+// They were inline in their assertions until `/redact-pdf` went on the held list. A held entry
+// for a route that does not exist yet asserts nothing -- `routesIn` returns empty because the
+// page is absent, not because anything is holding it -- so the entry needs a probe that shows
+// the assertion still fires, and a probe that does not run the same code the assertion runs
+// proves nothing about the assertion. Extracting them is what lets it be the same code.
+
+/** Every file a build would serve for `slug`. */
+export const routesIn = (files: string[], slug: string): string[] =>
+  files.filter(
+    (f) => f === `${slug}/index.html` || f === `${slug}.html` || f.startsWith(`${slug}/`),
+  );
+
+/** Every script whose text names `op` as a quoted string, the way the worker's dispatch does. */
+export const scriptsNaming = (scripts: string[], sources: string[], op: string): string[] =>
+  scripts.filter((_f, i) => sources[i].includes(`"${op}"`));
+
 describe("the production build", () => {
   const files: string[] = walk(outDir);
 
@@ -59,17 +77,31 @@ describe("the production build", () => {
     // thing this assertion can say anything about -- absent code is absent -- so `held` is
     // empty and the SHIPPED list is what carries the weight now. A route that must not ship
     // goes back on `held`, and the loop below is waiting for it.
-    const held: { slug: string; why: string }[] = [];
+    // `/redact-pdf` IS HELD FOR A REASON, AND THE REASON IS #125 -- not "not built yet".
+    //
+    // That distinction is the whole of the paragraph above. #125 is a hold: ADR 0029 §5 decided
+    // five refusals, and four of them have no page-side signal that fires. A refusal keyed on
+    // something the operation cannot see is a bypass, so a redaction tool shipped today would
+    // accept a document it has declared it cannot redact safely and emit something that looks
+    // redacted. `docs/ROADMAP.md`'s blockers table carries the same row.
+    //
+    // It comes off this list when #125 closes, deliberately, not when the page appears.
+    const held: { slug: string; why: string }[] = [
+      {
+        slug: "redact-pdf",
+        why: "#125 — four of redaction's five refusals have no page-side signal that fires, so a refusal would not refuse (ADR 0029 §5)",
+      },
+    ];
     const shipped = ["merge-pdf", "split-pdf", "rotate-pdf", "reorder-pdf", "compress-pdf"];
 
-    const routesFor = (slug: string) =>
-      files.filter(
-        (f) => f === `${slug}/index.html` || f === `${slug}.html` || f.startsWith(`${slug}/`),
-      );
+    const routesFor = (slug: string) => routesIn(files, slug);
 
     for (const { slug, why } of held) {
       expect(routesFor(slug), `/${slug} must not ship — ${why}`).toEqual([]);
     }
+    // GATED ON ITS OWN LENGTH for the same reason `shipped` is: an entry dropped from `held`
+    // takes its assertion with it, and the loop above would pass over a shorter list.
+    expect(held).toHaveLength(1);
 
     // GATED ON THE COUNT, not merely on each one being found: a slug dropped from this list
     // would take its assertion with it and the suite would still pass.
@@ -114,7 +146,10 @@ describe("the production build", () => {
     // pass over an empty set -- which is why the `allowed` loop exists and is the half that
     // carries the measurement: each of the eight names must be found in a shipped script, so
     // a scan that stopped finding anything fails rather than reporting no offenders.
-    const held: string[] = [];
+    // `redact` IS HELD FOR A REASON, AND THE REASON IS #125. See the route list above: the
+    // slug is a name, the operation is the thing held, and a page called anything at all that
+    // posts `op: "redact"` ships a redaction tool.
+    const held: string[] = ["redact"];
     const allowed = [
       "page_count",
       "structure_check",
@@ -141,13 +176,54 @@ describe("the production build", () => {
         `no shipped script mentions the op "${op}", so this scan proves nothing`,
       ).toBe(true);
     }
+    expect(held).toHaveLength(1);
     for (const op of held) {
-      const offenders = scripts.filter((f, i) => sources[i].includes(`"${op}"`));
+      const offenders = scriptsNaming(scripts, sources, op);
       expect(
         offenders,
         `a shipped script names the held operation "${op}": ${offenders.join(", ")}`,
       ).toEqual([]);
     }
+  });
+
+  it('the held-list assertions FIRE — a planted /redact-pdf and a planted "redact" op are both caught', () => {
+    // THE PROBE THAT MAKES THE HELD ENTRIES MEAN SOMETHING TODAY.
+    //
+    // `/redact-pdf` does not exist, so the two assertions above pass over an absent page and an
+    // absent op name. That is the exact shape this repository keeps finding: a check that
+    // examines nothing reads as coverage. Without this, the held entries would be a promise
+    // that the assertions WOULD fire, tested the day somebody wrote the page — which is the
+    // wrong day to find out they do not.
+    //
+    // So: plant a fake build, run THE SAME HELPERS the assertions run, and require offenders.
+    // The day the real page appears, that assertion trips unless #125 is closed and the entry
+    // removed deliberately — and this probe says the tripwire is live in the meantime.
+    const planted = [
+      "redact-pdf/index.html",
+      "index.html",
+      "_astro/page.js",
+      // NEAR MISSES, so the helper cannot pass by matching everything. Neither is /redact-pdf:
+      // one is a different route whose name merely begins the same way, the other a different
+      // slug entirely.
+      "redact-pdf-guide.html",
+      "redaction-pdf/index.html",
+    ];
+    const caught = routesIn(planted, "redact-pdf");
+    expect(caught, "the route held-list predicate did not catch a planted /redact-pdf").toEqual([
+      "redact-pdf/index.html",
+    ]);
+
+    const plantedScripts = ["_astro/worker.js", "_astro/other.js"];
+    const plantedSources = [
+      // A worker dispatch naming the held op, as `main.js`'s allowlist would.
+      'const OPS = ["merge", "redact", "split"];',
+      // NEAR MISS: mentions the word but never as the quoted op name.
+      'const label = "redacted"; // not an op, and `redact` unquoted is not one either',
+    ];
+    const named = scriptsNaming(plantedScripts, plantedSources, "redact");
+    expect(named, 'the op held-list predicate did not catch a planted "redact"').toEqual([
+      "_astro/worker.js",
+    ]);
   });
 
   it("links every tool page it ships, and no tool page it does not", () => {

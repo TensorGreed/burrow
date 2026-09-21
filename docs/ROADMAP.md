@@ -773,17 +773,26 @@ page-side signal, and ADR 0029 §5's rule is that *a refusal keyed on something 
 cannot see is a bypass*. The tool does not go in front of a person until each signal has fired on
 a fixture built to evade it.
 
-**Where that blocker becomes a check rather than a note:**
-`apps/web/src/production-build.test.ts` holds two lists — routes that must not ship, and
-operation names the shipped bundle must not contain. Both are empty today and both say in their
-own comments that they are waiting. **`redact-pdf` and `redact` go on them the moment redaction
-has a route or a bridge, and come off when #125 closes.**
+**It is a check, not a note.** `apps/web/src/production-build.test.ts` holds two lists — routes
+that must not ship, and operation names the shipped bundle must not contain. **`/redact-pdf` is
+on the first and `redact` is on the second**, and both come off when **#125 closes**, not when
+the page appears.
 
-They are deliberately **not** added now. That file records `compress` having sat on the held list
-only because it was not written, and names that as the conflation to avoid: *"HELD MEANS HELD FOR
-A REASON, not merely 'not built yet'."* Redaction has neither a route nor a bridge, so an entry
-today would assert nothing and would repeat the mistake the file argues against. The ROADMAP row
-carries the blocker until there is something to hold.
+**The reason recorded is #125, not "not built yet", and that distinction is the whole of it.**
+That file records `compress` having sat on the held list only because it was unwritten, and names
+it as the conflation to avoid — *"HELD MEANS HELD FOR A REASON, not merely 'not built yet'."*
+This is a hold: ADR 0029 §5 decided five refusals and four of them have no signal that fires, so
+a redaction tool shipped today would accept a document it has declared it cannot redact safely.
+
+**And the entries are probed, because an entry for a page that does not exist asserts nothing.**
+`the held-list assertions FIRE` plants a fake `/redact-pdf` and a fake `"redact"` op into a
+synthetic build and requires the same predicates the real assertions use to catch both — with
+near-misses (`redact-pdf-guide.html`, `redaction-pdf/`, the string `"redacted"`) that must *not*
+be caught, so the check cannot pass by matching everything. Verified by mutation: a copy of the
+file with the route predicate returning `[]` fails, naming the reason.
+
+So the tripwire is demonstrated live today, and the day the real page appears it trips unless
+#125 is closed and the entry removed deliberately.
 
 ### The work
 
