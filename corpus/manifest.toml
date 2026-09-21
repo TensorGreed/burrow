@@ -36,16 +36,82 @@ name = "redaction"
 description = "Documents with known secrets at known locations, for M2 verification."
 
 # --- Corpora ------------------------------------------------------------------------
-# No corpora are registered yet: the first ones land in M1 alongside merge and split.
-# Shape of an entry, for reference:
+#
+# EVERY ENTRY HAS A `kind`, AND THE KIND DECIDES WHICH FIELDS IT NEEDS.
+#
+# The original shape here assumed every corpus is FETCHED: a url and a sha256. The redaction
+# corpus is not — it is first-party, half regenerated from a committed generator and half
+# committed outright — and writing a url and a hash it does not have would be filling in fields
+# to satisfy a schema rather than to describe anything. `tools/check-corpus-manifest.py`
+# enforces the fields each kind requires and REFUSES the fields it must not have, so a
+# generated corpus cannot carry a fake digest and a fetched one cannot omit a real digest.
+#
+#   kind = "fetched"     Third-party, downloaded. Needs `url` and `sha256`.
+#   kind = "generated"   First-party, produced on demand. Needs `generator`. No digest exists,
+#                        because the bytes are whatever the generator makes today.
+#   kind = "committed"   First-party, in the tree. Needs `path` and `provenance` — what made
+#                        these bytes, since nothing can remake them exactly.
+#
+# Shape of a fetched entry, for reference:
 #
 # [[corpora]]
 # name = "pdfa-conformance"
 # set = "regression"
+# kind = "fetched"
 # url = "https://example.org/pdfa-suite.tar.zst"
 # sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 # license = "CC-BY-4.0"
 # redistributable = true
 # notes = "Upstream conformance suite; see docs for provenance."
 
-corpora = []
+[[corpora]]
+name = "redaction-hand-built"
+set = "redaction"
+kind = "generated"
+generator = "tools/make-redaction-fixtures.py"
+verdicts = "tests/redaction/manifest.toml"
+license = "MIT OR Apache-2.0"
+redistributable = true
+notes = """
+Spike 0006's 23 channels plus a canary-free control: one document per place the visible text of
+a page can also exist. Deterministic and toolchain-free, so they are regenerated rather than
+stored — `tests/redaction/generated/` is gitignored and `check-no-generated-files.sh` carries a
+pattern for it.
+
+`verdicts` is the manifest that gives every placement the outcome ADR 0029 §3 assigns it, so the
+corpus asserts the decision rather than holding the file.
+"""
+
+[[corpora]]
+name = "redaction-evasion"
+set = "redaction"
+kind = "generated"
+generator = "tools/make-evasion-fixtures.py"
+verdicts = "tests/redaction/manifest.toml"
+license = "MIT OR Apache-2.0"
+redistributable = true
+notes = """
+Issue #125's fixtures: each puts what a refusal must catch where its PROPOSED page-side signal
+does not look, with a near-miss twin per refusal that must NOT be refused. The generator refuses
+to run if any refusal has evasions and no twin.
+"""
+
+[[corpora]]
+name = "redaction-producer"
+set = "redaction"
+kind = "committed"
+path = "tests/redaction/fixtures"
+provenance = "tests/redaction/PROVENANCE.md"
+verdicts = "tests/redaction/manifest.toml"
+license = "MIT OR Apache-2.0"
+redistributable = true
+notes = """
+Real producer output: a LibreOffice Writer export, a pdfTeX document, and a tesseract OCR of a
+rasterised scan. COMMITTED rather than generated, because CI has none of those toolchains and
+each changes its output between versions — `provenance` records the exact versions that made
+these bytes.
+
+The first real-world documents in this repository's corpora since the embedded-font defect
+(#112), which an ordinary course PDF found in minutes and twenty-two synthetic cases never
+touched.
+"""

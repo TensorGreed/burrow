@@ -29,7 +29,9 @@
     clippy::print_stderr,
     clippy::print_stdout,
     clippy::unwrap_used,
-    reason = "an example that reports to a person and exits"
+    clippy::indexing_slicing,
+    reason = "an example that reports to a person and exits; the workspace panic lints are for \
+              library code"
 )]
 
 #[cfg(all(feature = "native-engines", target_os = "linux"))]
@@ -68,9 +70,8 @@ mod text {
         // records that concurrent FPDF_InitLibrary aborts the process; there is one thread here.
         unsafe { FPDF_InitLibrary() };
         // SAFETY: PDFium does not copy the buffer; `bytes` outlives every call below.
-        let doc = unsafe {
-            FPDF_LoadMemDocument64(bytes.as_ptr().cast(), bytes.len(), std::ptr::null())
-        };
+        let doc =
+            unsafe { FPDF_LoadMemDocument64(bytes.as_ptr().cast(), bytes.len(), std::ptr::null()) };
         if doc.is_null() {
             // SAFETY: reading the error code PDFium just set.
             return Err(format!("FPDF_LoadMemDocument64 failed: {}", unsafe {

@@ -34,6 +34,10 @@
     clippy::print_stdout,
     clippy::expect_used,
     clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::integer_division,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
     reason = "an example that reports to a person and exits; the workspace panic lints are for \
               library code"
 )]
@@ -87,7 +91,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // because it needs no encoder and Pillow reads it directly.
     let mut pgm = format!("P5\n{width} {height}\n255\n").into_bytes();
     pgm.reserve(rgba.len() / 4);
-    for px in rgba.chunks_exact(4) {
+    // `as_chunks::<4>()` rather than `chunks_exact(4)`: `Raster` guarantees
+    // width * height * 4, so the remainder is provably empty and the array form says so in
+    // the type rather than in a comment.
+    let (pixels, remainder) = rgba.as_chunks::<4>();
+    debug_assert!(remainder.is_empty(), "Raster guarantees a multiple of four");
+    for px in pixels {
         let (r, g, b) = (f32::from(px[0]), f32::from(px[1]), f32::from(px[2]));
         pgm.push(
             (0.299 * r + 0.587 * g + 0.114 * b)
