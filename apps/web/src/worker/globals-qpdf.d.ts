@@ -85,6 +85,15 @@ interface EmscriptenModule {
   _qpdf_oh_get_array_item(data: number, oh: number, at: number): number;
   _qpdf_oh_erase_item(data: number, oh: number, at: number): void;
   _qpdf_oh_get_dict(data: number, oh: number): number;
+  _qpdf_oh_new_null(data: number): number;
+  _qpdf_oh_replace_stream_data(
+    data: number,
+    stream: number,
+    buf: number,
+    len: number,
+    filter: number,
+    decodeParms: number,
+  ): void;
   /** `bufp` and `lenp` are POINTERS to scratch words the caller owns and must free. */
   _qpdf_oh_get_page_content_data(data: number, page: number, bufp: number, lenp: number): number;
   _qpdf_oh_get_stream_data(
@@ -163,6 +172,14 @@ interface WorkerGlobalScope {
   __burrow_qpdf_oh_get_array_item(data: number, oh: number, at: number): number;
   __burrow_qpdf_oh_erase_item(data: number, oh: number, at: number): void;
   __burrow_qpdf_oh_get_dict(data: number, oh: number): number;
+  __burrow_qpdf_oh_new_null(data: number): number;
+  __burrow_qpdf_oh_replace_stream_data(
+    data: number,
+    stream: number,
+    bytes: Uint8Array,
+    filter: number,
+    decodeParms: number,
+  ): boolean;
   __burrow_qpdf_copy_c_string(ptr: number): Uint8Array;
   /** `null` when qpdf reported an error. */
   __burrow_qpdf_oh_page_content(data: number, page: number): Uint8Array | null;

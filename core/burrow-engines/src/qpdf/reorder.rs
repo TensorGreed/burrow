@@ -257,7 +257,7 @@ fn permute(
         // call, so comparing `raw()` says "different" for two handles to the same page -- which
         // made every permutation remove a page and try to insert it before itself. See
         // `ffi::qpdf_oh_get_object_id`.
-        if current.object(document)? == wanted_page.object(document)? {
+        if current.object()? == wanted_page.object()? {
             // Already in place. The identity permutation reaches this on every page, and a
             // partial reorder reaches it on the pages nobody moved.
             continue;

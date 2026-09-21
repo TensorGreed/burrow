@@ -111,6 +111,35 @@ impl<'a> ObjectHandle<'a> {
         }
     }
 
+    /// A handle `self`'s document has just issued, bound to that same document.
+    ///
+    /// # Why this exists rather than taking a `&Document`
+    ///
+    /// `key`, `array_item` and `stream_dict` used to take one, purely to satisfy
+    /// [`Self::owned`]'s lifetime. The FFI call underneath uses `self.data`, so a caller who
+    /// passed a **different** document got an `ObjectHandle` whose `data` was one document and
+    /// whose `handle` had been issued by another — and qpdf handles are bare `++next_oh`
+    /// counters, so that id very likely names a **live, unrelated object** in the document it
+    /// was bound to. Reads through it would silently answer about the wrong object, and `Drop`
+    /// would release an id the other document is still using.
+    ///
+    /// Nothing in the types stopped it. Found by auditing for the shape that leaked in
+    /// `replace_stream_data` (#130); the answer is the same one — the document is not a
+    /// parameter, it is `self`'s.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must have just been issued by `self.data` and be one nothing else releases.
+    unsafe fn sibling(&self, handle: ffi::QpdfObjectHandle) -> Self {
+        #[cfg(test)]
+        LIVE.with(|live| live.set(live.get() + 1));
+        Self {
+            data: self.data,
+            handle,
+            owner: PhantomData,
+        }
+    }
+
     /// The object's type code — `ot_integer`, `ot_dictionary`, … — read before any value is.
     ///
     /// Trapped through `do_with_oh`. See `ffi.rs`: these accessors return defaults rather than
@@ -127,13 +156,13 @@ impl<'a> ObjectHandle<'a> {
     /// Returns a handle to a null object if this is not a dictionary or the key is absent —
     /// qpdf does not raise for either, which is why every caller checks [`Self::type_code`]
     /// before reading a value out.
-    pub(super) fn key(&self, document: &'a Document, key: *const c_char) -> Self {
+    pub(super) fn key(&self, key: *const c_char) -> Self {
         // SAFETY: as `type_code`. The returned handle belongs to `self.data`, and wrapping it
         // here is what makes it released exactly once. Routes through `trap_errors`.
         let handle = unsafe { ffi::qpdf_oh_get_key(self.data, self.handle, key) };
         // SAFETY: `handle` was just issued by `self.data`, which is `document`'s -- the caller
         // passes the same document this handle came from, and `'a` holds it alive.
-        unsafe { Self::owned(document, handle) }
+        unsafe { self.sibling(handle) }
     }
 
     /// This object's integer value.
@@ -151,6 +180,101 @@ impl<'a> ObjectHandle<'a> {
         // caller establishes by obtaining both from it. Routes through `trap_errors` via
         // `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
         unsafe { ffi::qpdf_oh_replace_key(self.data, self.handle, key, item.handle) }
+    }
+
+    /// Replace this stream's body with `bytes`, and report qpdf's verdict.
+    ///
+    /// # It drains the error slot itself, and that is the whole point of the wrapper
+    ///
+    /// `qpdf_oh_replace_stream_data` returns `void`. Like every other void write in the C API
+    /// it reports failure only by latching on the `qpdf_data`, so calling it and carrying on is
+    /// an unchecked write — and for redaction an unchecked write is a page that reports a
+    /// removal it did not make (ADR 0029 §6). Folding [`Document::take_error`] in here means a
+    /// caller cannot forget it, the same reason `Lexer::next_token` skips an inline image
+    /// rather than asking its caller to.
+    ///
+    /// # It takes no `Document`, and that is a correctness decision
+    ///
+    /// The first version took `&Document` alongside `&self` so it could reach the error slot.
+    /// Security review found the leak in it: `ObjectHandle` carries no document identity, and
+    /// nothing stopped a caller passing a **different** document — whereupon qpdf latches the
+    /// failure on `self.data`'s slot, the wrapper drains the other document's empty one, and
+    /// the function returns `Ok(())` **on a write that did not happen**. That is the exact
+    /// sentence this milestone exists to prevent.
+    ///
+    /// So the slot is reached through `self.data`, which is by construction the document that
+    /// issued this handle. `filter` and `decode_parms` are checked against it too: qpdf handles
+    /// are bare `++next_oh` counters (`qpdf-c.cc:833-838`), so a handle from another document
+    /// would very likely *collide* with a live one here and be written as `/Filter` with no
+    /// error at all. `core/CLAUDE.md`'s rule that a handle is not an identity, one level up.
+    ///
+    /// **qpdf copies `bytes` before returning** — `qpdf-c.h:942-944` — so the slice does not
+    /// need to outlive the call.
+    ///
+    /// # `Err` does not tell you whether the stream was written
+    ///
+    /// `qpdf_oh_replace_stream_data` is three nested trapped calls, not one: inside the outer
+    /// `do_with_oh_void` it resolves `filter` and `decode_parms` through their own `do_with_oh`
+    /// (`qpdf-c.cc:1778-1796`), and an inner failure latches on the **same** slot. So an `Err`
+    /// here may mean the write never happened, or that it happened and a later step failed.
+    /// A caller must not treat `Err` as "the document is untouched" — for redaction, retrying
+    /// or falling back on that assumption is operating on state it believes unmodified.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Internal`] if `filter` or `decode_parms` belongs to another document.
+    /// - Whatever qpdf latched, mapped at the engine boundary as everywhere else.
+    #[allow(
+        dead_code,
+        reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
+    )]
+    pub(super) fn replace_stream_data(
+        &self,
+        bytes: &[u8],
+        filter: &Self,
+        decode_parms: &Self,
+    ) -> Result<()> {
+        if filter.data != self.data || decode_parms.data != self.data {
+            return Err(Error::Internal(
+                "qpdf: a stream's filter came from another document".to_owned(),
+            ));
+        }
+        // SAFETY: `self.data` is live and `self.handle` was issued by it; the check above
+        // establishes that `filter` and `decode_parms` were issued by the same document.
+        // `bytes` is read for `len` bytes and copied by qpdf before the call returns. Routes
+        // through `trap_errors` via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`
+        // (engines/qpdf-trapped-functions.txt:82).
+        unsafe {
+            ffi::qpdf_oh_replace_stream_data(
+                self.data,
+                self.handle,
+                bytes.as_ptr(),
+                bytes.len(),
+                filter.handle,
+                decode_parms.handle,
+            );
+        }
+        // THE SLOT THAT BELONGS TO THIS HANDLE'S DOCUMENT. Reached through `self.data` rather
+        // than through a `Document` a caller chose; see above for what that cost.
+        // SAFETY: `self.data` is live for as long as this handle borrows its document.
+        unsafe { Document::take_error_on(self.data) }.map_or(Ok(()), Err)
+    }
+
+    /// The null object, in `document`.
+    ///
+    /// It exists for [`Self::replace_stream_data`]'s two object arguments: a null is how the C
+    /// API says "no filter".
+    #[allow(
+        dead_code,
+        reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
+    )]
+    pub(super) fn new_null(document: &'a Document) -> Self {
+        // SAFETY: `document.data` is live. Untrapped and argued in
+        // `engines/qpdf-untrapped-accepted.toml`: it constructs the null object and never
+        // touches the document.
+        let handle = unsafe { ffi::qpdf_oh_new_null(document.data) };
+        // SAFETY: `handle` was just issued by `document.data`.
+        unsafe { Self::owned(document, handle) }
     }
 
     /// A new integer object in this handle's document.
@@ -210,7 +334,7 @@ impl<'a> ObjectHandle<'a> {
     /// # Errors
     ///
     /// Whatever qpdf latched while reading the object's number or generation, mapped by code.
-    pub(super) fn object(&self, document: &Document) -> Result<(c_int, c_int)> {
+    pub(super) fn object(&self) -> Result<(c_int, c_int)> {
         // SAFETY: `self.data` is a live document and `self.handle` is one of its handles, by
         // this type's invariant. Both route through `trap_errors` via `do_with_oh`.
         let id = unsafe { ffi::qpdf_oh_get_object_id(self.data, self.handle) };
@@ -219,7 +343,8 @@ impl<'a> ObjectHandle<'a> {
         // of the two raised it, and leaving it latched would surface it later against an
         // unrelated page or against the write. The caller passes the document this handle came
         // from -- the same contract `key` has.
-        if let Some(error) = document.take_error() {
+        // SAFETY: `self.data` is live for as long as this handle borrows its document.
+        if let Some(error) = unsafe { Document::take_error_on(self.data) } {
             return Err(error);
         }
         Ok((id, generation))
@@ -286,12 +411,12 @@ impl<'a> ObjectHandle<'a> {
     }
 
     /// The item at `n`, as an owned handle. Out of range yields a null object.
-    pub(super) fn array_item(&self, document: &'a Document, n: c_int) -> Self {
+    pub(super) fn array_item(&self, n: c_int) -> Self {
         // SAFETY: as `unparse`. The returned handle belongs to `self.data`, which is
         // `document`'s -- the caller passes the document this handle came from.
         let handle = unsafe { ffi::qpdf_oh_get_array_item(self.data, self.handle, n) };
         // SAFETY: `handle` was just issued by `self.data`.
-        unsafe { Self::owned(document, handle) }
+        unsafe { self.sibling(handle) }
     }
 
     /// Remove the item at `at` from this array.
@@ -309,11 +434,11 @@ impl<'a> ObjectHandle<'a> {
     ///
     /// `ot_stream` is a distinct type from `ot_dictionary`, so a Form XObject's `/Resources` is
     /// unreachable without this.
-    pub(super) fn stream_dict(&self, document: &'a Document) -> Self {
+    pub(super) fn stream_dict(&self) -> Self {
         // SAFETY: as `array_item`.
         let handle = unsafe { ffi::qpdf_oh_get_dict(self.data, self.handle) };
         // SAFETY: `handle` was just issued by `self.data`.
-        unsafe { Self::owned(document, handle) }
+        unsafe { self.sibling(handle) }
     }
 
     /// This page's content streams, concatenated and **decoded**.
@@ -325,7 +450,7 @@ impl<'a> ObjectHandle<'a> {
     ///
     /// Whatever qpdf latched. A page with no `/Contents` is `Ok(empty)` rather than an error:
     /// it is a legitimate page that draws nothing and therefore uses no resources.
-    pub(super) fn page_content(&self, document: &Document) -> Result<Vec<u8>> {
+    pub(super) fn page_content(&self) -> Result<Vec<u8>> {
         let mut buffer: *mut u8 = core::ptr::null_mut();
         let mut length: usize = 0;
         // SAFETY: `self.data` is a live document and `self.handle` one of its handles. Both
@@ -339,7 +464,7 @@ impl<'a> ObjectHandle<'a> {
                 &raw mut length,
             )
         };
-        take_malloced_buffer(document, status, buffer, length)
+        take_malloced_buffer(self.data, status, buffer, length)
     }
 
     /// This stream's data, decoded, or `None` if qpdf could not decode it.
@@ -352,7 +477,7 @@ impl<'a> ObjectHandle<'a> {
     /// # Errors
     ///
     /// Whatever qpdf latched while reading the stream.
-    pub(super) fn stream_data(&self, document: &Document) -> Result<Option<Vec<u8>>> {
+    pub(super) fn stream_data(&self) -> Result<Option<Vec<u8>>> {
         let mut filtered: ffi::QpdfBool = ffi::QPDF_FALSE;
         let mut buffer: *mut u8 = core::ptr::null_mut();
         let mut length: usize = 0;
@@ -367,7 +492,7 @@ impl<'a> ObjectHandle<'a> {
                 &raw mut length,
             )
         };
-        let data = take_malloced_buffer(document, status, buffer, length)?;
+        let data = take_malloced_buffer(self.data, status, buffer, length)?;
         if filtered == ffi::QPDF_FALSE {
             return Ok(None);
         }
@@ -410,7 +535,7 @@ fn copy_c_string(text: *const c_char) -> Vec<u8> {
 /// error path, which is the one that would otherwise leak the decompressed size of a stream
 /// per failed page.
 fn take_malloced_buffer(
-    document: &Document,
+    data_handle: ffi::QpdfData,
     status: ffi::QpdfErrorCode,
     mut buffer: *mut u8,
     length: usize,
@@ -433,11 +558,16 @@ fn take_malloced_buffer(
     // THE ERROR BIT, never `!= 0`: a warning here is an ordinary outcome, and a page whose
     // content stream qpdf grumbled about still has content worth reading.
     if ffi::has_errors(status) {
-        return Err(document.take_error().unwrap_or_else(|| {
-            Error::Malformed("qpdf: a stream's data could not be read".to_owned())
-        }));
+        // SAFETY: the caller passes the `qpdf_data` of the handle it read from, which is
+        // live for the duration of that handle.
+        return Err(
+            unsafe { Document::take_error_on(data_handle) }.unwrap_or_else(|| {
+                Error::Malformed("qpdf: a stream's data could not be read".to_owned())
+            }),
+        );
     }
-    if let Some(error) = document.take_error() {
+    // SAFETY: as above.
+    if let Some(error) = unsafe { Document::take_error_on(data_handle) } {
         return Err(error);
     }
     Ok(data)
@@ -456,6 +586,67 @@ impl Drop for ObjectHandle<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// No method takes a handle AND a document, because the two could disagree.
+    ///
+    /// # The shape this refuses, and what it cost before it was refused
+    ///
+    /// `fn f(&self, document: &Document, …)` reads as harmless and is not. The FFI call
+    /// underneath uses `self.data`; the `document` is used for something else — draining the
+    /// error slot, or binding a returned handle's lifetime — and **nothing makes the two the
+    /// same document.** Both halves are real:
+    ///
+    /// * drained from the wrong document, a latched error is missed and the function returns
+    ///   `Ok` on a call that failed. `replace_stream_data` shipped with this shape for an hour
+    ///   and security review found it (#130);
+    /// * bound to the wrong document, the returned handle carries an id issued by one document
+    ///   against another's `qpdf_data` — and qpdf handles are bare `++next_oh` counters, so
+    ///   that id very likely names a **live, unrelated object** there. Reads answer about the
+    ///   wrong object and `Drop` releases an id the other document is still using.
+    ///
+    /// Six methods had it: `key`, `array_item`, `stream_dict`, `object`, `page_content` and
+    /// `stream_data`. None takes a document now — `self.data` is the answer in every case, and
+    /// [`Self::sibling`] and [`Document::take_error_on`] are how it is reached. The parameter
+    /// being absent is what makes the mistake unexpressible; this test is what stops it coming
+    /// back.
+    ///
+    /// The two genuine constructors — `new_null`, `new_integer` — and `page` take a document
+    /// and no handle, so there is nothing for them to disagree with.
+    #[test]
+    fn no_method_takes_both_a_handle_and_a_document() {
+        let source = include_str!("handle.rs");
+        let offenders: Vec<&str> = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("pub(super) fn ") || line.starts_with("fn "))
+            .filter(|line| line.contains("&self") && line.contains("Document"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a method takes both a handle and a document, so the two can disagree: {offenders:?}"
+        );
+
+        // THE RULE IS PROBED, on a line it must catch and one it must not, so a regression that
+        // broke the matching would fail here rather than reporting an empty list.
+        let catches = |line: &str| line.contains("&self") && line.contains("Document");
+        assert!(catches(
+            "pub(super) fn key(&self, document: &'a Document) -> Self {"
+        ));
+        assert!(!catches(
+            "pub(super) fn new_null(document: &'a Document) -> Self {"
+        ));
+        assert!(!catches(
+            "pub(super) fn key(&self, key: *const c_char) -> Self {"
+        ));
+
+        // AND IT EXAMINED SOMETHING. An `include_str!` that resolved to an empty file would
+        // report no offenders and no probe failure.
+        let methods = source
+            .lines()
+            .filter(|line| line.trim_start().starts_with("pub(super) fn "))
+            .count();
+        assert!(methods >= 15, "the scan saw only {methods} methods");
+    }
+
     /// The `qpdf_oh_*` API is called from this module and nowhere else.
     ///
     /// `handle.rs` claims "every route from qpdf to a handle in the `qpdf` module returns an

@@ -169,6 +169,49 @@ self.__burrow_qpdf_oh_get_array_item = (data, oh, at) =>
   qpdf()._qpdf_oh_get_array_item(data, oh, at);
 self.__burrow_qpdf_oh_erase_item = (data, oh, at) => qpdf()._qpdf_oh_erase_item(data, oh, at);
 self.__burrow_qpdf_oh_get_dict = (data, oh) => qpdf()._qpdf_oh_get_dict(data, oh);
+self.__burrow_qpdf_oh_new_null = (data) => u32(qpdf()._qpdf_oh_new_null(data));
+
+/**
+ * `qpdf_oh_replace_stream_data`, with the bytes copied into the engine heap and freed again.
+ *
+ * The only call in this bridge that carries bytes INTO a live object graph, and redaction's
+ * write (ADR 0029 §1). #130 asked it to get the scrutiny `__burrow_qpdf_oh_page_content` got;
+ * that is five hazards, and it is written out on `QpdfBridge::oh_replace_stream_data` in
+ * `core/burrow-engines/src/web/bridge.rs` rather than here. THIS BUNDLE IS CONCATENATED, NOT
+ * MINIFIED -- the reasoning cost 1,056 brotli bytes of a person's download when it lived in
+ * this file, on a payload whose margin is already 7.6% against a 10% policy. The rustdoc is
+ * not shipped; `bridge-write-path.test.ts` is where each hazard is asserted.
+ *
+ * In short: there is no out-parameter, so the `free(0xc0ffee)` class is absent; `HEAPU8` is
+ * read AFTER the malloc because growth detaches views; `true` means the bytes reached the
+ * engine and NOT that the replace succeeded; and `_malloc(0)` may return 0, which is this
+ * function's own failure signal.
+ *
+ * @param {number} data
+ * @param {number} stream
+ * @param {Uint8Array} bytes
+ * @param {number} filter
+ * @param {number} decodeParms
+ * @returns {boolean} false if the engine heap could not take the bytes — see 4
+ */
+self.__burrow_qpdf_oh_replace_stream_data = (data, stream, bytes, filter, decodeParms) => {
+  const module = qpdf();
+  const buf = u32(module._malloc(bytes.length === 0 ? 1 : bytes.length));
+  if (buf === 0) {
+    return false;
+  }
+  try {
+    // AFTER the malloc, never above it. See 2.
+    module.HEAPU8.set(bytes, buf);
+    module._qpdf_oh_replace_stream_data(data, stream, buf, bytes.length, filter, decodeParms);
+    return true;
+  } finally {
+    // qpdf COPIES the buffer before returning -- `qpdf-c.h:942-944` says so in those words.
+    // Without that, freeing here would be a use-after-free that looked like a working
+    // redaction on every document small enough for the allocator to leave the bytes alone.
+    module._free(buf);
+  }
+};
 
 /**
  * Copy a NUL-terminated string qpdf owns out of the engine heap.

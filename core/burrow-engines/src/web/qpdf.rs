@@ -204,6 +204,70 @@ impl Session {
         })
     }
 
+    /// Replace `stream`'s body with `bytes`, and report qpdf's verdict.
+    ///
+    /// # It drains the error slot itself, and that is the whole point of the wrapper
+    ///
+    /// `qpdf_oh_replace_stream_data` returns `void`; like every other void write in the C API
+    /// it reports failure only by latching on the `qpdf_data`. So calling the bridge method and
+    /// carrying on is an UNCHECKED WRITE, and for redaction an unchecked write is a page that
+    /// reports a removal it did not make (ADR 0029 §6). Folding [`Self::take_error`] in here
+    /// means a caller cannot forget it — the same discipline `Lexer::next_token` applies by
+    /// skipping an inline image rather than asking its caller to.
+    ///
+    /// The bridge's own `false` is a separate failure and is reported separately: it means the
+    /// engine heap could not take the bytes, so qpdf was never called and has nothing latched.
+    ///
+    /// # `Err` does not tell you whether the stream was written
+    ///
+    /// `qpdf_oh_replace_stream_data` is three nested trapped calls, not one: inside the outer
+    /// `do_with_oh_void` it resolves `filter` and `decode_parms` through their own `do_with_oh`
+    /// (`qpdf-c.cc:1778-1796`), and an inner failure latches on the **same** slot. So an `Err`
+    /// may mean the write never happened, or that it happened and something after it failed.
+    /// A caller must not read `Err` as "the document is untouched" — for redaction, retrying or
+    /// falling back on that assumption is operating on state it believes unmodified.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Internal`] if the engine heap could not accept the bytes.
+    /// - Whatever qpdf latched, mapped at the boundary as everywhere else.
+    // NOT `expect`: the lint fires in the non-test build of the lib and not in the test one,
+    // so an expectation is unfulfilled in whichever configuration is not the one it was written
+    // for. This allowance is removed by #131, which gives the method its caller.
+    //
+    // The method exists BEFORE that caller on purpose. Folding the error drain in here is what
+    // stops it being something a caller can forget, and a wrapper introduced alongside its
+    // first caller is a wrapper that caller could just as easily have skipped.
+    #[allow(
+        dead_code,
+        reason = "the caller arrives with #131; the wrapper exists first so the error drain \
+                  cannot be forgotten when it does"
+    )]
+    pub(super) fn replace_stream_data(
+        &self,
+        stream: u32,
+        bytes: &[u8],
+        filter: u32,
+        decode_parms: u32,
+    ) -> Result<()> {
+        let accepted =
+            self.bridge
+                .oh_replace_stream_data(self.data, stream, bytes, filter, decode_parms);
+        // THE ERROR SLOT FIRST, EVEN WHEN THE BRIDGE SAID YES. `true` means only that the
+        // bytes reached the engine; qpdf may still have refused the write, and a latched error
+        // left undrained would surface on some unrelated later call.
+        if let Some(error) = self.take_error() {
+            return Err(error);
+        }
+        if accepted {
+            Ok(())
+        } else {
+            Err(Error::Internal(
+                "the qpdf module could not allocate to replace a stream".to_owned(),
+            ))
+        }
+    }
+
     /// Whether qpdf is holding an error, and what it is.
     ///
     /// Called after **every** bridge call, whatever that call returned. `qpdf-c.h:70-73`:
