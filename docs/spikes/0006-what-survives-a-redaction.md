@@ -667,10 +667,18 @@ page-side signal finding 4's table demands; one has an adequate one and four do 
 | # | refuse | because | page-side signal |
 |--:|---|---|---|
 | 13 | a document whose kept pages reference **optional content** | `split` already refuses this. Redaction's reason is stronger: it must not make hidden content visible | **measured** |
-| 20 | a page whose region intersects an **image** | removing text from a JPEG is re-encoding it; recognising text in one is OCR | **owed** — page content stream only |
+| 20 | a page whose region intersects an **image** | burrow cannot write an edited image back — see the correction below | **owed** — page content stream only |
 | 18 | a page whose region intersects **vector path content** | indistinguishable from a chart, a logo or a signature | **owed** — page content stream only |
 | 12 | a document with an **`/AcroForm`** | the field `/V` is on the catalogue and unreachable. Channel 12's visibility is asserted, not measured — see finding 1 | **proposed only** |
 | 10 | a document with a **`/StructTreeRoot`** where the region carries marked content | `/ActualText` and `/Alt` are on the catalogue and unreachable | **proposed only** |
+
+**Row 20's reason is corrected, 2026-09-21.** It said *"recognising text in one is OCR"*, and
+that is wrong: redaction is **region-based**, so the person selects the region and every pixel
+inside it is blacked out — no recognition anywhere. The blocker is re-encoding the edited image,
+which is straightforward for Flate, lossy for `/DCTDecode` and hardest for `/JBIG2Decode`. ADR
+0029 carries it as a third named condition for revisiting. Kept as a correction rather than an
+edit because the wrong reason made a solvable problem look unsolvable, which is the kind of
+mistake worth being able to find again.
 
 Rows 12 and 10 are refusals *only while the catalogue is unreachable*. They are the price of ADR
 0013's bar, and the ADR should say so in those words.
