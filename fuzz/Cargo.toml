@@ -116,3 +116,20 @@ path = "fuzz_targets/pdfsyntax_dict_keys.rs"
 test = false
 doc = false
 bench = false
+
+# The rewriter's two entry points (#128, ADR 0029 §4). Same input shape as `pdfsyntax_names` --
+# a decoded content stream -- and a different answer: these return SPANS, and a rewriter cuts the
+# page's bytes at them. A span one byte wrong splices into the middle of a token.
+[[bin]]
+name = "pdfsyntax_operations"
+path = "fuzz_targets/pdfsyntax_operations.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pdfsyntax_contents"
+path = "fuzz_targets/pdfsyntax_contents.rs"
+test = false
+doc = false
+bench = false

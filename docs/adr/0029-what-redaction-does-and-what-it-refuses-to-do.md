@@ -128,6 +128,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | catalogue **`/Metadata`** and the trailer's **`/Info`** | **disclose** |
 | **`/EmbeddedFiles`** attachments | **disclose** |
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
+| an **inline image** whose extent the page cannot derive | **refuse** — added by the [2026-09-21 amendment](#amendment-2026-09-21--the-channel-the-spike-missed-inline-image-extent). Spike 0006 did not measure this channel |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -462,3 +463,132 @@ prevent. `split` refusing a layered document is the precedent, and its wording i
 **Put ADR 0022's read-back to work on the content.** Rejected as insufficient rather than wrong.
 `OutputReader`'s entire witness surface is a page count and a `/Rotate` vector; neither can see
 content. §6 adds a predicate rather than stretching a witness.
+
+
+## Amendment, 2026-09-21 — the channel the spike missed: inline-image extent
+
+**This record's §3 says it has "no 'not applicable' rows — a channel with no bucket is how the
+spike's own bar caught two omissions". It had a third, and the bar did not catch it because the
+channel was never enumerated.** Spike 0006 measured twenty-three places a page's text can
+survive. An inline image's *extent* is not one of them, and it is a place text can hide from the
+tokeniser entirely.
+
+### What was measured
+
+`BI … ID <data> EI` puts uninterpreted bytes in a content stream. Where the data ends is the
+question, and burrow's tokeniser answered it the way every PDF reader falls back on: the first
+`EI` standing alone, preceded by white space and followed by white space or a delimiter. On this
+page that is the wrong `EI`:
+
+```text
+q BI /W 1 /H 1 /BPC 8 /CS /G ID AEI
+BT /F1 24 Tf 1 0 0 1 72 700 Tm (BURROW-SECRET) Tj ET
+ EI Q
+```
+
+The dictionary declares **one** byte of data. The image therefore ends at the `EI` immediately
+after `A` — which is preceded by `A` rather than by white space, so the scan ran past it, past
+the text object, to the trailing ` EI`. **PDFium draws `BURROW-SECRET` from that page**;
+`pdfsyntax::operations` reported `q`, `BI`, `ID`, `Q`, with no text operator and no string
+operand anywhere in it.
+
+PDFium is the renderer burrow ships and the one §6's read-back reads through, so this is a
+measurement about burrow rather than about PDF readers in general. Other readers on the
+development machine were deliberately not used: ADR 0003 is permissive-only, and a GPL tool cited
+in this record's evidence is the precedent for the next one.
+
+An `ID` with no `BI` at all is the same shape with no dictionary to consult.
+
+### The decision
+
+Not "handle", because there is nothing to rewrite — the leak is that the operation cannot *see*
+the text, and a redactor that cannot see it reports the page clean, which §6 forbids in the
+strongest terms it has.
+
+**An inline image whose extent cannot be derived from its own dictionary is refused.** The extent
+comes from `/L` (`/Length`), or is computed from `/W`, `/H`, `/BPC` and `/CS`, and an `EI` is
+required exactly there; where neither is possible the stream is refused rather than scanned for.
+The underivable cases are a `/F` filter with no `/L`, a `/CS` naming a colour space from the
+page's `/Resources`, a missing `/W` or `/H`, a `/BPC` outside the five the specification allows,
+and a dictionary that will not lex.
+
+### What it costs, stated rather than discovered
+
+The refusal is in the tokeniser, so it reaches **every** caller of it, `split`'s resource scan
+included — a shipped operation now refuses a document it would previously have processed. No
+committed fixture is affected; the corpus's one inline image declares `/L 135`. That is evidence
+about the corpus as much as about the world, and it is recorded that way.
+
+[#142](https://github.com/TensorGreed/burrow/issues/142) is the work that would narrow the
+refusal again, by deriving extents currently out of reach. It is fidelity work: the leak is
+closed, and what is left is how many documents pay for closing it.
+
+### Why this is an amendment and not a correction to §3
+
+Nothing §3 decided is reversed. A channel it never had is added to it, with its bucket, which is
+what §3's own rule about empty buckets demands. The three conditions for revisiting are
+unchanged.
+
+## Amendment, 2026-09-21 — redaction ships in its own lazily-loaded wasm module
+
+**The *Consequences* section costs this record's decisions in engine exports and in verification
+work, and says nothing about the web payload.** That was an omission rather than a judgement, and
+#128 turned it into a number.
+
+### What was measured
+
+#128 landed the content-stream rewriter — some two thousand lines across `ops.rs`, `contents.rs`
+and `strings.rs`. It cost **zero brotli** in `burrow_wasm_bg.wasm`, the module every tool page
+fetches on its first file. Checked against the built artifact rather than assumed: none of those
+modules' error strings are in it. LTO strips code nothing calls, and on the web nothing calls them
+yet.
+
+**That stripping stops the moment [#131] wires them in.** The rewriter, then §6's geometry pass,
+then §1's font surgery, all become reachable from a shipped entry point at once — and they land on
+the module a person downloads to rotate a PDF.
+
+The margin cannot absorb it. After #128 the first-load total is **471,205 brotli against a 509,812
+ceiling: 38,607 bytes, 7.6% against the 10% `apps/web/size-budget.json` records as its policy.**
+The gate holds and the margin does not; it has been under 10% since the page-picture strip.
+
+### The decision
+
+**Redaction's Rust is compiled into its own binding module, fetched on the first redaction and
+never by anything else.** [ADR 0026](0026-how-rendering-loads-without-returning-to-the-old-payload.md)
+§1 already established the shape for PDFium, and this is a third row of the same table:
+
+| bundle | engine | Rust module | fetched |
+|---|---|---|---|
+| `burrow-worker.js` | qpdf | `burrow_wasm_bg.wasm` | on the first file, by every tool page |
+| `burrow-render-worker.js` | PDFium | `burrow_wasm_render_bg.wasm` | on the first page picture |
+| `burrow-redact-worker.js` | qpdf | `burrow_wasm_redact_bg.wasm` | on the first redaction |
+
+So `bindings/burrow-wasm` gains a third mutually exclusive feature, `redact`, beside `documents`
+and `render`; ADR 0026 §2's refusal of a `wasm32` build enabling none or more than one extends to
+cover it. `tools/stage-web-engines.mjs` builds the bundle from its own source list and generates
+its own manifest slice into it.
+
+**The total budget is not raised for redaction.** That is the decision, not a consequence of it:
+a tool that redacts nothing must not download a redaction engine, and raising the ceiling instead
+would have spent the margin on exactly that.
+
+### What it does not cover, stated because the split reads as bigger than it is
+
+`qpdf.wasm` is one artifact shared by every tool and no feature flag divides it, so the qpdf C
+exports redaction needs — `qpdf_oh_replace_stream_data` and whatever follows it — are unavoidable
+base payload. [#130] measures that cost and reports it rather than re-recording past it. The
+calibration on record is that `split`'s ten exports cost +3,340 brotli and `merge`'s seven cost
++53,456, and `engines/qpdf-not-exported.toml` says in those words that the variance is in what
+else gets pulled in rather than in the count.
+
+### The check that keeps it true
+
+A split nothing verifies is a split that closes quietly the first time someone imports across it.
+`tools/check-pdfium-is-render-only.sh` is the precedent — three layers, asserting PDFium reaches
+the render bundle and no other part of the build — and the redaction module gets its counterpart:
+**the base bundle contains no redaction symbol.** [#137] owns both, because it owns the binding
+entry point, and the entry point is what decides which module the code is compiled into.
+
+[#130]: https://github.com/TensorGreed/burrow/issues/130
+[#131]: https://github.com/TensorGreed/burrow/issues/131
+[#137]: https://github.com/TensorGreed/burrow/issues/137

@@ -31,3 +31,4 @@
 - [Web design tokens](m1_web_design_tokens.md) — what the reserved-colour checks actually read (base.css only), the 1-of-5 `.refusal` gap, and the measured palette distances.
 - [SBOM gate (make-sbom.py)](m1_sbom_gate.md) — 2nd pass: the libjpeg/libopenjpeg label collapse, and the native linked_in gate that does not run on an x86_64 runner.
 - [Spike 0006 redaction survival](spike_0006_redaction_survival.md) — verified, all five findings resolved same day; the durable one is control 5: a removal nothing observed is not a measured removal.
+- [M2 pdfsyntax rewriter (#128)](m2_pdfsyntax_rewriter.md) — the inline-image EI leak in 3 renderers, 7 GiB from 1 MB, apply's quadratic locate, and what is provably clean.

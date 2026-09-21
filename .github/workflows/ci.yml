@@ -512,7 +512,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys; do
+          for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys pdfsyntax_operations pdfsyntax_contents; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             # REDACTED, NEVER RAW. cargo-fuzz prints the ENTIRE crashing input as a
@@ -576,37 +576,6 @@ jobs:
             [ "$status" -eq 0 ] || exit "$status"
           done
 
-      # EVERY TARGET IN fuzz/Cargo.toml MUST BE NAMED IN A STEP ABOVE, and nothing enforced
-      # that until M1 PR B added one. The steps list targets explicitly -- which is right,
-      # because they need different RUSTFLAGS -- so a new `[[bin]]` runs nowhere and the job
-      # still passes. A fuzz target that never runs is the "silently examines nothing" shape
-      # the root CLAUDE.md names, in the suite whose whole job is to find what tests do not.
-      - name: Every fuzz target is actually run by this job
-        working-directory: fuzz
-        run: |
-          declared=$(cargo +nightly fuzz list | sort)
-          run=$(grep -ohE 'for target in [a-z_ ]+' ../.github/workflows/ci.yml \
-                | sed 's/for target in //' | tr ' ' '\n' | grep -v '^$' | sort -u)
-          # AND THE NIGHTLY MATRIX, which this guard did not read. `merge`, `split`, `rotate`
-          # and `reorder` were all absent from fuzz-nightly.yml -- four targets the long run
-          # had never touched -- while this step reported every declared target as covered.
-          # A guard that checks one of two places is the shape it exists to prevent.
-          nightly=$(sed -n '/^        target:/,/^    steps:/p' ../.github/workflows/fuzz-nightly.yml \
-                | grep -oE '^ *- [a-z_]+$' | tr -d ' -' | sort -u)
-          echo "declared: $(echo "$declared" | tr '\n' ' ')"
-          echo "run:      $(echo "$run" | tr '\n' ' ')"
-          echo "nightly:  $(echo "$nightly" | tr '\n' ' ')"
-          missing=$(comm -23 <(echo "$declared") <(echo "$run"))
-          if [ -n "$missing" ]; then
-            echo "::error::fuzz targets declared but never run in this job: $missing"
-            exit 1
-          fi
-          absent=$(comm -23 <(echo "$declared") <(echo "$nightly"))
-          if [ -n "$absent" ]; then
-            echo "::error::fuzz targets missing from the nightly matrix: $absent"
-            exit 1
-          fi
-          echo "OK -- all $(echo "$declared" | wc -l) declared target(s) run here and nightly."
 
   wasm:
     name: wasm build
@@ -774,6 +743,22 @@ jobs:
       # the original was not written by someone ignoring one.
       #
       # In `deny`, like its neighbours: it reads the committed workflows and nothing else.
+      # EVERY TARGET IN fuzz/Cargo.toml MUST BE NAMED IN A STEP ABOVE, and in the nightly
+      # matrix. Nothing enforced that until M1 PR B added a guard; the guard was an inline
+      # `run:` block, and `tools/ci-local.py` has no pattern for those -- so a local sweep
+      # reported full coverage over it, and #128's two new targets reached this file and never
+      # reached fuzz-nightly.yml. That is `CLAUDE.md`'s fifth-row shape, and its answer is that
+      # a gate belongs in a script both CI and the local runner can name.
+      #
+      # In `deny`, like its neighbours: it reads `fuzz/Cargo.toml` and the two committed
+      # workflows and nothing else, so it runs on a clean checkout -- and it runs even when
+      # the `fuzz` job, where it used to live, never gets that far.
+      - name: Every fuzz target is actually run, here and nightly
+        run: tools/check-fuzz-target-registration.sh
+
+      - name: That guard refuses when a target is registered in only one place
+        run: tools/test-check-fuzz-target-registration.sh
+
       - name: No workflow publishes a fuzzing reproducer
         run: |
           python3 tools/check-no-published-reproducers.py

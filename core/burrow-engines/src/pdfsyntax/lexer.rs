@@ -25,8 +25,13 @@
 //! `BI … ID <arbitrary binary> EI` puts uninterpreted bytes in the middle of a content stream.
 //! Those bytes routinely contain `(`, and a scan that did not know about `ID` would read the rest
 //! of the image as a literal string and swallow every name after it — an under-approximation, the
-//! direction that breaks pages. So `ID` is handled explicitly, and an inline image whose `EI`
-//! cannot be found is a refusal.
+//! direction that breaks pages. So `ID` is handled explicitly.
+//!
+//! **Where the image ends comes from its dictionary, and an image whose dictionary will not say
+//! is refused.** Scanning for an `EI` that stands alone is what every reader falls back on and it
+//! is a hiding place: an image declaring one byte of data, followed by an `EI` not preceded by
+//! white space, lets the scan run past a whole text object that PDFium draws. See
+//! [`Lexer::skip_inline_image_data`] for the measurement and for what the refusal costs.
 
 use burrow_types::{Error, Result};
 
@@ -93,12 +98,52 @@ const fn is_numeric(byte: u8) -> bool {
 pub(super) struct Lexer<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// Where the token most recently returned by [`next_token`](Lexer::next_token) began.
+    ///
+    /// **Added for the rewriter (#128).** Reading a content stream needs no offsets; REWRITING
+    /// one needs to know which bytes to replace, and a caller that tried to track this itself
+    /// would be re-implementing `skip_trivia`.
+    ///
+    /// It is also how a string's VALUE is reached without this module carrying one. `Token::Str`
+    /// stays a marker — the header's reason for that is still good, and a `Vec` per string on
+    /// every resource scan is a cost `names.rs` should not pay — and a caller that wants the
+    /// bytes slices them with [`span`](Lexer::span) and decodes with
+    /// [`decode_string`](super::decode_string).
+    token_start: usize,
+    /// Where the most recent `BI` keyword began, if one is open.
+    ///
+    /// An inline image's extent is a function of its own dictionary — `/L`, or `/W`, `/H`,
+    /// `/BPC` and `/CS` — and by the time `ID` arrives those tokens have been returned and
+    /// forgotten. Rather than make the lexer accumulate them, this records where the dictionary
+    /// STARTS, and [`skip_inline_image_data`](Lexer::skip_inline_image_data) re-lexes that short
+    /// range when it needs the numbers. The cost is paid once per inline image and is
+    /// proportional to the dictionary, not to the data.
+    ///
+    /// **Added after the security review of #128**, which measured PDFium — the renderer burrow
+    /// ships — drawing text that this lexer had swallowed as image data. See that method.
+    bi_at: Option<usize>,
 }
 
 impl<'a> Lexer<'a> {
     /// Start at the beginning of `bytes`.
     pub(super) const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
+        Self {
+            bytes,
+            at: 0,
+            token_start: 0,
+            bi_at: None,
+        }
+    }
+
+    /// The byte range the last token occupied, as `(start, end)`.
+    ///
+    /// Empty before the first [`next_token`](Lexer::next_token). A call that returns `None`
+    /// **does** move it: the start is set after trivia is skipped and before the end of input
+    /// is noticed, so it lands on `(len, len)`. Nothing depends on that today and the sentence
+    /// here used to claim the opposite, which is the kind of wrong that is discovered by
+    /// someone relying on it.
+    pub(super) const fn span(&self) -> (usize, usize) {
+        (self.token_start, self.at)
     }
 
     /// The byte at `self.at`, without advancing.
@@ -138,6 +183,7 @@ impl<'a> Lexer<'a> {
     /// partial answer is the one result that may not escape.
     pub(super) fn next_token(&mut self) -> Result<Option<Token>> {
         self.skip_trivia();
+        self.token_start = self.at;
         let Some(byte) = self.peek() else {
             return Ok(None);
         };
@@ -194,13 +240,20 @@ impl<'a> Lexer<'a> {
                         "pdf syntax: a run left its input".to_owned(),
                     ));
                 };
+                if word == b"BI" {
+                    self.bi_at = Some(start);
+                }
                 if word == b"ID" {
                     // THE INLINE IMAGE IS SKIPPED HERE, not by the caller. It began as a
                     // method callers were expected to call after seeing `ID`, and that is a
                     // discipline: `names_in_content` remembered and `top_level_keys` did not,
                     // which is one lexer with two behaviours depending on who is holding it.
                     // A caller cannot forget something it never has to do.
-                    self.skip_inline_image_data()?;
+                    let dictionary = self.bi_at.take().and_then(|bi| {
+                        // From just past `BI` to just before `ID`.
+                        self.bytes.get(bi.saturating_add(2)..start)
+                    });
+                    self.skip_inline_image_data(dictionary)?;
                 }
                 if word.is_empty() {
                     // Unreachable given the match arms above, and a refusal rather than an
@@ -311,40 +364,209 @@ impl<'a> Lexer<'a> {
     /// tokeniser that walked into it would read the rest of the image as a string and drop every
     /// name after it.
     ///
-    /// `EI` is recognised only when it stands alone — preceded by white space and followed by
-    /// white space, a delimiter or the end of the stream — because the two bytes occur inside
-    /// image data constantly. That is the same rule every PDF reader uses and it is a heuristic
-    /// in all of them; when it finds no `EI` at all this refuses rather than treating the
-    /// remainder as data.
-    fn skip_inline_image_data(&mut self) -> Result<()> {
+    /// # The extent comes from the dictionary, or the stream is refused
+    ///
+    /// The first version of this recognised `EI` only where it stood alone — preceded by white
+    /// space, followed by white space, a delimiter or the end of the stream. That is the
+    /// heuristic every PDF reader falls back on, and **as a rule for deciding what a page draws
+    /// it is a hiding place.** The security review of #128 measured it:
+    ///
+    /// ```text
+    /// q BI /W 1 /H 1 /BPC 8 /CS /G ID AEI
+    /// BT /F1 24 Tf 1 0 0 1 72 700 Tm (BURROW-SECRET) Tj ET
+    ///  EI Q
+    /// ```
+    ///
+    /// The dictionary declares **one** byte of data, so the image ends at the `EI` right after
+    /// `A` — but that `EI` is preceded by `A` rather than by white space, so the scan ran on to
+    /// the trailing ` EI` and swallowed the text object whole. **PDFium draws `BURROW-SECRET`
+    /// from that page**, and PDFium is the renderer burrow ships and the one ADR 0022's read-back
+    /// reads through. The tokeniser reported a page with no text operator on it. A redactor built
+    /// on this would report the page clean.
+    ///
+    /// So the length comes from `/L` (`/Length`), or is computed from `/W`, `/H`, `/BPC` and
+    /// `/CS`, and an `EI` is **required** there. Where neither is possible — a `/F` filter with
+    /// no `/L`, a `/CS` naming a colour space from the page's `/Resources`, a missing `/W` or
+    /// `/H` — **the stream is refused.**
+    ///
+    /// # Why refusing, rather than falling back
+    ///
+    /// The fall-back was kept at first and recorded as a known residue. A recorded residue is
+    /// still a leak: for those images the page above works exactly as it did, and the whole
+    /// point of the dictionary rule is that this tokeniser must not report a page as carrying
+    /// less than it draws. Refusing turns an unreadable extent into a refusal, which is an
+    /// outcome burrow already has a vocabulary for and which cannot be mistaken for "clean".
+    ///
+    /// It costs fidelity, and the cost is stated rather than discovered: a document whose inline
+    /// image is filtered and carries no `/L` is now refused by every caller of this lexer,
+    /// `split`'s resource scan included. **No committed fixture is affected** — the corpus's one
+    /// inline image (`tests/redaction/generated/evade-inline-image.pdf`) declares `/L 135` — and
+    /// #142 tracks deriving the extents that are currently out of reach, which is what would
+    /// narrow the refusal again.
+    ///
+    /// An `ID` with no `BI` before it is refused for the same reason: it has no dictionary, so
+    /// there is nothing to derive an extent from.
+    fn skip_inline_image_data(&mut self, dictionary: Option<&[u8]>) -> Result<()> {
+        let Some(dictionary) = dictionary else {
+            return Err(Error::Malformed(
+                "pdf syntax: an 'ID' with no 'BI' before it, so the image has no extent".to_owned(),
+            ));
+        };
         // One byte of white space after `ID` belongs to the operator, not the data.
         if self.peek().is_some_and(is_whitespace) {
             self.at += 1;
         }
-        let mut at = self.at;
-        while at + 1 < self.bytes.len() {
-            let two = self.bytes.get(at..at + 2);
-            if two == Some(b"EI") {
-                let before_is_space = at
-                    .checked_sub(1)
-                    .and_then(|before| self.bytes.get(before).copied())
-                    .is_some_and(is_whitespace);
-                let after_ends_it = self
-                    .bytes
-                    .get(at + 2)
-                    .copied()
-                    .is_none_or(|b| is_whitespace(b) || is_delimiter(b));
-                if before_is_space && after_ends_it {
-                    self.at = at + 2;
-                    return Ok(());
-                }
-            }
+
+        let length = inline_image_length(dictionary)?;
+        let data_end = self.at.checked_add(length).ok_or_else(|| {
+            Error::Malformed("pdf syntax: an inline image longer than its stream".to_owned())
+        })?;
+        // The specification allows white space between the data and `EI`, and producers emit it.
+        // Anything else there means the dictionary and the data disagree about how long the
+        // image is, and two conforming readers would end it in two places.
+        let mut at = data_end;
+        while self.bytes.get(at).copied().is_some_and(is_whitespace) {
             at += 1;
         }
+        if self.bytes.get(at..at.saturating_add(2)) == Some(b"EI") {
+            self.at = at + 2;
+            return Ok(());
+        }
         Err(Error::Malformed(
-            "pdf syntax: an inline image with no 'EI' to end it".to_owned(),
+            "pdf syntax: an inline image whose dictionary says one length and whose data ends \
+             somewhere else"
+                .to_owned(),
         ))
     }
+}
+
+/// How many bytes of data an inline image's dictionary declares.
+///
+/// `dictionary` is the bytes between `BI` and `ID`.
+///
+/// # Errors
+///
+/// [`Error::Malformed`], naming which of the derivations failed, when the extent cannot be
+/// worked out from the dictionary alone. That is a refusal rather than a fall-back, and
+/// [`skip_inline_image_data`](Lexer::skip_inline_image_data) has the reasoning; the message says
+/// which case it was, because "an inline image burrow cannot read" is not something a person can
+/// act on and these four are.
+fn inline_image_length(dictionary: &[u8]) -> Result<usize> {
+    let mut lexer = Lexer::new(dictionary);
+    let mut key: Option<Vec<u8>> = None;
+    let (mut width, mut height, mut bits) = (None, None, None);
+    let mut colour_space: Option<Vec<u8>> = None;
+    let mut mask = false;
+    let mut filtered = false;
+    let mut declared: Option<u64> = None;
+
+    while let Some(token) = lexer.next_token()? {
+        let span = lexer.span();
+        let Some(name) = key.take() else {
+            // A key position. Anything but a name here is a dictionary this cannot read.
+            if let Token::Name(name) = token {
+                key = Some(name);
+                continue;
+            }
+            return Err(Error::Malformed(
+                "pdf syntax: an inline image whose dictionary has something other than a name \
+                 where a key belongs"
+                    .to_owned(),
+            ));
+        };
+        let number = || -> Option<u64> {
+            let raw = dictionary.get(span.0..span.1)?;
+            std::str::from_utf8(raw).ok()?.parse::<u64>().ok()
+        };
+        match name.as_slice() {
+            b"L" | b"Length" => declared = number(),
+            b"W" | b"Width" => width = number(),
+            b"H" | b"Height" => height = number(),
+            b"BPC" | b"BitsPerComponent" => bits = number(),
+            b"F" | b"Filter" => filtered = true,
+            b"IM" | b"ImageMask" => mask = matches!(token, Token::Keyword(ref w) if w == b"true"),
+            b"CS" | b"ColorSpace" => {
+                if let Token::Name(value) = token {
+                    colour_space = Some(value);
+                } else {
+                    return Err(Error::Malformed(
+                        "pdf syntax: an inline image whose /CS is not a name, so its component \
+                         count cannot be worked out"
+                            .to_owned(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // `/L` is the producer saying it outright, and it beats any computation -- including for a
+    // filtered image, which is the only way a filtered one is derivable at all.
+    if let Some(length) = declared {
+        return usize::try_from(length).map_err(|_| {
+            Error::Malformed("pdf syntax: an inline image longer than this machine".to_owned())
+        });
+    }
+    if filtered {
+        return Err(Error::Malformed(
+            "pdf syntax: an inline image with a /F filter and no /L, so how many bytes it \
+             occupies is whatever the filter produced and nothing on the page says"
+                .to_owned(),
+        ));
+    }
+
+    let components = if mask {
+        1
+    } else {
+        match colour_space.as_deref() {
+            Some(b"G" | b"DeviceGray" | b"CalGray" | b"I" | b"Indexed") => 1,
+            Some(b"RGB" | b"DeviceRGB" | b"CalRGB") => 3,
+            Some(b"CMYK" | b"DeviceCMYK") => 4,
+            // A name this does not know is a colour space from the page's `/Resources`, whose
+            // component count lives in a dictionary this module cannot resolve -- it holds no
+            // document, by design. #142 is where that changes, if it does.
+            Some(_) => {
+                return Err(Error::Malformed(
+                    "pdf syntax: an inline image whose /CS names a colour space from the page's \
+                     resources, whose component count this cannot resolve"
+                        .to_owned(),
+                ));
+            }
+            None => 1,
+        }
+    };
+    let (Some(width), Some(height)) = (width, height) else {
+        return Err(Error::Malformed(
+            "pdf syntax: an inline image with no /L and no /W and /H, so nothing says how long \
+             it is"
+                .to_owned(),
+        ));
+    };
+    // `/BPC` defaults to 8, and to 1 for an image mask -- PDF 32000-1 Table 91.
+    let bits = bits.unwrap_or(if mask { 1 } else { 8 });
+    if !matches!(bits, 1 | 2 | 4 | 8 | 16) {
+        return Err(Error::Malformed(
+            "pdf syntax: an inline image whose /BPC is not one of the five the specification \
+             allows"
+                .to_owned(),
+        ));
+    }
+
+    // Rows are padded to a byte boundary; the total is rows x height. Checked throughout: these
+    // are three numbers straight out of the file and their product is not bounded by anything.
+    let row_bits = width
+        .checked_mul(bits)
+        .and_then(|b| b.checked_mul(components))
+        .ok_or_else(|| {
+            Error::Malformed("pdf syntax: an inline image row larger than a u64".to_owned())
+        })?;
+    let row_bytes = row_bits.div_ceil(8);
+    let total = row_bytes.checked_mul(height).ok_or_else(|| {
+        Error::Malformed("pdf syntax: an inline image larger than a u64".to_owned())
+    })?;
+    usize::try_from(total).map_err(|_| {
+        Error::Malformed("pdf syntax: an inline image longer than this machine".to_owned())
+    })
 }
 
 /// Two ASCII hex digits as a byte.
@@ -475,24 +697,123 @@ mod tests {
     fn inline_image_data_is_skipped_rather_than_tokenised() {
         // The binary payload contains `(`, `/` and `<`, every one of which would derail a
         // tokeniser that walked into it -- and `/F9` after them would be read as a used name
-        // while `/F2` after the image would be lost.
-        let stream = b"BI /W 2 /H 2 ID \x00(/F9<<\xff\xfe EI Q /F2";
+        // while `/F2` after the image would be lost. `/W 9 /H 1` declares the nine bytes
+        // between `ID ` and ` EI`, so the extent is the dictionary's rather than a guess.
+        let stream = b"BI /W 9 /H 1 ID \x00(/F9<<\xff\xfe EI Q /F2";
         assert_eq!(names(stream), ["W", "H", "F2"]);
     }
 
     #[test]
-    fn an_inline_image_with_no_ei_is_refused() {
-        let mut lexer = Lexer::new(b"ID \x00\x01\x02");
-        assert!(lexer.next_token().is_err());
+    fn the_declared_length_ends_the_image_even_when_a_later_ei_stands_alone() {
+        // THE SECURITY REVIEW'S FINDING, as a test. The dictionary declares ONE byte, so the
+        // image ends at the `EI` right after `A` -- which is preceded by `A` rather than by
+        // white space, so the old standalone-`EI` scan ran past it and swallowed the text
+        // object. PDFium -- the renderer burrow ships -- draws `SECRET` from this page.
+        let stream = b"q BI /W 1 /H 1 /BPC 8 /CS /G ID AEI\nBT /F1 24 Tf (SECRET) Tj ET\n EI Q";
+        let read = tokens(stream);
+        assert!(
+            read.contains(&Token::Str),
+            "the text object after the image must be tokenised, not swallowed: {read:?}"
+        );
+        assert!(
+            read.iter()
+                .any(|t| matches!(t, Token::Keyword(w) if w == b"Tj")),
+            "the drawing operator must be visible to a rewriter: {read:?}"
+        );
     }
 
     #[test]
-    fn ei_inside_image_data_does_not_end_it_unless_it_stands_alone() {
-        // `xEIy` is data. Only a delimited `EI` ends the image.
-        let stream = b"BI ID \x00xEIy\x00 EI /F2";
-        assert_eq!(names(stream), ["F2"]);
+    fn a_declared_length_that_does_not_land_on_ei_is_refused() {
+        // The dictionary says one byte and the data runs on. Two conforming readers would end
+        // the image in two places, so there is no answer to carry on with.
+        let mut lexer = Lexer::new(b"BI /W 1 /H 1 /CS /G ID AAAAAAAA EI Q");
+        loop {
+            match lexer.next_token() {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("the disagreement should have been refused"),
+                Err(_) => break,
+            }
+        }
     }
 
+    #[test]
+    fn an_explicit_length_beats_the_computation_and_works_for_a_filtered_image() {
+        let stream = b"BI /W 99 /H 99 /F /AHx /L 4 ID abcd EI Q /F2";
+        assert_eq!(names(stream), ["W", "H", "F", "AHx", "L", "F2"]);
+    }
+
+    #[test]
+    fn every_underivable_extent_is_a_refusal_rather_than_a_guess() {
+        // ONE FIXTURE PER WAY THE DICTIONARY CAN FAIL TO SAY HOW LONG THE IMAGE IS. Each used to
+        // fall back to scanning for a standalone `EI`, and that fall-back is the hiding place
+        // this rule exists to close -- a recorded residue is still a leak. Every one of these
+        // hides a `Tj` behind the data exactly as the security review's page did, so a
+        // fall-back would tokenise none of them.
+        let hidden = b" ID x\nBT /F1 24 Tf (SECRET) Tj ET\n EI Q";
+        let cases: [(&str, &[u8]); 5] = [
+            (
+                "a filter with no /L: the encoded length is whatever the filter produced",
+                b"q BI /W 1 /H 1 /F /Fl",
+            ),
+            (
+                "a /CS naming a colour space from the page's resources, which this cannot resolve",
+                b"q BI /W 1 /H 1 /CS /MySpace",
+            ),
+            (
+                "no /W and no /H, so nothing says how many rows there are",
+                b"q BI /CS /G /BPC 8",
+            ),
+            (
+                "a /BPC the specification does not allow",
+                b"q BI /W 1 /H 1 /CS /G /BPC 7",
+            ),
+            (
+                "a dictionary with something other than a name where a key belongs",
+                b"q BI 42 /W 1 /H 1 /CS /G",
+            ),
+        ];
+        for (why, dictionary) in cases {
+            let mut stream = dictionary.to_vec();
+            stream.extend_from_slice(hidden);
+            let mut lexer = Lexer::new(&stream);
+            let refused = loop {
+                match lexer.next_token() {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break false,
+                    Err(_) => break true,
+                }
+            };
+            assert!(refused, "should have been refused -- {why}");
+        }
+    }
+
+    #[test]
+    fn an_id_with_no_bi_is_refused_because_it_has_no_extent() {
+        // It has no dictionary, so there is nothing to compute an extent from and nothing to
+        // check a guess against.
+        let mut lexer = Lexer::new(b"q ID x\nBT (SECRET) Tj ET\n EI Q");
+        loop {
+            match lexer.next_token() {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("an 'ID' with no 'BI' should have been refused"),
+                Err(_) => break,
+            }
+        }
+    }
+
+    #[test]
+    fn an_inline_image_whose_declared_data_runs_off_the_end_is_refused() {
+        // `/L` says more bytes than the stream holds. Truncated rather than hostile, and the
+        // answer is the same: there is no `EI` where the dictionary says there is one.
+        let mut lexer = Lexer::new(b"BI /W 1 /H 1 /L 4096 ID ab");
+        loop {
+            match lexer.next_token() {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("a declared length past the end should have been refused"),
+                Err(_) => break,
+            }
+        }
+    }
     #[test]
     fn hex_pairs_decode_in_both_cases_and_reject_anything_else() {
         assert_eq!(hex_value(b"20"), Some(0x20));
