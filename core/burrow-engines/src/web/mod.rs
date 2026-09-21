@@ -32,6 +32,7 @@ mod assemble;
 pub mod bridge;
 // The one compression lever, and spike 0005's finding that there is only one.
 mod compress;
+mod handle;
 mod pdfium;
 mod qpdf;
 pub mod recycle;

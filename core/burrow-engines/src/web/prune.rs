@@ -10,18 +10,21 @@
 //! the decision about what to remove. See `crate::prune`'s header for why this one capability is
 //! shared where `rotate`, `reorder` and `merge` deliberately are not.
 //!
-//! # Releasing handles is this file's whole burden
+//! # Releasing handles was this file's whole burden, and is now [`super::handle`]'s
 //!
-//! The native seam hands back an [`ObjectHandle`](crate::qpdf) that releases on drop, so "remember
-//! to release" is not something a reader has to check. Across the bridge a handle is a `u32` with
-//! no `Drop` — the same gap `web/reorder.rs` records and solves with a guard that owns the page
-//! handles for the length of the operation.
+//! The native seam hands back an `ObjectHandle` that releases on drop, so "remember to release"
+//! is not something a reader has to check. Across the bridge a handle is a `u32` with no `Drop`,
+//! and this file grew its own [`WebHandle`] to close that — while
+//! `reorder.rs` grew a different guard and `rotate.rs`, `extract.rs` and `compress.rs` released
+//! by hand at every exit. Three answers to one question.
 //!
-//! Pruning takes far more handles than reordering does: a key lookup, an array item, a stream
-//! dictionary, each of them per page and several per resource. So [`WebHandle`] owns its `u32` and
-//! releases it on drop, and the graph hands out nothing else. `qpdf_oh_release` is a map erase —
-//! not releasing is what `handle.rs` measured as one cache entry per node for the life of the
-//! document, invisible to `max_memory_bytes` because it is steady growth well under a ceiling.
+//! That type is shared now, and it carries a second property this file never needed and the
+//! others did: a handle and the `qpdf_data` it belongs to are **one value**, so no call can pair
+//! a handle from one document with another's. Pruning takes far more handles than the rest — a
+//! key lookup, an array item, a stream dictionary, each per page and several per resource — so
+//! this is still where the cost of getting it wrong is largest. `qpdf_oh_release` is a map erase;
+//! not releasing is one cache entry per node for the life of the document, invisible to
+//! `max_memory_bytes` because it is steady growth well under a ceiling.
 
 use core::cell::RefCell;
 use std::collections::BTreeMap;
@@ -30,38 +33,9 @@ use burrow_types::{Error, Result};
 
 use super::WebQpdf;
 use super::bridge::QpdfPtr;
+use super::handle::WebHandle;
 use super::qpdf::Session;
 use crate::prune::graph::ObjectGraph;
-
-/// A qpdf object handle across the bridge, released when it goes out of scope.
-///
-/// The `u32` qpdf issued, plus what is needed to give it back. Handles are per-document, and the
-/// graph only ever issues them for its own session, so there is no document to get wrong.
-pub(super) struct WebHandle<'a> {
-    engine: &'a WebQpdf,
-    data: QpdfPtr,
-    handle: u32,
-}
-
-impl Drop for WebHandle<'_> {
-    fn drop(&mut self) {
-        // ONLY WHAT WAS ISSUED. qpdf numbers handles from 1 (`++qpdf->next_oh`), so 0 means no
-        // handle was created — and releasing it is not harmless in the one place it matters:
-        // `qpdf_oh_release` erases from a map, so a release of an id that was never issued would
-        // cancel out a future leak of the same id rather than doing nothing. `web/reorder.rs`
-        // records the same rule, and the fake refuses the call outright, which is how it was found.
-        //
-        // THE COMPARISON IS BOUND TO A NAME so the hatch can sit on it. `check-handle-identity`
-        // reads one line, and rustfmt will not keep a trailing comment after an `if`'s brace --
-        // it moves it inside the block, where the checker no longer sees it and the violation
-        // comes back. What the hatch opens is narrow: this compares against the LITERAL 0, not
-        // against another handle, and 0 is readable precisely because qpdf numbers from 1.
-        let issued = self.handle != 0; // handle-identity-ok: 0 is "no handle", not an object
-        if issued {
-            self.engine.bridge().oh_release(self.data, self.handle);
-        }
-    }
-}
 
 /// A document reached across the bridge, seen as an object graph.
 pub(super) struct WebGraph<'a> {
@@ -123,11 +97,7 @@ impl<'a> WebGraph<'a> {
 
     /// Wrap a handle the session just issued.
     fn own(&self, handle: u32) -> WebHandle<'a> {
-        WebHandle {
-            engine: self.engine,
-            data: self.session.data(),
-            handle,
-        }
+        WebHandle::owned(self.engine, self.session, handle)
     }
 }
 
@@ -169,35 +139,24 @@ impl<'a> ObjectGraph for WebGraph<'a> {
 
     fn key(&self, of: &Self::Handle, key: &[u8]) -> Result<Self::Handle> {
         let ptr = self.key_ptr(key)?;
-        let handle = self
-            .engine
-            .bridge()
-            .oh_get_key(self.session.data(), of.handle, ptr);
-        // OWNED BEFORE THE DRAIN. qpdf allocates a handle on the error path too --
-        // `trap_oh_errors`' fallback is `return_uninitialized`, which calls `new_object` -- so
-        // draining first and returning past the raw `u32` leaks one `oh_cache` entry per
-        // failure. Wrapping first makes every path release. `web/reorder.rs` uses the same
-        // shape; found by security review.
-        let owned = self.own(handle);
-        self.drained()?;
+        // OWNED BEFORE THE DRAIN, which `WebHandle::key` does by construction: qpdf allocates
+        // a handle on the error path too -- `trap_oh_errors`' fallback is
+        // `return_uninitialized`, which calls `new_object` -- so returning past a raw `u32`
+        // leaks one `oh_cache` entry per failure. Found by security review; the type holds it.
+        let owned = of.key(ptr);
+        of.drained()?;
         Ok(owned)
     }
 
     fn type_code(&self, of: &Self::Handle) -> Result<i32> {
-        let code = self
-            .engine
-            .bridge()
-            .oh_get_type_code(self.session.data(), of.handle);
-        self.drained()?;
+        let code = of.type_code();
+        of.drained()?;
         Ok(code)
     }
 
     fn name(&self, of: &Self::Handle) -> Result<Vec<u8>> {
-        let ptr = self
-            .engine
-            .bridge()
-            .oh_get_name(self.session.data(), of.handle);
-        self.drained()?;
+        let ptr = of.name();
+        of.drained()?;
         if ptr == QpdfPtr::NULL {
             return Ok(Vec::new());
         }
@@ -205,11 +164,8 @@ impl<'a> ObjectGraph for WebGraph<'a> {
     }
 
     fn unparse(&self, of: &Self::Handle) -> Result<Vec<u8>> {
-        let ptr = self
-            .engine
-            .bridge()
-            .oh_unparse_resolved(self.session.data(), of.handle);
-        self.drained()?;
+        let ptr = of.unparse_resolved();
+        of.drained()?;
         if ptr == QpdfPtr::NULL {
             return Ok(Vec::new());
         }
@@ -221,64 +177,44 @@ impl<'a> ObjectGraph for WebGraph<'a> {
 
     fn remove_key(&self, of: &Self::Handle, key: &[u8]) -> Result<()> {
         let ptr = self.key_ptr(key)?;
-        self.engine
-            .bridge()
-            .oh_remove_key(self.session.data(), of.handle, ptr);
-        self.drained()
+        of.remove_key(ptr);
+        of.drained()
     }
 
     fn array_len(&self, of: &Self::Handle) -> Result<i32> {
-        let len = self
-            .engine
-            .bridge()
-            .oh_get_array_n_items(self.session.data(), of.handle);
-        self.drained()?;
+        let len = of.array_len();
+        of.drained()?;
         Ok(len)
     }
 
     fn array_item(&self, of: &Self::Handle, at: i32) -> Result<Self::Handle> {
-        let handle = self
-            .engine
-            .bridge()
-            .oh_get_array_item(self.session.data(), of.handle, at);
-        // OWNED BEFORE THE DRAIN. qpdf allocates a handle on the error path too --
-        // `trap_oh_errors`' fallback is `return_uninitialized`, which calls `new_object` -- so
-        // draining first and returning past the raw `u32` leaks one `oh_cache` entry per
-        // failure. Wrapping first makes every path release. `web/reorder.rs` uses the same
-        // shape; found by security review.
-        let owned = self.own(handle);
-        self.drained()?;
-        Ok(owned)
+        let handle = of.array_item(at);
+        // ALREADY OWNED: the accessor returns a `WebHandle`, so the "wrap before draining"
+        // rule this used to spell out is held by the type. qpdf allocates a handle on the
+        // error path too, and returning past a raw `u32` leaked one `oh_cache` entry per
+        // failure; found by security review.
+        of.drained()?;
+        Ok(handle)
     }
 
     fn erase_item(&self, of: &Self::Handle, at: i32) -> Result<()> {
-        self.engine
-            .bridge()
-            .oh_erase_item(self.session.data(), of.handle, at);
-        self.drained()
+        of.erase_item(at);
+        of.drained()
     }
 
     fn stream_dict(&self, of: &Self::Handle) -> Result<Self::Handle> {
-        let handle = self
-            .engine
-            .bridge()
-            .oh_get_dict(self.session.data(), of.handle);
-        // OWNED BEFORE THE DRAIN. qpdf allocates a handle on the error path too --
-        // `trap_oh_errors`' fallback is `return_uninitialized`, which calls `new_object` -- so
-        // draining first and returning past the raw `u32` leaks one `oh_cache` entry per
-        // failure. Wrapping first makes every path release. `web/reorder.rs` uses the same
-        // shape; found by security review.
-        let owned = self.own(handle);
-        self.drained()?;
-        Ok(owned)
+        let handle = of.stream_dict();
+        // ALREADY OWNED: the accessor returns a `WebHandle`, so the "wrap before draining"
+        // rule this used to spell out is held by the type. qpdf allocates a handle on the
+        // error path too, and returning past a raw `u32` leaked one `oh_cache` entry per
+        // failure; found by security review.
+        of.drained()?;
+        Ok(handle)
     }
 
     fn page_content(&self, page: &Self::Handle) -> Result<Vec<u8>> {
-        let data = self
-            .engine
-            .bridge()
-            .oh_page_content(self.session.data(), page.handle);
-        self.drained()?;
+        let data = page.page_content();
+        page.drained()?;
         // `None` HERE IS NOT A DECODE FAILURE. The bridge returns it only when the engine
         // could not allocate its scratch words; a qpdf throw is latched and `drained` above has
         // already returned it. So this is the module out of memory rather than anything about
@@ -291,11 +227,8 @@ impl<'a> ObjectGraph for WebGraph<'a> {
     }
 
     fn stream_data(&self, of: &Self::Handle) -> Result<Option<Vec<u8>>> {
-        let data = self
-            .engine
-            .bridge()
-            .oh_stream_data(self.session.data(), of.handle);
-        self.drained()?;
+        let data = of.stream_data();
+        of.drained()?;
         // `None` ALREADY MEANS "could not decode" here, and the bridge does not distinguish that
         // from an error because the policy treats them the same way and must. See the bridge
         // method: undecoded bytes are still compressed, and reading names out of them is an
@@ -304,10 +237,7 @@ impl<'a> ObjectGraph for WebGraph<'a> {
     }
 
     fn identity(&self, of: &Self::Handle) -> Result<(i32, i32)> {
-        let packed = self
-            .engine
-            .bridge()
-            .oh_object(self.session.data(), of.handle);
+        let packed = of.object();
         // DRAINED AND RETURNED, never swallowed. Both halves read as 0 on an internal failure and
         // `(0, 0)` equals `(0, 0)`, so a swallowed error here is two unrelated objects comparing
         // equal — which for pruning means keeping what should have gone. `handle.rs` has the
@@ -321,10 +251,7 @@ impl<'a> ObjectGraph for WebGraph<'a> {
     }
 
     fn integer_value(&self, of: &Self::Handle) -> Result<i64> {
-        let value = self
-            .engine
-            .bridge()
-            .oh_get_int_value_i64(self.session.data(), of.handle);
+        let value = of.int_value();
         self.drained()?;
         Ok(value)
     }

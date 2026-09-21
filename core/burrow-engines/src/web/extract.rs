@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
+use super::handle::WebHandle;
 use super::prune::WebGraph;
 use super::qpdf::{Session, WebQpdf};
 use crate::blank::BLANK_DOCUMENT;
@@ -122,10 +123,9 @@ impl PageExtractor for WebQpdf {
             // BEFORE THE HANDLE IS ISSUED, so a refusal cannot leave one behind.
             deadline.checkpoint(clock.as_ref())?;
             let page = super::rotate::page_handle(self, &source.session, index, source.pages)?;
-            // EVERY PATH RELEASES: `?` inside the loop would return past the release.
+            // EVERY PATH RELEASES, by the handle's `Drop` rather than a line a `?` could skip.
             // RECORDED, NOT JUDGED -- see the trait's docs.
-            let outcome = super::rotate::declared_rotation(self, &source.session, &keys, page);
-            self.bridge().oh_release(source.session.data(), page);
+            let outcome = super::rotate::declared_rotation(&page, &keys);
             rotations.push(outcome?.unwrap_or(0));
         }
         Ok(rotations)
@@ -167,23 +167,20 @@ impl PageExtractor for WebQpdf {
         for n in first..end {
             let index = u32::try_from(n)
                 .map_err(|_| Error::Internal("page index does not fit in u32".to_owned()))?;
-            let page = self.bridge().get_page_n(source.session.data(), index);
-            if let Some(error) = source.session.take_error() {
-                // RELEASE WHAT WAS ISSUED. qpdf allocates a handle on the error path too, and
-                // this one would otherwise live in the SOURCE's cache for the whole split.
-                // Found by security review. `handle != 0` because qpdf numbers from 1 and
-                // releasing an id that was never issued is not harmless -- it would cancel a
-                // later leak of the same id rather than doing nothing.
-                if page != 0 {
-                    self.bridge().oh_release(source.session.data(), page);
-                }
-                return Err(error);
-            }
+            // OWNED BEFORE THE DRAIN. qpdf allocates a handle on the error path too, and this
+            // one would otherwise live in the SOURCE's cache for the whole split -- found by
+            // security review, and now held by the type rather than by two lines here, along
+            // with the "only what was issued" rule that came with it.
+            let page = WebHandle::owned(
+                self,
+                &source.session,
+                self.bridge().get_page_n(source.session.data(), index),
+            );
+            page.drained()?;
             // `false` is `first`: append rather than prepend, so pages arrive in source order.
-            let added = self
-                .bridge()
-                .add_page(dest.data(), source.session.data(), page, false);
-            self.bridge().oh_release(source.session.data(), page);
+            let added =
+                self.bridge()
+                    .add_page(dest.data(), source.session.data(), page.raw(), false);
             if has_errors(added) {
                 return Err(dest
                     .take_error()
@@ -200,15 +197,18 @@ impl PageExtractor for WebQpdf {
         // THE BLANK PAGE COMES BACK OUT, now that the document has real pages in it. Last rather
         // than first: qpdf will not hold a document with no pages, which is the same fact that
         // made the constant one page instead of none.
-        let blank = self.bridge().get_page_n(dest.data(), 0);
-        if let Some(error) = dest.take_error() {
-            if blank != 0 {
-                self.bridge().oh_release(dest.data(), blank);
-            }
-            return Err(error);
-        }
-        let removed = self.bridge().remove_page(dest.data(), blank);
-        self.bridge().oh_release(dest.data(), blank);
+        // OWNED BEFORE THE DRAIN, and released by `Drop` whichever way this returns -- including
+        // the "only what was issued" rule, which the type holds now rather than each call site.
+        //
+        // IT LIVES TO THE END OF THIS FUNCTION, where it used to be released right after
+        // `remove_page`. Benign and worth saying rather than leaving to be re-derived: nothing
+        // reads `blank.raw()` again, and qpdf-c's `oh_cache` is a separate map from `QPDF`'s
+        // own object cache, so holding the id does not affect what `QPDFWriter` emits. It is
+        // one extra live handle on the split path, and `web/tests.rs`'s `live == 0` assertions
+        // still hold. Measured by security review.
+        let blank = WebHandle::owned(self, &dest, self.bridge().get_page_n(dest.data(), 0));
+        blank.drained()?;
+        let removed = self.bridge().remove_page(dest.data(), blank.raw());
         if has_errors(removed) {
             return Err(dest.take_error().unwrap_or_else(|| {
                 Error::Internal("qpdf: the blank destination page could not be removed".to_owned())

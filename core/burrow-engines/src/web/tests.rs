@@ -3068,3 +3068,70 @@ fn the_null_handle_comes_from_qpdf_rather_than_being_invented() {
         "the handle did not come from the engine"
     );
 }
+
+// ---- derived handles and the order they release in (#145) ---------------------------------
+//
+// `WebHandle::sibling` gives a derived handle the parent's `engine` and `session`, NOT a borrow
+// of the parent value. So a derived handle is independent of the handle it came from: its own
+// qpdf id, its own release. That is deliberate -- `key`, `array_item` and `stream_dict` are used
+// in loops where the parent goes out of scope first -- and since `Drop` now decides when each
+// release happens, the claim is worth a test rather than a sentence.
+//
+// The fake is what makes it a measurement: `oh_release` refuses an id it did not issue, so a
+// double release aborts instead of cancelling out a future leak, and `live_handles` counts.
+
+#[test]
+fn a_derived_handle_outlives_its_parent_and_releases_exactly_once() {
+    let state = FakeHeap::new();
+    let script = QpdfScript::default();
+    let live = Arc::clone(&script.live_handles);
+    let bridge = Arc::new(FakeQpdf::new(Arc::clone(&state), script));
+    let engine = WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>);
+    let session =
+        super::qpdf::Session::open(&engine, b"%PDF-1.7\n", None, false).expect("the fake opens");
+
+    let derived = {
+        // SAFETY-BY-CONSTRUCTION, not by `unsafe`: the parent is an owned handle over this
+        // session, and `stream_dict` derives from it.
+        let parent = super::handle::WebHandle::owned(
+            &engine,
+            &session,
+            bridge.get_page_n(session.data(), 0),
+        );
+        let derived = parent.stream_dict();
+        assert_ne!(
+            derived.raw(),
+            parent.raw(),
+            "the fake must issue a fresh id, or this measures nothing"
+        );
+        assert_eq!(
+            *live.lock().expect("not poisoned"),
+            2,
+            "two handles are live"
+        );
+        derived
+        // THE PARENT DROPS HERE, before the derived one. If `sibling` had borrowed the parent
+        // this would not compile; if it had shared the parent's id, the release below would be
+        // the second of two on the same id and the fake would refuse it.
+    };
+
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        1,
+        "the parent released and the derived handle did not"
+    );
+    // AND IT IS STILL USABLE. A derived handle whose parent has gone is the ordinary shape in
+    // `prune.rs`'s walk; reading through it here is what says so.
+    let _ = derived.type_code();
+    assert!(
+        derived.drained().is_ok(),
+        "reading through a handle whose parent has dropped must not latch an error"
+    );
+
+    drop(derived);
+    assert_eq!(
+        *live.lock().expect("not poisoned"),
+        0,
+        "the derived handle did not release, or released an id the fake never issued"
+    );
+}

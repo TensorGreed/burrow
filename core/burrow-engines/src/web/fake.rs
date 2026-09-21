@@ -1497,10 +1497,6 @@ impl QpdfBridge for FakeQpdf {
         self.issue_handle(&format!("{}.dict", self.handle_name(oh)))
     }
 
-    fn oh_get_int_value_i64(&self, data: QpdfPtr, oh: u32) -> i64 {
-        self.oh_get_int_value(data, oh)
-    }
-
     fn oh_page_content(&self, _data: QpdfPtr, page: u32) -> Option<Vec<u8>> {
         self.state.record(Call::OhPageContent(page));
         Some(self.script.page_content.clone())

@@ -32,3 +32,4 @@
 - [SBOM gate (make-sbom.py)](m1_sbom_gate.md) — 2nd pass: the libjpeg/libopenjpeg label collapse, and the native linked_in gate that does not run on an x86_64 runner.
 - [Spike 0006 redaction survival](spike_0006_redaction_survival.md) — verified, all five findings resolved same day; the durable one is control 5: a removal nothing observed is not a measured removal.
 - [M2 pdfsyntax rewriter (#128)](m2_pdfsyntax_rewriter.md) — the inline-image EI leak in 3 renderers, 7 GiB from 1 MB, apply's quadratic locate, and what is provably clean.
+- [Web handle newtype (b887eff)](m2_web_handle_newtype.md) — releases are correct; the type does not bind to its Session, and its scan test misses `const fn` and wrapped signatures.

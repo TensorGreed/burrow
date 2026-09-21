@@ -15,10 +15,11 @@
 //! time, and this holds **every page's** for the whole permutation, because a page's index
 //! changes as its neighbours move and only its identity is stable.
 //!
-//! So the discipline here is not "release before returning" at each step but: the vector of
-//! handles is owned by one guard, [`Pages`], whose `Drop` releases all of them. Every `?` in
-//! the permutation returns past that guard, not past a bare release call — which is what the
-//! native path gets from `ObjectHandle` and what this module has to build.
+//! So the discipline here is not "release before returning" at each step but: the handles are
+//! held in a `Vec<`[`WebHandle`]`>`, and each element releases as it
+//! drops. Every `?` in the permutation returns past that, not past a bare release call — which
+//! is what the native path gets from `ObjectHandle`, and what this module used to build for
+//! itself in a bespoke `Pages` guard before `web/handle.rs` gave every file the same answer.
 //!
 //! # A handle is not an identity, and that is the whole reason `oh_object` exists
 //!
@@ -53,6 +54,7 @@ use std::sync::Arc;
 
 use burrow_types::{Deadline, Error, Limits, Permutation, Result, Stage};
 
+use super::handle::WebHandle;
 use super::qpdf::{Session, WebQpdf};
 use crate::{OpenOptions, PageReorderer};
 
@@ -80,33 +82,6 @@ pub struct WebReorderable {
     /// being unnecessary — "no caller does this yet" is a property of today's callers, and the
     /// trait is public. Found by security review.
     poisoned: core::cell::Cell<bool>,
-}
-
-/// Every page's handle, released together.
-///
-/// # Why a guard rather than releasing at each step
-///
-/// The permutation holds `n` handles for its whole duration — it cannot hold one at a time,
-/// because a page's *index* changes as its neighbours move and its handle is the only stable
-/// reference to it. So the shape `rotate.rs` uses (take one, release it, `?` after) does not
-/// apply: there is no single point where releasing is correct except the end.
-///
-/// A guard is what the native path gets for free from `ObjectHandle`'s `Drop`. Building it
-/// here means every `?` in [`permute`] returns past a release of **all** the handles rather
-/// than leaking the ones taken so far — which is the failure a hand-written release loop has
-/// on exactly the error paths nobody exercises.
-struct Pages<'a> {
-    engine: &'a WebQpdf,
-    data: super::bridge::QpdfPtr,
-    handles: Vec<u32>,
-}
-
-impl Drop for Pages<'_> {
-    fn drop(&mut self) {
-        for &handle in &self.handles {
-            self.engine.bridge().oh_release(self.data, handle);
-        }
-    }
 }
 
 impl PageReorderer for WebQpdf {
@@ -185,11 +160,10 @@ impl PageReorderer for WebQpdf {
             // BEFORE THE HANDLE IS ISSUED, so a refusal cannot leave one behind.
             deadline.checkpoint(clock.as_ref())?;
             let page = self.page_handle(&source.session, index, source.pages)?;
-            // EVERY PATH RELEASES, as everywhere else across this bridge: `?` inside the loop
-            // would return past the release.
+            // EVERY PATH RELEASES, and it is the handle's `Drop` that does it now rather than a
+            // line after the call that a `?` could jump over.
             // RECORDED, NOT JUDGED -- see the native sweep's comment and the trait's docs.
-            let outcome = super::rotate::declared_rotation(self, &source.session, &keys, page);
-            self.bridge().oh_release(source.session.data(), page);
+            let outcome = super::rotate::declared_rotation(&page, &keys);
             rotations.push(outcome?.unwrap_or(0));
         }
         Ok(rotations)
@@ -295,8 +269,9 @@ impl PageReorderer for WebQpdf {
 impl WebQpdf {
     /// Move each page to the position the order gives it.
     ///
-    /// Split out so the handle guard has a scope: every `?` below returns past [`Pages`]'
-    /// `Drop`, which releases all `n` handles.
+    /// Split out so the handles have a scope: `originals` is a `Vec<`[`WebHandle`]`>`, and
+    /// every `?` below returns past its drop, which releases all `n`. It was a bespoke `Pages`
+    /// guard doing exactly that until `web/handle.rs` gave every file the same answer.
     fn permute(
         &self,
         source: &WebReorderable,
@@ -304,17 +279,15 @@ impl WebQpdf {
         deadline: &Deadline,
         clock: &dyn burrow_types::Clock,
     ) -> Result<()> {
-        let data = source.session.data();
-
         // EVERY PAGE'S HANDLE, TAKEN ONCE, UP FRONT. A page's index changes as its neighbours
         // move -- `get_page_n(3)` means something different after the first swap -- so the
         // loop works with identities rather than positions. Bounded by `max_pages`, checked
         // at open.
-        let mut originals = Pages {
-            engine: self,
-            data,
-            handles: Vec::with_capacity(order.len()),
-        };
+        // A `Vec<WebHandle>` IS the guard: each element releases on drop, so every `?` below
+        // returns past all of them. `Pages` was a bespoke struct doing exactly this for a
+        // `Vec<u32>`, one of three answers the web path had to the same question; `web/handle.rs`
+        // is the one answer now.
+        let mut originals: Vec<WebHandle<'_>> = Vec::with_capacity(order.len());
         for index in 0..source.pages {
             // CHECKPOINTED TOO. This loop is two bridge round trips per page before the
             // permutation proper begins, so without it `max_duration_ms` gets its first look
@@ -323,7 +296,7 @@ impl WebQpdf {
             // security review.
             deadline.checkpoint(clock)?;
             let handle = self.page_handle(&source.session, index, source.pages)?;
-            originals.handles.push(handle);
+            originals.push(handle);
         }
 
         for (target, &wanted) in order.order().iter().enumerate() {
@@ -335,7 +308,7 @@ impl WebQpdf {
                 .map_err(|_| Error::Internal("page index does not fit in u64".to_owned()))?;
             let wanted_index = usize::try_from(wanted)
                 .map_err(|_| Error::Internal("page index does not fit in usize".to_owned()))?;
-            let Some(&wanted_page) = originals.handles.get(wanted_index) else {
+            let Some(wanted_page) = originals.get(wanted_index) else {
                 // Unreachable: `Permutation` refused anything out of range and the length was
                 // checked against this document above. A typed error rather than an index
                 // panic, because library code here does not panic.
@@ -348,9 +321,7 @@ impl WebQpdf {
             // the document is the thing being changed and a local would be a second model of
             // it that could disagree.
             let current = self.page_handle(&source.session, at, source.pages)?;
-            let outcome = self.move_into_place(source, wanted_page, current);
-            self.bridge().oh_release(data, current);
-            outcome?;
+            self.move_into_place(source, wanted_page, &current)?;
         }
 
         Ok(())
@@ -363,16 +334,16 @@ impl WebQpdf {
     fn move_into_place(
         &self,
         source: &WebReorderable,
-        wanted_page: u32,
-        current: u32,
+        wanted_page: &WebHandle<'_>,
+        current: &WebHandle<'_>,
     ) -> Result<()> {
         let data = source.session.data();
 
         // OBJECT IDENTITY, NOT HANDLE IDENTITY, and the error is drained immediately after.
         // Both halves return 0 on failure, so an undrained failure reads as "already in
         // place" -- the answer that means *do nothing* -- and the page is silently not moved.
-        let here = self.bridge().oh_object(data, current);
-        let there = self.bridge().oh_object(data, wanted_page);
+        let here = current.object();
+        let there = wanted_page.object();
         if let Some(error) = source.session.take_error() {
             return Err(error);
         }
@@ -387,7 +358,7 @@ impl WebQpdf {
         // and at least one page is in the tree throughout, which "remove them all, add them
         // back" would not give. Removing FIRST is also what makes this a move rather than a
         // copy; see `QpdfBridge::add_page_at`.
-        let removed = self.bridge().remove_page(data, wanted_page);
+        let removed = self.bridge().remove_page(data, wanted_page.raw());
         if crate::codes::qpdf::has_errors(removed) {
             return Err(source.session.take_error().unwrap_or_else(|| {
                 Error::Malformed("qpdf: a page could not be taken out of the order".to_owned())
@@ -402,7 +373,7 @@ impl WebQpdf {
         // its own -- this is a move, not a copy.
         let added = self
             .bridge()
-            .add_page_at(data, data, wanted_page, true, current);
+            .add_page_at(data, data, wanted_page.raw(), true, current.raw());
         if crate::codes::qpdf::has_errors(added) {
             return Err(source.session.take_error().unwrap_or_else(|| {
                 Error::Malformed("qpdf: a page could not be put back in the order".to_owned())
@@ -416,7 +387,13 @@ impl WebQpdf {
     }
 
     /// The handle for page `index`, bounds-checked first.
-    fn page_handle(&self, session: &Session, index: u64, pages: u64) -> Result<u32> {
+    fn page_handle<'e>(
+        &'e self,
+        // `&'e Session`: the handle's `Drop` releases against this session's `qpdf_data`.
+        session: &'e Session,
+        index: u64,
+        pages: u64,
+    ) -> Result<WebHandle<'e>> {
         if index >= pages {
             return Err(Error::InvalidArgument(
                 "page is not in the document".to_owned(),
@@ -425,18 +402,15 @@ impl WebQpdf {
         let n = u32::try_from(index)
             .map_err(|_| Error::Internal("page index does not fit in u32".to_owned()))?;
         let page = self.bridge().get_page_n(session.data(), n);
-        if let Some(error) = session.take_error() {
-            // RELEASE ONLY WHAT WAS ISSUED. qpdf numbers handles from 1 (`++qpdf->next_oh`),
-            // so 0 means no handle was created -- and releasing it is not harmless in the one
-            // place it matters: `qpdf_oh_release` erases from a map, so a release of an id
-            // that was never issued would cancel out a future leak of the same id rather than
-            // doing nothing. The fake refuses it outright, which is how this was found.
-            if page != 0 {
-                self.bridge().oh_release(session.data(), page);
-            }
-            return Err(error);
-        }
-        Ok(page)
+        // OWNED BEFORE THE DRAIN. qpdf allocates a handle on the error path too --
+        // `trap_oh_errors`' fallback is `return_uninitialized`, which calls `new_object` -- so
+        // returning past the raw `u32` leaks one `oh_cache` entry per failure. `WebHandle`'s
+        // `Drop` releases it whichever way this returns, and releases nothing when qpdf issued
+        // nothing: it numbers from 1, so 0 is "no handle". `prune.rs` had this rule written out
+        // at two call sites and `reorder` had it here; the type holds it now.
+        let owned = WebHandle::owned(self, session, page);
+        owned.drained()?;
+        Ok(owned)
     }
 }
 

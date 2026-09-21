@@ -538,9 +538,17 @@ pub trait QpdfBridge: Send + Sync {
     //
     // **Handles are per-document and they accumulate.** qpdf's handle cache only grows;
     // nothing in the C API reports how many are live. Every handle these produce must reach
-    // [`oh_release`](QpdfBridge::oh_release), and on the web that is the caller's discipline
-    // rather than a type's — `web/rotate.rs` owns it, and the native path's `ObjectHandle`
-    // is the model.
+    // [`oh_release`](QpdfBridge::oh_release).
+    //
+    // **That is `web/handle.rs`'s job now, and this comment used to say otherwise** — "on the
+    // web that is the caller's discipline rather than a type's — `web/rotate.rs` owns it, and
+    // the native path's `ObjectHandle` is the model". It was accurate and it described three
+    // different answers in three files: a `WebHandle` in `prune.rs`, a `Pages` guard in
+    // `reorder.rs`, and a manual release at every exit in `rotate.rs`, `extract.rs` and
+    // `compress.rs`. `WebHandle` is the one answer, and these methods take a `data` and an
+    // `oh` separately only because that is what wasm-bindgen can carry -- exactly as
+    // `qpdf/ffi.rs` does, and for the same reason. **Call them through `WebHandle`**, which
+    // pairs the two so they cannot disagree.
 
     /// `qpdf_oh_get_key`. Resolves an indirect object, so this is the parser running on
     /// file-controlled bytes.
@@ -698,9 +706,6 @@ pub trait QpdfBridge: Send + Sync {
     /// `qpdf_oh_get_dict`. A stream's dictionary -- a distinct type from a dictionary, so a
     /// Form XObject's `/Resources` is unreachable without it.
     fn oh_get_dict(&self, data: QpdfPtr, oh: u32) -> u32;
-
-    /// `qpdf_oh_get_int_value`. Only meaningful once the type code has said it is an integer.
-    fn oh_get_int_value_i64(&self, data: QpdfPtr, oh: u32) -> i64;
 
     /// `qpdf_oh_get_page_content_data`, copied out and freed in one call.
     ///
