@@ -317,6 +317,8 @@ JOBS: list[dict] = [
                 # matrix. A gate in a script is a gate this table can track.
                 "tools/check-fuzz-target-registration.sh",
                 "tools/test-check-fuzz-target-registration.sh",
+                "python3 tools/check-proptest-regressions.py",
+                "tools/test-check-proptest-regressions.sh",
             ]
         ),
         "covers": [
@@ -348,6 +350,8 @@ JOBS: list[dict] = [
             "tools/test-check-release-notes.sh",
             "tools/check-fuzz-target-registration.sh",
             "tools/test-check-fuzz-target-registration.sh",
+            "tools/check-proptest-regressions.py",
+            "tools/test-check-proptest-regressions.sh",
         ],
     },
     {
