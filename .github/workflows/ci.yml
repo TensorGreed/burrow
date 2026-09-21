@@ -758,6 +758,17 @@ jobs:
 
       - name: That guard refuses when a target is registered in only one place
         run: tools/test-check-fuzz-target-registration.sh
+      # A REGRESSION SEED WITH NO DEFECT BEHIND IT IS A FALSE RECORD. Twice a seed has been
+      # written by a test failing for an ENVIRONMENTAL reason -- the `qpdf` CLI absent from the
+      # shell's PATH, which `tools/ci-local.py` supplies and a bare `cargo test` does not -- and
+      # twice it was nearly committed. It costs time on every run and reads as evidence of a
+      # defect that was never there.
+      #
+      # In `deny`, like its neighbours: it reads tracked files and nothing else.
+      - name: Every proptest regression seed names the defect it records
+        run: |
+          python3 tools/check-proptest-regressions.py
+          tools/test-check-proptest-regressions.sh
 
       - name: No workflow publishes a fuzzing reproducer
         run: |

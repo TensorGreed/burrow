@@ -9,3 +9,4 @@
 - [New fuzz target registration](feedback_new_fuzz_target_registration.md) — four sites, not three; fuzz-nightly.yml's matrix is the seeded run and the one that gets missed.
 - [Gate keyed on a hand-edited id](feedback_gate_keyed_on_hand_edited_id.md) — break the identifier a gate resolves through; an unresolvable case that is only a note means the gate turned itself off.
 - [Probe that re-implements its rule](feedback_probe_reimplements_rule.md) — a source-scan test whose probe is a copied closure stays green with the real filter inert.
+- [Probe fixture vs real producer](feedback_probe_fixture_vs_real_producer.md) — diff probe fixtures against the imitated tool's byte-exact output; an abridged fixture leaves a branch freely mutable.
