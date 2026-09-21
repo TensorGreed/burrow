@@ -49,6 +49,7 @@ repo="$(cd "$here/.." && pwd)"
 # Anchored loosely on purpose: a pattern that only matched at the repository root would miss
 # `apps/web/dist/` and `tools/__pycache__/`, which is where both real incidents happened.
 PATTERNS=(
+  '(^|/)tests/redaction/generated/'
   '\.pyc$'
   '(^|/)__pycache__/'
   '(^|/)results/'
@@ -69,6 +70,7 @@ PATTERNS=(
   '\.MUTANT\.(py|sh)$'
 )
 LABELS=(
+  "the redaction corpus's regenerated fixtures"
   'Python bytecode'
   'Python bytecode directory'
   "a tool or test run's output directory"
@@ -90,6 +92,7 @@ LABELS=(
 )
 # One path each pattern MUST match. Both real incidents appear here by name.
 PROBES=(
+  'tests/redaction/generated/01-plain-tj.pdf'
   'tools/__pycache__/check-engine-licences.cpython-312.pyc'
   'tools/__pycache__/x.py'
   'spikes/wasm-memory-ceiling/results/pdfium-512.txt'

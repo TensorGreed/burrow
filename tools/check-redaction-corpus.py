@@ -24,7 +24,16 @@ WITNESS KINDS, and each is a different question
                          producer writes /Info and /Keywords.
   font-mapping           The font's own /ToUnicode or /Differences describes the canary's
                          characters. Channel 23.
+  font-cmap              The embedded font program's own cmap covers the canary's alphabet.
+                         The only witness for a CID subset with neither of the above.
   image-covers-page      The page draws an image large enough that every region intersects it.
+  image-drawn            An image XObject exists and is drawn, at any size.
+  thumb-ink              The page's /Thumb exists and carries ink. STRUCTURAL: the canary is
+                         pixels, and no scan can read it.
+  vector-fills           The page draws filled paths. Structural, for the same reason.
+  pdfium-text-loose      PDFium's text, compared with whitespace squashed on both sides — a
+                         page whose glyphs are individually positioned extracts with separators
+                         between them, and the strict match fails on text that IS there.
   structure-tree-present The document carries a /StructTreeRoot.
 
 A witness that cannot be evaluated is an ERROR, never a silent pass.
@@ -192,7 +201,150 @@ def witness_pdfium_text(pdf: Path, canary: str, cache: dict[Path, str]) -> bool:
     return canary in result.stdout
 
 
+def witness_font_cmap(data: bytes, canary: str) -> bool:
+    """The embedded sfnt's own `cmap` covers every distinct character of the canary.
+
+    The third construct spike 0006's `fontscan.rs` reads, and the ONLY witness for a CID font
+    with no `/ToUnicode` and no `/Differences` — channel 6, which is one of the five the spike
+    measured as invisible to every scan. A subset font's cmap covers exactly the characters it
+    was built for, so on a single-run subset it IS that run's alphabet.
+
+    Font programs are found by `/Length1`, the key that declares a stream is an sfnt.
+    """
+    chars: set[str] = set()
+    at = 0
+    while True:
+        i = data.find(b"/Length1", at)
+        if i < 0:
+            break
+        at = i + 8
+        m = re.match(rb"\s*(\d+)", data[i + 8 :])
+        if not m:
+            continue
+        length = int(m.group(1))
+        j = data.find(b"stream", i)
+        if j < 0:
+            continue
+        start = j + 6
+        while start < len(data) and data[start] in (13, 10):
+            start += 1
+        _sfnt_cmap(data[start : start + length], chars)
+    distinct = {c for c in canary if c != " "}
+    return bool(distinct) and distinct <= chars
+
+
+def _sfnt_cmap(font: bytes, out: set[str]) -> None:
+    """Walk an sfnt table directory to `cmap` and read a format 4 subtable's covered codes."""
+    def be16(o: int) -> int | None:
+        return int.from_bytes(font[o : o + 2], "big") if o + 2 <= len(font) else None
+
+    def be32(o: int) -> int | None:
+        return int.from_bytes(font[o : o + 4], "big") if o + 4 <= len(font) else None
+
+    n = be16(4)
+    if not n or n > 64:
+        return
+    cmap = None
+    for i in range(n):
+        rec = 12 + i * 16
+        if font[rec : rec + 4] == b"cmap":
+            cmap = be32(rec + 8)
+    if cmap is None:
+        return
+    subtables = be16(cmap + 2)
+    if not subtables:
+        return
+    for i in range(subtables):
+        rec = cmap + 4 + i * 8
+        off = be32(rec + 4)
+        if off is None:
+            continue
+        sub = cmap + off
+        if be16(sub) != 4:
+            continue
+        seg_x2 = be16(sub + 6)
+        if not seg_x2:
+            continue
+        for seg in range(seg_x2 // 2):
+            end = be16(sub + 14 + seg * 2)
+            start = be16(sub + 16 + seg_x2 + seg * 2)
+            if start is None or end is None or start > end or end == 0xFFFF:
+                continue
+            for code in range(start, end + 1):
+                out.add(chr(code))
+        return
+
+
+def witness_pdfium_text_loose(pdf: Path, canary: str, cache: dict[Path, str]) -> bool:
+    """PDFium's text page, ignoring whitespace on both sides.
+
+    Spike 0006's cheapest lesson: **a substring match is not text extraction.** On a page whose
+    glyphs are individually repositioned, PDFium inserts separators between runs and reads
+    `BURROW- SECRET- 03` — the text was extracted perfectly and the MATCHER failed. A verifier
+    that looked for its secret the strict way would report success on a page that plainly still
+    says it.
+    """
+    if pdf not in cache:
+        witness_pdfium_text(pdf, "", cache)
+    squash = "".join(cache[pdf].split())
+    return "".join(canary.split()) in squash
+
+
+def _stream_for_object(data: bytes, number: int) -> bytes:
+    """The stream body of object `number` in a qdf expansion."""
+    m = re.search(rb"(?m)^%d 0 obj\b" % number, data)
+    if not m:
+        return b""
+    start = data.find(b"stream", m.end())
+    if start < 0:
+        return b""
+    start += 6
+    while start < len(data) and data[start] in (13, 10):
+        start += 1
+    end = data.find(b"endstream", start)
+    return data[start:end] if end > 0 else b""
+
+
+def witness_thumb_ink(data: bytes, _canary: str) -> bool:
+    """The page's /Thumb exists and carries ink.
+
+    STRUCTURAL, and labelled as such in the manifest: the canary here is PIXELS, and no byte
+    scan or text extraction can read it. Spike 0006 measured this channel as the only one no
+    instrument found — the page was blank and the surviving thumbnail read BURROW-CARRIER-14.
+    What this witnesses is that the carrier is present and non-empty, which is the strongest
+    statement available without decoding an image.
+    """
+    m = re.search(rb"/Thumb\s+(\d+)\s+0\s+R", data)
+    if not m:
+        return False
+    body = _stream_for_object(data, int(m.group(1)))
+    if not body:
+        return False
+    dark = sum(1 for b in body if b < 128)
+    return dark > len(body) // 20
+
+
+def witness_vector_fills(data: bytes, _canary: str) -> bool:
+    """The page draws filled paths — the secret as geometry, with no font and no text object.
+
+    Structural for the same reason as `thumb-ink`: there is no text to witness. A run of `re`
+    rectangles followed by `f` is what `outline_ops` emits and what a chart or a signature also
+    looks like, which is precisely why ADR 0029 §3 refuses rather than guessing.
+    """
+    return len(re.findall(rb"\bre\b", data)) >= 20 and b" f\n" in data.replace(b"\r", b"\n")
+
+
+def witness_image_drawn(data: bytes, _canary: str) -> bool:
+    """An image XObject exists and is drawn. Any size, unlike `image-covers-page`."""
+    has_image = b"/Subtype /Image" in data or b"/Subtype/Image" in data
+    return has_image and re.search(rb"/\w+\s+Do\b", data) is not None
+
+
 BYTE_WITNESSES = {
+    "font-cmap": witness_font_cmap,
+    "thumb-ink": witness_thumb_ink,
+    "vector-fills": witness_vector_fills,
+    "image-drawn": witness_image_drawn,
     "raw-utf16-hex": witness_raw,
     "font-mapping": witness_font_mapping,
     "image-covers-page": witness_image_covers_page,
@@ -236,6 +388,8 @@ def main() -> int:
             canary = placement["canary"]
             if kind == "pdfium-text":
                 ok = witness_pdfium_text(path, canary, text_cache)
+            elif kind == "pdfium-text-loose":
+                ok = witness_pdfium_text_loose(path, canary, text_cache)
             elif kind in BYTE_WITNESSES:
                 ok = BYTE_WITNESSES[kind](data, canary)
             else:
