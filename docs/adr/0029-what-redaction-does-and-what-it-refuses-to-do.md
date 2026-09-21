@@ -377,7 +377,7 @@ fixture generator is the obvious first entry. Both `known_gap` entries in
 
 ## Conditions for revisiting
 
-Two, both named rather than general, each with the thing that would change.
+Three, all named rather than general, each with the thing that would change.
 
 **`hb-subset`, for the `cmap` residue.** §1 closes `/ToUnicode` and `/Differences`. The embedded
 font program itself still covers the removed run's alphabet in its own `cmap` — and its `post`
@@ -400,7 +400,35 @@ rule. Any of these would change that:
 - a structural route to the catalogue outside the engine, which is [#24](https://github.com/TensorGreed/burrow/issues/24)'s
   inflater and the same wall #111 hit from the other side.
 
-**Neither condition is a plan.** They are written down so that the next person to look does not
+**Image re-encoding, for the scanned-document refusal.** §3 refuses a page whose region
+intersects an image, and a scan is the commonest document there is — the whole page is one
+image. **The reason is narrower than "we cannot redact images", and an earlier draft of the
+corpus entry got it wrong in a way that made a solvable problem look unsolvable**: it said
+removing the pixels would mean deciding *which* pixels, and that deciding meant recognising text
+in a bitmap, and therefore OCR.
+
+Redaction here is **region-based**. The person selects the region, so *which pixels* is not a
+question anybody has to answer: every pixel inside the rectangle is blacked out, and the
+invisible text glyphs whose boxes fall in the same region go through the ordinary
+content-stream path. **No recognition is involved at any point.**
+
+What actually blocks it is writing the edited image back, and it differs per filter:
+
+| filter | what re-encoding costs |
+|---|---|
+| `/FlateDecode`, greyscale or RGB | **Straightforward.** Decode, black out the region, re-deflate. zlib is already linked, and the image dictionary needs nothing beyond a new `/Length` |
+| `/DCTDecode` | **Lossy.** Re-encoding the whole image imposes generation loss on the parts nobody touched. Editing in the DCT domain — zeroing the coefficient blocks the region covers — avoids that and is specialised work |
+| `/JBIG2Decode` | **Hardest.** Symbol dictionaries are shared across pages, neither engine decodes them here, and [spike 0005](../spikes/0005-what-qpdf-alone-compresses.md) refused `jbig2enc` on correctness grounds rather than licence ones |
+
+So the condition is **not** "acquire OCR". It is **an image re-encoding path, taken per filter,
+starting with Flate** — which is the easy case and is what `tests/redaction/fixtures/producer-ocr-scan.pdf`
+happens to be, making it the fixture to measure against.
+
+It matters more than it looks: this is the only one of the three conditions that governs a
+document shape a person is *likely to bring*, and until it is taken the refusal has to say why
+in a way that does not read as permanent (§7, and [#136](https://github.com/TensorGreed/burrow/issues/136)).
+
+**None of the three is a plan.** They are written down so that the next person to look does not
 have to re-derive why five channels are handled the way they are.
 
 ## Alternatives considered

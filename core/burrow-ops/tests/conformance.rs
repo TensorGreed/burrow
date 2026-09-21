@@ -512,15 +512,35 @@ fn the_corpus_and_the_expectations_cover_each_other() {
     let dir = conformance_dir();
     let expectations = load();
 
+    // A CASE MAY NAME A FIXTURE OUTSIDE THIS DIRECTORY, and one kind does: the redaction
+    // corpus's PRODUCER fixtures live in `tests/redaction/fixtures/` because they belong to
+    // that corpus and `corpus/manifest.toml` registers them there with their provenance. The
+    // alternative was a second copy of the same bytes under two names, which is a drift
+    // waiting to happen -- and the sha256 in the case pins them either way.
+    //
+    // Those paths are checked for EXISTENCE below like any other, and excluded only from the
+    // orphan half of this test, which can only speak about the directory it reads.
+    let mut outside: Vec<String> = Vec::new();
     let named: BTreeSet<String> = expectations
         .cases
         .iter()
-        .flat_map(|c| {
-            c.inputs
-                .iter()
-                .map(|i| i.file.trim_start_matches("fixtures/").to_owned())
+        .flat_map(|c| c.inputs.iter().map(|i| i.file.clone()))
+        .filter(|f| {
+            if f.starts_with("../") {
+                outside.push(f.clone());
+                false
+            } else {
+                true
+            }
         })
+        .map(|f| f.trim_start_matches("fixtures/").to_owned())
         .collect();
+
+    let absent: Vec<&String> = outside.iter().filter(|f| !dir.join(f).is_file()).collect();
+    assert!(
+        absent.is_empty(),
+        "these cases name fixtures outside tests/conformance that do not exist: {absent:?}"
+    );
 
     let mut on_disk = BTreeSet::new();
     for entry in std::fs::read_dir(dir.join("fixtures")).expect("fixtures/ should exist") {

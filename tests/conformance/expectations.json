@@ -1416,6 +1416,150 @@
           }
         }
       }
+    },
+    {
+      "name": "real-writer",
+      "inputs": [
+        {
+          "file": "../redaction/fixtures/producer-writer.pdf",
+          "sha256": "2993655cf9eb9eff9dd55152c7be1b382bbbf9f2905e8fc414447701b64bb7f6"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ]
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
+      "name": "real-latex",
+      "inputs": [
+        {
+          "file": "../redaction/fixtures/producer-latex.pdf",
+          "sha256": "b08bdf191f96edc35e796a6ac477fd7fba220dd9d4013b7a86e9384cd5fd7ffa"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ]
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
+    },
+    {
+      "name": "real-ocr-scan",
+      "inputs": [
+        {
+          "file": "../redaction/fixtures/producer-ocr-scan.pdf",
+          "sha256": "27d43eb68ecfbcd929f0c5f0ca3dfd10ba252dcdaebd22ca7823956d6feef31b"
+        }
+      ],
+      "password": null,
+      "attempt_recovery": false,
+      "expect": {
+        "page_count": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "structure_check": {
+          "ok": {
+            "page_count": 1
+          }
+        },
+        "rotate": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              90
+            ]
+          }
+        },
+        "reorder": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ]
+          }
+        },
+        "compress": {
+          "ok": {
+            "page_count": 1,
+            "rotations": [
+              0
+            ],
+            "compressed": true
+          }
+        }
+      }
     }
   ]
 }
