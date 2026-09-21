@@ -24,6 +24,21 @@
 //! extensions is not a closed set. Every operator nobody listed would take the second row. Not
 //! having a table means there is nothing to be incomplete.
 //!
+//! # That argument is about THIS answer, and it inverts for a rewriter
+//!
+//! [`super::ops`] does associate operands with their operator, which reads like a contradiction
+//! of the paragraph above and is not one. The argument here is not *operator tables are bad*; it
+//! is *this function over-approximates, so an incomplete table could only ever make its answer
+//! narrower, and a narrower answer is the one that breaks a page*. A rewriter has the opposite
+//! asymmetry — an operator it does not understand is output it gets **wrong** — so the same
+//! reasoning lands on the other side.
+//!
+//! `ops` resolves it by grouping operands **positionally** and still holding no table: every
+//! operand precedes its operator and an operator ends the run, which is a property of PDF's
+//! postfix syntax rather than of anyone's list. A caller that needs to know what an operator
+//! *means* keeps that table itself and owns being incomplete about it, where it can refuse.
+//! ADR 0029's *What this changes for the operation*, item 3.
+//!
 //! **What it costs, stated rather than left to be discovered:** a resource only ever mentioned in
 //! a comment, in text drawn on the page, or as a name operand to something that is not a resource
 //! lookup, survives pruning. It is a fidelity cost — a larger file — not a leak, *unless* the
@@ -128,7 +143,9 @@ mod tests {
 
     #[test]
     fn an_inline_image_does_not_hide_the_names_after_it() {
-        let content = b"BI /W 1 /H 1 /CS /G ID \x00(/F9 <</a 1>> EI Q /F2 12 Tf";
+        // `/W 14 /H 1 /CS /G` declares the fourteen bytes between `ID ` and ` EI`, so the
+        // extent is the dictionary's. `/F9` inside the data stays data.
+        let content = b"BI /W 14 /H 1 /CS /G ID \x00(/F9 <</a 1>> EI Q /F2 12 Tf";
         assert_eq!(set(content), ["CS", "F2", "G", "H", "W"]);
     }
 

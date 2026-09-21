@@ -7,7 +7,7 @@ five document shapes outright, disclose three it cannot reach, and that its veri
 **what it did**, never *that the secret is gone*. No ADR is amended here.
 
 **[ADR 0029](../adr/0029-what-redaction-does-and-what-it-refuses-to-do.md) is written from this
-spike and was accepted on 2026-09-21.** Said on this document's own status line because that is where
+spike and was accepted on 2026-09-21, and amended the same day with a channel this report did not enumerate — an inline image whose extent cannot be derived from its own dictionary, which hides a text object from the tokeniser entirely.** Said on this document's own status line because that is where
 this repository puts it (ADRs 0002, 0007, 0008 and spike 0004), not only in the record that
 decides it. Three things in that ADR are not in this report and are not derivable from it: the
 per-channel assignment is stated as a decision rather than a recommendation; control 5 is

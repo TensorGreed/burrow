@@ -135,7 +135,15 @@ MERGE_TARGET = "merge"
 #
 # So these two are CARVED out of the fixtures rather than copied. It is the same lesson this
 # script was written from, one level in: a seed of the wrong shape is not a seed.
-CARVED_TARGETS = ("pdfsyntax_dict_keys", "pdfsyntax_names")
+CARVED_TARGETS = (
+    "pdfsyntax_dict_keys",
+    "pdfsyntax_names",
+    # #128's two. Same carve as `pdfsyntax_names`: the input is a decoded content stream.
+    # `pdfsyntax_operations` reads one; `pdfsyntax_contents` cuts one into `/Contents` elements
+    # at a delimiter its first input byte chooses, so the seed is still a content stream.
+    "pdfsyntax_operations",
+    "pdfsyntax_contents",
+)
 
 # Not every span is worth writing, and a fixture with 277 dictionaries would otherwise
 # contribute 277 near-identical seeds. libFuzzer mutates from what it is given; more copies of
@@ -218,6 +226,39 @@ def carve_streams(body: bytes) -> list[bytes]:
     return spans
 
 
+# `pdfsyntax_contents` consumes its FIRST BYTE as the delimiter to cut the rest into `/Contents`
+# elements, so a carved span handed over raw is a seed whose first token has been eaten and whose
+# delimiter is whatever byte happened to be there. Measured by code review over the 38 carved
+# spans: 38 of 38 lost their first byte, and **33 of 38 produced a single element** -- no boundary
+# at all, which is the one axis the target exists to explore.
+#
+# So its seeds are built rather than copied, two per span, and each is a different question:
+#
+#   * cut on white space -- the divisions fall between tokens, which is where the specification
+#     says a real `/Contents` array divides;
+#   * cut on a byte that occurs INSIDE a token, which is where a hostile document divides.
+#
+# This is the same lesson as `CARVED_TARGETS` itself, one level further in: a seed of the wrong
+# shape is not a seed, and a target that eats a parameter needs the parameter chosen.
+MAX_VARIANTS_PER_SPAN = 2
+
+
+def contents_seed_variants(span: bytes) -> list[bytes]:
+    """`[delimiter] + span` for a boundary between tokens and one inside a token."""
+    variants: list[bytes] = []
+    for delimiter in (b" ", b"\n"):
+        if span.count(delimiter[0]) >= 1:
+            variants.append(delimiter + span)
+            break
+    # A byte that is neither white space nor a delimiter character is inside a token by
+    # construction: the lexer would not have ended a token there.
+    for byte in span:
+        if byte not in b" \t\r\n\x00\x0c()<>[]{}/%":
+            variants.append(bytes([byte]) + span)
+            break
+    return variants[:MAX_VARIANTS_PER_SPAN]
+
+
 def carved_is_usable(target: str, seed: bytes) -> str | None:
     """Why this carved seed would teach the target nothing, or `None` if it is fine.
 
@@ -232,6 +273,15 @@ def carved_is_usable(target: str, seed: bytes) -> str | None:
             return f"{target}: a seed that does not begin with '<<' is rejected on the first token"
         if not seed.endswith(b">>"):
             return f"{target}: a seed with no closing '>>' can only ever exercise the refusal"
+    if target == "pdfsyntax_contents":
+        # REPLAY THE TARGET'S OWN PARAMETER READ. A seed that cuts into one element exercises
+        # no boundary, which is the whole subject -- and 33 of 38 did before this existed.
+        delimiter, body = seed[0], seed[1:]
+        if len(body.split(bytes([delimiter]))) < 2:
+            return (
+                f"{target}: a seed whose delimiter byte does not occur in it produces a single "
+                "/Contents element, so it exercises no boundary"
+            )
     return None
 
 
@@ -525,14 +575,25 @@ def main(argv: list[str]) -> int:
         contributed = []
         for path in files:
             spans = carve(path.read_bytes())
+            wrote_any = False
             for index, span in enumerate(spans):
-                if problem := carved_is_usable(target, span):
-                    print(f"\nFAILED — {problem} (from {path.name})", file=sys.stderr)
-                    return 1
-                if not check_only:
-                    (directory / f"seed-{path.name}-{index}").write_bytes(span)
-                count += 1
-            if spans:
+                variants = (
+                    contents_seed_variants(span)
+                    if target == "pdfsyntax_contents"
+                    else [span]
+                )
+                for variant_index, seed in enumerate(variants):
+                    if problem := carved_is_usable(target, seed):
+                        print(f"\nFAILED — {problem} (from {path.name})", file=sys.stderr)
+                        return 1
+                    if not check_only:
+                        name = f"seed-{path.name}-{index}"
+                        if len(variants) > 1:
+                            name = f"{name}-{variant_index}"
+                        (directory / name).write_bytes(seed)
+                    count += 1
+                    wrote_any = True
+            if wrote_any:
                 contributed.append(path)
         written[target] = count
         silent = [p.name for p in expected_contributors if p not in contributed]

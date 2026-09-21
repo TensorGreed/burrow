@@ -128,6 +128,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | catalogue **`/Metadata`** and the trailer's **`/Info`** | **disclose** |
 | **`/EmbeddedFiles`** attachments | **disclose** |
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
+| an **inline image** whose extent the page cannot derive | **refuse** — added by the [2026-09-21 amendment](#amendment-2026-09-21--the-channel-the-spike-missed-inline-image-extent). Spike 0006 did not measure this channel |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -462,3 +463,68 @@ prevent. `split` refusing a layered document is the precedent, and its wording i
 **Put ADR 0022's read-back to work on the content.** Rejected as insufficient rather than wrong.
 `OutputReader`'s entire witness surface is a page count and a `/Rotate` vector; neither can see
 content. §6 adds a predicate rather than stretching a witness.
+
+
+## Amendment, 2026-09-21 — the channel the spike missed: inline-image extent
+
+**This record's §3 says it has "no 'not applicable' rows — a channel with no bucket is how the
+spike's own bar caught two omissions". It had a third, and the bar did not catch it because the
+channel was never enumerated.** Spike 0006 measured twenty-three places a page's text can
+survive. An inline image's *extent* is not one of them, and it is a place text can hide from the
+tokeniser entirely.
+
+### What was measured
+
+`BI … ID <data> EI` puts uninterpreted bytes in a content stream. Where the data ends is the
+question, and burrow's tokeniser answered it the way every PDF reader falls back on: the first
+`EI` standing alone, preceded by white space and followed by white space or a delimiter. On this
+page that is the wrong `EI`:
+
+```text
+q BI /W 1 /H 1 /BPC 8 /CS /G ID AEI
+BT /F1 24 Tf 1 0 0 1 72 700 Tm (BURROW-SECRET) Tj ET
+ EI Q
+```
+
+The dictionary declares **one** byte of data. The image therefore ends at the `EI` immediately
+after `A` — which is preceded by `A` rather than by white space, so the scan ran past it, past
+the text object, to the trailing ` EI`. **PDFium draws `BURROW-SECRET` from that page**;
+`pdfsyntax::operations` reported `q`, `BI`, `ID`, `Q`, with no text operator and no string
+operand anywhere in it.
+
+PDFium is the renderer burrow ships and the one §6's read-back reads through, so this is a
+measurement about burrow rather than about PDF readers in general. Other readers on the
+development machine were deliberately not used: ADR 0003 is permissive-only, and a GPL tool cited
+in this record's evidence is the precedent for the next one.
+
+An `ID` with no `BI` at all is the same shape with no dictionary to consult.
+
+### The decision
+
+Not "handle", because there is nothing to rewrite — the leak is that the operation cannot *see*
+the text, and a redactor that cannot see it reports the page clean, which §6 forbids in the
+strongest terms it has.
+
+**An inline image whose extent cannot be derived from its own dictionary is refused.** The extent
+comes from `/L` (`/Length`), or is computed from `/W`, `/H`, `/BPC` and `/CS`, and an `EI` is
+required exactly there; where neither is possible the stream is refused rather than scanned for.
+The underivable cases are a `/F` filter with no `/L`, a `/CS` naming a colour space from the
+page's `/Resources`, a missing `/W` or `/H`, a `/BPC` outside the five the specification allows,
+and a dictionary that will not lex.
+
+### What it costs, stated rather than discovered
+
+The refusal is in the tokeniser, so it reaches **every** caller of it, `split`'s resource scan
+included — a shipped operation now refuses a document it would previously have processed. No
+committed fixture is affected; the corpus's one inline image declares `/L 135`. That is evidence
+about the corpus as much as about the world, and it is recorded that way.
+
+[#142](https://github.com/TensorGreed/burrow/issues/142) is the work that would narrow the
+refusal again, by deriving extents currently out of reach. It is fidelity work: the leak is
+closed, and what is left is how many documents pay for closing it.
+
+### Why this is an amendment and not a correction to §3
+
+Nothing §3 decided is reversed. A channel it never had is added to it, with its bucket, which is
+what §3's own rule about empty buckets demands. The three conditions for revisiting are
+unchanged.

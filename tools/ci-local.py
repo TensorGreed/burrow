@@ -311,6 +311,12 @@ JOBS: list[dict] = [
                 "tools/test-check-known-crashes.sh",
                 "python3 tools/check-release-notes.py --probe",
                 "tools/test-check-release-notes.sh",
+                # #128. It was an inline `run:` block in ci.yml, which this file has no
+                # pattern for -- so parity reported it covered and a local sweep passed over
+                # two fuzz targets that had reached ci.yml and never reached the nightly
+                # matrix. A gate in a script is a gate this table can track.
+                "tools/check-fuzz-target-registration.sh",
+                "tools/test-check-fuzz-target-registration.sh",
             ]
         ),
         "covers": [
@@ -340,6 +346,8 @@ JOBS: list[dict] = [
             "tools/test-check-known-crashes.sh",
             "tools/check-release-notes.py",
             "tools/test-check-release-notes.sh",
+            "tools/check-fuzz-target-registration.sh",
+            "tools/test-check-fuzz-target-registration.sh",
         ],
     },
     {
@@ -355,6 +363,7 @@ JOBS: list[dict] = [
             'export RUSTFLAGS="$RUSTFLAGS -L native=$PWD/../engines/vendor/native-$(uname -m)/lib/fuzz" && '
             "export ASAN_OPTIONS=detect_leaks=0 && "
             "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
+            "pdfsyntax_operations pdfsyntax_contents "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -372,6 +381,8 @@ JOBS: list[dict] = [
             "fuzz:prescan",
             "fuzz:pdfsyntax_names",
             "fuzz:pdfsyntax_dict_keys",
+            "fuzz:pdfsyntax_operations",
+            "fuzz:pdfsyntax_contents",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

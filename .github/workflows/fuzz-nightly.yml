@@ -74,6 +74,8 @@ jobs:
           - reorder
           - pdfsyntax_names
           - pdfsyntax_dict_keys
+          - pdfsyntax_operations
+          - pdfsyntax_contents
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Same pinned action as every other job (its `stable` branch); the `toolchain`
@@ -152,7 +154,7 @@ jobs:
           # that drives qpdf names `burrow_engines::qpdf`. So ask the file. Verified to
           # reproduce the old list exactly, plus compress: qpdf_check, merge, split, rotate,
           # reorder, compress instrumented; document_open, prescan, pdfsyntax_names,
-          # pdfsyntax_dict_keys not.
+          # pdfsyntax_dict_keys, pdfsyntax_operations, pdfsyntax_contents not.
           #
           # ASan's malloc interceptors work either way -- the plain build still caught #62 --
           # so the cost of getting this wrong is silent and is coverage, which is the only
