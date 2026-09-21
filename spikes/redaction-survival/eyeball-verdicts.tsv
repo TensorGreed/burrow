@@ -1,0 +1,65 @@
+# Would a PERSON looking at the output page read the secret?
+#
+# Filled by looking at `results/pages/*.ppm` through `ppm2png.py --sheet`, not computed. The
+# harness REQUIRES a row for every channel in both states and refuses to run without one, so a
+# channel added later cannot quietly inherit a blank.
+#
+# WHY THIS FILE EXISTS RATHER THAN A THRESHOLD. I4 measures ink in the region, which answers
+# "is anything there", not "is the secret there". Measured, on this very run: channel 19 draws
+# the secret and then a black rectangle over it, so I4 reports ink 1.0000 and the page shows a
+# black bar with nothing readable in it. A threshold would have called that "visible" and the
+# recommendation would have been built on it. The number is still reported next to this column,
+# because the disagreement between them IS the finding about what a render can witness.
+#
+# `viewer` means: visible in a conforming viewer but NOT in burrow's own render, which passes
+# flags = 0 and therefore does not draw annotation appearance streams. Recorded separately
+# rather than folded into yes or no, because which one it is decides whether burrow could ever
+# show a person what it is about to leave behind.
+#
+# channel	state	verdict	what is on the page
+1	roundtrip	yes	BURROW-SECRET-01 in Helvetica
+1	redacted	no	blank above the keep line
+2	roundtrip	yes	BURROW-SECRET-02, kerned
+2	redacted	no	blank
+3	roundtrip	yes	BURROW-SECRET-03, glyph by glyph, spacing slightly uneven
+3	redacted	no	blank
+4	roundtrip	yes	BURROW-SECRET-04 in the generated block face
+4	redacted	no	blank
+5	roundtrip	yes	BURROW-SECRET-05 in the generated block face
+5	redacted	no	blank
+6	roundtrip	yes	BURROW-SECRET-06 in the generated block face
+6	redacted	no	blank
+7	roundtrip	yes	BURROW-SECRET-07 in Helvetica, drawn by the form
+7	redacted	yes	UNCHANGED -- the form is drawn exactly as before
+8	roundtrip	yes	BURROW-SECRET-08 through the Type 3 glyph
+8	redacted	no	blank
+9	roundtrip	yes	BURROW-SECRET-09 in the block face
+9	redacted	no	blank
+10	roundtrip	yes	BURROW-SECRET-10 in the block face
+10	redacted	no	blank
+11	roundtrip	viewer	MEASURED: ink 0.0693 with FPDF_ANNOT and 0.0000 without; the FreeText appearance is fully legible in the annotation-aware render
+11	redacted	viewer	UNCHANGED -- ink 0.0693 with FPDF_ANNOT, 0.0000 in burrow's own configuration
+12	roundtrip	viewer	ASSERTED NOT MEASURED: the /AP /N is there and viewers draw it, but PDFium does not draw a WIDGET even with FPDF_ANNOT -- it needs a form-fill environment this harness does not build
+12	redacted	viewer	UNCHANGED, and still not measured here for the same reason
+13	roundtrip	no	the layer is OFF, so nothing is drawn in either state
+13	redacted	no	nothing drawn
+14	roundtrip	yes	BURROW-SECRET-14 on the page; the /Thumb is not drawn on the page
+14	redacted	viewer	the PAGE is blank; the surviving /Thumb reads BURROW-CARRIER-14 (204x14, written by the harness to results/pages/14-redacted-thumb.pgm). This line said SECRET-14 until review checked it against make-fixtures.py, which rasters carrier(14) -- the human verdict file was wrong about the one thing it exists to record
+15	roundtrip	yes	BURROW-SECRET-15 in Helvetica
+15	redacted	no	blank
+16	roundtrip	yes	BURROW-SECRET-16 in Helvetica
+16	redacted	no	blank
+17	roundtrip	no	the update already replaced the content; only the keep line is drawn
+17	redacted	no	blank
+18	roundtrip	yes	BURROW-SECRET-18 as filled rectangles
+18	redacted	yes	UNCHANGED -- fully legible, no text object was ever there to cut
+19	roundtrip	no	a solid black bar; the text under it is not readable
+19	redacted	no	the same black bar, and the text under it is now actually gone
+20	roundtrip	yes	BURROW-SECRET-20 as JPEG pixels
+20	redacted	yes	UNCHANGED -- fully legible
+21	roundtrip	yes	BURROW-SECRET-21 in the block face, while extraction reads the decoy
+21	redacted	no	blank
+22	roundtrip	yes	BURROW-SECRET-22 in Helvetica
+22	redacted	no	blank
+24	roundtrip	yes	BURROW-SECRET-24 in Helvetica; the page /Metadata and /PieceInfo are not drawn
+24	redacted	no	blank page -- and the page-level /Metadata and /PieceInfo are untouched

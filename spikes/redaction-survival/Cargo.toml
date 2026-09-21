@@ -1,0 +1,32 @@
+# Spike 0006. Its OWN workspace, deliberately.
+#
+# `spikes/` is not in the root `Cargo.toml`'s `exclude` -- only `fuzz` is -- so a crate here
+# without this table is a crate cargo believes belongs to a workspace that does not list it.
+# The root manifest is not touched; a spike does not change the production build graph.
+[workspace]
+
+[package]
+name = "redaction-survival"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# The REAL crates, for finding 3 only. The spike measures what the shipped pruning and the
+# shipped verification already do with these fixtures; reasoning about it from the ADRs would
+# be exactly the "argued rather than measured" this spike is trying not to do. Nothing is
+# written back into these crates -- they are read-only dependencies of a throwaway binary.
+burrow-types = { path = "../../core/burrow-types" }
+burrow-engines = { path = "../../core/burrow-engines", features = ["native-engines"] }
+burrow-ops = { path = "../../core/burrow-ops" }
+
+[profile.release]
+debug = true
+
+[[bin]]
+name = "redaction-survival"
+path = "src/main.rs"
+
+[[bin]]
+name = "what-split-already-does"
+path = "src/split_probe.rs"
