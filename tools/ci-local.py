@@ -368,6 +368,7 @@ JOBS: list[dict] = [
             "export ASAN_OPTIONS=detect_leaks=0 && "
             "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
             "pdfsyntax_operations pdfsyntax_contents "
+            "pdfsyntax_geometry pdfsyntax_cmap_wmode "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -387,6 +388,8 @@ JOBS: list[dict] = [
             "fuzz:pdfsyntax_dict_keys",
             "fuzz:pdfsyntax_operations",
             "fuzz:pdfsyntax_contents",
+            "fuzz:pdfsyntax_geometry",
+            "fuzz:pdfsyntax_cmap_wmode",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

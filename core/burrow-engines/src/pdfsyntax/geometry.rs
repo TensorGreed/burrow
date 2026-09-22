@@ -40,6 +40,21 @@
 //! inherited through `usecmap` — and [`CMap::Embedded`] does not carry a name at all, so it
 //! cannot be keyed on by accident.
 //!
+//! # What this walk does not reach
+//!
+//! "Every early exit is a refusal" is a claim about the operators the walk **models**. It was
+//! not, until review, a claim about the ones it does not -- and the gap was measured: a page
+//! whose only text lived in a tiling pattern walked to `Ok(0)` while PDFium inked 740 pixels of
+//! it, and `FPDFText_*` reported zero characters, so ADR 0029 §6's read-back was blind to it
+//! too. An `Ok` over text nothing observed is the exact shape §8 forbids.
+//!
+//! So a pattern fill is now refused ([`Refusal::PatternMayDrawText`]) rather than walked past.
+//! The residue, stated rather than implied: an ExtGState naming a `/Font` sets the size and
+//! face without a `Tf`, and this walk does not resolve `gs`. Refusing every `gs` would refuse
+//! most real documents, and resolving it needs a seam [`Resources`] does not have yet. That is
+//! #152, and until it is closed the walk's completeness claim is "every operator it models,
+//! plus patterns refused".
+//!
 //! # And a vertical document need not say any of that
 //!
 //! Measured: asked for a vertically-written Japanese paragraph, LibreOffice emitted a **subset
@@ -63,10 +78,10 @@ use super::ops::{Operand, Operation};
 /// habit — the next test still has a shorter, looser spelling available.
 ///
 /// So the rule name is a value rather than a string. Every refusal in this module is built
-/// through [`Refusal::refuse`], which stamps the rule into the message; every refusal test
-/// names the variant it expects. The loose assertion is now the *longer* one to write, and
-/// `refusals_are_the_only_way_to_refuse` fails the build if a bare `Error::Malformed` or
-/// `Error::Unsupported` reappears here.
+/// through `Refusal::refuse` (private, so no intra-doc link), which stamps the rule into the
+/// message; every refusal test names the variant it expects. The loose assertion is now the
+/// *longer* one to write, and `refusals_are_the_only_way_to_refuse_in_this_module` fails if a
+/// bare `Error::Malformed` or `Error::Unsupported` reappears here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Refusal {
@@ -94,6 +109,18 @@ pub enum Refusal {
     NoFontSelected,
     /// A font claiming zero bytes per code.
     ZeroBytesPerCode,
+    /// An operator whose numeric operand is missing or is not a number.
+    NumericOperandNotANumber,
+    /// An operator given a number of operands the specification does not define for it.
+    OperandCountMismatch,
+    /// A coordinate or matrix entry that is not finite.
+    NonFiniteGeometry,
+    /// More glyphs on one page than burrow will place.
+    TooManyGlyphs,
+    /// More Form XObject draws in one walk than burrow will follow.
+    TooManyFormDraws,
+    /// A pattern fill, which can draw text burrow's walk does not reach.
+    PatternMayDrawText,
     /// A Form XObject that draws itself, directly or through another form.
     FormCycle,
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
@@ -119,6 +146,12 @@ impl Refusal {
         Self::ShowOperandNotAString,
         Self::NoFontSelected,
         Self::ZeroBytesPerCode,
+        Self::NumericOperandNotANumber,
+        Self::OperandCountMismatch,
+        Self::NonFiniteGeometry,
+        Self::TooManyGlyphs,
+        Self::TooManyFormDraws,
+        Self::PatternMayDrawText,
         Self::FormCycle,
         Self::FormDepth,
         Self::VerticalWriting,
@@ -141,6 +174,12 @@ impl Refusal {
             Self::ShowOperandNotAString => "show-operand-not-a-string",
             Self::NoFontSelected => "no-font-selected",
             Self::ZeroBytesPerCode => "zero-bytes-per-code",
+            Self::NumericOperandNotANumber => "numeric-operand-not-a-number",
+            Self::OperandCountMismatch => "operand-count-mismatch",
+            Self::NonFiniteGeometry => "non-finite-geometry",
+            Self::TooManyGlyphs => "too-many-glyphs",
+            Self::TooManyFormDraws => "too-many-form-draws",
+            Self::PatternMayDrawText => "pattern-may-draw-text",
             Self::FormCycle => "form-cycle",
             Self::FormDepth => "form-depth",
             Self::VerticalWriting => "vertical-writing",
@@ -152,15 +191,22 @@ impl Refusal {
     const fn is_unsupported(self) -> bool {
         matches!(
             self,
-            Self::FormCycle | Self::FormDepth | Self::VerticalWriting
+            Self::FormCycle
+                | Self::FormDepth
+                | Self::VerticalWriting
+                | Self::TooManyGlyphs
+                | Self::TooManyFormDraws
+                | Self::PatternMayDrawText
         )
     }
 
     /// Build the refusal, with the rule name stamped into the message.
     fn refuse<T>(self, detail: &str) -> Result<T> {
-        // PROBE-EXEMPT BEGIN -- `refuse` and `caught` are this module's entire `Error`
-        // vocabulary: one builds the two variants, the other matches on them, and a probe that
-        // could tell a construction from a pattern would be a parser.
+        // PROBE-EXEMPT BEGIN -- `refuse` and `caught` are this module's entire *refusal*
+        // vocabulary: one builds the two variants a refusal uses, the other matches on them,
+        // and a probe that could tell a construction from a pattern would be a parser.
+        // `Error::Internal` in `show` is deliberately outside this: it reports a bug in this
+        // code rather than a judgement about a file, so it is not a rule anything asserts on.
         // `refusals_are_the_only_way_to_refuse_in_this_module` skips exactly this window and
         // checks every other line in the file, production and tests alike.
         let message = format!("pdf geometry [{}]: {detail}", self.rule());
@@ -183,7 +229,11 @@ impl Refusal {
             Error::Unsupported(message) if self.is_unsupported() => message,
             _ => return false,
         };
-        message.contains(&format!("[{}]", self.rule()))
+        // A PREFIX, NOT A SEARCH. `contains` accepted an error this module never built --
+        // `Error::Unsupported("qpdf: /Annot [form-cycle] in the document")` matched -- and
+        // `caught` is the oracle every refusal test here rests on, so it must not be
+        // satisfiable by a tag that happens to appear anywhere in a message.
+        message.starts_with(&format!("pdf geometry [{}]: ", self.rule()))
         // PROBE-EXEMPT END
     }
 }
@@ -475,7 +525,8 @@ pub fn check_writing_mode(mode: WritingMode) -> Result<()> {
         WritingMode::Horizontal => Ok(()),
         // KEYED ON `WMode`, NOT ON THE NAME. See `WritingMode::from_wmode`.
         WritingMode::Vertical => Refusal::VerticalWriting.refuse(
-            "the font's CMap declares 'WMode 1', and burrow places vertical runs nowhere              rather than somewhere wrong",
+            "the font's CMap declares 'WMode 1', and burrow places vertical runs \
+             nowhere rather than somewhere wrong",
         ),
     }
 }
@@ -513,6 +564,32 @@ pub enum CMap<'a> {
         /// The CMap program itself, between `begincmap` and `endcmap`.
         program: &'a [u8],
     },
+}
+
+impl Matrix {
+    /// Whether every entry is finite.
+    ///
+    /// Checked after each composition, not only on the operands: two finite `cm` of `1e300`
+    /// compose to an infinity, and `inf * 0` in [`Matrix::then`] is a NaN. `Rect::transformed`
+    /// folds NaN corners with `min`/`max`, which leaves its own `+inf`/`-inf` initialisers in
+    /// place and returns an inverted rectangle -- one that intersects nothing, so the glyph is
+    /// one a redaction skips.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
+        [self.a, self.b, self.c, self.d, self.e, self.f]
+            .iter()
+            .all(|value| value.is_finite())
+    }
+}
+
+impl Rect {
+    /// Whether every edge is finite.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
+        [self.left, self.bottom, self.right, self.top]
+            .iter()
+            .all(|value| value.is_finite())
+    }
 }
 
 impl WritingMode {
@@ -612,7 +689,19 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
                     return Refusal::UndeterminedWritingMode
                         .refuse("a 'WMode' whose value is not an integer");
                 };
-                declared = Some(WritingMode::from_wmode(value)?);
+                let mode = WritingMode::from_wmode(value)?;
+                // A SECOND, DIFFERENT `WMode` IS A DISAGREEMENT, and it is refused for the
+                // same reason the dictionary-versus-program one is. PostScript `def` semantics
+                // arguably make the last one win, and believing that is how nine appended
+                // bytes -- `/WMode 0 def` after a `/WMode 1 def` -- walked a vertical CMap as
+                // horizontal. The module's rule is that uncertainty removes more, not less.
+                if let Some(first) = declared
+                    && first != mode
+                {
+                    return Refusal::UndeterminedWritingMode
+                        .refuse("a CMap program declaring 'WMode' twice, with different values");
+                }
+                declared = Some(mode);
                 continue;
             }
             // A `WMode` FOLLOWED BY SOMETHING THAT IS NOT A NUMBER is a writing mode the
@@ -637,7 +726,16 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
                     return Refusal::UndeterminedWritingMode
                         .refuse("a 'usecmap' with no CMap named before it");
                 };
-                inherited = Some(predefined_writing_mode(&name)?);
+                let mode = predefined_writing_mode(&name)?;
+                // THE SAME CONTRADICTION AS THE DICTIONARY-VERSUS-PROGRAM ONE, and it used to
+                // be resolved silently toward Horizontal, which is the direction that misses
+                // text. PDF 32000-1 §9.7.5.3 requires a `usecmap`'d CMap to share the writing
+                // mode, so a disagreement is exactly as undecidable here as it is there.
+                if inherited.is_some_and(|first| first != mode) {
+                    return Refusal::UndeterminedWritingMode
+                        .refuse("two 'usecmap' references with different writing modes");
+                }
+                inherited = Some(mode);
             }
             _ => previous_name = None,
         }
@@ -646,7 +744,12 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
         return Refusal::UndeterminedWritingMode
             .refuse("a 'WMode' at the end of a CMap program, with no value after it");
     }
-    Ok(declared.or(inherited))
+    match (declared, inherited) {
+        (Some(a), Some(b)) if a != b => Refusal::UndeterminedWritingMode
+            .refuse("a CMap whose own 'WMode' contradicts the one it inherits by 'usecmap'"),
+        (Some(mode), _) | (None, Some(mode)) => Ok(Some(mode)),
+        (None, None) => Ok(None),
+    }
 }
 
 // ---- the content-stream walk ---------------------------------------------------------------
@@ -658,6 +761,59 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 /// its own number: deeper than any producer nests (a form inside a form inside a stamp is three)
 /// and shallow enough that the work is bounded well before the stack is.
 pub const MAX_FORM_DEPTH: usize = 16;
+
+/// How many Form XObject draws one walk will follow in total.
+///
+/// # Depth is not the bound it looks like
+///
+/// [`MAX_FORM_DEPTH`] stops recursion and the open-form set stops cycles, and between them they
+/// look like a bound. They are not: a form may draw the *next* form `B` times without ever
+/// recursing into itself, so the work is `B^16`. Measured in release, from **405 bytes** of
+/// content spread over sixteen form objects -- `B = 3` produced 14,348,907 glyphs in 9.7 s at
+/// 1,644 MiB, and `B = 4` extrapolates to a billion glyphs and something like 128 GB.
+///
+/// So the total number of draws is counted across the whole walk, not just the open stack.
+pub const MAX_FORM_DRAWS: usize = 4096;
+
+/// How many glyphs one walk will place.
+///
+/// A page has a knowable maximum. This is far above any real one and far below where `Vec`
+/// growth is the problem: `size_of::<Glyph>()` is 120 bytes, so this bounds `out` at ~24 MiB.
+pub const MAX_GLYPHS: usize = 200_000;
+
+/// How many operands each operator this walk models takes, or `None` for one it ignores.
+///
+/// # Why a count mismatch is refused rather than trimmed
+///
+/// `ops::operations` gathers **every** pending operand into the operation. A renderer keeps a
+/// small parameter buffer and takes the **last** N. Reading the **first** N, as this walk did,
+/// is a leak with a six-byte exploit: measured, `0 0 0 0 0 0 1 0 0 1 100 700 Tm (SECRET) Tj`
+/// puts the glyph at `(100, 700)` in PDFium and at `(0, 0)` here, so a region drawn over the
+/// visible word met no glyph box at all and the redaction removed nothing.
+///
+/// Taking the last N instead would match PDFium. It is not what this does, because matching one
+/// renderer's recovery from a malformed operand stack is a guess about every other renderer's,
+/// and ADR 0029 licenses refusing where guessing would place glyphs. A padded operand run is
+/// malformed; the walk says so.
+const fn arity(operator: &[u8]) -> Option<usize> {
+    Some(match operator {
+        b"q" | b"Q" | b"BT" | b"ET" | b"T*" => 0,
+        b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" | b"Do" | b"Tj" | b"TJ" | b"'" => 1,
+        b"Tf" | b"Td" | b"TD" => 2,
+        b"\"" => 3,
+        b"cm" | b"Tm" => 6,
+        _ => return None,
+    })
+}
+
+/// What one walk has spent, so a page cannot buy unbounded work with a few hundred bytes.
+#[derive(Debug, Default)]
+struct Budget {
+    /// The forms currently open, by object identity -- the cycle check.
+    open_forms: Vec<u64>,
+    /// Every `Do` on a form followed so far, cycles and siblings alike.
+    forms_drawn: usize,
+}
 
 /// A Form XObject, resolved.
 #[derive(Debug, Clone)]
@@ -753,7 +909,7 @@ struct GraphicsState {
 /// - [`Error::Unsupported`] — a form cycle, a form nested too deep, or a vertical writing mode.
 pub fn glyphs_in(content: &[u8], resources: &dyn Resources) -> Result<Vec<Glyph>> {
     let mut out = Vec::new();
-    let mut open_forms = Vec::new();
+    let mut budget = Budget::default();
     walk(
         content,
         resources,
@@ -762,10 +918,33 @@ pub fn glyphs_in(content: &[u8], resources: &dyn Resources) -> Result<Vec<Glyph>
             text: TextState::default(),
             font: None,
         },
-        &mut open_forms,
+        &mut budget,
         &mut out,
     )?;
     Ok(out)
+}
+
+/// One numeric operand, refused rather than defaulted.
+///
+/// # No file bytes in the message
+///
+/// An earlier draft named the operator with `String::from_utf8_lossy`, which is up to 255
+/// attacker-chosen bytes in an error string. `core/CLAUDE.md`: errors describe the failure, not
+/// the input. The position is a `usize` this code chose; nothing here comes from the file.
+fn number_operand(operands: &[Operand], at: usize) -> Result<f64> {
+    let Some(value) = operands.get(at).and_then(Operand::as_number) else {
+        return Refusal::NumericOperandNotANumber
+            .refuse("an operator whose numeric operand is missing or is not a number");
+    };
+    // NON-FINITE FAILS CLOSED. Two `cm` of 1e300 compose to an infinity, `inf * 0` in
+    // `Matrix::then` is a NaN, and `Rect::transformed` folds NaN corners with `min`/`max` --
+    // which leaves its `+inf/-inf` initialisers untouched and returns an inverted rectangle
+    // that intersects nothing. A box that intersects nothing is a glyph a redaction skips.
+    if !value.is_finite() {
+        return Refusal::NonFiniteGeometry
+            .refuse("an operand that is not a finite number, so no box derived from it is one");
+    }
+    Ok(value)
 }
 
 /// One content stream, at one nesting level.
@@ -777,7 +956,7 @@ fn walk(
     // the size but not the font refused every string it drew. Found by the form-inheritance
     // test, which is the only place the two are set in different streams.
     initial: GraphicsState,
-    open_forms: &mut Vec<u64>,
+    budget: &mut Budget,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
     let operations = super::ops::operations(content)?;
@@ -789,14 +968,29 @@ fn walk(
     let mut position: Option<TextPosition> = None;
 
     for operation in &operations {
-        let number = |at: usize| -> f64 {
-            operation
-                .operands
-                .get(at)
-                .and_then(Operand::as_number)
-                .unwrap_or(0.0)
-        };
+        // FALLIBLE, and the reason is `Tz`. An operand that is missing or is not a number used
+        // to become `0.0`, so `/Bogus Tz` set the horizontal scale to zero and collapsed every
+        // glyph box on the page to a point -- a box that intersects almost nothing, so a
+        // redaction over it removes almost nothing. The operand-shape rules already refuse a
+        // `Do` or a `TJ` of the wrong shape; a number is no different.
+        let number = |at: usize| number_operand(&operation.operands, at);
+        // THE COUNT, BEFORE ANYTHING READS AN OPERAND. See `arity`.
+        if let Some(expected) = arity(&operation.operator)
+            && operation.operands.len() != expected
+        {
+            return Refusal::OperandCountMismatch
+                .refuse("an operator given more or fewer operands than it takes");
+        }
         match operation.operator.as_slice() {
+            // A PATTERN CAN DRAW TEXT THIS WALK DOES NOT REACH. Measured: a page whose only
+            // text lives in a tiling pattern walks to `Ok(0)` while PDFium inks 740 pixels of
+            // it -- and `FPDFText_*` reports zero characters too, so the §6 read-back is blind
+            // to it as well. An `Ok` over text nothing observed is the one outcome this module
+            // exists to prevent, so the pattern is refused until it is walked.
+            b"scn" | b"SCN" if matches!(operation.operands.last(), Some(Operand::Name { .. })) => {
+                return Refusal::PatternMayDrawText
+                    .refuse("a pattern fill, whose own content stream burrow does not yet walk");
+            }
             b"q" => stack.push(state.clone()),
             b"Q" => {
                 // A `Q` WITH NOTHING SAVED IS A REFUSAL. Tolerating it means guessing what the
@@ -813,14 +1007,18 @@ fn walk(
             }
             b"cm" => {
                 let m = Matrix {
-                    a: number(0),
-                    b: number(1),
-                    c: number(2),
-                    d: number(3),
-                    e: number(4),
-                    f: number(5),
+                    a: number(0)?,
+                    b: number(1)?,
+                    c: number(2)?,
+                    d: number(3)?,
+                    e: number(4)?,
+                    f: number(5)?,
                 };
                 state.ctm = m.then(&state.ctm);
+                if !state.ctm.is_finite() {
+                    return Refusal::NonFiniteGeometry
+                        .refuse("a transform that composes to a value that is not finite");
+                }
             }
             b"BT" => {
                 if position.is_some() {
@@ -839,13 +1037,13 @@ fn walk(
                     return Refusal::UnmatchedEndText.refuse("an 'ET' with no 'BT'");
                 }
             }
-            b"Tc" => state.text.char_spacing = number(0),
-            b"Tw" => state.text.word_spacing = number(0),
-            b"Tz" => state.text.horizontal_scale = number(0),
-            b"TL" => state.text.leading = number(0),
-            b"Ts" => state.text.rise = number(0),
+            b"Tc" => state.text.char_spacing = number(0)?,
+            b"Tw" => state.text.word_spacing = number(0)?,
+            b"Tz" => state.text.horizontal_scale = number(0)?,
+            b"TL" => state.text.leading = number(0)?,
+            b"Ts" => state.text.rise = number(0)?,
             b"Tf" => {
-                state.text.font_size = number(1);
+                state.text.font_size = number(1)?;
                 state.font = match operation.operands.first() {
                     Some(Operand::Name { value, .. }) => Some(value.clone()),
                     _ => None,
@@ -856,7 +1054,7 @@ fn walk(
                     return Refusal::FormOperandNotAName
                         .refuse("a 'Do' whose operand is not a name");
                 };
-                draw_form(value, resources, &state, open_forms, out)?;
+                draw_form(value, resources, &state, budget, out)?;
             }
             // The text-placing and text-showing operators, which need a text object.
             b"Tm" | b"Td" | b"TD" | b"T*" | b"Tj" | b"TJ" | b"'" | b"\"" => {
@@ -891,7 +1089,7 @@ fn draw_form(
     name: &[u8],
     resources: &dyn Resources,
     state: &GraphicsState,
-    open_forms: &mut Vec<u64>,
+    budget: &mut Budget,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
     let Some(form) = resources.form(name)? else {
@@ -902,15 +1100,21 @@ fn draw_form(
     // A CYCLE IS A REFUSAL, not a stop. A form that draws itself has no finite glyph list, and
     // returning the glyphs found before the loop was noticed would report a page as containing
     // less than it does. Keyed on object identity, not on the name -- see `Form::id`.
-    if open_forms.contains(&form.id) {
+    // THE TOTAL, not the depth. See `MAX_FORM_DRAWS`.
+    budget.forms_drawn += 1;
+    if budget.forms_drawn > MAX_FORM_DRAWS {
+        return Refusal::TooManyFormDraws
+            .refuse("more Form XObject draws on one page than burrow will follow");
+    }
+    if budget.open_forms.contains(&form.id) {
         return Refusal::FormCycle
             .refuse("a Form XObject draws itself, directly or through another form");
     }
-    if open_forms.len() >= MAX_FORM_DEPTH {
+    if budget.open_forms.len() >= MAX_FORM_DEPTH {
         return Refusal::FormDepth.refuse("Form XObjects nested deeper than burrow will walk");
     }
 
-    open_forms.push(form.id);
+    budget.open_forms.push(form.id);
     // THE FORM'S MATRIX COMPOSES WITH THE CTM AT THE `Do`, in that order. The other order puts
     // the form's own transform outside the page's, which is plausible and wrong.
     let result = walk(
@@ -920,10 +1124,10 @@ fn draw_form(
             ctm: form.matrix.then(&state.ctm),
             ..state.clone()
         },
-        open_forms,
+        budget,
         out,
     );
-    open_forms.pop();
+    budget.open_forms.pop();
     result
 }
 
@@ -936,33 +1140,28 @@ fn text_operator(
     resources: &dyn Resources,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
-    let number = |at: usize| -> f64 {
-        operation
-            .operands
-            .get(at)
-            .and_then(Operand::as_number)
-            .unwrap_or(0.0)
-    };
+    // Fallible for the same reason as the one in `walk`: see the comment there.
+    let number = |at: usize| number_operand(&operation.operands, at);
     match operation.operator.as_slice() {
         b"Tm" => {
             let m = Matrix {
-                a: number(0),
-                b: number(1),
-                c: number(2),
-                d: number(3),
-                e: number(4),
-                f: number(5),
+                a: number(0)?,
+                b: number(1)?,
+                c: number(2)?,
+                d: number(3)?,
+                e: number(4)?,
+                f: number(5)?,
             };
             place.text = m;
             place.line = m;
         }
-        b"Td" => place.next_line_at(number(0), number(1)),
+        b"Td" => place.next_line_at(number(0)?, number(1)?),
         b"TD" => {
             // `TD` SETS THE LEADING TOO, to the NEGATIVE of its second operand. A walk that
             // treated it as `Td` would leave `TL` at whatever it was, so every later `T*` on the
             // page moves by the wrong amount.
-            state.text.leading = -number(1);
-            place.next_line_at(number(0), number(1));
+            state.text.leading = -number(1)?;
+            place.next_line_at(number(0)?, number(1)?);
         }
         b"T*" => place.next_line_at(0.0, -state.text.leading),
         b"'" => {
@@ -978,8 +1177,8 @@ fn text_operator(
         }
         b"\"" => {
             // `aw ac string "` sets word spacing, then character spacing, then does `'`.
-            state.text.word_spacing = number(0);
-            state.text.char_spacing = number(1);
+            state.text.word_spacing = number(0)?;
+            state.text.char_spacing = number(1)?;
             place.next_line_at(0.0, -state.text.leading);
             show(
                 content,
@@ -1052,6 +1251,7 @@ fn show(
     // that nothing `names_in_content` answers depends on what a string SAYS -- so the value
     // comes from slicing and decoding, which is exactly what that span exists for.
     let raw = content.get(span.0..span.1).ok_or_else(|| {
+        // probe-allowed: reports a bug in this code, not a judgement about a file
         Error::Internal("pdf geometry: a string's span left its content stream".to_owned())
     })?;
     let bytes = super::strings::decode_string(raw)?;
@@ -1067,6 +1267,22 @@ fn show(
         }
         let metrics = resources.glyph(&font, code)?;
         check_writing_mode(metrics.writing_mode)?;
+        // THE METRICS COME OUT OF THE FILE TOO. Checking the content stream's operands and the
+        // composed CTM left this open: a `/W` entry of `f64::MAX` against a `/FontMatrix` of
+        // 1e297 multiplies to an infinity, and the box built from it was
+        // `left: -inf, right: inf` -- which contains everything, and whose union with anything
+        // is still infinite. Found by `pdfsyntax_geometry` on its second run, in seconds.
+        //
+        // A box that spans the page is not the leak direction the way an inverted one is, but
+        // it makes every region test true, which is a redaction that removes the whole page and
+        // reports success. Neither answer is one to guess at.
+        if !metrics.width.is_finite()
+            || !metrics.font_matrix.is_finite()
+            || metrics.font_bbox.is_some_and(|bbox| !bbox.is_finite())
+        {
+            return Refusal::NonFiniteGeometry
+                .refuse("a font declaring a width, matrix or bounding box that is not finite");
+        }
 
         let scale = state.text.horizontal_scale / 100.0;
         // GLYPH SPACE -> TEXT SPACE -> PAGE SPACE, composed once per glyph. `Tz` scales x only
@@ -1080,16 +1296,41 @@ fn show(
             .then(&Matrix::translate(0.0, state.text.rise))
             .then(&place.text)
             .then(&state.ctm);
+        if !to_page.is_finite() {
+            return Refusal::NonFiniteGeometry
+                .refuse("a glyph transform that composes to a value that is not finite");
+        }
         let origin = place.text.then(&state.ctm).apply(0.0, state.text.rise);
 
         let width = metrics.width * metrics.font_matrix.a;
-        out.push(Glyph {
+        if out.len() >= MAX_GLYPHS {
+            return Refusal::TooManyGlyphs.refuse("more glyphs on one page than burrow will place");
+        }
+        let glyph = Glyph {
             origin,
             to_page,
             advance: width * state.text.font_size,
             font_bbox: metrics.font_bbox,
             font_size: state.text.font_size,
-        });
+        };
+
+        // THE DERIVED VALUES, checked before the glyph is accepted, because each input above
+        // can be finite while the product is not: `f64::MAX` times a `/FontMatrix` of 1e297 is
+        // an infinity, and so is a finite `/FontBBox` through a large enough transform. This is
+        // the one check that sees a value no single input predicts, and the fuzzer found it in
+        // seconds on the target's second run.
+        //
+        // The failing direction is the mirror of an inverted box: an infinite one INTERSECTS
+        // EVERYTHING, so a redaction built on it removes the whole page and reports success.
+        // A guess in either direction is wrong, so neither is made.
+        if !glyph.conservative_box().is_finite()
+            || !glyph.origin.0.is_finite()
+            || !glyph.origin.1.is_finite()
+        {
+            return Refusal::NonFiniteGeometry
+                .refuse("a glyph whose box is not finite, so no region test over it is one");
+        }
+        out.push(glyph);
 
         // THE ADVANCE, with word spacing applied ONLY to single-byte code 32. See
         // `takes_word_spacing` for what applying it to a two-byte 0x0020 costs.
@@ -1106,12 +1347,12 @@ fn show(
 
 #[cfg(test)]
 mod tests {
-    use burrow_types::Result;
+    use burrow_types::{Error, Result};
 
     use super::{
-        CMap, Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, Matrix, Rect, Refusal, Resources,
-        TextPosition, TextState, WritingMode, check_writing_mode, glyphs_in, takes_word_spacing,
-        writing_mode_of,
+        CMap, Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix, Rect, Refusal,
+        Resources, TextPosition, TextState, WritingMode, check_writing_mode, glyphs_in,
+        takes_word_spacing, writing_mode_of,
     };
 
     /// A resources table with one font of known width and whatever forms a test names.
@@ -1122,6 +1363,8 @@ mod tests {
         forms: Vec<(Vec<u8>, Form)>,
         writing_mode: WritingMode,
         bytes_per_code: u8,
+        width: f64,
+        font_matrix_scale: f64,
     }
 
     impl Fake {
@@ -1130,6 +1373,8 @@ mod tests {
                 forms: Vec::new(),
                 writing_mode: WritingMode::Horizontal,
                 bytes_per_code: 1,
+                width: 500.0,
+                font_matrix_scale: 0.001,
             }
         }
 
@@ -1157,7 +1402,7 @@ mod tests {
 
         fn glyph(&self, _name: &[u8], _code: u32) -> Result<GlyphMetrics> {
             Ok(GlyphMetrics {
-                width: 500.0,
+                width: self.width,
                 bytes_per_code: self.bytes_per_code,
                 font_bbox: Some(Rect {
                     left: 0.0,
@@ -1165,7 +1410,7 @@ mod tests {
                     right: 1000.0,
                     top: 1000.0,
                 }),
-                font_matrix: Matrix::scale(0.001, 0.001),
+                font_matrix: Matrix::scale(self.font_matrix_scale, self.font_matrix_scale),
                 writing_mode: self.writing_mode,
             })
         }
@@ -1201,8 +1446,33 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "two refusals share a rule name");
+
+        // `ALL` IS HAND-MAINTAINED, and its doc used to claim it could not drift. It could: a
+        // variant added to the enum and to `rule()` -- both of which the compiler forces -- but
+        // not to `ALL` was never raised, never tested, never checked for a name collision, and
+        // silent in every probe. So the expectation is derived from the enum's own source
+        // rather than from the list that is the thing at risk.
+        let source = include_str!("geometry.rs");
+        let body = source
+            .split_once("pub enum Refusal {")
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .expect("the enum's source brackets the variants")
+            .0;
+        let in_enum = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                line.ends_with(',')
+                    && !line.starts_with("//")
+                    && line.chars().next().is_some_and(char::is_uppercase)
+            })
+            .count();
         assert_eq!(
-            total, 16,
+            total, in_enum,
+            "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
+        );
+        assert_eq!(
+            total, 22,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -1211,7 +1481,7 @@ mod tests {
     fn a_rule_catches_its_own_refusal_and_rejects_every_other() {
         // THE PER-RULE PROBE. A `caught` that matched everything would make every refusal test
         // in this module vacuous, and a `caught` that matched nothing would make them all fail
-        // for the wrong reason. Both directions, for all 15 x 15 pairs.
+        // for the wrong reason. Both directions, for every ordered pair of rules.
         for rule in Refusal::ALL {
             let error = rule
                 .refuse::<()>("a detail")
@@ -1231,6 +1501,22 @@ mod tests {
     }
 
     #[test]
+    fn caught_anchors_on_the_message_rather_than_searching_it() {
+        // `contains` accepted an error this module never built. `caught` is the oracle every
+        // refusal test here rests on, so a tag appearing anywhere must not satisfy it.
+        // probe-allowed: the whole point of this test is an error this module did not build
+        let foreign = Error::Unsupported("qpdf: /Annot [form-cycle] in the document".to_owned());
+        assert!(
+            !Refusal::FormCycle.caught(&foreign),
+            "caught accepted a refusal this module did not build"
+        );
+        let ours = Refusal::FormCycle
+            .refuse::<()>("a detail")
+            .expect_err("refuses");
+        assert!(Refusal::FormCycle.caught(&ours));
+    }
+
+    #[test]
     fn refusals_are_the_only_way_to_refuse_in_this_module() {
         // THE STRUCTURAL HALF. Naming rules helps only while every refusal has one; a single
         // bare `Error::Malformed` here would be a refusal no test could assert on, and the next
@@ -1246,20 +1532,55 @@ mod tests {
         let (before, rest) = source.split_once(begin).expect("the exempt window opens");
         let (exempt, after) = rest.split_once(end).expect("the exempt window closes");
         assert!(
-            exempt.lines().count() <= 30,
+            exempt.lines().count() <= 40,
             "the exempt window has grown past the two functions it is for: {} lines",
             exempt.lines().count()
+        );
+        // WHAT WAS EXAMINED, as a number with an expectation beside it. Without this the probe
+        // could scan two lines and report the same silence it reports over a clean file -- and
+        // "4 of 15" reads exactly like success.
+        let mut allowlisted = 0_usize;
+        let examined = before.lines().count() + after.lines().count();
+        assert_eq!(
+            examined + exempt.lines().count(),
+            // `+ 2` because `split_once` cuts mid-line at each of the two markers, so the two
+            // boundary lines are each counted in both of the halves they straddle.
+            source.lines().count() + 2,
+            "scanned {examined} lines of {}; the split lost some",
+            source.lines().count()
         );
         for (half, label) in [(before, "before the exempt window"), (after, "after it")] {
             // COMMENTS ARE NOT CONSTRUCTION SITES. The doc on `Refusal` quotes the loose shape
             // in order to argue against it, and a probe that could not tell the two apart would
             // have to be weakened somewhere instead.
-            for line in half.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                // SPELLED IN PIECES so this probe does not match itself -- it did, on the
-                // second run, which is the same self-matching shape as `pgrep -f` in CLAUDE.md.
+            // A VISIBLE, GREPPABLE ALLOWLIST. Two lines in this file build an `Error`
+            // outside the refusal vocabulary on purpose -- the `Internal` in `show`, and the
+            // foreign error the `caught` test needs -- and each says so on its own line, where
+            // a reviewer reading the diff sees it. An allowlist matched on message text would
+            // have silently widened the day someone reworded the message.
+            // The marker sits on the line ABOVE the construction, where a Rust comment
+            // belongs, so the filter looks back one line rather than demanding it trail.
+            let marker = concat!("// probe-", "allowed:");
+            let lines: Vec<&str> = half.lines().collect();
+            allowlisted += lines.iter().filter(|l| l.contains(marker)).count();
+            for (at, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//")
+                    || at
+                        .checked_sub(1)
+                        .and_then(|prior| lines.get(prior))
+                        .is_some_and(|prior| prior.contains(marker))
+                {
+                    continue;
+                }
+                // `Error::Internal` IS ON THE LIST TOO. It is not a refusal -- it reports a
+                // bug in this code rather than a judgement about a file -- but leaving it off
+                // meant the probe could not tell the one deliberate use from a new one, and a
+                // reviewer used exactly that to swap a deleted refusal for an `Internal` with
+                // both probes green. One allowlisted site, named, and everything else refused.
                 for bare in [
                     concat!("Error::", "Malformed("),
                     concat!("Error::", "Unsupported("),
+                    concat!("Error::", "Internal("),
                 ] {
                     assert!(
                         !line.contains(bare),
@@ -1269,6 +1590,13 @@ mod tests {
                 }
             }
         }
+        // AND HOW MANY WERE EXEMPTED, with an expectation beside it. An allowlist that grows
+        // unnoticed is how a structural probe stops being one.
+        assert_eq!(
+            allowlisted, 2,
+            "the allowlist holds {allowlisted} lines; it is for exactly two -- the `Internal` \
+             in `show`, and the foreign error the `caught` test builds"
+        );
     }
 
     #[test]
@@ -1279,6 +1607,23 @@ mod tests {
         let (production, tests) = source
             .split_once("mod tests {")
             .expect("the test module marks the split");
+        // COMMENTED-OUT SOURCE IS NOT SOURCE. Without this filter the probe was satisfied by a
+        // `//` line, so deleting `check_writing_mode`'s vertical arm and commenting out its
+        // test left the rule raised-and-tested on paper and absent in fact -- 34 tests green
+        // over an accepted vertical CMap. Found by a reviewer planting exactly that.
+        let code = |half: &str| -> String {
+            half.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (production, tests) = (code(production), code(tests));
+        assert!(
+            production.lines().count() > 300 && tests.lines().count() > 200,
+            "scanned {} production and {} test lines of code, too few to be this file",
+            production.lines().count(),
+            tests.lines().count()
+        );
         // Whitespace-insensitive: rustfmt wraps `Refusal::X.refuse(..)` onto two lines when the
         // detail is long, and a probe that missed those would report the longest refusals as
         // unraised -- which it did, on the first run.
@@ -1611,6 +1956,141 @@ mod tests {
     }
 
     #[test]
+    fn a_numeric_operand_that_is_not_a_number_is_refused() {
+        // THE DANGEROUS DEFAULT. `/Bogus Tz` used to set the horizontal scale to 0.0, which
+        // collapses every glyph box on the page to a point -- a box that intersects almost
+        // nothing, so a redaction over it removes almost nothing. `TextState::default` sets
+        // the scale to 100 for this exact reason; silently reintroducing 0 from a malformed
+        // operand undid it. Found by review.
+        refusing(
+            "/F1 10 Tf /Bogus Tz BT 0 0 Td (A) Tj ET",
+            Refusal::NumericOperandNotANumber,
+        );
+        // A name where a number belongs, AT THE RIGHT COUNT -- the arity check passes this,
+        // so the operand check is what has to catch it. The first draft used `BT Tm` and
+        // `1 0 0 1 0 cm`, which are count mismatches; the rule-naming assertion said so.
+        refusing(
+            "/F1 10 Tf BT 0 /Bogus Td (A) Tj ET",
+            Refusal::NumericOperandNotANumber,
+        );
+        // THE NEAR-MISS: the same operators with proper numbers are not refused.
+        assert_eq!(placed("/F1 10 Tf 50 Tz BT 0 0 Td (A) Tj ET").len(), 1);
+    }
+
+    #[test]
+    fn a_padded_operand_run_is_refused_rather_than_read_from_the_front() {
+        // THE MEASURED LEAK. `ops::operations` gathers every pending operand; a renderer keeps
+        // a small buffer and takes the LAST six. Reading the first six put this glyph at
+        // (0, 0) while PDFium put it at (100, 700) -- so a region over the visible word met no
+        // box, and the redaction removed nothing. Found by review, with both numbers measured.
+        refusing(
+            "/F1 12 Tf BT 0 0 0 0 0 0 1 0 0 1 100 700 Tm (A) Tj ET",
+            Refusal::OperandCountMismatch,
+        );
+        refusing("1 0 0 1 100 700 0 cm", Refusal::OperandCountMismatch);
+        refusing("/F1 12 Tf 9 9 /Other /F1 Tf", Refusal::OperandCountMismatch);
+        // THE NEAR-MISS: the honest page, which must still walk.
+        let glyphs = placed("/F1 12 Tf BT 1 0 0 1 100 700 Tm (A) Tj ET");
+        assert_eq!(glyphs.len(), 1);
+        assert!((glyphs[0].origin.0 - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_non_finite_operand_is_refused_rather_than_boxed() {
+        // An infinity composes to a NaN, and `Rect::transformed` folding NaN corners with
+        // min/max leaves its own +inf/-inf initialisers -- an inverted rectangle that
+        // intersects nothing. A box that intersects nothing is a glyph a redaction skips.
+        // Each `cm` on its own is finite -- 1e300 is a perfectly good f64. It is the
+        // COMPOSITION that overflows, which is why the check cannot live on the operands only.
+        // AND THROUGH THE FONT METRICS, which come out of the file just as the operands do.
+        // This is the fuzzer's own finding, reproduced: a `/W` of `f64::MAX` against a large
+        // `/FontMatrix` composes to an infinity, and the box built from it was
+        // `left: -inf, right: inf` -- a box that makes every region test true, so the
+        // redaction removes the whole page and reports success.
+        let mut wild = Fake::new();
+        wild.width = f64::MAX;
+        wild.font_matrix_scale = 1e297;
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &wild),
+            Refusal::NonFiniteGeometry,
+        );
+        // THE NEAR-MISS: large but finite metrics still walk.
+        let mut large = Fake::new();
+        large.width = 1e6;
+        assert_eq!(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &large)
+                .expect("finite metrics walk")
+                .len(),
+            1
+        );
+
+        let huge = "9".repeat(300);
+        let one = format!("{huge} 0 0 {huge} 0 0 cm");
+        assert_eq!(placed(&one).len(), 0, "one `cm` of 1e300 is still finite");
+        refusing(&format!("{one} {one}"), Refusal::NonFiniteGeometry);
+    }
+
+    #[test]
+    fn a_page_that_buys_unbounded_work_with_a_few_hundred_bytes_is_refused() {
+        // DEPTH IS NOT THE BOUND. Sixteen forms, each drawing the next three times, is 3^16
+        // glyphs from 405 bytes -- 9.7 s and 1,644 MiB measured in release before this cap.
+        // The open-form set sees no cycle and the depth cap sees no over-deep nest.
+        // SIX levels, each drawing the next FIVE times: 5^6 = 15,625 draws at a depth of six.
+        // Shallower than MAX_FORM_DEPTH and acyclic, so neither existing bound sees it -- which
+        // is the finding. The first draft used sixteen levels and was refused by the depth cap
+        // instead; the rule-naming assertion is what said so.
+        const LEVELS: u64 = 6;
+        let mut resources = Fake::new();
+        for level in 0..LEVELS {
+            let next = format!("/Fm{} Do ", level + 1).repeat(5);
+            resources = resources.with_form(
+                format!("Fm{level}").as_bytes(),
+                200 + level,
+                Matrix::IDENTITY,
+                &next,
+            );
+        }
+        resources = resources.with_form(
+            format!("Fm{LEVELS}").as_bytes(),
+            999,
+            Matrix::IDENTITY,
+            "/F1 10 Tf BT 0 0 Td (A) Tj ET",
+        );
+        assert_refused(glyphs_in(b"/Fm0 Do", &resources), Refusal::TooManyFormDraws);
+    }
+
+    #[test]
+    fn more_glyphs_than_burrow_will_place_is_a_refusal() {
+        // The other half of the same bound: `out` had no ceiling, so a page that stayed inside
+        // the draw budget could still ask for an unbounded `Vec<Glyph>`.
+        let mut body = String::from("/F1 1 Tf BT ");
+        // One `Tj` of many bytes is far cheaper to build than many operations.
+        body.push_str(&format!("({}) Tj ET", "A".repeat(MAX_GLYPHS + 1)));
+        assert_refused(
+            glyphs_in(body.as_bytes(), &Fake::new()),
+            Refusal::TooManyGlyphs,
+        );
+    }
+
+    #[test]
+    fn a_pattern_fill_is_refused_because_the_walk_does_not_reach_its_text() {
+        // MEASURED: a page whose only text lives in a tiling pattern walked to `Ok(0)` while
+        // PDFium inked 740 pixels of it -- and `FPDFText_*` reported zero characters, so the
+        // ADR 0029 §6 read-back was blind to it too. An `Ok` over text nothing observed is
+        // exactly what this module exists to prevent.
+        refusing(
+            "/Pattern cs /P1 scn 0 0 600 300 re f",
+            Refusal::PatternMayDrawText,
+        );
+        refusing(
+            "/Pattern CS /P1 SCN 0 0 600 300 re S",
+            Refusal::PatternMayDrawText,
+        );
+        // THE NEAR-MISS: a plain colour fill names no pattern and is not refused.
+        assert_eq!(placed("0 0 1 rg 0 0 600 300 re f").len(), 0);
+    }
+
+    #[test]
     fn a_font_claiming_zero_bytes_per_code_is_refused() {
         // Not a division by zero but a non-terminating chunk: `chunks(0)` panics, and a walk
         // that clamped it to 1 would decode a two-byte font's codes as bytes and place every
@@ -1749,6 +2229,40 @@ mod tests {
                 program: b"/WMode 2 def",
             }),
             Refusal::UndeterminedWritingMode,
+        );
+        // NINE APPENDED BYTES used to turn a vertical CMap horizontal, because the last `def`
+        // won. Found by review; the rule was already stated in three places and false here.
+        assert_refused_mode(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: None,
+                program: b"/WMode 1 def /CMapName /X def /WMode 0 def",
+            }),
+            Refusal::UndeterminedWritingMode,
+        );
+        // AND THE `usecmap` HALF, which used to resolve silently toward Horizontal -- the
+        // direction that misses text. Found by review.
+        assert_refused_mode(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: None,
+                program: b"/WMode 0 def /UniJIS-UCS2-V usecmap",
+            }),
+            Refusal::UndeterminedWritingMode,
+        );
+        assert_refused_mode(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: None,
+                program: b"/UniJIS-UCS2-V usecmap /Plain-H usecmap",
+            }),
+            Refusal::UndeterminedWritingMode,
+        );
+        // A repeat that AGREES is not a disagreement, and must not be refused.
+        assert_eq!(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: Some(1),
+                program: b"/WMode 1 def /WMode 1 def",
+            })
+            .expect("derives"),
+            WritingMode::Vertical
         );
         assert_refused_mode(
             writing_mode_of(&CMap::Embedded {

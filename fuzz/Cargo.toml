@@ -133,3 +133,17 @@ path = "fuzz_targets/pdfsyntax_contents.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pdfsyntax_geometry"
+path = "fuzz_targets/pdfsyntax_geometry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pdfsyntax_cmap_wmode"
+path = "fuzz_targets/pdfsyntax_cmap_wmode.rs"
+test = false
+doc = false
+bench = false

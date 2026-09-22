@@ -426,7 +426,7 @@ So the condition is **not** "acquire OCR". It is **an image re-encoding path, ta
 starting with Flate** — which is the easy case and is what `tests/redaction/fixtures/producer-ocr-scan.pdf`
 happens to be, making it the fixture to measure against.
 
-It matters more than it looks: this is the only one of the three conditions that governs a
+It matters more than it looks: this and vertical writing are the conditions that govern a
 document shape a person is *likely to bring*, and until it is taken the refusal has to say why
 in a way that does not read as permanent (§7, and [#136](https://github.com/TensorGreed/burrow/issues/136)).
 
@@ -456,7 +456,24 @@ are places a later reader would get it wrong:
 
 What would change it: `/W2`, `/DW2` and the vertical origin vector implemented and measured
 against `FPDFText_GetCharBox` on a vertical fixture, to the same tolerance §6 sets for the
-horizontal terms. Until then this is a refusal with a fixture, not a gap with a plan.
+horizontal terms. Until then it is a refusal with unit fixtures over CMap programs -- the
+document-level twin pair arrives with the font resolver that reads a CMap out of a file, which
+the walk's resources seam does not do yet. The one committed *document* fixture here is the
+LibreOffice shape, which is the case that is **not** refused.
+
+### What the walk does not reach, which §6 must not be read as covering
+
+Measured during #129's review, and recorded here because §6's read-back shares the blindness:
+a page whose only text lives in a **tiling pattern** produced an empty glyph list from burrow's
+walk and **zero characters** from `FPDFText_*`, while PDFium's renderer inked 740 pixels of the
+word. Neither the operation nor its verification saw it. §8's rule -- a removal nothing observed
+is not a measured removal -- applies to a *presence* nothing observed just as squarely.
+
+The pattern case is closed by refusal. The one left open is an **ExtGState naming a `/Font`**,
+which sets face and size with no `Tf`: refusing every `gs` would refuse most real documents, and
+resolving it needs a seam the resources trait does not have. That is
+[#152](https://github.com/TensorGreed/burrow/issues/152), and until it closes, §6's assertions
+are bounded by "every operator the walk models, plus patterns refused" rather than by "the page".
 
 **None of the four is a plan.** They are written down so that the next person to look does not
 have to re-derive why five channels are handled the way they are.
