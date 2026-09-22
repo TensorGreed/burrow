@@ -23,8 +23,18 @@
 //!
 //! - [`Name::literal`], a `const fn` whose `assert!` fails **at compile time** in a `const`
 //!   item. `const PARENT: Name = Name::literal(b"Parent\0")` does not build.
-//! - [`Name::from_stripped`], for names read out of a document, which puts the slash on and
-//!   refuses an embedded NUL rather than letting a C string end early and act on a shorter key.
+//! - [`Name::from_stripped`], for names read out of a document with the slash stripped, which
+//!   puts it back and refuses an embedded NUL rather than letting a C string end early and act
+//!   on a shorter key.
+//! - [`Name::from_canonical`], for names that already carry the slash — `prune`'s policy hands
+//!   them over that way. Separate from `from_stripped` rather than sniffing for a slash,
+//!   because a name that may or may not have one is the ambiguity this type removes.
+//!
+//! **The compile-time half covers `const` items and not every call.** `Name::literal` is a
+//! plain `const fn`, so calling it in a function body compiles and panics at run time — which
+//! `core/CLAUDE.md`'s "nothing panics" rule forbids in library code and the shell gate cannot
+//! see. Every library call site here is a `const` item; the residue is stated rather than
+//! claimed away.
 
 use core::ffi::c_char;
 
@@ -47,10 +57,11 @@ impl Name {
     ///
     /// # Panics
     ///
-    /// In a `const` item this is a **compile error**, which is the point: a missing `/` or a
-    /// missing NUL cannot reach a running program. The slice pattern rather than indexing
-    /// because `indexing_slicing` is denied in this crate and a bounds check is not the
-    /// interesting part.
+    /// **In a `const` item this is a compile error**, which is the point and the only place it
+    /// is one. Called in a function body it compiles and panics at run time, so every library
+    /// call site uses a `const`. The slice pattern rather than indexing because
+    /// `indexing_slicing` is denied in this crate and a bounds check is not the interesting
+    /// part.
     pub(super) const fn literal(bytes: &'static [u8]) -> Self {
         assert!(
             matches!(bytes, [b'/', _, .., 0]),
@@ -102,7 +113,8 @@ impl Name {
         }
         if key.contains(&0) {
             return Err(Error::Malformed(
-                "pdf name [embedded-nul]: a name containing a NUL, which a C string would end                  at -- acting on a shorter name than the document gives"
+                "pdf name [embedded-nul]: a name containing a NUL, which a C string \
+                 would end at, acting on a shorter name than the document gives"
                     .to_owned(),
             ));
         }

@@ -763,6 +763,30 @@ that will reach it, and the refusal cannot fire until it does. Recording the rul
 deliberate: the alternative is discovering it while writing the code that would have edited a
 shared font in place.
 
+### A shared page `/Contents` is the same hazard, and it is **not** covered
+
+Raised by a review, and recorded rather than quietly left: the rule above is scoped to glyphs
+whose source is a **Form XObject**. A page's own content stream is `form: None`, and nothing
+counts how many pages share it.
+
+Two pages pointing at one `/Contents` object is legal, and it is not exotic — the
+`inheriting_document()` fixture in this very branch builds one, because it was the shortest way
+to write a two-page document. Editing that stream removes the text from **both** pages, with
+§6's read-back clean on the page it was given. Identical hazard, outside the rule.
+
+It is not reachable today, because nothing calls the removal. It has to be closed before
+anything does, and there are two ways:
+
+- count page-`/Contents` objects in the same walk and extend the refusal to the `None` case,
+  which is a few lines and the same shape as the form rule;
+- or emit a **copy** of the content stream for the page being redacted and repoint only that
+  page, which does not hit the `qpdf_oh_new_stream` wall below because
+  `qpdf_oh_replace_stream_data` on a page's existing stream is already how the operation works —
+  what is missing is a second object to point at.
+
+**Recorded as a named gap rather than an assumption**, because §8's rule cuts both ways: a
+hazard nobody wrote down is a hazard nobody will look for.
+
 ### Copy-on-write is the alternative, and the C API wall is in the way
 
 The better answer is to clone the form, edit the clone, and repoint **only this `Do`'s**
@@ -836,10 +860,20 @@ that does not exist yet, so it bounds the bookkeeping and not the resolution. An
 are uniform; a real one with deeply nested forms pays `MAX_FORM_DEPTH` per entry rather than one.
 The number to re-measure is the production walk when it lands.
 
-The same generated documents also measure the annotation half of the rule: a full scan counts
-**11,000** uses at 5,000 pages where a page-resources-only scan counts **6,000**. A scan confined
-to page resources would report a bit over half the uses of a form — and under-counting reads as
-*unshared*, which is the direction that edits in place.
+The same generated documents also measure the annotation half of the rule: at 5,000 pages, where
+each page draws the form once and its annotation is the form, a full scan counts **10,000** uses
+and a page-resources-only scan counts **5,000**. A scan confined to page resources reports
+**half** the uses — and under-counting reads as *unshared*, which is the direction that edits in
+place.
+
+**Those numbers were first recorded as 11,000 and 6,000, and were wrong.** The instrument was a
+substring search for `"4 0 R"`, which also matches inside `"14 0 R"`, `"24 0 R"` and every other
+object number ending in four — 1,000 spurious hits in both columns. A review recomputed them and
+disagreed; re-measuring showed the review was right. The error is recorded rather than quietly
+patched, because it is the same family as the rest of this document: **a measurement is only as
+good as the instrument, and a substring scan with no word boundary is not one.** The ratio the
+paragraph rests on — a page-only scan sees half — survives, which is luck rather than
+robustness.
 
 ### Condition for revisiting
 

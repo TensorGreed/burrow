@@ -20,12 +20,28 @@ crate="core/burrow-engines/src/qpdf/name.rs"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# The predicate, lifted verbatim from `Name::literal` so this probes the real rule rather than
-# a copy of it that could drift. If the source below stops matching, the extraction fails loudly.
-if ! grep -q 'matches!(bytes, \[b'"'"'/'"'"', _, \.\., 0\])' "$crate"; then
-  echo "::error::$crate no longer contains the predicate this script probes. Update both together." >&2
-  exit 1
-fi
+# The predicate, lifted from `Name::literal` so this probes the real rule rather than a copy
+# that could drift.
+#
+# COMMENTS ARE STRIPPED FIRST, and a review is why. The earlier version grepped the raw file, so
+# deleting the `assert!` from `Name::literal` and leaving the predicate in a `//` comment left
+# this script printing OK over a type that no longer checked anything -- and the unit test named
+# `the_compile_time_check_is_real_and_not_a_comment` passed too. The same class as the two
+# comment-satisfiable probes #129 closed.
+#
+# The check is on the whitespace-stripped, comment-stripped source, and it requires the
+# `assert!` and the predicate TOGETHER: a predicate with no assertion around it is a comment
+# with extra steps.
+dense="$(sed 's://.*::' "$crate" | tr -d '[:space:]')"
+needle="assert!(matches!(bytes,[b'/',_,..,0]),"
+case "$dense" in
+  *"$needle"*) ;;
+  *)
+    echo "::error::$crate no longer asserts the predicate this script probes." >&2
+    echo "::error::Looked for, after stripping comments and whitespace: $needle" >&2
+    exit 1
+    ;;
+esac
 
 probe() {
   local label="$1" literal="$2" expect="$3"
@@ -65,4 +81,5 @@ if [ "$failures" -ne 0 ]; then
   echo "not a rule, and one that accepts nothing refuses the correct spellings too." >&2
   exit 1
 fi
-echo "OK -- 6 probe(s): 4 rejected spellings refused at compile time, 2 correct ones accepted."
+echo "OK -- 6 probe(s): 4 rejected spellings refused at compile time, 2 correct ones accepted;"
+echo "     and the predicate is asserted in $crate, not merely mentioned in a comment."

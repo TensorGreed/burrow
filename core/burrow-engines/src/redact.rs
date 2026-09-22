@@ -54,9 +54,11 @@
 //! dropped and the operation refuses. A half-redacted page is the worst possible output,
 //! because it looks like a redaction.
 //!
-//! That is enforced by shape rather than by discipline: [`Redaction::emit`] consumes `self`,
-//! and every fallible step consumes it too, returning it only on success. A caller holding an
-//! error has nothing left to emit from.
+//! That is enforced by shape rather than by discipline: `Finished::emit` consumes `self`, and
+//! every fallible step consumes it too, returning it only on success. A caller holding an error
+//! has nothing left to emit from — **provided the `Steps` value owns the document**, which is a
+//! contract [`Steps`] states and the compiler cannot. A review found that gap while the trait
+//! had no implementation, which is the cheapest time to find it.
 
 use burrow_types::{Error, Result};
 
@@ -72,7 +74,7 @@ pub(crate) enum StreamId {
 /// The document operations a redaction needs, so the order can be tested without an engine.
 ///
 /// Every method takes `&mut self` because each mutates the in-memory document. None of them
-/// emits: emission is [`Redaction::emit`]'s alone, and it runs only after every step.
+/// emits: emission is `Finished::emit`'s alone, and it runs only after every step.
 pub(crate) trait Steps {
     /// Every stream the region reaches, in a stable order.
     ///
@@ -258,6 +260,8 @@ mod tests {
         fail_rewrite: Option<usize>,
         /// Fail `codes_still_drawn`, for the step-2 poisoning case.
         fail_codes: bool,
+        /// Mutate the document before failing, which is what a real step does.
+        mutate_before_failing: bool,
         rewrites: usize,
         streams: Vec<StreamId>,
     }
@@ -270,6 +274,7 @@ mod tests {
                     log: Rc::clone(&log),
                     fail_rewrite: None,
                     fail_codes: false,
+                    mutate_before_failing: false,
                     rewrites: 0,
                     streams: core::iter::once(StreamId::Page)
                         .chain((1..count).map(StreamId::Object))
@@ -294,6 +299,11 @@ mod tests {
             self.rewrites += 1;
             self.note(&format!("rewrite {stream:?}"));
             if self.fail_rewrite == Some(self.rewrites) {
+                if self.mutate_before_failing {
+                    // The edit lands and the write-back fails: the document is now in a state
+                    // nothing describes, which is exactly what must not be emitted.
+                    self.note("mutated");
+                }
                 return Err(poisoned("a stream rewrite failed"));
             }
             Ok(())
@@ -420,6 +430,34 @@ mod tests {
             !log.borrow().iter().any(|entry| entry == "write"),
             "nothing may be emitted: {:?}",
             log.borrow()
+        );
+    }
+
+    #[test]
+    fn a_step_that_mutates_before_failing_still_emits_nothing() {
+        // THE FAKE NEVER MUTATED ANYTHING, which a review pointed out: every failure knob
+        // returned `Err` before touching state, so the ordering claim was proven and the
+        // *poisoning* claim was proven only against a document that had nothing to poison.
+        //
+        // This one mutates and then fails, which is the real shape -- a rewrite that edits the
+        // stream and then cannot write it back. Nothing later may run, and nothing may be
+        // emitted.
+        let (mut fake, log) = Fake::with_streams(4);
+        fake.fail_rewrite = Some(2);
+        fake.mutate_before_failing = true;
+        let error = run(fake).expect_err("a mutating failure still refuses");
+        assert!(
+            format!("{error:?}").contains("[document-poisoned]"),
+            "refused, but by a different rule: {error:?}"
+        );
+        let log = log.borrow();
+        assert!(
+            log.iter().any(|entry| entry == "mutated"),
+            "the fixture must actually mutate, or it is the old one: {log:?}"
+        );
+        assert!(
+            !log.iter().any(|entry| entry == "write"),
+            "nothing may be emitted from a document a failed step already edited: {log:?}"
         );
     }
 

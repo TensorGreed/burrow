@@ -138,12 +138,20 @@ pub enum Refusal {
     SimpleFontWithMultiByteCodes,
     /// A glyph whose span indexes a stream other than the one being edited.
     GlyphFromAnotherStream,
+    /// A glyph attributed to an operation the stream being edited does not contain.
+    GlyphWithoutItsOperation,
+    /// A glyph attributed to an operation that shows no text.
+    GlyphOnANonShowingOperation,
     /// A displacement no `TJ` adjustment reproduces.
     AdjustmentNotExpressible,
     /// The region reaches text inside a Form XObject drawn in more than one place.
     SharedFormWouldChangeElsewhere,
     /// A Type 3 glyph procedure that shows text the walk does not reach.
     TypeThreeProcedureShowsText,
+    /// A shown string that does not divide into whole codes.
+    StringNotWholeCodes,
+    /// Glyphs cut from one string disagreeing on the font's code width.
+    MixedCodeWidths,
     /// A Form XObject that draws itself, directly or through another form.
     FormCycle,
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
@@ -178,9 +186,13 @@ impl Refusal {
         Self::UnreadableCMap,
         Self::SimpleFontWithMultiByteCodes,
         Self::GlyphFromAnotherStream,
+        Self::GlyphWithoutItsOperation,
+        Self::GlyphOnANonShowingOperation,
         Self::AdjustmentNotExpressible,
         Self::SharedFormWouldChangeElsewhere,
         Self::TypeThreeProcedureShowsText,
+        Self::StringNotWholeCodes,
+        Self::MixedCodeWidths,
         Self::FormCycle,
         Self::FormDepth,
         Self::VerticalWriting,
@@ -212,9 +224,13 @@ impl Refusal {
             Self::UnreadableCMap => "unreadable-cmap",
             Self::SimpleFontWithMultiByteCodes => "simple-font-multi-byte-codes",
             Self::GlyphFromAnotherStream => "glyph-from-another-stream",
+            Self::GlyphWithoutItsOperation => "glyph-without-its-operation",
+            Self::GlyphOnANonShowingOperation => "glyph-on-a-non-showing-operation",
             Self::AdjustmentNotExpressible => "adjustment-not-expressible",
             Self::SharedFormWouldChangeElsewhere => "shared-form-would-change-elsewhere",
             Self::TypeThreeProcedureShowsText => "type-three-procedure-shows-text",
+            Self::StringNotWholeCodes => "string-not-whole-codes",
+            Self::MixedCodeWidths => "mixed-code-widths",
             Self::FormCycle => "form-cycle",
             Self::FormDepth => "form-depth",
             Self::VerticalWriting => "vertical-writing",
@@ -555,12 +571,20 @@ pub struct GlyphSource {
     pub operand: usize,
     /// This glyph's index **in codes** within that string, not in bytes.
     pub code_index: usize,
-    /// How many bytes that code took.
+    /// How many bytes **the font** uses per code.
     ///
-    /// Carried because removal has to slice the same string back into the same codes, and
-    /// asking the font a second time would be a second source of truth for a number the walk
-    /// already established.
-    pub code_len: u8,
+    /// # Not the length of this glyph's own chunk
+    ///
+    /// It was, and that was a defect a review caught: `bytes.chunks(n)` yields a short final
+    /// chunk, so the last glyph of an odd-length two-byte string had a length of 1. Removal
+    /// took the framing width from the glyph being cut, re-chunked the whole string into
+    /// single bytes, and removed a **different glyph** -- measured on `(ABCDE)` at two bytes
+    /// per code: asked to remove `0x45`, it left `0x45` on the page and deleted `0x43`, and
+    /// returned `Ok`. A redaction that does not redact, reported as success.
+    ///
+    /// Inferring a framing parameter from one element of the thing being framed is the bug,
+    /// not the off-by-one. This is the font's width, constant for every code in the string.
+    pub bytes_per_code: u8,
 }
 
 impl Glyph {
@@ -1043,7 +1067,7 @@ pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> R
         }
     }
     if edits.len() < count_distinct_operations(remove) {
-        return Refusal::GlyphFromAnotherStream
+        return Refusal::GlyphWithoutItsOperation
             .refuse("a glyph attributed to an operation this stream does not contain");
     }
 
@@ -1053,8 +1077,10 @@ pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> R
     let mut applied = super::contents::Contents::concatenate(&[content])?.apply(&edits)?;
     applied.pop().filter(|_| applied.is_empty()).map_or_else(
         || {
-            Refusal::GlyphFromAnotherStream
-                .refuse("the splice returned something other than one stream")
+            // probe-allowed: a burrow invariant, not a judgement about the file
+            Err(Error::Internal(
+                "pdf geometry: the splice returned something other than one stream".to_owned(),
+            ))
         },
         Ok,
     )
@@ -1083,12 +1109,31 @@ fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Re
         b"Tj" | b"'" => vec![(0, show_operand(operation, 0)?)],
         b"\"" => vec![(2, show_operand(operation, 2)?)],
         _ => {
-            return Refusal::GlyphFromAnotherStream
+            return Refusal::GlyphOnANonShowingOperation
                 .refuse("a glyph attributed to an operation that does not show text");
         }
     };
 
-    let mut out = Vec::from(b"[".as_slice());
+    // `'` AND `\"` ARE NOT `Tj`. `'` is `T*` then `Tj`; `\"` is `aw Tw`, `ac Tc`, `T*`, then
+    // `Tj`. Rewriting either as a bare `TJ` drops the line move and, for `\"`, the two spacing
+    // operands -- so everything after the cut moves down a line and every later glyph in the
+    // stream gets the wrong word and character spacing.
+    //
+    // Measured against PDFium by a review: cutting one glyph from `(AB) ' (CD) '` moved every
+    // kept glyph **+14 pt in y**, one whole line. The committed differential fixtures could not
+    // see it because all three used `Tj` or `TJ` only, and `'`/`\"` are ordinary output from
+    // the dvips family. The prefix below restores what the operator did besides showing text.
+    let mut out = Vec::new();
+    match operation.operator.as_slice() {
+        b"'" => out.extend_from_slice(b"T* "),
+        b"\"" => {
+            let word = number_operand(&operation.operands, 0)?;
+            let character = number_operand(&operation.operands, 1)?;
+            out.extend_from_slice(format!("{word} Tw {character} Tc T* ").as_bytes());
+        }
+        _ => {}
+    }
+    out.push(b'[');
     for (at, item) in items {
         match item {
             // THE PRODUCER'S OWN KERNS, CARRIED THROUGH IN PLACE. They sit between glyphs the
@@ -1137,10 +1182,28 @@ fn emit_run(out: &mut Vec<u8>, bytes: &[u8], cuts: &[&Glyph], operand: usize) ->
         emit_hex(out, bytes);
         return Ok(());
     };
-    // Code width comes from the glyphs themselves rather than from a second font lookup: the
-    // walk knew it when it cut the string into codes, and asking again is a second source of
-    // truth for a number that already has one.
-    let width = usize::from(first.source.code_len).max(1);
+    // THE FONT'S WIDTH, and every cut in this string must agree on it. Taking it from one
+    // glyph's own chunk was a defect: a short final chunk gave a width of 1 and re-chunked the
+    // whole string, so the removal cut a different glyph and returned `Ok`. See
+    // `GlyphSource::bytes_per_code`.
+    let width = usize::from(first.source.bytes_per_code);
+    if width == 0 {
+        return Refusal::ZeroBytesPerCode.refuse("a font claiming zero bytes per code");
+    }
+    if here
+        .iter()
+        .any(|glyph| glyph.source.bytes_per_code != first.source.bytes_per_code)
+    {
+        return Refusal::MixedCodeWidths.refuse(
+            "glyphs cut from one string disagreeing on the font's code width, so the string \
+             cannot be framed",
+        );
+    }
+    if !bytes.len().is_multiple_of(width) {
+        return Refusal::StringNotWholeCodes.refuse(
+            "a string being edited whose length is not a multiple of the font's code width",
+        );
+    }
 
     let mut kept: Vec<u8> = Vec::new();
     let mut cut = here.iter().peekable();
@@ -1167,7 +1230,7 @@ fn emit_run(out: &mut Vec<u8>, bytes: &[u8], cuts: &[&Glyph], operand: usize) ->
     // operand, and silently dropping it would leave the secret on the page while every other
     // check reported success.
     if cut.next().is_some() {
-        return Refusal::GlyphFromAnotherStream
+        return Refusal::GlyphWithoutItsOperation
             .refuse("a glyph whose code index is past the end of the string it names");
     }
     Ok(())
@@ -1802,6 +1865,16 @@ fn show(
     if per_code == 0 {
         return Refusal::ZeroBytesPerCode.refuse("a font claiming zero bytes per code");
     }
+    // A STRING THAT DOES NOT DIVIDE INTO WHOLE CODES has no unambiguous reading. `chunks`
+    // would yield a short final chunk and the walk would report a glyph for a code the font
+    // does not have, which a removal then cannot place back. Refused here rather than papered
+    // over, because a phantom glyph is a wrong answer about what the page draws.
+    if bytes.len() % usize::from(per_code) != 0 {
+        return Refusal::StringNotWholeCodes.refuse(
+            "a shown string whose length is not a multiple of the font's bytes per code, so \
+             which codes it holds is not derivable",
+        );
+    }
 
     for (index, chunk) in bytes.chunks(usize::from(per_code)).enumerate() {
         let mut code = 0_u32;
@@ -1872,7 +1945,7 @@ fn show(
                 operation: at.0,
                 operand: at.1,
                 code_index: index,
-                code_len: u8::try_from(chunk.len()).unwrap_or(u8::MAX),
+                bytes_per_code: per_code,
             },
         };
 
@@ -2027,7 +2100,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 28,
+            total, 32,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -2148,10 +2221,10 @@ mod tests {
         // AND HOW MANY WERE EXEMPTED, with an expectation beside it. An allowlist that grows
         // unnoticed is how a structural probe stops being one.
         assert_eq!(
-            allowlisted, 3,
+            allowlisted, 4,
             "the allowlist holds {allowlisted} lines; it is for exactly three -- the two \
-             `Internal`s reporting a span that left its stream, and the foreign error the \
-             `caught` test builds"
+             `Internal`s reporting a span that left its stream, the splice invariant, and the \
+             foreign error the `caught` test builds"
         );
     }
 
@@ -2914,6 +2987,64 @@ mod tests {
     }
 
     #[test]
+    fn an_odd_length_composite_string_is_refused_rather_than_reframed() {
+        // THE DEFECT A REVIEW CAUGHT, as a fixture. `(ABCDE)` at two bytes per code is five
+        // bytes: `chunks(2)` yields a short final chunk, so the last glyph's own length is 1.
+        // Removal took the framing width from the glyph being cut, re-chunked the whole string
+        // into single bytes, and cut a DIFFERENT glyph -- measured: asked to remove `0x45`, it
+        // left `0x45` on the page, deleted `0x43`, and returned `Ok`.
+        //
+        // The walk now refuses the string outright, because a phantom glyph for a partial code
+        // is a wrong answer about what the page draws before removal is even reached.
+        let mut wide = Fake::new();
+        wide.bytes_per_code = 2;
+        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET", &wide),
+            Refusal::StringNotWholeCodes,
+        );
+    }
+
+    #[test]
+    fn a_whole_composite_string_is_cut_at_the_right_code() {
+        // THE NEAR-MISS, and the positive half of the same finding: an even-length string
+        // frames correctly and the code that comes out is the one that was asked for.
+        let mut wide = Fake::new();
+        wide.bytes_per_code = 2;
+        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        let content = b"/F1 10 Tf BT 0 0 Td (ABCDEF) Tj ET";
+        let glyphs = glyphs_in(content, &wide).expect("walks");
+        assert_eq!(glyphs.len(), 3, "three two-byte codes");
+        assert!(
+            glyphs.iter().all(|g| g.source.bytes_per_code == 2),
+            "every glyph carries the FONT's width, not its own chunk's"
+        );
+        let out = remove_glyphs(content, None, &glyphs[2..3]).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(
+            text.contains("<41424344>") && !text.contains("4546"),
+            "the third code (0x4546) is the one removed: {text}"
+        );
+    }
+
+    #[test]
+    fn glyphs_disagreeing_on_the_code_width_are_refused() {
+        // Nothing the walk produces can disagree today -- the width comes from one font per
+        // string. The rule exists because `emit_run` frames a string from it, and a framing
+        // parameter that could differ between elements is the shape of the defect above.
+        let mut wide = Fake::new();
+        wide.bytes_per_code = 2;
+        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        let content = b"/F1 10 Tf BT 0 0 Td (ABCD) Tj ET";
+        let mut glyphs = glyphs_in(content, &wide).expect("walks");
+        glyphs[1].source.bytes_per_code = 1;
+        assert_refused_bytes(
+            remove_glyphs(content, None, &glyphs),
+            Refusal::MixedCodeWidths,
+        );
+    }
+
+    #[test]
     fn a_removed_glyph_leaves_an_adjustment_equal_to_what_it_displaced() {
         // Width 500/1000 at 10pt is an advance of 5, and `Tz` is 100, so the adjustment that
         // reproduces it is -500 thousandths. A reader can check that in their head, which is
@@ -2975,6 +3106,38 @@ mod tests {
         assert_eq!(
             remove_glyphs(&content, None, &[]).expect("removes"),
             content
+        );
+    }
+
+    #[test]
+    fn a_glyph_attributed_to_the_wrong_operation_is_refused_by_its_own_name() {
+        // FOUR CONDITIONS SHARED ONE NAME, which a review flagged: only one of them was about
+        // another stream, §7's disclosure keys on the name, and every `assert_refused_bytes`
+        // in this suite keys on it too -- so a test could assert the right refusal for the
+        // wrong reason, and the user would be told the wrong thing.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        let mut stray = glyphs[1];
+        stray.source.operation = (9_999, 10_000);
+        assert_refused_bytes(
+            remove_glyphs(&content, None, &[stray]),
+            Refusal::GlyphWithoutItsOperation,
+        );
+    }
+
+    #[test]
+    fn a_glyph_attributed_to_an_operation_that_shows_no_text_is_refused_by_its_own_name() {
+        let content = b"/F1 10 Tf 1 0 0 1 0 0 cm BT 0 0 Td (ABC) Tj ET";
+        let glyphs = glyphs_in(content, &Fake::new()).expect("walks");
+        let operations = super::super::ops::operations(content).expect("tokenises");
+        let cm = operations
+            .iter()
+            .find(|operation| operation.operator == b"cm")
+            .expect("the fixture has a `cm`");
+        let mut stray = glyphs[1];
+        stray.source.operation = cm.span;
+        assert_refused_bytes(
+            remove_glyphs(content, None, &[stray]),
+            Refusal::GlyphOnANonShowingOperation,
         );
     }
 
@@ -3179,8 +3342,11 @@ mod tests {
             program: b"/CMapName /Ordinary-H def /WMode 1 def".to_vec(),
         };
         resources.bytes_per_code = 2;
+        // `(AB)` and not `(A)`: a one-byte string against a two-byte font is now refused for
+        // not dividing into whole codes, which would make this a test of that rule instead.
+        // The rule-naming assertion is what said so.
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
             Refusal::VerticalWriting,
         );
     }

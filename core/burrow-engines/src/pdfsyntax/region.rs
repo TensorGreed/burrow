@@ -34,10 +34,17 @@
 //! walk, the box intersection, the removal — works in content space and never sees a display
 //! coordinate. A second conversion site is a second chance to disagree, and the disagreement
 //! would be a redaction over the wrong part of the page.
+//!
+//! This module briefly shipped a second one. `display_to_content` returned a matrix that
+//! applied `/UserUnit` and **nothing else** — no y flip, no `/Rotate`, no display-box origin —
+//! under a doc comment saying it was the same conversion. It agreed only on an unrotated page
+//! cropped at the origin, it had no caller, and the missing flip is the row this header calls
+//! the one most likely to be got wrong silently. A review found it; it is deleted rather than
+//! completed, because the way to need it is to have a caller.
 
 use burrow_types::{Error, Result};
 
-use super::geometry::{Matrix, Rect};
+use super::geometry::Rect;
 
 /// The page geometry a region is measured against, read from the page dictionary.
 ///
@@ -121,6 +128,23 @@ impl Region {
                     .to_owned(),
             ));
         }
+        // THE REGION, not only the frame. A NaN or negative extent converts to a rectangle
+        // that intersects nothing, so the redaction removes nothing and reports success --
+        // which is the failure this module opens by describing.
+        for value in [self.left, self.top, self.width, self.height] {
+            if !value.is_finite() {
+                return Err(Error::Malformed(
+                    "pdf region [region-extent]: a region coordinate that is not finite".to_owned(),
+                ));
+            }
+        }
+        if self.width <= 0.0 || self.height <= 0.0 {
+            return Err(Error::Malformed(
+                "pdf region [region-extent]: a region with no positive extent, which intersects \
+                 nothing -- a redaction over it would remove nothing and report success"
+                    .to_owned(),
+            ));
+        }
         let box_width = frame.display_box.right - frame.display_box.left;
         let box_height = frame.display_box.top - frame.display_box.bottom;
         if !(box_width > 0.0 && box_height > 0.0)
@@ -163,17 +187,6 @@ impl Region {
             top: y1 + frame.display_box.bottom,
         })
     }
-}
-
-/// The transform a caller needs if it would rather compose than convert a rectangle.
-///
-/// Exposed so that nothing downstream is tempted to write its own: the matrix and
-/// [`Region::to_content_space`] are the same conversion, and a caller that needed one and
-/// found only the other is how a second implementation gets written.
-#[must_use]
-pub fn display_to_content(frame: &PageFrame) -> Matrix {
-    let scale = 1.0 / frame.user_unit;
-    Matrix::scale(scale, scale)
 }
 
 #[cfg(test)]

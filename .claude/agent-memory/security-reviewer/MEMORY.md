@@ -34,3 +34,4 @@
 - [M2 pdfsyntax rewriter (#128)](m2_pdfsyntax_rewriter.md) — the inline-image EI leak in 3 renderers, 7 GiB from 1 MB, apply's quadratic locate, and what is provably clean.
 - [Web handle newtype (b887eff)](m2_web_handle_newtype.md) — releases are correct; the type does not bind to its Session, and its scan test misses `const fn` and wrapped signatures.
 - [M2 glyph geometry (#129)](m2_glyph_geometry.md) — front-vs-back operand indexing beats PDFium, 405 B → 1.64 GiB form DAG, and two comment-satisfiable probes.
+- [Remove-glyphs + sharing (#156)](m2_remove_glyphs_and_sharing.md) — the quote-operator reflow measured in PDFium, the ragged-code leak, the transitive sharing under-count, and what real qpdf returns.

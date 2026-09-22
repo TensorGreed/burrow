@@ -61,7 +61,9 @@
 use core::ffi::c_int;
 use std::collections::{BTreeMap, BTreeSet};
 
-use burrow_types::{Error, Result};
+use std::sync::Arc;
+
+use burrow_types::{Clock, Deadline, Error, Result};
 
 use super::Document;
 use super::handle::ObjectHandle;
@@ -78,6 +80,21 @@ pub(crate) const MAX_RESOURCE_DEPTH: u32 = 32;
 
 /// The page-tree climb's ceiling, matching `rotate`'s for the same reason.
 const MAX_PAGE_TREE_DEPTH: u32 = 64;
+
+/// How many resource dictionaries one walk will read in total.
+///
+/// # Depth bounds nothing on its own
+///
+/// [`MAX_RESOURCE_DEPTH`] caps the *path*, and a review measured what that leaves open: a
+/// **branching** ladder of Type 3 fonts, each rung's `/Resources` naming two fonts on the next,
+/// is `2^depth` -- 10.12 s at depth 22 from 6 kB, `4x` per two rungs, extrapolating to roughly
+/// **2.9 hours from about 8.6 kB**, returning `Ok`. A cyclic version refuses in 209 us, so the
+/// attack needs a *terminating* ladder, which is why the linear depth fixture never saw it.
+///
+/// Stream subtrees were already descended once per object; dictionary recursion -- a font's own
+/// `/Resources` -- had no memo at all. Both are memoised now, and this is the backstop for a
+/// shape neither memo covers.
+const MAX_RESOURCE_DICTIONARIES: usize = 4096;
 
 /// `/Resources`.
 const RESOURCES: Name = Name::literal(b"/Resources\0");
@@ -106,6 +123,20 @@ const R: Name = Name::literal(b"/R\0");
 type ObjectId = (c_int, c_int);
 
 /// How many places draw each Form XObject in a document.
+///
+/// # Transitive, and a review found out why that matters
+///
+/// A first version counted each *reference* and descended each subtree once. That is right for
+/// cost and wrong for multiplicity: a form `B` referenced once by a form `A` that is drawn on
+/// two pages is reached twice and counted **once**.
+///
+/// Measured on exactly that document: `A` counted 2, `B` counted 1. `B` then reads as
+/// **unshared**, takes the sanctioned in-place edit path, and removing text from it removes it
+/// from a page nobody selected -- the damage the sharing rule exists to prevent, and the thing
+/// §6's read-back cannot see. None of the seven fixtures was two levels deep.
+///
+/// So references are collected as a graph and the counts are propagated down it. Cycles are
+/// refused during collection, so the graph is a DAG and the propagation terminates.
 #[derive(Debug, Default)]
 pub(crate) struct FormUseCounts {
     counts: BTreeMap<ObjectId, usize>,
@@ -134,15 +165,29 @@ impl FormUseCounts {
 /// [`Error::Unsupported`] naming `resource-graph-cycle` or `resource-graph-depth` if the graph
 /// is cyclic or nests past [`MAX_RESOURCE_DEPTH`]; [`Error::Malformed`] for a page tree that
 /// does not terminate. Whatever the engine failed with.
-pub(crate) fn count_form_uses(document: &Document) -> Result<FormUseCounts> {
+pub(crate) fn count_form_uses(
+    document: &Document,
+    deadline: &Deadline,
+    clock: &Arc<dyn Clock>,
+) -> Result<FormUseCounts> {
     let mut walk = Walk {
         document,
-        counts: BTreeMap::new(),
+        from_pages: BTreeMap::new(),
+        edges: BTreeMap::new(),
         descended: BTreeSet::new(),
         open: Vec::new(),
+        container: None,
+        fonts_read: BTreeSet::new(),
+        dictionaries_read: 0,
     };
     let pages = document.page_count()?;
     for index in 0..pages {
+        // THE PAGE BOUNDARY `Limits` PROMISES, as `rotate` does for its ancestor climb. One
+        // check per page: the walk below is a `/Parent` climb plus a resource graph plus an
+        // `unparse` per dictionary, and no engine here offers a timeout or an abort hook
+        // (ADR 0007), so a page is the finest grain available. `max_duration_ms` is
+        // cooperative, which means a path that never checks it cannot honour it.
+        deadline.checkpoint(clock.as_ref())?;
         let at = usize::try_from(index)
             .map_err(|_| Error::Internal("qpdf: a page index that is not an index".to_owned()))?;
         // SAFETY: `at` is below the page count just read from this document.
@@ -153,20 +198,66 @@ pub(crate) fn count_form_uses(document: &Document) -> Result<FormUseCounts> {
         walk.page(&page)?;
     }
     Ok(FormUseCounts {
-        counts: walk.counts,
+        counts: propagate(&walk.from_pages, &walk.edges),
     })
+}
+
+/// Push the page-level counts down the reference graph.
+///
+/// `uses(child) = direct references from pages + sum over parents of uses(parent) x references`.
+///
+/// Relaxed [`MAX_RESOURCE_DEPTH`] + 1 times rather than topologically sorted: the graph is a DAG
+/// (cycles are refused during collection) whose longest path the depth cap already bounds, so
+/// that many rounds is enough and the argument is one sentence rather than a sort nobody checks.
+fn propagate(
+    from_pages: &BTreeMap<ObjectId, usize>,
+    edges: &BTreeMap<ObjectId, BTreeMap<ObjectId, usize>>,
+) -> BTreeMap<ObjectId, usize> {
+    let mut counts = from_pages.clone();
+    for _ in 0..=MAX_RESOURCE_DEPTH {
+        let mut next = from_pages.clone();
+        for (parent, children) in edges {
+            let parent_uses = counts.get(parent).copied().unwrap_or(0);
+            if parent_uses == 0 {
+                continue;
+            }
+            for (child, references) in children {
+                *next.entry(*child).or_insert(0) += parent_uses.saturating_mul(*references);
+            }
+        }
+        if next == counts {
+            break;
+        }
+        counts = next;
+    }
+    counts
 }
 
 /// The walk's state: what it has counted, what it has already descended, and what is open.
 struct Walk<'a> {
     document: &'a Document,
-    counts: BTreeMap<ObjectId, usize>,
-    /// Subtrees already descended, so a form referenced *n* times costs its subtree once.
+    /// Forms referenced straight from a page's resources or a page's annotations.
+    from_pages: BTreeMap<ObjectId, usize>,
+    /// `container -> form -> how many times that container references it`.
+    ///
+    /// Collected rather than counted, so multiplicity can be propagated afterwards. Counting
+    /// during the walk and descending once undercounts every nested form; see
+    /// [`FormUseCounts`].
+    edges: BTreeMap<ObjectId, BTreeMap<ObjectId, usize>>,
+    /// Subtrees already descended, so a form referenced *n* times costs its subtree once. Safe
+    /// now that multiplicity comes from the propagation rather than from the traversal.
     descended: BTreeSet<ObjectId>,
     /// The objects on the current path, for cycle detection. **Not** the same set as
     /// `descended`: a form legitimately appearing twice is sharing, not a cycle, and a walk
     /// that confused the two would refuse the documents this exists to measure.
     open: Vec<ObjectId>,
+    /// Which stream's resources are being read, or `None` at page level.
+    container: Option<ObjectId>,
+    /// Font objects whose `/Resources` have already been read, so a branching ladder of Type 3
+    /// fonts costs each rung once rather than once per path to it.
+    fonts_read: BTreeSet<ObjectId>,
+    /// How many resource dictionaries have been read, against [`MAX_RESOURCE_DICTIONARIES`].
+    dictionaries_read: usize,
 }
 
 impl Walk<'_> {
@@ -223,6 +314,14 @@ impl Walk<'_> {
 
     /// One resource dictionary: its forms, patterns and Type 3 fonts.
     fn resources(&mut self, resources: &ObjectHandle<'_>, depth: u32) -> Result<()> {
+        self.dictionaries_read += 1;
+        if self.dictionaries_read > MAX_RESOURCE_DICTIONARIES {
+            return Err(Error::Unsupported(
+                "qpdf sharing [resource-graph-work]: more resource dictionaries than burrow \
+                 will read, which a branching graph reaches long before the depth cap"
+                    .to_owned(),
+            ));
+        }
         if depth > MAX_RESOURCE_DEPTH {
             return Err(Error::Unsupported(
                 "qpdf sharing [resource-graph-depth]: a resource graph nested deeper than \
@@ -259,7 +358,17 @@ impl Walk<'_> {
         }
         let object = entry.object()?;
         if count {
-            *self.counts.entry(object).or_insert(0) += 1;
+            match self.container {
+                None => *self.from_pages.entry(object).or_insert(0) += 1,
+                Some(parent) => {
+                    *self
+                        .edges
+                        .entry(parent)
+                        .or_default()
+                        .entry(object)
+                        .or_insert(0) += 1;
+                }
+            }
         }
         self.descend(entry, object, depth)
     }
@@ -287,7 +396,9 @@ impl Walk<'_> {
             return Ok(());
         };
         self.open.push(object);
+        let enclosing = self.container.replace(object);
         let result = self.resources(&resources, depth + 1);
+        self.container = enclosing;
         self.open.pop();
         result
     }
@@ -305,9 +416,15 @@ impl Walk<'_> {
             let Some(procs) = self.dictionary_key(&font, &CHARPROCS)? else {
                 continue;
             };
-            // The font's own `/Resources` is what its procedures draw against.
-            if let Some(inner) = self.dictionary_key(&font, &RESOURCES)? {
-                self.resources(&inner, depth + 1)?;
+            // ONCE PER FONT OBJECT. Without this a branching ladder of Type 3 fonts is
+            // exponential in depth: `MAX_RESOURCE_DEPTH` caps the path and nothing capped the
+            // number of paths. See `MAX_RESOURCE_DICTIONARIES`.
+            let identity = font.object()?;
+            if self.fonts_read.insert(identity) {
+                // The font's own `/Resources` is what its procedures draw against.
+                if let Some(inner) = self.dictionary_key(&font, &RESOURCES)? {
+                    self.resources(&inner, depth + 1)?;
+                }
             }
             for proc_name in self.keys_of(&procs)? {
                 let procedure = procs.key(&proc_name);
@@ -378,6 +495,21 @@ impl Walk<'_> {
         object: &ObjectHandle<'h>,
         key: &Name,
     ) -> Result<Option<ObjectHandle<'h>>> {
+        // THE CONTAINER'S TYPE FIRST. `qpdf_oh_get_key` on a non-dictionary reaches
+        // `QPDFObjectHandle::typeWarning` -> `Common::warn`, which appends to qpdf's warning
+        // vector **whatever `suppress_warnings` says** -- that flag only stops the printing.
+        // burrow sets no `max_warnings`, so every one is retained.
+        //
+        // Measured by a review: an `/Annots` array of 400,000 integers, 800 kB of file, peaked
+        // at **265 MB** and took 401 ms; the same array of empty dictionaries grew nothing.
+        // Roughly 330x amplification, linear in the array, inside the engine thread.
+        let container = object.type_code();
+        if let Some(error) = self.document.take_error() {
+            return Err(error);
+        }
+        if container != object_type::DICTIONARY && container != object_type::STREAM {
+            return Ok(None);
+        }
         let value = object.key(key);
         if let Some(error) = self.document.take_error() {
             return Err(error);

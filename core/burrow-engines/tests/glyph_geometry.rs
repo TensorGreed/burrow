@@ -1008,36 +1008,78 @@ fn origins_across_a_redaction(body: &str, cut: usize) -> (Vec<OracleChar>, Vec<O
     (before, drawn_chars(&page_with_declared_widths(&inner)))
 }
 
-/// Every kept glyph is where it was, ignoring the spaces PDFium synthesises at the gap.
+/// The characters PDFium reports that the **file** actually draws.
 ///
-/// The synthetic space is identified by **position in the expected sequence**, not by being a
-/// space: a fixture may contain real spaces, and skipping every `U+0020` would skip those too —
-/// which is how a test for word spacing would quietly stop testing anything.
+/// # PDFium invents characters, and not only spaces
+///
+/// Measured on this suite's own fixtures:
+///
+/// - a positioning adjustment wide enough to look like a gap produces a **`U+0020`** that is in
+///   no string in the file — which is what a redaction leaves behind by design;
+/// - a `T*` line move produces **`U+000D U+000A`**, so `(AB) ' (CD) '` reports six characters
+///   for four glyphs.
+///
+/// A wide kern the producer wrote does the same thing before any redaction, so character
+/// indices and glyph indices are not the same sequence even on an untouched page. Anything
+/// correlating the two by position is wrong on documents nobody redacted.
+///
+/// # How a synthetic one is told apart, and why not "it is a space"
+///
+/// An earlier version skipped **every** `U+0020` while its doc claimed it skipped by position —
+/// a review caught that the doc described behaviour the code did not have. Skipping every space
+/// would skip the *real* ones too, which is how a fixture for word spacing quietly stops
+/// testing anything.
+///
+/// The rule here is structural instead: a synthetic character carries **no advance**, so its
+/// origin equals the next character's. A real space advances, so the next character is further
+/// along. Carriage return and line feed are synthetic unconditionally — no fixture in this file
+/// puts either in a string.
+fn drawn_characters(chars: &[OracleChar]) -> Vec<&OracleChar> {
+    let mut drawn = Vec::new();
+    for (at, char) in chars.iter().enumerate() {
+        let synthetic = match char.unicode {
+            0x000D | 0x000A => true,
+            0x0020 => chars.get(at + 1).is_some_and(|next| {
+                (next.origin.0 - char.origin.0).abs() < TOLERANCE_PT
+                    && (next.origin.1 - char.origin.1).abs() < TOLERANCE_PT
+            }),
+            _ => false,
+        };
+        if !synthetic {
+            drawn.push(char);
+        }
+    }
+    drawn
+}
+
+/// Every kept glyph is where it was, over the characters the file actually draws.
+///
+/// `cut` indexes the **drawn** sequence, which is the one `glyphs_in` produces — see
+/// [`drawn_characters`] for why that is not PDFium's character sequence.
 #[track_caller]
 fn assert_kept_glyphs_held(before: &[OracleChar], after: &[OracleChar], cut: usize, label: &str) {
-    let expected: Vec<&OracleChar> = before
+    let drawn_before = drawn_characters(before);
+    let drawn_after = drawn_characters(after);
+    let expected: Vec<&&OracleChar> = drawn_before
         .iter()
         .enumerate()
         .filter(|(at, _)| *at != cut)
         .map(|(_, char)| char)
         .collect();
+    assert_eq!(
+        drawn_after.len(),
+        expected.len(),
+        "{label}: {} glyph(s) drawn after the redaction against {} expected -- the counts must \
+         match once PDFium's synthetic characters are removed",
+        drawn_after.len(),
+        expected.len()
+    );
 
-    let mut remaining = after.iter();
-    for want in expected {
-        let found = loop {
-            let Some(got) = remaining.next() else {
-                panic!("{label}: U+{:04X} vanished from the page", want.unicode);
-            };
-            if got.unicode == want.unicode {
-                break got;
-            }
-            // Anything skipped must be the synthetic space the gap produces, and nothing else.
-            assert_eq!(
-                got.unicode, 0x0020,
-                "{label}: the redaction introduced U+{:04X}, which is not a synthetic space",
-                got.unicode
-            );
-        };
+    for (want, found) in expected.into_iter().zip(&drawn_after) {
+        assert_eq!(
+            want.unicode, found.unicode,
+            "{label}: a different glyph stayed"
+        );
         let moved = (want.origin.0 - found.origin.0).hypot(want.origin.1 - found.origin.1);
         assert!(
             moved < TOLERANCE_PT,
@@ -1308,5 +1350,81 @@ impl Resources for TestResources {
 
     fn bytes_per_code(&self, _name: &[u8]) -> Result<u8> {
         Ok(1)
+    }
+}
+
+#[test]
+fn a_redaction_inside_a_quote_operator_keeps_the_line_move() {
+    // `'` IS `T*` THEN `Tj`. Rewriting it as a bare `TJ` drops the line move, so every kept
+    // glyph slides up by the leading -- one whole line, which on a paragraph re-flows the page
+    // and on a form puts values against the wrong labels.
+    //
+    // Measured by a review before this fixture existed: +14 pt in y on every kept glyph. The
+    // three fixtures above could not see it because all of them use `Tj` or `TJ` only, and
+    // `'` is ordinary output from the dvips family rather than an adversarial shape.
+    let (before, after) = origins_across_a_redaction("/F1 12 Tf 14 TL 100 700 Td (AB) ' (CD) '", 0);
+    let drawn = drawn_characters(&before);
+    assert_eq!(
+        drawn.len(),
+        4,
+        "A, B, C, D, once PDFium's synthetic CR/LF are removed"
+    );
+    assert!(
+        drawn
+            .iter()
+            .any(|char| (char.origin.1 - drawn[0].origin.1).abs() > 1.0),
+        "the fixture must span two lines, or the line move is not exercised"
+    );
+    assert_kept_glyphs_held(&before, &after, 0, "a quote operator");
+}
+
+#[test]
+fn a_redaction_inside_a_double_quote_operator_keeps_its_spacing_operands() {
+    // `"` IS `aw Tw`, `ac Tc`, `T*`, THEN `Tj`. Dropping the two numeric operands changes the
+    // word and character spacing for every later glyph in the stream, not only inside the
+    // operator -- measured: B, C and D moved from 129.4 / 139.6 / 149.8 to 117.4 / 124.6 /
+    // 131.8, as well as up a line.
+    let (before, after) =
+        origins_across_a_redaction("/F1 12 Tf 14 TL 100 700 Td 9 3 (A B) \" (CD) Tj", 0);
+    assert!(
+        drawn_characters(&before).len() >= 4,
+        "the fixture must draw the run the operands apply to"
+    );
+    assert_kept_glyphs_held(&before, &after, 0, "a double-quote operator");
+}
+
+#[test]
+fn pdfium_synthesises_a_space_once_a_kern_is_wide_enough() {
+    // THE THRESHOLD, PINNED. ADR 0029 §6 asserts that a `-200` kern at 12 pt already makes
+    // PDFium synthesise a space *before* any redaction — which is why character indices and
+    // glyph indices are not the same sequence even on an untouched page. A review could not
+    // verify it because nothing exercised `-200`; this is that measurement, committed.
+    //
+    // It is also the reason `a_redaction_across_a_kern_neither_swallows_nor_doubles_it` uses
+    // `-50`: a fixture past the threshold has a synthetic character in `before`, and the cut
+    // index would name a different glyph.
+    let count = |kern: i32| {
+        let body = format!("/F1 12 Tf 100 700 Td [(AB) {kern} (CD)] TJ");
+        chars_on_page(&page_with_declared_widths(&body), 0)
+    };
+
+    for narrow in [-50, -100] {
+        assert_eq!(
+            count(narrow).len(),
+            4,
+            "a {narrow} kern must not synthesise anything, or the kern fixture's indices drift"
+        );
+    }
+    for wide in [-150, -200, -500] {
+        let chars = count(wide);
+        assert_eq!(chars.len(), 5, "a {wide} kern synthesises one character");
+        assert_eq!(
+            chars[2].unicode, 0x0020,
+            "and the character it synthesises is a space"
+        );
+        assert!(
+            drawn_characters(&chars).len() == 4,
+            "which `drawn_characters` removes, leaving the four glyphs the file draws"
+        );
     }
 }
