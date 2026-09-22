@@ -27,8 +27,8 @@
 mod support;
 
 use burrow_engines::pdfsyntax::geometry::{
-    Encoding, Form, GlyphMetrics, Matrix, Rect as GeometryRect, Refusal, Resources, glyphs_in,
-    remove_glyphs,
+    Encoding, Form, FormUses, Glyph, GlyphMetrics, Matrix, Rect as GeometryRect, Refusal,
+    Resources, check_form_sharing, glyphs_in, remove_glyphs,
 };
 use burrow_types::Result;
 use support::char_box_oracle::{
@@ -995,7 +995,7 @@ fn origins_across_a_redaction(body: &str, cut: usize) -> (Vec<OracleChar>, Vec<O
     let removed = glyphs
         .get(cut..=cut)
         .expect("the fixture has a glyph at that index");
-    let edited = remove_glyphs(content.as_bytes(), removed).expect("the redaction applies");
+    let edited = remove_glyphs(content.as_bytes(), None, removed).expect("the redaction applies");
 
     // The edited stream goes back into a page the same way the original did.
     let text = String::from_utf8(edited).expect("the rewrite is text");
@@ -1116,4 +1116,197 @@ fn a_redacted_space_puts_back_its_word_spacing_too() {
     let (before, after) = origins_across_a_redaction("/F1 12 Tf 6 Tw 100 700 Td (A B C) Tj", 1);
     assert_eq!(before.len(), 5, "A, space, B, space, C");
     assert_kept_glyphs_held(&before, &after, 1, "a redacted space");
+}
+
+/// A two-page document whose form object 6 is drawn by page 1 **and** by an annotation's
+/// appearance stream on page 2.
+///
+/// # Why the annotation is the interesting second use
+///
+/// An appearance stream is reached through `/Annots` → `/AP` → `/N`, not through a page's
+/// `/Resources`. A scan that walks page resources alone counts **one** use of the form and
+/// concludes it is unshared — which is the direction that edits in place and silently removes
+/// the text from the other page. The test below measures both counts and requires them to
+/// differ, so the fixture demonstrates the miss rather than merely containing it.
+fn document_sharing_a_form_with_an_annotation() -> Vec<u8> {
+    let form = "/F1 10 Tf BT 0 0 Td (SHARED) Tj ET\n";
+    let page_one = "q 1 0 0 1 100 700 cm /Fm0 Do Q\n";
+    let mut objects: Vec<String> = Vec::new();
+    objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_owned()); // 1
+    objects.push("<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned()); // 2
+    objects.push(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /XObject << /Fm0 6 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+    ); // 3
+    // PAGE TWO'S OWN RESOURCES DO NOT MENTION THE FORM. Only its annotation does.
+    objects.push(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << >> /Contents 5 0 R /Annots [7 0 R] >>"
+            .to_owned(),
+    ); // 4
+    objects.push(format!(
+        "<< /Length {} >>\nstream\n{page_one}endstream",
+        page_one.len()
+    )); // 5
+    objects.push(format!(
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 200 50] /Length {} >>\nstream\n{form}endstream",
+        form.len()
+    )); // 6
+    objects.push(
+        "<< /Type /Annot /Subtype /Widget /Rect [100 100 300 150] /F 4 \
+         /AP << /N 6 0 R >> >>"
+            .to_owned(),
+    ); // 7
+
+    let mut out = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+    }
+    let xref_at = out.len();
+    out.push_str(&format!(
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objects.len() + 1
+    ));
+    for offset in &offsets {
+        out.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    out.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+        objects.len() + 1
+    ));
+    out.into_bytes()
+}
+
+/// Count references to object `number` in `pdf`, optionally ignoring annotations.
+///
+/// Deliberately crude — a regex over `N 0 R` inside the dictionaries that can reach a form —
+/// because it is **standing in for the qpdf-side resource walk**, not pretending to be one. What
+/// it establishes is that the annotation really is a second reference and that a scan confined
+/// to page `/Resources` really does miss it. The production walk resolves objects properly and
+/// compares identity through `ObjectHandle::object()`.
+fn reference_count(pdf: &[u8], number: u32, include_annotations: bool) -> usize {
+    let text = String::from_utf8_lossy(pdf).into_owned();
+    let needle = format!("{number} 0 R");
+    text.split("obj")
+        .filter(|chunk| include_annotations || !chunk.contains("/AP"))
+        .map(|chunk| chunk.matches(&needle).count())
+        .sum::<usize>()
+        // The object's own `N 0 obj` header is not a reference to it.
+        .saturating_sub(0)
+}
+
+#[test]
+fn an_annotation_appearance_is_a_second_use_a_page_scan_would_miss() {
+    let pdf = document_sharing_a_form_with_an_annotation();
+
+    // NON-VACUITY FIRST: the form really is drawn, and PDFium really renders its text on
+    // page one. A fixture whose form were unreachable would make both counts below trivial.
+    let drawn = chars_on_page(&pdf, 0);
+    assert_eq!(
+        drawn.len(),
+        6,
+        "page one must draw the form's six glyphs, or the fixture draws nothing"
+    );
+
+    let with_annotations = reference_count(&pdf, 6, true);
+    let pages_only = reference_count(&pdf, 6, false);
+
+    assert_eq!(
+        pages_only, 1,
+        "a scan confined to page resources sees one use, which is the miss this fixture is for"
+    );
+    assert_eq!(
+        with_annotations, 2,
+        "counting the annotation's appearance stream sees the second use"
+    );
+    assert!(
+        with_annotations > pages_only,
+        "if these agree the fixture does not demonstrate the miss it exists to demonstrate"
+    );
+}
+
+#[test]
+fn the_shared_form_is_refused_and_the_letterhead_case_is_not() {
+    // The two halves of the rule, on the same document shape, differing only in whether the
+    // region reaches inside the shared form.
+    struct Counted(usize);
+    impl FormUses for Counted {
+        fn uses(&self, _form: u64) -> Result<usize> {
+            Ok(self.0)
+        }
+    }
+
+    let form_body = "/F1 10 Tf BT 0 0 Td (SHARED) Tj ET";
+    let resources = TestResources::with_form(6, form_body);
+    let page = b"q 1 0 0 1 100 700 cm /Fm0 Do Q /F1 10 Tf BT 0 0 Td (BODY) Tj ET";
+    let glyphs = glyphs_in(page, &resources).expect("walks");
+
+    let inside: Vec<Glyph> = glyphs
+        .iter()
+        .filter(|g| g.source.form.is_some())
+        .cloned()
+        .collect();
+    let outside: Vec<Glyph> = glyphs
+        .iter()
+        .filter(|g| g.source.form.is_none())
+        .cloned()
+        .collect();
+    assert!(
+        !inside.is_empty() && !outside.is_empty(),
+        "the fixture needs both"
+    );
+
+    // Reaching inside a form used twice: refused.
+    let refusal = check_form_sharing(&inside, &Counted(2)).expect_err("must refuse");
+    assert!(
+        Refusal::SharedFormWouldChangeElsewhere.caught(&refusal),
+        "refused by a different rule: {refusal:?}"
+    );
+
+    // The same document, the same shared form, region on the page's own text: allowed.
+    check_form_sharing(&outside, &Counted(2))
+        .expect("a letterhead the region avoids must not bar the redaction");
+
+    // And the form itself, when it is drawn only once: allowed.
+    check_form_sharing(&inside, &Counted(1)).expect("a form drawn once has nowhere else to reach");
+}
+
+/// Resources with one form, for the sharing tests.
+struct TestResources {
+    form: Form,
+}
+
+impl TestResources {
+    fn with_form(id: u64, content: &str) -> Self {
+        Self {
+            form: Form {
+                id,
+                matrix: Matrix::IDENTITY,
+                content: content.as_bytes().to_vec(),
+            },
+        }
+    }
+}
+
+impl Resources for TestResources {
+    fn form(&self, name: &[u8]) -> Result<Option<Form>> {
+        Ok((name == b"Fm0").then(|| self.form.clone()))
+    }
+
+    fn glyph(&self, _name: &[u8], _code: u32) -> Result<GlyphMetrics> {
+        Ok(GlyphMetrics {
+            width: FIXTURE_WIDTH,
+            bytes_per_code: 1,
+            font_bbox: None,
+            font_matrix: Matrix::scale(0.001, 0.001),
+            encoding: Encoding::Simple,
+        })
+    }
+
+    fn bytes_per_code(&self, _name: &[u8]) -> Result<u8> {
+        Ok(1)
+    }
 }

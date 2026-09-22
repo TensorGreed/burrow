@@ -140,6 +140,10 @@ pub enum Refusal {
     GlyphFromAnotherStream,
     /// A displacement no `TJ` adjustment reproduces.
     AdjustmentNotExpressible,
+    /// The region reaches text inside a Form XObject drawn in more than one place.
+    SharedFormWouldChangeElsewhere,
+    /// A Type 3 glyph procedure that shows text the walk does not reach.
+    TypeThreeProcedureShowsText,
     /// A Form XObject that draws itself, directly or through another form.
     FormCycle,
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
@@ -175,6 +179,8 @@ impl Refusal {
         Self::SimpleFontWithMultiByteCodes,
         Self::GlyphFromAnotherStream,
         Self::AdjustmentNotExpressible,
+        Self::SharedFormWouldChangeElsewhere,
+        Self::TypeThreeProcedureShowsText,
         Self::FormCycle,
         Self::FormDepth,
         Self::VerticalWriting,
@@ -207,6 +213,8 @@ impl Refusal {
             Self::SimpleFontWithMultiByteCodes => "simple-font-multi-byte-codes",
             Self::GlyphFromAnotherStream => "glyph-from-another-stream",
             Self::AdjustmentNotExpressible => "adjustment-not-expressible",
+            Self::SharedFormWouldChangeElsewhere => "shared-form-would-change-elsewhere",
+            Self::TypeThreeProcedureShowsText => "type-three-procedure-shows-text",
             Self::FormCycle => "form-cycle",
             Self::FormDepth => "form-depth",
             Self::VerticalWriting => "vertical-writing",
@@ -225,6 +233,8 @@ impl Refusal {
                 | Self::TooManyFormDraws
                 | Self::PatternMayDrawText
                 | Self::UnreadableCMap
+                | Self::SharedFormWouldChangeElsewhere
+                | Self::TypeThreeProcedureShowsText
         )
     }
 
@@ -867,6 +877,108 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 
 // ---- removing glyphs without moving the ones that stay --------------------------------------
 
+/// Whether a Type 3 glyph procedure draws text this walk cannot see.
+///
+/// # Channel 8 fails closed until the walk descends into `/CharProcs`
+///
+/// A Type 3 glyph procedure is a content stream, and it may show text of its own. The geometry
+/// walk does not descend into one: [`Resources`] resolves forms and glyph metrics and has no
+/// hook for a procedure's content. So text drawn inside a procedure is **not found**, and a
+/// redaction that removed the page's Type 3 glyphs would leave that text in the font — spike
+/// 0006's channel 8, still open.
+///
+/// Leaving it silent is the one outcome ADR 0029 §8 forbids: an `Ok` over text nothing
+/// observed. So the procedure's stream is scanned for the text-showing operators, and a
+/// procedure that has any is refused rather than removed.
+///
+/// # A scan, not a parse, and the direction of its error
+///
+/// This tokenises the procedure and looks for `Tj`, `TJ`, `'` and `"` as **operators** — not a
+/// byte search, which would match a `Tj` inside a string or a comment and refuse procedures
+/// that draw nothing. It does not attempt to decide whether the text is inside the region,
+/// because that is the walk this function exists to stand in for. A procedure that shows any
+/// text refuses the whole removal.
+///
+/// That over-refuses: a Type 3 glyph whose procedure draws text outside the region is refused
+/// along with one whose procedure draws the secret. Over-refusing is the direction that does
+/// not leak, and it is temporary — see #131 and the residue note in ADR 0029.
+///
+/// # Errors
+///
+/// [`Refusal::TypeThreeProcedureShowsText`] if the procedure shows text. Whatever
+/// [`super::ops::operations`] refuses, since a procedure burrow cannot tokenise is one whose
+/// contents it cannot rule on.
+pub fn check_type_three_procedure(procedure: &[u8]) -> Result<()> {
+    for operation in super::ops::operations(procedure)? {
+        if matches!(operation.operator.as_slice(), b"Tj" | b"TJ" | b"\'" | b"\"") {
+            return Refusal::TypeThreeProcedureShowsText.refuse(
+                "a Type 3 glyph procedure that draws text of its own, which burrow's walk does \
+                 not yet reach",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// How many places in the document draw a given Form XObject.
+///
+/// # Why this is a seam and not a function here
+///
+/// Counting uses means walking every page's resource graph, which is a qpdf-side question:
+/// object identity, `/Annots`, `/AP`, nested forms, patterns and `/CharProcs`. None of that is
+/// content-stream syntax, so none of it belongs in this module. What belongs here is the
+/// **rule** — and the rule is what would otherwise be written by whoever happens to implement
+/// the walk.
+pub trait FormUses {
+    /// How many places draw the form with this object identity. `1` means "only here".
+    ///
+    /// Counted by **object identity**, never by resource name: two pages may both call a form
+    /// `/Fm0` and mean different objects, and one page may reach the same object under two
+    /// names. `core/CLAUDE.md` has the rule and `tools/check-handle-identity.py` enforces it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever walking the document failed with.
+    fn uses(&self, form: u64) -> Result<usize>;
+}
+
+/// Refuse if the region reaches glyphs inside a Form XObject that is drawn more than once.
+///
+/// # The scoping is the rule, not a detail of it
+///
+/// Editing a shared form in place removes its text **everywhere it is drawn**: a page nobody
+/// asked about silently loses content, while the page the user did select looks correctly
+/// redacted. ADR 0029 §6's read-back cannot catch that, because it asks about the page it was
+/// given and that page is clean.
+///
+/// But refusing every page that merely *contains* a shared form would refuse a large share of
+/// real documents. A letterhead, a header, a footer, a watermark and a logo are all commonly
+/// one form drawn on every page, and none of them is what the user selected. So the test is
+/// over the glyphs **being removed** — a form is only in question when a glyph the operation is
+/// about to cut came out of it.
+///
+/// # Errors
+///
+/// [`Refusal::SharedFormWouldChangeElsewhere`] naming nothing about the document beyond the
+/// shape, per §7. Whatever [`FormUses::uses`] failed with.
+pub fn check_form_sharing(remove: &[Glyph], uses: &dyn FormUses) -> Result<()> {
+    let mut asked: Vec<u64> = remove
+        .iter()
+        .filter_map(|glyph| glyph.source.form)
+        .collect();
+    asked.sort_unstable();
+    asked.dedup();
+    for form in asked {
+        if uses.uses(form)? > 1 {
+            return Refusal::SharedFormWouldChangeElsewhere.refuse(
+                "this page draws the selected text from a template used elsewhere in the \
+                 document, and removing it here would remove it there too",
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Remove `remove` from `content`, leaving every other glyph exactly where it was.
 ///
 /// # The whole point is that nothing reflows
@@ -903,10 +1015,14 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 /// which is `Tz 0` or a zero font size making the conversion a division by zero.
 ///
 /// Whatever [`super::ops::operations`] and [`super::strings::decode_string`] refuse.
-pub fn remove_glyphs(content: &[u8], remove: &[Glyph]) -> Result<Vec<u8>> {
-    if remove.iter().any(|glyph| glyph.source.form.is_some()) {
+pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> Result<Vec<u8>> {
+    // EVERY GLYPH MUST BELONG TO THE STREAM BEING EDITED. A span from another stream indexes
+    // different bytes, so applying it here cuts whatever happens to sit at those offsets --
+    // a cut in the wrong place, reported as success. Editing a form is done by calling this
+    // again with that form's own content and its identity.
+    if remove.iter().any(|glyph| glyph.source.form != stream) {
         return Refusal::GlyphFromAnotherStream
-            .refuse("a glyph drawn inside a Form XObject, whose span does not index this stream");
+            .refuse("a glyph drawn in a different stream, whose span does not index this one");
     }
     if remove.is_empty() {
         return Ok(content.to_vec());
@@ -1788,9 +1904,10 @@ mod tests {
     use burrow_types::{Error, Result};
 
     use super::{
-        CMap, Encoding, Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix, Rect,
-        Refusal, Resources, TextPosition, TextState, WritingMode, check_writing_mode, glyphs_in,
-        remove_glyphs, takes_word_spacing, writing_mode_of,
+        CMap, Encoding, Form, FormUses, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix,
+        Rect, Refusal, Resources, TextPosition, TextState, WritingMode, check_form_sharing,
+        check_type_three_procedure, check_writing_mode, glyphs_in, remove_glyphs,
+        takes_word_spacing, writing_mode_of,
     };
 
     /// A resources table with one font of known width and whatever forms a test names.
@@ -1910,7 +2027,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 26,
+            total, 28,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -2803,7 +2920,7 @@ mod tests {
         // what makes the failure message useful rather than a pair of decimals.
         let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
         assert_eq!(glyphs.len(), 3);
-        let out = remove_glyphs(&content, &glyphs[1..2]).expect("removes");
+        let out = remove_glyphs(&content, None, &glyphs[1..2]).expect("removes");
         let text = String::from_utf8_lossy(&out).into_owned();
         assert!(text.contains("-500"), "no adjustment in the output: {text}");
         // `A` and `C` stay, as hex, and `B` does not.
@@ -2827,7 +2944,7 @@ mod tests {
             "a space at width 5 with `4 Tw` displaces 9, not {}",
             space.displacement
         );
-        let out = remove_glyphs(&content, &glyphs[1..2]).expect("removes");
+        let out = remove_glyphs(&content, None, &glyphs[1..2]).expect("removes");
         assert!(
             String::from_utf8_lossy(&out).contains("-900"),
             "the adjustment dropped the word spacing: {}",
@@ -2841,7 +2958,7 @@ mod tests {
         // shifts everything after by a point or two.
         let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td [(AB) -25 (CD)] TJ ET");
         assert_eq!(glyphs.len(), 4);
-        let out = remove_glyphs(&content, &glyphs[3..4]).expect("removes");
+        let out = remove_glyphs(&content, None, &glyphs[3..4]).expect("removes");
         let text = String::from_utf8_lossy(&out).into_owned();
         assert!(text.contains("-25"), "the kern was dropped: {text}");
         assert!(
@@ -2855,7 +2972,10 @@ mod tests {
         // THE NON-VACUITY CONTROL'S PARTNER. A removal that rewrote a stream it was asked not
         // to touch would fail the byte-identity half of every test above for the wrong reason.
         let (_, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
-        assert_eq!(remove_glyphs(&content, &[]).expect("removes"), content);
+        assert_eq!(
+            remove_glyphs(&content, None, &[]).expect("removes"),
+            content
+        );
     }
 
     #[test]
@@ -2873,7 +2993,7 @@ mod tests {
         assert_eq!(glyphs.len(), 3);
         assert_eq!(glyphs[0].source.form, Some(7));
         assert_refused_bytes(
-            remove_glyphs(page, &glyphs[1..2]),
+            remove_glyphs(page, None, &glyphs[1..2]),
             Refusal::GlyphFromAnotherStream,
         );
     }
@@ -2885,9 +3005,150 @@ mod tests {
         // that no renderer can act on.
         let (glyphs, content) = walked("/F1 10 Tf 0 Tz BT 0 0 Td (ABC) Tj ET");
         assert_refused_bytes(
-            remove_glyphs(&content, &glyphs[1..2]),
+            remove_glyphs(&content, None, &glyphs[1..2]),
             Refusal::AdjustmentNotExpressible,
         );
+    }
+
+    /// A `FormUses` that answers from a table, standing in for the qpdf-side resource walk.
+    struct Uses(Vec<(u64, usize)>);
+
+    impl FormUses for Uses {
+        fn uses(&self, form: u64) -> Result<usize> {
+            Ok(self
+                .0
+                .iter()
+                .find(|(id, _)| *id == form)
+                .map_or(1, |(_, count)| *count))
+        }
+    }
+
+    /// Walk a page that draws one form, and hand back the glyphs it drew.
+    fn form_glyphs(page: &[u8], body: &str) -> (Vec<Glyph>, Vec<u8>) {
+        let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, body);
+        (
+            glyphs_in(page, &resources).expect("walks"),
+            body.as_bytes().to_vec(),
+        )
+    }
+
+    #[test]
+    fn a_shared_form_the_region_reaches_is_refused() {
+        // EDITING IT IN PLACE WOULD REMOVE THE TEXT EVERYWHERE IT IS DRAWN -- a page nobody
+        // asked about loses content, while the page the user selected looks correctly
+        // redacted. Section 6's read-back cannot catch that: it asks about the page it was
+        // given, and that page is clean.
+        let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        assert_eq!(glyphs[0].source.form, Some(7));
+        let shared = Uses(vec![(7, 4)]);
+        assert_refused_unit(
+            check_form_sharing(&glyphs[1..2], &shared),
+            Refusal::SharedFormWouldChangeElsewhere,
+        );
+    }
+
+    #[test]
+    fn a_letterhead_the_region_avoids_is_not_refused() {
+        // THE SCOPING, and it is the decision rather than a detail of it. A header, a footer,
+        // a watermark and a logo are all commonly one form drawn on every page. Refusing any
+        // page that merely CONTAINS one would refuse a large share of real documents, and a
+        // redaction nobody can run leaks nothing only because it never runs.
+        let resources = Fake::new().with_form(
+            b"Fm0",
+            7,
+            Matrix::IDENTITY,
+            "/F1 10 Tf BT 0 0 Td (LETTERHEAD) Tj ET",
+        );
+        let page = b"/Fm0 Do /F1 10 Tf BT 0 0 Td (BODY) Tj ET";
+        let glyphs = glyphs_in(page, &resources).expect("walks");
+
+        // The region reaches the page's own text, not the letterhead's.
+        let body: Vec<Glyph> = glyphs
+            .iter()
+            .filter(|glyph| glyph.source.form.is_none())
+            .cloned()
+            .collect();
+        assert!(
+            !body.is_empty(),
+            "the fixture must draw text outside the form"
+        );
+        assert!(
+            glyphs.iter().any(|glyph| glyph.source.form == Some(7)),
+            "and inside it, or the shared form is not present and this asks nothing"
+        );
+
+        let shared = Uses(vec![(7, 12)]);
+        check_form_sharing(&body, &shared).expect("a letterhead the region avoids is not a bar");
+        // And the redaction itself goes through, on the page's own stream.
+        let out = remove_glyphs(page, None, &body[1..2]).expect("removes");
+        assert!(String::from_utf8_lossy(&out).contains("TJ"));
+    }
+
+    #[test]
+    fn a_form_drawn_once_is_edited_rather_than_refused() {
+        // There is nowhere else for the edit to reach, so there is nothing to refuse.
+        let (glyphs, content) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        check_form_sharing(&glyphs[1..2], &Uses(vec![(7, 1)])).expect("drawn once");
+        // Editing it means passing THAT form's content and identity, not the page's.
+        let out = remove_glyphs(&content, Some(7), &glyphs[1..2]).expect("removes");
+        assert!(String::from_utf8_lossy(&out).contains("-500"));
+    }
+
+    #[test]
+    fn a_glyph_from_another_stream_is_still_refused() {
+        // The scoping loosened WHICH stream may be edited, not whether a span has to belong to
+        // the one being edited. A form's span against the page's bytes cuts in the wrong place.
+        let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        assert_refused_bytes(
+            remove_glyphs(b"/Fm0 Do", None, &glyphs[1..2]),
+            Refusal::GlyphFromAnotherStream,
+        );
+    }
+
+    #[test]
+    fn a_type_three_procedure_that_shows_text_is_refused() {
+        // CHANNEL 8, FAILING CLOSED. The walk does not descend into `/CharProcs`, so a
+        // redaction that removed this page's Type 3 glyphs would leave the procedure's own
+        // text in the font. An `Ok` over text nothing observed is what §8 forbids.
+        assert_refused_unit(
+            check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n"),
+            Refusal::TypeThreeProcedureShowsText,
+        );
+        for shape in [
+            b"500 0 d0 BT [(A)] TJ ET".as_slice(),
+            b"500 0 d0 BT (A) ' ET".as_slice(),
+            b"500 0 d0 BT 1 1 (A) \" ET".as_slice(),
+        ] {
+            assert_refused_unit(
+                check_type_three_procedure(shape),
+                Refusal::TypeThreeProcedureShowsText,
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_type_three_procedure_is_not_refused() {
+        // THE NEAR-MISS, and it is the majority case. Almost every Type 3 procedure draws
+        // shapes and no text; refusing those would refuse essentially every document with a
+        // Type 3 font in it.
+        check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n").expect("draws no text");
+        // A SCAN, NOT A BYTE SEARCH: `Tj` inside a string is not an operator, and a byte
+        // search would refuse this procedure for drawing nothing at all.
+        check_type_three_procedure(b"500 0 d0\n% Tj in a comment\n0 0 1 1 re f\n")
+            .expect("a comment is not an operator");
+    }
+
+    /// The rule-naming assertion, for a check that yields nothing.
+    #[track_caller]
+    fn assert_refused_unit(outcome: Result<()>, rule: Refusal) {
+        match outcome {
+            Err(error) => assert!(
+                rule.caught(&error),
+                "refused, but by a different rule: wanted `{}`, got {error:?}",
+                rule.rule()
+            ),
+            Ok(()) => panic!("expected a refusal by `{}`, got success", rule.rule()),
+        }
     }
 
     /// The rule-naming assertion, for a removal rather than a walk.

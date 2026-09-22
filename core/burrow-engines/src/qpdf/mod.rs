@@ -40,6 +40,9 @@ mod limits;
 mod prune;
 mod reorder;
 mod rotate;
+mod sharing;
+#[cfg(test)]
+mod sharing_tests;
 
 #[cfg(feature = "fuzzing")]
 pub use limits::enable_fuzz_mode;

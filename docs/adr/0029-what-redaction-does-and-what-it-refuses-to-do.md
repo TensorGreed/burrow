@@ -701,11 +701,20 @@ That fails in both directions at once, which is what makes it worse than a misse
 Nothing in §6's read-back catches it: that verification asks whether the selected region is
 clear on the page it was asked about, and it is.
 
-### The decision: refuse a form drawn more than once
+### The decision: refuse only when the region reaches inside a shared form
 
-v1 **refuses** a redaction whose region meets text inside a Form XObject that is drawn more than
-once in the document. A form drawn exactly once is edited in place as §1 describes, because
+v1 refuses when **the region reaches glyphs or ink inside a Form XObject that is drawn more than
+once** in the document. A form drawn exactly once is edited in place as §1 describes, because
 there is nowhere else for the edit to reach.
+
+**The scoping is the decision, not a detail of it.** Refusing any page that *contains* a shared
+form would refuse a large share of real documents: a letterhead, a header, a footer, a watermark
+and a logo are all commonly one form object drawn on every page, and none of them is what the
+user selected. A redaction nobody can run leaks nothing only because it never runs, and §7's
+disclosure is worth nothing if it fires on the ordinary case.
+
+So the test is over the glyphs **being removed**, not over the resources present: a form is only
+in question when a glyph the operation is about to cut came out of it.
 
 **Sharing is detected by object identity, never by resource name.** Two pages may both call a
 form `/Fm0` and mean different objects; one page may reach the same object under two names.
@@ -718,16 +727,41 @@ The scan is over **every page's** resource graph, not the page being redacted. A
 with a page the user never selected is exactly the case the refusal exists for, and a per-page
 scan cannot see it.
 
+And "the resource graph" means every graph from which a form can be drawn, not just page
+resources. A use counted in one place and missed in another reads as *unshared*, which is the
+direction that edits in place and damages the other page:
+
+| graph | why it can reach a form |
+|---|---|
+| a page's `/Resources` → `/XObject` | the ordinary `Do` |
+| a **nested form's** own `/Resources` → `/XObject` | a form drawing another form, to `MAX_FORM_DEPTH` |
+| an annotation's `/AP` → `/N` (and `/D`, `/R`) appearance stream's `/Resources` | an appearance is a form, and it has resources of its own |
+| a **tiling pattern's** `/Resources` | a pattern's content stream draws like any other |
+| a **Type 3 font's** `/CharProcs` entries and the font's `/Resources` | a glyph procedure draws like any other |
+
+The annotation case is the one a page-only scan misses most easily, because an appearance
+stream is reached through `/Annots` rather than through `/Resources`, and it is a form object in
+its own right. There is a fixture for it.
+
 ### The same rule applies to Type 3 `/CharProcs`
 
 A Type 3 glyph procedure is a content stream that draws glyphs, and a Type 3 **font** is shared
 by every page that selects it — which is the ordinary case, not the exotic one. Editing a
 `/CharProcs` entry changes that character everywhere in the document.
 
-So the same test: a glyph procedure reachable from more than one page's `/Font` resources is
-refused rather than edited. This is stricter in practice than the form rule, because a font
-used on one page only is uncommon — and that is the honest position rather than a reason to
-weaken it.
+So the same test, scoped the same way: refuse when **the region reaches text inside a glyph
+procedure** belonging to a Type 3 font reachable from more than one place. A Type 3 font merely
+being present refuses nothing — which matters more here than for forms, because a Type 3 font
+used on one page only is uncommon, and an unscoped rule would refuse essentially every document
+that has one.
+
+**Residue, stated rather than implied:** the geometry walk does not descend into `/CharProcs`
+today. `Resources` resolves forms and glyph metrics; it has no hook for a glyph procedure's
+content stream, so text drawn inside one is not currently found at all — which is spike 0006's
+channel 8 and is why that channel is still open. This rule is therefore written for the walk
+that will reach it, and the refusal cannot fire until it does. Recording the rule now is
+deliberate: the alternative is discovering it while writing the code that would have edited a
+shared font in place.
 
 ### Copy-on-write is the alternative, and the C API wall is in the way
 
@@ -778,6 +812,34 @@ that file's own header warns against.
 Note also that `qpdf_oh_is_stream` is **not** the way to ask whether an object is a stream:
 resolving an indirect handle parses, which is `qpdf_is_linearized`'s disqualifying property.
 `qpdf_oh_get_type_code` is trapped and is the verb to use.
+
+### What the scan costs
+
+Measured 2026-09-22, because a rule that walks every page's graph on every redaction has to be
+priced rather than assumed. No large document is committed — `corpus/files/` is fetched, and the
+biggest fixture here is 137 pages and 139 objects — so the measurement is on generated documents
+of the shape the rule cares about: one form drawn by every page **and** by every page's
+annotation appearance.
+
+| pages | objects | bytes | reference scan | `qpdf --check` (median of 5) |
+|--:|--:|--:|--:|--:|
+| 1,000 | 2,004 | 283 KiB | 0.5 ms | 32 ms |
+| 5,000 | 10,004 | 1,424 KiB | 2.4 ms | 110 ms |
+
+Both columns are linear in object count, and the scan itself is not where the cost is: **qpdf's
+own object resolution dominates by roughly fifty to one**. So the rule's price is one pass over
+the object graph, which a redaction already pays to open the document, and the walk should reuse
+that pass rather than taking its own.
+
+Two honest qualifications. The scan column is a *string* scan standing in for the qpdf-side walk
+that does not exist yet, so it bounds the bookkeeping and not the resolution. And these documents
+are uniform; a real one with deeply nested forms pays `MAX_FORM_DEPTH` per entry rather than one.
+The number to re-measure is the production walk when it lands.
+
+The same generated documents also measure the annotation half of the rule: a full scan counts
+**11,000** uses at 5,000 pages where a page-resources-only scan counts **6,000**. A scan confined
+to page resources would report a bit over half the uses of a form — and under-counting reads as
+*unshared*, which is the direction that edits in place.
 
 ### Condition for revisiting
 
