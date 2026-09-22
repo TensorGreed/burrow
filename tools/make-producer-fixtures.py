@@ -192,6 +192,78 @@ def writer_export(out: Path, work: Path) -> Path:
     return target
 
 
+def vertical_writing(out: Path, work: Path) -> Path:
+    """LibreOffice Writer again, asked for a vertically written paragraph.
+
+    # What this fixture is for, and the finding it carries
+
+    #129 refuses a font whose CMap declares `WMode 1`, and the obvious worry is a vertical
+    document evading it. This fixture is the measurement that says what a real producer
+    actually emits, and the answer was not the expected one: asked for `tb-rl` Japanese,
+    LibreOffice emits **no CID font, no `Identity-V` and no `WMode` at all** -- a subset
+    *simple* font and one `Tm` per glyph, stepping `y` down the page. The ordinary horizontal
+    walk places it correctly and there is nothing to refuse.
+
+    So this is a fixture for the case that must **not** be refused, which is the half a
+    refusal test usually lacks. `/Widths [0 -1000 -1000 ...]` -- negative advances -- is the
+    detail nobody would hand-write.
+
+    # Third-party content, which the other three do not have
+
+    This is the only committed fixture in the repository that embeds a font from outside it:
+    a six-glyph Type 1 subset of Noto Serif CJK SC, OFL-1.1. `PROVENANCE.md` beside it and
+    `THIRD_PARTY_NOTICES.md` both carry the audit. A CJK face is unavoidable here -- vertical
+    writing is a CJK feature and no bundled Latin font exercises it.
+    """
+    fodt = work / "vertical.fodt"
+    # Flat ODF again, for the same reason: the source of the fixture is readable in a diff.
+    # `style:writing-mode="tb-rl"` on BOTH the page layout and the paragraph -- Writer honours
+    # the paragraph only if the page agrees, and a fixture that silently came out horizontal
+    # would be a fixture measuring nothing.
+    fodt.write_text(
+        textwrap.dedent("""\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+         xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+         xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+         xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+         office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.text">
+         <office:automatic-styles>
+          <style:page-layout style:name="pm1">
+           <style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm"
+             style:writing-mode="tb-rl"/>
+          </style:page-layout>
+          <style:style style:name="P1" style:family="paragraph">
+           <style:paragraph-properties style:writing-mode="tb-rl"/>
+           <style:text-properties style:font-name-asian="Noto Sans CJK JP" style:font-size-asian="24pt"/>
+          </style:style>
+         </office:automatic-styles>
+         <office:master-styles>
+          <style:master-page style:name="Standard" style:page-layout-name="pm1"/>
+         </office:master-styles>
+         <office:body><office:text>
+          <text:p text:style-name="P1">\u79d8\u5bc6\u6587\u66f8\u3067\u3059</text:p>
+         </office:text></office:body>
+        </office:document>
+        """),
+        encoding="utf-8",
+    )
+    run(
+        [
+            "libreoffice",
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(work),
+            str(fodt),
+        ]
+    )
+    target = out / "producer-vertical-writing.pdf"
+    shutil.copyfile(work / "vertical.pdf", target)
+    return target
+
+
 # ---------------------------------------------------------------------------
 # 2. A typesetter's output.
 # ---------------------------------------------------------------------------
@@ -345,6 +417,10 @@ BUILDERS = {
     "producer-writer.pdf": ("LibreOffice Writer export", writer_export),
     "producer-latex.pdf": ("pdfTeX / LaTeX", latex_document),
     "producer-ocr-scan.pdf": ("scanner + tesseract OCR", ocr_scan),
+    "producer-vertical-writing.pdf": (
+        "LibreOffice Writer, vertical tb-rl text",
+        vertical_writing,
+    ),
 }
 
 

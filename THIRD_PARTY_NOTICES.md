@@ -229,10 +229,20 @@ MIT.
 
 ## Fonts
 
-Any bundled font must be OFL-1.1 or a permissive alternative, with its full license text
-included alongside the font file. `apps/web/fonts.toml` is the manifest: where each face
-came from, pinned to an upstream commit, what was done to it, and the digest of what ships.
+Any bundled font must be OFL-1.1 or a permissive alternative. There are **two classes**, and
+they carry different obligations:
+
+**Distributed** — a font file the website ships. Its full licence text must sit alongside it.
+`apps/web/fonts.toml` is the manifest for this class: where each face came from, pinned to an
+upstream commit, what was done to it, and the digest of what ships.
 `apps/web/src/fonts.test.ts` holds the shipped bytes to that record.
+
+**Embedded** — a font that arrives *inside* a committed document, as a subset in a test
+fixture's PDF. OFL-FAQ 1.10 makes embedding the one case in which an OFL font may travel
+without the licence text, so no `OFL.txt` sits beside those files; the notice travels here
+instead. There is no manifest and **no automated gate** for this class — see the Noto Serif
+CJK entry below, and [#154](https://github.com/TensorGreed/burrow/issues/154), which exists
+because the hand-maintained control has already missed one.
 
 ### Atkinson Hyperlegible Next 2.001 — OFL-1.1
 
@@ -261,3 +271,133 @@ MIT-Modern-Variant impose affirmative acknowledgement obligations binding "docum
 accompanying the distribution" (ADR 0008). OFL 1.1 imposes no such obligation, and adding a
 font to a page whose reason for existing is a different clause would blur why that page is
 mandatory. `apps/web/fonts.toml` gives the full reasoning.
+
+### Noto Serif CJK SC 2.002, six-glyph subset embedded in a test fixture — OFL-1.1
+
+Copyright © 2017-2023 Adobe (https://www.adobe.com/). Trademarks held by Google.
+Licensed under the SIL Open Font License, Version 1.1:
+https://github.com/notofonts/noto-cjk/blob/main/Serif/LICENSE
+
+**Not shipped in any burrow binary, and not a dependency.** A six-glyph Type 1 subset
+(`/FontFile`, `/BAAAAA+NotoSerifCJKsc-Regular`) embedded by LibreOffice in
+`tests/redaction/fixtures/producer-vertical-writing.pdf`, a real-producer fixture for
+vertical (`tb-rl`) text. It is test data: no build step reads it, nothing links it, and it
+is absent from every artifact we distribute.
+
+Source: `fonts-noto-cjk` `1:20230817+repack1-3`, supplying
+`/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc` at version 2.002. Established from
+the installed font's own `name` table (ID 0 the copyright, IDs 13/14 the licence) and
+verified against upstream `notofonts/noto-cjk` `Serif/LICENSE`, not only against package
+metadata. The Debian `copyright` file records `Files: *` as SIL-1.1; its GPL-3+ stanza covers
+`debian/*` packaging scripts only and none of that reaches the PDF. Upstream's
+`Serif/README-third_party.md` still calls the fonts Apache-2.0 in its prose while its own
+header says OFL-1.1 — both are on the allowlist, so the stale sentence changes nothing, but
+cite `Serif/LICENSE`.
+
+**Do not read the version off the PDF.** Its Type 1 header says `NotoSerifCJKsc-Regular
+001.003`, which is LibreOffice's conversion stamp and not a Noto CJK release number. That is
+benign here only because every Noto CJK release is allowlisted — ≥1.002 is OFL-1.1, earlier
+was Apache-2.0 — and would not be benign for a family that changed to a forbidden licence at
+some version. The provenance pins the *system* font by path and version for that reason.
+
+**No Reserved Font Name is engaged.** OFL 1.1 defines an RFN as a name "specified as such
+after the copyright statement(s)", and neither upstream's LICENSE nor the font's own name ID
+0 specifies one — Adobe reserves "Source" for Source Han Serif; Google's Noto re-release
+deliberately reserves nothing. Clause 3 is therefore inert for both the `/BaseFont` subset
+tag and the internal `/FontName`, which still reads `NotoSerifCJKsc-Regular`. **Re-check on
+any version bump**: declaring an RFN is a one-line upstream change and would otherwise pass
+unnoticed. Same standing obligation as the Atkinson entry.
+
+**The OFL text is not required to travel with it, and does not.** OFL-FAQ 1.10: the one case
+in which an OFL font may be distributed without the licence text is when it is embedded in a
+document. FAQ 1.11-1.12 place a format-converted six-glyph subset inside a PDF firmly in
+"embedding" — our artifact satisfies every clause of that description at once, since the
+format was altered (OpenType/CFF → Type 1), six glyphs are present, and the names are
+`cid28987`-style CID references. FAQ 1.13 confirms the document's own licence is unaffected,
+so the fixture stays `MIT OR Apache-2.0`.
+
+The distinction that would bite next time: FAQ 1.15 makes dropping an **unmodified** font
+file into a container *bundling*, not embedding, and bundling does carry clause 2's
+notice-and-licence requirement. Committing a `.ttf` or `.otf` to this repository would
+engage that. A PDF with a six-glyph Type 1 subset inside it does not.
+
+**One residual, recorded rather than smoothed over.** LibreOffice's OpenType-to-Type 1
+conversion discarded the font's `name` table, so the embedded program carries **no copyright
+notice and no licence reference** — verified by string search and by decrypting the eexec
+portion, which holds only `/Private`, `/Subrs`, `/CharStrings` and six `/cid*` glyphs. A
+literal reading of OFL clause 2 ("each copy contains the above copyright notice and this
+license") is therefore not satisfied by the bytes; the position rests on SIL's own published
+interpretation that clause 2 governs distribution rather than embedding. That reading is
+sound, and this entry is where the notice travels instead, so the obligation is discharged
+either way.
+
+Deliberately **not** in `engines/licenses.toml` and not on the website `/credits` page: it is
+not an engine, has no vendor tree and no symbols, and OFL 1.1 imposes no affirmative
+acknowledgement obligation of the kind that makes that page mandatory for FTL, IJG and
+MIT-Modern-Variant.
+
+### Liberation Serif 2.1.5 and Liberation Sans 2.1.5, subsets embedded in a test fixture — OFL-1.1
+
+Digitized data copyright © 2010 Google Corporation. Copyright © 2012 Red Hat, Inc.
+Ascender Corporation. Licensed under the SIL Open Font License, Version 1.1:
+http://scripts.sil.org/OFL
+
+**Not shipped in any burrow binary, and not a dependency.** `/FontFile2` TrueType subsets
+(`/BAAAAA+LiberationSans-Bold`, `/CAAAAA+LiberationSerif`) embedded by LibreOffice in
+`tests/redaction/fixtures/producer-writer.pdf`. Test data, as above.
+
+**This entry exists because the record was wrong.** `tests/redaction/PROVENANCE.md` stated
+that no third-party font was embedded in those fixtures and that "the fonts are the
+producers' own bundled faces". Liberation is Ascender, Red Hat and Google — a face LibreOffice
+*bundles* is not a face LibreOffice *wrote*. Read out of the embedded `name` tables, not
+inferred. Both provenance and this file are corrected, and
+[#154](https://github.com/TensorGreed/burrow/issues/154) is the control.
+
+**Clean, and clean only by the version.** 2.1.5 is OFL-1.1, and these subsets retain name IDs
+0, 13 and 14, so OFL clause 2 is satisfied literally — unlike the Noto Type 1 subset above.
+**Liberation 1.x was GPLv2 with a font exception**, which this repository's allowlist forbids,
+so the version is load-bearing rather than incidental.
+
+### `GlyphLessFont` 1.0, embedded in a test fixture — Apache-2.0
+
+Copyright © 2020 Google Inc. Licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+**Not shipped in any burrow binary, and not a dependency.** A 572-byte `/FontFile2`
+embedded by tesseract in `tests/redaction/fixtures/producer-ocr-scan.pdf`: the invisible
+face an OCR layer draws its recognised text with. Test data.
+
+**Established by byte identity against a version-pinned source, because the font itself
+says nothing.** Its `name` table carries no copyright string and no licence string — read,
+not assumed — so the file cannot answer for itself and an earlier version of this entry
+recorded it as *undetermined*. ADR 0008 forbids anything unclear, so undetermined could not
+stand on a committed fixture. The route that resolved it:
+
+1. `tesseract --version` on the producing host reports **5.3.4**, which is the version
+   `tests/redaction/PROVENANCE.md` records for `producer-ocr-scan.pdf`.
+2. Tesseract does not ship the font as a file; it generates it from
+   `src/api/pdf_ttf.h`, a `static const uint8_t pdf_ttf[]` array produced by
+   `bin2cpp pdf.ttf pdf_ttf cpp17`. Fetched at tag **5.3.4**, that file's header reads
+   `(C) Copyright 2020, Google Inc.` and `Licensed under the Apache License, Version 2.0`.
+3. The array decodes to **573 bytes**, sha256
+   `dbbbba44717f3c6dfdb4ab8dd5d231ba16ef002d75cedb820824ce6063c0a5ee`. The fixture's
+   embedded font is **572 bytes**, sha256
+   `c7845420925a23d88ed830a63957b8af85a66a8daf8d9fc90e843673b2ef1a59`, and the two are
+   **byte-for-byte identical over all 572**. The extra byte is the array's trailing `0x00`,
+   `bin2cpp`'s NUL terminator, which is not part of the font.
+4. Tesseract's top-level `LICENSE` at tag 5.3.4 is the Apache License 2.0, and the Debian
+   `tesseract-ocr` `5.3.4-1build5` copyright file records `Files: *` as Apache-2.0.
+
+So the bytes in the fixture are the bytes tesseract distributes under Apache-2.0, and the
+claim rests on a hash comparison rather than on the package's word or the font's silence.
+
+**Both Apache-2.0 obligations are already discharged.** §4(a) requires recipients of the
+Work to receive a copy of the licence: burrow carries `LICENSE-APACHE` at its root, since
+the project is itself `MIT OR Apache-2.0`. §4(d) requires carrying a `NOTICE` file's
+contents where one exists — **tesseract 5.3.4 has no `NOTICE` file** (checked: 404 at that
+tag, and none under any of the usual spellings), so nothing is owed under it. No further
+file is added beside the fixture.
+
+**Re-check if the fixture is regenerated against a different tesseract.** The verification
+above is pinned to 5.3.4; a newer release could change the font bytes, and the hash
+comparison is what would catch it.

@@ -34,8 +34,7 @@
 #![no_main]
 
 use burrow_engines::pdfsyntax::geometry::{
-    Form, Glyph, GlyphMetrics, MAX_GLYPHS, Matrix, Rect, Refusal, Resources, WritingMode,
-    glyphs_in,
+    Encoding, Form, Glyph, GlyphMetrics, MAX_GLYPHS, Matrix, Rect, Refusal, Resources, glyphs_in,
 };
 use burrow_types::{Error, Result};
 use libfuzzer_sys::fuzz_target;
@@ -46,7 +45,7 @@ struct Hostile {
     font_matrix_scale: f64,
     bytes_per_code: u8,
     bbox: Option<Rect>,
-    vertical: bool,
+    encoding: Encoding,
     forms: Vec<(Vec<u8>, Form)>,
 }
 
@@ -65,11 +64,7 @@ impl Resources for Hostile {
             bytes_per_code: self.bytes_per_code,
             font_bbox: self.bbox,
             font_matrix: Matrix::scale(self.font_matrix_scale, self.font_matrix_scale),
-            writing_mode: if self.vertical {
-                WritingMode::Vertical
-            } else {
-                WritingMode::Horizontal
-            },
+            encoding: self.encoding.clone(),
         })
     }
 
@@ -106,7 +101,18 @@ fuzz_target!(|data: &[u8]| {
             right: pick(control[3]),
             top: pick(control[4]),
         }),
-        vertical: control[5] & 1 == 1,
+        // THE ENCODING IS THE FUZZER'S TOO, and all four arms are reachable. The walk derives
+        // the writing mode from this rather than being told it, so pinning it to `Simple` would
+        // leave the derivation -- and the two refusals hanging off it -- unexplored.
+        encoding: match control[5] % 4 {
+            0 => Encoding::Simple,
+            1 => Encoding::Predefined(body.to_vec()),
+            2 => Encoding::UnreadableCMap,
+            _ => Encoding::Embedded {
+                dictionary_wmode: (control[4] % 3 != 0).then(|| i64::from(control[4] % 3) - 1),
+                program: body.to_vec(),
+            },
+        },
         // THE FORM TABLE IS WIRED FROM THE SAME BYTES, so a cycle or a sixteen-deep nest is a
         // mutation away. A table of distinct, non-recursive forms would leave the two bounds
         // this module cares most about unreachable.

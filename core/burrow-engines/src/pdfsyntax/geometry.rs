@@ -40,6 +40,17 @@
 //! inherited through `usecmap` — and [`CMap::Embedded`] does not carry a name at all, so it
 //! cannot be keyed on by accident.
 //!
+//! **And the walk derives it rather than being told.** That is the difference between a rule
+//! that holds in this module's tests and one that holds over a document. [`GlyphMetrics`] used
+//! to carry a [`WritingMode`] the resolver supplied, so a resolver that could not decode a CMap
+//! stream — or never tried — returned `Horizontal` by default, with no refusal and no compile
+//! error: the whole rule was true at unit level and vacuous at document level. It now carries
+//! an [`Encoding`], every arm of which is an answer someone had to give, and the arm for "I
+//! could not read it" is [`Encoding::UnreadableCMap`], which is refused. There is no way left
+//! to reach horizontal by omission. `tests/glyph_geometry.rs` pins it on a real PDF whose
+//! `/Encoding` is a CMap **stream** named `/Ordinary-H` and declaring `WMode 1`, against a twin
+//! differing in one digit that must not be refused.
+//!
 //! # What this walk does not reach
 //!
 //! "Every early exit is a refusal" is a claim about the operators the walk **models**. It was
@@ -121,6 +132,10 @@ pub enum Refusal {
     TooManyFormDraws,
     /// A pattern fill, which can draw text burrow's walk does not reach.
     PatternMayDrawText,
+    /// An embedded CMap stream the resolver could not read.
+    UnreadableCMap,
+    /// A simple font whose codes are not single bytes.
+    SimpleFontWithMultiByteCodes,
     /// A Form XObject that draws itself, directly or through another form.
     FormCycle,
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
@@ -152,6 +167,8 @@ impl Refusal {
         Self::TooManyGlyphs,
         Self::TooManyFormDraws,
         Self::PatternMayDrawText,
+        Self::UnreadableCMap,
+        Self::SimpleFontWithMultiByteCodes,
         Self::FormCycle,
         Self::FormDepth,
         Self::VerticalWriting,
@@ -180,6 +197,8 @@ impl Refusal {
             Self::TooManyGlyphs => "too-many-glyphs",
             Self::TooManyFormDraws => "too-many-form-draws",
             Self::PatternMayDrawText => "pattern-may-draw-text",
+            Self::UnreadableCMap => "unreadable-cmap",
+            Self::SimpleFontWithMultiByteCodes => "simple-font-multi-byte-codes",
             Self::FormCycle => "form-cycle",
             Self::FormDepth => "form-depth",
             Self::VerticalWriting => "vertical-writing",
@@ -197,6 +216,7 @@ impl Refusal {
                 | Self::TooManyGlyphs
                 | Self::TooManyFormDraws
                 | Self::PatternMayDrawText
+                | Self::UnreadableCMap
         )
     }
 
@@ -611,6 +631,43 @@ impl WritingMode {
     }
 }
 
+/// The writing mode a font's encoding implies, refusing the encodings that imply nothing.
+///
+/// # Errors
+///
+/// [`Refusal::UnreadableCMap`] for a CMap stream the resolver could not read;
+/// [`Refusal::SimpleFontWithMultiByteCodes`] for a simple font claiming multi-byte codes, which
+/// is incoherent -- `WMode` lives on a CMap, and a font with no CMap cannot have multi-byte
+/// codes; and whatever [`writing_mode_of`] refuses.
+pub fn writing_mode_for(encoding: &Encoding, bytes_per_code: u8) -> Result<WritingMode> {
+    match encoding {
+        Encoding::Simple => {
+            if bytes_per_code == 1 {
+                Ok(WritingMode::Horizontal)
+            } else {
+                // NOT A PEDANTRY. `Encoding::Simple` is the one arm that concludes "horizontal"
+                // without reading anything, so it is the one a resolver could misuse to skip
+                // the question for a CID font. A simple font's codes are bytes; if they are not,
+                // the resolver has classified the font wrongly and its answer is worth nothing.
+                Refusal::SimpleFontWithMultiByteCodes.refuse(
+                    "a font encoded as a simple font but claiming codes wider than one byte",
+                )
+            }
+        }
+        Encoding::Predefined(name) => writing_mode_of(&CMap::Predefined(name)),
+        Encoding::Embedded {
+            dictionary_wmode,
+            program,
+        } => writing_mode_of(&CMap::Embedded {
+            dictionary_wmode: *dictionary_wmode,
+            program,
+        }),
+        Encoding::UnreadableCMap => Refusal::UnreadableCMap.refuse(
+            "an embedded CMap stream burrow could not read, so its writing mode is unknown",
+        ),
+    }
+}
+
 /// Derive a CMap's writing mode from what the file actually says.
 ///
 /// # Errors
@@ -832,7 +889,7 @@ pub struct Form {
 }
 
 /// What a glyph's font says about it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GlyphMetrics {
     /// The advance, in glyph-space units before the font matrix.
     pub width: f64,
@@ -842,10 +899,52 @@ pub struct GlyphMetrics {
     pub bytes_per_code: u8,
     /// The font's `/FontBBox`, in glyph space.
     pub font_bbox: Option<Rect>,
-    /// Glyph space to text space — `/FontMatrix` for a Type 3, 0.001 otherwise.
+    /// Glyph space to text space -- `/FontMatrix` for a Type 3, 0.001 otherwise.
     pub font_matrix: Matrix,
-    /// Which way the font lays glyphs out.
-    pub writing_mode: WritingMode,
+    /// How the font's codes are encoded, from which the walk derives the writing mode.
+    ///
+    /// # Why this is the encoding and not a `WritingMode`
+    ///
+    /// It used to be a `WritingMode`, supplied by whoever implements [`Resources`]. That made
+    /// the whole `WMode` rule true at unit level and **nothing at all at document level**: a
+    /// resolver that simply never read the CMap would return `Horizontal`, silently, with no
+    /// refusal and no compile error. The dangerous answer was the one you got by doing nothing.
+    ///
+    /// So the seam carries what the *file* says and the walk draws the conclusion, through
+    /// [`writing_mode_of`]. A resolver can no longer omit the question; it can only answer it,
+    /// name a predefined CMap, hand over the program, or say it could not read the stream --
+    /// and that last one is [`Encoding::UnreadableCMap`], which is refused.
+    pub encoding: Encoding,
+}
+
+/// How a font's codes are encoded, as the resolver found it in the file.
+///
+/// Every arm is a statement a resolver has to make deliberately. There is no arm meaning
+/// "I did not look", which is the point: see [`GlyphMetrics::encoding`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Encoding {
+    /// A simple font -- Type 1, TrueType, Type 3 -- whose `/Encoding` is a name or a
+    /// difference list rather than a CMap.
+    ///
+    /// Horizontal by construction: `WMode` is a property of a CMap, and a simple font has
+    /// none. Single-byte by construction too, which the walk checks rather than assumes.
+    Simple,
+    /// A predefined CMap, by registry name. The document carries no program.
+    Predefined(Vec<u8>),
+    /// An embedded CMap stream the resolver read: its dictionary's `/WMode` and its program.
+    Embedded {
+        /// `/WMode` on the CMap stream dictionary, if the file states one.
+        dictionary_wmode: Option<i64>,
+        /// The CMap program, decoded.
+        program: Vec<u8>,
+    },
+    /// An embedded CMap stream the resolver could **not** read.
+    ///
+    /// A filter it does not implement, a decode that failed, a stream that is not there. The
+    /// walk refuses it: a CMap nobody read is a writing mode nobody knows, and guessing
+    /// horizontal is the guess that boxes vertical text in the wrong place and misses it.
+    UnreadableCMap,
 }
 
 /// What the walk needs from the document, so `pdfsyntax` still holds none.
@@ -1266,7 +1365,8 @@ fn show(
             code = (code << 8) | u32::from(*byte);
         }
         let metrics = resources.glyph(&font, code)?;
-        check_writing_mode(metrics.writing_mode)?;
+        // THE WALK DRAWS THE CONCLUSION, from what the file says. See `GlyphMetrics::encoding`.
+        check_writing_mode(writing_mode_for(&metrics.encoding, per_code)?)?;
         // THE METRICS COME OUT OF THE FILE TOO. Checking the content stream's operands and the
         // composed CTM left this open: a `/W` entry of `f64::MAX` against a `/FontMatrix` of
         // 1e297 multiplies to an infinity, and the box built from it was
@@ -1350,8 +1450,8 @@ mod tests {
     use burrow_types::{Error, Result};
 
     use super::{
-        CMap, Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix, Rect, Refusal,
-        Resources, TextPosition, TextState, WritingMode, check_writing_mode, glyphs_in,
+        CMap, Encoding, Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix, Rect,
+        Refusal, Resources, TextPosition, TextState, WritingMode, check_writing_mode, glyphs_in,
         takes_word_spacing, writing_mode_of,
     };
 
@@ -1361,7 +1461,7 @@ mod tests {
     /// their head, which is what makes a failure message useful rather than a pair of decimals.
     struct Fake {
         forms: Vec<(Vec<u8>, Form)>,
-        writing_mode: WritingMode,
+        encoding: Encoding,
         bytes_per_code: u8,
         width: f64,
         font_matrix_scale: f64,
@@ -1371,7 +1471,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 forms: Vec::new(),
-                writing_mode: WritingMode::Horizontal,
+                encoding: Encoding::Simple,
                 bytes_per_code: 1,
                 width: 500.0,
                 font_matrix_scale: 0.001,
@@ -1411,7 +1511,7 @@ mod tests {
                     top: 1000.0,
                 }),
                 font_matrix: Matrix::scale(self.font_matrix_scale, self.font_matrix_scale),
-                writing_mode: self.writing_mode,
+                encoding: self.encoding.clone(),
             })
         }
 
@@ -1472,7 +1572,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 22,
+            total, 24,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -2287,9 +2387,76 @@ mod tests {
     }
 
     #[test]
+    fn a_cmap_the_resolver_could_not_read_is_refused() {
+        // THE DOCUMENT-LEVEL EVASION, closed at the seam. Before this, `GlyphMetrics` carried a
+        // `WritingMode` the resolver supplied -- so a resolver that could not decode a CMap
+        // stream, or never tried, returned `Horizontal` and the whole `WMode` rule was true at
+        // unit level and vacuous at document level. There is now no way to say "horizontal" by
+        // omission: the only arms are the ones that answer the question.
+        let mut resources = Fake::new();
+        resources.encoding = Encoding::UnreadableCMap;
+        resources.bytes_per_code = 2;
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
+            Refusal::UnreadableCMap,
+        );
+    }
+
+    #[test]
+    fn a_simple_font_claiming_wide_codes_is_refused() {
+        // `Encoding::Simple` is the one arm that concludes "horizontal" without reading
+        // anything, so it is the one a resolver could misuse to skip the question for a CID
+        // font. A simple font's codes are bytes; if they are not, the classification is wrong
+        // and so is the conclusion drawn from it.
+        let mut resources = Fake::new();
+        resources.bytes_per_code = 2;
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
+            Refusal::SimpleFontWithMultiByteCodes,
+        );
+    }
+
+    #[test]
+    fn an_embedded_cmap_is_read_rather_than_trusted() {
+        // The near-miss pair at the seam, not only at `writing_mode_of`: the SAME resolver
+        // shape, differing only in the program's `WMode` digit, must walk one and refuse the
+        // other. The name says `Identity-H` in both.
+        let mut vertical = Fake::new();
+        vertical.bytes_per_code = 2;
+        vertical.encoding = Encoding::Embedded {
+            dictionary_wmode: None,
+            program: b"/CMapName /Identity-H def /WMode 1 def".to_vec(),
+        };
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &vertical),
+            Refusal::VerticalWriting,
+        );
+
+        let mut horizontal = Fake::new();
+        horizontal.bytes_per_code = 2;
+        horizontal.encoding = Encoding::Embedded {
+            dictionary_wmode: None,
+            program: b"/CMapName /Identity-H def /WMode 0 def".to_vec(),
+        };
+        assert_eq!(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &horizontal)
+                .expect("the twin must walk")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn a_vertical_writing_mode_is_refused() {
         let mut resources = Fake::new();
-        resources.writing_mode = WritingMode::Vertical;
+        // STATED AS THE FILE WOULD STATE IT -- an embedded CMap whose program declares
+        // `WMode 1` -- rather than as a `WritingMode` the fake simply asserts. The walk has to
+        // read it to refuse it, which is what makes this a test of the derivation.
+        resources.encoding = Encoding::Embedded {
+            dictionary_wmode: None,
+            program: b"/CMapName /Ordinary-H def /WMode 1 def".to_vec(),
+        };
+        resources.bytes_per_code = 2;
         assert_refused(
             glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources),
             Refusal::VerticalWriting,
