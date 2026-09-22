@@ -14,6 +14,7 @@ use std::sync::Arc;
 use burrow_types::{Clock, Limits, SystemClock};
 
 use super::handle::ObjectHandle;
+use super::name::Name;
 use super::{Document, open_document};
 use crate::OpenOptions;
 use crate::minimal_pdf;
@@ -29,7 +30,7 @@ fn options() -> OpenOptions<'static> {
 fn page_contents(document: &Document) -> ObjectHandle<'_> {
     // SAFETY: the document opened successfully and page 0 is below its page count.
     let page = unsafe { ObjectHandle::page(document, 0) };
-    page.key(c"/Contents".as_ptr())
+    page.key(&Name::literal(b"/Contents\0"))
 }
 
 #[test]
@@ -77,7 +78,7 @@ fn a_null_filter_leaves_the_stream_uncompressed_and_readable() {
         .expect("the replace succeeds");
 
     let dictionary = contents.stream_dict();
-    let filter = dictionary.key(c"/Filter".as_ptr());
+    let filter = dictionary.key(&Name::literal(b"/Filter\0"));
     // `qpdf_ot_null` is 2 (`qpdf-c.h`'s `qpdf_object_type_e`: uninitialized, reserved, null,
     // …) — the first draft of this test guessed 1 and the engine said 2, which is the reason
     // to assert against the engine rather than against a remembered enum. The point is only

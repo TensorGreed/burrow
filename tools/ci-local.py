@@ -319,6 +319,7 @@ JOBS: list[dict] = [
                 "tools/test-check-fuzz-target-registration.sh",
                 "python3 tools/check-proptest-regressions.py",
                 "tools/test-check-proptest-regressions.sh",
+                "tools/test-name-requires-slash.sh",
             ]
         ),
         "covers": [
@@ -352,6 +353,7 @@ JOBS: list[dict] = [
             "tools/test-check-fuzz-target-registration.sh",
             "tools/check-proptest-regressions.py",
             "tools/test-check-proptest-regressions.sh",
+            "tools/test-name-requires-slash.sh",
         ],
     },
     {

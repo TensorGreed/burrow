@@ -768,7 +768,7 @@ jobs:
       - name: Every proptest regression seed names the defect it records
         run: |
           python3 tools/check-proptest-regressions.py
-          tools/test-check-proptest-regressions.sh
+          tools/test-check-proptest-regressions.sh && tools/test-name-requires-slash.sh
 
       - name: No workflow publishes a fuzzing reproducer
         run: |

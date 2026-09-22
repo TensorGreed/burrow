@@ -65,6 +65,7 @@ use burrow_types::{Error, Result};
 
 use super::Document;
 use super::handle::ObjectHandle;
+use super::name::Name;
 use crate::codes::qpdf::object_type;
 
 /// How deep the resource graph may nest before the walk refuses.
@@ -77,6 +78,29 @@ pub(crate) const MAX_RESOURCE_DEPTH: u32 = 32;
 
 /// The page-tree climb's ceiling, matching `rotate`'s for the same reason.
 const MAX_PAGE_TREE_DEPTH: u32 = 64;
+
+/// `/Resources`.
+const RESOURCES: Name = Name::literal(b"/Resources\0");
+/// `/Parent`.
+const PARENT: Name = Name::literal(b"/Parent\0");
+/// `/XObject`.
+const XOBJECT: Name = Name::literal(b"/XObject\0");
+/// `/Pattern`.
+const PATTERN: Name = Name::literal(b"/Pattern\0");
+/// `/Font`.
+const FONT: Name = Name::literal(b"/Font\0");
+/// `/CharProcs`.
+const CHARPROCS: Name = Name::literal(b"/CharProcs\0");
+/// `/Annots`.
+const ANNOTS: Name = Name::literal(b"/Annots\0");
+/// `/AP`.
+const AP: Name = Name::literal(b"/AP\0");
+/// `/N`.
+const N: Name = Name::literal(b"/N\0");
+/// `/D`.
+const D: Name = Name::literal(b"/D\0");
+/// `/R`.
+const R: Name = Name::literal(b"/R\0");
 
 /// A PDF object's identity: number and generation.
 type ObjectId = (c_int, c_int);
@@ -162,11 +186,11 @@ impl Walk<'_> {
     /// inherits its resources draws whatever the ancestor names, and a walk that stopped at the
     /// page dictionary would count those forms once instead of once per page.
     fn inherited_resources<'h>(&self, page: &ObjectHandle<'h>) -> Result<Option<ObjectHandle<'h>>> {
-        let direct = self.dictionary_key(page, c"/Resources")?;
+        let direct = self.dictionary_key(page, &RESOURCES)?;
         if direct.is_some() {
             return Ok(direct);
         }
-        let mut current = page.key(c"/Parent".as_ptr());
+        let mut current = page.key(&PARENT);
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
@@ -181,10 +205,10 @@ impl Walk<'_> {
                 // nothing above to inherit from, which is not an error.
                 _ => return Ok(None),
             }
-            if let Some(found) = self.dictionary_key(&current, c"/Resources")? {
+            if let Some(found) = self.dictionary_key(&current, &RESOURCES)? {
                 return Ok(Some(found));
             }
-            let next = current.key(c"/Parent".as_ptr());
+            let next = current.key(&PARENT);
             if let Some(error) = self.document.take_error() {
                 return Err(error);
             }
@@ -206,12 +230,12 @@ impl Walk<'_> {
                     .to_owned(),
             ));
         }
-        for (category, is_form) in [(c"/XObject", true), (c"/Pattern", false)] {
+        for (category, is_form) in [(&XOBJECT, true), (&PATTERN, false)] {
             let Some(dictionary) = self.dictionary_key(resources, category)? else {
                 continue;
             };
             for name in self.keys_of(&dictionary)? {
-                let entry = dictionary.key(name.as_ptr().cast());
+                let entry = dictionary.key(&name);
                 if let Some(error) = self.document.take_error() {
                     return Err(error);
                 }
@@ -259,7 +283,7 @@ impl Walk<'_> {
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
-        let Some(resources) = self.dictionary_key(&dictionary, c"/Resources")? else {
+        let Some(resources) = self.dictionary_key(&dictionary, &RESOURCES)? else {
             return Ok(());
         };
         self.open.push(object);
@@ -270,23 +294,23 @@ impl Walk<'_> {
 
     /// `/Font` entries that are Type 3, whose `/CharProcs` draw like any other stream.
     fn type_three_fonts(&mut self, resources: &ObjectHandle<'_>, depth: u32) -> Result<()> {
-        let Some(fonts) = self.dictionary_key(resources, c"/Font")? else {
+        let Some(fonts) = self.dictionary_key(resources, &FONT)? else {
             return Ok(());
         };
         for name in self.keys_of(&fonts)? {
-            let font = fonts.key(name.as_ptr().cast());
+            let font = fonts.key(&name);
             if let Some(error) = self.document.take_error() {
                 return Err(error);
             }
-            let Some(procs) = self.dictionary_key(&font, c"/CharProcs")? else {
+            let Some(procs) = self.dictionary_key(&font, &CHARPROCS)? else {
                 continue;
             };
             // The font's own `/Resources` is what its procedures draw against.
-            if let Some(inner) = self.dictionary_key(&font, c"/Resources")? {
+            if let Some(inner) = self.dictionary_key(&font, &RESOURCES)? {
                 self.resources(&inner, depth + 1)?;
             }
             for proc_name in self.keys_of(&procs)? {
-                let procedure = procs.key(proc_name.as_ptr().cast());
+                let procedure = procs.key(&proc_name);
                 if let Some(error) = self.document.take_error() {
                     return Err(error);
                 }
@@ -299,7 +323,7 @@ impl Walk<'_> {
 
     /// `/Annots` → `/AP` → `/N`, `/D`, `/R`: appearance streams are forms with resources.
     fn annotations(&mut self, page: &ObjectHandle<'_>) -> Result<()> {
-        let annots = page.key(c"/Annots".as_ptr());
+        let annots = page.key(&ANNOTS);
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
@@ -319,11 +343,11 @@ impl Walk<'_> {
             if let Some(error) = self.document.take_error() {
                 return Err(error);
             }
-            let Some(appearances) = self.dictionary_key(&annotation, c"/AP")? else {
+            let Some(appearances) = self.dictionary_key(&annotation, &AP)? else {
                 continue;
             };
-            for state in [c"/N", c"/D", c"/R"] {
-                let appearance = appearances.key(state.as_ptr());
+            for state in [&N, &D, &R] {
+                let appearance = appearances.key(state);
                 if let Some(error) = self.document.take_error() {
                     return Err(error);
                 }
@@ -334,7 +358,7 @@ impl Walk<'_> {
                 }
                 if kind == object_type::DICTIONARY {
                     for name in self.keys_of(&appearance)? {
-                        let one = appearance.key(name.as_ptr().cast());
+                        let one = appearance.key(&name);
                         if let Some(error) = self.document.take_error() {
                             return Err(error);
                         }
@@ -352,9 +376,9 @@ impl Walk<'_> {
     fn dictionary_key<'h>(
         &self,
         object: &ObjectHandle<'h>,
-        key: &core::ffi::CStr,
+        key: &Name,
     ) -> Result<Option<ObjectHandle<'h>>> {
-        let value = object.key(key.as_ptr());
+        let value = object.key(key);
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
@@ -365,27 +389,22 @@ impl Walk<'_> {
         Ok((code == object_type::DICTIONARY).then_some(value))
     }
 
-    /// A dictionary's keys, as NUL-terminated names.
+    /// A dictionary's keys, as [`Name`]s qpdf will accept.
     ///
     /// Through `unparse` and `pdfsyntax::dict`, because `qpdf_oh_get_dict_keys` is neither
     /// trapped nor accepted — the same route `web/extract.rs` takes for the same reason.
-    fn keys_of(&self, dictionary: &ObjectHandle<'_>) -> Result<Vec<Vec<u8>>> {
+    ///
+    /// `top_level_keys` strips the leading `/` and qpdf requires it; [`Name::from_stripped`]
+    /// is the one place that conversion happens, and it refuses a key containing a NUL rather
+    /// than letting the C string end early and act on a shorter key.
+    fn keys_of(&self, dictionary: &ObjectHandle<'_>) -> Result<Vec<Name>> {
         let unparsed = dictionary.unparse();
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
-        let mut names = Vec::new();
-        for key in crate::pdfsyntax::dict::top_level_keys(&unparsed)? {
-            // THE SLASH GOES BACK ON. `top_level_keys` strips it and qpdf's `getKey` requires
-            // it -- `rotate.rs` passes `b"/Rotate\0"` for the same reason. Without it every
-            // lookup returns a null object and the walk reports a document that draws nothing,
-            // which is the under-counting direction: unshared, so edit in place.
-            let mut terminated = Vec::with_capacity(key.len() + 2);
-            terminated.push(b'/');
-            terminated.extend_from_slice(&key);
-            terminated.push(0);
-            names.push(terminated);
-        }
-        Ok(names)
+        crate::pdfsyntax::dict::top_level_keys(&unparsed)?
+            .iter()
+            .map(|key| Name::from_stripped(key))
+            .collect()
     }
 }

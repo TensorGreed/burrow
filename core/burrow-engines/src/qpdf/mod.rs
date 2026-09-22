@@ -34,6 +34,7 @@ mod compress;
 mod extract;
 mod ffi;
 mod handle;
+mod name;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod limits;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).

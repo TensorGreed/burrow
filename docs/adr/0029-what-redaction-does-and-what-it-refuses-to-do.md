@@ -853,3 +853,66 @@ Until then the refusal has to say why in a way that does not read as permanent (
 disclosure names the document shape rather than the engine limitation: *"this page draws text
 from a template used elsewhere in the document, and removing it here would remove it there
 too"*.
+
+## Amendment, 2026-09-22 — the region's frame, and why it is in the type
+
+### Four numbers with no frame can be read four ways, and three of them miss
+
+A page has up to five boxes, may declare a `/Rotate` that turns what the reader sees away from
+user space, and may declare a `/UserUnit` that changes what a point means. "The rectangle the
+user selected" is therefore not well defined until the frame is stated, and a wrong reading does
+not fail loudly: the region lands somewhere the text is not, no glyph intersects it, the
+operation removes nothing and **reports success**.
+
+So the frame is part of the type. `pdfsyntax::region::Region` cannot be built from four bare
+numbers with the meaning left to the caller.
+
+### The frame
+
+A `Region` is in **display coordinates** — what the person looking at the page saw:
+
+| question | answer |
+|---|---|
+| which box? | **`/CropBox`**, falling back to `/MediaBox`. A viewer shows the crop box, so that is what the user selected within |
+| before or after `/Rotate`? | **after** — the user selected on the page that was on screen |
+| what is a unit? | **points as displayed**, already multiplied by `/UserUnit` |
+| origin | **top-left, y downwards**, as every viewer and pointing device reports |
+
+The last row is the one most likely to be wrong silently: PDF user space has its origin at the
+**bottom** left. A region converted without the flip lands mirrored about the page's horizontal
+centre, which on a form or a two-column page is very often still *on* the page and over the
+wrong text.
+
+### Converted in one place
+
+`Region::to_content_space` is the only conversion, and it does four things in order:
+`/UserUnit` divides out, the y axis flips, `/Rotate` unwinds, and the display box's origin
+shifts back in. Everything downstream works in content space and never sees a display
+coordinate. A second conversion site is a second chance to disagree, and the disagreement would
+be a redaction over the wrong part of the page.
+
+An unreadable frame is refused rather than guessed: a `/Rotate` that is not a right angle, a
+`/UserUnit` that is not positive and finite, a display box with no extent. Each has a fixture,
+and each fixture asserts **which** rule refused.
+
+The three frame fixtures each place the region so a wrong reading demonstrably misses:
+a non-origin `/CropBox` whose offset exceeds the region's own width, a `/Rotate 90` page where
+the region's extents swap, and a `/UserUnit 2` page where the region is half the size it looks.
+Each asserts the whole rectangle rather than one edge — a first draft checked the extent only,
+and a mutation that scaled the extents but not the origin survived it: the right size in the
+wrong place, which removes the wrong text rather than none.
+
+### The public entry point waits for #134
+
+ADR 0022's rule is that an operation verifies its own output before returning it. Redaction is
+the operation where that matters most, and the verification is
+[#134](https://github.com/TensorGreed/burrow/issues/134).
+
+So the assembled operation returns bytes **only** through the verified path, and until #134
+exists there is no public entry point that emits a redacted document. The pieces — the walk,
+the geometry, the removal, the sharing count, the frame — are crate-internal and tested, and
+the seam they will be assembled behind is deliberately not exported yet.
+
+Shipping an unverified redaction "temporarily" is the one shortcut this record will not take:
+an operation that removes a secret and cannot say whether it did is indistinguishable, from the
+outside, from one that did not.
