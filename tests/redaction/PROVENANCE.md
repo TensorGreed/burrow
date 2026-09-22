@@ -24,7 +24,96 @@ by `tools/make-redaction-fixtures.py`, and not committed.
 | `fixtures/producer-writer.pdf` | LibreOffice Writer export, 20,406 bytes |
 | `fixtures/producer-latex.pdf` | pdfTeX / LaTeX, 17,097 bytes |
 | `fixtures/producer-ocr-scan.pdf` | scanner + tesseract OCR, 37,536 bytes |
+| `fixtures/producer-vertical-writing.pdf` | LibreOffice Writer, vertical `tb-rl` Japanese, 6,261 bytes — **the one file here with third-party content in it**, see below |
 
-Every canary in these files is a string this repository invented. No third-party
-document, image or font is embedded: the text is ours, the page images are rendered
-from our own source, and the fonts are the producers' own bundled faces.
+Every canary in these files is a string this repository invented, and no third-party
+**document or image** is embedded: the text is ours and the page images are rendered
+from our own source.
+
+**The fonts are a different question, and this page used to get it wrong.** It said
+"no third-party ... font is embedded ... the fonts are the producers' own bundled
+faces", which is false twice over: a face a producer *bundles* is not a face the
+producer *wrote*, and two of these files carry fonts from outside this repository.
+Measured by reading the embedded name tables, not by reading the producers' websites:
+
+| file | embedded font | licence | name IDs 0/13/14 present? |
+|---|---|---|---|
+| `producer-writer.pdf` | Liberation Serif 2.1.5, Liberation Sans 2.1.5 | OFL-1.1 | **Yes** — clause 2 satisfied literally |
+| `producer-vertical-writing.pdf` | Noto Serif CJK SC 2.002, six-glyph Type 1 subset | OFL-1.1 | **No** — see below |
+| `producer-ocr-scan.pdf` | `GlyphLessFont` 1.0, tesseract's invisible OCR face | **undetermined** — see below | No |
+| `producer-latex.pdf` | none — no `/BaseFont` and no `/FontFile` at all | n.a. | n.a. |
+
+Liberation is Ascender Corporation, Red Hat and Google, not LibreOffice's own work.
+The licence outcome is clean and always was — 2.1.5 is OFL-1.1, and **only by the
+version**: Liberation 1.x was GPLv2-with-font-exception, which this repository's
+allowlist forbids. That is the reason the version column exists rather than being
+implied.
+
+All of this is recorded in `THIRD_PARTY_NOTICES.md`. The correction is noted here
+rather than quietly applied because the sentence was wrong in the document whose job
+is to be right about exactly this, and it stood through every review that read the
+page.
+
+## `producer-vertical-writing.pdf` — the one file with third-party content in it
+
+Six glyphs of one Japanese phrase, set vertically. It exists because the `WMode` refusal
+in #129 needed a real producer's answer to "what does a vertical document actually look
+like", and the answer was not the expected one.
+
+**What was measured.** Asked for `tb-rl` Japanese, LibreOffice emitted **no CID font, no
+`Identity-V` and no `WMode` at all**: a subset *simple* font and one `Tm` per glyph,
+stepping `y` down the page, with `/Widths [0 -1000 -1000 …]` — negative advances. The
+ordinary horizontal walk places it correctly and there is nothing to refuse. So this is a
+fixture for the case that must **not** be refused, which is the half a refusal test usually
+lacks, and it is why ADR 0029's fourth condition says the `WMode` refusal covers the CMap
+case and only that.
+
+**Its licence, audited rather than assumed.** The embedded font is Noto Serif CJK SC 2.002,
+© 2017-2023 Adobe, under the SIL Open Font License 1.1 — established from the installed
+font's own `name` table (IDs 0, 13, 14) and from upstream `notofonts/noto-cjk`
+`Serif/LICENSE`, not from the name "Noto" and not only from package metadata. **Do not read
+the version off this PDF**: its Type 1 header says `001.003`, which is LibreOffice's
+conversion stamp and not a Noto CJK release number. The system font is
+`fonts-noto-cjk` `1:20230817+repack1-3`, supplying `NotoSerifCJK-Regular.ttc` v2.002.
+
+OFL 1.1 permits embedding a subset in a document, does not require the licence text to
+travel with it, and does not affect the document's own licence — so this file stays
+`MIT OR Apache-2.0` and no `OFL.txt` is added beside it, unlike
+`apps/web/public/fonts/OFL.txt`, which is required because that font is *distributed*
+rather than embedded. No Reserved Font Name is declared upstream, so OFL clause 3 is inert
+for both `/BAAAAA+NotoSerifCJKsc-Regular` and the internal `/FontName`. **Re-check on any
+version bump** — declaring an RFN is a one-line upstream change.
+
+**One residual, recorded rather than smoothed over.** LibreOffice's OpenType-to-Type 1
+conversion discarded the font's `name` table, so the embedded program carries no copyright
+notice and no licence reference — verified by string search and by decrypting the eexec
+portion, which holds only `/Private`, `/Subrs`, `/CharStrings` and six `/cid*` glyphs. A
+literal reading of OFL clause 2 is therefore not satisfied by the bytes; the position rests
+on SIL's own published interpretation that clause 2 governs distribution rather than
+embedding. `THIRD_PARTY_NOTICES.md` is where the notice travels instead, so the obligation
+is discharged either way. The Liberation subsets in `producer-writer.pdf` *do* retain name
+IDs 0/13/14 and satisfy clause 2 literally — same producer, different converter, different
+answer.
+
+## `GlyphLessFont`, which is undetermined rather than cleared
+
+`producer-ocr-scan.pdf` embeds tesseract's invisible OCR face as a `/FontFile2`. Its `name`
+table carries **no copyright string and no licence string** — read, not assumed; only a
+version of `1.0`. Upstream it is `pdf.ttf` in the tesseract repository, which is
+Apache-2.0, but **that has not been verified from these bytes**, so it is recorded here as
+undetermined. It is test data in a fixture nothing ships, so this is a gap in the record
+rather than a licence risk, and it is written down so that the record does not read as
+cleared when it is not.
+
+## No automated gate covers any of this
+
+`cargo-deny` sees Rust crates. `tools/check-engine-licences.py` sees engine components with
+a vendor tree and symbols; a font has neither, and a row that satisfied its schema while
+none of its fields meant anything would make the check report a component it had not
+examined. `tools/check-corpus-manifest.py` reads `corpus/manifest.toml`.
+
+So a third-party font inside a committed PDF is caught by a hand-maintained audit and by
+`THIRD_PARTY_NOTICES.md` — and the Liberation sentence above is the measured evidence that
+a hand-maintained control has already missed one here. A check that walked every committed
+`*.pdf`, extracted `/FontFile*`, and required each `/BaseFont` to appear in a manifest is
+the shape that would fix the control rather than the number. That is #154.

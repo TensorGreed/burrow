@@ -447,19 +447,30 @@ are places a later reader would get it wrong:
   that declares `/WMode 1 def` is vertical. `WMode` is read from the stream dictionary, from the
   program, and through `usecmap`; the disagreement and the unreadable cases are refused rather
   than resolved in one direction. `CMap::Embedded` carries no name at all, so the wrong key is
-  not expressible.
-- **A vertical document need not declare vertical writing.** Measured: asked for a vertically
-  written Japanese paragraph, LibreOffice emitted a subset **simple** font and one `Tm` per
+  not expressible. **And the walk derives the mode rather than being handed it**: the resources
+  seam carries the *encoding* the resolver found, not a conclusion about it, so a resolver that
+  cannot decode a CMap stream has to say so — `Encoding::UnreadableCMap`, which is refused —
+  rather than returning horizontal by default. Before that change the rule held in this module's
+  unit tests and over no document at all. A real PDF whose `/Encoding` is a CMap **stream** named
+  `/Ordinary-H` declaring `WMode 1`, and its one-digit horizontal twin, are both exercised in
+  `core/burrow-engines/tests/glyph_geometry.rs`.
+- **A vertical document need not declare vertical writing.** Measured, and the measurement is
+  now a committed file (`tests/redaction/fixtures/producer-vertical-writing.pdf`) with a test
+  that fails if the producer ever changes its mind: asked for a vertically
+  written Japanese paragraph, LibreOffice 24.2.7.2 emitted a subset **simple** font and one `Tm` per
   glyph, stepping `y` down the page — no CID font, no `WMode`, nothing to refuse. That document
   is walked correctly by the ordinary horizontal machinery. The refusal covers the CMap case and
   only the CMap case, which is the honest statement of its reach.
 
 What would change it: `/W2`, `/DW2` and the vertical origin vector implemented and measured
 against `FPDFText_GetCharBox` on a vertical fixture, to the same tolerance §6 sets for the
-horizontal terms. Until then it is a refusal with unit fixtures over CMap programs -- the
-document-level twin pair arrives with the font resolver that reads a CMap out of a file, which
-the walk's resources seam does not do yet. The one committed *document* fixture here is the
-LibreOffice shape, which is the case that is **not** refused.
+horizontal terms. Until then it is a refusal with fixtures on both sides: a built document whose
+`/Encoding` is a CMap **stream** named `/Ordinary-H` declaring `WMode 1`, refused, against its
+one-digit twin that is not; and `tests/redaction/fixtures/producer-vertical-writing.pdf`, a real
+producer's vertical document, which is the case that must **not** be refused and is not. What is
+still missing is the resolver that would carry a file's CMap to the seam in production — the
+seam's shape now forces that resolver to answer the question rather than skip it, but nothing
+implements it yet.
 
 ### What the walk does not reach, which §6 must not be read as covering
 
