@@ -60,6 +60,7 @@ mod lexer;
 
 pub mod contents;
 pub mod dict;
+pub mod geometry;
 pub mod names;
 pub mod ops;
 pub mod strings;

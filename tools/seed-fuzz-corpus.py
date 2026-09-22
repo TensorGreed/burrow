@@ -143,7 +143,34 @@ CARVED_TARGETS = (
     # at a delimiter its first input byte chooses, so the seed is still a content stream.
     "pdfsyntax_operations",
     "pdfsyntax_contents",
+    # #129's. The input is a content stream again -- the glyph walk reads exactly one -- but the
+    # target consumes its FIRST SIX BYTES as the resources a real font dictionary would supply,
+    # so the seed carries a prefix for the same reason `pdfsyntax_contents` carries a delimiter.
+    "pdfsyntax_geometry",
 )
+
+# `pdfsyntax_cmap_wmode` is NOT carved, and that is the point of the exception.
+#
+# Its grammar is a PostScript CMap program -- `def`, `usecmap`, `begincmap` -- and the corpus
+# holds content streams. A carved content stream handed to it is a seed of the wrong shape, and
+# this script's own `CARVED_TARGETS` comment says what that is worth. So its seeds are written
+# here, one per case the derivation has to get right, and each is a program a real font could
+# carry. The first byte is the target's dictionary-`WMode` parameter.
+SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
+    "pdfsyntax_cmap_wmode": (
+        b"\x00/CIDInit /ProcSet findresource begin\n/CMapName /Identity-H def\n/WMode 0 def\n",
+        b"\x00/CMapName /Identity-H def /WMode 1 def",
+        b"\x00/CMapName /Perfectly-Ordinary-H def /WMode 1 def",
+        b"\x00/CMapName /Custom def /UniJIS-UCS2-V usecmap",
+        b"\x00/WMode 1 def /CMapName /X def /WMode 0 def",
+        b"\x01/WMode 1 def",
+        b"\x02/CMapName /Identity-H def",
+        b"\x00%% /WMode 1 def\n/CMapName /Plain-H def",
+        b"\x00(/WMode 1 def) pop /CMapName /Plain-H def",
+        b"\x00Identity-V",
+        b"\x00begincmap /WMode 1 def endcmap",
+    )
+}
 
 # Not every span is worth writing, and a fixture with 277 dictionaries would otherwise
 # contribute 277 near-identical seeds. libFuzzer mutates from what it is given; more copies of
@@ -259,6 +286,27 @@ def contents_seed_variants(span: bytes) -> list[bytes]:
     return variants[:MAX_VARIANTS_PER_SPAN]
 
 
+# `pdfsyntax_geometry` consumes its FIRST SIX BYTES as the metrics its `Resources` stub returns
+# -- the widths, font matrix, bytes-per-code and `/FontBBox` a real font dictionary supplies and
+# a real attacker chooses. A span handed over raw loses six bytes off the front of the content
+# stream AND pins the resources to whatever those bytes decoded to, which is the same "the target
+# eats a parameter, so the parameter must be chosen" lesson as the delimiter above.
+#
+# Two per span, because the two ends of the resource space ask different questions:
+#
+#   * ordinary metrics -- 500/1000 widths, a millimetre-scale font matrix, single-byte codes, no
+#     declared `/FontBBox`, horizontal. This is the seed that actually places glyphs, so it is
+#     the one that reaches the arithmetic at all;
+#   * degenerate metrics -- a width of `f64::MAX`, a two-byte encoding and a declared box, which
+#     is where the box composition overflows and where the conservative-box claim is load-bearing.
+GEOMETRY_CONTROL_PREFIXES = (bytes([1, 7, 1, 0, 1, 0]), bytes([3, 5, 2, 1, 3, 1]))
+
+
+def geometry_seed_variants(span: bytes) -> list[bytes]:
+    """`[six control bytes] + span`, once for ordinary metrics and once for degenerate ones."""
+    return [prefix + span for prefix in GEOMETRY_CONTROL_PREFIXES]
+
+
 def carved_is_usable(target: str, seed: bytes) -> str | None:
     """Why this carved seed would teach the target nothing, or `None` if it is fine.
 
@@ -273,6 +321,15 @@ def carved_is_usable(target: str, seed: bytes) -> str | None:
             return f"{target}: a seed that does not begin with '<<' is rejected on the first token"
         if not seed.endswith(b">>"):
             return f"{target}: a seed with no closing '>>' can only ever exercise the refusal"
+    if target == "pdfsyntax_geometry":
+        # REPLAY THE TARGET'S OWN PARAMETER READ, as for `pdfsyntax_contents` below: a seed
+        # shorter than the control prefix is discarded by `split_at_checked` before the walk
+        # ever runs, so it would be a file in the corpus that exercises nothing.
+        if len(seed) <= len(GEOMETRY_CONTROL_PREFIXES[0]):
+            return (
+                f"{target}: a seed no longer than its six control bytes leaves an empty content "
+                "stream, so the walk never runs"
+            )
     if target == "pdfsyntax_contents":
         # REPLAY THE TARGET'S OWN PARAMETER READ. A seed that cuts into one element exercises
         # no boundary, which is the whole subject -- and 33 of 38 did before this existed.
@@ -577,11 +634,12 @@ def main(argv: list[str]) -> int:
             spans = carve(path.read_bytes())
             wrote_any = False
             for index, span in enumerate(spans):
-                variants = (
-                    contents_seed_variants(span)
-                    if target == "pdfsyntax_contents"
-                    else [span]
-                )
+                if target == "pdfsyntax_contents":
+                    variants = contents_seed_variants(span)
+                elif target == "pdfsyntax_geometry":
+                    variants = geometry_seed_variants(span)
+                else:
+                    variants = [span]
                 for variant_index, seed in enumerate(variants):
                     if problem := carved_is_usable(target, seed):
                         print(f"\nFAILED — {problem} (from {path.name})", file=sys.stderr)
@@ -640,6 +698,17 @@ def main(argv: list[str]) -> int:
     written[MERGE_TARGET] = count
 
     print()
+    # The synthetic seeds, written after the carved ones so the report counts both.
+    for target, seeds in SYNTHETIC_SEEDS.items():
+        directory = CORPUS / target
+        if not check_only:
+            directory.mkdir(parents=True, exist_ok=True)
+        for index, seed in enumerate(seeds):
+            if not check_only:
+                (directory / f"seed-synthetic-{index}").write_bytes(seed)
+        written[target] = len(seeds)
+        print(f"  {target}: {len(seeds)} synthetic seed(s), hand-written (see SYNTHETIC_SEEDS)")
+
     for target in sorted(written):
         print(f"  {target:16} {written[target]:>3} seed(s)")
     if unpaired:

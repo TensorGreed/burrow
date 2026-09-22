@@ -378,7 +378,8 @@ fixture generator is the obvious first entry. Both `known_gap` entries in
 
 ## Conditions for revisiting
 
-Three, all named rather than general, each with the thing that would change.
+Four, all named rather than general, each with the thing that would change. The fourth was
+added by #129 and is dated 2026-09-21.
 
 **`hb-subset`, for the `cmap` residue.** §1 closes `/ToUnicode` and `/Differences`. The embedded
 font program itself still covers the removed run's alphabet in its own `cmap` — and its `post`
@@ -425,11 +426,56 @@ So the condition is **not** "acquire OCR". It is **an image re-encoding path, ta
 starting with Flate** — which is the easy case and is what `tests/redaction/fixtures/producer-ocr-scan.pdf`
 happens to be, making it the fixture to measure against.
 
-It matters more than it looks: this is the only one of the three conditions that governs a
+It matters more than it looks: this and vertical writing are the conditions that govern a
 document shape a person is *likely to bring*, and until it is taken the refusal has to say why
 in a way that does not read as permanent (§7, and [#136](https://github.com/TensorGreed/burrow/issues/136)).
 
-**None of the three is a plan.** They are written down so that the next person to look does not
+**Vertical writing, for the glyph geometry.** #129 places glyphs by composing the text, font and
+current transformation matrices, and every term in it displaces horizontally. A vertical run
+advances **downwards**, takes its widths from `/W2` and `/DW2` rather than `/W` and `/DW`, and
+offsets each glyph origin by a vertical origin vector — so walking one as though it were
+horizontal puts every box in the wrong place, and in the direction that misses text inside the
+region rather than the direction that removes too much. It is therefore refused, not
+approximated.
+
+Two things about the refusal are worth recording here rather than only in the code, because both
+are places a later reader would get it wrong:
+
+- **It is keyed on `WMode`, never on the name `Identity-V`.** A name check misses the rest of
+  Adobe's registry (`UniJIS-UCS2-V`, `90ms-RKSJ-V`, `ETen-B5-V`, …) and misses embedded CMaps
+  altogether, since there the producer chooses the stream's name — a CMap called `/Identity-H`
+  that declares `/WMode 1 def` is vertical. `WMode` is read from the stream dictionary, from the
+  program, and through `usecmap`; the disagreement and the unreadable cases are refused rather
+  than resolved in one direction. `CMap::Embedded` carries no name at all, so the wrong key is
+  not expressible.
+- **A vertical document need not declare vertical writing.** Measured: asked for a vertically
+  written Japanese paragraph, LibreOffice emitted a subset **simple** font and one `Tm` per
+  glyph, stepping `y` down the page — no CID font, no `WMode`, nothing to refuse. That document
+  is walked correctly by the ordinary horizontal machinery. The refusal covers the CMap case and
+  only the CMap case, which is the honest statement of its reach.
+
+What would change it: `/W2`, `/DW2` and the vertical origin vector implemented and measured
+against `FPDFText_GetCharBox` on a vertical fixture, to the same tolerance §6 sets for the
+horizontal terms. Until then it is a refusal with unit fixtures over CMap programs -- the
+document-level twin pair arrives with the font resolver that reads a CMap out of a file, which
+the walk's resources seam does not do yet. The one committed *document* fixture here is the
+LibreOffice shape, which is the case that is **not** refused.
+
+### What the walk does not reach, which §6 must not be read as covering
+
+Measured during #129's review, and recorded here because §6's read-back shares the blindness:
+a page whose only text lives in a **tiling pattern** produced an empty glyph list from burrow's
+walk and **zero characters** from `FPDFText_*`, while PDFium's renderer inked 740 pixels of the
+word. Neither the operation nor its verification saw it. §8's rule -- a removal nothing observed
+is not a measured removal -- applies to a *presence* nothing observed just as squarely.
+
+The pattern case is closed by refusal. The one left open is an **ExtGState naming a `/Font`**,
+which sets face and size with no `Tf`: refusing every `gs` would refuse most real documents, and
+resolving it needs a seam the resources trait does not have. That is
+[#152](https://github.com/TensorGreed/burrow/issues/152), and until it closes, §6's assertions
+are bounded by "every operator the walk models, plus patterns refused" rather than by "the page".
+
+**None of the four is a plan.** They are written down so that the next person to look does not
 have to re-derive why five channels are handled the way they are.
 
 ## Alternatives considered
