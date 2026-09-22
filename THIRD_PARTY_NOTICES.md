@@ -358,14 +358,46 @@ inferred. Both provenance and this file are corrected, and
 **Liberation 1.x was GPLv2 with a font exception**, which this repository's allowlist forbids,
 so the version is load-bearing rather than incidental.
 
-### `GlyphLessFont` 1.0 — undetermined, recorded as such
+### `GlyphLessFont` 1.0, embedded in a test fixture — Apache-2.0
 
-A `/FontFile2` embedded by tesseract in `tests/redaction/fixtures/producer-ocr-scan.pdf`: the
-invisible face an OCR layer draws its text with.
+Copyright © 2020 Google Inc. Licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
 
-**Its `name` table carries no copyright string and no licence string** — read, not assumed.
-Upstream it is `pdf.ttf` in the tesseract repository, which is Apache-2.0, but that has
-**not been verified from these bytes**, so it is recorded here as undetermined rather than
-cleared. It is test data in a fixture nothing ships, so this is a gap in the record rather
-than a licence risk. Determining it belongs with
-[#154](https://github.com/TensorGreed/burrow/issues/154).
+**Not shipped in any burrow binary, and not a dependency.** A 572-byte `/FontFile2`
+embedded by tesseract in `tests/redaction/fixtures/producer-ocr-scan.pdf`: the invisible
+face an OCR layer draws its recognised text with. Test data.
+
+**Established by byte identity against a version-pinned source, because the font itself
+says nothing.** Its `name` table carries no copyright string and no licence string — read,
+not assumed — so the file cannot answer for itself and an earlier version of this entry
+recorded it as *undetermined*. ADR 0008 forbids anything unclear, so undetermined could not
+stand on a committed fixture. The route that resolved it:
+
+1. `tesseract --version` on the producing host reports **5.3.4**, which is the version
+   `tests/redaction/PROVENANCE.md` records for `producer-ocr-scan.pdf`.
+2. Tesseract does not ship the font as a file; it generates it from
+   `src/api/pdf_ttf.h`, a `static const uint8_t pdf_ttf[]` array produced by
+   `bin2cpp pdf.ttf pdf_ttf cpp17`. Fetched at tag **5.3.4**, that file's header reads
+   `(C) Copyright 2020, Google Inc.` and `Licensed under the Apache License, Version 2.0`.
+3. The array decodes to **573 bytes**, sha256
+   `dbbbba44717f3c6dfdb4ab8dd5d231ba16ef002d75cedb820824ce6063c0a5ee`. The fixture's
+   embedded font is **572 bytes**, sha256
+   `c7845420925a23d88ed830a63957b8af85a66a8daf8d9fc90e843673b2ef1a59`, and the two are
+   **byte-for-byte identical over all 572**. The extra byte is the array's trailing `0x00`,
+   `bin2cpp`'s NUL terminator, which is not part of the font.
+4. Tesseract's top-level `LICENSE` at tag 5.3.4 is the Apache License 2.0, and the Debian
+   `tesseract-ocr` `5.3.4-1build5` copyright file records `Files: *` as Apache-2.0.
+
+So the bytes in the fixture are the bytes tesseract distributes under Apache-2.0, and the
+claim rests on a hash comparison rather than on the package's word or the font's silence.
+
+**Both Apache-2.0 obligations are already discharged.** §4(a) requires recipients of the
+Work to receive a copy of the licence: burrow carries `LICENSE-APACHE` at its root, since
+the project is itself `MIT OR Apache-2.0`. §4(d) requires carrying a `NOTICE` file's
+contents where one exists — **tesseract 5.3.4 has no `NOTICE` file** (checked: 404 at that
+tag, and none under any of the usual spellings), so nothing is owed under it. No further
+file is added beside the fixture.
+
+**Re-check if the fixture is regenerated against a different tesseract.** The verification
+above is pinned to 5.3.4; a newer release could change the font bytes, and the hash
+comparison is what would catch it.

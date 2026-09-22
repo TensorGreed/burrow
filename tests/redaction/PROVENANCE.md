@@ -40,7 +40,7 @@ Measured by reading the embedded name tables, not by reading the producers' webs
 |---|---|---|---|
 | `producer-writer.pdf` | Liberation Serif 2.1.5, Liberation Sans 2.1.5 | OFL-1.1 | **Yes** — clause 2 satisfied literally |
 | `producer-vertical-writing.pdf` | Noto Serif CJK SC 2.002, six-glyph Type 1 subset | OFL-1.1 | **No** — see below |
-| `producer-ocr-scan.pdf` | `GlyphLessFont` 1.0, tesseract's invisible OCR face | **undetermined** — see below | No |
+| `producer-ocr-scan.pdf` | `GlyphLessFont` 1.0, tesseract's invisible OCR face | Apache-2.0 — established by byte identity, see below | No — and it does not need them |
 | `producer-latex.pdf` | none — no `/BaseFont` and no `/FontFile` at all | n.a. | n.a. |
 
 Liberation is Ascender Corporation, Red Hat and Google, not LibreOffice's own work.
@@ -95,15 +95,25 @@ is discharged either way. The Liberation subsets in `producer-writer.pdf` *do* r
 IDs 0/13/14 and satisfy clause 2 literally — same producer, different converter, different
 answer.
 
-## `GlyphLessFont`, which is undetermined rather than cleared
+## `GlyphLessFont`, resolved by byte identity
 
-`producer-ocr-scan.pdf` embeds tesseract's invisible OCR face as a `/FontFile2`. Its `name`
-table carries **no copyright string and no licence string** — read, not assumed; only a
-version of `1.0`. Upstream it is `pdf.ttf` in the tesseract repository, which is
-Apache-2.0, but **that has not been verified from these bytes**, so it is recorded here as
-undetermined. It is test data in a fixture nothing ships, so this is a gap in the record
-rather than a licence risk, and it is written down so that the record does not read as
-cleared when it is not.
+`producer-ocr-scan.pdf` embeds tesseract's invisible OCR face as a 572-byte `/FontFile2`.
+Its `name` table carries **no copyright string and no licence string** — read, not assumed —
+so this page previously recorded it as *undetermined*. ADR 0008 forbids anything unclear, so
+that could not stand on a committed fixture.
+
+It is **Apache-2.0**, © 2020 Google Inc., established not from the package's word but from
+the bytes: tesseract generates the font from `src/api/pdf_ttf.h`, whose header at tag
+**5.3.4** — the version recorded above — declares Apache-2.0, and whose `pdf_ttf[]` array is
+**byte-for-byte identical** to the fixture's embedded font over all 572 bytes. Tesseract's
+array is 573 bytes; the extra one is `bin2cpp`'s trailing NUL and is not part of the font.
+Hashes and the full route are in `THIRD_PARTY_NOTICES.md` under *Fonts*.
+
+Apache-2.0 §4(a) is satisfied by `LICENSE-APACHE` at the repository root, and §4(d) asks
+nothing here because tesseract 5.3.4 ships no `NOTICE` file.
+
+**Re-check if this fixture is regenerated against a newer tesseract**: the verification is
+pinned to 5.3.4, and the hash comparison is what would catch a change.
 
 ## No automated gate covers any of this
 
