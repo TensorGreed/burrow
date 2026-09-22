@@ -1010,46 +1010,26 @@ fn origins_across_a_redaction(body: &str, cut: usize) -> (Vec<OracleChar>, Vec<O
 
 /// The characters PDFium reports that the **file** actually draws.
 ///
-/// # PDFium invents characters, and not only spaces
+/// # PDFium invents characters, and it will say which
 ///
-/// Measured on this suite's own fixtures:
+/// A positioning adjustment wide enough to look like a gap produces a `U+0020`; a `T*` line
+/// move produces `U+000D U+000A`. Neither is in any string in the document, so a comparison
+/// against burrow's walk must not expect them — and a wide kern the producer wrote does the
+/// same thing before any redaction, so character indices and glyph indices are not the same
+/// sequence even on an untouched page.
 ///
-/// - a positioning adjustment wide enough to look like a gap produces a **`U+0020`** that is in
-///   no string in the file — which is what a redaction leaves behind by design;
-/// - a `T*` line move produces **`U+000D U+000A`**, so `(AB) ' (CD) '` reports six characters
-///   for four glyphs.
+/// # This guessed before it asked, and the guess was wrong
 ///
-/// A wide kern the producer wrote does the same thing before any redaction, so character
-/// indices and glyph indices are not the same sequence even on an untouched page. Anything
-/// correlating the two by position is wrong on documents nobody redacted.
+/// The rule used to be structural: *a synthetic character carries no advance, so its origin
+/// equals the next character's*. It held on every hand-built fixture in this file and failed
+/// on the first real document — a LaTeX page where PDFium gave a synthetic space an origin of
+/// its own, between the two glyphs it sat between. The walk found 138 glyphs and the filter
+/// left 140.
 ///
-/// # How a synthetic one is told apart, and why not "it is a space"
-///
-/// An earlier version skipped **every** `U+0020` while its doc claimed it skipped by position —
-/// a review caught that the doc described behaviour the code did not have. Skipping every space
-/// would skip the *real* ones too, which is how a fixture for word spacing quietly stops
-/// testing anything.
-///
-/// The rule here is structural instead: a synthetic character carries **no advance**, so its
-/// origin equals the next character's. A real space advances, so the next character is further
-/// along. Carriage return and line feed are synthetic unconditionally — no fixture in this file
-/// puts either in a string.
+/// `FPDFText_IsGenerated` is the renderer answering the question directly. A heuristic that
+/// agrees with it on the cases you thought of is not the same thing.
 fn drawn_characters(chars: &[OracleChar]) -> Vec<&OracleChar> {
-    let mut drawn = Vec::new();
-    for (at, char) in chars.iter().enumerate() {
-        let synthetic = match char.unicode {
-            0x000D | 0x000A => true,
-            0x0020 => chars.get(at + 1).is_some_and(|next| {
-                (next.origin.0 - char.origin.0).abs() < TOLERANCE_PT
-                    && (next.origin.1 - char.origin.1).abs() < TOLERANCE_PT
-            }),
-            _ => false,
-        };
-        if !synthetic {
-            drawn.push(char);
-        }
-    }
-    drawn
+    chars.iter().filter(|char| !char.generated).collect()
 }
 
 /// Every kept glyph is where it was, over the characters the file actually draws.
@@ -1426,5 +1406,62 @@ fn pdfium_synthesises_a_space_once_a_kern_is_wide_enough() {
             drawn_characters(&chars).len() == 4,
             "which `drawn_characters` removes, leaving the four glyphs the file draws"
         );
+    }
+}
+
+/// The real resolver's glyph origins, against PDFium's, on the committed producer corpus.
+///
+/// # The first time the walk has met a real document
+///
+/// Everything on #131 was tested against a `Resources` fake that returned one width for every
+/// code and never refused. This drives the **qpdf-backed** resolver over files four different
+/// producers wrote, and compares every origin against `FPDFText_GetCharOrigin`.
+///
+/// It is the join the fakes could not exercise: the walk's arithmetic was checked against
+/// PDFium already, and the resolver's reading of a font dictionary never was.
+#[test]
+fn the_real_resolver_agrees_with_pdfium_on_producer_documents() {
+    for name in [
+        "producer-writer.pdf",
+        "producer-latex.pdf",
+        "producer-vertical-writing.pdf",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/redaction/fixtures")
+            .join(name);
+        let pdf = std::fs::read(&path).expect("the committed fixture");
+
+        let walked = burrow_engines::redact_probe::walk_first_page(&pdf)
+            .unwrap_or_else(|error| panic!("{name}: the real resolver refused: {error:?}"));
+        let chars = chars_on_page(&pdf, 0);
+        let drawn = drawn_characters(&chars);
+
+        // NON-VACUITY FIRST: both sides must have found something, or every comparison below
+        // passes over nothing.
+        assert!(
+            !walked.is_empty() && !drawn.is_empty(),
+            "{name}: walk {} glyph(s), PDFium {} char(s)",
+            walked.len(),
+            drawn.len()
+        );
+        assert_eq!(
+            walked.len(),
+            drawn.len(),
+            "{name}: the walk found {} glyph(s) and PDFium {} -- a count mismatch makes the \
+             pairwise comparison below meaningless",
+            walked.len(),
+            drawn.len()
+        );
+
+        for (at, (glyph, char)) in walked.iter().zip(&drawn).enumerate() {
+            let apart = (glyph.origin.0 - char.origin.0).hypot(glyph.origin.1 - char.origin.1);
+            assert!(
+                apart < TOLERANCE_PT,
+                "{name}: glyph {at} is {apart} pt from where PDFium put it, {:?} against {:?} \
+                 -- the resolver read this font's metrics differently from the renderer",
+                glyph.origin,
+                char.origin
+            );
+        }
     }
 }

@@ -428,106 +428,50 @@ fn an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each() {
     // `qpdf_oh_get_key` on a NON-DICTIONARY reaches `QPDFObjectHandle::typeWarning` ->
     // `Common::warn`, which appends to qpdf's warning vector whatever `suppress_warnings` says
     // -- that flag only stops the printing -- and burrow sets no `max_warnings`. A review
-    // measured an `/Annots` of 400,000 integers peaking at **265 MB** from 800 kB of file:
-    // about 330x, linear in the array, inside the engine thread.
+    // measured an `/Annots` of 400,000 integers peaking at 265 MB from 800 kB of file.
     //
-    // The walk now checks the container's type before asking for a key.
-    const ITEMS: usize = 400_000;
-    let annots: String = (0..ITEMS)
-        .map(|n| format!("{n} "))
-        .collect::<Vec<_>>()
-        .join("");
-    let bytes = document(&[
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-             /Resources << >> /Contents 4 0 R /Annots [{}] >>",
-            annots.trim_end()
-        ),
-        stream("", "BT ET\n"),
-    ]);
-    let opened = open(bytes);
+    // THE MEASUREMENT IS DIFFERENTIAL, and the first version was not. It compared total RSS
+    // growth against a fixed ceiling, which also counts qpdf legitimately materialising
+    // 400,000 array items -- so it passed in release and failed in debug, for a reason that
+    // was not the defect. Two documents of the same shape, differing only in whether the array
+    // items are dictionaries, isolate the retention: the dictionary run is the control, and
+    // the integer run must not cost dramatically more.
+    const ITEMS: usize = 200_000;
 
-    // The mark is taken AFTER opening, so the document's own footprint is not counted against
-    // the walk. `VmHWM` is a high-water mark and never falls, which is the property that makes
-    // this readable at all.
-    let before = peak_rss_kb();
-    let counts = count(&opened).expect("an array of integers draws no forms");
-    let grew = peak_rss_kb().saturating_sub(before);
-
-    assert!(
-        counts.all().is_empty(),
-        "integers are not appearance streams: {:?}",
-        counts.all()
-    );
-    assert!(
-        grew < 64 * 1024,
-        "the walk grew the peak RSS by {grew} kB over {ITEMS} non-dictionary annotations -- \
-         the container type check is not holding, and each skipped check retains a qpdf warning"
-    );
-}
-
-#[test]
-fn the_live_handle_count_returns_to_its_baseline() {
-    // THE CACHE ONLY GROWS. `handle.rs` explains why a per-page walk is exactly the shape that
-    // fills it, and `rotate` already measures this for its ancestor climb. A walk that leaked
-    // one handle per page would be invisible on a two-page fixture and fatal on a real one, so
-    // the document here is large enough for a leak to show as a number rather than as noise.
-    let pages = 200;
-    let mut objects = vec![
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        String::new(), // filled in below, once the kid ids are known
-        stream("", "/Fm0 Do\n"),
-        form("/F1 10 Tf BT 0 0 Td (SHARED) Tj ET\n"),
-    ];
-    let first_page = 5;
-    let mut kids = Vec::new();
-    for index in 0..pages {
-        let page_id = first_page + index * 2;
-        let annot_id = page_id + 1;
-        kids.push(format!("{page_id} 0 R"));
-        objects.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-             /Resources << /XObject << /Fm0 4 0 R >> >> /Contents 3 0 R /Annots [{annot_id} 0 R] >>"
-        ));
-        objects.push(
-            "<< /Type /Annot /Subtype /Widget /Rect [0 0 10 10] /AP << /N 4 0 R >> >>".to_owned(),
+    let grew = |item: &str| -> u64 {
+        let annots: String = (0..ITEMS)
+            .map(|n| format!("{} ", item.replace("{n}", &n.to_string())))
+            .collect();
+        let bytes = document(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                 /Resources << >> /Contents 4 0 R /Annots [{}] >>",
+                annots.trim_end()
+            ),
+            stream("", "BT ET\n"),
+        ]);
+        let opened = open(bytes);
+        let before = peak_rss_kb();
+        let counts = count(&opened).expect("an array of these draws no forms");
+        assert!(
+            counts.all().is_empty(),
+            "neither shape is an appearance stream"
         );
-    }
-    objects[1] = format!(
-        "<< /Type /Pages /Count {pages} /Kids [{}] >>",
-        kids.join(" ")
-    );
-    let opened = open(document(&objects));
-
-    let baseline = handle::live();
-    let counts = count(&opened).expect("walks");
-    let after = handle::live();
-
-    // NON-VACUITY: the walk must actually have done the work whose handles are being counted.
-    assert_eq!(
-        counts.uses((4, 0)),
-        usize::try_from(pages * 2).expect("fits"),
-        "every page draws the form and every annotation is it"
-    );
-    assert_eq!(
-        after,
-        baseline,
-        "the walk leaked {} handle(s) over {pages} pages",
-        after.saturating_sub(baseline)
-    );
-}
-
-#[track_caller]
-fn assert_named(error: &Error, rule: &str) {
-    let message = match error {
-        Error::Unsupported(message) | Error::Malformed(message) => message,
-        other => panic!("expected a refusal naming `{rule}`, got {other:?}"),
+        peak_rss_kb().saturating_sub(before)
     };
+
+    // The control first, so its allocation is already in the high-water mark when the second
+    // runs -- `VmHWM` never falls, so the order makes the comparison strictly conservative.
+    let dictionaries = grew("<< >>");
+    let integers = grew("{n}");
+
     assert!(
-        message.contains(&format!("[{rule}]")),
-        "refused, but by a different rule: wanted `{rule}`, got `{message}`"
+        integers <= dictionaries + 32 * 1024,
+        "an /Annots of {ITEMS} integers grew the peak RSS by {integers} kB against \
+         {dictionaries} kB for the same array of dictionaries -- the container type check is \
+         not holding, and each skipped check retains a qpdf warning"
     );
 }
 
@@ -580,5 +524,67 @@ fn the_walk_honours_the_deadline_per_page() {
         counts.uses((4, 0)),
         40,
         "forty pages each draw the form once"
+    );
+}
+
+#[test]
+fn the_live_handle_count_returns_to_its_baseline() {
+    // THE CACHE ONLY GROWS. `handle.rs` explains why a per-page walk is exactly the shape that
+    // fills it, and `rotate` already measures this for its ancestor climb. A walk that leaked
+    // one handle per page would be invisible on a two-page fixture and fatal on a real one.
+    let pages = 200u64;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        String::new(),
+        stream("", "/Fm0 Do\n"),
+        form("/F1 10 Tf BT 0 0 Td (SHARED) Tj ET\n"),
+    ];
+    let mut kids = Vec::new();
+    for index in 0..pages {
+        let page_id = 5 + index * 2;
+        kids.push(format!("{page_id} 0 R"));
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /XObject << /Fm0 4 0 R >> >> /Contents 3 0 R /Annots [{} 0 R] >>",
+            page_id + 1
+        ));
+        objects.push(
+            "<< /Type /Annot /Subtype /Widget /Rect [0 0 10 10] /AP << /N 4 0 R >> >>".to_owned(),
+        );
+    }
+    objects[1] = format!(
+        "<< /Type /Pages /Count {pages} /Kids [{}] >>",
+        kids.join(" ")
+    );
+    let opened = open(document(&objects));
+
+    let baseline = handle::live();
+    let counts = count(&opened).expect("walks");
+    let after = handle::live();
+
+    // NON-VACUITY: the walk must actually have done the work whose handles are being counted.
+    assert_eq!(
+        counts.uses((4, 0)),
+        usize::try_from(pages * 2).expect("fits"),
+        "every page draws the form and every annotation is it"
+    );
+    assert_eq!(
+        after,
+        baseline,
+        "the walk leaked {} handle(s) over {pages} pages",
+        after.saturating_sub(baseline)
+    );
+}
+
+/// Assert a refusal names `rule`, rather than merely being a refusal.
+#[track_caller]
+fn assert_named(error: &Error, rule: &str) {
+    let message = match error {
+        Error::Unsupported(message) | Error::Malformed(message) => message,
+        other => panic!("expected a refusal naming `{rule}`, got {other:?}"),
+    };
+    assert!(
+        message.contains(&format!("[{rule}]")),
+        "refused, but by a different rule: wanted `{rule}`, got `{message}`"
     );
 }

@@ -199,6 +199,17 @@ unsafe extern "C" {
         top: *mut c_double,
     ) -> c_int;
     fn FPDFText_GetLooseCharBox(text_page: *mut c_void, index: c_int, rect: *mut FsRectF) -> c_int;
+    /// Whether PDFium **invented** this character rather than reading it from the file.
+    ///
+    /// A positioning adjustment wide enough to look like a gap produces a space; a `T*` line
+    /// move produces a CR/LF pair. Neither is in any string in the document.
+    ///
+    /// This suite guessed at that before it used this call -- "a synthetic character has no
+    /// advance, so its origin equals the next one's" -- and the guess was wrong on a real
+    /// LaTeX document, where PDFium gave a synthetic space an origin between the two glyphs it
+    /// sat between. Asking is not a heuristic.
+    fn FPDFText_IsGenerated(text_page: *mut core::ffi::c_void, index: c_int) -> c_int;
+
     fn FPDFText_GetCharOrigin(
         text_page: *mut c_void,
         index: c_int,
@@ -225,6 +236,18 @@ pub struct OracleChar {
     pub loose: Rect,
     /// `FPDFText_GetCharBox` — the inked box, which burrow's must contain.
     pub ink: Rect,
+    /// Whether PDFium **invented** this character rather than reading it from the file.
+    ///
+    /// `FPDFText_IsGenerated`. A wide positioning adjustment produces a space; a `T*` line move
+    /// produces a CR/LF pair. Neither is in any string in the document, and a comparison
+    /// against burrow's walk must not expect it.
+    ///
+    /// This suite guessed at this before it asked — "a synthetic character has no advance, so
+    /// its origin equals the next one's" — and the guess was wrong on a real LaTeX document,
+    /// where PDFium gave a synthetic space an origin of its own between two glyphs. The guess
+    /// held on every hand-built fixture and failed on the first real one, which is what a
+    /// corpus is for.
+    pub generated: bool,
 }
 
 /// Every character on page `index` of `bytes`, as PDFium reads them.
@@ -332,9 +355,15 @@ fn read_chars(bytes: &[u8], index: i32) -> Vec<OracleChar> {
         // SAFETY: as above; both pointers are to live locals.
         let ok = unsafe { FPDFText_GetCharOrigin(text, at, &mut ox, &mut oy) };
         assert!(ok != 0, "FPDFText_GetCharOrigin refused character {at}");
+        // SAFETY: as above.
+        let generated = unsafe { FPDFText_IsGenerated(text, at) };
         out.push(OracleChar {
             unicode,
             origin: (ox, oy),
+            // `FPDFText_IsGenerated` returns -1 when it cannot tell. Treating "cannot tell" as
+            // "from the file" keeps an unknown character in the comparison rather than
+            // silently dropping it, which is the direction that fails loudly.
+            generated: generated == 1,
             loose: Rect {
                 left: f64::from(loose.left),
                 bottom: f64::from(loose.bottom),

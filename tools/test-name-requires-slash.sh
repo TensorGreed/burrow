@@ -43,8 +43,14 @@ case "$dense" in
     ;;
 esac
 
+probes=0
+refused=0
+accepted=0
+
 probe() {
   local label="$1" literal="$2" expect="$3"
+  probes=$((probes + 1))
+  if [ "$expect" = "no" ]; then refused=$((refused + 1)); else accepted=$((accepted + 1)); fi
   cat > "$work/probe.rs" <<RS
 const fn literal(bytes: &'static [u8]) -> &'static [u8] {
     assert!(matches!(bytes, [b'/', _, .., 0]), "bad name");
@@ -75,11 +81,97 @@ probe "a bare slash and NUL"              'b"/\0"'        no  || failures=$((fai
 probe "THE CONTROL: a correct name"       'b"/Parent\0"'  yes || failures=$((failures+1))
 probe "THE CONTROL: the shortest name"    'b"/N\0"'       yes || failures=$((failures+1))
 
+# --- THE READ SIDE, which had the same bug and now has the same guard ---------------------
+#
+# `ObjectHandle::name` returns a `Name`, and a comparison takes one. So asking "is this
+# `Type0`?" with the bare spelling is a compile error exactly as writing `getKey("Parent")` is.
+#
+# It was live: every `/Subtype` check in `resources.rs` compared a slashed name against a bare
+# byte string, so a Type 0 font read as a simple one and the OCR fixture refused with entirely
+# the wrong rule. `prune.rs` had always compared against `b"/Form"` and was never affected,
+# which is the difference a convention makes versus a type.
+read_probe() {
+  local label="$1" comparison="$2" expect="$3"
+  probes=$((probes + 1))
+  if [ "$expect" = "no" ]; then refused=$((refused + 1)); else accepted=$((accepted + 1)); fi
+  cat > "$work/read.rs" <<RS
+#[derive(Clone)]
+enum Name { Literal(&'static [u8]), Read(Vec<u8>) }
+impl PartialEq for Name {
+    fn eq(&self, other: &Self) -> bool { self.bytes() == other.bytes() }
+}
+impl Name {
+    fn bytes(&self) -> &[u8] {
+        match self { Self::Literal(b) => b, Self::Read(o) => o }
+    }
+    const fn literal(bytes: &'static [u8]) -> Self {
+        assert!(matches!(bytes, [b'/', _, .., 0]), "bad name");
+        Self::Literal(bytes)
+    }
+}
+fn subtype() -> Name { Name::Read(b"/Type0\0".to_vec()) }
+fn main() { let _ = $comparison; }
+RS
+  if rustc --edition 2021 --crate-type bin -o "$work/read" "$work/read.rs" >"$work/rout" 2>&1; then
+    built=yes
+  else
+    built=no
+  fi
+  if [ "$built" != "$expect" ]; then
+    echo "  FAIL $label: built=$built, expected=$expect" >&2
+    sed 's/^/        /' "$work/rout" >&2
+    return 1
+  fi
+  echo "  ok   $label (builds=$built)"
+}
+
+echo
+echo "and the read side:"
+read_probe "comparing a name against a bare byte string"  'subtype() == *b"Type0"'          no  || failures=$((failures+1))
+read_probe "comparing against a slashed byte string"      'subtype() == *b"/Type0"'         no  || failures=$((failures+1))
+# THE RESIDUE AND THE CONST POSITION, both measured. `Name::literal` is a plain `const fn`, so
+# in a FUNCTION BODY a missing slash compiles and panics at run time -- which core/CLAUDE.md's
+# "nothing panics" rule forbids in library code and no shell gate can see. The compile-time
+# guarantee is about `const` items, and every library call site is one.
+#
+# A residue nobody measures is a residue nobody notices growing, so it gets a probe too.
+const_probe() {
+  local label="$1" literal="$2" expect="$3"
+  probes=$((probes + 1))
+  if [ "$expect" = "no" ]; then refused=$((refused + 1)); else accepted=$((accepted + 1)); fi
+  cat > "$work/constpos.rs" <<RS
+enum Name { Literal(&'static [u8]) }
+impl Name {
+    const fn literal(bytes: &'static [u8]) -> Self {
+        assert!(matches!(bytes, [b'/', _, .., 0]), "bad name");
+        Self::Literal(bytes)
+    }
+}
+const SUBTYPE: Name = Name::literal($literal);
+fn main() { let Name::Literal(b) = &SUBTYPE; let _ = b; }
+RS
+  if rustc --edition 2021 --crate-type bin -o "$work/constpos" "$work/constpos.rs" >"$work/cout" 2>&1; then
+    built=yes
+  else
+    built=no
+  fi
+  if [ "$built" != "$expect" ]; then
+    echo "  FAIL $label: built=$built, expected=$expect" >&2
+    return 1
+  fi
+  echo "  ok   $label (builds=$built)"
+}
+
+const_probe "a const Name without its slash is refused"   'b"Type0\0"'  no  || failures=$((failures+1))
+const_probe "THE CONTROL: a const Name with its slash"    'b"/Type0\0"' yes || failures=$((failures+1))
+read_probe "THE RESIDUE: a non-const call still compiles" 'subtype() == Name::literal(b"Type0\0")' yes || failures=$((failures+1))
+read_probe "THE CONTROL: comparing two Names"             'subtype() == Name::literal(b"/Type0\0")' yes || failures=$((failures+1))
+
 if [ "$failures" -ne 0 ]; then
   echo "" >&2
-  echo "FAILED -- $failures of 6 probe(s) behaved wrongly. A rule that accepts everything is" >&2
+  echo "FAILED -- $failures of 10 probe(s) behaved wrongly. A rule that accepts everything is" >&2
   echo "not a rule, and one that accepts nothing refuses the correct spellings too." >&2
   exit 1
 fi
-echo "OK -- 6 probe(s): 4 rejected spellings refused at compile time, 2 correct ones accepted;"
+echo "OK -- $probes probe(s): $refused spelling(s) refused, $accepted accepted (the controls plus the one recorded residue);"
 echo "     and the predicate is asserted in $crate, not merely mentioned in a comment."

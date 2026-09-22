@@ -44,7 +44,7 @@ use burrow_types::{Error, Result};
 ///
 /// Borrowed for the compile-time case so a constant costs no allocation; owned for names built
 /// from a document's bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) enum Name {
     /// A name written in this source, checked when it was written.
     Literal(&'static [u8]),
@@ -52,7 +52,47 @@ pub(super) enum Name {
     Read(Vec<u8>),
 }
 
+/// Two names are equal when they **name the same thing**, whatever built them.
+///
+/// Derived equality would compare the variants, so a `Literal(b"/Type0\0")` read back out of a
+/// document as `Read(b"/Type0\0")` would be unequal -- which is the read-side half of exactly
+/// the bug this type exists to prevent, arriving as a silent `false` rather than a silent null.
+impl PartialEq for Name {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes() == other.bytes()
+    }
+}
+
+impl Eq for Name {}
+
 impl Name {
+    /// The name's bytes, slash and terminator included.
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Literal(bytes) => bytes,
+            Self::Read(owned) => owned,
+        }
+    }
+
+    /// The name **with** its leading slash and without the terminator.
+    ///
+    /// What `prune`'s object-graph seam compares against — it has always used the slashed
+    /// spelling (`b"/Form"`), which is why nothing there had the bug `resources.rs` did.
+    pub(super) fn slashed(&self) -> &[u8] {
+        let bytes = self.bytes();
+        bytes.strip_suffix(b"\0".as_slice()).unwrap_or(bytes)
+    }
+
+    /// The name without its leading slash or its terminator, for a message.
+    pub(super) fn plain(&self) -> &[u8] {
+        let bytes = self.bytes();
+        bytes
+            .strip_prefix(b"/".as_slice())
+            .unwrap_or(bytes)
+            .strip_suffix(b"\0".as_slice())
+            .unwrap_or(bytes)
+    }
+
     /// A name written in source, checked at compile time.
     ///
     /// # Panics

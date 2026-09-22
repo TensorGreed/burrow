@@ -408,8 +408,9 @@ fixture generator is the obvious first entry. Both `known_gap` entries in
 
 ## Conditions for revisiting
 
-Four, all named rather than general, each with the thing that would change. The fourth was
-added by #129 and is dated 2026-09-21.
+Five, all named rather than general, each with the thing that would change. The fourth was
+added by #129 on 2026-09-21; the fifth by #131 on 2026-09-22, when the real font resolver
+first met the corpus.
 
 **`hb-subset`, for the `cmap` residue.** §1 closes `/ToUnicode` and `/Differences`. The embedded
 font program itself still covers the removed run's alphabet in its own `cmap` — and its `post`
@@ -516,7 +517,46 @@ resolving it needs a seam the resources trait does not have. That is
 [#152](https://github.com/TensorGreed/burrow/issues/152), and until it closes, §6's assertions
 are bounded by "every operator the walk models, plus patterns refused" rather than by "the page".
 
-**None of the four is a plan.** They are written down so that the next person to look does not
+**The standard-14 metrics, for the font that carries none.** A font with no `/Widths` array
+has **no advances in the document at all**: the standard 14 — Helvetica, Times, Courier,
+Symbol, ZapfDingbats and their variants — are defined by tables every viewer bundles and no
+file repeats. PDFium has them built in. burrow does not, so the resolver refuses rather than
+guessing, and it is right to: an invented width misplaces every glyph after it on the line, and
+a region test over a misplaced glyph is a redaction that removes the wrong thing or nothing.
+
+**Measured, because a refusal this common would be a product decision rather than an
+implementation detail.** Over every committed fixture in `tests/redaction/fixtures` and
+`tests/conformance/fixtures` — 26 files:
+
+| outcome | count |
+|---|--:|
+| walked cleanly | 11 |
+| refused: **no `/Widths`** | **1** (`font-program-with-a-paren.pdf`) |
+| refused: the document does not open at all | 10 (the deliberately damaged fixtures) |
+| refused: the content names a font the resources do not provide | 3 |
+| refused: text shown with no font selected | 1 |
+
+So it fires **once** in the committed corpus, and **not at all** on the four real-producer
+documents — LibreOffice, pdfTeX and tesseract all embed the fonts they use and declare their
+widths. That is the shape to expect: a producer that embeds a subset has to declare widths,
+because the subset is not a standard font any more.
+
+Where it will fire is the hand-written PDF and the minimal generator — a document that says
+`/BaseFont /Helvetica` and stops. Those are real, and a user who brings one gets a refusal for
+a document every viewer opens happily.
+
+**What would change it: bundling the standard-14 metrics.** They are 14 tables of a few hundred
+widths, they are not copyrightable data, and the Adobe Font Metrics files that carry them are
+redistributable. It is a few tens of kilobytes and no new dependency — which puts it in a
+different class from `hb-subset` and image re-encoding, both of which need code that does not
+exist here. It is the cheapest of the five conditions and the one whose absence a user is most
+likely to meet.
+
+Until then the refusal has to say why in the voice §7 established, and name the document shape
+rather than the missing table: *"this page uses a font whose measurements are not in the file,
+so burrow cannot tell where its text sits."*
+
+**None of the five is a plan.** They are written down so that the next person to look does not
 have to re-derive why five channels are handled the way they are.
 
 ## Alternatives considered

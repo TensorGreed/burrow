@@ -40,6 +40,9 @@ mod limits;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod prune;
 mod reorder;
+mod resources;
+#[cfg(test)]
+mod resources_tests;
 mod rotate;
 mod sharing;
 #[cfg(test)]
@@ -531,4 +534,35 @@ impl crate::OutputReader for Qpdf {
         // had already accepted.
         crate::PageRotator::rotations(self, read, options, deadline)
     }
+}
+
+/// Walk a document's first page with the real font resolver, for the differential test.
+///
+/// Crate-internal on purpose: ADR 0022 forbids a public path that emits a redacted document,
+/// and this emits geometry rather than bytes. `redact_probe` is the one caller.
+pub(crate) fn walk_first_page_for_probe(
+    bytes: &[u8],
+) -> Result<Vec<crate::pdfsyntax::geometry::Glyph>> {
+    use std::sync::Arc;
+
+    use burrow_types::{Clock, Limits, ManualClock};
+
+    let options = crate::OpenOptions::new(
+        Limits::default(),
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+    );
+    let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+    if pages == 0 {
+        return Err(Error::Malformed(
+            "pdf redaction: a document with no pages".to_owned(),
+        ));
+    }
+    // SAFETY: page 0 is below the page count just read from this document.
+    let page = unsafe { handle::ObjectHandle::page(&document, 0) };
+    if let Some(error) = document.take_error() {
+        return Err(error);
+    }
+    let content = page.page_content()?;
+    let resources = resources::PageResources::of(&page)?;
+    crate::pdfsyntax::geometry::glyphs_in(&content, &resources)
 }

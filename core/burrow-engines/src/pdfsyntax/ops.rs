@@ -464,6 +464,36 @@ fn number(content: &[u8], span: Span) -> Result<Operand> {
     })
 }
 
+/// Every number in a fragment of PDF syntax, in order.
+///
+/// For reading a `/Widths`, a `/FontMatrix` or a `/W` out of what `qpdf_oh_unparse` produced.
+/// Tokenised rather than scanned, so a number inside a string or after a `%` comment is not one
+/// — the same reason `writing_mode_of` tokenises rather than searching for `/WMode`.
+///
+/// # Errors
+///
+/// None: a fragment that does not lex yields the numbers found before it stopped. A caller that
+/// needs exactly six numbers checks the count, which is the check that matters — a `/FontMatrix`
+/// of five numbers is refused by its caller rather than silently padded here.
+#[must_use]
+pub fn numbers_in(fragment: &[u8]) -> Vec<f64> {
+    let mut lexer = Lexer::new(fragment);
+    let mut found = Vec::new();
+    while let Ok(Some(token)) = lexer.next_token() {
+        if matches!(token, Token::Number) {
+            let (start, end) = lexer.span();
+            if let Some(text) = fragment.get(start..end)
+                && let Ok(text) = core::str::from_utf8(text)
+                && let Ok(value) = text.parse::<f64>()
+                && value.is_finite()
+            {
+                found.push(value);
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MAX_OPERANDS, Operand, Operation, operations};
