@@ -916,3 +916,57 @@ the seam they will be assembled behind is deliberately not exported yet.
 Shipping an unverified redaction "temporarily" is the one shortcut this record will not take:
 an operation that removes a secret and cannot say whether it did is indistinguishable, from the
 outside, from one that did not.
+
+## Amendment, 2026-09-22 — the order of the steps, and what a failure discards
+
+### The order
+
+1. **Every content edit, across every affected stream** — the page's own content, each Form
+   XObject the region reaches that is not shared, each pattern.
+2. **Then font surgery**, computing "no longer drawn" from the **complete** result of step 1.
+3. **Then the page strip** — the keys outside §2's allowlist.
+
+### Why step 2 cannot run early, and why the failure would be silent
+
+Font surgery removes the `/Widths`, `/ToUnicode` and `/Differences` entries for codes the
+document no longer draws. **"No longer drawn" is a fact about the finished content.** A form
+edited in step 1 *after* the fonts were already cut leaves entries for codes nothing draws any
+more — which is spike 0006's channel 4 and 23 residue, put back by hand.
+
+The residue is not abstract: **the `/ToUnicode` entry for a removed glyph is the removed
+character, in plain text, in the font.** A redaction that cut the fonts first removes the glyph
+from the page and leaves its character in a table beside it.
+
+And it does not fail loudly. The output is a valid PDF, the page renders correctly, and §6's
+read-back — which is about glyph positions on the page — sees nothing wrong. The secret is
+legible to anything that reads the font rather than the page.
+
+So the order is a state machine rather than three calls in a comment: each step consumes the
+redaction and returns the next state, so font surgery **cannot be reached** without having
+finished every content edit. `font_surgery_reads_the_content_after_every_edit_not_before_any`
+asserts it as an index comparison against a real run, and a mutation that moves the font step
+into `edit_content` fails three tests.
+
+**Step 3 is last** because the page-key allowlist is decided against the page as it will ship.
+A key stripped before an edit that would have removed its last reference is a key whose removal
+nothing observed — §8's rule, from the other direction.
+
+### Any failure discards the whole document
+
+Per #130's poisoned-document rule: **no partial emission, no retry, no fallback to a
+partly-edited state.** The first failing step ends the redaction and the in-memory document is
+dropped. A half-redacted page is the worst possible output, because it looks like a redaction.
+
+Enforced by ownership rather than by discipline: every fallible step **consumes** the redaction
+and returns it only on success, and `emit` consumes it too. A caller holding an error has
+nothing left to emit from — the state that would have to be emitted no longer exists.
+
+Measured, as the rule requires rather than as an argument: failing the **third of four** stream
+rewrites refuses by name (`[document-poisoned]`), never reaches `write`, never attempts the
+fourth rewrite, and runs none of the later steps — each asserted separately, because "it
+returned an error" is satisfied by an implementation that also emitted something. A failure in
+step 2, after every rewrite succeeded, is asserted the same way: the rule is about **any** step.
+
+The non-vacuity control is that a clean run rewrites all four streams and does reach `write`.
+Without it, every assertion about what does *not* happen after a failure would be satisfied by
+an implementation that does nothing at all.
