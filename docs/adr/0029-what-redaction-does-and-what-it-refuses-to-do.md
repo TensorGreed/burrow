@@ -255,6 +255,36 @@ render-only. The test asserts burrow's geometry agrees with a second implementat
 where both are asked; the runtime check continues to assert burrow's own rule against burrow's
 own reading, and that residue stays exactly as stated above.
 
+#### PDFium invents a space where a redaction leaves a gap
+
+Measured during #131, and recorded here rather than only in a code comment because §6's
+read-back is a **text-layer** read and [#134](https://github.com/TensorGreed/burrow/issues/134)
+will build on it.
+
+Removing a glyph from inside a run leaves a positioning adjustment in its place, so that the
+glyphs after the cut do not move (#131's rule). Cutting `C` out of `ABCDE` produces
+`[<4142> -600 <4445>] TJ`. `FPDFText_CountChars` on that page then reports **five** characters:
+`A`, `B`, a **`U+0020` that is in no string in the file**, `D`, `E`. PDFium's text layer
+synthesises a space when the gap between two glyphs is wide enough, and a positioning
+adjustment is exactly such a gap.
+
+Three consequences, each stated because the obvious reading of a character count gets one of
+them wrong:
+
+- **It is not a leak.** No glyph from the removed run survives, and the synthetic space carries
+  no information about what was there beyond the fact that *something* was.
+- **"The text is shorter by the number of glyphs removed" is false**, and a verification
+  asserting it would fail on correct output. Verification must match the **kept** glyphs —
+  by code and by origin — rather than count characters.
+- **A wide kern the producer wrote does the same thing**, before any redaction. Measured: a
+  `-200` kern at 12 pt already makes PDFium synthesise a space, so char indices and glyph
+  indices are not the same sequence even on an untouched page. Anything correlating the two by
+  position is wrong on documents nobody redacted.
+
+The synthetic space is identified by **position in the expected sequence**, not by being a
+space: a page may contain real spaces, and skipping every `U+0020` would skip those too, which
+is how a check for word spacing would quietly stop checking anything.
+
 ### 7. The page says what is left, and names where to look
 
 In the voice [ADR 0019](0019-how-split-builds-its-outputs.md) §4 established, where every limit
@@ -649,3 +679,115 @@ entry point, and the entry point is what decides which module the code is compil
 [#130]: https://github.com/TensorGreed/burrow/issues/130
 [#131]: https://github.com/TensorGreed/burrow/issues/131
 [#137]: https://github.com/TensorGreed/burrow/issues/137
+
+## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
+
+Raised on #131, before the code that would have got it wrong was written.
+
+### The hazard
+
+§1 removes glyphs from the streams that draw them, and a Form XObject **is** such a stream. But
+a form is an object, and an object can be drawn more than once: from several pages, or several
+times on one page at different `cm` transforms. Editing it in place removes the text
+**everywhere it is drawn**.
+
+That fails in both directions at once, which is what makes it worse than a missed channel:
+
+- a page nobody asked about loses content, silently — a redaction that damaged a document
+  rather than redacting it;
+- and the region the user *did* select is on one of those pages, so the operation appears to
+  have worked.
+
+Nothing in §6's read-back catches it: that verification asks whether the selected region is
+clear on the page it was asked about, and it is.
+
+### The decision: refuse a form drawn more than once
+
+v1 **refuses** a redaction whose region meets text inside a Form XObject that is drawn more than
+once in the document. A form drawn exactly once is edited in place as §1 describes, because
+there is nowhere else for the edit to reach.
+
+**Sharing is detected by object identity, never by resource name.** Two pages may both call a
+form `/Fm0` and mean different objects; one page may reach the same object under two names.
+`core/CLAUDE.md` already states the rule this rests on — a `qpdf_oh` handle is a fresh number on
+every call and is not an identity, so the comparison is on **object number and generation**,
+`ObjectHandle::object()`. `tools/check-handle-identity.py` enforces that a raw handle is never
+compared, and the detection must satisfy it rather than argue around it.
+
+The scan is over **every page's** resource graph, not the page being redacted. A form shared
+with a page the user never selected is exactly the case the refusal exists for, and a per-page
+scan cannot see it.
+
+### The same rule applies to Type 3 `/CharProcs`
+
+A Type 3 glyph procedure is a content stream that draws glyphs, and a Type 3 **font** is shared
+by every page that selects it — which is the ordinary case, not the exotic one. Editing a
+`/CharProcs` entry changes that character everywhere in the document.
+
+So the same test: a glyph procedure reachable from more than one page's `/Font` resources is
+refused rather than edited. This is stricter in practice than the form rule, because a font
+used on one page only is uncommon — and that is the honest position rather than a reason to
+weaken it.
+
+### Copy-on-write is the alternative, and the C API wall is in the way
+
+The better answer is to clone the form, edit the clone, and repoint **only this `Do`'s**
+resource entry, leaving every other reference at the original. That is `split`'s shape applied
+to one object.
+
+It needs these verbs, and their status against `engines/qpdf-trapped-functions.txt` is the
+whole argument:
+
+| verb | needed for | status |
+|---|---|---|
+| `qpdf_get_num_pages`, `qpdf_get_page_n` | enumerating pages to detect sharing | **trapped** |
+| `qpdf_oh_get_key`, `qpdf_oh_has_key` | walking `/Resources` → `/XObject` → the form | **trapped** |
+| `qpdf_oh_get_object_id`, `qpdf_oh_get_generation` | identity, for the sharing test | **trapped** |
+| `qpdf_oh_get_type_code` | asking whether an object is a stream | **trapped** |
+| `qpdf_oh_get_stream_data`, `qpdf_oh_replace_stream_data` | reading and writing a form's content | **trapped** |
+| `qpdf_oh_replace_key` | repointing the `Do`'s resource entry | **trapped** |
+| `qpdf_make_indirect_object` | giving the clone an object number | **trapped** |
+| **`qpdf_oh_new_stream`** | **creating the clone** | **NOT trapped, and not acceptable** |
+| **`qpdf_oh_new_dictionary`** | **the clone's stream dictionary** | **NOT trapped** |
+| `qpdf_oh_get_stream_dict` | copying the original's dictionary | **neither trapped nor accepted** |
+
+So **detection is entirely within the permitted API and the copy is not.** The refusal can be
+implemented today; copy-on-write cannot.
+
+`qpdf_oh_new_stream` is not a borderline case. Read it:
+
+```c
+qpdf_oh_new_stream(qpdf_data qpdf)
+{
+    QTC::TC("qpdf", "qpdf-c called qpdf_oh_new_stream");
+    return new_object(qpdf, qpdf->qpdf->newStream());
+}
+```
+
+A bare `QTC::TC` outside any trapping lambda, then a direct call into `QPDF`. That is the same
+shape as `qpdf_get_root` and `qpdf_get_trailer`, which ADR 0013 §1's caller rule already
+rejects, and for the same reason: a C++ exception crossing an `extern "C"` frame is not
+something `catch_unwind` can hold.
+
+Nor does it qualify for `engines/qpdf-untrapped-accepted.toml`. That file's bar is that the
+function is **non-parsing** — "it assigns a field, flips a flag, or reads a stored value …
+never resolves an object". `QPDF::newStream` mutates the document's object table. It is not in
+`qpdf_oh_new_null`'s class, and an entry claiming it were would be the kind of false exemption
+that file's own header warns against.
+
+Note also that `qpdf_oh_is_stream` is **not** the way to ask whether an object is a stream:
+resolving an indirect handle parses, which is `qpdf_is_linearized`'s disqualifying property.
+`qpdf_oh_get_type_code` is trapped and is the verb to use.
+
+### Condition for revisiting
+
+**Upstream trapping `qpdf_oh_new_stream` and `qpdf_oh_new_dictionary`**, which a version bump
+would surface because `tools/check-qpdf-trapped.py --generate` regenerates the set. At that
+point copy-on-write becomes implementable inside the permitted API and shared forms move from
+*refused* to *handled*. A C++ shim is the other route and this record does not reopen it;
+ADR 0013 rejected it.
+
+Until then the refusal has to say why in a way that does not read as permanent (§7), and the
+disclosure names the document shape rather than the engine limitation: *"this page draws text
+from a template used elsewhere in the document, and removing it here would remove it there
+too"*.
