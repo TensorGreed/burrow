@@ -25,16 +25,168 @@
 //! its glyphs exceed and nothing in the file contradicts it. The oracle catches it in the suite;
 //! at run time it belongs with the refusals.
 //!
-//! # Vertical writing is refused, not approximated
+//! # Vertical writing is refused, and it is keyed on `WMode` rather than on a name
 //!
-//! An Identity-V font advances **downwards**, takes its metrics from `/W2` and `/DW2`, and
+//! A vertical font advances **downwards**, takes its metrics from `/W2` and `/DW2`, and
 //! displaces the glyph origin by a vertical origin vector. Treating it as horizontal computes
 //! every box in the wrong place, and in the dangerous direction: text inside the region gets
-//! boxes outside it and is missed. [`Error::Unsupported`] rather than a wrong answer.
+//! boxes outside it and is missed. A refusal rather than a wrong answer.
+//!
+//! **The name `Identity-V` is not the key.** It is the obvious check and it is wrong twice over:
+//! it misses every other vertical CMap in Adobe's registry (`UniJIS-UCS2-V`, `90ms-RKSJ-V`,
+//! `ETen-B5-V`, …), and it misses an *embedded* CMap entirely, because there the producer names
+//! the stream. A CMap called `/Identity-H` that declares `/WMode 1 def` is vertical. So
+//! [`writing_mode_of`] reads `WMode` — from the stream dictionary, from the program, or
+//! inherited through `usecmap` — and [`CMap::Embedded`] does not carry a name at all, so it
+//! cannot be keyed on by accident.
+//!
+//! # And a vertical document need not say any of that
+//!
+//! Measured: asked for a vertically-written Japanese paragraph, LibreOffice emitted a **subset
+//! simple font and one `Tm` per glyph**, stepping `y` down the page. No CID font, no `WMode`,
+//! nothing to refuse — and the ordinary horizontal walk places every glyph correctly.
+//! `tests/glyph_geometry.rs` pins that shape. The `WMode` refusal covers the other case, and
+//! saying so here is the difference between a bound and a hope.
 
 use burrow_types::{Error, Result};
 
 use super::ops::{Operand, Operation};
+
+/// Why a walk refused, named.
+///
+/// # Why this exists, and why it is an enum
+///
+/// Three times in this milestone a refusal test accepted *some* refusal rather than *the*
+/// refusal, and twice that hid a deleted defence: the Form-XObject depth cap refuses a
+/// self-drawing form too, so `matches!(outcome, Err(Error::Unsupported(_)))` stayed green with
+/// cycle detection removed. Asserting on a hand-written substring fixes the test and not the
+/// habit — the next test still has a shorter, looser spelling available.
+///
+/// So the rule name is a value rather than a string. Every refusal in this module is built
+/// through [`Refusal::refuse`], which stamps the rule into the message; every refusal test
+/// names the variant it expects. The loose assertion is now the *longer* one to write, and
+/// `refusals_are_the_only_way_to_refuse` fails the build if a bare `Error::Malformed` or
+/// `Error::Unsupported` reappears here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Refusal {
+    /// A `Q` with nothing on the stack.
+    UnmatchedRestore,
+    /// `q` without a matching `Q` by the end of the stream.
+    UnbalancedSave,
+    /// A `BT` inside a text object.
+    NestedTextObject,
+    /// A `BT` the stream ends without closing.
+    UnterminatedTextObject,
+    /// An `ET` with no `BT`.
+    UnmatchedEndText,
+    /// A text operator outside `BT` … `ET`.
+    TextOutsideTextObject,
+    /// A `Do` whose operand is not a name.
+    FormOperandNotAName,
+    /// A `TJ` whose operand is not an array.
+    ShowArrayOperandNotAnArray,
+    /// A `TJ` array item that is neither a string nor a number.
+    ShowArrayItemNotShowable,
+    /// A text-showing operator whose operand is not a string.
+    ShowOperandNotAString,
+    /// Text shown with no font selected by `Tf`.
+    NoFontSelected,
+    /// A font claiming zero bytes per code.
+    ZeroBytesPerCode,
+    /// A Form XObject that draws itself, directly or through another form.
+    FormCycle,
+    /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
+    FormDepth,
+    /// A font whose CMap declares vertical writing (`WMode 1`).
+    VerticalWriting,
+    /// A CMap whose writing mode the document does not determine.
+    UndeterminedWritingMode,
+}
+
+impl Refusal {
+    /// Every variant, so the uniqueness and message tests cannot drift from the enum.
+    pub const ALL: &'static [Self] = &[
+        Self::UnmatchedRestore,
+        Self::UnbalancedSave,
+        Self::NestedTextObject,
+        Self::UnterminatedTextObject,
+        Self::UnmatchedEndText,
+        Self::TextOutsideTextObject,
+        Self::FormOperandNotAName,
+        Self::ShowArrayOperandNotAnArray,
+        Self::ShowArrayItemNotShowable,
+        Self::ShowOperandNotAString,
+        Self::NoFontSelected,
+        Self::ZeroBytesPerCode,
+        Self::FormCycle,
+        Self::FormDepth,
+        Self::VerticalWriting,
+        Self::UndeterminedWritingMode,
+    ];
+
+    /// The rule's name, as it appears in the error message.
+    #[must_use]
+    pub const fn rule(self) -> &'static str {
+        match self {
+            Self::UnmatchedRestore => "q-without-save",
+            Self::UnbalancedSave => "q-unbalanced",
+            Self::NestedTextObject => "bt-nested",
+            Self::UnterminatedTextObject => "bt-unterminated",
+            Self::UnmatchedEndText => "et-without-bt",
+            Self::TextOutsideTextObject => "text-outside-text-object",
+            Self::FormOperandNotAName => "do-operand-not-a-name",
+            Self::ShowArrayOperandNotAnArray => "tj-operand-not-an-array",
+            Self::ShowArrayItemNotShowable => "tj-array-item-not-showable",
+            Self::ShowOperandNotAString => "show-operand-not-a-string",
+            Self::NoFontSelected => "no-font-selected",
+            Self::ZeroBytesPerCode => "zero-bytes-per-code",
+            Self::FormCycle => "form-cycle",
+            Self::FormDepth => "form-depth",
+            Self::VerticalWriting => "vertical-writing",
+            Self::UndeterminedWritingMode => "writing-mode-undetermined",
+        }
+    }
+
+    /// Whether this is a refusal to walk a well-formed file, rather than a malformed one.
+    const fn is_unsupported(self) -> bool {
+        matches!(
+            self,
+            Self::FormCycle | Self::FormDepth | Self::VerticalWriting
+        )
+    }
+
+    /// Build the refusal, with the rule name stamped into the message.
+    fn refuse<T>(self, detail: &str) -> Result<T> {
+        // PROBE-EXEMPT BEGIN -- `refuse` and `caught` are this module's entire `Error`
+        // vocabulary: one builds the two variants, the other matches on them, and a probe that
+        // could tell a construction from a pattern would be a parser.
+        // `refusals_are_the_only_way_to_refuse_in_this_module` skips exactly this window and
+        // checks every other line in the file, production and tests alike.
+        let message = format!("pdf geometry [{}]: {detail}", self.rule());
+        Err(if self.is_unsupported() {
+            Error::Unsupported(message)
+        } else {
+            Error::Malformed(message)
+        })
+    }
+
+    /// Whether `error` is this refusal.
+    ///
+    /// Public so the integration suites assert on the rule too, rather than on the variant of
+    /// [`Error`] — which every refusal here shares with a dozen others.
+    #[must_use]
+    pub fn caught(self, error: &Error) -> bool {
+        // (still inside the probe-exempt window: see `refuse`)
+        let message = match error {
+            Error::Malformed(message) if !self.is_unsupported() => message,
+            Error::Unsupported(message) if self.is_unsupported() => message,
+            _ => return false,
+        };
+        message.contains(&format!("[{}]", self.rule()))
+        // PROBE-EXEMPT END
+    }
+}
 
 /// A 2-D affine transform, in PDF's `[a b c d e f]` order.
 ///
@@ -318,11 +470,183 @@ pub const fn takes_word_spacing(code: u32, bytes_per_code: u8) -> bool {
 /// # Errors
 ///
 /// [`Error::Unsupported`] for [`WritingMode::Vertical`]. See the module header.
-pub const fn check_writing_mode(mode: WritingMode) -> Result<()> {
+pub fn check_writing_mode(mode: WritingMode) -> Result<()> {
     match mode {
         WritingMode::Horizontal => Ok(()),
-        WritingMode::Vertical => Err(Error::Unsupported(String::new())),
+        // KEYED ON `WMode`, NOT ON THE NAME. See `WritingMode::from_wmode`.
+        WritingMode::Vertical => Refusal::VerticalWriting.refuse(
+            "the font's CMap declares 'WMode 1', and burrow places vertical runs nowhere              rather than somewhere wrong",
+        ),
     }
+}
+
+// ---- where the writing mode actually comes from ---------------------------------------------
+
+/// A font's CMap, as the file gives it.
+///
+/// # The name is not the key, and in one arm it is not even representable
+///
+/// `Identity-V` is the CMap everyone reaches for when writing this check, and keying on it is
+/// wrong in both directions. It misses every other vertical CMap in Adobe's registry —
+/// `UniJIS-UCS2-V`, `90ms-RKSJ-V`, `ETen-B5-V` and a dozen more — and, worse, it misses an
+/// **embedded** CMap, whose name the producer chooses. A stream called `/Whatever` that declares
+/// `/WMode 1 def` is vertical, and a stream called `/Identity-H` that declares `/WMode 1 def` is
+/// vertical too. There is a fixture for each.
+///
+/// So the two cases are different types rather than one string:
+///
+/// - [`Self::Predefined`] carries a name **because the name is all the file carries**. The
+///   program lives in Adobe's registry, not in the document, so the name cannot lie about it: it
+///   either resolves to a published CMap or it does not resolve at all.
+/// - [`Self::Embedded`] carries **no name at all**. The program is right there, so the name is
+///   both untrustworthy and unnecessary — and leaving it out of the type means a future reader
+///   cannot key on it by accident. That is the shape of the whole finding, expressed where the
+///   compiler can hold it.
+#[derive(Debug, Clone, Copy)]
+pub enum CMap<'a> {
+    /// A predefined CMap, referenced by registry name. The document carries no program.
+    Predefined(&'a [u8]),
+    /// An embedded CMap stream: its dictionary's `/WMode`, if present, and its program.
+    Embedded {
+        /// `/WMode` on the CMap **stream dictionary**, if the file states one.
+        dictionary_wmode: Option<i64>,
+        /// The CMap program itself, between `begincmap` and `endcmap`.
+        program: &'a [u8],
+    },
+}
+
+impl WritingMode {
+    /// PDF 32000-1 §9.7.5.1: `WMode` is 0 for horizontal and 1 for vertical.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::UndeterminedWritingMode`] for any other value. A third mode is not something
+    /// to guess at: the guess that it means horizontal is the one that places vertical text
+    /// where it is not and misses it.
+    pub fn from_wmode(wmode: i64) -> Result<Self> {
+        match wmode {
+            0 => Ok(Self::Horizontal),
+            1 => Ok(Self::Vertical),
+            other => Refusal::UndeterminedWritingMode.refuse(&format!(
+                "a CMap declaring 'WMode {other}', which is neither 0 nor 1"
+            )),
+        }
+    }
+}
+
+/// Derive a CMap's writing mode from what the file actually says.
+///
+/// # Errors
+///
+/// [`Refusal::UndeterminedWritingMode`] when the mode cannot be derived — a predefined name
+/// outside the registry's `-H`/`-V` convention, a `usecmap` of such a name, or a stream
+/// dictionary and program that disagree. Vertical writing is refused later, by
+/// [`check_writing_mode`], so that the two questions stay separate: *what does the file say* and
+/// *what will burrow do about it*.
+pub fn writing_mode_of(cmap: &CMap<'_>) -> Result<WritingMode> {
+    match *cmap {
+        CMap::Predefined(name) => predefined_writing_mode(name),
+        CMap::Embedded {
+            dictionary_wmode,
+            program,
+        } => {
+            let declared = match dictionary_wmode {
+                Some(wmode) => Some(WritingMode::from_wmode(wmode)?),
+                None => None,
+            };
+            let in_program = program_writing_mode(program)?;
+            match (declared, in_program) {
+                // THEY DISAGREE, so the file says two things. §9.7.5.1 requires them to match,
+                // and picking one means picking which half of a contradiction to believe.
+                (Some(a), Some(b)) if a != b => Refusal::UndeterminedWritingMode.refuse(
+                    "a CMap whose stream dictionary and whose program declare different \
+                     writing modes",
+                ),
+                (Some(mode), _) | (None, Some(mode)) => Ok(mode),
+                // ABSENT MEANS HORIZONTAL, per the specification's default of 0. A vertical
+                // CMap has to say so; this is the one place the absence of a statement is
+                // allowed to settle the question, and it is allowed because the specification
+                // settles it rather than because nothing was found.
+                (None, None) => Ok(WritingMode::Horizontal),
+            }
+        }
+    }
+}
+
+/// A predefined CMap's mode, from the registry's naming convention.
+fn predefined_writing_mode(name: &[u8]) -> Result<WritingMode> {
+    // Every predefined CMap in Adobe's registry ends `-H` or `-V`, and that suffix *is* the
+    // mode. Trusting a name is sound HERE and nowhere else: a predefined CMap's program is not
+    // in the document, so the name is a reference rather than a claim about bytes beside it.
+    if name.ends_with(b"-V") {
+        return Ok(WritingMode::Vertical);
+    }
+    if name.ends_with(b"-H") {
+        return Ok(WritingMode::Horizontal);
+    }
+    Refusal::UndeterminedWritingMode.refuse(
+        "a predefined CMap whose name follows neither the '-H' nor the '-V' convention, so its \
+         writing mode is not derivable from the document",
+    )
+}
+
+/// `/WMode` as the CMap program declares it, and `usecmap` as a way of inheriting one.
+fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
+    // TOKENISED, NOT SEARCHED. `/WMode` inside a string literal or after a `%` comment is not a
+    // declaration, and a byte scan cannot tell the difference -- the lexer already can, and its
+    // `a_string_hides_what_looks_like_a_name` test is exactly this case.
+    let mut lexer = super::lexer::Lexer::new(program);
+    let mut previous_name: Option<Vec<u8>> = None;
+    let mut wanted_number = false;
+    let mut declared: Option<WritingMode> = None;
+    let mut inherited: Option<WritingMode> = None;
+
+    while let Some(token) = lexer.next_token()? {
+        let span = lexer.span();
+        if wanted_number {
+            wanted_number = false;
+            if let super::lexer::Token::Number = token {
+                let digits = program.get(span.0..span.1).unwrap_or_default();
+                let text = core::str::from_utf8(digits).unwrap_or_default();
+                let Ok(value) = text.parse::<i64>() else {
+                    return Refusal::UndeterminedWritingMode
+                        .refuse("a 'WMode' whose value is not an integer");
+                };
+                declared = Some(WritingMode::from_wmode(value)?);
+                continue;
+            }
+            // A `WMode` FOLLOWED BY SOMETHING THAT IS NOT A NUMBER is a writing mode the
+            // document states and this code cannot read. Passing over it reports the CMap as
+            // horizontal on the strength of having failed to parse it, which is the one reading
+            // that places vertical text where it is not.
+            return Refusal::UndeterminedWritingMode
+                .refuse("a 'WMode' whose value is not a number");
+        }
+        match token {
+            super::lexer::Token::Name(name) => {
+                if name == b"WMode" {
+                    wanted_number = true;
+                }
+                previous_name = Some(name);
+            }
+            // `/UniJIS-UCS2-V usecmap` INHERITS A VERTICAL MODE WITHOUT DECLARING ONE. An
+            // embedded CMap that does this and states no `/WMode` of its own is vertical, and a
+            // check that read only `/WMode` would pass it as horizontal.
+            super::lexer::Token::Keyword(word) if word == b"usecmap" => {
+                let Some(name) = previous_name.take() else {
+                    return Refusal::UndeterminedWritingMode
+                        .refuse("a 'usecmap' with no CMap named before it");
+                };
+                inherited = Some(predefined_writing_mode(&name)?);
+            }
+            _ => previous_name = None,
+        }
+    }
+    if wanted_number {
+        return Refusal::UndeterminedWritingMode
+            .refuse("a 'WMode' at the end of a CMap program, with no value after it");
+    }
+    Ok(declared.or(inherited))
 }
 
 // ---- the content-stream walk ---------------------------------------------------------------
@@ -477,13 +801,15 @@ fn walk(
             b"Q" => {
                 // A `Q` WITH NOTHING SAVED IS A REFUSAL. Tolerating it means guessing what the
                 // producer meant by it, and every guess puts later glyphs somewhere.
-                state = stack.pop().ok_or_else(|| {
-                    Error::Malformed(
-                        "pdf geometry: a 'Q' with no matching 'q', so the graphics state after \
-                         it is undefined"
-                            .to_owned(),
-                    )
-                })?;
+                state = match stack.pop() {
+                    Some(saved) => saved,
+                    None => {
+                        return Refusal::UnmatchedRestore.refuse(
+                            "a 'Q' with no matching 'q', so the graphics state after it is \
+                             undefined",
+                        );
+                    }
+                };
             }
             b"cm" => {
                 let m = Matrix {
@@ -498,11 +824,10 @@ fn walk(
             }
             b"BT" => {
                 if position.is_some() {
-                    return Err(Error::Malformed(
-                        "pdf geometry: a 'BT' inside a text object, which the specification does \
-                         not allow to nest"
-                            .to_owned(),
-                    ));
+                    return Refusal::NestedTextObject.refuse(
+                        "a 'BT' inside a text object, which the specification does not allow to \
+                         nest",
+                    );
                 }
                 // ONLY THE MATRICES. `Tc`, `Tw`, `Tz`, `TL`, `Tf`, `Tr` and `Ts` are graphics
                 // state and survive `BT` -- a walk that reset them would place every glyph in a
@@ -511,9 +836,7 @@ fn walk(
             }
             b"ET" => {
                 if position.take().is_none() {
-                    return Err(Error::Malformed(
-                        "pdf geometry: an 'ET' with no 'BT'".to_owned(),
-                    ));
+                    return Refusal::UnmatchedEndText.refuse("an 'ET' with no 'BT'");
                 }
             }
             b"Tc" => state.text.char_spacing = number(0),
@@ -530,9 +853,8 @@ fn walk(
             }
             b"Do" => {
                 let Some(Operand::Name { value, .. }) = operation.operands.first() else {
-                    return Err(Error::Malformed(
-                        "pdf geometry: a 'Do' whose operand is not a name".to_owned(),
-                    ));
+                    return Refusal::FormOperandNotAName
+                        .refuse("a 'Do' whose operand is not a name");
                 };
                 draw_form(value, resources, &state, open_forms, out)?;
             }
@@ -542,10 +864,8 @@ fn walk(
                     // OUTSIDE A TEXT OBJECT IS A REFUSAL, not a no-op. There is no text matrix
                     // to place against, so a walk that skipped it would silently not see
                     // whatever the operator draws.
-                    return Err(Error::Malformed(
-                        "pdf geometry: a text operator outside a 'BT' ... 'ET' text object"
-                            .to_owned(),
-                    ));
+                    return Refusal::TextOutsideTextObject
+                        .refuse("a text operator outside a 'BT' ... 'ET' text object");
                 };
                 text_operator(content, operation, &mut state, place, resources, out)?;
             }
@@ -554,16 +874,14 @@ fn walk(
     }
 
     if !stack.is_empty() {
-        return Err(Error::Malformed(format!(
-            "pdf geometry: {} unbalanced 'q' at the end of a content stream",
+        return Refusal::UnbalancedSave.refuse(&format!(
+            "{} unbalanced 'q' at the end of a content stream",
             stack.len()
-        )));
+        ));
     }
     if position.is_some() {
-        return Err(Error::Malformed(
-            "pdf geometry: a 'BT' with no 'ET' -- the text object runs off the end of the stream"
-                .to_owned(),
-        ));
+        return Refusal::UnterminatedTextObject
+            .refuse("a 'BT' with no 'ET' -- the text object runs off the end of the stream");
     }
     Ok(())
 }
@@ -585,14 +903,11 @@ fn draw_form(
     // returning the glyphs found before the loop was noticed would report a page as containing
     // less than it does. Keyed on object identity, not on the name -- see `Form::id`.
     if open_forms.contains(&form.id) {
-        return Err(Error::Unsupported(
-            "a Form XObject draws itself, directly or through another form (cycle)".to_owned(),
-        ));
+        return Refusal::FormCycle
+            .refuse("a Form XObject draws itself, directly or through another form");
     }
     if open_forms.len() >= MAX_FORM_DEPTH {
-        return Err(Error::Unsupported(
-            "Form XObjects nested deeper than burrow will walk (depth)".to_owned(),
-        ));
+        return Refusal::FormDepth.refuse("Form XObjects nested deeper than burrow will walk");
     }
 
     open_forms.push(form.id);
@@ -685,9 +1000,8 @@ fn text_operator(
         )?,
         b"TJ" => {
             let Some(Operand::Array { items, .. }) = operation.operands.first() else {
-                return Err(Error::Malformed(
-                    "pdf geometry: a 'TJ' whose operand is not an array".to_owned(),
-                ));
+                return Refusal::ShowArrayOperandNotAnArray
+                    .refuse("a 'TJ' whose operand is not an array");
             };
             for item in items {
                 match item {
@@ -705,11 +1019,10 @@ fn text_operator(
                         place.text = Matrix::translate(shift, 0.0).then(&place.text);
                     }
                     _ => {
-                        return Err(Error::Malformed(
-                            "pdf geometry: a 'TJ' array holding something that is neither a \
-                             string nor a number"
-                                .to_owned(),
-                        ));
+                        return Refusal::ShowArrayItemNotShowable.refuse(
+                            "a 'TJ' array holding something that is neither a string nor a \
+                             number",
+                        );
                     }
                 }
             }
@@ -729,14 +1042,11 @@ fn show(
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
     let Some(Operand::Str { span }) = operand else {
-        return Err(Error::Malformed(
-            "pdf geometry: a text-showing operator whose operand is not a string".to_owned(),
-        ));
+        return Refusal::ShowOperandNotAString
+            .refuse("a text-showing operator whose operand is not a string");
     };
     let Some(font) = state.font.clone() else {
-        return Err(Error::Malformed(
-            "pdf geometry: text shown with no font selected by 'Tf'".to_owned(),
-        ));
+        return Refusal::NoFontSelected.refuse("text shown with no font selected by 'Tf'");
     };
     // THE STRING'S BYTES, decoded from its span. `Token::Str` carries no value -- #128's note
     // that nothing `names_in_content` answers depends on what a string SAYS -- so the value
@@ -747,9 +1057,7 @@ fn show(
     let bytes = super::strings::decode_string(raw)?;
     let per_code = resources.bytes_per_code(&font)?;
     if per_code == 0 {
-        return Err(Error::Malformed(
-            "pdf geometry: a font claiming zero bytes per code".to_owned(),
-        ));
+        return Refusal::ZeroBytesPerCode.refuse("a font claiming zero bytes per code");
     }
 
     for chunk in bytes.chunks(usize::from(per_code)) {
@@ -798,11 +1106,12 @@ fn show(
 
 #[cfg(test)]
 mod tests {
-    use burrow_types::{Error, Result};
+    use burrow_types::Result;
 
     use super::{
-        Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, Matrix, Rect, Resources, TextPosition,
-        TextState, WritingMode, glyphs_in, takes_word_spacing,
+        CMap, Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, Matrix, Rect, Refusal, Resources,
+        TextPosition, TextState, WritingMode, check_writing_mode, glyphs_in, takes_word_spacing,
+        writing_mode_of,
     };
 
     /// A resources table with one font of known width and whatever forms a test names.
@@ -812,6 +1121,7 @@ mod tests {
     struct Fake {
         forms: Vec<(Vec<u8>, Form)>,
         writing_mode: WritingMode,
+        bytes_per_code: u8,
     }
 
     impl Fake {
@@ -819,6 +1129,7 @@ mod tests {
             Self {
                 forms: Vec::new(),
                 writing_mode: WritingMode::Horizontal,
+                bytes_per_code: 1,
             }
         }
 
@@ -847,7 +1158,7 @@ mod tests {
         fn glyph(&self, _name: &[u8], _code: u32) -> Result<GlyphMetrics> {
             Ok(GlyphMetrics {
                 width: 500.0,
-                bytes_per_code: 1,
+                bytes_per_code: self.bytes_per_code,
                 font_bbox: Some(Rect {
                     left: 0.0,
                     bottom: 0.0,
@@ -860,7 +1171,7 @@ mod tests {
         }
 
         fn bytes_per_code(&self, _name: &[u8]) -> Result<u8> {
-            Ok(1)
+            Ok(self.bytes_per_code)
         }
     }
 
@@ -868,8 +1179,150 @@ mod tests {
         glyphs_in(content.as_bytes(), &Fake::new()).expect("the fixture should walk")
     }
 
-    fn refused(content: &str) -> Error {
-        glyphs_in(content.as_bytes(), &Fake::new()).expect_err("this fixture must be refused")
+    // ---- the refusal names themselves are checked ------------------------------------------
+
+    /// Every variant, spelled as it appears in source.
+    ///
+    /// Derived from `ALL` rather than listed again, so a variant added to the enum and to
+    /// nothing else fails the two probes below instead of quietly joining an unchecked set.
+    fn variant_names() -> Vec<String> {
+        Refusal::ALL
+            .iter()
+            .map(|rule| format!("{rule:?}"))
+            .collect()
+    }
+
+    #[test]
+    fn every_rule_name_is_distinct() {
+        // Two variants sharing a name makes `caught` accept the wrong one, which is exactly the
+        // looseness this enum exists to remove.
+        let mut names: Vec<&str> = Refusal::ALL.iter().map(|rule| rule.rule()).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "two refusals share a rule name");
+        assert_eq!(
+            total, 16,
+            "a refusal was added or removed without updating the probes"
+        );
+    }
+
+    #[test]
+    fn a_rule_catches_its_own_refusal_and_rejects_every_other() {
+        // THE PER-RULE PROBE. A `caught` that matched everything would make every refusal test
+        // in this module vacuous, and a `caught` that matched nothing would make them all fail
+        // for the wrong reason. Both directions, for all 15 x 15 pairs.
+        for rule in Refusal::ALL {
+            let error = rule
+                .refuse::<()>("a detail")
+                .expect_err("refuse must refuse");
+            assert!(rule.caught(&error), "{} did not catch itself", rule.rule());
+            for other in Refusal::ALL {
+                if other != rule {
+                    assert!(
+                        !other.caught(&error),
+                        "{} caught {}'s refusal",
+                        other.rule(),
+                        rule.rule()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn refusals_are_the_only_way_to_refuse_in_this_module() {
+        // THE STRUCTURAL HALF. Naming rules helps only while every refusal has one; a single
+        // bare `Error::Malformed` here would be a refusal no test could assert on, and the next
+        // test written against it would fall back to the loose shape. So the module's own
+        // source is the fixture.
+        let source = include_str!("geometry.rs");
+        // THE WHOLE FILE, minus one marked window. An earlier draft checked only the part
+        // before `refuse` and the test module, which left everything after `refuse` -- most of
+        // the module, including the CMap code added the same day -- unexamined. A check that
+        // silently examines part of its subject reads as coverage.
+        let begin = concat!("// PROBE-", "EXEMPT BEGIN");
+        let end = concat!("// PROBE-", "EXEMPT END");
+        let (before, rest) = source.split_once(begin).expect("the exempt window opens");
+        let (exempt, after) = rest.split_once(end).expect("the exempt window closes");
+        assert!(
+            exempt.lines().count() <= 30,
+            "the exempt window has grown past the two functions it is for: {} lines",
+            exempt.lines().count()
+        );
+        for (half, label) in [(before, "before the exempt window"), (after, "after it")] {
+            // COMMENTS ARE NOT CONSTRUCTION SITES. The doc on `Refusal` quotes the loose shape
+            // in order to argue against it, and a probe that could not tell the two apart would
+            // have to be weakened somewhere instead.
+            for line in half.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                // SPELLED IN PIECES so this probe does not match itself -- it did, on the
+                // second run, which is the same self-matching shape as `pgrep -f` in CLAUDE.md.
+                for bare in [
+                    concat!("Error::", "Malformed("),
+                    concat!("Error::", "Unsupported("),
+                ] {
+                    assert!(
+                        !line.contains(bare),
+                        "a bare `{bare}` in {label}: build it through `Refusal` so a test can \
+                         name it -- {line}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_refusal_is_both_raised_and_tested() {
+        // A variant that nothing raises is a rule that cannot fire; one that no test names is a
+        // rule nobody checks. Neither is caught by the compiler.
+        let source = include_str!("geometry.rs");
+        let (production, tests) = source
+            .split_once("mod tests {")
+            .expect("the test module marks the split");
+        // Whitespace-insensitive: rustfmt wraps `Refusal::X.refuse(..)` onto two lines when the
+        // detail is long, and a probe that missed those would report the longest refusals as
+        // unraised -- which it did, on the first run.
+        let dense: String = production.chars().filter(|c| !c.is_whitespace()).collect();
+        for name in variant_names() {
+            assert!(
+                dense.contains(&format!("Refusal::{name}.refuse(")),
+                "`Refusal::{name}` is never raised"
+            );
+            assert!(
+                tests.contains(&format!("Refusal::{name})"))
+                    || tests.contains(&format!("Refusal::{name},")),
+                "no test asserts `Refusal::{name}`"
+            );
+        }
+    }
+
+    /// Assert a walk was refused, **and by which rule**.
+    ///
+    /// There is deliberately no helper that asserts "refused somehow". Writing one out by hand
+    /// is three lines of `matches!` against an `Error` variant a dozen rules share; naming the
+    /// rule is one line. The shorter spelling is the correct one, which is the point -- the
+    /// habit that produced three loose refusal tests in this milestone now produces the right
+    /// check by default.
+    #[track_caller]
+    fn assert_refused(outcome: Result<Vec<Glyph>>, rule: Refusal) {
+        match outcome {
+            Err(error) => assert!(
+                rule.caught(&error),
+                "refused, but by a different rule: wanted `{}`, got {error:?}",
+                rule.rule()
+            ),
+            Ok(glyphs) => panic!(
+                "expected a refusal by `{}`, got {} glyphs",
+                rule.rule(),
+                glyphs.len()
+            ),
+        }
+    }
+
+    /// Walk a fixture against the default resources, for a walk that must be refused.
+    #[track_caller]
+    fn refusing(content: &str, rule: Refusal) {
+        assert_refused(glyphs_in(content.as_bytes(), &Fake::new()), rule);
     }
 
     #[test]
@@ -1036,18 +1489,7 @@ mod tests {
         // ASSERTED ON THE RULE, not on "some Unsupported". The depth cap refuses a
         // self-drawing form too -- it recurses to MAX_FORM_DEPTH and stops -- so a test that
         // accepted either would pass with cycle detection deleted. Measured: it did.
-        assert_refused_by(glyphs_in(b"/Fm0 Do", &resources), "cycle");
-    }
-
-    /// Assert a walk was refused, by the rule whose name appears in the message.
-    fn assert_refused_by(outcome: Result<Vec<Glyph>>, rule: &str) {
-        match outcome {
-            Err(Error::Unsupported(message)) => assert!(
-                message.contains(rule),
-                "refused, but by a different rule: wanted `{rule}`, got `{message}`"
-            ),
-            other => panic!("expected a refusal naming `{rule}`, got {other:?}"),
-        }
+        assert_refused(glyphs_in(b"/Fm0 Do", &resources), Refusal::FormCycle);
     }
 
     #[test]
@@ -1058,7 +1500,7 @@ mod tests {
         let resources = Fake::new()
             .with_form(b"FmA", 11, Matrix::IDENTITY, "/FmB Do")
             .with_form(b"FmB", 12, Matrix::IDENTITY, "/FmA Do");
-        assert_refused_by(glyphs_in(b"/FmA Do", &resources), "cycle");
+        assert_refused(glyphs_in(b"/FmA Do", &resources), Refusal::FormCycle);
     }
 
     #[test]
@@ -1071,7 +1513,7 @@ mod tests {
             resources =
                 resources.with_form(name.as_bytes(), 100 + level as u64, Matrix::IDENTITY, &next);
         }
-        assert_refused_by(glyphs_in(b"/Fm0 Do", &resources), "depth");
+        assert_refused(glyphs_in(b"/Fm0 Do", &resources), Refusal::FormDepth);
     }
 
     #[test]
@@ -1109,68 +1551,234 @@ mod tests {
         // A WALK THAT STOPS EARLY HAS NOT EXAMINED THE REST OF THE PAGE. Returning the glyphs
         // found so far would report a page as holding less than it does, and a redaction built
         // on that removes what it saw and leaves what it did not.
-        assert!(matches!(
-            refused("q /F1 10 Tf BT 0 0 Td (A) Tj ET"),
-            Error::Malformed(_)
-        ));
+        refusing("q /F1 10 Tf BT 0 0 Td (A) Tj ET", Refusal::UnbalancedSave);
     }
 
     #[test]
     fn a_q_with_nothing_saved_is_refused() {
-        assert!(matches!(
-            refused("Q /F1 10 Tf BT 0 0 Td (A) Tj ET"),
-            Error::Malformed(_)
-        ));
+        refusing("Q /F1 10 Tf BT 0 0 Td (A) Tj ET", Refusal::UnmatchedRestore);
     }
 
     #[test]
     fn an_unterminated_text_object_is_refused() {
-        assert!(matches!(
-            refused("/F1 10 Tf BT 0 0 Td (A) Tj"),
-            Error::Malformed(_)
-        ));
+        refusing(
+            "/F1 10 Tf BT 0 0 Td (A) Tj",
+            Refusal::UnterminatedTextObject,
+        );
     }
 
     #[test]
     fn a_nested_bt_is_refused() {
-        assert!(matches!(
-            refused("/F1 10 Tf BT BT 0 0 Td (A) Tj ET ET"),
-            Error::Malformed(_)
-        ));
+        refusing(
+            "/F1 10 Tf BT BT 0 0 Td (A) Tj ET ET",
+            Refusal::NestedTextObject,
+        );
     }
 
     #[test]
     fn a_text_operator_outside_a_text_object_is_refused() {
         // Not a no-op: there is no text matrix to place against, so skipping it means silently
         // not seeing whatever it draws.
-        assert!(matches!(
-            refused("/F1 10 Tf 0 0 Td (A) Tj"),
-            Error::Malformed(_)
-        ));
-        assert!(matches!(refused("/F1 10 Tf (A) Tj"), Error::Malformed(_)));
+        refusing("/F1 10 Tf 0 0 Td (A) Tj", Refusal::TextOutsideTextObject);
+        refusing("/F1 10 Tf (A) Tj", Refusal::TextOutsideTextObject);
     }
 
     #[test]
     fn an_et_with_no_bt_is_refused() {
-        assert!(matches!(refused("ET"), Error::Malformed(_)));
+        refusing("ET", Refusal::UnmatchedEndText);
     }
 
     #[test]
     fn text_shown_with_no_font_is_refused() {
-        assert!(matches!(
-            refused("BT 0 0 Td (A) Tj ET"),
-            Error::Malformed(_)
-        ));
+        refusing("BT 0 0 Td (A) Tj ET", Refusal::NoFontSelected);
+    }
+
+    #[test]
+    fn an_operator_whose_operand_is_the_wrong_shape_is_refused() {
+        // FOUND BY `every_refusal_is_both_raised_and_tested`, which reported five rules nothing
+        // asserted. They are the ones a malformed file reaches first, so they were exactly the
+        // wrong five to leave unchecked.
+        refusing("5 Do", Refusal::FormOperandNotAName);
+        refusing(
+            "/F1 10 Tf BT (A) TJ ET",
+            Refusal::ShowArrayOperandNotAnArray,
+        );
+        refusing(
+            "/F1 10 Tf BT [/Name] TJ ET",
+            Refusal::ShowArrayItemNotShowable,
+        );
+        refusing("/F1 10 Tf BT /Name Tj ET", Refusal::ShowOperandNotAString);
+    }
+
+    #[test]
+    fn a_font_claiming_zero_bytes_per_code_is_refused() {
+        // Not a division by zero but a non-terminating chunk: `chunks(0)` panics, and a walk
+        // that clamped it to 1 would decode a two-byte font's codes as bytes and place every
+        // glyph on the page somewhere else.
+        let mut resources = Fake::new();
+        resources.bytes_per_code = 0;
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources),
+            Refusal::ZeroBytesPerCode,
+        );
+    }
+
+    // ---- the writing mode comes from `WMode`, not from a name -----------------------------
+
+    #[test]
+    fn a_vertical_cmap_is_caught_by_wmode_under_any_name() {
+        // THE EVASION. An embedded CMap's name is the producer's to choose, so `/Identity-V` is
+        // the one spelling an attacker will not use. A check keyed on the name passes all three
+        // of these; the check keyed on `WMode` fails all three.
+        for program in [
+            b"/CIDInit /ProcSet findresource begin /WMode 1 def".as_slice(),
+            b"%!PS-Adobe-3.0 Resource-CMap\n/CMapName /Perfectly-Ordinary-H def /WMode 1 def"
+                .as_slice(),
+            b"/CMapName /Identity-H def /WMode 1 def".as_slice(),
+        ] {
+            let cmap = CMap::Embedded {
+                dictionary_wmode: None,
+                program,
+            };
+            assert_eq!(
+                writing_mode_of(&cmap).expect("derives"),
+                WritingMode::Vertical,
+                "a program declaring 'WMode 1' read as horizontal"
+            );
+        }
+    }
+
+    #[test]
+    fn the_identity_h_twin_is_not_refused() {
+        // THE NEAR-MISS. A rule that refuses too much is not safe either -- it refuses the
+        // ordinary horizontal document this fixture is, and a redaction nobody can run leaks
+        // nothing only because it never runs.
+        for cmap in [
+            CMap::Predefined(b"Identity-H"),
+            CMap::Embedded {
+                dictionary_wmode: Some(0),
+                program: b"/CMapName /Identity-H def /WMode 0 def",
+            },
+            CMap::Embedded {
+                dictionary_wmode: None,
+                // NO `WMode` AT ALL. The specification's default is 0, so this is horizontal
+                // because the specification says so, not because nothing was found.
+                program: b"/CMapName /Identity-H def",
+            },
+        ] {
+            assert_eq!(
+                writing_mode_of(&cmap).expect("derives"),
+                WritingMode::Horizontal
+            );
+            check_writing_mode(writing_mode_of(&cmap).expect("derives")).expect("not refused");
+        }
+    }
+
+    #[test]
+    fn a_predefined_cmap_is_read_from_its_registry_suffix() {
+        // The `-V` CMaps a name check spelled `Identity-V` would miss.
+        for name in [
+            b"Identity-V".as_slice(),
+            b"UniJIS-UCS2-V".as_slice(),
+            b"90ms-RKSJ-V".as_slice(),
+            b"ETen-B5-V".as_slice(),
+        ] {
+            assert_eq!(
+                writing_mode_of(&CMap::Predefined(name)).expect("derives"),
+                WritingMode::Vertical,
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+        assert_refused_mode(
+            writing_mode_of(&CMap::Predefined(b"SomethingElse")),
+            Refusal::UndeterminedWritingMode,
+        );
+    }
+
+    #[test]
+    fn a_usecmap_inherits_a_vertical_mode_without_declaring_one() {
+        // A REAL HOLE IN THE OBVIOUS CHECK. This program states no `WMode` of its own; it
+        // inherits one. Reading only `/WMode` reports it horizontal.
+        let cmap = CMap::Embedded {
+            dictionary_wmode: None,
+            program: b"/CMapName /Custom def /UniJIS-UCS2-V usecmap",
+        };
+        assert_eq!(
+            writing_mode_of(&cmap).expect("derives"),
+            WritingMode::Vertical
+        );
+    }
+
+    #[test]
+    fn a_wmode_inside_a_string_or_a_comment_is_not_a_declaration() {
+        // TOKENISED, NOT SCANNED. A byte search for "/WMode 1" matches both of these, and
+        // refusing an ordinary document because a comment mentions the key is a check that
+        // cannot be left on.
+        for program in [
+            b"% /WMode 1 def
+/CMapName /Plain-H def"
+                .as_slice(),
+            b"(/WMode 1 def) pop /CMapName /Plain-H def".as_slice(),
+        ] {
+            let cmap = CMap::Embedded {
+                dictionary_wmode: None,
+                program,
+            };
+            assert_eq!(
+                writing_mode_of(&cmap).expect("derives"),
+                WritingMode::Horizontal,
+                "{}",
+                String::from_utf8_lossy(program)
+            );
+        }
+    }
+
+    #[test]
+    fn a_cmap_that_says_two_things_is_refused_rather_than_believed_once() {
+        assert_refused_mode(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: Some(0),
+                program: b"/WMode 1 def",
+            }),
+            Refusal::UndeterminedWritingMode,
+        );
+        assert_refused_mode(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: None,
+                program: b"/WMode 2 def",
+            }),
+            Refusal::UndeterminedWritingMode,
+        );
+        assert_refused_mode(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: None,
+                program: b"/WMode (one) def",
+            }),
+            Refusal::UndeterminedWritingMode,
+        );
+    }
+
+    /// The rule-naming assertion, for the derivation rather than the walk.
+    #[track_caller]
+    fn assert_refused_mode(outcome: Result<WritingMode>, rule: Refusal) {
+        match outcome {
+            Err(error) => assert!(
+                rule.caught(&error),
+                "refused, but by a different rule: wanted `{}`, got {error:?}",
+                rule.rule()
+            ),
+            Ok(mode) => panic!("expected a refusal by `{}`, got {mode:?}", rule.rule()),
+        }
     }
 
     #[test]
     fn a_vertical_writing_mode_is_refused() {
         let mut resources = Fake::new();
         resources.writing_mode = WritingMode::Vertical;
-        let outcome = glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources);
-        assert!(
-            matches!(outcome, Err(Error::Unsupported(_))),
-            "vertical writing must be refused rather than laid out horizontally: {outcome:?}"
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources),
+            Refusal::VerticalWriting,
         );
     }
 }
