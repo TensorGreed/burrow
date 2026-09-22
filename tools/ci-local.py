@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 """Run locally what CI runs, and refuse to run at all if the two have drifted apart.
 
+MODES
+
+    tools/ci-local.py --changed    the jobs the change can affect  -- BEFORE EVERY PUSH
+    tools/ci-local.py              every job                       -- ONCE PER PR, BEFORE MERGE
+    tools/ci-local.py --changed --since <ref>   ... measured against <ref> rather than upstream
+    tools/ci-local.py --check      parity only, runs nothing
+    tools/ci-local.py --list       the coverage table
+    tools/ci-local.py --only <job> one job
+
+`--changed` NARROWS AND NEVER GUESSES. Each job's paths are derived from the command CI runs
+and from the workspace's own crate graph -- never from a map somebody maintains, which is the
+same shape as the coverage table this file exists to replace. Where a changed file cannot be
+attributed to a job, or the change cannot be read from git, it runs everything and prints why.
+It reports what it ran and what it skipped with a reason for each, because a selective sweep
+that printed only its passes would read exactly like a full one.
+
 WHY THIS EXISTS
 
 Four CI failures in two batches, every one of them a green local sweep that had skipped a job:
@@ -319,6 +335,7 @@ JOBS: list[dict] = [
                 "tools/test-check-fuzz-target-registration.sh",
                 "python3 tools/check-proptest-regressions.py",
                 "tools/test-check-proptest-regressions.sh",
+                "tools/test-name-requires-slash.sh",
             ]
         ),
         "covers": [
@@ -352,6 +369,7 @@ JOBS: list[dict] = [
             "tools/test-check-fuzz-target-registration.sh",
             "tools/check-proptest-regressions.py",
             "tools/test-check-proptest-regressions.sh",
+            "tools/test-name-requires-slash.sh",
         ],
     },
     {
@@ -1444,6 +1462,250 @@ def report_environment(findings: list[str]) -> None:
     )
 
 
+# --- selecting jobs by what a change touches -----------------------------------------------
+#
+# `--changed` exists because the full sweep stopped being run. It takes over twenty minutes,
+# most of it fuzzing, and a rule whose cost is that high gets skipped or half-run -- which is
+# worse than a cheaper rule honestly applied. CLAUDE.md has the argument; this is the mechanism.
+#
+# THE SELECTION IS DERIVED, NOT LISTED. A hand-maintained map from paths to jobs is the same
+# shape as the coverage table this file already exists to replace: it rots silently, and the
+# person adding a job is exactly the person who will not think to update it. So a job's paths
+# come from the command CI runs -- the `run` string, which parity holds equal to ci.yml -- read
+# against the workspace's own crate graph.
+#
+# THE DEFAULT IS TO RUN. A job whose paths cannot be derived runs, and says why. Selection may
+# only ever *narrow* from a known-complete set, never guess its way to a smaller one.
+
+
+def crate_directories() -> dict[str, str]:
+    """Every workspace crate, from the root `Cargo.toml`, as `name -> directory`."""
+    root = REPO / "Cargo.toml"
+    if not root.is_file():
+        return {}
+    members: list[str] = []
+    inside = False
+    for line in root.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("members"):
+            inside = True
+        if inside:
+            members += re.findall(r'"([^"]+)"', stripped)
+            if "]" in stripped and not stripped.startswith("members"):
+                inside = False
+            elif stripped.endswith("]"):
+                inside = False
+    found: dict[str, str] = {}
+    for member in members:
+        for manifest in sorted(REPO.glob(f"{member}/Cargo.toml")):
+            text = manifest.read_text(encoding="utf-8")
+            name = re.search(r'^\s*name\s*=\s*"([^"]+)"', text, re.M)
+            if name:
+                found[name.group(1)] = str(manifest.parent.relative_to(REPO))
+    return found
+
+
+def crate_dependencies(directories: dict[str, str]) -> dict[str, set[str]]:
+    """`crate -> every workspace crate it depends on, transitively`.
+
+    From each manifest's `path = "..."` dependencies, so a change to `burrow-types` selects the
+    jobs that test `burrow-engines`. Derived rather than declared, for the same reason as above.
+    """
+    direct: dict[str, set[str]] = {}
+    for name, directory in directories.items():
+        text = (REPO / directory / "Cargo.toml").read_text(encoding="utf-8")
+        here: set[str] = set()
+        # BOTH SPELLINGS. This repo writes `burrow-types.workspace = true`; an inline
+        # `{ path = "..." }` is the other form. A first version matched only the second and
+        # found NO dependencies at all -- so a change to `burrow-types` would have selected
+        # nothing that tests it, which is the narrowing-on-bad-reasoning this mode must not do.
+        # Caught by printing the derived table rather than trusting it.
+        patterns = (
+            r"^\s*([A-Za-z0-9_-]+)\s*=\s*\{[^}]*path\s*=",
+            r"^\s*([A-Za-z0-9_-]+)\.workspace\s*=\s*true",
+            r"^\s*\[(?:dev-|build-)?dependencies\.([A-Za-z0-9_-]+)\]",
+        )
+        for pattern in patterns:
+            for dependency in re.findall(pattern, text, re.M):
+                if dependency in directories and dependency != name:
+                    here.add(dependency)
+        direct[name] = here
+    closed: dict[str, set[str]] = {}
+    for name in directories:
+        seen: set[str] = set()
+        stack = [name]
+        while stack:
+            current = stack.pop()
+            for dependency in direct.get(current, set()):
+                if dependency not in seen:
+                    seen.add(dependency)
+                    stack.append(dependency)
+        closed[name] = seen
+    return closed
+
+
+# Paths every job depends on whatever it runs: the workflow, this runner, and the lockfile.
+# A change to any of them means the selection logic or the dependency set itself moved, and a
+# narrowed sweep would be narrowing on stale reasoning.
+ALWAYS_RELEVANT = (
+    r"\.github/workflows/",
+    r"tools/ci-local\.py",
+    r"Cargo\.lock",
+    r"Cargo\.toml",
+    r"rust-toolchain",
+)
+
+
+def job_paths(job: dict) -> tuple[set[str] | None, str]:
+    """Path prefixes `job` depends on, or `(None, reason)` when they cannot be derived."""
+    command = job["run"]
+    directories = crate_directories()
+    dependencies = crate_dependencies(directories)
+
+    # A checker reads whatever it reads, and that is not derivable from its invocation. They
+    # are seconds each, so they always run -- the conservative direction, stated.
+    if re.search(r"(^|[ &|])(python3 )?tools/", command):
+        return None, "invokes a tools/ checker, whose inputs are not derivable from its command"
+
+    # `cargo run` EXECUTES A PROGRAM, and a program's inputs are not in its command line. The
+    # `corpus` job is why this rule exists: it runs an example that reads
+    # `tests/conformance/`, so deriving its paths from `-p burrow-engines` would have skipped
+    # it on a fixture change -- the one change it is entirely about.
+    if re.search(r"cargo run\b", command):
+        return None, "runs a program, whose inputs are not derivable from its command"
+
+    paths: set[str] = set()
+    if "--workspace" in command:
+        paths.update(directories.values())
+    for crate in re.findall(r"-p\s+([A-Za-z0-9_-]+)", command):
+        if crate not in directories:
+            return None, f"names a crate this runner cannot place: {crate}"
+        paths.add(directories[crate])
+        paths.update(directories[other] for other in dependencies.get(crate, set()))
+    for directory in re.findall(r"cd\s+([A-Za-z0-9_./-]+)", command):
+        paths.add(directory.rstrip("/"))
+    for manifest in re.findall(r"(bindings/[A-Za-z0-9_-]+)", command):
+        paths.add(manifest)
+        name = manifest.rsplit("/", 1)[-1]
+        paths.update(directories[other] for other in dependencies.get(name, set()))
+
+    if not paths:
+        return None, "no path could be derived from its command"
+    return paths, ""
+
+
+def changed_paths(base: str | None) -> tuple[list[str], str] | None:
+    """Files this change touches, against `base`, or `None` when that cannot be established."""
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", *args], capture_output=True, text=True, check=False, cwd=REPO, timeout=60
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout if done.returncode == 0 else None
+
+    if base is None:
+        upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+        base = upstream.strip() if upstream and upstream.strip() else "origin/main"
+    merge_base = git("merge-base", "HEAD", base)
+    if merge_base is None:
+        return None
+    against = merge_base.strip()
+    committed = git("diff", "--name-only", against, "HEAD")
+    working = git("diff", "--name-only", "HEAD")
+    untracked = git("ls-files", "--others", "--exclude-standard")
+    if committed is None or working is None or untracked is None:
+        return None
+    files = sorted(
+        {line for line in (committed + working + untracked).splitlines() if line.strip()}
+    )
+    return files, f"{base} ({against[:9]})"
+
+
+# Jobs `--changed` never runs, whatever was touched.
+#
+# A fuzz target is a SEARCH, and sixty seconds of it proves nothing about a change that did not
+# touch the parser it fuzzes -- while costing more than every other job combined. Searching
+# belongs in the nightly run, which is seeded and given hours. Keeping it on the pre-push path
+# bought the appearance of rigour at the price of the rule being followed at all.
+NEVER_ON_THE_CHANGED_PATH = {
+    "fuzz": "a search, not a check: 60 s proves nothing about an unrelated change. "
+    "fuzz-nightly.yml is where it belongs, seeded and given hours",
+    "fuzz-seed": "seeds the corpora the nightly search uses; nothing else reads them",
+}
+
+# ...unless the change is about the fuzzers themselves.
+#
+# `fuzz/` is its own cargo workspace, so `cargo clippy --workspace` and `cargo test --workspace`
+# never compile a fuzz target. Measured this milestone: a seam change in `burrow-engines` broke
+# `pdfsyntax_geometry` and every Rust gate run by hand stayed green -- only the `fuzz` job saw
+# it. Excluding these jobs unconditionally would make that permanent for anyone editing a
+# target, so an edit under `fuzz/` puts them back.
+FUZZ_OWN_PATHS = ("fuzz",)
+
+
+def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list[tuple[str, str]]]:
+    """`(jobs to run, [(skipped job, why)])`."""
+    touched = changed_paths(base)
+    if touched is None:
+        return jobs, [
+            (
+                "(none)",
+                "the change could not be determined from git, so nothing was narrowed -- "
+                "selection may only narrow from a complete set, never guess at one",
+            )
+        ]
+    files, described = touched
+    print(f"\nchanged against {described}: {len(files)} file(s)")
+
+    universal = [f for f in files if any(re.search(p, f) for p in ALWAYS_RELEVANT)]
+    if universal:
+        print(f"  {universal[0]} is a path every job depends on, so nothing is narrowed")
+        return jobs, []
+
+    derivable = [(job, job_paths(job)[0]) for job in jobs]
+    known = {p for _, paths in derivable if paths for p in paths}
+
+    # A FILE UNDER NO JOB'S PATHS CANNOT BE ATTRIBUTED, so nothing is narrowed. `cargo test`
+    # reads fixtures at run time -- `tests/conformance/` is loaded by path, not compiled in --
+    # so "outside every crate" does not mean "affects no crate's tests". Selection may only
+    # narrow from a complete set; where the reasoning runs out, it stops.
+    orphans = [
+        f
+        for f in files
+        if not any(f == p or f.startswith(f"{p}/") for p in known)
+        and not f.startswith("docs/")
+    ]
+    if orphans:
+        print(
+            f"  {orphans[0]} is under no job's derived paths, so nothing is narrowed "
+            f"({len(orphans)} such file(s))"
+        )
+        return jobs, []
+
+    touched_fuzz = any(
+        f == p or f.startswith(f"{p}/") for f in files for p in FUZZ_OWN_PATHS
+    )
+    selected: list[dict] = []
+    skipped: list[tuple[str, str]] = []
+    for job, paths in derivable:
+        if job["name"] in NEVER_ON_THE_CHANGED_PATH and not touched_fuzz:
+            skipped.append((job["name"], NEVER_ON_THE_CHANGED_PATH[job["name"]]))
+            continue
+        if paths is None:
+            selected.append(job)
+            continue
+        hit = any(f == p or f.startswith(f"{p}/") for f in files for p in paths)
+        if hit:
+            selected.append(job)
+        else:
+            shown = ", ".join(sorted(paths)[:3])
+            more = "" if len(paths) <= 3 else f" (+{len(paths) - 3} more)"
+            skipped.append((job["name"], f"nothing changed under {shown}{more}"))
+    return selected, skipped
+
+
 def main(argv: list[str]) -> int:
     check_only = "--check" in argv
     listing = "--list" in argv
@@ -1457,6 +1719,17 @@ def main(argv: list[str]) -> int:
     # against a mutant whose `preflight()` refused everything unconditionally. A case that
     # cannot observe the behaviour it names is the failure this whole file is about.
     preflight_only = "--preflight" in argv
+    changed = "--changed" in argv
+    since = None
+    if "--since" in argv:
+        index = argv.index("--since")
+        if index + 1 >= len(argv):
+            print("error: --since needs a git ref", file=sys.stderr)
+            return 1
+        since = argv[index + 1]
+    if since and not changed:
+        print("error: --since only means something with --changed", file=sys.stderr)
+        return 1
     only = None
     if "--only" in argv:
         index = argv.index("--only")
@@ -1533,6 +1806,13 @@ def main(argv: list[str]) -> int:
         print(f"error: no local job named {only!r}", file=sys.stderr)
         return 1
 
+    skipped: list[tuple[str, str]] = []
+    if changed:
+        if only:
+            print("error: --changed and --only both select jobs; use one", file=sys.stderr)
+            return 1
+        jobs, skipped = select_changed(jobs, since)
+
     if preflight_only:
         findings = preflight(jobs)
         if findings:
@@ -1589,6 +1869,21 @@ def main(argv: list[str]) -> int:
 
     failed = [j["name"] for j in jobs if not run(j, env)]
     print("\n" + "=" * 60)
+
+    # WHAT RAN AND WHAT DID NOT, BY NAME AND WITH THE REASON. A selective sweep that reported
+    # only its passes would read exactly like a full one, which is the failure mode this whole
+    # file exists to prevent -- "4 of 15" reads as success.
+    if changed:
+        print(f"\nselected {len(jobs)} job(s): {', '.join(j['name'] for j in jobs) or '(none)'}")
+        if skipped:
+            print(f"skipped {len(skipped)}:")
+            for name, why in skipped:
+                print(f"  {name:<24} {why}")
+        print(
+            "\nA SELECTIVE SWEEP IS NOT THE FULL ONE. This is the pre-push gate;\n"
+            "`tools/ci-local.py` with no arguments is what runs before a merge."
+        )
+
     if failed:
         print(f"FAILED — {len(failed)} of {len(jobs)}: {', '.join(failed)}", file=sys.stderr)
         return 1

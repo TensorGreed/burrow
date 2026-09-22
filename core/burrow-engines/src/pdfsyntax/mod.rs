@@ -63,6 +63,7 @@ pub mod dict;
 pub mod geometry;
 pub mod names;
 pub mod ops;
+pub mod region;
 pub mod strings;
 
 pub use contents::{Contents, Edit};

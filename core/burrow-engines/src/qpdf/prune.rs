@@ -14,6 +14,7 @@ use burrow_types::{Error, Result};
 
 use super::Document;
 use super::handle::ObjectHandle;
+use super::name::Name;
 use crate::prune::graph::ObjectGraph;
 
 /// A qpdf document, seen as an object graph.
@@ -47,11 +48,8 @@ impl<'a> QpdfGraph<'a> {
 /// The policy hands over a canonicalised name with its leading `/` and no NUL — it has already
 /// refused a name containing one, because a C string would end there and the call would act on a
 /// *different, shorter* key. This only appends the terminator.
-fn c_key(key: &[u8]) -> Vec<u8> {
-    let mut owned = Vec::with_capacity(key.len() + 1);
-    owned.extend_from_slice(key);
-    owned.push(0);
-    owned
+fn c_key(key: &[u8]) -> Result<Name> {
+    Name::from_canonical(key)
 }
 
 impl<'a> ObjectGraph for QpdfGraph<'a> {
@@ -74,8 +72,8 @@ impl<'a> ObjectGraph for QpdfGraph<'a> {
     }
 
     fn key(&self, of: &Self::Handle, key: &[u8]) -> Result<Self::Handle> {
-        let key = c_key(key);
-        let value = of.key(key.as_ptr().cast());
+        let key = c_key(key)?;
+        let value = of.key(&key);
         self.drained()?;
         Ok(value)
     }
@@ -99,8 +97,8 @@ impl<'a> ObjectGraph for QpdfGraph<'a> {
     }
 
     fn remove_key(&self, of: &Self::Handle, key: &[u8]) -> Result<()> {
-        let key = c_key(key);
-        of.remove_key(key.as_ptr().cast());
+        let key = c_key(key)?;
+        of.remove_key(&key);
         self.drained()
     }
 

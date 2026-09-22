@@ -76,7 +76,7 @@
 
 use burrow_types::{Error, Result};
 
-use super::ops::{Operand, Operation};
+use super::ops::{Operand, Operation, Span};
 
 /// Why a walk refused, named.
 ///
@@ -136,6 +136,22 @@ pub enum Refusal {
     UnreadableCMap,
     /// A simple font whose codes are not single bytes.
     SimpleFontWithMultiByteCodes,
+    /// A glyph whose span indexes a stream other than the one being edited.
+    GlyphFromAnotherStream,
+    /// A glyph attributed to an operation the stream being edited does not contain.
+    GlyphWithoutItsOperation,
+    /// A glyph attributed to an operation that shows no text.
+    GlyphOnANonShowingOperation,
+    /// A displacement no `TJ` adjustment reproduces.
+    AdjustmentNotExpressible,
+    /// The region reaches text inside a Form XObject drawn in more than one place.
+    SharedFormWouldChangeElsewhere,
+    /// A Type 3 glyph procedure that shows text the walk does not reach.
+    TypeThreeProcedureShowsText,
+    /// A shown string that does not divide into whole codes.
+    StringNotWholeCodes,
+    /// Glyphs cut from one string disagreeing on the font's code width.
+    MixedCodeWidths,
     /// A Form XObject that draws itself, directly or through another form.
     FormCycle,
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
@@ -169,6 +185,14 @@ impl Refusal {
         Self::PatternMayDrawText,
         Self::UnreadableCMap,
         Self::SimpleFontWithMultiByteCodes,
+        Self::GlyphFromAnotherStream,
+        Self::GlyphWithoutItsOperation,
+        Self::GlyphOnANonShowingOperation,
+        Self::AdjustmentNotExpressible,
+        Self::SharedFormWouldChangeElsewhere,
+        Self::TypeThreeProcedureShowsText,
+        Self::StringNotWholeCodes,
+        Self::MixedCodeWidths,
         Self::FormCycle,
         Self::FormDepth,
         Self::VerticalWriting,
@@ -199,6 +223,14 @@ impl Refusal {
             Self::PatternMayDrawText => "pattern-may-draw-text",
             Self::UnreadableCMap => "unreadable-cmap",
             Self::SimpleFontWithMultiByteCodes => "simple-font-multi-byte-codes",
+            Self::GlyphFromAnotherStream => "glyph-from-another-stream",
+            Self::GlyphWithoutItsOperation => "glyph-without-its-operation",
+            Self::GlyphOnANonShowingOperation => "glyph-on-a-non-showing-operation",
+            Self::AdjustmentNotExpressible => "adjustment-not-expressible",
+            Self::SharedFormWouldChangeElsewhere => "shared-form-would-change-elsewhere",
+            Self::TypeThreeProcedureShowsText => "type-three-procedure-shows-text",
+            Self::StringNotWholeCodes => "string-not-whole-codes",
+            Self::MixedCodeWidths => "mixed-code-widths",
             Self::FormCycle => "form-cycle",
             Self::FormDepth => "form-depth",
             Self::VerticalWriting => "vertical-writing",
@@ -217,6 +249,8 @@ impl Refusal {
                 | Self::TooManyFormDraws
                 | Self::PatternMayDrawText
                 | Self::UnreadableCMap
+                | Self::SharedFormWouldChangeElsewhere
+                | Self::TypeThreeProcedureShowsText
         )
     }
 
@@ -495,6 +529,62 @@ pub struct Glyph {
     pub font_bbox: Option<Rect>,
     /// The font size in force, for the advance box's height.
     pub font_size: f64,
+    /// The font size in force, scaled by `Tz` -- the denominator a `TJ` adjustment divides by.
+    ///
+    /// Recorded rather than recomputed for the same reason as `displacement`: the two must
+    /// cancel exactly when a removal converts one into an adjustment, and two expressions that
+    /// are meant to agree, written twice, is how they stop agreeing.
+    pub scaled_font_size: f64,
+    /// The text-space displacement this glyph caused, **including** `Tc`, `Tw` and `Tz`.
+    ///
+    /// # Why this is carried rather than recomputed
+    ///
+    /// Removing a glyph has to put back exactly what it displaced, or the glyphs after the cut
+    /// slide along and the page reflows -- a redaction that changed the evidence rather than
+    /// removing a secret from it. The value to put back is this one, computed by the same
+    /// expression that moved the pen, on the same line. Recomputing it at removal time from
+    /// `advance`, `char_spacing` and `word_spacing` would be the same arithmetic written twice,
+    /// and a test comparing the two would be measuring them against each other rather than
+    /// against the renderer.
+    ///
+    /// `advance` is deliberately **not** this: it is the glyph's own width times the font size,
+    /// with no spacing terms, which is what the advance box needs.
+    pub displacement: f64,
+    /// Where in the content stream this glyph's code came from.
+    pub source: GlyphSource,
+}
+
+/// Where a glyph's code sits in the stream that drew it.
+///
+/// Enough to rewrite the operation that drew it, and no more. The span is the **operation's**,
+/// not the string's, because a cut inside a `Tj` becomes a `TJ` -- the operator changes, so the
+/// whole operation is what gets replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphSource {
+    /// The form this glyph was drawn from, by object identity, or `None` for the caller's own
+    /// stream. A span means nothing without knowing which stream it indexes.
+    pub form: Option<u64>,
+    /// The drawing operation's byte span in that stream.
+    pub operation: Span,
+    /// Which operand held the string: `0` for `Tj`, `'` and `"`, or the index within a `TJ`
+    /// array.
+    pub operand: usize,
+    /// This glyph's index **in codes** within that string, not in bytes.
+    pub code_index: usize,
+    /// How many bytes **the font** uses per code.
+    ///
+    /// # Not the length of this glyph's own chunk
+    ///
+    /// It was, and that was a defect a review caught: `bytes.chunks(n)` yields a short final
+    /// chunk, so the last glyph of an odd-length two-byte string had a length of 1. Removal
+    /// took the framing width from the glyph being cut, re-chunked the whole string into
+    /// single bytes, and removed a **different glyph** -- measured on `(ABCDE)` at two bytes
+    /// per code: asked to remove `0x45`, it left `0x45` on the page and deleted `0x43`, and
+    /// returned `Ok`. A redaction that does not redact, reported as success.
+    ///
+    /// Inferring a framing parameter from one element of the thing being framed is the bug,
+    /// not the off-by-one. This is the font's width, constant for every code in the string.
+    pub bytes_per_code: u8,
 }
 
 impl Glyph {
@@ -809,6 +899,376 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
     }
 }
 
+// ---- removing glyphs without moving the ones that stay --------------------------------------
+
+/// Whether a Type 3 glyph procedure draws text this walk cannot see.
+///
+/// # Channel 8 fails closed until the walk descends into `/CharProcs`
+///
+/// A Type 3 glyph procedure is a content stream, and it may show text of its own. The geometry
+/// walk does not descend into one: [`Resources`] resolves forms and glyph metrics and has no
+/// hook for a procedure's content. So text drawn inside a procedure is **not found**, and a
+/// redaction that removed the page's Type 3 glyphs would leave that text in the font — spike
+/// 0006's channel 8, still open.
+///
+/// Leaving it silent is the one outcome ADR 0029 §8 forbids: an `Ok` over text nothing
+/// observed. So the procedure's stream is scanned for the text-showing operators, and a
+/// procedure that has any is refused rather than removed.
+///
+/// # A scan, not a parse, and the direction of its error
+///
+/// This tokenises the procedure and looks for `Tj`, `TJ`, `'` and `"` as **operators** — not a
+/// byte search, which would match a `Tj` inside a string or a comment and refuse procedures
+/// that draw nothing. It does not attempt to decide whether the text is inside the region,
+/// because that is the walk this function exists to stand in for. A procedure that shows any
+/// text refuses the whole removal.
+///
+/// That over-refuses: a Type 3 glyph whose procedure draws text outside the region is refused
+/// along with one whose procedure draws the secret. Over-refusing is the direction that does
+/// not leak, and it is temporary — see #131 and the residue note in ADR 0029.
+///
+/// # Errors
+///
+/// [`Refusal::TypeThreeProcedureShowsText`] if the procedure shows text. Whatever
+/// [`super::ops::operations`] refuses, since a procedure burrow cannot tokenise is one whose
+/// contents it cannot rule on.
+pub fn check_type_three_procedure(procedure: &[u8]) -> Result<()> {
+    for operation in super::ops::operations(procedure)? {
+        if matches!(operation.operator.as_slice(), b"Tj" | b"TJ" | b"\'" | b"\"") {
+            return Refusal::TypeThreeProcedureShowsText.refuse(
+                "a Type 3 glyph procedure that draws text of its own, which burrow's walk does \
+                 not yet reach",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// How many places in the document draw a given Form XObject.
+///
+/// # Why this is a seam and not a function here
+///
+/// Counting uses means walking every page's resource graph, which is a qpdf-side question:
+/// object identity, `/Annots`, `/AP`, nested forms, patterns and `/CharProcs`. None of that is
+/// content-stream syntax, so none of it belongs in this module. What belongs here is the
+/// **rule** — and the rule is what would otherwise be written by whoever happens to implement
+/// the walk.
+pub trait FormUses {
+    /// How many places draw the form with this object identity. `1` means "only here".
+    ///
+    /// Counted by **object identity**, never by resource name: two pages may both call a form
+    /// `/Fm0` and mean different objects, and one page may reach the same object under two
+    /// names. `core/CLAUDE.md` has the rule and `tools/check-handle-identity.py` enforces it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever walking the document failed with.
+    fn uses(&self, form: u64) -> Result<usize>;
+}
+
+/// Refuse if the region reaches glyphs inside a Form XObject that is drawn more than once.
+///
+/// # The scoping is the rule, not a detail of it
+///
+/// Editing a shared form in place removes its text **everywhere it is drawn**: a page nobody
+/// asked about silently loses content, while the page the user did select looks correctly
+/// redacted. ADR 0029 §6's read-back cannot catch that, because it asks about the page it was
+/// given and that page is clean.
+///
+/// But refusing every page that merely *contains* a shared form would refuse a large share of
+/// real documents. A letterhead, a header, a footer, a watermark and a logo are all commonly
+/// one form drawn on every page, and none of them is what the user selected. So the test is
+/// over the glyphs **being removed** — a form is only in question when a glyph the operation is
+/// about to cut came out of it.
+///
+/// # Errors
+///
+/// [`Refusal::SharedFormWouldChangeElsewhere`] naming nothing about the document beyond the
+/// shape, per §7. Whatever [`FormUses::uses`] failed with.
+pub fn check_form_sharing(remove: &[Glyph], uses: &dyn FormUses) -> Result<()> {
+    let mut asked: Vec<u64> = remove
+        .iter()
+        .filter_map(|glyph| glyph.source.form)
+        .collect();
+    asked.sort_unstable();
+    asked.dedup();
+    for form in asked {
+        if uses.uses(form)? > 1 {
+            return Refusal::SharedFormWouldChangeElsewhere.refuse(
+                "this page draws the selected text from a template used elsewhere in the \
+                 document, and removing it here would remove it there too",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Remove `remove` from `content`, leaving every other glyph exactly where it was.
+///
+/// # The whole point is that nothing reflows
+///
+/// Cutting a glyph out of a run shortens the run, and every glyph after the cut slides left by
+/// the removed advance. The page still *reads* plausibly, which is the worst kind of wrong:
+/// nothing about the output announces it, and on a form, a table or a signature block the
+/// remaining text can end up appearing to say something it did not. A redaction that reflows
+/// the line has altered the evidence rather than removed a secret from it.
+///
+/// So each removed glyph becomes a positioning adjustment equal to **the displacement it
+/// caused** -- [`Glyph::displacement`], recorded by the same expression that moved the pen,
+/// including `Tc`, `Tz`, and `Tw` where and only where the code was a single-byte 32. Nothing
+/// after the cut moves, and `tests/glyph_geometry.rs` holds that to PDFium's own char origins
+/// rather than to this module's arithmetic.
+///
+/// # What comes out
+///
+/// Every affected drawing operation becomes a `TJ`: kept runs as hex strings, removed glyphs as
+/// array numbers, and the producer's own kerns carried through **in place**. A `Tj` with a cut
+/// inside it is therefore replaced by a `TJ`, which is why [`GlyphSource`] carries the
+/// *operation's* span rather than the string's -- the operator itself changes.
+///
+/// Hex strings rather than literals: `(`, `)` and a backslash inside a re-encoded run would need
+/// escaping, and an escaping bug here silently corrupts the text that stays.
+///
+/// # Errors
+///
+/// [`Refusal::GlyphFromAnotherStream`] if any glyph came from a Form XObject -- its span indexes
+/// that form's bytes, not these, so applying it here would cut the wrong text out of the page.
+/// Following into forms is the next step; refusing is what stops it being silently skipped.
+///
+/// [`Refusal::AdjustmentNotExpressible`] if a displacement cannot be written as an adjustment,
+/// which is `Tz 0` or a zero font size making the conversion a division by zero.
+///
+/// Whatever [`super::ops::operations`] and [`super::strings::decode_string`] refuse.
+pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> Result<Vec<u8>> {
+    // EVERY GLYPH MUST BELONG TO THE STREAM BEING EDITED. A span from another stream indexes
+    // different bytes, so applying it here cuts whatever happens to sit at those offsets --
+    // a cut in the wrong place, reported as success. Editing a form is done by calling this
+    // again with that form's own content and its identity.
+    if remove.iter().any(|glyph| glyph.source.form != stream) {
+        return Refusal::GlyphFromAnotherStream
+            .refuse("a glyph drawn in a different stream, whose span does not index this one");
+    }
+    if remove.is_empty() {
+        return Ok(content.to_vec());
+    }
+
+    let operations = super::ops::operations(content)?;
+    let mut edits: Vec<super::contents::Edit> = Vec::new();
+    for operation in &operations {
+        let cuts: Vec<&Glyph> = remove
+            .iter()
+            .filter(|glyph| glyph.source.operation == operation.span)
+            .collect();
+        if !cuts.is_empty() {
+            edits.push(super::contents::Edit {
+                span: operation.span,
+                replacement: rewrite_without(content, operation, &cuts)?,
+            });
+        }
+    }
+    if edits.len() < count_distinct_operations(remove) {
+        return Refusal::GlyphWithoutItsOperation
+            .refuse("a glyph attributed to an operation this stream does not contain");
+    }
+
+    // THE SPLICE IS #128'S, not a second implementation of one. A single-element `Contents` is
+    // the degenerate case of the page-content span map, and reusing it keeps the offset
+    // arithmetic in one place rather than in two that can disagree.
+    let mut applied = super::contents::Contents::concatenate(&[content])?.apply(&edits)?;
+    applied.pop().filter(|_| applied.is_empty()).map_or_else(
+        || {
+            // probe-allowed: a burrow invariant, not a judgement about the file
+            Err(Error::Internal(
+                "pdf geometry: the splice returned something other than one stream".to_owned(),
+            ))
+        },
+        Ok,
+    )
+}
+
+/// How many distinct operations the cuts name, so an unmatched one is caught rather than ignored.
+fn count_distinct_operations(remove: &[Glyph]) -> usize {
+    let mut spans: Vec<Span> = remove.iter().map(|glyph| glyph.source.operation).collect();
+    spans.sort_unstable();
+    spans.dedup();
+    spans.len()
+}
+
+/// One drawing operation, rewritten as a `TJ` with its cuts turned into adjustments.
+fn rewrite_without(content: &[u8], operation: &Operation, cuts: &[&Glyph]) -> Result<Vec<u8>> {
+    // The operation's items, in the order they were written. A `TJ` has its array; the other
+    // three show operators have exactly one string, at the operand index `GlyphSource` records.
+    let items: Vec<(usize, &Operand)> = match operation.operator.as_slice() {
+        b"TJ" => match operation.operands.first() {
+            Some(Operand::Array { items, .. }) => items.iter().enumerate().collect(),
+            _ => {
+                return Refusal::ShowArrayOperandNotAnArray
+                    .refuse("a 'TJ' whose operand is not an array");
+            }
+        },
+        b"Tj" | b"'" => vec![(0, show_operand(operation, 0)?)],
+        b"\"" => vec![(2, show_operand(operation, 2)?)],
+        _ => {
+            return Refusal::GlyphOnANonShowingOperation
+                .refuse("a glyph attributed to an operation that does not show text");
+        }
+    };
+
+    // `'` AND `\"` ARE NOT `Tj`. `'` is `T*` then `Tj`; `\"` is `aw Tw`, `ac Tc`, `T*`, then
+    // `Tj`. Rewriting either as a bare `TJ` drops the line move and, for `\"`, the two spacing
+    // operands -- so everything after the cut moves down a line and every later glyph in the
+    // stream gets the wrong word and character spacing.
+    //
+    // Measured against PDFium by a review: cutting one glyph from `(AB) ' (CD) '` moved every
+    // kept glyph **+14 pt in y**, one whole line. The committed differential fixtures could not
+    // see it because all three used `Tj` or `TJ` only, and `'`/`\"` are ordinary output from
+    // the dvips family. The prefix below restores what the operator did besides showing text.
+    let mut out = Vec::new();
+    match operation.operator.as_slice() {
+        b"'" => out.extend_from_slice(b"T* "),
+        b"\"" => {
+            let word = number_operand(&operation.operands, 0)?;
+            let character = number_operand(&operation.operands, 1)?;
+            out.extend_from_slice(format!("{word} Tw {character} Tc T* ").as_bytes());
+        }
+        _ => {}
+    }
+    out.push(b'[');
+    for (at, item) in items {
+        match item {
+            // THE PRODUCER'S OWN KERNS, CARRIED THROUGH IN PLACE. They sit between glyphs the
+            // cut does not touch, and dropping or reordering one moves everything after it.
+            Operand::Number { value, .. } => {
+                out.extend_from_slice(format!("{value} ").as_bytes());
+            }
+            Operand::Str { span } => {
+                let raw = content.get(span.0..span.1).ok_or_else(|| {
+                    // probe-allowed: reports a bug in this code, not a judgement about a file
+                    Error::Internal("pdf geometry: a string's span left its stream".to_owned())
+                })?;
+                let bytes = super::strings::decode_string(raw)?;
+                emit_run(&mut out, &bytes, cuts, at)?;
+            }
+            _ => {
+                return Refusal::ShowArrayItemNotShowable.refuse(
+                    "a 'TJ' array holding something that is neither a string nor a number",
+                );
+            }
+        }
+    }
+    out.extend_from_slice(b"] TJ");
+    Ok(out)
+}
+
+/// The one string operand of a `Tj`, `'` or `"`.
+fn show_operand(operation: &Operation, at: usize) -> Result<&Operand> {
+    match operation.operands.get(at) {
+        Some(item @ Operand::Str { .. }) => Ok(item),
+        _ => Refusal::ShowOperandNotAString
+            .refuse("a text-showing operator whose operand is not a string"),
+    }
+}
+
+/// One string, emitted as kept runs and adjustments for the codes cut out of it.
+fn emit_run(out: &mut Vec<u8>, bytes: &[u8], cuts: &[&Glyph], operand: usize) -> Result<()> {
+    let mut here: Vec<&Glyph> = cuts
+        .iter()
+        .copied()
+        .filter(|glyph| glyph.source.operand == operand)
+        .collect();
+    here.sort_by_key(|glyph| glyph.source.code_index);
+
+    let Some(first) = here.first() else {
+        emit_hex(out, bytes);
+        return Ok(());
+    };
+    // THE FONT'S WIDTH, and every cut in this string must agree on it. Taking it from one
+    // glyph's own chunk was a defect: a short final chunk gave a width of 1 and re-chunked the
+    // whole string, so the removal cut a different glyph and returned `Ok`. See
+    // `GlyphSource::bytes_per_code`.
+    let width = usize::from(first.source.bytes_per_code);
+    if width == 0 {
+        return Refusal::ZeroBytesPerCode.refuse("a font claiming zero bytes per code");
+    }
+    if here
+        .iter()
+        .any(|glyph| glyph.source.bytes_per_code != first.source.bytes_per_code)
+    {
+        return Refusal::MixedCodeWidths.refuse(
+            "glyphs cut from one string disagreeing on the font's code width, so the string \
+             cannot be framed",
+        );
+    }
+    if !bytes.len().is_multiple_of(width) {
+        return Refusal::StringNotWholeCodes.refuse(
+            "a string being edited whose length is not a multiple of the font's code width",
+        );
+    }
+
+    let mut kept: Vec<u8> = Vec::new();
+    let mut cut = here.iter().peekable();
+    for (code, chunk) in bytes.chunks(width).enumerate() {
+        let cut_here = cut
+            .peek()
+            .is_some_and(|glyph| glyph.source.code_index == code);
+        if cut_here {
+            if let Some(glyph) = cut.next() {
+                if !kept.is_empty() {
+                    emit_hex(out, &kept);
+                    kept.clear();
+                }
+                out.extend_from_slice(format!("{} ", adjustment_for(glyph)?).as_bytes());
+            }
+        } else {
+            kept.extend_from_slice(chunk);
+        }
+    }
+    if !kept.is_empty() {
+        emit_hex(out, &kept);
+    }
+    // A CUT THAT NAMED A CODE THIS STRING DOES NOT HAVE is a glyph attributed to the wrong
+    // operand, and silently dropping it would leave the secret on the page while every other
+    // check reported success.
+    if cut.next().is_some() {
+        return Refusal::GlyphWithoutItsOperation
+            .refuse("a glyph whose code index is past the end of the string it names");
+    }
+    Ok(())
+}
+
+/// The `TJ` number that reproduces a removed glyph's displacement.
+///
+/// A number `n` in a `TJ` array displaces by `-n/1000 x Tfs x Tz/100`, so reproducing a
+/// displacement `d` needs `n = -d x 1000 / (Tfs x Tz/100)`. The denominator is recovered from
+/// the glyph rather than from the graphics state, which no longer exists by the time a removal
+/// runs -- and it is the same `Tz`-scaled font size the displacement was computed against, so
+/// the two cancel exactly rather than approximately.
+fn adjustment_for(glyph: &Glyph) -> Result<f64> {
+    let scaled_size = glyph.scaled_font_size;
+    if !scaled_size.is_finite() || scaled_size.abs() < f64::EPSILON {
+        return Refusal::AdjustmentNotExpressible.refuse(
+            "a glyph displaced under a zero font size or a zero 'Tz', so no adjustment \
+             reproduces it",
+        );
+    }
+    let number = -glyph.displacement * 1000.0 / scaled_size;
+    if number.is_finite() {
+        Ok(number)
+    } else {
+        Refusal::AdjustmentNotExpressible
+            .refuse("a displacement with no finite 'TJ' adjustment that reproduces it")
+    }
+}
+
+/// A run of code bytes as a hex string, which needs no escaping.
+fn emit_hex(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.push(b'<');
+    for byte in bytes {
+        out.extend_from_slice(format!("{byte:02x}").as_bytes());
+    }
+    out.extend_from_slice(b"> ");
+}
+
 // ---- the content-stream walk ---------------------------------------------------------------
 
 /// How deep Form XObjects may nest before the walk refuses.
@@ -870,6 +1330,11 @@ struct Budget {
     open_forms: Vec<u64>,
     /// Every `Do` on a form followed so far, cycles and siblings alike.
     forms_drawn: usize,
+    /// The form whose content stream is being walked, or `None` for the caller's own.
+    ///
+    /// Carried so a `GlyphSource` span is never separated from the stream it indexes. A span
+    /// alone would be read against the page and silently name the wrong bytes.
+    in_form: Option<u64>,
 }
 
 /// A Form XObject, resolved.
@@ -1164,7 +1629,9 @@ fn walk(
                     return Refusal::TextOutsideTextObject
                         .refuse("a text operator outside a 'BT' ... 'ET' text object");
                 };
-                text_operator(content, operation, &mut state, place, resources, out)?;
+                text_operator(
+                    content, operation, &mut state, place, resources, budget, out,
+                )?;
             }
             _ => {}
         }
@@ -1214,6 +1681,10 @@ fn draw_form(
     }
 
     budget.open_forms.push(form.id);
+    // AND WHICH STREAM THE SPANS BELOW WILL INDEX. Restored on the way out, including on the
+    // error path, so a refusal deep in a form cannot leave the caller recording page spans
+    // against a form's bytes.
+    let enclosing = budget.in_form.replace(form.id);
     // THE FORM'S MATRIX COMPOSES WITH THE CTM AT THE `Do`, in that order. The other order puts
     // the form's own transform outside the page's, which is plausible and wrong.
     let result = walk(
@@ -1226,6 +1697,7 @@ fn draw_form(
         budget,
         out,
     );
+    budget.in_form = enclosing;
     budget.open_forms.pop();
     result
 }
@@ -1237,6 +1709,7 @@ fn text_operator(
     state: &mut GraphicsState,
     place: &mut TextPosition,
     resources: &dyn Resources,
+    budget: &Budget,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
     // Fallible for the same reason as the one in `walk`: see the comment there.
@@ -1266,7 +1739,11 @@ fn text_operator(
         b"'" => {
             place.next_line_at(0.0, -state.text.leading);
             show(
-                content,
+                &Shown {
+                    content,
+                    at: (operation.span, 0),
+                    form: budget.in_form,
+                },
                 operation.operands.first(),
                 state,
                 place,
@@ -1280,7 +1757,11 @@ fn text_operator(
             state.text.char_spacing = number(1)?;
             place.next_line_at(0.0, -state.text.leading);
             show(
-                content,
+                &Shown {
+                    content,
+                    at: (operation.span, 2),
+                    form: budget.in_form,
+                },
                 operation.operands.get(2),
                 state,
                 place,
@@ -1289,7 +1770,11 @@ fn text_operator(
             )?;
         }
         b"Tj" => show(
-            content,
+            &Shown {
+                content,
+                at: (operation.span, 0),
+                form: budget.in_form,
+            },
             operation.operands.first(),
             state,
             place,
@@ -1301,10 +1786,21 @@ fn text_operator(
                 return Refusal::ShowArrayOperandNotAnArray
                     .refuse("a 'TJ' whose operand is not an array");
             };
-            for item in items {
+            for (operand, item) in items.iter().enumerate() {
                 match item {
                     Operand::Str { .. } => {
-                        show(content, Some(item), state, place, resources, out)?;
+                        show(
+                            &Shown {
+                                content,
+                                at: (operation.span, operand),
+                                form: budget.in_form,
+                            },
+                            Some(item),
+                            state,
+                            place,
+                            resources,
+                            out,
+                        )?;
                     }
                     Operand::Number { value, .. } => {
                         // A KERN, in thousandths of text space, SUBTRACTED from the advance --
@@ -1331,14 +1827,25 @@ fn text_operator(
 }
 
 /// Place every glyph of one shown string, advancing the text matrix as it goes.
+/// Where a shown string sits, and in which stream -- the provenance half of `show`'s arguments.
+struct Shown<'a> {
+    /// The stream the span indexes.
+    content: &'a [u8],
+    /// The drawing operation's span, and which operand of it holds the string.
+    at: (Span, usize),
+    /// Which form's stream that is, or `None` for the caller's own.
+    form: Option<u64>,
+}
+
 fn show(
-    content: &[u8],
+    shown: &Shown<'_>,
     operand: Option<&Operand>,
     state: &GraphicsState,
     place: &mut TextPosition,
     resources: &dyn Resources,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
+    let (content, at) = (shown.content, shown.at);
     let Some(Operand::Str { span }) = operand else {
         return Refusal::ShowOperandNotAString
             .refuse("a text-showing operator whose operand is not a string");
@@ -1358,8 +1865,18 @@ fn show(
     if per_code == 0 {
         return Refusal::ZeroBytesPerCode.refuse("a font claiming zero bytes per code");
     }
+    // A STRING THAT DOES NOT DIVIDE INTO WHOLE CODES has no unambiguous reading. `chunks`
+    // would yield a short final chunk and the walk would report a glyph for a code the font
+    // does not have, which a removal then cannot place back. Refused here rather than papered
+    // over, because a phantom glyph is a wrong answer about what the page draws.
+    if bytes.len() % usize::from(per_code) != 0 {
+        return Refusal::StringNotWholeCodes.refuse(
+            "a shown string whose length is not a multiple of the font's bytes per code, so \
+             which codes it holds is not derivable",
+        );
+    }
 
-    for chunk in bytes.chunks(usize::from(per_code)) {
+    for (index, chunk) in bytes.chunks(usize::from(per_code)).enumerate() {
         let mut code = 0_u32;
         for byte in chunk {
             code = (code << 8) | u32::from(*byte);
@@ -1406,12 +1923,30 @@ fn show(
         if out.len() >= MAX_GLYPHS {
             return Refusal::TooManyGlyphs.refuse("more glyphs on one page than burrow will place");
         }
+        // THE DISPLACEMENT, computed once, here, and both used to move the pen and recorded on
+        // the glyph. Word spacing applies ONLY to single-byte code 32; see `takes_word_spacing`.
+        let word = if takes_word_spacing(code, metrics.bytes_per_code) {
+            state.text.word_spacing
+        } else {
+            0.0
+        };
+        let displacement = (width * state.text.font_size + state.text.char_spacing + word) * scale;
+
         let glyph = Glyph {
             origin,
             to_page,
             advance: width * state.text.font_size,
             font_bbox: metrics.font_bbox,
             font_size: state.text.font_size,
+            scaled_font_size: state.text.font_size * scale,
+            displacement,
+            source: GlyphSource {
+                form: shown.form,
+                operation: at.0,
+                operand: at.1,
+                code_index: index,
+                bytes_per_code: per_code,
+            },
         };
 
         // THE DERIVED VALUES, checked before the glyph is accepted, because each input above
@@ -1431,16 +1966,8 @@ fn show(
                 .refuse("a glyph whose box is not finite, so no region test over it is one");
         }
         out.push(glyph);
-
-        // THE ADVANCE, with word spacing applied ONLY to single-byte code 32. See
-        // `takes_word_spacing` for what applying it to a two-byte 0x0020 costs.
-        let word = if takes_word_spacing(code, metrics.bytes_per_code) {
-            state.text.word_spacing
-        } else {
-            0.0
-        };
-        let advance = (width * state.text.font_size + state.text.char_spacing + word) * scale;
-        place.text = Matrix::translate(advance, 0.0).then(&place.text);
+        // THE SAME VALUE that was recorded, not a second copy of the expression.
+        place.text = Matrix::translate(displacement, 0.0).then(&place.text);
     }
     Ok(())
 }
@@ -1450,8 +1977,9 @@ mod tests {
     use burrow_types::{Error, Result};
 
     use super::{
-        CMap, Encoding, Form, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix, Rect,
-        Refusal, Resources, TextPosition, TextState, WritingMode, check_writing_mode, glyphs_in,
+        CMap, Encoding, Form, FormUses, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix,
+        Rect, Refusal, Resources, TextPosition, TextState, WritingMode, check_form_sharing,
+        check_type_three_procedure, check_writing_mode, glyphs_in, remove_glyphs,
         takes_word_spacing, writing_mode_of,
     };
 
@@ -1572,7 +2100,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 24,
+            total, 32,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -1693,9 +2221,10 @@ mod tests {
         // AND HOW MANY WERE EXEMPTED, with an expectation beside it. An allowlist that grows
         // unnoticed is how a structural probe stops being one.
         assert_eq!(
-            allowlisted, 2,
-            "the allowlist holds {allowlisted} lines; it is for exactly two -- the `Internal` \
-             in `show`, and the foreign error the `caught` test builds"
+            allowlisted, 4,
+            "the allowlist holds {allowlisted} lines; it is for exactly three -- the two \
+             `Internal`s reporting a span that left its stream, the splice invariant, and the \
+             foreign error the `caught` test builds"
         );
     }
 
@@ -2446,6 +2975,362 @@ mod tests {
         );
     }
 
+    // ---- removing glyphs without moving the ones that stay ---------------------------------
+
+    /// Walk a fixture and hand back both the glyphs and the content, for a removal test.
+    fn walked(content: &str) -> (Vec<Glyph>, Vec<u8>) {
+        let bytes = content.as_bytes().to_vec();
+        (
+            glyphs_in(&bytes, &Fake::new()).expect("the fixture should walk"),
+            bytes,
+        )
+    }
+
+    #[test]
+    fn an_odd_length_composite_string_is_refused_rather_than_reframed() {
+        // THE DEFECT A REVIEW CAUGHT, as a fixture. `(ABCDE)` at two bytes per code is five
+        // bytes: `chunks(2)` yields a short final chunk, so the last glyph's own length is 1.
+        // Removal took the framing width from the glyph being cut, re-chunked the whole string
+        // into single bytes, and cut a DIFFERENT glyph -- measured: asked to remove `0x45`, it
+        // left `0x45` on the page, deleted `0x43`, and returned `Ok`.
+        //
+        // The walk now refuses the string outright, because a phantom glyph for a partial code
+        // is a wrong answer about what the page draws before removal is even reached.
+        let mut wide = Fake::new();
+        wide.bytes_per_code = 2;
+        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        assert_refused(
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET", &wide),
+            Refusal::StringNotWholeCodes,
+        );
+    }
+
+    #[test]
+    fn a_whole_composite_string_is_cut_at_the_right_code() {
+        // THE NEAR-MISS, and the positive half of the same finding: an even-length string
+        // frames correctly and the code that comes out is the one that was asked for.
+        let mut wide = Fake::new();
+        wide.bytes_per_code = 2;
+        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        let content = b"/F1 10 Tf BT 0 0 Td (ABCDEF) Tj ET";
+        let glyphs = glyphs_in(content, &wide).expect("walks");
+        assert_eq!(glyphs.len(), 3, "three two-byte codes");
+        assert!(
+            glyphs.iter().all(|g| g.source.bytes_per_code == 2),
+            "every glyph carries the FONT's width, not its own chunk's"
+        );
+        let out = remove_glyphs(content, None, &glyphs[2..3]).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(
+            text.contains("<41424344>") && !text.contains("4546"),
+            "the third code (0x4546) is the one removed: {text}"
+        );
+    }
+
+    #[test]
+    fn glyphs_disagreeing_on_the_code_width_are_refused() {
+        // Nothing the walk produces can disagree today -- the width comes from one font per
+        // string. The rule exists because `emit_run` frames a string from it, and a framing
+        // parameter that could differ between elements is the shape of the defect above.
+        let mut wide = Fake::new();
+        wide.bytes_per_code = 2;
+        wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
+        let content = b"/F1 10 Tf BT 0 0 Td (ABCD) Tj ET";
+        let mut glyphs = glyphs_in(content, &wide).expect("walks");
+        glyphs[1].source.bytes_per_code = 1;
+        assert_refused_bytes(
+            remove_glyphs(content, None, &glyphs),
+            Refusal::MixedCodeWidths,
+        );
+    }
+
+    #[test]
+    fn a_removed_glyph_leaves_an_adjustment_equal_to_what_it_displaced() {
+        // Width 500/1000 at 10pt is an advance of 5, and `Tz` is 100, so the adjustment that
+        // reproduces it is -500 thousandths. A reader can check that in their head, which is
+        // what makes the failure message useful rather than a pair of decimals.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        assert_eq!(glyphs.len(), 3);
+        let out = remove_glyphs(&content, None, &glyphs[1..2]).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.contains("-500"), "no adjustment in the output: {text}");
+        // `A` and `C` stay, as hex, and `B` does not.
+        assert!(text.contains("<41>") && text.contains("<43>"), "{text}");
+        assert!(
+            !text.contains("42"),
+            "the removed code is still there: {text}"
+        );
+    }
+
+    #[test]
+    fn word_spacing_rides_with_a_removed_space_and_only_a_single_byte_one() {
+        // THE CLASSIC MISS, on the removal side. A removed space in a simple font displaced by
+        // its width PLUS `Tw`, so the adjustment has to put both back. Getting it wrong shifts
+        // everything after the cut by the word spacing -- small enough to look like rounding.
+        let (glyphs, content) = walked("/F1 10 Tf 4 Tw BT 0 0 Td (A B) Tj ET");
+        assert_eq!(glyphs.len(), 3);
+        let space = &glyphs[1];
+        assert!(
+            (space.displacement - 9.0).abs() < 1e-9,
+            "a space at width 5 with `4 Tw` displaces 9, not {}",
+            space.displacement
+        );
+        let out = remove_glyphs(&content, None, &glyphs[1..2]).expect("removes");
+        assert!(
+            String::from_utf8_lossy(&out).contains("-900"),
+            "the adjustment dropped the word spacing: {}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+
+    #[test]
+    fn a_producers_own_kern_is_carried_through_in_place() {
+        // The kern sits between glyphs the cut does not touch. Dropping it, or moving it,
+        // shifts everything after by a point or two.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td [(AB) -25 (CD)] TJ ET");
+        assert_eq!(glyphs.len(), 4);
+        let out = remove_glyphs(&content, None, &glyphs[3..4]).expect("removes");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(text.contains("-25"), "the kern was dropped: {text}");
+        assert!(
+            text.contains("<4142>"),
+            "the untouched run was rewritten: {text}"
+        );
+    }
+
+    #[test]
+    fn removing_nothing_returns_the_stream_unchanged() {
+        // THE NON-VACUITY CONTROL'S PARTNER. A removal that rewrote a stream it was asked not
+        // to touch would fail the byte-identity half of every test above for the wrong reason.
+        let (_, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        assert_eq!(
+            remove_glyphs(&content, None, &[]).expect("removes"),
+            content
+        );
+    }
+
+    #[test]
+    fn a_glyph_attributed_to_the_wrong_operation_is_refused_by_its_own_name() {
+        // FOUR CONDITIONS SHARED ONE NAME, which a review flagged: only one of them was about
+        // another stream, §7's disclosure keys on the name, and every `assert_refused_bytes`
+        // in this suite keys on it too -- so a test could assert the right refusal for the
+        // wrong reason, and the user would be told the wrong thing.
+        let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        let mut stray = glyphs[1];
+        stray.source.operation = (9_999, 10_000);
+        assert_refused_bytes(
+            remove_glyphs(&content, None, &[stray]),
+            Refusal::GlyphWithoutItsOperation,
+        );
+    }
+
+    #[test]
+    fn a_glyph_attributed_to_an_operation_that_shows_no_text_is_refused_by_its_own_name() {
+        let content = b"/F1 10 Tf 1 0 0 1 0 0 cm BT 0 0 Td (ABC) Tj ET";
+        let glyphs = glyphs_in(content, &Fake::new()).expect("walks");
+        let operations = super::super::ops::operations(content).expect("tokenises");
+        let cm = operations
+            .iter()
+            .find(|operation| operation.operator == b"cm")
+            .expect("the fixture has a `cm`");
+        let mut stray = glyphs[1];
+        stray.source.operation = cm.span;
+        assert_refused_bytes(
+            remove_glyphs(content, None, &[stray]),
+            Refusal::GlyphOnANonShowingOperation,
+        );
+    }
+
+    #[test]
+    fn a_glyph_from_a_form_is_refused_rather_than_cut_out_of_the_page() {
+        // ITS SPAN INDEXES THE FORM'S BYTES. Applying it to the page would delete whatever
+        // happened to sit at those offsets -- a cut in the wrong place, reported as success.
+        let resources = Fake::new().with_form(
+            b"Fm0",
+            7,
+            Matrix::IDENTITY,
+            "/F1 10 Tf BT 0 0 Td (ABC) Tj ET",
+        );
+        let page = b"/Fm0 Do";
+        let glyphs = glyphs_in(page, &resources).expect("walks");
+        assert_eq!(glyphs.len(), 3);
+        assert_eq!(glyphs[0].source.form, Some(7));
+        assert_refused_bytes(
+            remove_glyphs(page, None, &glyphs[1..2]),
+            Refusal::GlyphFromAnotherStream,
+        );
+    }
+
+    #[test]
+    fn a_displacement_with_no_expressible_adjustment_is_refused() {
+        // `0 Tz` scales the font size to zero, so the conversion to thousandths of text space
+        // is a division by zero. Emitting an infinity would put a `TJ` number in the stream
+        // that no renderer can act on.
+        let (glyphs, content) = walked("/F1 10 Tf 0 Tz BT 0 0 Td (ABC) Tj ET");
+        assert_refused_bytes(
+            remove_glyphs(&content, None, &glyphs[1..2]),
+            Refusal::AdjustmentNotExpressible,
+        );
+    }
+
+    /// A `FormUses` that answers from a table, standing in for the qpdf-side resource walk.
+    struct Uses(Vec<(u64, usize)>);
+
+    impl FormUses for Uses {
+        fn uses(&self, form: u64) -> Result<usize> {
+            Ok(self
+                .0
+                .iter()
+                .find(|(id, _)| *id == form)
+                .map_or(1, |(_, count)| *count))
+        }
+    }
+
+    /// Walk a page that draws one form, and hand back the glyphs it drew.
+    fn form_glyphs(page: &[u8], body: &str) -> (Vec<Glyph>, Vec<u8>) {
+        let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, body);
+        (
+            glyphs_in(page, &resources).expect("walks"),
+            body.as_bytes().to_vec(),
+        )
+    }
+
+    #[test]
+    fn a_shared_form_the_region_reaches_is_refused() {
+        // EDITING IT IN PLACE WOULD REMOVE THE TEXT EVERYWHERE IT IS DRAWN -- a page nobody
+        // asked about loses content, while the page the user selected looks correctly
+        // redacted. Section 6's read-back cannot catch that: it asks about the page it was
+        // given, and that page is clean.
+        let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        assert_eq!(glyphs[0].source.form, Some(7));
+        let shared = Uses(vec![(7, 4)]);
+        assert_refused_unit(
+            check_form_sharing(&glyphs[1..2], &shared),
+            Refusal::SharedFormWouldChangeElsewhere,
+        );
+    }
+
+    #[test]
+    fn a_letterhead_the_region_avoids_is_not_refused() {
+        // THE SCOPING, and it is the decision rather than a detail of it. A header, a footer,
+        // a watermark and a logo are all commonly one form drawn on every page. Refusing any
+        // page that merely CONTAINS one would refuse a large share of real documents, and a
+        // redaction nobody can run leaks nothing only because it never runs.
+        let resources = Fake::new().with_form(
+            b"Fm0",
+            7,
+            Matrix::IDENTITY,
+            "/F1 10 Tf BT 0 0 Td (LETTERHEAD) Tj ET",
+        );
+        let page = b"/Fm0 Do /F1 10 Tf BT 0 0 Td (BODY) Tj ET";
+        let glyphs = glyphs_in(page, &resources).expect("walks");
+
+        // The region reaches the page's own text, not the letterhead's.
+        let body: Vec<Glyph> = glyphs
+            .iter()
+            .filter(|glyph| glyph.source.form.is_none())
+            .cloned()
+            .collect();
+        assert!(
+            !body.is_empty(),
+            "the fixture must draw text outside the form"
+        );
+        assert!(
+            glyphs.iter().any(|glyph| glyph.source.form == Some(7)),
+            "and inside it, or the shared form is not present and this asks nothing"
+        );
+
+        let shared = Uses(vec![(7, 12)]);
+        check_form_sharing(&body, &shared).expect("a letterhead the region avoids is not a bar");
+        // And the redaction itself goes through, on the page's own stream.
+        let out = remove_glyphs(page, None, &body[1..2]).expect("removes");
+        assert!(String::from_utf8_lossy(&out).contains("TJ"));
+    }
+
+    #[test]
+    fn a_form_drawn_once_is_edited_rather_than_refused() {
+        // There is nowhere else for the edit to reach, so there is nothing to refuse.
+        let (glyphs, content) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        check_form_sharing(&glyphs[1..2], &Uses(vec![(7, 1)])).expect("drawn once");
+        // Editing it means passing THAT form's content and identity, not the page's.
+        let out = remove_glyphs(&content, Some(7), &glyphs[1..2]).expect("removes");
+        assert!(String::from_utf8_lossy(&out).contains("-500"));
+    }
+
+    #[test]
+    fn a_glyph_from_another_stream_is_still_refused() {
+        // The scoping loosened WHICH stream may be edited, not whether a span has to belong to
+        // the one being edited. A form's span against the page's bytes cuts in the wrong place.
+        let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+        assert_refused_bytes(
+            remove_glyphs(b"/Fm0 Do", None, &glyphs[1..2]),
+            Refusal::GlyphFromAnotherStream,
+        );
+    }
+
+    #[test]
+    fn a_type_three_procedure_that_shows_text_is_refused() {
+        // CHANNEL 8, FAILING CLOSED. The walk does not descend into `/CharProcs`, so a
+        // redaction that removed this page's Type 3 glyphs would leave the procedure's own
+        // text in the font. An `Ok` over text nothing observed is what §8 forbids.
+        assert_refused_unit(
+            check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n"),
+            Refusal::TypeThreeProcedureShowsText,
+        );
+        for shape in [
+            b"500 0 d0 BT [(A)] TJ ET".as_slice(),
+            b"500 0 d0 BT (A) ' ET".as_slice(),
+            b"500 0 d0 BT 1 1 (A) \" ET".as_slice(),
+        ] {
+            assert_refused_unit(
+                check_type_three_procedure(shape),
+                Refusal::TypeThreeProcedureShowsText,
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_type_three_procedure_is_not_refused() {
+        // THE NEAR-MISS, and it is the majority case. Almost every Type 3 procedure draws
+        // shapes and no text; refusing those would refuse essentially every document with a
+        // Type 3 font in it.
+        check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n").expect("draws no text");
+        // A SCAN, NOT A BYTE SEARCH: `Tj` inside a string is not an operator, and a byte
+        // search would refuse this procedure for drawing nothing at all.
+        check_type_three_procedure(b"500 0 d0\n% Tj in a comment\n0 0 1 1 re f\n")
+            .expect("a comment is not an operator");
+    }
+
+    /// The rule-naming assertion, for a check that yields nothing.
+    #[track_caller]
+    fn assert_refused_unit(outcome: Result<()>, rule: Refusal) {
+        match outcome {
+            Err(error) => assert!(
+                rule.caught(&error),
+                "refused, but by a different rule: wanted `{}`, got {error:?}",
+                rule.rule()
+            ),
+            Ok(()) => panic!("expected a refusal by `{}`, got success", rule.rule()),
+        }
+    }
+
+    /// The rule-naming assertion, for a removal rather than a walk.
+    #[track_caller]
+    fn assert_refused_bytes(outcome: Result<Vec<u8>>, rule: Refusal) {
+        match outcome {
+            Err(error) => assert!(
+                rule.caught(&error),
+                "refused, but by a different rule: wanted `{}`, got {error:?}",
+                rule.rule()
+            ),
+            Ok(bytes) => panic!(
+                "expected a refusal by `{}`, got {} bytes",
+                rule.rule(),
+                bytes.len()
+            ),
+        }
+    }
+
     #[test]
     fn a_vertical_writing_mode_is_refused() {
         let mut resources = Fake::new();
@@ -2457,8 +3342,11 @@ mod tests {
             program: b"/CMapName /Ordinary-H def /WMode 1 def".to_vec(),
         };
         resources.bytes_per_code = 2;
+        // `(AB)` and not `(A)`: a one-byte string against a two-byte font is now refused for
+        // not dividing into whole codes, which would make this a test of that rule instead.
+        // The rule-naming assertion is what said so.
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
             Refusal::VerticalWriting,
         );
     }

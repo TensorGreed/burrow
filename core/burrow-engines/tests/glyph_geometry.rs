@@ -27,7 +27,8 @@
 mod support;
 
 use burrow_engines::pdfsyntax::geometry::{
-    Encoding, Form, GlyphMetrics, Matrix, Rect as GeometryRect, Refusal, Resources, glyphs_in,
+    Encoding, Form, FormUses, Glyph, GlyphMetrics, Matrix, Rect as GeometryRect, Refusal,
+    Resources, check_form_sharing, glyphs_in, remove_glyphs,
 };
 use burrow_types::Result;
 use support::char_box_oracle::{
@@ -872,5 +873,558 @@ fn a_real_producers_vertical_document_declares_no_writing_mode_at_all() {
 impl ContainsStr for &[u8] {
     fn contains_str(&self, needle: &str) -> bool {
         self.windows(needle.len()).any(|w| w == needle.as_bytes())
+    }
+}
+
+/// The width every glyph in the redaction fixtures advances by, in glyph space.
+///
+/// # Why the fixture declares its own widths
+///
+/// The first version of these tests used `/Helvetica` with no `/Widths` and a stub that
+/// returned 667 for every code. PDFium used the *real* Helvetica metrics — `C` and `D` are 722,
+/// not 667 — so the adjustment was short by 0.66 pt per removed `C`, and the kept glyphs moved.
+/// The algorithm was right and the harness was lying: a stub that invents metrics is measuring
+/// its own transcription of a metric table, not the arithmetic under test.
+///
+/// So the fixture's font dictionary carries `/Widths`, the stub returns the same number, and the
+/// two agree **by construction** rather than by my getting Adobe's table right.
+const FIXTURE_WIDTH: f64 = 600.0;
+
+/// A one-page PDF like [`page_with`], but whose font declares [`FIXTURE_WIDTH`] for every code.
+fn page_with_declared_widths(body: &str) -> Vec<u8> {
+    let content = format!("BT\n{body}\nET\n");
+    let widths: String = (32..=126)
+        .map(|_| format!("{FIXTURE_WIDTH} "))
+        .collect::<Vec<_>>()
+        .join("");
+    let mut objects: Vec<String> = Vec::new();
+    objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_owned());
+    objects.push("<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned());
+    objects.push(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+            .to_owned(),
+    );
+    objects.push(format!(
+        "<< /Length {} >>\nstream\n{content}endstream",
+        content.len()
+    ));
+    objects.push(format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+         /FirstChar 32 /LastChar 126 /Widths [{}] >>",
+        widths.trim_end()
+    ));
+
+    let mut out = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+    }
+    let xref_at = out.len();
+    out.push_str(&format!(
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objects.len() + 1
+    ));
+    for offset in &offsets {
+        out.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    out.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+        objects.len() + 1
+    ));
+    out.into_bytes()
+}
+
+/// Resources reporting exactly the widths the fixture declares.
+struct DeclaredWidths;
+
+impl Resources for DeclaredWidths {
+    fn form(&self, _name: &[u8]) -> Result<Option<Form>> {
+        Ok(None)
+    }
+
+    fn glyph(&self, _name: &[u8], _code: u32) -> Result<GlyphMetrics> {
+        Ok(GlyphMetrics {
+            width: FIXTURE_WIDTH,
+            bytes_per_code: 1,
+            font_bbox: Some(GeometryRect {
+                left: -166.0,
+                bottom: -225.0,
+                right: 1000.0,
+                top: 931.0,
+            }),
+            font_matrix: Matrix::scale(0.001, 0.001),
+            encoding: Encoding::Simple,
+        })
+    }
+
+    fn bytes_per_code(&self, _name: &[u8]) -> Result<u8> {
+        Ok(1)
+    }
+}
+
+/// The glyphs PDFium reports that the **file** actually draws.
+///
+/// # PDFium invents a space where a redaction leaves a gap
+///
+/// Measured: cutting `C` out of `ABCDE` leaves `[<4142> -600 <4445>] TJ`, and
+/// `FPDFText_CountChars` then reports **five** characters — `A`, `B`, a `U+0020` that is in no
+/// string in the file, `D`, `E`. PDFium's text layer synthesises a space when the gap between
+/// two glyphs is wide enough, which is exactly what a positioning adjustment creates.
+///
+/// That is worth stating beyond this test. ADR 0029 §6's read-back reads the text layer, so a
+/// verifier counting characters sees a space appear where a secret was removed — not a leak,
+/// since no glyph from the removed run survives, but a difference that a naive "the text is
+/// shorter by one" assertion would trip over, and a shape worth knowing before §6 asserts on
+/// character counts.
+fn drawn_chars(pdf: &[u8]) -> Vec<OracleChar> {
+    chars_on_page(pdf, 0)
+}
+
+/// Redact a glyph out of `body` and return PDFium's char origins before and after.
+///
+/// The redaction runs over the page's content stream and the page is rebuilt around it, so what
+/// the oracle reads afterwards is a real PDF that a renderer laid out from scratch — not this
+/// module's arithmetic played back.
+fn origins_across_a_redaction(body: &str, cut: usize) -> (Vec<OracleChar>, Vec<OracleChar>) {
+    let content = format!("BT\n{body}\nET\n");
+    let before = drawn_chars(&page_with_declared_widths(body));
+
+    let glyphs = glyphs_in(content.as_bytes(), &DeclaredWidths).expect("the fixture walks");
+    let removed = glyphs
+        .get(cut..=cut)
+        .expect("the fixture has a glyph at that index");
+    let edited = remove_glyphs(content.as_bytes(), None, removed).expect("the redaction applies");
+
+    // The edited stream goes back into a page the same way the original did.
+    let text = String::from_utf8(edited).expect("the rewrite is text");
+    let inner = text
+        .trim_start_matches("BT\n")
+        .trim_end_matches('\n')
+        .trim_end_matches("ET")
+        .trim_end()
+        .to_owned();
+    (before, drawn_chars(&page_with_declared_widths(&inner)))
+}
+
+/// The characters PDFium reports that the **file** actually draws.
+///
+/// # PDFium invents characters, and not only spaces
+///
+/// Measured on this suite's own fixtures:
+///
+/// - a positioning adjustment wide enough to look like a gap produces a **`U+0020`** that is in
+///   no string in the file — which is what a redaction leaves behind by design;
+/// - a `T*` line move produces **`U+000D U+000A`**, so `(AB) ' (CD) '` reports six characters
+///   for four glyphs.
+///
+/// A wide kern the producer wrote does the same thing before any redaction, so character
+/// indices and glyph indices are not the same sequence even on an untouched page. Anything
+/// correlating the two by position is wrong on documents nobody redacted.
+///
+/// # How a synthetic one is told apart, and why not "it is a space"
+///
+/// An earlier version skipped **every** `U+0020` while its doc claimed it skipped by position —
+/// a review caught that the doc described behaviour the code did not have. Skipping every space
+/// would skip the *real* ones too, which is how a fixture for word spacing quietly stops
+/// testing anything.
+///
+/// The rule here is structural instead: a synthetic character carries **no advance**, so its
+/// origin equals the next character's. A real space advances, so the next character is further
+/// along. Carriage return and line feed are synthetic unconditionally — no fixture in this file
+/// puts either in a string.
+fn drawn_characters(chars: &[OracleChar]) -> Vec<&OracleChar> {
+    let mut drawn = Vec::new();
+    for (at, char) in chars.iter().enumerate() {
+        let synthetic = match char.unicode {
+            0x000D | 0x000A => true,
+            0x0020 => chars.get(at + 1).is_some_and(|next| {
+                (next.origin.0 - char.origin.0).abs() < TOLERANCE_PT
+                    && (next.origin.1 - char.origin.1).abs() < TOLERANCE_PT
+            }),
+            _ => false,
+        };
+        if !synthetic {
+            drawn.push(char);
+        }
+    }
+    drawn
+}
+
+/// Every kept glyph is where it was, over the characters the file actually draws.
+///
+/// `cut` indexes the **drawn** sequence, which is the one `glyphs_in` produces — see
+/// [`drawn_characters`] for why that is not PDFium's character sequence.
+#[track_caller]
+fn assert_kept_glyphs_held(before: &[OracleChar], after: &[OracleChar], cut: usize, label: &str) {
+    let drawn_before = drawn_characters(before);
+    let drawn_after = drawn_characters(after);
+    let expected: Vec<&&OracleChar> = drawn_before
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| *at != cut)
+        .map(|(_, char)| char)
+        .collect();
+    assert_eq!(
+        drawn_after.len(),
+        expected.len(),
+        "{label}: {} glyph(s) drawn after the redaction against {} expected -- the counts must \
+         match once PDFium's synthetic characters are removed",
+        drawn_after.len(),
+        expected.len()
+    );
+
+    for (want, found) in expected.into_iter().zip(&drawn_after) {
+        assert_eq!(
+            want.unicode, found.unicode,
+            "{label}: a different glyph stayed"
+        );
+        let moved = (want.origin.0 - found.origin.0).hypot(want.origin.1 - found.origin.1);
+        assert!(
+            moved < TOLERANCE_PT,
+            "{label}: removing glyph {cut} moved U+{:04X} by {moved} pt, from {:?} to {:?} -- \
+             the line reflowed, which changes what the remaining text appears to say",
+            want.unicode,
+            want.origin,
+            found.origin
+        );
+    }
+}
+
+/// Removing a glyph must not move the glyphs that remain.
+///
+/// # Why this is asserted against PDFium and not against the walk
+///
+/// The adjustment is computed from `Glyph::displacement`, which the walk also used to move the
+/// pen. Checking the result with the walk would compare that expression against itself and pass
+/// for any consistent mistake — including the one this test exists for, where the adjustment is
+/// omitted entirely and both sides agree the run is simply shorter.
+///
+/// `FPDFText_GetCharOrigin` is a third party to that argument. Every kept glyph's origin must be
+/// the same before and after, to the tolerance pre-registered in `char_box_oracle.rs`.
+#[test]
+fn a_redaction_does_not_move_the_glyphs_that_remain() {
+    // Three cut positions, because they fail differently. A last-glyph cut needs no adjustment
+    // at all, so an implementation that always appends one is wrong in a way a middle-only
+    // test cannot see; a first-glyph cut puts the adjustment before any kept run.
+    for (label, cut) in [("first", 0usize), ("middle", 2), ("last", 4)] {
+        let (before, after) = origins_across_a_redaction("/F1 12 Tf 100 700 Td (ABCDE) Tj", cut);
+        assert_eq!(before.len(), 5, "{label}: the fixture draws five glyphs");
+
+        // THE NON-VACUITY CONTROL. If the redaction removed nothing, every origin below
+        // matches trivially and the test asserts nothing at all. Stated over the glyph that
+        // was cut rather than over the total, because PDFium adds a synthetic space at the gap.
+        let removed = before
+            .get(cut)
+            .expect("the fixture has a glyph at that index");
+        assert!(
+            !after.iter().any(|char| char.unicode == removed.unicode
+                && (char.origin.0 - removed.origin.0).abs() < TOLERANCE_PT),
+            "{label}: U+{:04X} is still on the page at {:?}, so nothing was redacted and the \
+             comparison below is vacuous",
+            removed.unicode,
+            removed.origin
+        );
+
+        assert_kept_glyphs_held(&before, &after, cut, label);
+    }
+}
+
+#[test]
+fn a_redaction_across_a_kern_neither_swallows_nor_doubles_it() {
+    // The kern is a displacement the producer chose, between glyphs the cut does not touch.
+    // Dropping it shifts everything after it left; emitting it twice shifts them right.
+    //
+    // `-50` rather than something larger, and the reason is the finding on `drawn_chars`: a
+    // wide enough kern makes PDFium synthesise a space of its own, which put a character in
+    // `before` that the walk never drew and slid every index after it by one. The first draft
+    // used `-200` and compared the walk's glyph 2 against PDFium's char 2, which were different
+    // glyphs. A fixture whose indices do not line up is not a smaller version of this test.
+    let (before, after) = origins_across_a_redaction("/F1 12 Tf 100 700 Td [(AB) -50 (CD)] TJ", 2);
+    assert_eq!(
+        before.len(),
+        4,
+        "A, B, C, D and no synthetic space, or the indices below name the wrong glyphs"
+    );
+    assert_kept_glyphs_held(&before, &after, 2, "across a kern");
+}
+
+#[test]
+fn a_redacted_space_puts_back_its_word_spacing_too() {
+    // `Tw` rides with a single-byte space and with nothing else. An adjustment that omits it
+    // shifts everything after the cut by the word spacing — small enough to read as rounding,
+    // and PDFium is what tells the difference.
+    let (before, after) = origins_across_a_redaction("/F1 12 Tf 6 Tw 100 700 Td (A B C) Tj", 1);
+    assert_eq!(before.len(), 5, "A, space, B, space, C");
+    assert_kept_glyphs_held(&before, &after, 1, "a redacted space");
+}
+
+/// A two-page document whose form object 6 is drawn by page 1 **and** by an annotation's
+/// appearance stream on page 2.
+///
+/// # Why the annotation is the interesting second use
+///
+/// An appearance stream is reached through `/Annots` → `/AP` → `/N`, not through a page's
+/// `/Resources`. A scan that walks page resources alone counts **one** use of the form and
+/// concludes it is unshared — which is the direction that edits in place and silently removes
+/// the text from the other page. The test below measures both counts and requires them to
+/// differ, so the fixture demonstrates the miss rather than merely containing it.
+fn document_sharing_a_form_with_an_annotation() -> Vec<u8> {
+    let form = "/F1 10 Tf BT 0 0 Td (SHARED) Tj ET\n";
+    let page_one = "q 1 0 0 1 100 700 cm /Fm0 Do Q\n";
+    let mut objects: Vec<String> = Vec::new();
+    objects.push("<< /Type /Catalog /Pages 2 0 R >>".to_owned()); // 1
+    objects.push("<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned()); // 2
+    objects.push(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /XObject << /Fm0 6 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+    ); // 3
+    // PAGE TWO'S OWN RESOURCES DO NOT MENTION THE FORM. Only its annotation does.
+    objects.push(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << >> /Contents 5 0 R /Annots [7 0 R] >>"
+            .to_owned(),
+    ); // 4
+    objects.push(format!(
+        "<< /Length {} >>\nstream\n{page_one}endstream",
+        page_one.len()
+    )); // 5
+    objects.push(format!(
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 200 50] /Length {} >>\nstream\n{form}endstream",
+        form.len()
+    )); // 6
+    objects.push(
+        "<< /Type /Annot /Subtype /Widget /Rect [100 100 300 150] /F 4 \
+         /AP << /N 6 0 R >> >>"
+            .to_owned(),
+    ); // 7
+
+    let mut out = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+    }
+    let xref_at = out.len();
+    out.push_str(&format!(
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objects.len() + 1
+    ));
+    for offset in &offsets {
+        out.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    out.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+        objects.len() + 1
+    ));
+    out.into_bytes()
+}
+
+/// Count references to object `number` in `pdf`, optionally ignoring annotations.
+///
+/// Deliberately crude — a regex over `N 0 R` inside the dictionaries that can reach a form —
+/// because it is **standing in for the qpdf-side resource walk**, not pretending to be one. What
+/// it establishes is that the annotation really is a second reference and that a scan confined
+/// to page `/Resources` really does miss it. The production walk resolves objects properly and
+/// compares identity through `ObjectHandle::object()`.
+fn reference_count(pdf: &[u8], number: u32, include_annotations: bool) -> usize {
+    let text = String::from_utf8_lossy(pdf).into_owned();
+    let needle = format!("{number} 0 R");
+    text.split("obj")
+        .filter(|chunk| include_annotations || !chunk.contains("/AP"))
+        .map(|chunk| chunk.matches(&needle).count())
+        .sum::<usize>()
+        // The object's own `N 0 obj` header is not a reference to it.
+        .saturating_sub(0)
+}
+
+#[test]
+fn an_annotation_appearance_is_a_second_use_a_page_scan_would_miss() {
+    let pdf = document_sharing_a_form_with_an_annotation();
+
+    // NON-VACUITY FIRST: the form really is drawn, and PDFium really renders its text on
+    // page one. A fixture whose form were unreachable would make both counts below trivial.
+    let drawn = chars_on_page(&pdf, 0);
+    assert_eq!(
+        drawn.len(),
+        6,
+        "page one must draw the form's six glyphs, or the fixture draws nothing"
+    );
+
+    let with_annotations = reference_count(&pdf, 6, true);
+    let pages_only = reference_count(&pdf, 6, false);
+
+    assert_eq!(
+        pages_only, 1,
+        "a scan confined to page resources sees one use, which is the miss this fixture is for"
+    );
+    assert_eq!(
+        with_annotations, 2,
+        "counting the annotation's appearance stream sees the second use"
+    );
+    assert!(
+        with_annotations > pages_only,
+        "if these agree the fixture does not demonstrate the miss it exists to demonstrate"
+    );
+}
+
+#[test]
+fn the_shared_form_is_refused_and_the_letterhead_case_is_not() {
+    // The two halves of the rule, on the same document shape, differing only in whether the
+    // region reaches inside the shared form.
+    struct Counted(usize);
+    impl FormUses for Counted {
+        fn uses(&self, _form: u64) -> Result<usize> {
+            Ok(self.0)
+        }
+    }
+
+    let form_body = "/F1 10 Tf BT 0 0 Td (SHARED) Tj ET";
+    let resources = TestResources::with_form(6, form_body);
+    let page = b"q 1 0 0 1 100 700 cm /Fm0 Do Q /F1 10 Tf BT 0 0 Td (BODY) Tj ET";
+    let glyphs = glyphs_in(page, &resources).expect("walks");
+
+    let inside: Vec<Glyph> = glyphs
+        .iter()
+        .filter(|g| g.source.form.is_some())
+        .cloned()
+        .collect();
+    let outside: Vec<Glyph> = glyphs
+        .iter()
+        .filter(|g| g.source.form.is_none())
+        .cloned()
+        .collect();
+    assert!(
+        !inside.is_empty() && !outside.is_empty(),
+        "the fixture needs both"
+    );
+
+    // Reaching inside a form used twice: refused.
+    let refusal = check_form_sharing(&inside, &Counted(2)).expect_err("must refuse");
+    assert!(
+        Refusal::SharedFormWouldChangeElsewhere.caught(&refusal),
+        "refused by a different rule: {refusal:?}"
+    );
+
+    // The same document, the same shared form, region on the page's own text: allowed.
+    check_form_sharing(&outside, &Counted(2))
+        .expect("a letterhead the region avoids must not bar the redaction");
+
+    // And the form itself, when it is drawn only once: allowed.
+    check_form_sharing(&inside, &Counted(1)).expect("a form drawn once has nowhere else to reach");
+}
+
+/// Resources with one form, for the sharing tests.
+struct TestResources {
+    form: Form,
+}
+
+impl TestResources {
+    fn with_form(id: u64, content: &str) -> Self {
+        Self {
+            form: Form {
+                id,
+                matrix: Matrix::IDENTITY,
+                content: content.as_bytes().to_vec(),
+            },
+        }
+    }
+}
+
+impl Resources for TestResources {
+    fn form(&self, name: &[u8]) -> Result<Option<Form>> {
+        Ok((name == b"Fm0").then(|| self.form.clone()))
+    }
+
+    fn glyph(&self, _name: &[u8], _code: u32) -> Result<GlyphMetrics> {
+        Ok(GlyphMetrics {
+            width: FIXTURE_WIDTH,
+            bytes_per_code: 1,
+            font_bbox: None,
+            font_matrix: Matrix::scale(0.001, 0.001),
+            encoding: Encoding::Simple,
+        })
+    }
+
+    fn bytes_per_code(&self, _name: &[u8]) -> Result<u8> {
+        Ok(1)
+    }
+}
+
+#[test]
+fn a_redaction_inside_a_quote_operator_keeps_the_line_move() {
+    // `'` IS `T*` THEN `Tj`. Rewriting it as a bare `TJ` drops the line move, so every kept
+    // glyph slides up by the leading -- one whole line, which on a paragraph re-flows the page
+    // and on a form puts values against the wrong labels.
+    //
+    // Measured by a review before this fixture existed: +14 pt in y on every kept glyph. The
+    // three fixtures above could not see it because all of them use `Tj` or `TJ` only, and
+    // `'` is ordinary output from the dvips family rather than an adversarial shape.
+    let (before, after) = origins_across_a_redaction("/F1 12 Tf 14 TL 100 700 Td (AB) ' (CD) '", 0);
+    let drawn = drawn_characters(&before);
+    assert_eq!(
+        drawn.len(),
+        4,
+        "A, B, C, D, once PDFium's synthetic CR/LF are removed"
+    );
+    assert!(
+        drawn
+            .iter()
+            .any(|char| (char.origin.1 - drawn[0].origin.1).abs() > 1.0),
+        "the fixture must span two lines, or the line move is not exercised"
+    );
+    assert_kept_glyphs_held(&before, &after, 0, "a quote operator");
+}
+
+#[test]
+fn a_redaction_inside_a_double_quote_operator_keeps_its_spacing_operands() {
+    // `"` IS `aw Tw`, `ac Tc`, `T*`, THEN `Tj`. Dropping the two numeric operands changes the
+    // word and character spacing for every later glyph in the stream, not only inside the
+    // operator -- measured: B, C and D moved from 129.4 / 139.6 / 149.8 to 117.4 / 124.6 /
+    // 131.8, as well as up a line.
+    let (before, after) =
+        origins_across_a_redaction("/F1 12 Tf 14 TL 100 700 Td 9 3 (A B) \" (CD) Tj", 0);
+    assert!(
+        drawn_characters(&before).len() >= 4,
+        "the fixture must draw the run the operands apply to"
+    );
+    assert_kept_glyphs_held(&before, &after, 0, "a double-quote operator");
+}
+
+#[test]
+fn pdfium_synthesises_a_space_once_a_kern_is_wide_enough() {
+    // THE THRESHOLD, PINNED. ADR 0029 §6 asserts that a `-200` kern at 12 pt already makes
+    // PDFium synthesise a space *before* any redaction — which is why character indices and
+    // glyph indices are not the same sequence even on an untouched page. A review could not
+    // verify it because nothing exercised `-200`; this is that measurement, committed.
+    //
+    // It is also the reason `a_redaction_across_a_kern_neither_swallows_nor_doubles_it` uses
+    // `-50`: a fixture past the threshold has a synthetic character in `before`, and the cut
+    // index would name a different glyph.
+    let count = |kern: i32| {
+        let body = format!("/F1 12 Tf 100 700 Td [(AB) {kern} (CD)] TJ");
+        chars_on_page(&page_with_declared_widths(&body), 0)
+    };
+
+    for narrow in [-50, -100] {
+        assert_eq!(
+            count(narrow).len(),
+            4,
+            "a {narrow} kern must not synthesise anything, or the kern fixture's indices drift"
+        );
+    }
+    for wide in [-150, -200, -500] {
+        let chars = count(wide);
+        assert_eq!(chars.len(), 5, "a {wide} kern synthesises one character");
+        assert_eq!(
+            chars[2].unicode, 0x0020,
+            "and the character it synthesises is a space"
+        );
+        assert!(
+            drawn_characters(&chars).len() == 4,
+            "which `drawn_characters` removes, leaving the four glyphs the file draws"
+        );
     }
 }

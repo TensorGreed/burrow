@@ -14,6 +14,7 @@ use std::sync::Arc;
 use burrow_types::{Clock, Limits, SystemClock};
 
 use super::handle::ObjectHandle;
+use super::name::Name;
 use super::{Document, open_document};
 use crate::OpenOptions;
 use crate::minimal_pdf;
@@ -29,7 +30,7 @@ fn options() -> OpenOptions<'static> {
 fn page_contents(document: &Document) -> ObjectHandle<'_> {
     // SAFETY: the document opened successfully and page 0 is below its page count.
     let page = unsafe { ObjectHandle::page(document, 0) };
-    page.key(c"/Contents".as_ptr())
+    page.key(&Name::literal(b"/Contents\0"))
 }
 
 #[test]
@@ -67,17 +68,30 @@ fn a_null_filter_leaves_the_stream_uncompressed_and_readable() {
     // The other half of the C API's shape: `filter` and `decode_parms` are OBJECTS, and a null
     // object is how "no filter" is said. If a null meant "leave the old filter alone", the new
     // raw bytes would be read back through the previous `/FlateDecode` and come out as noise.
-    let bytes = minimal_pdf::pdf_with_ink();
+    // A FIXTURE THAT ACTUALLY HAS A FILTER, and a review is why. This used
+    // `minimal_pdf::pdf_with_ink()`, whose content stream carries **no `/Filter` at all** -- and
+    // `qpdf_oh_get_key` on an absent key also returns a null object. So the assertion below
+    // already held before the call it was meant to measure: the test passed on a document
+    // where nothing could have gone wrong.
+    let bytes = filtered_page();
     let (document, _, _, _) = open_document(bytes.into(), &options()).expect("opens");
     let contents = page_contents(&document);
-    let null = ObjectHandle::new_null(&document);
+    let dictionary = contents.stream_dict();
 
+    // THE NON-VACUITY CONTROL: the stream really is filtered before the replace. `7` is
+    // `qpdf_ot_name`.
+    assert_eq!(
+        dictionary.key(&Name::literal(b"/Filter\0")).type_code(),
+        7,
+        "the fixture must start with a /Filter, or clearing it asserts nothing"
+    );
+
+    let null = ObjectHandle::new_null(&document);
     contents
         .replace_stream_data(b"0 0 1 rg", &null, &null)
         .expect("the replace succeeds");
 
-    let dictionary = contents.stream_dict();
-    let filter = dictionary.key(c"/Filter".as_ptr());
+    let filter = dictionary.key(&Name::literal(b"/Filter\0"));
     // `qpdf_ot_null` is 2 (`qpdf-c.h`'s `qpdf_object_type_e`: uninitialized, reserved, null,
     // …) — the first draft of this test guessed 1 and the engine said 2, which is the reason
     // to assert against the engine rather than against a remembered enum. The point is only
@@ -142,4 +156,51 @@ fn a_filter_handle_from_another_document_is_refused_rather_than_written() {
     // the engine call, which is a refusal reported over a document already modified.
     let unchanged = contents.stream_data().expect("reads").expect("decodes");
     assert_ne!(unchanged.as_slice(), b"0 0 1 rg");
+}
+
+/// A one-page PDF whose content stream genuinely carries a `/Filter`.
+///
+/// `/ASCIIHexDecode` rather than `/FlateDecode`: it is a real filter qpdf decodes, and it can be
+/// written by hand, so the fixture needs no compression library. What the test needs is a stream
+/// that **has** a filter before the replace — which `minimal_pdf::pdf_with_ink()` does not, and
+/// that is what made the assertion vacuous.
+fn filtered_page() -> Vec<u8> {
+    let content = b"0 0 0 rg 10 10 100 100 re f\n";
+    let mut hex: String = content.iter().map(|byte| format!("{byte:02x}")).collect();
+    hex.push('>');
+
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".to_vec(),
+        format!(
+            "<< /Length {} /Filter /ASCIIHexDecode >>\nstream\n{hex}\nendstream",
+            hex.len() + 1
+        )
+        .into_bytes(),
+    ];
+
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_at = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
 }

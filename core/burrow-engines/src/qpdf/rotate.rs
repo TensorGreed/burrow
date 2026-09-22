@@ -33,6 +33,7 @@ use std::sync::Arc;
 use burrow_types::{Deadline, Error, Limits, Result, Rotation, Stage};
 
 use super::handle::ObjectHandle;
+use super::name::Name;
 use super::{Document, Qpdf};
 use crate::codes::qpdf::object_type;
 use crate::{OpenOptions, PageRotator};
@@ -41,10 +42,10 @@ use crate::{OpenOptions, PageRotator};
 ///
 /// A literal in this crate, never anything derived from a document: qpdf takes `char const*`
 /// and a key built from file content would be a way for a file to name its own keys.
-const ROTATE_KEY: &[u8] = b"/Rotate\0";
+const ROTATE_KEY: Name = Name::literal(b"/Rotate\0");
 
 /// `/Parent`, as a NUL-terminated C string.
-const PARENT_KEY: &[u8] = b"/Parent\0";
+const PARENT_KEY: Name = Name::literal(b"/Parent\0");
 
 /// How far up the page tree the inheritance walk will go before refusing.
 ///
@@ -181,7 +182,7 @@ impl PageRotator for Qpdf {
 
             // ON THE PAGE. Never on the ancestor `current` may have come from — that node can
             // be the parent of every page in the document.
-            page.replace_key(ROTATE_KEY.as_ptr().cast(), &value);
+            page.replace_key(&ROTATE_KEY, &value);
             if let Some(error) = source.document.take_error() {
                 return Err(error);
             }
@@ -275,7 +276,7 @@ pub(super) fn declared_rotation<'a>(
     // previous one is dropped — and therefore released — at that moment. A version of this
     // that collected ancestors into a `Vec` first would hold one handle per level, which is
     // the shape `handle.rs` is about.
-    let mut node = page.key(ROTATE_KEY.as_ptr().cast());
+    let mut node = page.key(&ROTATE_KEY);
     // The page's own value first, then ancestors. `node` above is the *value*; the walk below
     // moves over page-tree *nodes*, so they are kept apart deliberately.
     let own = rotation_of(document, &node)?;
@@ -284,7 +285,7 @@ pub(super) fn declared_rotation<'a>(
     }
     drop(node);
 
-    let mut current = page.key(PARENT_KEY.as_ptr().cast());
+    let mut current = page.key(&PARENT_KEY);
     if let Some(error) = document.take_error() {
         return Err(error);
     }
@@ -315,7 +316,7 @@ pub(super) fn declared_rotation<'a>(
             ));
         }
 
-        node = current.key(ROTATE_KEY.as_ptr().cast());
+        node = current.key(&ROTATE_KEY);
         if let Some(error) = document.take_error() {
             return Err(error);
         }
@@ -324,7 +325,7 @@ pub(super) fn declared_rotation<'a>(
         }
         drop(node);
 
-        let parent = current.key(PARENT_KEY.as_ptr().cast());
+        let parent = current.key(&PARENT_KEY);
         if let Some(error) = document.take_error() {
             return Err(error);
         }

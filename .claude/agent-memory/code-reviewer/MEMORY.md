@@ -10,3 +10,4 @@
 - [Gate keyed on a hand-edited id](feedback_gate_keyed_on_hand_edited_id.md) — break the identifier a gate resolves through; an unresolvable case that is only a note means the gate turned itself off.
 - [Probe that re-implements its rule](feedback_probe_reimplements_rule.md) — a source-scan test whose probe is a copied closure stays green with the real filter inert.
 - [Probe fixture vs real producer](feedback_probe_fixture_vs_real_producer.md) — diff probe fixtures against the imitated tool's byte-exact output; an abridged fixture leaves a branch freely mutable.
+- [Memoised walks under-count](feedback_memoised_walk_undercounts.md) — a `descended` set makes a nested child of a twice-drawn parent count 1; probe two levels deep.

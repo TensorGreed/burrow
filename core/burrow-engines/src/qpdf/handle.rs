@@ -46,6 +46,7 @@ use core::marker::PhantomData;
 
 use burrow_types::{Error, Result};
 
+use super::name::Name;
 use super::{Document, ffi};
 
 // How many [`ObjectHandle`]s are alive on this thread.
@@ -156,7 +157,8 @@ impl<'a> ObjectHandle<'a> {
     /// Returns a handle to a null object if this is not a dictionary or the key is absent —
     /// qpdf does not raise for either, which is why every caller checks [`Self::type_code`]
     /// before reading a value out.
-    pub(super) fn key(&self, key: *const c_char) -> Self {
+    pub(super) fn key(&self, key: &Name) -> Self {
+        let key = key.as_ptr();
         // SAFETY: as `type_code`. The returned handle belongs to `self.data`, and wrapping it
         // here is what makes it released exactly once. Routes through `trap_errors`.
         let handle = unsafe { ffi::qpdf_oh_get_key(self.data, self.handle, key) };
@@ -175,7 +177,8 @@ impl<'a> ObjectHandle<'a> {
     }
 
     /// Set `key` on this dictionary to `item`.
-    pub(super) fn replace_key(&self, key: *const c_char, item: &Self) {
+    pub(super) fn replace_key(&self, key: &Name, item: &Self) {
+        let key = key.as_ptr();
         // SAFETY: as `type_code`; `item` belongs to the same document as `self`, which the
         // caller establishes by obtaining both from it. Routes through `trap_errors` via
         // `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
@@ -398,7 +401,8 @@ impl<'a> ObjectHandle<'a> {
     ///
     /// Removing a key that is not there is not an error, which is what lets the page-key rule
     /// be "remove everything the allowlist does not name" rather than a diff.
-    pub(super) fn remove_key(&self, key: *const c_char) {
+    pub(super) fn remove_key(&self, key: &Name) {
+        let key = key.as_ptr();
         // SAFETY: as `unparse`. Routes through `trap_errors` via `do_with_oh_void` ->
         // `do_with_oh` -> `trap_oh_errors`.
         unsafe { ffi::qpdf_oh_remove_key(self.data, self.handle, key) }
@@ -657,15 +661,17 @@ mod tests {
     fn the_handle_api_is_reachable_only_from_here() {
         // Every sibling that could reach `ffi`, by name. `include_str!` needs a literal, so
         // the contents are listed; what is NOT listed is how many there should be.
-        let siblings: [(&str, &str); 8] = [
+        let siblings: [(&str, &str); 10] = [
             ("assemble.rs", include_str!("assemble.rs")),
             ("compress.rs", include_str!("compress.rs")),
             ("extract.rs", include_str!("extract.rs")),
             ("limits.rs", include_str!("limits.rs")),
             ("mod.rs", include_str!("mod.rs")),
+            ("name.rs", include_str!("name.rs")),
             ("prune.rs", include_str!("prune.rs")),
             ("reorder.rs", include_str!("reorder.rs")),
             ("rotate.rs", include_str!("rotate.rs")),
+            ("sharing.rs", include_str!("sharing.rs")),
         ];
 
         // THE LIST IS COMPARED AGAINST THE DIRECTORY, not against a number. It used to assert

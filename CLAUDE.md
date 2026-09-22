@@ -194,8 +194,11 @@ A change is done when all of these hold:
 - [ ] Public API changes are reflected in bindings (uniffi + wasm) or explicitly deferred.
 - [ ] Docs updated: rustdoc on public items, plus `docs/ROADMAP.md` or an ADR if scope
       or a decision changed.
-- [ ] `tools/ci-local.py` passes **before the first push** — it is the replication of CI,
-      and it refuses to run if CI has a gate nothing local covers.
+- [ ] `tools/ci-local.py --changed` passes **before every push**, and the full
+      `tools/ci-local.py` passes **once per PR before merge**. It is the replication of CI, and
+      it refuses to run if CI has a gate nothing local covers. The split, and why the old
+      "everything before every push" rule was replaced rather than restated, is under *Working
+      agreements*. The fuzz jobs are not on the pre-push path.
 - [ ] Commit messages follow Conventional Commits; CI is green.
 
 ## Working agreements
@@ -286,11 +289,37 @@ those at full candour is working and is not what "summarise" is asking you to sh
   CI and forget to add it there, and it fails before running a single test.
 
   ```bash
-  tools/ci-local.py            # parity check, then run everything
+  tools/ci-local.py --changed  # BEFORE EVERY PUSH: the jobs the change can affect
+  tools/ci-local.py            # ONCE PER PR, BEFORE MERGE: every job
   tools/ci-local.py --check    # parity only
   tools/ci-local.py --list     # the coverage table
   tools/ci-local.py --only web # one job
   ```
+
+  **The pre-push gate is `--changed`; the full sweep runs once per PR before merge.** That is a
+  change from "run everything before every push", and the reason is that the old rule stopped
+  being followed. A full sweep is over twenty minutes, most of it fuzzing, and a rule that
+  expensive gets skipped, half-run, or run against a tree that moved underneath it — all three
+  happened in M2. **A cheaper rule honestly applied beats an expensive one applied sometimes**,
+  and the expensive one still runs where it decides something: before a merge.
+
+  `--changed` **narrows and never guesses**. It derives each job's paths from the command CI
+  runs — the crate graph comes from the manifests, not from a map somebody maintains — and where
+  it cannot attribute a changed file to a job, or cannot read the change from git, it runs
+  everything and prints why. It reports what it ran and what it skipped, each with a reason,
+  because a selective sweep that printed only its passes would read exactly like a full one.
+
+  A hand-written path→job map was the obvious implementation and is the wrong one: it is the
+  same shape as the coverage table this tool exists to replace, and it rots in the same way —
+  the person adding a job is exactly the person who will not think to update it.
+
+  **The fuzz jobs are off the pre-push path entirely.** A fuzz target is a *search*, and sixty
+  seconds of it proves nothing about a change that did not touch the parser it fuzzes, while
+  costing more than every other job combined. Searching belongs in `fuzz-nightly.yml`, which is
+  seeded and given hours. The one exception is derived rather than declared: an edit **under
+  `fuzz/`** puts them back, because `fuzz/` is its own cargo workspace and nothing else compiles
+  a fuzz target — measured in M2, when a seam change broke `pdfsyntax_geometry` and every Rust
+  gate run by hand stayed green.
 
   It exists because the rule that used to sit here did not work. That rule said *"replicating
   CI locally means every job, and `cargo audit` is the one that gets skipped"*, written after

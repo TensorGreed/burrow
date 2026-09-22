@@ -794,6 +794,104 @@ else
 fi
 rm -f "$broken"
 
+# --- `--changed` may only ever NARROW, and each rule that lets it is probed ------------------
+#
+# A selective sweep that skipped a job it should have run is indistinguishable, from its output,
+# from one that ran it and passed. So every rule that permits a skip gets a case, and every case
+# names the rule rather than asserting a count.
+#
+# The scenarios drive `select_changed` directly with a fixed file list: shelling out to git
+# would be testing git, and the question here is the derivation.
+echo
+echo "--changed selects by derived paths, and only ever narrows:"
+
+changed_probe="$here/.ci-local-changed-fixture.py"
+cp "$here/ci-local.py" "$changed_probe"
+
+# The driver, as a file rather than a heredoc inside `$( )` -- bash mis-parses the latter and
+# warns about an unterminated here-document, which reads like a failure in a test's own output.
+scenario_driver="$here/.ci-local-changed-driver.py"
+cat > "$scenario_driver" <<'PYEOF'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("cil", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["cil"] = module
+spec.loader.exec_module(module)
+files = [f for f in sys.argv[2].split(",") if f]
+module.changed_paths = lambda base, _f=files: (_f, "a scenario")
+jobs, skipped = module.select_changed(list(module.JOBS), None)
+print("RUNS:" + ",".join(j["name"] for j in jobs))
+print("SKIPS:" + ",".join(n for n, _ in skipped))
+PYEOF
+
+scenario() {
+  local name="$1" files="$2" must_run="$3" must_skip="$4"
+  local out status=0
+  out="$(python3 "$scenario_driver" "$changed_probe" "$files" 2>&1)" || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "  FAIL $name: the probe itself failed"
+    echo "$out" | tail -4
+    fail=$((fail + 1))
+    return
+  fi
+  local runs skips ok=1
+  runs="$(grep '^RUNS:' <<<"$out" | cut -d: -f2-)"
+  skips="$(grep '^SKIPS:' <<<"$out" | cut -d: -f2-)"
+  for job in ${must_run//,/ }; do
+    grep -q "\b$job\b" <<<"$runs" || { echo "  FAIL $name: $job should have run"; ok=0; }
+  done
+  for job in ${must_skip//,/ }; do
+    grep -q "\b$job\b" <<<"$skips" || { echo "  FAIL $name: $job should have been skipped"; ok=0; }
+  done
+  if [ "$ok" -eq 1 ]; then
+    echo "  ok   $name"
+    pass=$((pass + 1))
+  else
+    echo "       ran:     $runs"
+    echo "       skipped: $skips"
+    fail=$((fail + 1))
+  fi
+}
+
+scenario "a Rust change runs the Rust jobs and skips the web ones" \
+  "core/burrow-engines/src/pdfsyntax/geometry.rs" "clippy,test,doc" "web,web-e2e,fuzz"
+scenario "a web change skips the Rust jobs" \
+  "apps/web/src/pages/index.astro" "web,web-e2e" "clippy,test,doc,wasm"
+scenario "a change to a dependency selects its dependents" \
+  "core/burrow-types/src/lib.rs" "test,ignored-tests,wasm" "web,web-e2e"
+scenario "a fuzz-target change runs the fuzz jobs, which nothing else compiles" \
+  "fuzz/fuzz_targets/pdfsyntax_geometry.rs" "fuzz,fuzz-seed" "clippy,test"
+scenario "an unattributable file narrows nothing" \
+  "tests/conformance/fixtures/blank-1page.pdf" "clippy,test,web,web-e2e,fuzz" ""
+scenario "a workflow change narrows nothing" \
+  ".github/workflows/ci.yml" "clippy,test,web,fuzz" ""
+scenario "a checker always runs, whatever changed" \
+  "apps/web/src/pages/index.astro" "checkers,checker-self-tests,integration-suites" "test"
+
+# AND THE RULE THAT MUST NOT BE BREAKABLE: with the fuzz exclusion removed, a fuzz-target
+# change must still run them -- but an UNRELATED change must not. A mutation that dropped the
+# `touched_fuzz` condition would put a minute of searching on every push, which is the cost
+# this mode exists to remove.
+python3 - "$changed_probe" <<'PYEOF'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "if job[\"name\"] in NEVER_ON_THE_CHANGED_PATH and not touched_fuzz:"
+assert old in text, "the fuzz exclusion is not spelled as this test expects"
+path.write_text(text.replace(old, "if False:", 1))
+PYEOF
+out="$(python3 "$scenario_driver" "$changed_probe" "apps/web/src/pages/index.astro" 2>&1)"
+if grep -q '^RUNS:.*\bfuzz\b' <<<"$out"; then
+  echo "  ok   removing the fuzz exclusion puts fuzz back on an unrelated change, as the mutation should"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the fuzz exclusion could be removed without any scenario noticing"
+  fail=$((fail + 1))
+fi
+rm -f "$changed_probe" "$scenario_driver"
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

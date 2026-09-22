@@ -255,6 +255,36 @@ render-only. The test asserts burrow's geometry agrees with a second implementat
 where both are asked; the runtime check continues to assert burrow's own rule against burrow's
 own reading, and that residue stays exactly as stated above.
 
+#### PDFium invents a space where a redaction leaves a gap
+
+Measured during #131, and recorded here rather than only in a code comment because §6's
+read-back is a **text-layer** read and [#134](https://github.com/TensorGreed/burrow/issues/134)
+will build on it.
+
+Removing a glyph from inside a run leaves a positioning adjustment in its place, so that the
+glyphs after the cut do not move (#131's rule). Cutting `C` out of `ABCDE` produces
+`[<4142> -600 <4445>] TJ`. `FPDFText_CountChars` on that page then reports **five** characters:
+`A`, `B`, a **`U+0020` that is in no string in the file**, `D`, `E`. PDFium's text layer
+synthesises a space when the gap between two glyphs is wide enough, and a positioning
+adjustment is exactly such a gap.
+
+Three consequences, each stated because the obvious reading of a character count gets one of
+them wrong:
+
+- **It is not a leak.** No glyph from the removed run survives, and the synthetic space carries
+  no information about what was there beyond the fact that *something* was.
+- **"The text is shorter by the number of glyphs removed" is false**, and a verification
+  asserting it would fail on correct output. Verification must match the **kept** glyphs —
+  by code and by origin — rather than count characters.
+- **A wide kern the producer wrote does the same thing**, before any redaction. Measured: a
+  `-200` kern at 12 pt already makes PDFium synthesise a space, so char indices and glyph
+  indices are not the same sequence even on an untouched page. Anything correlating the two by
+  position is wrong on documents nobody redacted.
+
+The synthetic space is identified by **position in the expected sequence**, not by being a
+space: a page may contain real spaces, and skipping every `U+0020` would skip those too, which
+is how a check for word spacing would quietly stop checking anything.
+
 ### 7. The page says what is left, and names where to look
 
 In the voice [ADR 0019](0019-how-split-builds-its-outputs.md) §4 established, where every limit
@@ -649,3 +679,328 @@ entry point, and the entry point is what decides which module the code is compil
 [#130]: https://github.com/TensorGreed/burrow/issues/130
 [#131]: https://github.com/TensorGreed/burrow/issues/131
 [#137]: https://github.com/TensorGreed/burrow/issues/137
+
+## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
+
+Raised on #131, before the code that would have got it wrong was written.
+
+### The hazard
+
+§1 removes glyphs from the streams that draw them, and a Form XObject **is** such a stream. But
+a form is an object, and an object can be drawn more than once: from several pages, or several
+times on one page at different `cm` transforms. Editing it in place removes the text
+**everywhere it is drawn**.
+
+That fails in both directions at once, which is what makes it worse than a missed channel:
+
+- a page nobody asked about loses content, silently — a redaction that damaged a document
+  rather than redacting it;
+- and the region the user *did* select is on one of those pages, so the operation appears to
+  have worked.
+
+Nothing in §6's read-back catches it: that verification asks whether the selected region is
+clear on the page it was asked about, and it is.
+
+### The decision: refuse only when the region reaches inside a shared form
+
+v1 refuses when **the region reaches glyphs or ink inside a Form XObject that is drawn more than
+once** in the document. A form drawn exactly once is edited in place as §1 describes, because
+there is nowhere else for the edit to reach.
+
+**The scoping is the decision, not a detail of it.** Refusing any page that *contains* a shared
+form would refuse a large share of real documents: a letterhead, a header, a footer, a watermark
+and a logo are all commonly one form object drawn on every page, and none of them is what the
+user selected. A redaction nobody can run leaks nothing only because it never runs, and §7's
+disclosure is worth nothing if it fires on the ordinary case.
+
+So the test is over the glyphs **being removed**, not over the resources present: a form is only
+in question when a glyph the operation is about to cut came out of it.
+
+**Sharing is detected by object identity, never by resource name.** Two pages may both call a
+form `/Fm0` and mean different objects; one page may reach the same object under two names.
+`core/CLAUDE.md` already states the rule this rests on — a `qpdf_oh` handle is a fresh number on
+every call and is not an identity, so the comparison is on **object number and generation**,
+`ObjectHandle::object()`. `tools/check-handle-identity.py` enforces that a raw handle is never
+compared, and the detection must satisfy it rather than argue around it.
+
+The scan is over **every page's** resource graph, not the page being redacted. A form shared
+with a page the user never selected is exactly the case the refusal exists for, and a per-page
+scan cannot see it.
+
+And "the resource graph" means every graph from which a form can be drawn, not just page
+resources. A use counted in one place and missed in another reads as *unshared*, which is the
+direction that edits in place and damages the other page:
+
+| graph | why it can reach a form |
+|---|---|
+| a page's `/Resources` → `/XObject` | the ordinary `Do` |
+| a **nested form's** own `/Resources` → `/XObject` | a form drawing another form, to `MAX_FORM_DEPTH` |
+| an annotation's `/AP` → `/N` (and `/D`, `/R`) appearance stream's `/Resources` | an appearance is a form, and it has resources of its own |
+| a **tiling pattern's** `/Resources` | a pattern's content stream draws like any other |
+| a **Type 3 font's** `/CharProcs` entries and the font's `/Resources` | a glyph procedure draws like any other |
+
+The annotation case is the one a page-only scan misses most easily, because an appearance
+stream is reached through `/Annots` rather than through `/Resources`, and it is a form object in
+its own right. There is a fixture for it.
+
+### The same rule applies to Type 3 `/CharProcs`
+
+A Type 3 glyph procedure is a content stream that draws glyphs, and a Type 3 **font** is shared
+by every page that selects it — which is the ordinary case, not the exotic one. Editing a
+`/CharProcs` entry changes that character everywhere in the document.
+
+So the same test, scoped the same way: refuse when **the region reaches text inside a glyph
+procedure** belonging to a Type 3 font reachable from more than one place. A Type 3 font merely
+being present refuses nothing — which matters more here than for forms, because a Type 3 font
+used on one page only is uncommon, and an unscoped rule would refuse essentially every document
+that has one.
+
+**Residue, stated rather than implied:** the geometry walk does not descend into `/CharProcs`
+today. `Resources` resolves forms and glyph metrics; it has no hook for a glyph procedure's
+content stream, so text drawn inside one is not currently found at all — which is spike 0006's
+channel 8 and is why that channel is still open. This rule is therefore written for the walk
+that will reach it, and the refusal cannot fire until it does. Recording the rule now is
+deliberate: the alternative is discovering it while writing the code that would have edited a
+shared font in place.
+
+### A shared page `/Contents` is the same hazard, and it is **not** covered
+
+Raised by a review, and recorded rather than quietly left: the rule above is scoped to glyphs
+whose source is a **Form XObject**. A page's own content stream is `form: None`, and nothing
+counts how many pages share it.
+
+Two pages pointing at one `/Contents` object is legal, and it is not exotic — the
+`inheriting_document()` fixture in this very branch builds one, because it was the shortest way
+to write a two-page document. Editing that stream removes the text from **both** pages, with
+§6's read-back clean on the page it was given. Identical hazard, outside the rule.
+
+It is not reachable today, because nothing calls the removal. It has to be closed before
+anything does, and there are two ways:
+
+- count page-`/Contents` objects in the same walk and extend the refusal to the `None` case,
+  which is a few lines and the same shape as the form rule;
+- or emit a **copy** of the content stream for the page being redacted and repoint only that
+  page, which does not hit the `qpdf_oh_new_stream` wall below because
+  `qpdf_oh_replace_stream_data` on a page's existing stream is already how the operation works —
+  what is missing is a second object to point at.
+
+**Recorded as a named gap rather than an assumption**, because §8's rule cuts both ways: a
+hazard nobody wrote down is a hazard nobody will look for.
+
+### Copy-on-write is the alternative, and the C API wall is in the way
+
+The better answer is to clone the form, edit the clone, and repoint **only this `Do`'s**
+resource entry, leaving every other reference at the original. That is `split`'s shape applied
+to one object.
+
+It needs these verbs, and their status against `engines/qpdf-trapped-functions.txt` is the
+whole argument:
+
+| verb | needed for | status |
+|---|---|---|
+| `qpdf_get_num_pages`, `qpdf_get_page_n` | enumerating pages to detect sharing | **trapped** |
+| `qpdf_oh_get_key`, `qpdf_oh_has_key` | walking `/Resources` → `/XObject` → the form | **trapped** |
+| `qpdf_oh_get_object_id`, `qpdf_oh_get_generation` | identity, for the sharing test | **trapped** |
+| `qpdf_oh_get_type_code` | asking whether an object is a stream | **trapped** |
+| `qpdf_oh_get_stream_data`, `qpdf_oh_replace_stream_data` | reading and writing a form's content | **trapped** |
+| `qpdf_oh_replace_key` | repointing the `Do`'s resource entry | **trapped** |
+| `qpdf_make_indirect_object` | giving the clone an object number | **trapped** |
+| **`qpdf_oh_new_stream`** | **creating the clone** | **NOT trapped, and not acceptable** |
+| **`qpdf_oh_new_dictionary`** | **the clone's stream dictionary** | **NOT trapped** |
+| `qpdf_oh_get_stream_dict` | copying the original's dictionary | **neither trapped nor accepted** |
+
+So **detection is entirely within the permitted API and the copy is not.** The refusal can be
+implemented today; copy-on-write cannot.
+
+`qpdf_oh_new_stream` is not a borderline case. Read it:
+
+```c
+qpdf_oh_new_stream(qpdf_data qpdf)
+{
+    QTC::TC("qpdf", "qpdf-c called qpdf_oh_new_stream");
+    return new_object(qpdf, qpdf->qpdf->newStream());
+}
+```
+
+A bare `QTC::TC` outside any trapping lambda, then a direct call into `QPDF`. That is the same
+shape as `qpdf_get_root` and `qpdf_get_trailer`, which ADR 0013 §1's caller rule already
+rejects, and for the same reason: a C++ exception crossing an `extern "C"` frame is not
+something `catch_unwind` can hold.
+
+Nor does it qualify for `engines/qpdf-untrapped-accepted.toml`. That file's bar is that the
+function is **non-parsing** — "it assigns a field, flips a flag, or reads a stored value …
+never resolves an object". `QPDF::newStream` mutates the document's object table. It is not in
+`qpdf_oh_new_null`'s class, and an entry claiming it were would be the kind of false exemption
+that file's own header warns against.
+
+Note also that `qpdf_oh_is_stream` is **not** the way to ask whether an object is a stream:
+resolving an indirect handle parses, which is `qpdf_is_linearized`'s disqualifying property.
+`qpdf_oh_get_type_code` is trapped and is the verb to use.
+
+### What the scan costs
+
+Measured 2026-09-22, because a rule that walks every page's graph on every redaction has to be
+priced rather than assumed. No large document is committed — `corpus/files/` is fetched, and the
+biggest fixture here is 137 pages and 139 objects — so the measurement is on generated documents
+of the shape the rule cares about: one form drawn by every page **and** by every page's
+annotation appearance.
+
+| pages | objects | bytes | reference scan | `qpdf --check` (median of 5) |
+|--:|--:|--:|--:|--:|
+| 1,000 | 2,004 | 283 KiB | 0.5 ms | 32 ms |
+| 5,000 | 10,004 | 1,424 KiB | 2.4 ms | 110 ms |
+
+Both columns are linear in object count, and the scan itself is not where the cost is: **qpdf's
+own object resolution dominates by roughly fifty to one**. So the rule's price is one pass over
+the object graph, which a redaction already pays to open the document, and the walk should reuse
+that pass rather than taking its own.
+
+Two honest qualifications. The scan column is a *string* scan standing in for the qpdf-side walk
+that does not exist yet, so it bounds the bookkeeping and not the resolution. And these documents
+are uniform; a real one with deeply nested forms pays `MAX_FORM_DEPTH` per entry rather than one.
+The number to re-measure is the production walk when it lands.
+
+The same generated documents also measure the annotation half of the rule: at 5,000 pages, where
+each page draws the form once and its annotation is the form, a full scan counts **10,000** uses
+and a page-resources-only scan counts **5,000**. A scan confined to page resources reports
+**half** the uses — and under-counting reads as *unshared*, which is the direction that edits in
+place.
+
+**Those numbers were first recorded as 11,000 and 6,000, and were wrong.** The instrument was a
+substring search for `"4 0 R"`, which also matches inside `"14 0 R"`, `"24 0 R"` and every other
+object number ending in four — 1,000 spurious hits in both columns. A review recomputed them and
+disagreed; re-measuring showed the review was right. The error is recorded rather than quietly
+patched, because it is the same family as the rest of this document: **a measurement is only as
+good as the instrument, and a substring scan with no word boundary is not one.** The ratio the
+paragraph rests on — a page-only scan sees half — survives, which is luck rather than
+robustness.
+
+### Condition for revisiting
+
+**Upstream trapping `qpdf_oh_new_stream` and `qpdf_oh_new_dictionary`**, which a version bump
+would surface because `tools/check-qpdf-trapped.py --generate` regenerates the set. At that
+point copy-on-write becomes implementable inside the permitted API and shared forms move from
+*refused* to *handled*. A C++ shim is the other route and this record does not reopen it;
+ADR 0013 rejected it.
+
+Until then the refusal has to say why in a way that does not read as permanent (§7), and the
+disclosure names the document shape rather than the engine limitation: *"this page draws text
+from a template used elsewhere in the document, and removing it here would remove it there
+too"*.
+
+## Amendment, 2026-09-22 — the region's frame, and why it is in the type
+
+### Four numbers with no frame can be read four ways, and three of them miss
+
+A page has up to five boxes, may declare a `/Rotate` that turns what the reader sees away from
+user space, and may declare a `/UserUnit` that changes what a point means. "The rectangle the
+user selected" is therefore not well defined until the frame is stated, and a wrong reading does
+not fail loudly: the region lands somewhere the text is not, no glyph intersects it, the
+operation removes nothing and **reports success**.
+
+So the frame is part of the type. `pdfsyntax::region::Region` cannot be built from four bare
+numbers with the meaning left to the caller.
+
+### The frame
+
+A `Region` is in **display coordinates** — what the person looking at the page saw:
+
+| question | answer |
+|---|---|
+| which box? | **`/CropBox`**, falling back to `/MediaBox`. A viewer shows the crop box, so that is what the user selected within |
+| before or after `/Rotate`? | **after** — the user selected on the page that was on screen |
+| what is a unit? | **points as displayed**, already multiplied by `/UserUnit` |
+| origin | **top-left, y downwards**, as every viewer and pointing device reports |
+
+The last row is the one most likely to be wrong silently: PDF user space has its origin at the
+**bottom** left. A region converted without the flip lands mirrored about the page's horizontal
+centre, which on a form or a two-column page is very often still *on* the page and over the
+wrong text.
+
+### Converted in one place
+
+`Region::to_content_space` is the only conversion, and it does four things in order:
+`/UserUnit` divides out, the y axis flips, `/Rotate` unwinds, and the display box's origin
+shifts back in. Everything downstream works in content space and never sees a display
+coordinate. A second conversion site is a second chance to disagree, and the disagreement would
+be a redaction over the wrong part of the page.
+
+An unreadable frame is refused rather than guessed: a `/Rotate` that is not a right angle, a
+`/UserUnit` that is not positive and finite, a display box with no extent. Each has a fixture,
+and each fixture asserts **which** rule refused.
+
+The three frame fixtures each place the region so a wrong reading demonstrably misses:
+a non-origin `/CropBox` whose offset exceeds the region's own width, a `/Rotate 90` page where
+the region's extents swap, and a `/UserUnit 2` page where the region is half the size it looks.
+Each asserts the whole rectangle rather than one edge — a first draft checked the extent only,
+and a mutation that scaled the extents but not the origin survived it: the right size in the
+wrong place, which removes the wrong text rather than none.
+
+### The public entry point waits for #134
+
+ADR 0022's rule is that an operation verifies its own output before returning it. Redaction is
+the operation where that matters most, and the verification is
+[#134](https://github.com/TensorGreed/burrow/issues/134).
+
+So the assembled operation returns bytes **only** through the verified path, and until #134
+exists there is no public entry point that emits a redacted document. The pieces — the walk,
+the geometry, the removal, the sharing count, the frame — are crate-internal and tested, and
+the seam they will be assembled behind is deliberately not exported yet.
+
+Shipping an unverified redaction "temporarily" is the one shortcut this record will not take:
+an operation that removes a secret and cannot say whether it did is indistinguishable, from the
+outside, from one that did not.
+
+## Amendment, 2026-09-22 — the order of the steps, and what a failure discards
+
+### The order
+
+1. **Every content edit, across every affected stream** — the page's own content, each Form
+   XObject the region reaches that is not shared, each pattern.
+2. **Then font surgery**, computing "no longer drawn" from the **complete** result of step 1.
+3. **Then the page strip** — the keys outside §2's allowlist.
+
+### Why step 2 cannot run early, and why the failure would be silent
+
+Font surgery removes the `/Widths`, `/ToUnicode` and `/Differences` entries for codes the
+document no longer draws. **"No longer drawn" is a fact about the finished content.** A form
+edited in step 1 *after* the fonts were already cut leaves entries for codes nothing draws any
+more — which is spike 0006's channel 4 and 23 residue, put back by hand.
+
+The residue is not abstract: **the `/ToUnicode` entry for a removed glyph is the removed
+character, in plain text, in the font.** A redaction that cut the fonts first removes the glyph
+from the page and leaves its character in a table beside it.
+
+And it does not fail loudly. The output is a valid PDF, the page renders correctly, and §6's
+read-back — which is about glyph positions on the page — sees nothing wrong. The secret is
+legible to anything that reads the font rather than the page.
+
+So the order is a state machine rather than three calls in a comment: each step consumes the
+redaction and returns the next state, so font surgery **cannot be reached** without having
+finished every content edit. `font_surgery_reads_the_content_after_every_edit_not_before_any`
+asserts it as an index comparison against a real run, and a mutation that moves the font step
+into `edit_content` fails three tests.
+
+**Step 3 is last** because the page-key allowlist is decided against the page as it will ship.
+A key stripped before an edit that would have removed its last reference is a key whose removal
+nothing observed — §8's rule, from the other direction.
+
+### Any failure discards the whole document
+
+Per #130's poisoned-document rule: **no partial emission, no retry, no fallback to a
+partly-edited state.** The first failing step ends the redaction and the in-memory document is
+dropped. A half-redacted page is the worst possible output, because it looks like a redaction.
+
+Enforced by ownership rather than by discipline: every fallible step **consumes** the redaction
+and returns it only on success, and `emit` consumes it too. A caller holding an error has
+nothing left to emit from — the state that would have to be emitted no longer exists.
+
+Measured, as the rule requires rather than as an argument: failing the **third of four** stream
+rewrites refuses by name (`[document-poisoned]`), never reaches `write`, never attempts the
+fourth rewrite, and runs none of the later steps — each asserted separately, because "it
+returned an error" is satisfied by an implementation that also emitted something. A failure in
+step 2, after every rewrite succeeded, is asserted the same way: the rule is about **any** step.
+
+The non-vacuity control is that a clean run rewrites all four streams and does reach `write`.
+Without it, every assertion about what does *not* happen after a failure would be satisfied by
+an implementation that does nothing at all.
