@@ -530,7 +530,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys pdfsyntax_operations pdfsyntax_contents pdfsyntax_geometry pdfsyntax_cmap_wmode; do
+          for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys pdfsyntax_operations pdfsyntax_contents pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             # REDACTED, NEVER RAW. cargo-fuzz prints the ENTIRE crashing input as a

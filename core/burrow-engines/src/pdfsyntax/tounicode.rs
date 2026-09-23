@@ -118,13 +118,21 @@ impl ToUnicode {
                     let value = decode_string(program.get(span.0..span.1).ok_or_else(|| {
                         Error::Internal("a token span outside the CMap program".to_owned())
                     })?)?;
-                    let width = span.1.saturating_sub(span.0).saturating_sub(2);
                     pending.push(Item::Str {
+                        // TWO HEX DIGITS PER DECODED BYTE, not the raw span's width.
+                        //
+                        // It was the span: `span.1 - span.0 - 2`. White space inside a hex
+                        // string is ignored by the decoder and counted by that subtraction, and
+                        // **NUL is white space** in PDF 32000-1 §7.2.3. A fuzzer found
+                        // `<` + twenty-six NULs + `20>` in its second minute: one decoded byte
+                        // reported as twenty-eight digits, so the narrowed program emitted a
+                        // fourteen-byte code and burrow then refused to read its own output.
+                        //
+                        // The decoded length cannot disagree with itself this way, and it is
+                        // the quantity the emitter actually wants: how many bytes the code
+                        // occupies.
+                        digits: value.len().saturating_mul(2),
                         value,
-                        // `<0041>` is four hex digits: two source bytes. The decoded length is
-                        // the same number, but only for an even count, so the raw width is what
-                        // is carried.
-                        digits: width,
                     });
                 }
                 Token::ArrayOpen => pending.push(Item::ArrayOpen),
@@ -396,11 +404,26 @@ fn push_hex(out: &mut Vec<u8>, bytes: &[u8]) {
     }
 }
 
-/// Append `code` as `digits` hex digits, rounded up to a whole number of bytes.
+/// Append `code` as hex, at a **whole number of bytes** and never narrower than its source.
+///
+/// # An odd number of hex digits is a different code
+///
+/// This was `format!("{code:0width$X}")` with `width` the source's digit count clamped to
+/// `2..=8`, and `width` is a *minimum*: code 272 came out as `<110>`. PDF 32000-1 §7.3.4.3
+/// pads a final odd hex digit with zero, so a reader takes `<110>` as the bytes `0x11 0x00` —
+/// code **4352**, which the input never mapped.
+///
+/// Found by this module's own fuzz target inside sixty seconds, on
+/// `1 beginbfrange <00> <10FF ><FF> endbfrange`, through the claim that burrow must be able to
+/// read back what it writes. It is the exact defect that claim exists for, and no unit test
+/// here had reached it: every hand-written fixture used codes below 256.
 fn push_code(out: &mut Vec<u8>, code: u32, digits: usize) {
-    let width = digits.clamp(2, 8);
-    let text = format!("{code:0width$X}");
-    out.extend_from_slice(text.as_bytes());
+    let natural = format!("{code:X}").len();
+    // At least the source's width, at least two digits, and always even — a byte is two hex
+    // digits and a code is a whole number of bytes.
+    let width = natural.max(digits).max(2);
+    let width = width + width % 2;
+    out.extend_from_slice(format!("{code:0width$X}").as_bytes());
 }
 
 #[cfg(test)]
@@ -519,6 +542,92 @@ mod tests {
             String::from_utf8_lossy(&narrowed)
         );
         assert_eq!(text_for(&narrowed, 0x41), Some(vec![0x00, 0x61]));
+    }
+
+    #[test]
+    fn a_code_whose_hex_is_an_odd_number_of_digits_is_emitted_as_whole_bytes() {
+        // THE FUZZER'S FINDING, reduced to its input. `format!("{code:0width$X}")` took `width`
+        // from the SOURCE's digit count, and `width` is a minimum: a range written `<00>` to
+        // `<10FF>` has a two-digit source, so code 272 came out as `<110>` -- three digits. A
+        // reader pads the final odd digit with zero per PDF 32000-1 §7.3.4.3, so `<110>` is the
+        // bytes `0x11 0x00`: code **4352**, which the document never drew.
+        //
+        // **The first version of this test used a four-digit source and did not reproduce it.**
+        // Re-planting the defect left the suite green, which is the whole reason `CLAUDE.md`
+        // says to assert a mutation applied before believing what a green run means. The source
+        // width is the parameter that matters and the fixture has to vary it.
+        let program = b"1 beginbfrange\n<00> <10FF> <0041>\nendbfrange\n";
+        let read = ToUnicode::parse(program).expect("parses");
+        assert!(read.maps(0x0110), "the fixture maps code 272");
+        assert!(!read.maps(0x1100), "and does not map 4352");
+
+        let narrowed = read.narrowed(&|_| true).expect("kept");
+        let again = ToUnicode::parse(&narrowed).expect("burrow reads its own output");
+        assert!(
+            !again.maps(0x1100),
+            "an odd digit count re-framed a code: the narrowed program maps 4352, which the \
+             original never did"
+        );
+        assert!(
+            again.maps(0x0110),
+            "and the code it did map is still mapped"
+        );
+    }
+
+    #[test]
+    fn a_narrowed_program_never_maps_a_code_the_original_did_not() {
+        // The general form, over a two-digit source spanning every width boundary: 0xFF is two
+        // hex digits, 0x100 is three, 0x1000 is four. The round trip must map exactly the same
+        // set across all of them.
+        let program = b"1 begincodespacerange\n<00> <FF>\nendcodespacerange\n\
+                        1 beginbfrange\n<00> <2000> <0041>\nendbfrange\n";
+        let read = ToUnicode::parse(program).expect("parses");
+        let narrowed = read.narrowed(&|code| code % 3 == 0).expect("kept");
+        let again = ToUnicode::parse(&narrowed).expect("burrow reads its own output");
+        for code in 0..=u32::from(u16::MAX) {
+            assert_eq!(
+                again.maps(code),
+                read.maps(code) && code % 3 == 0,
+                "code {code} disagrees across the round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn white_space_inside_a_hex_code_does_not_widen_what_is_emitted() {
+        // THE FUZZER'S SECOND FINDING, in its second minute. The source width was taken from
+        // the raw span, and the decoder ignores white space inside `<...>` -- including NUL,
+        // which PDF 32000-1 §7.2.3 lists as white space. One decoded byte was reported as
+        // twenty-eight digits, the narrowed program emitted a fourteen-byte code, and burrow
+        // refused to read its own output.
+        //
+        // Spaces rather than NULs here because a NUL in a Rust byte-string literal reads as an
+        // escape everyone has to decode; the mechanism is the same and `strings.rs` treats both
+        // as white space, which the companion assertion below pins.
+        let program = b"1 beginbfrange\n<          20> <7E> <0020>\nendbfrange\n";
+        let read = ToUnicode::parse(program).expect("parses");
+        assert!(read.maps(0x20), "the fixture maps the space");
+
+        let narrowed = read.narrowed(&|_| true).expect("kept");
+        let again = ToUnicode::parse(&narrowed).expect("burrow reads its own output");
+        assert_eq!(again.len(), read.len(), "the round trip changed the count");
+        assert!(again.maps(0x20), "and maps the same codes");
+    }
+
+    #[test]
+    fn a_nul_inside_a_hex_code_is_white_space_like_any_other() {
+        // The companion: the same shape with the byte the fuzzer actually used. If
+        // `decode_string` ever stopped treating NUL as white space, the test above would keep
+        // passing over a mechanism that had moved.
+        let mut program = Vec::from(b"1 beginbfrange\n<".as_slice());
+        program.extend(std::iter::repeat_n(0u8, 26));
+        program.extend_from_slice(b"20> <7E> <0020>\nendbfrange\n");
+        let read = ToUnicode::parse(&program).expect("parses");
+        assert!(read.maps(0x20), "NUL is white space inside a hex string");
+
+        let narrowed = read.narrowed(&|_| true).expect("kept");
+        let again = ToUnicode::parse(&narrowed).expect("burrow reads its own output");
+        assert_eq!(again.len(), read.len());
     }
 
     #[test]
