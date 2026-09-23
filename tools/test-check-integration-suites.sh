@@ -84,13 +84,23 @@ cat >"$planted" <<'RSEOF'
 fn planted_by_test_check_integration_suites() {}
 RSEOF
 [ -f "$planted" ] || { echo "  FAIL the plant did not apply"; exit 1; }
-if "$checker" --list-only 2>&1 | grep -q "zz_planted_by_self_test"; then
-  echo "  ok   a suite newly on disk is swept without being named anywhere"
-  pass=$((pass + 1))
-else
-  echo "  FAIL a suite newly on disk is swept without being named anywhere: it was not picked up"
-  fail=$((fail + 1))
-fi
+# CAPTURED, THEN MATCHED. `"$checker" … | grep -q` looks right and is not: `grep -q` closes
+# the pipe the moment it matches, the checker takes SIGPIPE, and under `set -o pipefail` the
+# pipeline's status is that failure -- so a SUCCESSFUL match read as "not picked up". Traced
+# with `bash -x` after this case failed while running the same command by hand passed. It is
+# CLAUDE.md's "never put a command whose status you need on the left of a pipe", from the
+# other end: here the pipe's right-hand side is what breaks the left.
+swept=$("$checker" --list-only 2>&1 || true)
+case "$swept" in
+  *zz_planted_by_self_test*)
+    echo "  ok   a suite newly on disk is swept without being named anywhere"
+    pass=$((pass + 1))
+    ;;
+  *)
+    echo "  FAIL a suite newly on disk is swept without being named anywhere: not picked up"
+    fail=$((fail + 1))
+    ;;
+esac
 rm -f "$planted"
 planted=""
 
@@ -179,6 +189,50 @@ if cmp -s "$checker" "$copy"; then
 else
   expect_refusal "a crate reporting zero suites is refused rather than swept as empty" \
     "which is not that directory" \
+    "$copy" --list-only
+fi
+rm -f "$copy"
+
+# --- The OPS floor, which nothing reached -----------------------------------------------------
+#
+# A code review deleted the `ops_count` floor outright and all six cases still printed `ok`.
+# Neither case that touches a floor reaches this one: the moved-directory case empties both
+# crates and the engines floor fires first, and the `engines_count=0` case names engines. Half
+# the replacement for the deleted comparison was a defence nothing failed for.
+sed 's/^ops_count=.*/ops_count=0/' "$checker" >"$copy"
+chmod +x "$copy"
+if cmp -s "$checker" "$copy"; then
+  echo "  FAIL the ops-floor mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  expect_refusal "a zero count for burrow-ops is refused, not only for burrow-engines" \
+    "core/burrow-ops/tests" \
+    "$copy" --list-only
+fi
+rm -f "$copy"
+
+# --- A PARTIAL derivation, which the floors cannot see ----------------------------------------
+#
+# The failure the git comparison was added for. Truncating `suites_in` swept 10 of 26 suites and
+# printed `OK -- 10 suite(s) derived from disk`: both floors passed, because both crates still
+# had five. "10 of 26" reads exactly like success.
+#
+# `tail` rather than `head` DELIBERATELY. With `head -5` the planted-suite case happens to catch
+# it, because `zz_planted_by_self_test` sorts last and is dropped -- by alphabetical accident,
+# not by design. `tail -5` drops the front instead and leaves that case green, so this is the
+# shape that measures the git comparison rather than the accident.
+sed 's/| tr .\\n. . .; } || true/| tail -5 | tr "\\n" " "; } || true/' "$checker" >"$copy"
+if cmp -s "$checker" "$copy"; then
+  # The sed above is fragile against reformatting; fall back to a direct pipeline edit.
+  sed 's#LC_ALL=C sort -u | tr#LC_ALL=C sort -u | tail -5 | tr#' "$checker" >"$copy"
+fi
+chmod +x "$copy"
+if cmp -s "$checker" "$copy"; then
+  echo "  FAIL the truncation mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  expect_refusal "a partial derivation is refused against git's index, not swept as complete" \
+    "the derivation is partial" \
     "$copy" --list-only
 fi
 rm -f "$copy"

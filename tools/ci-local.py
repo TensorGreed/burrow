@@ -180,8 +180,13 @@ JOBS: list[dict] = [
         # Nothing regenerated it until this job existed, so the sweep passed on machines where
         # the files were left over and panicked on a clean checkout.
         "name": "redaction-corpus",
-        "run": "tools/check-redaction-corpus.sh",
-        "covers": ["tools/check-redaction-corpus.sh"],
+        "run": (
+            "tools/check-redaction-corpus.sh && tools/test-check-redaction-corpus.sh"
+        ),
+        "covers": [
+            "tools/check-redaction-corpus.sh",
+            "tools/test-check-redaction-corpus.sh",
+        ],
     },
     {
         "name": "test",

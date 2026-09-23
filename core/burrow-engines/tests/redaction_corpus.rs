@@ -122,6 +122,23 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
          written against"
     );
 
+    // A DOCUMENT THE ORACLE READS NOTHING FROM MEASURES NOTHING, and is reported here as
+    // `quiet` rather than as a failure. That is right for the report and wrong as a resting
+    // state: every fixture in this corpus draws at least the keep line, so a quiet one is a
+    // broken one.
+    //
+    // Measured on my own mistake: an evasion fixture written with one `>>` too many closed the
+    // page's `/Resources` early and detached `/Contents`. `qpdf --check` passed it, the
+    // generator reported it written, and this sweep counted it quiet and stayed green -- a
+    // fixture whose whole purpose is to probe a leak, asserting nothing, in a test that said OK.
+    assert!(
+        quiet.is_empty(),
+        "the oracle reads no text from {}: {:?}. Every fixture here draws at least the keep \
+         line, so a quiet one is malformed rather than uninteresting",
+        quiet.len(),
+        quiet
+    );
+
     // AND THE OUTCOME DISTRIBUTION, not just the count examined. A mutation that made
     // `QpdfRedaction::new` refuse unconditionally left this test green — 43 of 43 examined, 0
     // redacted, 43 refused — because every per-document assertion is inside the `Ok` arm.
@@ -132,11 +149,22 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     // the floor at 4 would have left this test passing over a regression that took 39 back to
     // 5, which is the whole failure mode the floor exists to catch: "4 of 43" reads as success.
     //
-    // A floor rather than an equality, because the six that still refuse are refusals this
-    // milestone intends to close, and closing one must not be a test failure.
+    // A floor rather than an equality, because the refusals that remain are ones this milestone
+    // intends to close, and closing one must not be a test failure.
+    //
+    // IT WENT DOWN ONCE, 39 to 38, and the reason is worth keeping: `evade-image-in-type3-glyph`
+    // was **redacting** while its own manifest entry declares `verdict = "refuse"` and
+    // `expect_after = "refused"`. Refusing a Type 3 procedure that draws — not only one that
+    // shows text — closed that evasion and took the count with it. A floor that may only rise
+    // would have read that as a regression.
+    //
+    // It also names a gap: the manifest assigns every fixture a verdict and nothing compares an
+    // outcome against it, so a fixture can disagree with its own declared decision in silence.
+    // That is the `expect_after` half of ADR 0029 §8, which `check-redaction-corpus.py` says it
+    // does not check.
     assert!(
-        redactions.len() >= 39,
-        "{} documents redacted, and 39 did when this floor was last measured: a refusal widened \
+        redactions.len() >= 38,
+        "{} documents redacted, and 38 did when this floor was last measured: a refusal widened \
          far enough to cover them would take every per-document assertion here to zero while \
          this test still printed a pass",
         redactions.len()

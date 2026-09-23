@@ -939,10 +939,14 @@ file = "generated/00-control-no-canary.pdf"
 kind = "hand-built"
 pages = 1
 no_placements_because = """
-It has no canary, by design. This is the INERTNESS control for every witness in
-`tools/check-redaction-corpus.py`: a scanner that matches everything fails everything, and this
-is the document that proves none of them does. A placement here would assert the presence of
-something the fixture exists to lack.
+It has no canary, by design, so there is nothing here to witness present -- a placement would
+assert the presence of the thing this fixture exists to lack.
+
+It is not unchecked. `tools/check-redaction-corpus.py` runs EVERY witness against it on every
+run and requires each to find nothing: a scanner that matches everything fails everything, and
+this is the document that proves none of them does. That sweep is the reason this entry carries
+no placement rather than an excuse for carrying none -- and it was written only after a code
+review pointed out that this text claimed a control which, at the time, ran nowhere in CI.
 """
 
 [[fixture]]
@@ -1064,4 +1068,66 @@ pages = 1
 MUST NOT be refused. The canary is drawn by the page itself, outside the span; the span covers a
 form drawing the keep line well away from the region. A rule that refuses any page whose content
 carries `/ActualText` passes every evasion above and refuses most tagged documents.
+"""
+
+[[fixture]]
+name = "evade-actualtext-in-the-middle-form"
+file = "generated/evade-actualtext-in-the-middle-form.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText in an intermediate form, covering a leaf form's glyphs"
+  canary = "BURROW-EVADE-ACTUALTEXT-MIDFORM"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+The marked-content scope was the page plus the forms HOLDING a removed glyph. A form that merely
+draws one was in neither set, so its bytes were read by nobody.
+"""
+
+[[fixture]]
+name = "evade-actualtext-over-a-form-without-resources"
+file = "generated/evade-actualtext-over-a-form-without-resources.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText over a form that declares no /Resources and inherits the page's"
+  canary = "BURROW-EVADE-ACTUALTEXT-NORES"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+`Resources::within` returns `None` for a form with no `/Resources` and the walk continues with
+the enclosing dictionary. The scope walk returned "reaches nothing", so deleting one dictionary
+from the file turned a correct refusal into a leak.
+"""
+
+[[fixture]]
+name = "evade-text-in-type3-via-form"
+file = "generated/evade-text-in-type3-via-form.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Type 3 glyph procedure that draws a Form XObject holding the text"
+  canary = "BURROW-EVADE-TYPE3-VIA-FORM"
+  verdict = "refuse"
+  adr = "§8"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The procedure shows no text of its own, so the `Tj`/`TJ` rule did not see it, and the walk
+enters neither the procedure nor the form. Measured: the page rendered nothing afterwards and
+the drawing operators were still in the file -- covered, not gone.
 """

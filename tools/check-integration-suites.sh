@@ -146,6 +146,33 @@ directory -- a glob matching nothing would make this whole sweep vacuous"
   fail "found $ops_count suite(s) under core/burrow-ops/tests, which is not that directory -- \
 a glob matching nothing would make this whole sweep vacuous"
 
+# AND AGAINST GIT'S INDEX, which is a real second opinion rather than a restatement. The header
+# used to claim "no second opinion about them can be more correct"; that was wrong, and a code
+# review measured what it cost: truncating the derivation with `head -5` swept 10 of 26 suites
+# and printed `OK -- 10 suite(s) derived from disk`. Both floors passed, because both crates
+# still had five. "10 of 26" reads exactly like success.
+#
+# ONE DIRECTION ONLY, and the direction matters. A suite git tracks and the derivation missed is
+# a truncated sweep. A suite on disk that git does not track is a **new test somebody is
+# writing**, which must not fail their local run -- and which CI cannot see anyway, since CI
+# checks out what is committed. Requiring equality broke exactly that case in the self-test.
+#
+# AFTER THE FLOORS, so an empty derivation is reported by the floor that names the crate rather
+# than by this, which would say "0 against 26" and bury the reason.
+#
+# `grep -E` for the depth, because git's pathspec `*` crosses `/` -- `core/*/tests/*.rs` also
+# matches `core/burrow-engines/tests/support/mod.rs`, a shared helper and not a suite.
+tracked=$(git ls-files 'core/*/tests/*.rs' 2>/dev/null |
+  grep -E '^core/[^/]+/tests/[^/]+\.rs$' |
+  sed -e 's#.*/##' -e 's/\.rs$//' | LC_ALL=C sort -u || true)
+if [ -n "$tracked" ]; then
+  untouched=$(comm -13 <(printf '%s\n' "$named") <(printf '%s\n' "$tracked") | tr '\n' ' ')
+  [ -z "$(printf '%s' "$untouched" | tr -d ' ')" ] ||
+    fail "git tracks suite(s) this sweep did not derive, so the derivation is partial: \
+$untouched"
+fi
+
+
 if [ "$list_only" = "1" ]; then
   echo "OK -- $named_count suite(s) derived from disk ($engines_count engines, $ops_count ops; list-only: tests not discovered)"
 else

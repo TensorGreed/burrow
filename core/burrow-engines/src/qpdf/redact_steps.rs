@@ -341,27 +341,28 @@ impl Steps for QpdfRedaction {
         // from. The page's own content first, then each form the removal reaches -- a form
         // carries its own `BDC`s and its own offsets.
         //
-        // EACH CALL IS ALSO TOLD WHICH `Do`s DRAW A REACHED FORM. A span in the page stream can
-        // cover glyphs that live in a form, and without that the page call saw no removed glyph
-        // of its own and returned early over a `/ActualText` wrapping the whole thing. See
-        // `FormsReached`.
+        // EVERY STREAM ON A PATH TO A REMOVED GLYPH, each told which of its own `Do`s lead to
+        // one. A span in one stream can cover glyphs drawn from another, and the honest scope
+        // is the whole path rather than its endpoints -- see `marked_content_scope` for the two
+        // shapes a narrower scope leaked through, both measured.
+        //
+        // `FormsReached::Unresolved` is gone from this call site with it: the scope resolves
+        // each form's own names now, so there is nothing left to be unresolved about.
         let reached_forms: BTreeSet<u64> =
             cut.iter().filter_map(|glyph| glyph.source.form).collect();
-        let reached_names = form_names_for(&resources, &reached_forms)?;
+        let (page_names, form_scope) = marked_content_scope(&resources, &reached_forms)?;
         check_marked_content(
             contents.bytes(),
             &cut,
             None,
-            &FormsReached::Named(&reached_names),
+            &FormsReached::Named(&page_names),
         )?;
-        for form in &reached_forms {
-            // UNRESOLVED FOR A FORM'S OWN STREAM: resolving a `Do` inside it needs that form's
-            // `/Resources`, which this seam does not carry down.
+        for (form, names) in &form_scope {
             check_marked_content(
                 &find_form(&resources, *form)?,
                 &cut,
                 Some(*form),
-                &FormsReached::Unresolved,
+                &FormsReached::Named(names),
             )?;
         }
 
@@ -835,85 +836,228 @@ fn find_form(resources: &PageResources<'_>, id: u64) -> Result<Vec<u8>> {
     })
 }
 
-/// The page-resource names whose Form XObject is one of `wanted`.
+/// The page's `Do` names that lead to a removed glyph, and each in-scope form with its own.
 ///
-/// [`check_marked_content`] asks its questions about a stream's own byte offsets, so it needs
-/// the `Do` operand as the content stream spells it, not an object identity. This is the one
-/// place that crossing is made, and it is made by object identity on both sides -- the name is
-/// what the stream says and `pack(entry.object()?)` is what it means, per `core/CLAUDE.md`.
-fn form_names_for(
+/// A named type rather than the tuple written out, because the tuple is what it says: a set of
+/// names for the page plus, per form, its identity and its own set. Clippy asked, and it was
+/// right to.
+type MarkedContentScope = (BTreeSet<Vec<u8>>, Vec<(u64, BTreeSet<Vec<u8>>)>);
+
+/// Every stream the marked-content rule must read, and the `Do` names in each that lead to a
+/// removed glyph.
+///
+/// Returns the page's own names, then one entry per **form** that holds or draws toward a
+/// removed glyph, with that form's own leading names.
+///
+/// # Why "draws toward", and what asking a narrower question cost
+///
+/// [`check_marked_content`] was called on the page stream and then once per form **holding** a
+/// cut glyph. A form that merely *draws* such a form was never in that set, so its bytes were
+/// never read — and a `/Span << /ActualText … >> BDC /Inner Do … EMC` sitting in that
+/// intermediate form was seen by nobody. Measured by a security review on a 1,192-byte file:
+/// the operation returned `Ok`, the glyphs came out of `Inner`, and PDFium read
+/// `BURROW-SEC164-MIDFORM` off the output.
+///
+/// So the scope is every form on a path from the page to a removed glyph, not the forms at the
+/// end of one.
+///
+/// # And a form declaring no `/Resources` inherits, which the descent has to do too
+///
+/// `Resources::within` returns `None` for a form with no `/Resources`, and the walk then
+/// resolves that form's names against the **enclosing** dictionary — so its children are the
+/// enclosing scope's children. This descent returned "reaches nothing" instead, which unlinked
+/// the page-level `Do` from the wanted set: deleting one dictionary from a file turned a
+/// correct refusal into a leak, also measured. Anything that resolves names differently from
+/// the walk is a bypass by construction.
+///
+/// # Errors
+///
+/// As [`walk_forms`]: [`Error::Unsupported`] when the visit budget is exhausted.
+fn marked_content_scope(
     resources: &PageResources<'_>,
     wanted: &BTreeSet<u64>,
+) -> Result<MarkedContentScope> {
+    let mut found: BTreeMap<u64, BTreeSet<Vec<u8>>> = BTreeMap::new();
+    if wanted.is_empty() {
+        return Ok((BTreeSet::new(), Vec::new()));
+    }
+    // ONE BUDGET ACROSS THE WHOLE SCOPE, not one per entry: a per-entry budget would let each of
+    // `n` top-level forms pay the full ceiling, which is `n` times the ceiling.
+    let mut budget = MAX_FORM_RESOURCE_VISITS;
+    let mut open = BTreeSet::new();
+    let page = scope_of(
+        resources.dictionary(),
+        0,
+        wanted,
+        &mut budget,
+        &mut open,
+        &mut found,
+    )?;
+    Ok((page, found.into_iter().collect()))
+}
+
+/// Spend one visit from the shared budget, refusing when it runs out.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `form-graph-too-large`. **Exhaustion is a refusal, not a
+/// silent "nothing found"**: a "nothing found" here would mean "this `Do` draws nothing the
+/// removal reaches", which is the answer that re-opens the `/ActualText` cross-stream hole.
+fn spend(budget: &mut usize) -> Result<()> {
+    *budget = budget.saturating_sub(1);
+    if *budget == 0 {
+        return Err(Error::Unsupported(
+            "pdf redaction [form-graph-too-large]: a page whose Form XObjects reference each \
+             other more ways than burrow will walk"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// The names in `dict`'s `/XObject` that lead to a form in `wanted`, recording each form that
+/// does in `found`.
+fn scope_of(
+    dict: &ObjectHandle<'_>,
+    depth: usize,
+    wanted: &BTreeSet<u64>,
+    budget: &mut usize,
+    open: &mut BTreeSet<u64>,
+    found: &mut BTreeMap<u64, BTreeSet<Vec<u8>>>,
 ) -> Result<BTreeSet<Vec<u8>>> {
     const XOBJECT: Name = Name::literal(b"/XObject\0");
+    const RESOURCES: Name = Name::literal(b"/Resources\0");
     let mut names = BTreeSet::new();
-    if wanted.is_empty() {
+    if depth >= crate::pdfsyntax::geometry::MAX_FORM_DEPTH {
         return Ok(names);
     }
-    let xobjects = resources.dictionary().key(&XOBJECT);
+    // A `/Resources` WITH NO `/XObject` IS ORDINARY, and asking for its keys is not. The flat
+    // version only ever saw the page's resources, which always have one; descending reaches
+    // forms whose resources carry only a `/Font`, and `top_level_keys` on a non-dictionary is
+    // `Malformed` -- a refusal blaming the file for a question burrow should not have asked.
+    let xobjects = dict.key(&XOBJECT);
+    if xobjects.type_code() != object_type::DICTIONARY {
+        return Ok(names);
+    }
     for key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
         let entry = xobjects.key(&Name::from_stripped(&key)?);
         if entry.type_code() != object_type::STREAM {
             continue;
         }
-        // THE NAME COUNTS IF ANYTHING BELOW IT IS WANTED, not only if it is wanted itself.
-        //
-        // This matched the top-level object alone, which was correct exactly while a nested
-        // form could not be redacted -- #164 refused those, so a `wanted` id was always a
-        // direct child. Fixing that lookup makes them reachable, and a page-level
-        // `/Span << /ActualText … >> BDC /X1 Do EMC` whose glyphs live **inside** `/X1`'s own
-        // form would have had an empty name set again: the same cross-stream hole a security
-        // review measured, one level further down and re-opened by the fix for a different bug.
-        //
-        // `check_marked_content` asks "does this `Do` draw something the removal reaches", and
-        // the honest answer follows the whole subtree.
-        let mut open = BTreeSet::new();
+        spend(budget)?;
         let here = pack(entry.object()?);
-        if wanted.contains(&here) || reaches_wanted(&entry, wanted, 0, &mut open)? {
+        if !open.insert(here) {
+            continue;
+        }
+        let own = entry.stream_dict().key(&RESOURCES);
+        // INHERITING WHEN IT DECLARES NONE, exactly as `Resources::within` does. Recursing with
+        // the enclosing dictionary re-examines its entries, and `open` is what stops that being
+        // endless: every form on the current path is already in it.
+        let inner = if own.type_code() == object_type::DICTIONARY {
+            scope_of(&own, depth.saturating_add(1), wanted, budget, open, found)?
+        } else {
+            scope_of(dict, depth.saturating_add(1), wanted, budget, open, found)?
+        };
+        open.remove(&here);
+        if wanted.contains(&here) || !inner.is_empty() {
             // WITHOUT THE LEADING SLASH, which is how `Operand::Name` carries a decoded name.
             names.insert(key.strip_prefix(b"/".as_slice()).unwrap_or(&key).to_vec());
+            found.entry(here).or_insert(inner);
         }
     }
     Ok(names)
 }
 
-/// Whether any form reachable from this one's `/Resources` is in `wanted`.
+/// How many resource-graph entries one lookup will examine, across the whole descent.
 ///
-/// Bounded and cycle-guarded like [`find_form_below`], and for the same reasons.
-fn reaches_wanted(
-    form: &ObjectHandle<'_>,
-    wanted: &BTreeSet<u64>,
+/// # Depth is not the bound it looks like, and this crate had already measured that
+///
+/// [`crate::pdfsyntax::geometry::MAX_FORM_DRAWS`]' rustdoc says it, about the walk:
+/// `MAX_FORM_DEPTH` plus a set of forms currently open *look* like a bound and are not, because
+/// a form may name the next one `B` times without ever recursing into itself. The open set is a
+/// **path** set — an entry is removed on the way out so a legitimate second path is not skipped
+/// — so a resource graph that is a DAG is re-explored once per path, and the work is `B^16`.
+///
+/// I reintroduced exactly that, in the lookup, two commits after reading the paragraph warning
+/// about it. Measured on this tree, release, through `burrow_ops::redact::page`, with the bomb
+/// never drawn so the walk's own `MAX_FORM_DRAWS` never sees it:
+///
+/// | levels | branch | file | elapsed |
+/// |---|---|--:|--:|
+/// | 4 | 3 | 1,965 B | 3 ms |
+/// | 8 | 3 | 2,697 B | 45 ms |
+/// | 12 | 3 | 3,429 B | **2.77 s** |
+///
+/// Nine times per two levels, which is `3²`. A 4 KB file at depth 16 branch 4 does not return.
+///
+/// So the ceiling is a **total**, counted across the whole descent and — in
+/// [`form_names_for`] — across its top-level loop as well, because a per-entry budget would let
+/// each of `n` entries pay the full price. Four thousand and ninety-six, the same number and
+/// the same argument as `MAX_FORM_DRAWS`.
+const MAX_FORM_RESOURCE_VISITS: usize = 4096;
+
+/// Walk a `/Resources` dictionary's `/XObject` entries, and each form's own, looking for `want`.
+///
+/// One function rather than two near-copies, and that is the practical lesson rather than a
+/// tidiness preference: this existed as `find_form_below` and `reaches_wanted`, the same loop
+/// with a different predicate, and the visit budget above had to be added to both. A ceiling
+/// that must be written twice is a ceiling that gets written once.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `form-graph-too-large` when the budget is exhausted, and
+/// whatever reading a dictionary failed with. **Exhaustion is a refusal, not a `None`**: for
+/// `form_names_for` a `None` would mean "this `Do` draws nothing the removal reaches", which is
+/// the answer that re-opens the `/ActualText` cross-stream hole. The conservative direction and
+/// the honest one are the same here.
+fn walk_forms<'a>(
+    resources: &ObjectHandle<'a>,
     depth: usize,
+    budget: &mut usize,
+    want: &mut dyn FnMut(u64) -> bool,
     open: &mut BTreeSet<u64>,
-) -> Result<bool> {
+) -> Result<Option<ObjectHandle<'a>>> {
     const XOBJECT: Name = Name::literal(b"/XObject\0");
     const RESOURCES: Name = Name::literal(b"/Resources\0");
     if depth >= crate::pdfsyntax::geometry::MAX_FORM_DEPTH {
-        return Ok(false);
+        return Ok(None);
     }
-    let own = form.stream_dict().key(&RESOURCES);
-    if own.type_code() != object_type::DICTIONARY {
-        return Ok(false);
+    let xobjects = resources.key(&XOBJECT);
+    if xobjects.type_code() != object_type::DICTIONARY {
+        return Ok(None);
     }
-    let xobjects = own.key(&XOBJECT);
     for key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
         let entry = xobjects.key(&Name::from_stripped(&key)?);
         if entry.type_code() != object_type::STREAM {
             continue;
         }
+        // COUNTED PER ENTRY EXAMINED, which is the quantity that grew exponentially -- not per
+        // level and not per form, both of which stayed small while this ran for seconds.
+        spend(budget)?;
         let here = pack(entry.object()?);
-        if wanted.contains(&here) {
-            return Ok(true);
+        if want(here) {
+            return Ok(Some(entry));
         }
+        // A CYCLE IS A DOCUMENT THAT EXISTS, not a malformed one, and `open` is what makes this
+        // terminate. It is a path set: the entry comes off on the way out, so a form legitimately
+        // reachable by two routes is still found by the second.
         if !open.insert(here) {
             continue;
         }
-        if reaches_wanted(&entry, wanted, depth.saturating_add(1), open)? {
-            return Ok(true);
+        // INHERITING WHEN IT DECLARES NONE, as `Resources::within` does -- a lookup resolving
+        // names differently from the walk is a bypass by construction.
+        let own = entry.stream_dict().key(&RESOURCES);
+        let next = if own.type_code() == object_type::DICTIONARY {
+            &own
+        } else {
+            resources
+        };
+        if let Some(found) = walk_forms(next, depth.saturating_add(1), budget, want, open)? {
+            return Ok(Some(found));
         }
         open.remove(&here);
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// The handle for the form with this identity, searched the way the walk reached it.
@@ -934,59 +1078,31 @@ fn reaches_wanted(
 /// Nothing leaked: it refuses. What it did was blame the file for an incomplete lookup, and take
 /// a document offline that the operation can handle.
 ///
-/// # The same ceilings as the walk, for the same reasons
+/// # The ceilings, and the one that was missing
 ///
-/// [`MAX_FORM_DEPTH`] bounds the descent and the set of forms already open stops a cycle, which
-/// is the pair `glyphs_in` uses. A form that names itself is a document that exists; without the
-/// open set this recursion would not return.
+/// `MAX_FORM_DEPTH` bounds the descent and the set of forms already open stops a cycle. This
+/// said those two were "the same ceilings as the walk"; they are not, and the sentence was
+/// wrong when it was written. `glyphs_in` carries a **third** — a total count of forms drawn,
+/// against `MAX_FORM_DRAWS` — precisely because depth and a path set do not bound a DAG.
+/// [`MAX_FORM_RESOURCE_VISITS`] is this lookup's equivalent, and it is why the descent now
+/// terminates on a graph a code review measured running for seconds from a 3 KB file.
 fn form_handle<'a>(resources: &PageResources<'a>, id: u64) -> Result<ObjectHandle<'a>> {
     let mut open = BTreeSet::new();
-    find_form_below(resources.dictionary(), id, 0, &mut open)?.ok_or_else(|| {
+    let mut budget = MAX_FORM_RESOURCE_VISITS;
+    walk_forms(
+        resources.dictionary(),
+        0,
+        &mut budget,
+        &mut |here| here == id,
+        &mut open,
+    )?
+    .ok_or_else(|| {
         Error::Malformed(
             "pdf redaction [form-vanished]: a form the walk found is not reachable from the \
              page's resources"
                 .to_owned(),
         )
     })
-}
-
-/// Search `resources`' `/XObject` for the form with `id`, then each form's own `/Resources`.
-fn find_form_below<'a>(
-    resources: &ObjectHandle<'a>,
-    id: u64,
-    depth: usize,
-    open: &mut BTreeSet<u64>,
-) -> Result<Option<ObjectHandle<'a>>> {
-    const XOBJECT: Name = Name::literal(b"/XObject\0");
-    const RESOURCES: Name = Name::literal(b"/Resources\0");
-    if depth >= crate::pdfsyntax::geometry::MAX_FORM_DEPTH {
-        return Ok(None);
-    }
-    let xobjects = resources.key(&XOBJECT);
-    for key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
-        let entry = xobjects.key(&Name::from_stripped(&key)?);
-        if entry.type_code() != object_type::STREAM {
-            continue;
-        }
-        let here = pack(entry.object()?);
-        if here == id {
-            return Ok(Some(entry));
-        }
-        // A CYCLE IS A DOCUMENT THAT EXISTS, not a malformed one: `open` is what makes this
-        // terminate, and it is checked before the recursion rather than inside it so a form
-        // that names itself costs one lookup rather than one per level.
-        if !open.insert(here) {
-            continue;
-        }
-        let own = entry.stream_dict().key(&RESOURCES);
-        if own.type_code() == object_type::DICTIONARY
-            && let Some(found) = find_form_below(&own, id, depth.saturating_add(1), open)?
-        {
-            return Ok(Some(found));
-        }
-        open.remove(&here);
-    }
-    Ok(None)
 }
 
 /// Remove a font's entries for codes the document no longer draws.

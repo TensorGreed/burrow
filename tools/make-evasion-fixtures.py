@@ -189,6 +189,49 @@ def evade_image_in_type3_glyph() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_text_in_type3_via_form() -> bytes:
+    """A Type 3 glyph procedure that draws a FORM holding the text — it shows no text itself.
+
+    `check_type_three_procedure` refused a procedure containing `Tj`/`TJ`/`'`/`"`. A procedure
+    that draws a Form XObject shows none of those, and the walk enters neither the procedure nor
+    the form. Measured by a security review: the operation returned `Ok`, the page's own `Tj` was
+    removed so the output rendered **nothing** — zero dark pixels against 660 in the input, and
+    PDFium extracted nothing — and the emitted file still carried the secret's drawing operators
+    in full, recoverable with `qpdf --qdf`.
+
+    "Covered, not gone" is ADR 0029 §8's forbidden outcome, and the reason `Do` now counts.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, y0, x1, y1 = REGION
+    held = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv 20 Tf 0 0 Td " + literal(secret("TYPE3-VIA-FORM")) + b" Tj ET\n",
+    )
+    proc = pdf.stream(
+        b"",
+        f"{x1 - x0} 0 0 0 {x1 - x0} {y1 - y0} d1\n".encode() + b"/Held Do\n",
+    )
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3res = pdf.add(b"<< /XObject << /Held " + str(held).encode() + b" 0 R >> >>")
+    t3 = pdf.add(
+        b"<< /Type /Font /Subtype /Type3"
+        b" /FontBBox [0 0 " + f"{x1 - x0} {y1 - y0}".encode() + b"]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [" + str(x1 - x0).encode() + b"]"
+        b" /Resources " + str(t3res).encode() + b" 0 R >>"
+    )
+    content = (
+        b"BT /T3 1 Tf " + f"{x0} {y0} Td ".encode() + literal("a") + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_image_outside_region() -> bytes:
     """An image on the page, nowhere near the region. MUST NOT be refused.
 
@@ -667,6 +710,74 @@ def evade_actualtext_around_a_nested_form() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_actualtext_in_the_middle_form() -> bytes:
+    """The `/ActualText` lives in the INTERMEDIATE form, not the page and not the leaf.
+
+    `check_marked_content` ran on the page stream and on each form *holding* a removed glyph. A
+    form that merely **draws** such a form was in neither set, so its bytes were read by nobody
+    -- and a span sitting there covered glyphs nothing checked. Measured by a security review:
+    the operation returned `Ok` and PDFium read the carrier off the output.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    inner = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-MIDFORM")) + b" Tj ET\n",
+    )
+    outer = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /XObject << /Inner " + str(inner).encode() + b" 0 R >> >>",
+        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-MIDFORM")) + b" >> BDC\n"
+        b"/Inner Do\n"
+        b"EMC\n",
+    )
+    content = b"/Outer Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Outer " + str(outer).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_actualtext_over_a_form_without_resources() -> bytes:
+    """The covered form declares NO `/Resources`, so its children resolve against the page's.
+
+    `Resources::within` returns `None` for such a form and the walk continues with the enclosing
+    dictionary -- so the glyph's form is a page-level object. The scope walk returned "reaches
+    nothing" instead, which unlinked the page's `Do` from the wanted set: deleting one dictionary
+    from the file turned a correct refusal into a leak. Anything resolving names differently from
+    the walk is a bypass by construction.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    inner = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-NORES")) + b" Tj ET\n",
+    )
+    # NO /Resources AT ALL on this one -- that is the whole fixture.
+    outer = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]",
+        b"/Inner Do\n",
+    )
+    content = (
+        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-NORES")) + b" >> BDC\n"
+        b"/Outer Do\n"
+        b"EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Outer " + str(outer).encode() + b" 0 R"
+        b" /Inner " + str(inner).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_actualtext_around_an_untouched_form() -> bytes:
     """The same shape, with the `/ActualText` span around a form the region never reaches.
 
@@ -706,6 +817,7 @@ CASES: list[tuple[str, str, str]] = [
     ("evade-inline-image", "image", "refuse"),
     ("evade-image-as-pattern", "image", "refuse"),
     ("evade-image-in-type3-glyph", "image", "refuse"),
+    ("evade-text-in-type3-via-form", "image", "refuse"),
     ("nearmiss-image-outside-region", "image", "handle"),
     ("evade-paths-in-form", "vector paths", "refuse"),
     ("evade-paths-in-type3-glyph", "vector paths", "refuse"),
@@ -720,6 +832,8 @@ CASES: list[tuple[str, str, str]] = [
     ("evade-actualtext-around-a-form", "/ActualText", "refuse"),
     ("evade-actualtext-inside-a-form", "/ActualText", "refuse"),
     ("evade-actualtext-around-a-nested-form", "/ActualText", "refuse"),
+    ("evade-actualtext-in-the-middle-form", "/ActualText", "refuse"),
+    ("evade-actualtext-over-a-form-without-resources", "/ActualText", "refuse"),
     ("nearmiss-actualtext-around-an-untouched-form", "/ActualText", "handle"),
 ]
 
@@ -728,6 +842,7 @@ BUILDERS = {
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,
     "evade-image-in-type3-glyph": evade_image_in_type3_glyph,
+    "evade-text-in-type3-via-form": evade_text_in_type3_via_form,
     "nearmiss-image-outside-region": nearmiss_image_outside_region,
     "evade-paths-in-form": evade_paths_in_form,
     "evade-paths-in-type3-glyph": evade_paths_in_type3_glyph,
@@ -742,6 +857,8 @@ BUILDERS = {
     "evade-actualtext-around-a-form": evade_actualtext_around_a_form,
     "evade-actualtext-inside-a-form": evade_actualtext_inside_a_form,
     "evade-actualtext-around-a-nested-form": evade_actualtext_around_a_nested_form,
+    "evade-actualtext-in-the-middle-form": evade_actualtext_in_the_middle_form,
+    "evade-actualtext-over-a-form-without-resources": evade_actualtext_over_a_form_without_resources,
     "nearmiss-actualtext-around-an-untouched-form": nearmiss_actualtext_around_an_untouched_form,
 }
 

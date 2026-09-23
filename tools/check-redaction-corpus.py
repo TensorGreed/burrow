@@ -426,9 +426,23 @@ def main() -> int:
     # and a count somebody bumps without looking is worse than no count: it reads as a
     # measurement while asserting whatever the last person typed. Deriving is only sound if the
     # manifest is complete, so completeness is enforced here rather than assumed.
-    declared = {f["file"].split("/")[-1] for f in fixtures}
+    # FULL RELATIVE PATHS, NOT BASENAMES. This compared `file.split("/")[-1]` against
+    # `path.name`, so two different files satisfied it: a security review showed that
+    # `file = "generated/../../../../../../tmp/01-plain-tj.pdf"` passed completeness -- the
+    # basename is still declared and the real file is still on disk -- and the checker then ran
+    # `read_bytes()` and `qpdf` on that arbitrary path. The manifest is committed and trusted, so
+    # this is hardening rather than an exploit; what made it worth fixing is that the claim being
+    # made was "manifest against disk, both ways", and what was checked was *names*.
+    declared = {f["file"] for f in fixtures}
+    for fixture in fixtures:
+        resolved = (MANIFEST.parent / fixture["file"]).resolve()
+        if not resolved.is_relative_to(MANIFEST.parent.resolve()):
+            sys.exit(
+                f"check-redaction-corpus: {fixture['name']} declares {fixture['file']}, which "
+                "resolves outside the corpus directory"
+            )
     on_disk = {
-        path.name
+        f"{directory}/{path.name}"
         for directory in ("generated", "fixtures")
         for path in (MANIFEST.parent / directory).glob("*.pdf")
     }
@@ -453,6 +467,63 @@ def main() -> int:
             + "\n  ".join(silent)
         )
 
+    # THE NEGATIVE PROBE, on every run. Every witness below has a positive fixture; until now
+    # none had a near-miss anywhere CI runs, so a witness that matched everything would have
+    # passed every placement and failed nothing. `00-control-no-canary.pdf` is the document
+    # written to contain no canary at all, and its manifest entry said it was "the INERTNESS
+    # control for every witness in this file" -- which was not true of anything in this file,
+    # because a fixture with no placements runs no witness. A code review found the sentence
+    # before it found a bug; this is what makes it true.
+    control = MANIFEST.parent / "generated" / "00-control-no-canary.pdf"
+    if not control.is_file():
+        sys.exit(f"check-redaction-corpus: the inertness control {control} is missing")
+    control_data = expanded(qpdf, control, scratch)
+    matched: list[str] = []
+    for kind in sorted(WITNESS_OBSERVES):
+        canary = "BURROW-SECRET-CONTROL"
+        if kind == "raw-file":
+            hit = witness_raw(control.read_bytes(), canary)
+        elif kind == "pdfium-text":
+            hit = witness_pdfium_text(control, canary, text_cache)
+        elif kind == "pdfium-text-loose":
+            hit = witness_pdfium_text_loose(control, canary, text_cache)
+        else:
+            hit = BYTE_WITNESSES[kind](control_data, canary)
+        if hit:
+            matched.append(kind)
+    if matched:
+        sys.exit(
+            "check-redaction-corpus: these witnesses found a canary in the canary-free "
+            "control, so they match everything and assert nothing:\n  " + "\n  ".join(matched)
+        )
+    print(
+        f"  inertness: {len(WITNESS_OBSERVES)} witness(es) run against "
+        f"{control.name}, none matched"
+    )
+
+    # AND A FLOOR ON WHAT IS ASSERTED, which `no_placements_because` would otherwise let anyone
+    # lower one fixture at a time. A security review replaced `01-plain-tj`'s single placement
+    # with one sentence: this checker exited 0, the shell gate exited 0 (its counts come from
+    # the `file` lines, which did not move), and `redaction_corpus.rs` stayed green. The witness
+    # census line dropped from 36 canaries to 35 and nothing looked at it.
+    #
+    # The count is knowable -- it is a count over this same file -- so it is gated rather than
+    # merely printed, and the fixtures that assert nothing are enumerated rather than tolerated
+    # as a number.
+    declared_placements = sum(len(f.get("placement", [])) for f in fixtures)
+    silent_fixtures = sorted(f["name"] for f in fixtures if not f.get("placement"))
+    # 54 AND 2, the measured values, not round numbers with slack in them. A floor of 50 let
+    # the very mutation this was written for through: removing one placement takes 54 to 53,
+    # which a floor of 50 reads as fine. The count may RISE freely -- a new fixture is a new
+    # assertion -- and a fall means one was removed.
+    if declared_placements < 54 or len(silent_fixtures) > 2:
+        sys.exit(
+            f"check-redaction-corpus: the manifest declares {declared_placements} placement(s) "
+            f"across {len(fixtures)} fixture(s), with {len(silent_fixtures)} asserting nothing "
+            f"({', '.join(silent_fixtures)}). A placement removed is an assertion removed, and "
+            "`no_placements_because` is a reason to skip one fixture, not a way to empty the set."
+        )
+
     checked = 0
     failures: list[str] = []
     verdicts: dict[str, int] = {}
@@ -463,8 +534,20 @@ def main() -> int:
         path = MANIFEST.parent / fixture["file"]
         if not path.is_file():
             if fixture.get("kind") == "hand-built":
-                missing_files.append(
-                    f"{fixture['name']}: not generated — run tools/make-redaction-fixtures.py"
+                # A HARD FAILURE, not a note. This was appended to `missing_files`, which is
+                # printed and does not fail -- so a manifest entry naming a file that does not
+                # exist had every one of its placements silently skipped, and the run still
+                # said OK. A code review measured it: a phantom `[[fixture]]` produced
+                # `not generated: …` and exit 0.
+                #
+                # The generators run immediately before this in
+                # `tools/check-redaction-corpus.sh`, so "not generated" here means "not
+                # written by either generator", which is a defect rather than a reminder.
+                # Both generators are named, because there are two and the old message
+                # mentioned only the first.
+                failures.append(
+                    f"{fixture['name']}: declared at {fixture['file']} and not written by "
+                    "tools/make-redaction-fixtures.py or tools/make-evasion-fixtures.py"
                 )
             else:
                 failures.append(f"{fixture['name']}: committed fixture {path} is missing")

@@ -1016,10 +1016,26 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 /// contents it cannot rule on.
 pub fn check_type_three_procedure(procedure: &[u8]) -> Result<()> {
     for operation in super::ops::operations(procedure)? {
-        if matches!(operation.operator.as_slice(), b"Tj" | b"TJ" | b"\'" | b"\"") {
+        // `Do` COUNTS, and it did not. A procedure that shows no text of its own but draws a
+        // Form XObject shows the form's text, and this walk enters neither.
+        //
+        // Measured by a security review: a page drawing one Type 3 glyph whose procedure is
+        // `/Sec Do` redacted to `Ok`, the page's `Tj` was removed so the output rendered
+        // **nothing** — zero dark pixels against 660 in the input, and PDFium extracted nothing
+        // — and the emitted file still contained
+        // `BT /Helv 20 Tf 0 0 Td (BURROW-SEC164-TYPE3DO) Tj ET` in full, recoverable with
+        // `qpdf --qdf` by anyone holding it.
+        //
+        // That is "covered, not gone": ADR 0029 §8's forbidden outcome, and the same shape as
+        // `19-covered-by-a-rectangle.pdf`. Refusing a procedure that draws anything is the
+        // conservative reading of the rule already here, not a new one.
+        if matches!(
+            operation.operator.as_slice(),
+            b"Tj" | b"TJ" | b"\'" | b"\"" | b"Do"
+        ) {
             return Refusal::TypeThreeProcedureShowsText.refuse(
-                "a Type 3 glyph procedure that draws text of its own, which burrow's walk does \
-                 not yet reach",
+                "a Type 3 glyph procedure that draws content of its own, which burrow's walk \
+                 does not yet reach",
             );
         }
     }
@@ -1217,10 +1233,14 @@ pub enum FormsReached<'a> {
     /// Every `Do` in this stream must be treated as drawing one.
     ///
     /// **For a form's own stream**, where resolving a nested `Do` would need that form's
-    /// `/Resources` and this module has none. Nested forms are refused today by `form-vanished`
-    /// in the qpdf handle lookup, and this does not lean on that: a defect is not a control, and
-    /// relying on one for a leak boundary is how it becomes load-bearing before anybody notices
-    /// it was a defect.
+    /// `/Resources` and this module has none.
+    ///
+    /// This used to add that nested forms were refused anyway by `form-vanished`, and that this
+    /// did not lean on it — a defect is not a control, and relying on one for a leak boundary is
+    /// how it becomes load-bearing before anybody notices it was a defect. #164 fixed that
+    /// lookup, so the refusal is gone and only the argument remains: the conservative answer
+    /// here is correct on its own, which is why removing the thing it did not depend on changed
+    /// nothing.
     Unresolved,
 }
 
