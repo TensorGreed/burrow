@@ -440,17 +440,6 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// How many bytes of data an inline image's dictionary declares.
-///
-/// `dictionary` is the bytes between `BI` and `ID`.
-///
-/// # Errors
-///
-/// [`Error::Malformed`], naming which of the derivations failed, when the extent cannot be
-/// worked out from the dictionary alone. That is a refusal rather than a fall-back, and
-/// [`skip_inline_image_data`](Lexer::skip_inline_image_data) has the reasoning; the message says
-/// which case it was, because "an inline image burrow cannot read" is not something a person can
-/// act on and these four are.
 /// Read past a composite value in an inline image's dictionary, to its matching close.
 ///
 /// Bounded by [`MAX_NESTING`], the same ceiling the operand reader uses: a value nested deeper
@@ -484,6 +473,17 @@ fn skip_composite(lexer: &mut Lexer<'_>, array: bool) -> Result<()> {
     }))
 }
 
+/// How many bytes of data an inline image's dictionary declares.
+///
+/// `dictionary` is the bytes between `BI` and `ID`.
+///
+/// # Errors
+///
+/// [`Error::Malformed`], naming which of the derivations failed, when the extent cannot be
+/// worked out from the dictionary alone. That is a refusal rather than a fall-back, and
+/// [`skip_inline_image_data`](Lexer::skip_inline_image_data) has the reasoning; the message says
+/// which case it was, because "an inline image burrow cannot read" is not something a person can
+/// act on and these four are.
 fn inline_image_length(dictionary: &[u8]) -> Result<usize> {
     let mut lexer = Lexer::new(dictionary);
     let mut key: Option<Vec<u8>> = None;
@@ -633,7 +633,7 @@ fn hex_value(pair: &[u8]) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lexer, Token, hex_value, is_whitespace};
+    use super::{Lexer, MAX_NESTING, Token, hex_value, is_whitespace};
 
     fn tokens(bytes: &[u8]) -> Vec<Token> {
         let mut lexer = Lexer::new(bytes);
@@ -771,6 +771,46 @@ mod tests {
             refused,
             "a filtered image with no /L has no derivable extent"
         );
+    }
+
+    #[test]
+    fn an_image_dictionary_nested_past_the_ceiling_is_a_refusal() {
+        // A mutation sweep deleted `skip_composite`'s `MAX_NESTING` check and the suite stayed
+        // green: the bound was real and nothing failed for its absence, which `CLAUDE.md` says
+        // is not a defence. The depth here is one past the lexer's own ceiling.
+        let mut stream = b"q BI /W 1 /H 1 /D ".to_vec();
+        stream.extend(std::iter::repeat_n(b'[', MAX_NESTING + 1));
+        stream.extend_from_slice(b" 1 ");
+        stream.extend(std::iter::repeat_n(b']', MAX_NESTING + 1));
+        stream.extend_from_slice(b" ID a EI Q");
+        let mut lexer = Lexer::new(&stream);
+        let mut refused = None;
+        loop {
+            match lexer.next_token() {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(error) => {
+                    refused = Some(format!("{error}"));
+                    break;
+                }
+            }
+        }
+        let refused = refused.expect("nesting past the ceiling is a refusal");
+        assert!(
+            refused.contains("nested deeper than burrow will read"),
+            "the refusal must name the nesting, got: {refused}"
+        );
+    }
+
+    #[test]
+    fn an_image_dictionary_nested_to_the_ceiling_is_read() {
+        // THE NEAR-MISS. Without it the test above passes for a ceiling of one.
+        let mut stream = b"q BI /W 9 /H 1 /D ".to_vec();
+        stream.extend(std::iter::repeat_n(b'[', MAX_NESTING - 1));
+        stream.extend_from_slice(b" 1 ");
+        stream.extend(std::iter::repeat_n(b']', MAX_NESTING - 1));
+        stream.extend_from_slice(b" ID \x00(/F9<<\xff\xfe EI Q /F2");
+        assert_eq!(names(&stream), ["W", "H", "D", "F2"]);
     }
 
     #[test]

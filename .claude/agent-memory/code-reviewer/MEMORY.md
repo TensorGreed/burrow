@@ -11,3 +11,4 @@
 - [Probe that re-implements its rule](feedback_probe_reimplements_rule.md) — a source-scan test whose probe is a copied closure stays green with the real filter inert.
 - [Probe fixture vs real producer](feedback_probe_fixture_vs_real_producer.md) — diff probe fixtures against the imitated tool's byte-exact output; an abridged fixture leaves a branch freely mutable.
 - [Memoised walks under-count](feedback_memoised_walk_undercounts.md) — a `descended` set makes a nested child of a twice-drawn parent count 1; probe two levels deep.
+- [Scope set wider than the edit](feedback_scope_set_wider_than_the_edit.md) — a caller-supplied "pages this covers" set the implementation does not honour; read back the pages it never edited.

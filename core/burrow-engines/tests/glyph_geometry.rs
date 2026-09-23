@@ -34,7 +34,7 @@ use burrow_engines::pdfsyntax::region::Region;
 use burrow_types::Result;
 use support::char_box_oracle::{
     MIN_FIXTURE_DISPLACEMENT_PT, OracleChar, Rect, TOLERANCE_PT, assert_fixture_is_discriminating,
-    chars_on_page, page_size,
+    chars_on_page, ink_overlaps, origins_close, page_size,
 };
 
 /// A one-page PDF drawing `text` with the given text-object body.
@@ -1478,6 +1478,9 @@ fn the_real_resolver_agrees_with_pdfium_on_producer_documents() {
 /// The second half is the one a fake cannot check at all. A fake cannot reflow a page.
 #[test]
 fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
+    // COUNTED, because every assertion below is inside the `Ok` arm and a refusal `continue`s.
+    // A mutation that refused unconditionally left this test green over all three fixtures.
+    let mut redacted_documents = 0usize;
     for name in [
         "producer-writer.pdf",
         "producer-latex.pdf",
@@ -1540,6 +1543,8 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
             report.retained().count()
         );
 
+        redacted_documents += 1;
+
         // THE OUTPUT IS A DOCUMENT. A redaction that emitted something unreadable would
         // satisfy "the secret is gone" trivially.
         assert!(out.starts_with(b"%PDF"), "{name}: the output must be a PDF");
@@ -1550,14 +1555,21 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         // the three that is a correctness failure rather than a fidelity one.
         let mut reached = 0usize;
         for want in &drawn_before {
-            if !ink_overlaps(&want.ink, &region, height) {
+            if !ink_overlaps(
+                &want.ink,
+                region.left,
+                region.top,
+                region.width,
+                region.height,
+                height,
+            ) {
                 continue;
             }
             reached += 1;
             assert!(
-                !drawn_after
-                    .iter()
-                    .any(|got| got.unicode == want.unicode && close(got.origin, want.origin)),
+                !drawn_after.iter().any(
+                    |got| got.unicode == want.unicode && origins_close(got.origin, want.origin)
+                ),
                 "{name}: U+{:04X} at {:?} has ink inside the region and is still drawn",
                 want.unicode,
                 want.origin
@@ -1573,7 +1585,8 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
             assert!(
                 drawn_before
                     .iter()
-                    .any(|want| want.unicode == got.unicode && close(got.origin, want.origin)),
+                    .any(|want| want.unicode == got.unicode
+                        && origins_close(got.origin, want.origin)),
                 "{name}: U+{:04X} appears at {:?} after the redaction and was not there \
                  before -- the page reflowed",
                 got.unicode,
@@ -1587,30 +1600,19 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         // boxes. That is the direction that does not leak, and ADR 0029 records it as a
         // disclosure rather than a defect. Counting it here is what keeps it visible: a number
         // that grows is a question, and a silent pass is not.
-        let extra = drawn_before.len() - reached - drawn_after.len();
-        eprintln!(
-            "  {name:<34} region reached {reached}, removed {} more",
-            extra
-        );
+        // `saturating_sub`, matching `redaction_corpus.rs`. Plain `usize` subtraction panics on
+        // underflow, and PDFium synthesising a space can make `drawn_after` larger than the
+        // arithmetic here assumes -- a reporting line that panics is a test failing for the
+        // wrong reason.
+        let extra = drawn_before
+            .len()
+            .saturating_sub(reached + drawn_after.len());
+        eprintln!("  {name:<34} region reached {reached}, removed {extra} more");
     }
-}
 
-/// Whether an oracle ink box overlaps a region, converting between the two frames.
-///
-/// PDFium's boxes are measured from the bottom of the page and a [`Region`] from the top, so
-/// this is the one place the two meet. Written here rather than reached for from the operation:
-/// a test that used the operation's own conversion would be asking the instrument whether it
-/// agrees with itself.
-fn ink_overlaps(ink: &Rect, region: &Region, page_height: f64) -> bool {
-    let top = page_height - region.top;
-    let bottom = top - region.height;
-    ink.right > region.left
-        && ink.left < region.left + region.width
-        && ink.top > bottom
-        && ink.bottom < top
-}
-
-/// Two origins within the oracle's pre-registered tolerance.
-fn close(a: (f64, f64), b: (f64, f64)) -> bool {
-    (a.0 - b.0).hypot(a.1 - b.1) < TOLERANCE_PT
+    assert_eq!(
+        redacted_documents, 3,
+        "all three real-producer documents must redact; a refusal that covered them would \
+         leave every assertion above unexecuted and this test still green"
+    );
 }

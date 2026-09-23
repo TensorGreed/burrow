@@ -98,9 +98,20 @@ impl<'a> PageResources<'a> {
     /// they refuse with `font-missing` either way. Absent and empty are different, and only one
     /// of them inherits.
     ///
+    /// # A `/Parent` chain that does not terminate yields empty resources, not an error
+    ///
+    /// This section claimed `Error::Malformed` for that case and the function does not raise
+    /// one: the climb falls out of its bounded loop and returns the empty dictionary. The
+    /// direction is safe today — the resolver then refuses `font-missing` on the first glyph —
+    /// but `redact_frame::inherited_numbers` *does* refuse in the same situation, so the two
+    /// differ and only one of them said so.
+    ///
+    /// Corrected rather than changed: making this refuse would change what a document with a
+    /// long `/Parent` chain does, which is a behaviour question rather than a doc one.
+    ///
     /// # Errors
     ///
-    /// [`Error::Malformed`] for a `/Parent` chain that does not terminate.
+    /// Whatever qpdf latched while reading the page or an ancestor.
     pub(crate) fn of(owner: &ObjectHandle<'a>) -> Result<Self> {
         let direct = owner.key(&RESOURCES);
         if direct.type_code() == object_type::DICTIONARY {

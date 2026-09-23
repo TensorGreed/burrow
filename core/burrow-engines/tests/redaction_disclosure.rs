@@ -46,11 +46,11 @@ use support::char_box_oracle::chars_on_page;
 const WIDTHS: &str = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
                       556 556 556 556 556 556 556 556 556 556]";
 
-/// A document of `pages` pages. Every page draws with the font at object 5; page 0 also draws
-/// with the font at object 6, which no other page names.
+/// A document of `pages` pages. Every page draws with the font at object **3**; page 0 also
+/// draws with the font at object **4**, which no other page names.
 ///
 /// Two fonts, because one of each outcome is what makes the report's two arms distinguishable:
-/// object 5 is used outside the redacted set and must be **retained**, object 6 is not and must
+/// object 3 is used outside the redacted set and must be **retained**, object 4 is not and must
 /// be **cut**. A fixture with one font can only ever show one arm.
 fn shared_font_document(pages: usize) -> Vec<u8> {
     let kids: Vec<String> = (0..pages).map(|at| format!("{} 0 R", 7 + at * 2)).collect();
@@ -69,7 +69,8 @@ fn shared_font_document(pages: usize) -> Vec<u8> {
         "<< /Type /Null >>".to_owned(),
         "<< /Type /Null >>".to_owned(),
     ];
-    // Objects 3 and 4 are the fonts; 5 and 6 are their numbers once the list is one-based.
+    // Objects 3 and 4 are the fonts. Objects 5 and 6 are `/Type /Null` spacers, present so
+    // the page objects start at a fixed number the loop below can compute from.
     objects[2] = objects[2].replace("PLACEHOLDER", WIDTHS);
     objects[3] = objects[3].replace("PLACEHOLDER", WIDTHS);
 
@@ -182,8 +183,39 @@ fn redacting_every_page_leaves_nothing_to_disclose() {
         height: 120.0,
     };
     let redacted: BTreeSet<usize> = (0..4).collect();
-    let (_, report) = burrow_engines::redact_probe::redact_page(&pdf, 0, redacted, region)
+    let (out, report) = burrow_engines::redact_probe::redact_page(&pdf, 0, redacted, region)
         .expect("every page redacted");
+
+    // THE PAGES THE OPERATION DID NOT EDIT, READ BACK. This assertion is the one that was
+    // missing, and its absence is how a real defect passed: `codes_still_drawn` read one
+    // page's codes while `cut_fonts` cut on the strength of all four, so the shared font's
+    // widths were zeroed for every code only the other pages draw. "AAAA" on pages 1 to 3
+    // collapsed onto one origin -- and this test, asserting only on the report, stayed green.
+    //
+    // A control that looks at the report cannot see what the report is wrong about.
+    for page in 1..4 {
+        let before = chars_on_page(&pdf, page);
+        let after = chars_on_page(&out, page);
+        let drawn_before: Vec<_> = before.iter().filter(|char| !char.generated).collect();
+        let drawn_after: Vec<_> = after.iter().filter(|char| !char.generated).collect();
+        assert_eq!(
+            drawn_after.len(),
+            drawn_before.len(),
+            "page {page} was not redacted and must still draw what it drew"
+        );
+        for (was, now) in drawn_before.iter().zip(&drawn_after) {
+            assert_eq!(was.unicode, now.unicode, "page {page} changed character");
+            assert!(
+                (was.origin.0 - now.origin.0).abs() < 0.01
+                    && (was.origin.1 - now.origin.1).abs() < 0.01,
+                "page {page}: U+{:04X} moved from {:?} to {:?} -- the page reflowed",
+                was.unicode,
+                was.origin,
+                now.origin
+            );
+        }
+    }
+
     assert!(
         !report.discloses_a_retained_font(),
         "every font is cuttable when every page using it is redacted: {:?}",

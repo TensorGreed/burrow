@@ -57,8 +57,17 @@
 //! That is enforced by shape rather than by discipline: `Finished::emit` consumes `self`, and
 //! every fallible step consumes it too, returning it only on success. A caller holding an error
 //! has nothing left to emit from — **provided the `Steps` value owns the document**, which is a
-//! contract [`Steps`] states and the compiler cannot. A review found that gap while the trait
+//! contract `Steps` states and the compiler cannot. A review found that gap while the trait
 //! had no implementation, which is the cheapest time to find it.
+//!
+//! # What is public here, and what narrows again with #134
+//!
+//! The module is `pub` so that `redact_probe::redact_page` can name [`Report`] and
+//! [`FontOutcome`] in its signature. Those two types and their accessors are the whole public
+//! surface: `Steps`, `Redaction` and `run` are `pub(crate)`, and there is no
+//! caller-visible way to start a redaction. ADR 0022 forbids one until verification exists.
+//!
+//! When #134 lands, `redact_probe` goes and this narrows with it.
 
 use std::collections::BTreeSet;
 
@@ -96,7 +105,7 @@ pub struct FontOutcome {
 ///
 /// Carried separately from the output because ADR 0022 means there may be no output: a failure
 /// discards the document, and the report of what was *going* to happen is not a consolation
-/// prize. It is reachable on [`Finished`] before `emit` for that reason.
+/// prize. It is reachable on `Finished` before `emit` for that reason.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     /// One entry per font the operation considered.
@@ -143,9 +152,21 @@ pub(crate) trait Steps {
 
     /// Which character codes each font still draws, **after** every content edit.
     ///
+    /// # It is asked about every page in `redacted`, not about the page being edited
+    ///
+    /// [`Self::cut_fonts`] decides cuttability across the whole `redacted` set, so "no longer
+    /// drawn" has to be a fact about the same set. An implementation that answered for one
+    /// page while `cut_fonts` cut on the strength of several removed the widths and mappings
+    /// for every code the other pages draw — measured on a four-page document, where three
+    /// untouched pages collapsed onto one origin while the report said nothing outside the
+    /// operation had been affected.
+    ///
+    /// Passed rather than stored for the reason `cut_fonts` takes it too: two copies of one
+    /// set is how they stop agreeing.
+    ///
     /// # Errors
     /// Whatever walking the finished content failed with.
-    fn codes_still_drawn(&mut self) -> Result<Vec<(u64, Vec<u32>)>>;
+    fn codes_still_drawn(&mut self, redacted: &BTreeSet<usize>) -> Result<Vec<(u64, Vec<u32>)>>;
 
     /// Remove font entries for codes nothing draws any more, where that is safe.
     ///
@@ -251,7 +272,7 @@ impl<S: Steps> ContentEdited<S> {
         // READ AFTER EVERY EDIT, not before any. This call is the reason the type exists: a
         // caller cannot reach it without having finished step 1, so "no longer drawn" is a
         // fact about the finished content rather than about a snapshot taken part-way.
-        let still_drawn = self.steps.codes_still_drawn()?;
+        let still_drawn = self.steps.codes_still_drawn(&self.redacted)?;
         let fonts = self.steps.cut_fonts(&still_drawn, &self.redacted)?;
         Ok(FontsCut {
             steps: self.steps,
@@ -402,7 +423,10 @@ mod tests {
             Ok(())
         }
 
-        fn codes_still_drawn(&mut self) -> Result<Vec<(u64, Vec<u32>)>> {
+        fn codes_still_drawn(
+            &mut self,
+            _redacted: &BTreeSet<usize>,
+        ) -> Result<Vec<(u64, Vec<u32>)>> {
             self.note("codes_still_drawn");
             if self.fail_codes {
                 return Err(poisoned("the finished content could not be walked"));

@@ -424,6 +424,24 @@ fn peak_rss_kb() -> u64 {
 }
 
 #[test]
+// PROCESS-ISOLATED, BECAUSE `VmHWM` IS PROCESS-WIDE.
+//
+// `peak_rss_kb` reads `/proc/self/status`, which reports the whole process, and the lib test
+// binary runs its tests in parallel threads. A neighbouring test allocating between the two
+// measurements below lands in exactly the number this compares. Measured: this failed once in
+// a full-suite run at 191,848 kB against 156,608 kB and passed on four isolated runs, and it
+// then reported a mutation as "caught" that it had nothing to do with, which is how a flake
+// stops being cosmetic.
+//
+// The comment above argues the ordering makes the comparison "strictly conservative". What the
+// ordering actually makes it is dependent on what ran in between, and the *dangerous* direction
+// is a spike during the control run: that inflates `dictionaries` and the assertion passes for
+// free, so the flake's visible failures are the harmless half of it.
+//
+// `#[ignore]` plus a dedicated `--test-threads=1` run is the shape this repository already uses
+// for tests that cannot share a process. A test nobody runs is no test, so it is registered in
+// `ci.yml` and `tools/ci-local.py` and the parity check refuses until it is.
+#[ignore = "reads process-wide VmHWM; run with --test-threads=1, see the ci-local job"]
 fn an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each() {
     // `qpdf_oh_get_key` on a NON-DICTIONARY reaches `QPDFObjectHandle::typeWarning` ->
     // `Common::warn`, which appends to qpdf's warning vector whatever `suppress_warnings` says

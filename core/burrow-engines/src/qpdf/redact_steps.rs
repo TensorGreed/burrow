@@ -18,6 +18,8 @@
 //! exists, and `redact_probe` — the one narrow seam, returning geometry rather than bytes —
 //! goes when it lands.
 
+use core::ffi::c_int;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -43,6 +45,13 @@ const WIDTHS: Name = Name::literal(b"/Widths\0");
 const TO_UNICODE: Name = Name::literal(b"/ToUnicode\0");
 const ENCODING: Name = Name::literal(b"/Encoding\0");
 const DIFFERENCES: Name = Name::literal(b"/Differences\0");
+
+/// The longest `/Differences` array this will rewrite.
+///
+/// Two passes of `array_len()` FFI calls each, and `array_len` is the attacker's number. The
+/// value is [`crate::pdfsyntax::ops::MAX_COMPOSITE_ITEMS`]'s, because a `/Differences` is an
+/// array and that is already the cap this codebase puts on how long an array may be.
+const DIFFERENCES_CEILING: c_int = 65_536;
 
 /// One page's redaction, against a live qpdf document.
 pub(crate) struct QpdfRedaction {
@@ -80,6 +89,19 @@ impl QpdfRedaction {
         deadline: Deadline,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
+        // THE INVARIANT `page_handle`'s SAFETY COMMENT RELIES ON, established here rather
+        // than in one caller. It said "`self.page` was checked against the page count when the
+        // redaction was built" and nothing in this constructor checked it -- the check lived in
+        // `redact_page_for_probe`, and `new` is `pub(crate)`, so a second crate-internal caller
+        // got undefined behaviour under a comment saying it could not happen.
+        let count = usize::try_from(document.page_count()?)
+            .map_err(|_| Error::Internal("a page count that does not fit in usize".to_owned()))?;
+        if page >= count {
+            return Err(Error::InvalidArgument(
+                "pdf redaction [page-out-of-range]: a page index past the end of the document"
+                    .to_owned(),
+            ));
+        }
         // COUNTED BEFORE ANY EDIT. The sharing rule is about the document as it arrived; a
         // count taken after a rewrite would be counting the operation's own work.
         let sharing = count_form_uses(&document, &deadline, &clock)?;
@@ -93,6 +115,30 @@ impl QpdfRedaction {
             cut: Vec::new(),
             rewritten: BTreeMap::new(),
         })
+    }
+
+    /// Every page this operation covers, as indices that exist in the document.
+    ///
+    /// **The page being edited is always in it**, even when the caller's set does not name it:
+    /// its codes are the ones the content edit just changed, and a font cut without them is a
+    /// font cut against a page nobody looked at. An index past the end is a refusal rather
+    /// than a skip — `ObjectHandle::page` is unsafe on one, and a silently skipped page is a
+    /// page whose codes are treated as no longer drawn.
+    fn pages_in_scope(&self, redacted: &BTreeSet<usize>) -> Result<Vec<usize>> {
+        let count = usize::try_from(self.document.page_count()?)
+            .map_err(|_| Error::Internal("a page count that does not fit in usize".to_owned()))?;
+        let mut pages: BTreeSet<usize> = redacted.clone();
+        pages.insert(self.page);
+        for at in &pages {
+            if *at >= count {
+                return Err(Error::InvalidArgument(
+                    "pdf redaction [page-out-of-range]: the operation covers a page the \
+                     document does not have"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(pages.into_iter().collect())
     }
 
     fn page_handle(&self) -> Result<ObjectHandle<'_>> {
@@ -124,8 +170,9 @@ impl Steps for QpdfRedaction {
         // box: a glyph's ink can sit far from its origin, so uncertainty removes more.
         let glyphs = glyphs_in(&content, &resources)?;
         let cut: Vec<Glyph> = glyphs
-            .into_iter()
+            .iter()
             .filter(|glyph| glyph.conservative_box().intersects(&region))
+            .cloned()
             .collect();
 
         // THE SHARING RULE, before any edit is planned. A form the region reaches that is
@@ -137,7 +184,13 @@ impl Steps for QpdfRedaction {
         // content stream the walk does not descend into, so text inside one is text nothing
         // observed -- ADR 0029 §8's forbidden outcome. `check_type_three_procedure` refuses a
         // procedure that shows any text; this is the part that finds the procedures to hand it.
-        check_type_three(&resources, &cut)?;
+        // EVERY FONT THE PAGE DRAWS WITH, not the fonts the region reached. See the
+        // function's header for what the narrower scope missed.
+        let drawn_fonts: BTreeSet<Vec<u8>> = glyphs
+            .iter()
+            .map(|glyph| glyph.source.font.clone())
+            .collect();
+        check_type_three(&resources, &drawn_fonts)?;
 
         let mut streams: Vec<StreamId> = cut
             .iter()
@@ -194,23 +247,40 @@ impl Steps for QpdfRedaction {
         Ok(())
     }
 
-    fn codes_still_drawn(&mut self) -> Result<Vec<(u64, Vec<u32>)>> {
+    fn codes_still_drawn(&mut self, redacted: &BTreeSet<usize>) -> Result<Vec<(u64, Vec<u32>)>> {
         self.deadline.checkpoint(self.clock.as_ref())?;
         // THE FINISHED CONTENT, which is why this step cannot run before the rewrites. The
         // `/ToUnicode` entry for a removed glyph IS the removed character; a font cut from a
         // snapshot taken part-way would keep entries for codes a later edit removed.
-        let page = self.page_handle()?;
-        let content = page.page_content()?;
-        let resources = PageResources::of(&page)?;
-        let glyphs = glyphs_in(&content, &resources)?;
-
+        //
+        // **EVERY PAGE IN THE OPERATION, not just the edited one.** "No longer drawn" is a
+        // fact about the document, and `cut_fonts` decides cuttability across the whole
+        // `redacted` set — so reading one page's codes and cutting on the strength of the whole
+        // set zeroed the widths of every code the OTHER redacted pages draw. Measured by a
+        // code review on a four-page fixture with `redacted = {0,1,2,3}`: "AAAA" on pages 1
+        // to 3 collapsed onto one origin, while the report said `cut: true, also_used_by: 0` —
+        // that nothing outside the operation had been affected.
+        //
+        // The other pages are unedited, so every code they draw is still drawn. That is not a
+        // special case; it is the same question asked of each page in turn.
         let mut drawn: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
-        for glyph in &glyphs {
-            // KEYED BY THE FONT'S OBJECT, not its resource name: two names can mean one
-            // object and one name can mean different objects on different pages, and font
-            // surgery edits objects. `core/CLAUDE.md`'s identity rule, one level up.
-            let font = resources.font_object(&glyph.source.font)?;
-            drawn.entry(font).or_default().insert(glyph.source.code);
+        for at in self.pages_in_scope(redacted)? {
+            self.deadline.checkpoint(self.clock.as_ref())?;
+            // SAFETY: `pages_in_scope` yields only indices below the document's page count,
+            // which it reads from the document itself.
+            let page = unsafe { ObjectHandle::page(&self.document, at) };
+            if let Some(error) = self.document.take_error() {
+                return Err(error);
+            }
+            let content = page.page_content()?;
+            let resources = PageResources::of(&page)?;
+            for glyph in &glyphs_in(&content, &resources)? {
+                // KEYED BY THE FONT'S OBJECT, not its resource name: two names can mean one
+                // object and one name can mean different objects on different pages, and font
+                // surgery edits objects. `core/CLAUDE.md`'s identity rule, one level up.
+                let font = resources.font_object(&glyph.source.font)?;
+                drawn.entry(font).or_default().insert(glyph.source.code);
+            }
         }
         Ok(drawn
             .into_iter()
@@ -227,8 +297,6 @@ impl Steps for QpdfRedaction {
         let page = self.page_handle()?;
         let resources = PageResources::of(&page)?;
 
-        let cuttable = self.sharing.fonts_wholly_within(redacted);
-        let pages = self.sharing.font_pages_map();
         let mut outcomes = Vec::new();
 
         for name in font_names(&resources)? {
@@ -238,11 +306,14 @@ impl Steps for QpdfRedaction {
             }
             let identity = font.object()?;
             let packed = pack(identity);
-            let outside = pages
-                .get(&identity)
-                .map_or(0, |used| used.difference(redacted).count());
+            // ONE EXPRESSION FOR BOTH THE DECISION AND THE DISCLOSURE. `pages_outside` counts
+            // the pages an edit to this font would reach -- including through the `/ToUnicode`,
+            // `/Encoding` and `/Widths` it names, which can be indirect and shared. Asking
+            // twice, once for a cuttable set and once for a count, is how the two stop
+            // agreeing; see `FormUseCounts::pages_outside`.
+            let outside = self.sharing.pages_outside(identity, redacted);
 
-            if !cuttable.contains(&identity) {
+            if outside > 0 {
                 // LEFT INTACT AND DISCLOSED. Editing it reflows every other page that uses it
                 // -- corruption rather than leakage, and invisible to §6's read-back.
                 outcomes.push(FontOutcome {
@@ -262,7 +333,7 @@ impl Steps for QpdfRedaction {
             outcomes.push(FontOutcome {
                 font: packed,
                 cut: true,
-                also_used_by: 0,
+                also_used_by: outside,
             });
         }
         Ok(outcomes)
@@ -279,6 +350,9 @@ impl Steps for QpdfRedaction {
                 return Err(error);
             }
         }
+        let frame = self.frame(&page)?;
+        let region = self.region.to_content_space(&frame)?;
+        remove_annotations_in(&self.document, &page, &region)?;
         Ok(())
     }
 
@@ -286,6 +360,100 @@ impl Steps for QpdfRedaction {
         self.deadline.checkpoint(self.clock.as_ref())?;
         extract::write_out(&self.document, &self.document, ObjectStreams::Preserve)
     }
+}
+
+/// Remove every annotation whose `/Rect` intersects the region.
+///
+/// # This was missing, and it returned `Ok` over a rendered secret
+///
+/// `affected_streams` enumerates the page's content and the Form XObjects reached through its
+/// `/Resources`. It never walks `/Annots → /AP → /N`, and `/Annots` is on §2's allowlist, so an
+/// annotation's appearance stream drawing over the region survived untouched. A security review
+/// measured it: a `/FreeText` annotation whose appearance showed `(SECRET) Tj`, a region
+/// squarely over it, and the output still rendered SECRET — with the report saying the font was
+/// cut and nothing retained.
+///
+/// It was worse than a no-op. `codes_still_drawn` walks page content, so the codes the
+/// annotation drew were not in `keeps`, and font surgery zeroed **their** widths in the shared
+/// font. The output both kept the secret and drew it overlapping.
+///
+/// ADR 0029 §3 already said what to do, in words: *"annotations whose `/Rect` intersects the
+/// region — handle. Remove the annotation entirely; pruning its `/Contents` and keeping its
+/// appearance is two chances to miss one."* This is that sentence, and the whole-annotation
+/// removal is why there is no appearance-stream rewriting here.
+///
+/// # Backwards, and an unreadable `/Rect` is a refusal
+///
+/// [`ObjectHandle::erase_item`] renumbers, so a forward loop removing item 2 of 5 makes the old
+/// item 3 the new item 2 and never examines it — the same defect `prune`'s `/Annots` walk was
+/// written backwards to avoid, and for the same reason: a skipped annotation is one whose
+/// appearance nobody looked at.
+///
+/// An annotation whose `/Rect` is absent or not four numbers is refused rather than kept: where
+/// it sits is then unknown, and unknown is not "outside the region".
+fn remove_annotations_in(
+    document: &Document,
+    page: &ObjectHandle<'_>,
+    region: &crate::pdfsyntax::geometry::Rect,
+) -> Result<()> {
+    const ANNOTS: Name = Name::literal(b"/Annots\0");
+    const RECT: Name = Name::literal(b"/Rect\0");
+
+    let annots = page.key(&ANNOTS);
+    if let Some(error) = document.take_error() {
+        return Err(error);
+    }
+    if annots.type_code() != object_type::ARRAY {
+        return Ok(());
+    }
+    let length = annots.array_len();
+    if length > DIFFERENCES_CEILING {
+        return Err(Error::Unsupported(
+            "pdf redaction [annots-too-long]: an /Annots array longer than burrow will examine"
+                .to_owned(),
+        ));
+    }
+    for at in (0..length).rev() {
+        let annotation = annots.array_item(at);
+        if annotation.type_code() != object_type::DICTIONARY {
+            // Not an annotation. `prune`'s walk found these too, and the container type check
+            // is what stops each one retaining a qpdf warning.
+            continue;
+        }
+        let rect = annotation.key(&RECT);
+        if let Some(error) = document.take_error() {
+            return Err(error);
+        }
+        let numbers = crate::pdfsyntax::ops::numbers_in(&rect.unparse());
+        let [left, bottom, right, top] = numbers.as_slice() else {
+            return Err(Error::Malformed(
+                "pdf redaction [annotation-rect]: an annotation whose /Rect is not four \
+                 numbers, so where it draws is unknown"
+                    .to_owned(),
+            ));
+        };
+        // NORMALISED. `/Rect`'s corners are in either order per PDF 32000-1 §12.5.2, and an
+        // un-normalised rectangle compares as empty against every region.
+        let box_of = crate::pdfsyntax::geometry::Rect {
+            left: left.min(*right),
+            bottom: bottom.min(*top),
+            right: left.max(*right),
+            top: bottom.max(*top),
+        };
+        if !box_of.is_finite() {
+            return Err(Error::Malformed(
+                "pdf redaction [annotation-rect]: an annotation whose /Rect is not finite"
+                    .to_owned(),
+            ));
+        }
+        if box_of.intersects(region) {
+            annots.erase_item(at);
+            if let Some(error) = document.take_error() {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An object identity packed into the `u64` `Form::id` and `FontOutcome::font` use.
@@ -297,28 +465,40 @@ const fn pack(identity: (core::ffi::c_int, core::ffi::c_int)) -> u64 {
     ((identity.0.unsigned_abs() as u64) << 16) | (identity.1.unsigned_abs() as u64 & 0xffff)
 }
 
-/// Refuse if any cut glyph's Type 3 procedure shows text of its own.
+/// Refuse if any Type 3 font the page draws with has a procedure that shows text.
 ///
-/// # It resolves the specific procedure, and falls back to all of them
+/// # Scoped to the page's fonts, not to the glyphs the region reached
 ///
-/// A Type 3 font maps a code to a `/CharProcs` name through its `/Encoding /Differences`, so
-/// the procedure for a cut glyph can be named exactly — and a font whose *other* glyphs draw
-/// text is then not refused for glyphs the region never reached.
+/// It was scoped to the cut glyphs, and a security review measured what that missed. The walk
+/// boxes a Type 3 glyph by its `/Widths` advance and its `/FontBBox`; it does not descend into
+/// the procedure. So a procedure that draws its ink **somewhere else entirely** — a
+/// `/FontBBox [0 0 10 10]` glyph whose content stream does `30 -100 Td (SECRET) Tj` — is in no
+/// region's `cut`, the check never ran, and the operation returned `Ok` over a page that still
+/// rendered the secret. Input and output were byte-identical when rendered.
 ///
-/// When the font has no readable `/Differences`, there is no code-to-name map to follow, so
-/// every procedure is scanned. That over-refuses, which is the direction that does not leak:
-/// the alternative is deciding a procedure is harmless without having looked at it.
-fn check_type_three(resources: &PageResources<'_>, cut: &[Glyph]) -> Result<()> {
+/// A Type 3 glyph's real extent is not knowable from the font dictionary, so the scope cannot
+/// be "the glyphs the region reached": that set is computed from the boxes that are wrong. It
+/// has to be every Type 3 font the page draws with at all.
+///
+/// # Every procedure, and the name resolution is gone
+///
+/// It also resolved the specific `/CharProcs` entry through `/Encoding /Differences`, taking
+/// the **first** assignment for a code. Readers take the last, so `[5 /g 5 /secret]` resolved
+/// to the harmless procedure while poppler rendered the other one — and because a resolved
+/// name absent from `/CharProcs` matched nothing, it then scanned **zero** procedures while
+/// the doc comment claimed it over-refused.
+///
+/// Both defects are in the resolution, so the resolution is gone. Every procedure of every
+/// Type 3 font the page draws with is scanned. That over-refuses, which is the direction that
+/// does not leak, and it costs nothing measurable: the redaction corpus's Type 3 documents
+/// still redact, because a bitmap glyph's procedure draws an inline image and shows no text.
+fn check_type_three(resources: &PageResources<'_>, drawn: &BTreeSet<Vec<u8>>) -> Result<()> {
     const SUBTYPE: Name = Name::literal(b"/Subtype\0");
     const TYPE_THREE: Name = Name::literal(b"/Type3\0");
     const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
 
-    let mut seen: BTreeSet<(Vec<u8>, u32)> = BTreeSet::new();
-    for glyph in cut {
-        if !seen.insert((glyph.source.font.clone(), glyph.source.code)) {
-            continue;
-        }
-        let font = resources.font_handle(&glyph.source.font)?;
+    for font_name in drawn {
+        let font = resources.font_handle(font_name)?;
         let subtype = font.key(&SUBTYPE);
         if subtype.type_code() != object_type::NAME || subtype.name()? != TYPE_THREE {
             continue;
@@ -327,13 +507,8 @@ fn check_type_three(resources: &PageResources<'_>, cut: &[Glyph]) -> Result<()> 
         if procs.type_code() != object_type::DICTIONARY {
             continue;
         }
-        let named = char_proc_name(&font, glyph.source.code)?;
         for key in crate::pdfsyntax::dict::top_level_keys(&procs.unparse())? {
-            let name = Name::from_stripped(&key)?;
-            if named.as_ref().is_some_and(|wanted| *wanted != name) {
-                continue;
-            }
-            let entry = procs.key(&name);
+            let entry = procs.key(&Name::from_stripped(&key)?);
             if entry.type_code() != object_type::STREAM {
                 continue;
             }
@@ -351,35 +526,7 @@ fn check_type_three(resources: &PageResources<'_>, cut: &[Glyph]) -> Result<()> 
     Ok(())
 }
 
-/// The `/CharProcs` name a Type 3 font's `/Encoding /Differences` gives `code`.
-fn char_proc_name(font: &ObjectHandle<'_>, code: u32) -> Result<Option<Name>> {
-    let encoding = font.key(&ENCODING);
-    if encoding.type_code() != object_type::DICTIONARY {
-        return Ok(None);
-    }
-    let differences = encoding.key(&DIFFERENCES);
-    if differences.type_code() != object_type::ARRAY {
-        return Ok(None);
-    }
-    let mut at_code: u32 = 0;
-    for at in 0..differences.array_len() {
-        let item = differences.array_item(at);
-        if item.type_code() == object_type::INTEGER {
-            at_code = u32::try_from(item.integer_value()).unwrap_or(0);
-            continue;
-        }
-        if item.type_code() != object_type::NAME {
-            continue;
-        }
-        if at_code == code {
-            return Ok(Some(item.name()?));
-        }
-        at_code = at_code.saturating_add(1);
-    }
-    Ok(None)
-}
-
-/// Every `/Font` resource name on the page.
+/// Every `/Font` resource name on the page./// Every `/Font` resource name on the page.
 fn font_names(resources: &PageResources<'_>) -> Result<Vec<Name>> {
     let fonts = resources.dictionary().key(&FONT);
     if fonts.type_code() != object_type::DICTIONARY {
@@ -434,8 +581,15 @@ fn narrow_font(document: &Document, font: &ObjectHandle<'_>, keeps: &BTreeSet<u3
     // Zeroing the removed ones keeps the array's shape and says nothing about what was there.
     let widths = font.key(&WIDTHS);
     if widths.type_code() == object_type::ARRAY {
-        let first = first_char(font);
+        let first = first_char(font)?;
         let length = widths.array_len();
+        if length > DIFFERENCES_CEILING {
+            return Err(Error::Unsupported(
+                "pdf redaction [widths-too-long]: a /Widths array longer than burrow will \
+                 rewrite"
+                    .to_owned(),
+            ));
+        }
         for at in 0..length {
             let Ok(offset) = u32::try_from(at) else {
                 continue;
@@ -446,7 +600,12 @@ fn narrow_font(document: &Document, font: &ObjectHandle<'_>, keeps: &BTreeSet<u3
             }
         }
     }
-    Ok(())
+    // DRAINED, and it was not. The `/Widths` loop ran after both narrowings had drained and
+    // then returned `Ok(())` with nothing of its own — so a failure writing a width surfaced
+    // at the NEXT `take_error`: a different font's `/ToUnicode`, or the page strip, or the
+    // write. A wrong answer attributed to the wrong cause, which is the failure mode
+    // `prune.rs`'s drain-after-every-call rule exists for.
+    drained(document)
 }
 
 /// Rewrite `/ToUnicode` so it maps the kept codes and no others.
@@ -517,17 +676,39 @@ fn narrow_differences(
         return Ok(());
     }
     let length = differences.array_len();
+    if length > DIFFERENCES_CEILING {
+        return Err(Error::Unsupported(
+            "pdf redaction [differences-too-long]: a /Differences array longer than burrow              will rewrite"
+                .to_owned(),
+        ));
+    }
+
+    // TWO PASSES, BECAUSE SEVERAL NAMES CAN SIT AT ONE CODE AND ONLY THE LAST ONE DRAWS.
+    //
+    // `[0 /S 0 /e 0 /c 0 /r]` is legal PDF: four assignments to code 0, of which a reader takes
+    // the last. A single pass that asked "is this code kept?" kept every one of them, so a
+    // document whose kept code happens to be 0 carried the removed text's spelling out intact
+    // — measured, with `Ok` and `cut: true` beside it.
+    //
+    // So the first pass finds, for each code, the index of the last name assigned to it. The
+    // second keeps a name only if its code is kept **and** it is that index.
+    let mut last_at: BTreeMap<u32, c_int> = BTreeMap::new();
+    walk_differences(&differences, length, |code, at| {
+        last_at.insert(code, at);
+    })?;
+
     let mut code: u32 = 0;
     for at in 0..length {
         let item = differences.array_item(at);
         if item.type_code() == object_type::INTEGER {
-            code = u32::try_from(item.integer_value()).unwrap_or(0);
+            code = differences_anchor(&item)?;
             continue;
         }
         if item.type_code() != object_type::NAME {
             continue;
         }
-        if !keeps.contains(&code) {
+        let survives = keeps.contains(&code) && last_at.get(&code) == Some(&at);
+        if !survives {
             let next = i64::from(code).saturating_add(1);
             differences.set_array_item(at, &ObjectHandle::new_integer(document, next));
         }
@@ -536,17 +717,76 @@ fn narrow_differences(
     drained(document)
 }
 
+/// Walk a `/Differences` array, calling `seen` with each name's code and index.
+fn walk_differences(
+    differences: &ObjectHandle<'_>,
+    length: c_int,
+    mut seen: impl FnMut(u32, c_int),
+) -> Result<()> {
+    let mut code: u32 = 0;
+    for at in 0..length {
+        let item = differences.array_item(at);
+        if item.type_code() == object_type::INTEGER {
+            code = differences_anchor(&item)?;
+            continue;
+        }
+        if item.type_code() != object_type::NAME {
+            continue;
+        }
+        seen(code, at);
+        code = code.saturating_add(1);
+    }
+    Ok(())
+}
+
+/// A `/Differences` anchor, refused rather than folded onto zero.
+///
+/// It was `u32::try_from(value).unwrap_or(0)`, which is the silent truncation `core/CLAUDE.md`
+/// denies `as` casts for, spelled differently. An anchor of `-1` or `2^32` became code 0, so
+/// every name after it was tested against the wrong code — and a glyph name spelling removed
+/// text stayed in the file because its mis-computed code happened to be kept. Measured: a
+/// `/Differences` of `[-1 /S /e /c /r]` came back unchanged.
+fn differences_anchor(item: &ObjectHandle<'_>) -> Result<u32> {
+    u32::try_from(item.integer_value()).map_err(|_| {
+        Error::Malformed(
+            "pdf redaction [differences-anchor]: a /Differences array anchored at a code              outside the range a character code can take"
+                .to_owned(),
+        )
+    })
+}
+
 /// Drain whatever qpdf latched, as an error.
 fn drained(document: &Document) -> Result<()> {
     document.take_error().map_or(Ok(()), Err)
 }
 
-fn first_char(font: &ObjectHandle<'_>) -> u32 {
+/// A font's `/FirstChar`, read the way the resolver reads a number.
+///
+/// # One key, two readings, and they disagreed
+///
+/// This required `object_type::INTEGER` while `resources::whole` accepts a real that is a whole
+/// number. Measured with `/FirstChar 65.0`: the resolver placed the glyphs from code 65 and
+/// this read the first char as 0, so the `/Widths` offsets were 65 entries out and the KEPT
+/// glyph's width was zeroed along with the removed ones. The direction is corruption rather
+/// than leakage, and it is still two readings of one key that are supposed to agree.
+fn first_char(font: &ObjectHandle<'_>) -> Result<u32> {
     const FIRST_CHAR: Name = Name::literal(b"/FirstChar\0");
     let value = font.key(&FIRST_CHAR);
-    if value.type_code() == object_type::INTEGER {
-        u32::try_from(value.integer_value()).unwrap_or(0)
-    } else {
-        0
-    }
+    let code = match value.type_code() {
+        object_type::INTEGER => u32::try_from(value.integer_value()).ok(),
+        object_type::REAL => crate::pdfsyntax::ops::numbers_in(&value.unparse())
+            .first()
+            .copied()
+            .and_then(super::resources::whole)
+            .and_then(|whole| u32::try_from(whole).ok()),
+        // Absent. `/FirstChar` is required beside `/Widths`, but a font with neither is
+        // handled by the `ARRAY` guard above rather than here.
+        _ => Some(0),
+    };
+    code.ok_or_else(|| {
+        Error::Malformed(
+            "pdf redaction [first-char]: a font whose /FirstChar is not a character code"
+                .to_owned(),
+        )
+    })
 }

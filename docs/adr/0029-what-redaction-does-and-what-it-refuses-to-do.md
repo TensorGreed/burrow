@@ -1225,3 +1225,120 @@ Stated so the list above is not read as a survey of everything:
 - **Handle lifetimes.** `ObjectHandle<'a>` borrows the document, so the lifetime that made this
   hazard a compile error in `prune` makes it one here. `tools/check-handle-identity.py` covers
   the identity half and stays green.
+
+## Amendment, 2026-09-22 — what the reviews found, and the one number that frames it
+
+Two reviews went over the qpdf `Steps` implementation before its first push. The finding that
+organises the rest is not any one defect: it is that a security review planted twenty mutations
+and **nine survived, all nine in `qpdf/redact_steps.rs`**.
+
+The units that module drives were well covered. Deleting `MAX_ENTRIES`, `MAX_TOTAL_OPERANDS`,
+the `bfrange` bounds or the `keep` filter each turned something red. Deleting the **calls** to
+them did not. `narrow_differences` could be a no-op, `check_type_three` could stop refusing,
+`strip_page_keys` could strip nothing, and the suite stayed green.
+
+That is the shape of a seam nobody tested, and it is the same shape the previous amendment
+describes from the other side: a fake is not usually wrong about the call it fakes; it is wrong
+about everything downstream that nobody reached. `core/burrow-engines/tests/redaction_defences.rs`
+is one document per defence, named for the mutation it kills, and the sweep was re-run to
+confirm each one does.
+
+### Two leaks that returned `Ok` over a rendered secret
+
+**An annotation's appearance stream.** `affected_streams` walked the page content and the Form
+XObjects its `/Resources` reach, and never `/Annots → /AP → /N`. `/Annots` is on §2's allowlist,
+so an annotation drawing over the region survived untouched — and it was worse than a no-op,
+because `codes_still_drawn` did not see the codes it drew, so font surgery zeroed *their*
+widths in the shared font. The output kept the secret and drew it overlapping.
+
+§3 already said what to do, in words: *"annotations whose `/Rect` intersects the region —
+handle. Remove the annotation entirely."* It was an unimplemented ADR requirement producing a
+silent `Ok`, not a recorded residual. Now implemented, walking the array backwards because
+erasure renumbers, with an unreadable `/Rect` a refusal rather than an assumed miss.
+
+**A Type 3 glyph procedure drawing outside its own box.** The walk boxes a Type 3 glyph by its
+advance and its `/FontBBox`; it does not descend into the procedure. A glyph with a ten-unit
+box whose procedure draws a hundred units below the origin is therefore in no region's reach,
+so `check_type_three` — scoped to the glyphs the region reached — never ran. Input and output
+rendered to the same bytes.
+
+The scope cannot be "the glyphs the region reached", because that set is computed from the
+boxes that are wrong. It is now every Type 3 font the page draws with. The `/CharProcs` name
+resolution is gone with it: it took the **first** `/Differences` assignment for a code where a
+reader takes the last, so `[5 /g 5 /secret]` resolved to the harmless procedure, and a resolved
+name absent from `/CharProcs` scanned zero procedures while the doc comment claimed it
+over-refused. Every procedure is scanned instead.
+
+### `/Differences` narrowing was right about codes and wrong about names
+
+Several names can sit at one code. `[0 /S 0 /e 0 /c 0 /r]` is legal PDF — four assignments to
+code 0, of which a reader takes the last — and a pass that asked "is this code kept?" kept all
+four, carrying the removed text's spelling out intact. Two passes now: a name survives only if
+its code is kept **and** it is the last assignment to that code.
+
+Separately, `u32::try_from(anchor).unwrap_or(0)` turned an anchor of `-1` or `2^32` into code 0,
+so every name after it was tested against the wrong code. That is the silent truncation
+`core/CLAUDE.md` denies `as` casts for, spelled differently; it is a typed refusal now.
+
+### The font-sharing rule was keyed on the wrong object
+
+`fonts_wholly_within` asked about the font dictionary. `narrow_font` writes through the
+`/ToUnicode`, `/Encoding` and `/Widths` the font *names*, and those can be indirect and shared
+with a font on a page outside the operation. Two pages, one shared `/Encoding`, page 0 redacted:
+page 1 lost its mapping and the report said `cut: true, also_used_by: 0` — that nothing outside
+the operation had been affected.
+
+The sharing walk now records each font's indirect sub-objects and joins them to pages the same
+way fonts are joined. And the decision and the disclosure come from **one** expression,
+`pages_outside`: they were two, they are the same fact asked twice, and the cuttable branch was
+hardcoding `also_used_by: 0` and discarding the other answer — so a disagreement would have
+resolved in favour of cutting, suppressing the disclosure on exactly the font that needed it.
+
+### A `/ToUnicode` bomb
+
+`MAX_ENTRIES` bounds the map and bounds nothing about the work: a `bfrange` re-mapping codes
+already present passes the size check every time. Measured, release build: 47 kB of program
+took 3.9 s, 188 kB took 15.4 s, 752 kB took 61.8 s. That text Flate-compresses **343:1**, so a
+30 kB `/ToUnicode` stream decompresses to 10 MB and costs about **fourteen minutes inside one
+engine call** — against a `max_duration_ms` documented as tolerating "overshoot of up to one
+engine call". `MAX_INSERTS` bounds the work, and a range wider than the budget is refused
+before it is walked rather than after.
+
+### Three things that were threaded but unmeasured
+
+- **The deadline.** `redact_page_for_probe` built a `ManualClock::new(0)`, which never advances,
+  so all six checkpoints added with the implementation were inert on the only route in.
+- **The page bound.** `page_handle`'s `SAFETY` comment named the constructor as where the
+  invariant is established, and the constructor did not check it — the check lived in one
+  caller, and `new` is `pub(crate)`. The constructor checks it now, and the caller's duplicate
+  is **removed**: with both, deleting the one the comment names changed nothing a test could see.
+- **The `/Annots` RSS bound.** `peak_rss_kb` reads process-wide `VmHWM` while the lib test
+  binary runs in parallel threads, so the measurement depends on what a neighbouring test
+  allocated in between. It failed once in a full run and passed on four isolated ones — and
+  then reported a mutation as "caught" that it had nothing to do with. It is `#[ignore]`d and
+  run alone, with its own registered job. The dangerous direction is the quiet one: a spike
+  during the *control* run makes the assertion pass for free.
+
+### The corpus was regenerated by nothing
+
+`tests/redaction/generated/` is gitignored and regenerated rather than stored, which is the
+right call for 39 derived files. Nothing regenerated it — neither generator, and not
+`tools/check-redaction-corpus.py` either, appeared in any CI job. That was invisible until
+something read the directory, and then the sweep passed on the machine where the files were
+left over and panicked on a clean checkout. It also takes **two** generators, and only one was
+documented; the security review ran the first, got 28 files against a floor of 40, and found
+the second by reading the tools directory.
+
+`tools/check-redaction-corpus.sh` runs both and gates on 39 + 4, and it is registered in
+`ci.yml` and `tools/ci-local.py` — the parity check refused to run anything until it was.
+
+### The reviews also confirmed claims rather than only refuting them
+
+Stated so the list above is not read as a survey of everything. `qpdf_oh_replace_stream_data`
+with a null `/Filter` behaves as the code comment claims, and the mechanism was checked in
+qpdf's source rather than inferred: `Stream::replaceFilterData` overwrites both `/Filter` and
+`/DecodeParms` because `operator bool` is true for an initialized handle, `/Length` is set to
+the plain length, and the writer recompresses. One edge worth knowing and not currently
+reachable: a zero length **removes** `/Length` rather than setting it. The aggregate operand
+bound survives the `MAX_COMPOSITE_ITEMS` change; no raw handle is compared; no new error
+message carries file content.

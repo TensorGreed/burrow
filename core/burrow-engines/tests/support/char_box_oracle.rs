@@ -279,6 +279,38 @@ pub fn chars_on_page(bytes: &[u8], index: i32) -> Vec<OracleChar> {
     on_the_pdfium_thread(move || read_chars(&owned, index))
 }
 
+/// Whether an oracle ink box overlaps a region, converting between the two frames.
+///
+/// PDFium's boxes are measured from the bottom of the page and a region from the top, so this
+/// is the one place the two meet. Written here rather than reached for from the operation: a
+/// test that used the operation's own conversion would be asking the instrument whether it
+/// agrees with itself.
+///
+/// Lives in the oracle because two test binaries need it and a copy in each is two things that
+/// can disagree about which way up a page is.
+#[must_use]
+pub fn ink_overlaps(
+    ink: &Rect,
+    region_left: f64,
+    region_top: f64,
+    width: f64,
+    height: f64,
+    page_height: f64,
+) -> bool {
+    let top = page_height - region_top;
+    let bottom = top - height;
+    ink.right > region_left
+        && ink.left < region_left + width
+        && ink.top > bottom
+        && ink.bottom < top
+}
+
+/// Two origins within the oracle's pre-registered tolerance.
+#[must_use]
+pub fn origins_close(a: (f64, f64), b: (f64, f64)) -> bool {
+    (a.0 - b.0).hypot(a.1 - b.1) < TOLERANCE_PT
+}
+
 /// The page's size in points, as PDFium computes it.
 ///
 /// A region is measured from the top of the page and PDFium's origins are measured from the

@@ -5,6 +5,8 @@
 #[path = "../../testsupport/minimal_pdf.rs"]
 pub mod minimal_pdf;
 
+pub mod pdf_builder;
+
 // THE GEOMETRY ORACLE (#129). Behind the same gate as the engines themselves: it declares
 // PDFium symbols directly, which only a target that links `libpdfium.so` may do.
 #[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]

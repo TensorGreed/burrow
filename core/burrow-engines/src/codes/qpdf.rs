@@ -127,6 +127,13 @@ pub(crate) mod object_type {
     /// `ot_integer` — the fifth member.
     pub(crate) const INTEGER: c_int = 4;
 
+    /// `ot_real` — the sixth member.
+    ///
+    /// Declared because `/FirstChar 65.0` is legal PDF and `resources::whole` already accepts
+    /// it. Font surgery read only `INTEGER` and folded a real to zero, which put every
+    /// `/Widths` offset out by the first char.
+    pub(crate) const REAL: c_int = 5;
+
     /// `ot_name` — the eighth member.
     pub(crate) const NAME: c_int = 7;
 

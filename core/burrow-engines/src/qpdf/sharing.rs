@@ -98,6 +98,10 @@ const MAX_RESOURCE_DICTIONARIES: usize = 4096;
 
 /// `/Resources`.
 const RESOURCES: Name = Name::literal(b"/Resources\0");
+/// `/ToUnicode`, `/Encoding`, `/Widths` — the three keys font surgery writes through.
+const TO_UNICODE: Name = Name::literal(b"/ToUnicode\0");
+const ENCODING: Name = Name::literal(b"/Encoding\0");
+const WIDTHS: Name = Name::literal(b"/Widths\0");
 /// `/Parent`.
 const PARENT: Name = Name::literal(b"/Parent\0");
 /// `/XObject`.
@@ -154,6 +158,16 @@ pub(crate) struct FormUseCounts {
     /// So the rule is neither refuse-always nor edit-always: **cut a font only when every page
     /// that uses it is being redacted in this operation.** That needs the set, not a total.
     fonts: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
+    /// Which pages reach each object font surgery writes *through* — a font's indirect
+    /// `/ToUnicode`, `/Encoding` or `/Widths`.
+    ///
+    /// Separate from `fonts` because they are different questions with different answers. A
+    /// font object may be used by one page while the `/Encoding` it names is shared with a
+    /// font on another, and editing the font then edits the other page. Keyed on the part, and
+    /// the page set is the union over every font that names it.
+    font_parts: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
+    /// Which objects each font names, the other way round from `font_parts`.
+    font_part_names: BTreeMap<ObjectId, std::collections::BTreeSet<ObjectId>>,
 }
 
 impl FormUseCounts {
@@ -193,17 +207,42 @@ impl FormUseCounts {
         redacted: &std::collections::BTreeSet<usize>,
     ) -> std::collections::BTreeSet<ObjectId> {
         self.fonts
-            .iter()
-            .filter(|(_, pages)| pages.is_subset(redacted))
-            .map(|(font, _)| *font)
+            .keys()
+            .filter(|font| self.pages_outside(**font, redacted) == 0)
+            .copied()
             .collect()
     }
 
-    /// Which pages use each font.
-    pub(crate) const fn font_pages_map(
+    /// How many pages outside `redacted` an edit to this font would reach.
+    ///
+    /// **One expression, and it is the one [`Self::fonts_wholly_within`] filters on.** The
+    /// cuttable set and the disclosure count are the same fact asked twice, and
+    /// [`crate::redact::FontOutcome`]'s rustdoc promises they agree — "zero when it was cut,
+    /// non-zero is the reason it was not". Two expressions that are meant to agree is how they
+    /// stop agreeing, and a disagreement here resolves in favour of cutting, which suppresses
+    /// the disclosure on exactly the font that needed it.
+    ///
+    /// # It counts the pages the font's *parts* reach, not only the font's own
+    ///
+    /// `narrow_font` writes into the `/ToUnicode`, `/Encoding` and `/Widths` the font names.
+    /// Those can be indirect and shared with a font on a page outside the operation, and a
+    /// count keyed on the font dictionary alone does not see it. Measured by a security review:
+    /// two pages, two fonts, one shared `/Encoding` and one shared `/ToUnicode`, page 0
+    /// redacted — page 1's text lost its mapping while the report said `cut: true,
+    /// also_used_by: 0`, that nothing outside the operation had been affected.
+    pub(crate) fn pages_outside(
         &self,
-    ) -> &BTreeMap<ObjectId, std::collections::BTreeSet<usize>> {
-        &self.fonts
+        font: ObjectId,
+        redacted: &std::collections::BTreeSet<usize>,
+    ) -> usize {
+        let mut reached: std::collections::BTreeSet<usize> =
+            self.fonts.get(&font).cloned().unwrap_or_default();
+        for part in self.font_part_names.get(&font).into_iter().flatten() {
+            if let Some(pages) = self.font_parts.get(part) {
+                reached.extend(pages.iter().copied());
+            }
+        }
+        reached.difference(redacted).count()
     }
 
     /// Which pages use each font, for the survey and the tests.
@@ -236,6 +275,7 @@ pub(crate) fn count_form_uses(
         dictionaries_read: 0,
         page_fonts: BTreeMap::new(),
         container_fonts: BTreeMap::new(),
+        font_parts: BTreeMap::new(),
         page_reaches: BTreeMap::new(),
         at_page: 0,
     };
@@ -257,10 +297,37 @@ pub(crate) fn count_form_uses(
         walk.at_page = at;
         walk.page(&page)?;
     }
+    let fonts = join_fonts_to_pages(&walk);
     Ok(FormUseCounts {
         counts: propagate(&walk.from_pages, &walk.edges),
-        fonts: join_fonts_to_pages(&walk),
+        font_parts: join_parts_to_pages(&walk, &fonts),
+        font_part_names: walk.font_parts.clone(),
+        fonts,
     })
+}
+
+/// Which pages reach each object a font would be edited *through*.
+///
+/// The union over every font that names it, because editing the part edits it for all of them.
+/// A `/Encoding` shared between a font on a redacted page and a font on one that is not is
+/// reached by both, and is therefore not cuttable.
+fn join_parts_to_pages(
+    walk: &Walk<'_>,
+    fonts: &BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
+) -> BTreeMap<ObjectId, std::collections::BTreeSet<usize>> {
+    let mut parts: BTreeMap<ObjectId, std::collections::BTreeSet<usize>> = BTreeMap::new();
+    for (font, named) in &walk.font_parts {
+        let Some(pages) = fonts.get(font) else {
+            continue;
+        };
+        for part in named {
+            parts
+                .entry(*part)
+                .or_default()
+                .extend(pages.iter().copied());
+        }
+    }
+    parts
 }
 
 /// Which pages reach each font, joining the per-container sets over the reference graph.
@@ -373,6 +440,9 @@ struct Walk<'a> {
     /// container names, which objects each page reaches, and a closure over the edges.
     page_fonts: BTreeMap<usize, std::collections::BTreeSet<ObjectId>>,
     container_fonts: BTreeMap<ObjectId, std::collections::BTreeSet<ObjectId>>,
+    /// Each font's indirect `/ToUnicode`, `/Encoding` and `/Widths` — the objects font surgery
+    /// writes through. See where this is filled for what keying on the font alone missed.
+    font_parts: BTreeMap<ObjectId, std::collections::BTreeSet<ObjectId>>,
     page_reaches: BTreeMap<usize, std::collections::BTreeSet<ObjectId>>,
     /// The page whose subtree is being walked.
     at_page: usize,
@@ -554,6 +624,28 @@ impl Walk<'_> {
                         .entry(parent)
                         .or_default()
                         .insert(identity);
+                }
+            }
+
+            // THE SUB-OBJECTS FONT SURGERY EDITS, recorded against the font that names them.
+            //
+            // `narrow_font` writes through `/ToUnicode`, `/Encoding /Differences` and
+            // `/Widths`. When those are INDIRECT they can be shared with a font on a page
+            // outside the operation, and cuttability keyed on the font dictionary alone does
+            // not see it: two fonts, one shared `/Encoding`, page 0 redacted and page 1 not,
+            // and page 1's text silently loses its mapping. Measured by a security review --
+            // the report said `cut: true, also_used_by: 0`, that nothing outside the operation
+            // had been affected, while page 1 had.
+            for key in [&TO_UNICODE, &ENCODING, &WIDTHS] {
+                let part = font.key(key);
+                if let Some(error) = self.document.take_error() {
+                    return Err(error);
+                }
+                let part_id = part.object()?;
+                // A DIRECT object has object number 0 in qpdf, and a direct sub-object cannot
+                // be shared -- it exists only inside this font.
+                if part_id.0 != 0 {
+                    self.font_parts.entry(identity).or_default().insert(part_id);
                 }
             }
 

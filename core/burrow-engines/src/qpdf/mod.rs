@@ -581,17 +581,23 @@ pub(crate) fn redact_page_for_probe(
 ) -> Result<(Vec<u8>, crate::redact::Report)> {
     use std::sync::Arc;
 
-    use burrow_types::{Clock, Limits, ManualClock};
+    use burrow_types::{Clock, Limits, SystemClock};
 
-    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(0));
+    // A REAL CLOCK. It was `ManualClock::new(0)`, which never advances -- so every
+    // `deadline.checkpoint` in `redact_steps` was inert on the only route into the operation,
+    // and the time bound was threaded but unmeasured. A security review found six checkpoints
+    // that could not have fired.
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let options = crate::OpenOptions::new(Limits::default(), Arc::clone(&clock));
-    let (document, pages, _, deadline) =
-        open_document(bytes.to_vec().into_boxed_slice(), &options)?;
-    if page >= usize::try_from(pages).unwrap_or(0) {
-        return Err(Error::Malformed(
-            "pdf redaction: a page index past the end of the document".to_owned(),
-        ));
-    }
+    let (document, _, _, deadline) = open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+    // THE PAGE BOUND IS THE CONSTRUCTOR'S, and it is checked there and only there.
+    //
+    // It used to be checked here as well. That is one check too many rather than one too few:
+    // `QpdfRedaction::page_handle` calls the unsafe `ObjectHandle::page`, and its SAFETY
+    // comment names the constructor as where the invariant is established. With the check
+    // duplicated in this caller, deleting the constructor's changed nothing any test could
+    // see — a mutation sweep planted exactly that and the suite stayed green, which is a
+    // defence with no test standing behind an `unsafe` block.
     let steps = redact_steps::QpdfRedaction::new(document, page, region, deadline, clock)?;
     crate::redact::run(steps, redacted)
 }

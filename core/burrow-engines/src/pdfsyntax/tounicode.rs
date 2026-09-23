@@ -45,6 +45,22 @@ pub const MAX_ENTRIES: usize = 65_536;
 /// The most `begincodespacerange` pairs one CMap may declare.
 const MAX_CODESPACES: usize = 256;
 
+/// The most mappings this will **perform**, as opposed to hold.
+///
+/// [`MAX_ENTRIES`] bounds the map and bounds nothing about the work. A `bfrange` that re-maps
+/// codes already present passes the size check every time, so the same 65,536 inserts can be
+/// paid arbitrarily often — and a range is four bytes of source text per 65,536 of them.
+///
+/// Measured, release build, on `<0000> <FFFF> <0000>` repeated: 47 kB of program took 3.9 s,
+/// 188 kB took 15.4 s, 752 kB took 61.8 s. Linear at ~82 µs/kB. That text Flate-compresses
+/// **343:1**, so a 30 kB `/ToUnicode` stream in a file decompresses to 10 MB and costs about
+/// fourteen minutes inside one engine call — against a `max_duration_ms` documented as
+/// tolerating "overshoot of up to one engine call".
+///
+/// Four times [`MAX_ENTRIES`] leaves room for a CMap that legitimately re-states a range
+/// (producers do) and refuses the one that is buying work with it.
+const MAX_INSERTS: usize = MAX_ENTRIES * 4;
+
 /// A `/ToUnicode` CMap, read.
 #[derive(Debug, Default)]
 pub struct ToUnicode {
@@ -54,6 +70,9 @@ pub struct ToUnicode {
     codespace: Vec<(Vec<u8>, Vec<u8>)>,
     /// Code to its UTF-16BE destination bytes, with the byte width the source was written at.
     map: BTreeMap<u32, (usize, Vec<u8>)>,
+    /// How many mappings have been performed, which is not how many are held. See
+    /// [`MAX_INSERTS`].
+    inserts: usize,
 }
 
 impl ToUnicode {
@@ -81,9 +100,9 @@ impl ToUnicode {
     ///
     /// - [`Error::Malformed`] — the program could not be tokenised, or a `bfrange` runs
     ///   backwards.
-    /// - [`Error::Unsupported`] — more than [`MAX_ENTRIES`] entries or [`MAX_CODESPACES`]
-    ///   code ranges. A refusal rather than a truncation: a truncated CMap is one that still
-    ///   maps the secret and no longer maps something else.
+    /// - [`Error::Unsupported`] — more than [`MAX_ENTRIES`] entries, or more code ranges
+    ///   than this module will read. A refusal rather than a truncation: a truncated CMap is
+    ///   one that still maps the secret and no longer maps something else.
     pub fn parse(program: &[u8]) -> Result<Self> {
         let mut lexer = Lexer::new(program);
         let mut read = Self::default();
@@ -154,7 +173,7 @@ impl ToUnicode {
                     else {
                         continue;
                     };
-                    self.insert(code_of(src), *digits, dst.clone())?;
+                    self.insert(code_of(src)?, *digits, dst.clone())?;
                 }
                 Ok(())
             }
@@ -169,11 +188,19 @@ impl ToUnicode {
             let (Item::Str { value: lo, digits }, Item::Str { value: hi, .. }) = (low, high) else {
                 continue;
             };
-            let (first, last) = (code_of(lo), code_of(hi));
+            let (first, last) = (code_of(lo)?, code_of(hi)?);
             if last < first {
                 return Err(Error::Malformed(
                     "pdf syntax: a /ToUnicode bfrange whose last code precedes its first"
                         .to_owned(),
+                ));
+            }
+            // REFUSED BEFORE IT IS WALKED. Checking inside the loop would still pay for the
+            // first `MAX_INSERTS` of a range declaring four billion codes.
+            let span = u64::from(last - first).saturating_add(1);
+            if span > u64::try_from(MAX_INSERTS).unwrap_or(u64::MAX) {
+                return Err(Error::Unsupported(
+                    "a /ToUnicode bfrange wider than burrow will expand".to_owned(),
                 ));
             }
             match destination {
@@ -201,6 +228,14 @@ impl ToUnicode {
 
     /// Record one mapping, refusing past [`MAX_ENTRIES`].
     fn insert(&mut self, code: u32, digits: usize, destination: Vec<u8>) -> Result<()> {
+        // THE WORK, COUNTED BEFORE THE SIZE. A re-map costs the same as a new mapping and the
+        // size check does not see it; see `MAX_INSERTS` for the measurement.
+        self.inserts = self.inserts.saturating_add(1);
+        if self.inserts > MAX_INSERTS {
+            return Err(Error::Unsupported(
+                "a /ToUnicode CMap asks for more mappings than burrow will perform".to_owned(),
+            ));
+        }
         if self.map.len() >= MAX_ENTRIES && !self.map.contains_key(&code) {
             return Err(Error::Unsupported(
                 "a /ToUnicode CMap maps more codes than burrow will read".to_owned(),
@@ -301,14 +336,25 @@ fn collapse_array(pending: &mut Vec<Item>) -> Result<()> {
 
 /// A source code's integer value, big-endian over its bytes.
 ///
-/// Saturating rather than wrapping: a code written at more than four bytes is outside every
-/// encoding burrow reads, and folding it onto a small value would map a code the document does
-/// draw onto text it does not say.
-fn code_of(bytes: &[u8]) -> u32 {
-    bytes
+/// # A code wider than four bytes is refused, and the comment here used to say otherwise
+///
+/// It read *"saturating rather than wrapping: … folding it onto a small value would map a code
+/// the document does draw onto text it does not say"*, over a body that did `take(4)` — which
+/// keeps the **first** four bytes and discards the rest, so `<0000000041>` came out as `0`.
+/// That is the folding the comment said it avoided, and two distinct long codes collided onto
+/// one key.
+///
+/// No encoding burrow reads uses a code wider than four bytes, so the honest answer is to
+/// refuse rather than to pick one.
+fn code_of(bytes: &[u8]) -> Result<u32> {
+    if bytes.len() > 4 {
+        return Err(Error::Unsupported(
+            "a /ToUnicode CMap with a character code wider than burrow will read".to_owned(),
+        ));
+    }
+    Ok(bytes
         .iter()
-        .take(4)
-        .fold(0u32, |value, byte| (value << 8) | u32::from(*byte))
+        .fold(0u32, |value, byte| (value << 8) | u32::from(*byte)))
 }
 
 /// A destination advanced by `step`, which is what a `bfrange` with a single destination means.
@@ -504,6 +550,67 @@ mod tests {
         let error = ToUnicode::parse(program).expect_err("past MAX_ENTRIES");
         assert!(
             format!("{error}").contains("maps more codes than burrow will read"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_cmap_that_buys_work_by_re_mapping_is_refused_rather_than_paid_for() {
+        // `MAX_ENTRIES` bounds the MAP and bounds nothing about the WORK: a range that re-maps
+        // codes already present passes the size check every time. Measured before this cap: a
+        // 752 kB program took 61.8 s, and that text Flate-compresses 343:1, so a 30 kB stream
+        // in a file is about fourteen minutes inside one engine call.
+        //
+        // Eight ranges of 256 codes each is 2,048 mappings, well under the cap; the same eight
+        // at full width is 524,288, which is past it. The pair is what makes this a cap rather
+        // than a refusal of `bfrange`.
+        let narrow: Vec<u8> = "1 beginbfrange\n<00> <FF> <0000>\nendbfrange\n"
+            .repeat(8)
+            .into_bytes();
+        assert_eq!(
+            ToUnicode::parse(&narrow).expect("eight small ranges").len(),
+            256
+        );
+
+        let wide: Vec<u8> = "1 beginbfrange\n<000000> <00FFFF> <0000>\nendbfrange\n"
+            .repeat(8)
+            .into_bytes();
+        let error = ToUnicode::parse(&wide).expect_err("past MAX_INSERTS");
+        assert!(
+            format!("{error}").contains("more mappings than burrow will perform"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn a_single_range_wider_than_the_budget_is_refused_before_it_is_walked() {
+        // Checking inside the loop would still pay for the first `MAX_INSERTS` of a range
+        // declaring four billion codes. Four-byte codes, so the span is declarable.
+        let program = b"1 beginbfrange\n<00000000> <FFFFFFFF> <0000>\nendbfrange\n";
+        let started = std::time::Instant::now();
+        let error = ToUnicode::parse(program).expect_err("a range wider than the budget");
+        assert!(
+            format!("{error}").contains("wider than burrow will expand"),
+            "got: {error}"
+        );
+        // THE ASSERTION IS THE CLOCK, because a refusal reached after doing the work is not the
+        // thing this cap is for.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the refusal took {:?}; it is being reached after the expansion rather than before",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_character_code_wider_than_four_bytes_is_refused_rather_than_truncated() {
+        // `code_of` did `take(4)`, keeping the FIRST four bytes -- so `<0000000041>` came out
+        // as 0 and two distinct long codes collided onto one key, which is the folding its own
+        // comment said it avoided.
+        let program = b"1 beginbfchar\n<0000000041> <0041>\nendbfchar\n";
+        let error = ToUnicode::parse(program).expect_err("a five-byte code");
+        assert!(
+            format!("{error}").contains("wider than burrow will read"),
             "got: {error}"
         );
     }

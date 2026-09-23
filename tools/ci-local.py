@@ -175,10 +175,33 @@ JOBS: list[dict] = [
         "covers": ["cargo:clippy"],
     },
     {
+        # BEFORE `test`, and in this order deliberately: `redaction_corpus.rs` reads
+        # `tests/redaction/generated/`, which is gitignored and regenerated rather than stored.
+        # Nothing regenerated it until this job existed, so the sweep passed on machines where
+        # the files were left over and panicked on a clean checkout.
+        "name": "redaction-corpus",
+        "run": "tools/check-redaction-corpus.sh",
+        "covers": ["tools/check-redaction-corpus.sh"],
+    },
+    {
         "name": "test",
         "run": "cargo test --workspace --all-features",
         "covers": ["cargo:test"],
         "needs_qpdf_cli": True,
+    },
+    {
+        "name": "annots-rss",
+        "run": (
+            "cargo test -p burrow-engines --all-features --lib -- --ignored --exact "
+            "qpdf::sharing_tests::"
+            "an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each "
+            "--test-threads=1"
+        ),
+        "covers": [],
+        "why": (
+            "a peak-RSS measurement that reads process-wide /proc/self/status, so it is "
+            "meaningful only in a process of its own; ignored in the main run"
+        ),
     },
     {
         "name": "ignored-tests",

@@ -36,7 +36,7 @@ mod support;
 use std::collections::BTreeSet;
 
 use burrow_engines::pdfsyntax::region::Region;
-use support::char_box_oracle::{OracleChar, Rect, chars_on_page, page_size};
+use support::char_box_oracle::{OracleChar, chars_on_page, ink_overlaps, origins_close, page_size};
 
 /// Where the corpus lives, relative to this crate.
 const CORPUS: &[&str] = &[
@@ -121,6 +121,23 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
         "the corpus has shrunk to {expected} documents, which is not the corpus this was \
          written against"
     );
+
+    // AND THE OUTCOME DISTRIBUTION, not just the count examined. A mutation that made
+    // `QpdfRedaction::new` refuse unconditionally left this test green — 43 of 43 examined, 0
+    // redacted, 43 refused — because every per-document assertion is inside the `Ok` arm.
+    // `CLAUDE.md`: gate on the expected count where that count is knowable, and this one is:
+    // the four real-producer documents redact, and the reason the other 39 do not is the
+    // standard-14 refusal ADR 0029 records.
+    //
+    // A floor rather than an equality, because closing that refusal should not turn an
+    // improvement into a test failure — the number can only go up.
+    assert!(
+        redactions.len() >= 4,
+        "{} documents redacted, and the four real-producer documents must: a refusal widened \
+         far enough to cover them would take every per-document assertion here to zero while \
+         this test still printed a pass",
+        redactions.len()
+    );
 }
 
 /// Run one document and classify what came back.
@@ -185,14 +202,21 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
 
     let mut reached = 0usize;
     for want in &drawn_before {
-        if !ink_overlaps(&want.ink, &region, height) {
+        if !ink_overlaps(
+            &want.ink,
+            region.left,
+            region.top,
+            region.width,
+            region.height,
+            height,
+        ) {
             continue;
         }
         reached += 1;
         assert!(
             !drawn_after
                 .iter()
-                .any(|got| got.unicode == want.unicode && close(got.origin, want.origin)),
+                .any(|got| got.unicode == want.unicode && origins_close(got.origin, want.origin)),
             "{name}: U+{:04X} at {:?} has ink inside the region and is still drawn",
             want.unicode,
             want.origin
@@ -202,7 +226,7 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
         assert!(
             drawn_before
                 .iter()
-                .any(|want| want.unicode == got.unicode && close(got.origin, want.origin)),
+                .any(|want| want.unicode == got.unicode && origins_close(got.origin, want.origin)),
             "{name}: U+{:04X} appears at {:?} and was not drawn before -- the page reflowed",
             got.unicode,
             got.origin
@@ -217,19 +241,4 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
             .len()
             .saturating_sub(reached + drawn_after.len()),
     }
-}
-
-/// Whether an oracle ink box overlaps a region, converting between the two frames.
-fn ink_overlaps(ink: &Rect, region: &Region, page_height: f64) -> bool {
-    let top = page_height - region.top;
-    let bottom = top - region.height;
-    ink.right > region.left
-        && ink.left < region.left + region.width
-        && ink.top > bottom
-        && ink.bottom < top
-}
-
-/// Two origins within the oracle's pre-registered tolerance.
-fn close(a: (f64, f64), b: (f64, f64)) -> bool {
-    (a.0 - b.0).hypot(a.1 - b.1) < support::char_box_oracle::TOLERANCE_PT
 }
