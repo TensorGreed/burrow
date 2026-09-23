@@ -1103,6 +1103,51 @@ pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> R
         return Ok(content.to_vec());
     }
 
+    // THE SPLICE IS #128'S, not a second implementation of one. A single-element `Contents` is
+    // the degenerate case of the page-content span map, and reusing it keeps the offset
+    // arithmetic in one place rather than in two that can disagree.
+    let mut applied = remove_glyphs_across(
+        &super::contents::Contents::concatenate(&[content])?,
+        stream,
+        remove,
+    )?;
+    applied.pop().filter(|_| applied.is_empty()).map_or_else(
+        || {
+            // probe-allowed: a burrow invariant, not a judgement about the file
+            Err(Error::Internal(
+                "pdf geometry: the splice returned something other than one stream".to_owned(),
+            ))
+        },
+        Ok,
+    )
+}
+
+/// Remove `remove` from a page's `/Contents`, returning **one buffer per element**.
+///
+/// # Why this exists beside [`remove_glyphs`]
+///
+/// A page's `/Contents` may be an array, and PDF 32000-1 §7.8.2 makes the array **one lexical
+/// stream** — so the tokenising happens on the concatenation and the writing happens per
+/// element. [`remove_glyphs`] is this function over a one-element array, which is what keeps
+/// the edit-building in one place: two implementations of "which operations does this glyph
+/// belong to" is how they stop agreeing, and the agreement is what stops a cut landing at the
+/// wrong offset.
+///
+/// # Errors
+///
+/// [`Refusal::GlyphFromAnotherStream`] if any glyph was drawn in a different stream, and
+/// [`Refusal::GlyphWithoutItsOperation`] if one is attributed to an operation the content does
+/// not contain. Whatever tokenising or splicing refused.
+pub fn remove_glyphs_across(
+    contents: &super::contents::Contents,
+    stream: Option<u64>,
+    remove: &[Glyph],
+) -> Result<Vec<Vec<u8>>> {
+    if remove.iter().any(|glyph| glyph.source.form != stream) {
+        return Refusal::GlyphFromAnotherStream
+            .refuse("a glyph drawn in a different stream, whose span does not index this one");
+    }
+    let content = contents.bytes();
     let operations = super::ops::operations(content)?;
     let mut edits: Vec<super::contents::Edit> = Vec::new();
     for operation in &operations {
@@ -1121,20 +1166,7 @@ pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> R
         return Refusal::GlyphWithoutItsOperation
             .refuse("a glyph attributed to an operation this stream does not contain");
     }
-
-    // THE SPLICE IS #128'S, not a second implementation of one. A single-element `Contents` is
-    // the degenerate case of the page-content span map, and reusing it keeps the offset
-    // arithmetic in one place rather than in two that can disagree.
-    let mut applied = super::contents::Contents::concatenate(&[content])?.apply(&edits)?;
-    applied.pop().filter(|_| applied.is_empty()).map_or_else(
-        || {
-            // probe-allowed: a burrow invariant, not a judgement about the file
-            Err(Error::Internal(
-                "pdf geometry: the splice returned something other than one stream".to_owned(),
-            ))
-        },
-        Ok,
-    )
+    contents.apply(&edits)
 }
 
 /// How many distinct operations the cuts name, so an unmatched one is caught rather than ignored.

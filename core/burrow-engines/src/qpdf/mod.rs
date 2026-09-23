@@ -578,17 +578,18 @@ pub(crate) fn redact_page_for_probe(
     page: usize,
     redacted: std::collections::BTreeSet<usize>,
     region: crate::pdfsyntax::region::Region,
+    limits: Limits,
 ) -> Result<(Vec<u8>, crate::redact::Report)> {
     use std::sync::Arc;
 
-    use burrow_types::{Clock, Limits, SystemClock};
+    use burrow_types::{Clock, SystemClock};
 
     // A REAL CLOCK. It was `ManualClock::new(0)`, which never advances -- so every
     // `deadline.checkpoint` in `redact_steps` was inert on the only route into the operation,
     // and the time bound was threaded but unmeasured. A security review found six checkpoints
     // that could not have fired.
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-    let options = crate::OpenOptions::new(Limits::default(), Arc::clone(&clock));
+    let options = crate::OpenOptions::new(limits, Arc::clone(&clock));
     let (document, _, _, deadline) = open_document(bytes.to_vec().into_boxed_slice(), &options)?;
     // THE PAGE BOUND IS THE CONSTRUCTOR'S, and it is checked there and only there.
     //
@@ -598,6 +599,6 @@ pub(crate) fn redact_page_for_probe(
     // duplicated in this caller, deleting the constructor's changed nothing any test could
     // see — a mutation sweep planted exactly that and the suite stayed green, which is a
     // defence with no test standing behind an `unsafe` block.
-    let steps = redact_steps::QpdfRedaction::new(document, page, region, deadline, clock)?;
+    let steps = redact_steps::QpdfRedaction::new(document, page, region, limits, deadline, clock)?;
     crate::redact::run(steps, redacted)
 }

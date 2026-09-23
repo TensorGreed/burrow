@@ -36,3 +36,4 @@
 - [M2 glyph geometry (#129)](m2_glyph_geometry.md) — front-vs-back operand indexing beats PDFium, 405 B → 1.64 GiB form DAG, and two comment-satisfiable probes.
 - [Remove-glyphs + sharing (#156)](m2_remove_glyphs_and_sharing.md) — the quote-operator reflow measured in PDFium, the ragged-code leak, the transitive sharing under-count, and what real qpdf returns.
 - [M2 qpdf redact steps (22ceffa)](m2_qpdf_redact_steps.md) — measured annotation + Type 3 leaks, the shared-sub-object font edit, and 9 of 20 mutations surviving in redact_steps.rs.
+- [Shared /Contents (#132)](m2_shared_contents.md) — the two disjoint sharing counters that miss every cross-route sharer, 1 MB → 8.2 GB, and 4 of 16 survivors.

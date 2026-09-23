@@ -195,6 +195,33 @@ SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
         b"/CMapName /ABCDEF+Helvetica-UCS def\n1 beginbfchar\n<41> <0041>\nendbfchar\n",
         b"2 beginbfchar\n<41> <D83DDE00>\n<42> <0042>\nendbfchar\n",
     ),
+    # `redact_shared_contents` reads its bytes as a SHAPE, not as a document: page count,
+    # stream count, then each page's element-to-stream slots. Seeds are therefore the sharing
+    # structures worth reaching first, written out rather than waited for -- a fuzzer will find
+    # "two pages, one stream" eventually and there is no reason to spend the budget on it.
+    #
+    # Layout: [pages-1, streams-1, then per page: elements-1, then one byte per element].
+    "redact_shared_contents": (
+        # One page, one stream: nothing shared, must redact.
+        bytes([0, 0, 0, 0]),
+        # Two pages, one stream, one element each: the whole /Contents shared. ADR 0029's case.
+        bytes([1, 0, 0, 0, 0, 0]),
+        # Two pages, two streams. Page 0 is [0, 1], page 1 is [1]: the SHARED element is the one
+        # the region misses, so this must redact. The letterhead shape.
+        bytes([1, 1, 1, 0, 1, 0, 1]),
+        # Two pages, two streams. Page 0 is [0, 1], page 1 is [0]: the shared element is the one
+        # the region reaches, so this must refuse.
+        bytes([1, 1, 1, 0, 1, 0, 0]),
+        # One page referencing one stream twice: sharing with itself.
+        bytes([0, 0, 1, 0, 0]),
+        # Page 0 is [1, 0]: the drawn text is in element 1, not element 0. The shape the oracle
+        # got wrong first time round.
+        bytes([1, 1, 1, 1, 0, 0, 0]),
+        # Three pages, three streams, no sharing at all.
+        bytes([2, 2, 0, 0, 0, 1, 0, 2]),
+        # Four pages all pointing at stream 0: maximum sharing.
+        bytes([3, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    ),
 }
 
 # Not every span is worth writing, and a fixture with 277 dictionaries would otherwise

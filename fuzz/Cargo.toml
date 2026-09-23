@@ -154,3 +154,10 @@ path = "fuzz_targets/pdfsyntax_tounicode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "redact_shared_contents"
+path = "fuzz_targets/redact_shared_contents.rs"
+test = false
+doc = false
+bench = false

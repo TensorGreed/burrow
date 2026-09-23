@@ -52,6 +52,22 @@ fn redact(pdf: &[u8]) -> burrow_types::Result<(Vec<u8>, burrow_engines::redact::
     burrow_engines::redact_probe::redact_page(pdf, 0, redacted, band())
 }
 
+/// The refusal `pdf` produces, or a panic naming `what` — **without printing the document**.
+///
+/// `expect_err` on a `Result<(Vec<u8>, _), _>` formats the `Ok` side, which is the whole
+/// emitted PDF as a list of byte literals. Two of these turned a one-line assertion failure
+/// into several thousand lines of decimal, which is a test that is harder to read when it fails
+/// than when it passes.
+fn refusal(pdf: &[u8], what: &str) -> String {
+    match redact(pdf) {
+        Ok((out, report)) => panic!(
+            "{what}: redacted {} bytes instead of refusing, report {report:?}",
+            out.len()
+        ),
+        Err(error) => format!("{error:?}"),
+    }
+}
+
 /// Whether the emitted document contains `needle` once decompressed by qpdf.
 ///
 /// A raw scan of the output finds nothing, because qpdf re-compresses every stream it writes.
@@ -101,6 +117,62 @@ fn which_qpdf() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from("qpdf")
+}
+
+/// The object numbers of the page's `/Contents` elements, **in the output**.
+///
+/// qpdf renumbers objects on write, so the numbers the fixture built with do not survive. The
+/// correspondence that does survive is positional: element *i* of the output's `/Contents`
+/// array is element *i* of the input's. Reading them out of the emitted array is what lets an
+/// assertion name an element at all.
+///
+/// # Panics
+///
+/// If the output has no `/Contents` array — which for these fixtures means the array was
+/// collapsed to a single reference, and the caller should be told that rather than left to
+/// interpret an empty list.
+fn contents_elements(pdf: &[u8]) -> Vec<usize> {
+    let normalised = decompressed(pdf);
+    let text = String::from_utf8_lossy(&normalised).into_owned();
+    let at = text
+        .find("/Contents [")
+        .expect("the output page must still have a /Contents ARRAY");
+    let rest = &text[at + "/Contents [".len()..];
+    let end = rest.find(']').expect("an unterminated /Contents array");
+    // `5 0 R 6 0 R` is SIX tokens, not two. Taking every number would give the generations
+    // too, which is how the first version reported four elements for a two-element array.
+    rest[..end]
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .chunks(3)
+        .filter_map(|chunk| match chunk {
+            [number, _generation, r] if *r == "R" => number.parse::<usize>().ok(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The decoded body of object `number` in the normalised output.
+///
+/// The output is normalised with `--decode-level=all`, so stream bodies are plain text. Reading
+/// one **by object number** is what lets an assertion be about a single `/Contents` element
+/// rather than about the page's concatenation, which is the distinction a collapsed array
+/// destroys while leaving every page-level assertion true.
+fn stream_body(pdf: &[u8], number: usize) -> String {
+    let normalised = decompressed(pdf);
+    let text = String::from_utf8_lossy(&normalised).into_owned();
+    let marker = format!("\n{number} 0 obj");
+    let at = text
+        .find(&marker)
+        .unwrap_or_else(|| panic!("object {number} is not in the output"));
+    let rest = &text[at..];
+    let start = rest
+        .find("stream\n")
+        .unwrap_or_else(|| panic!("object {number} is not a stream in the output"));
+    let end = rest
+        .find("endstream")
+        .unwrap_or_else(|| panic!("object {number} has no endstream"));
+    rest[start + "stream\n".len()..end].to_owned()
 }
 
 /// Assert `needle` is absent from the normalised output, naming what it is.
@@ -257,8 +329,7 @@ fn a_differences_anchor_outside_a_character_code_is_refused_rather_than_folded_t
         let document = page_with_font(&format!(
             "/Encoding << /Type /Encoding /Differences [{anchor} /Sacute /Egrave] >>"
         ));
-        let error = redact(&document).expect_err("an anchor outside a character code");
-        let text = format!("{error:?}");
+        let text = refusal(&document, "an anchor outside a character code");
         assert!(
             text.contains("differences-anchor"),
             "an anchor of {anchor} must refuse by name, got: {text}"
@@ -323,8 +394,7 @@ fn a_type_three_procedure_that_shows_text_refuses_by_name() {
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     let document = pdf.build(catalog);
 
-    let error = redact(&document).expect_err("a Type 3 procedure that shows text");
-    let text = format!("{error:?}");
+    let text = refusal(&document, "a Type 3 procedure that shows text");
     assert!(
         text.contains("type-three-procedure-shows-text"),
         "got: {text}"
@@ -369,10 +439,10 @@ fn a_type_three_procedure_drawing_outside_its_own_box_is_still_refused() {
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     let document = pdf.build(catalog);
 
-    let error = redact(&document).expect_err("a Type 3 procedure the region cannot reach");
+    let text = refusal(&document, "a Type 3 procedure the region cannot reach");
     assert!(
-        format!("{error:?}").contains("type-three-procedure-shows-text"),
-        "got: {error:?}"
+        text.contains("type-three-procedure-shows-text"),
+        "got: {text}"
     );
 }
 
@@ -411,29 +481,112 @@ fn a_differences_naming_one_code_twice_does_not_hide_a_type_three_procedure() {
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     let document = pdf.build(catalog);
 
-    let error = redact(&document).expect_err("the shadowed procedure shows text");
+    let text = refusal(&document, "the shadowed procedure shows text");
     assert!(
-        format!("{error:?}").contains("type-three-procedure-shows-text"),
-        "got: {error:?}"
+        text.contains("type-three-procedure-shows-text"),
+        "got: {text}"
     );
 }
 
 #[test]
-fn a_page_whose_contents_is_not_a_single_stream_refuses_by_name() {
-    // KILLS: dropping the "/Contents must be a stream" check in `rewrite`.
+fn a_contents_array_is_rewritten_element_by_element_and_stays_an_array() {
+    // PDF 32000-1 §7.8.2 makes an array `/Contents` ONE lexical stream, so the cut is planned
+    // on the concatenation and written back along the element boundaries. A rewriter that put
+    // the whole concatenation into the first element would collapse the array -- which is what
+    // spike 0006 measured the naive route doing.
+    //
+    // The text object straddles the two elements on purpose: `BT` is in the first and the `Tj`
+    // in the second. Element-wise tokenising sees two parses, neither holding a complete text
+    // object, so a fixture whose elements each parse alone would not ask this question.
+    //
+    // # This test asserted the wrong thing first, and a review measured it
+    //
+    // It checked only that `/Contents` still contained a `[`. Collapsing the **distribution of
+    // bytes across the elements** leaves the array of references untouched -- the mutation that
+    // writes the whole concatenation into element 0 and empties the rest passed it, which is
+    // exactly the defect the comment in `rewrite` names. The array token was never the thing
+    // at risk.
+    //
+    // So the assertions are now per element: element 0 keeps its own bytes and element 1 keeps
+    // its own, and neither is the concatenation of both.
+    let (document, _, _) = array_contents_document(false);
+    let (out, _) = redact(&document).expect("an array /Contents redacts");
+
+    assert_absent(&out, b"SECRET", "the removed text");
+    assert_present(&out, b"KIN", "the text outside the region");
+
+    // RESOLVED THROUGH THE OUTPUT'S OWN ARRAY, because qpdf renumbers on write. The first
+    // version of this read the fixture's object numbers and could not find them.
+    let elements = contents_elements(&out);
+    assert_eq!(elements.len(), 2, "two elements in, two elements out");
+    let head_bytes = stream_body(&out, elements[0]);
+    let tail_bytes = stream_body(&out, elements[1]);
+    // Element 0 held the `BT … Td` prefix and must still hold it, and only it.
+    assert!(
+        head_bytes.contains("Td"),
+        "element 0 lost its own content: {head_bytes:?}"
+    );
+    assert!(
+        !head_bytes.contains("KIN"),
+        "element 1's text was written into element 0 -- the array was collapsed: {head_bytes:?}"
+    );
+    // Element 1 held the showing operators and must still hold them, and must not be empty.
+    assert!(
+        tail_bytes.contains("KIN"),
+        "element 1 lost its own content: {tail_bytes:?}"
+    );
+    assert!(
+        !tail_bytes.trim().is_empty(),
+        "element 1 was emptied -- the array was collapsed into element 0"
+    );
+}
+
+#[test]
+fn an_array_whose_reached_element_is_shared_refuses_by_name() {
+    // THE CASE THE SEAM LEAKS AT. Element 1 -- the one holding the text the region reaches --
+    // is also page 1's whole `/Contents`. Editing it in place removes that text from a page
+    // nobody selected, and §6's read-back would be clean on the page it was given.
+    //
+    // Under-detecting this asks only whether the ARRAY object is shared, which it is not.
+    let (document, _, _) = array_contents_document(true);
+    let text = refusal(&document, "the reached element is shared");
+    assert!(
+        text.contains("shared-contents"),
+        "the refusal must name the sharing rule, got: {text}"
+    );
+}
+
+#[test]
+fn an_array_whose_shared_element_the_region_misses_is_redacted() {
+    // THE NEAR-MISS TWIN, and the over-detection half. Element 0 is the shared one and it holds
+    // the letterhead, which sits at the foot of the page; the region reaches only element 1.
+    // A page-level rule -- "any element shared, refuse" -- would refuse this, and a shared
+    // letterhead across every page of a document is an ordinary shape rather than an exotic
+    // one. Without this test the rule above could tighten to a page-level one and stay green.
+    let (document, _) = shared_letterhead_document();
+    let (out, _) = redact(&document).expect("the region never reaches the shared element");
+    assert_absent(&out, b"SECRET", "the removed text");
+    assert_present(&out, b"LETTERHEAD", "the shared element, untouched");
+}
+
+#[test]
+fn one_page_referencing_one_stream_twice_refuses_by_name() {
+    // `/Contents [5 0 R 5 0 R]` is legal and is ONE page sharing with ITSELF. The concatenation
+    // holds that text twice, and an edit written back to the object applies at both positions.
+    // A rule that asked "does another PAGE use this?" answers no and is wrong, which is why the
+    // count is of references rather than of pages.
     let mut pdf = Builder::new();
     let catalog = pdf.reserve();
     let pages = pdf.reserve();
     let page = pdf.reserve();
     let font = pdf.add(&helvetica_with_widths());
-    let first = pdf.stream("", "BT /F1 24 Tf 72 700 Td (SEC) Tj ET\n");
-    let second = pdf.stream("", "BT /F1 24 Tf 72 300 Td (KIN) Tj ET\n");
+    let body = pdf.stream("", "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n");
     pdf.put(
         page,
         &format!(
             "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
              /Resources << /Font << /F1 {font} 0 R >> >> \
-             /Contents [{first} 0 R {second} 0 R] >>"
+             /Contents [{body} 0 R {body} 0 R] >>"
         ),
     );
     pdf.put(
@@ -443,11 +596,146 @@ fn a_page_whose_contents_is_not_a_single_stream_refuses_by_name() {
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     let document = pdf.build(catalog);
 
-    let error = redact(&document).expect_err("an array /Contents");
-    assert!(
-        format!("{error:?}").contains("contents-not-a-stream"),
-        "got: {error:?}"
+    let text = refusal(&document, "one object referenced twice by one page");
+    assert!(text.contains("shared-contents"), "got: {text}");
+}
+
+#[test]
+fn two_pages_sharing_one_whole_contents_stream_refuses_by_name() {
+    // The simplest form of the hazard, and the one ADR 0029 named: two pages, one `/Contents`
+    // object, no array anywhere.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let first = pdf.reserve();
+    let second = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let body = pdf.stream("", "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n");
+    for page in [first, second] {
+        pdf.put(
+            page,
+            &format!(
+                "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {font} 0 R >> >> /Contents {body} 0 R >>"
+            ),
+        );
+    }
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 2 /Kids [{first} 0 R {second} 0 R] >>"),
     );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let text = refusal(&document, "two pages sharing one content stream");
+    assert!(text.contains("shared-contents"), "got: {text}");
+}
+
+#[test]
+fn a_contents_array_holding_something_that_is_not_a_stream_refuses_by_name() {
+    // Skipping a non-stream element would shift every later element's index, so the map from an
+    // offset back to an object would name the wrong one -- a cut written to the wrong stream,
+    // reported as success.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let null = pdf.add("<< /Type /Null >>");
+    let body = pdf.stream("", "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> \
+             /Contents [{null} 0 R {body} 0 R] >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let text = refusal(&document, "a non-stream element");
+    assert!(text.contains("contents-not-a-stream"), "got: {text}");
+}
+
+/// A one- or two-page document whose page 0 `/Contents` is an array of two elements, with the
+/// text object **straddling** them: `BT` ends element 0, the `Tj` is in element 1.
+///
+/// With `share`, page 1 exists and its whole `/Contents` is element 1 — the element the region
+/// reaches. Without it, page 0 is the only page and nothing is shared.
+fn array_contents_document(share: bool) -> (Vec<u8>, usize, usize) {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let first = pdf.reserve();
+    let second = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    // ELEMENT 0 ENDS MID-TEXT-OBJECT. Tokenising it alone yields a `BT` with no `ET`.
+    let head = pdf.stream("", "BT /F1 24 Tf 72 700 Td\n");
+    let tail = pdf.stream("", "(SECRET) Tj ET\nBT /F1 24 Tf 72 300 Td (KIN) Tj ET\n");
+    pdf.put(
+        first,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> \
+             /Contents [{head} 0 R {tail} 0 R] >>"
+        ),
+    );
+    if share {
+        pdf.put(
+            second,
+            &format!(
+                "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {font} 0 R >> >> /Contents {tail} 0 R >>"
+            ),
+        );
+        pdf.put(
+            pages,
+            &format!("<< /Type /Pages /Count 2 /Kids [{first} 0 R {second} 0 R] >>"),
+        );
+    } else {
+        pdf.put(second, "<< /Type /Null >>");
+        pdf.put(
+            pages,
+            &format!("<< /Type /Pages /Count 1 /Kids [{first} 0 R] >>"),
+        );
+    }
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    (pdf.build(catalog), head, tail)
+}
+
+/// Two pages sharing element 0 — a letterhead at the foot of the page — with each page's own
+/// body in element 1. The region reaches the body and never the letterhead.
+fn shared_letterhead_document() -> (Vec<u8>, usize) {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let first = pdf.reserve();
+    let second = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let letterhead = pdf.stream("", "BT /F1 12 Tf 72 40 Td (LETTERHEAD) Tj ET\n");
+    let body_one = pdf.stream("", "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n");
+    let body_two = pdf.stream("", "BT /F1 24 Tf 72 700 Td (OTHER) Tj ET\n");
+    for (page, body) in [(first, body_one), (second, body_two)] {
+        pdf.put(
+            page,
+            &format!(
+                "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {font} 0 R >> >> \
+                 /Contents [{letterhead} 0 R {body} 0 R] >>"
+            ),
+        );
+    }
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 2 /Kids [{first} 0 R {second} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    (pdf.build(catalog), letterhead)
 }
 
 #[test]
@@ -553,11 +841,8 @@ fn an_annotation_whose_rect_is_not_four_numbers_refuses_by_name() {
     // KILLS: treating an unreadable `/Rect` as "outside the region". Where it sits is then
     // unknown, and unknown is not outside.
     let document = annotated_document("[72 690 400]");
-    let error = redact(&document).expect_err("a /Rect that is not four numbers");
-    assert!(
-        format!("{error:?}").contains("annotation-rect"),
-        "got: {error:?}"
-    );
+    let text = refusal(&document, "a /Rect that is not four numbers");
+    assert!(text.contains("annotation-rect"), "got: {text}");
 }
 
 #[test]
@@ -566,11 +851,16 @@ fn a_page_index_past_the_end_refuses_rather_than_reaching_for_the_page() {
     // check lived in one caller and the comment claimed the constructor made it.
     let document = page_with_font("");
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    let error = burrow_engines::redact_probe::redact_page(&document, 7, redacted, band())
-        .expect_err("a page the document does not have");
+    let text = match burrow_engines::redact_probe::redact_page(&document, 7, redacted, band()) {
+        Ok((out, _)) => panic!(
+            "redacted {} bytes for a page that does not exist",
+            out.len()
+        ),
+        Err(error) => format!("{error:?}"),
+    };
     assert!(
-        format!("{error:?}").contains("page"),
-        "the refusal must name the page, got: {error:?}"
+        text.contains("page"),
+        "the refusal must name the page, got: {text}"
     );
 }
 
@@ -609,8 +899,7 @@ fn a_form_xobject_drawn_twice_refuses_when_the_region_reaches_inside_it() {
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     let document = pdf.build(catalog);
 
-    let error = redact(&document).expect_err("a shared form the region reaches into");
-    let text = format!("{error:?}");
+    let text = refusal(&document, "a shared form the region reaches into");
     assert!(
         text.contains("shared-form"),
         "the refusal must name the sharing rule, got: {text}"
@@ -766,10 +1055,430 @@ fn a_parent_chain_that_never_terminates_refuses_by_name() {
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     let document = pdf.build(catalog);
 
-    let error = redact(&document).expect_err("a /Parent chain that does not terminate");
-    let text = format!("{error:?}");
+    let text = refusal(&document, "a /Parent chain that does not terminate");
     assert!(
         text.contains("page-tree-depth") || text.contains("no-display-box"),
         "the refusal must name the climb or the missing box, got: {text}"
     );
+}
+
+#[test]
+fn a_contents_array_past_the_element_ceiling_is_refused_by_the_walk() {
+    // THE CEILING, THROUGH THE OPERATION. What it measures is that the refusal reaches a
+    // caller of `redact_page` at all -- the ceiling itself is the walk's, and
+    // `sharing_tests::a_contents_array_past_the_element_ceiling_is_refused_by_the_walk` is
+    // what makes it non-inert, because only a direct call can tell which ceiling fired.
+    //
+    // Kept rather than deleted as a duplicate: it is the only thing asserting that the walk's
+    // refusal is not swallowed somewhere between `new` and the caller.
+    let elements = burrow_engines::pdfsyntax::contents::MAX_ELEMENTS + 1;
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let mut refs = Vec::with_capacity(elements);
+    refs.push(format!(
+        "{} 0 R",
+        pdf.stream("", "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n")
+    ));
+    for _ in 1..elements {
+        refs.push(format!("{} 0 R", pdf.stream("", " ")));
+    }
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents [{}] >>",
+            refs.join(" ")
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let text = refusal(&document, "past the element ceiling");
+    assert!(
+        text.contains("contents-too-many"),
+        "the WALK must refuse it, not the splice one step later: {text}"
+    );
+}
+
+#[test]
+fn a_contents_array_at_the_element_ceiling_is_read() {
+    // THE NEAR-MISS. Without it the test above passes for a ceiling of one, and a ceiling of
+    // one would refuse every two-element document in existence.
+    let elements = burrow_engines::pdfsyntax::contents::MAX_ELEMENTS;
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let mut refs = Vec::with_capacity(elements);
+    refs.push(format!(
+        "{} 0 R",
+        pdf.stream("", "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n")
+    ));
+    refs.push(format!(
+        "{} 0 R",
+        pdf.stream("", "BT /F1 24 Tf 72 300 Td (KIN) Tj ET\n")
+    ));
+    for _ in 2..elements {
+        refs.push(format!("{} 0 R", pdf.stream("", " ")));
+    }
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents [{}] >>",
+            refs.join(" ")
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let (out, _) = redact(&document).expect("exactly at the ceiling");
+    assert_absent(&out, b"SECRET", "the removed text");
+    assert_present(&out, b"KIN", "the text outside the region");
+}
+
+#[test]
+fn a_stream_that_is_both_a_page_content_and_a_form_is_counted_once_in_total() {
+    // THE TWO-COUNTER LEAK. `check_form_sharing` consulted the form counts and
+    // `check_contents_sharing` the content counts, and neither was the TOTAL. An object reached
+    // once by each route has one reference in each map, so both checks passed and the object
+    // was edited -- removing the text from the page that draws it as a form, with §6's
+    // read-back clean on the page that was asked for.
+    //
+    // A content stream may legally carry extra dictionary keys, so one object can be a valid
+    // page content stream AND a valid Form XObject at once. Nothing exotic is needed for the
+    // other two routes the review measured; this is the one that needs saying out loud.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let first = pdf.reserve();
+    let second = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    // Page 0's whole /Contents, and also a Form XObject page 1 draws.
+    let dual = pdf.stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 612 792]",
+        "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n",
+    );
+    let other = pdf.stream("", "q 1 0 0 1 0 0 cm /Fm0 Do Q\n");
+    pdf.put(
+        first,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {dual} 0 R >>"
+        ),
+    );
+    pdf.put(
+        second,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /XObject << /Fm0 {dual} 0 R >> >> \
+             /Contents {other} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 2 /Kids [{first} 0 R {second} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let text = refusal(&document, "one object, two routes, two references");
+    assert!(
+        text.contains("shared-contents") || text.contains("shared-form"),
+        "the refusal must name a sharing rule, got: {text}"
+    );
+}
+
+#[test]
+fn a_form_the_region_reaches_that_is_also_another_pages_contents_refuses() {
+    // The mirror of the case above, and the reason the fix is one total rather than each check
+    // learning about the other's map: here the region reaches a FORM, and what makes it shared
+    // is a `/Contents` reference.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let first = pdf.reserve();
+    let second = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let dual = pdf.stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 612 792]",
+        "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n",
+    );
+    let body = pdf.stream("", "q 1 0 0 1 0 0 cm /Fm0 Do Q\n");
+    pdf.put(
+        first,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /XObject << /Fm0 {dual} 0 R >> >> \
+             /Contents {body} 0 R >>"
+        ),
+    );
+    pdf.put(
+        second,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {dual} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 2 /Kids [{first} 0 R {second} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let text = refusal(&document, "a form that is also another page's content");
+    assert!(
+        text.contains("shared-form") || text.contains("shared-contents"),
+        "the refusal must name a sharing rule, got: {text}"
+    );
+}
+
+/// A three-element `/Contents` where the region reaches the **middle** element, with `shared`
+/// naming which element is also another page's whole `/Contents`.
+fn three_element_document(shared: usize) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let first = pdf.reserve();
+    let second = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    // Element 0 draws at the foot, element 1 in the band, element 2 at the foot.
+    let parts = [
+        pdf.stream("", "BT /F1 12 Tf 72 40 Td (HEAD) Tj ET\n"),
+        pdf.stream("", "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n"),
+        pdf.stream("", "BT /F1 12 Tf 72 20 Td (FOOT) Tj ET\n"),
+    ];
+    pdf.put(
+        first,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> \
+             /Contents [{} 0 R {} 0 R {} 0 R] >>",
+            parts[0], parts[1], parts[2]
+        ),
+    );
+    pdf.put(
+        second,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {} 0 R >>",
+            parts[shared]
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 2 /Kids [{first} 0 R {second} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+#[test]
+fn the_sharing_question_is_asked_of_the_element_the_cut_lands_in_not_a_fixed_one() {
+    // KILLS: any constant index. A review planted "always ask about the LAST element" and the
+    // whole suite stayed green, because every array fixture had exactly two elements and the
+    // reached one was the last -- so `locate`'s answer and `len() - 1` were the same number
+    // everywhere. `Contents::locate` is well tested; the OPERATION's use of it was not.
+    //
+    // Three elements, and the region reaches the MIDDLE one. Now "first", "last" and "the one
+    // the cut lands in" are three different answers.
+
+    // The middle element is shared: it is the one being edited, so refuse.
+    let text = refusal(&three_element_document(1), "the middle element is shared");
+    assert!(text.contains("shared-contents"), "got: {text}");
+
+    // The FIRST element is shared and the region never reaches it: redact.
+    let (out, _) = redact(&three_element_document(0)).expect("the shared element is element 0");
+    assert_absent(&out, b"SECRET", "the removed text");
+    assert_present(&out, b"HEAD", "the shared element, untouched");
+
+    // The LAST element is shared and the region never reaches it: redact. This is the one a
+    // `len() - 1` mutation gets wrong in the refusing direction.
+    let (out, _) = redact(&three_element_document(2)).expect("the shared element is element 2");
+    assert_absent(&out, b"SECRET", "the removed text");
+    assert_present(&out, b"FOOT", "the shared element, untouched");
+}
+
+#[test]
+fn a_page_with_no_contents_is_redacted_to_a_no_op_rather_than_refused() {
+    // `/Contents` is optional (PDF 32000-1 §7.7.3.3) and a page without one is blank. Refusing
+    // it was an undisclosed regression this commit introduced and a review measured against
+    // the parent: the parent returned Ok and this returned `contents-missing`.
+    //
+    // A blank page has nothing to remove, so the redaction is a no-op that still produces a
+    // document -- which is what a caller asking to redact a blank page should get.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let (out, _) = redact(&document).expect("a blank page is legal and redacts to a no-op");
+    assert!(out.starts_with(b"%PDF"));
+}
+
+#[test]
+fn a_contents_element_whose_data_will_not_decode_refuses_by_name() {
+    // What a stream draws is unknown if its data will not decode, and unknown is not "nothing".
+    // Declared `/FlateDecode` over bytes that are not flate.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let broken = pdf.stream("/Filter /DCTDecode", "not a jpeg at all\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {broken} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let text = refusal(&document, "a /Contents that will not decode");
+    assert!(
+        text.contains("contents-unreadable"),
+        "the refusal must be the /Contents one, not some other unreadable: {text}"
+    );
+}
+
+#[test]
+fn a_contents_array_that_decodes_past_the_memory_ceiling_is_refused_before_it_is_held() {
+    // KILLS: the missing running total in `page_contents`.
+    //
+    // `MAX_ELEMENTS` is 4096 and the same object may be referenced by every element, so the
+    // decoded total is 4096 x the element size however small the file is -- no compression
+    // needed. A security review measured 4096 references to one 1 MB stream: a **1.02 MB
+    // input** reaching **8.2 GB** resident in 2.9 s, with the operation failing on a ceiling
+    // inside `glyphs_in` only after both allocations had happened.
+    //
+    // THE CEILING IS STATED RATHER THAN THE FIXTURE SIZED TO THE DEFAULT. Building a document
+    // that passes a one-gigabyte default is a memory experiment, and a fixture sized to a
+    // default stops testing anything the day the default moves. 64 elements of 64 kB is 4 MB,
+    // against a stated 1 MB.
+    //
+    // ONE OBJECT REFERENCED 4096 TIMES, which is what makes the file small and the decode
+    // large -- the amplification the bound exists for. The sharing rule would also refuse this
+    // document, but `page_contents` runs first inside `affected_streams`, so the bound is what
+    // fires and the assertion below says so by name.
+    //
+    // The ceiling has to clear the OPEN's own size estimate, which consults `max_memory_bytes`
+    // at the `SizeEstimate` stage: a 1 MB ceiling was refused before this code ran at all, on
+    // the first version of this test.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let padding = "% ".to_owned() + &"x".repeat(64 * 1024) + "\n";
+    let body = pdf.stream(
+        "",
+        &format!("BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n{padding}"),
+    );
+    let refs: Vec<String> = std::iter::repeat_n(format!("{body} 0 R"), 4096).collect();
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents [{}] >>",
+            refs.join(" ")
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let mut limits = burrow_types::Limits::default();
+    limits.max_memory_bytes = 32 * 1024 * 1024;
+    let redacted: BTreeSet<usize> = [0].into_iter().collect();
+    let text = match burrow_engines::redact_probe::redact_page_with_limits(
+        &document,
+        0,
+        redacted,
+        band(),
+        limits,
+    ) {
+        Ok((out, _)) => panic!("redacted {} bytes past the memory ceiling", out.len()),
+        Err(error) => format!("{error:?}"),
+    };
+    assert!(
+        text.contains("contents-too-large"),
+        "the refusal must come from the decode bound, not from a ceiling downstream of the \
+         allocation: {text}"
+    );
+}
+
+#[test]
+fn a_contents_array_inside_the_memory_ceiling_is_read() {
+    // THE NEAR-MISS. Without it the test above passes for a ceiling of zero, which would refuse
+    // every document there is.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&helvetica_with_widths());
+    let head = pdf.stream("", "BT /F1 24 Tf 72 700 Td\n");
+    let tail = pdf.stream("", "(SECRET) Tj ET\nBT /F1 24 Tf 72 300 Td (KIN) Tj ET\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> \
+             /Contents [{head} 0 R {tail} 0 R] >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let mut limits = burrow_types::Limits::default();
+    limits.max_memory_bytes = 32 * 1024 * 1024;
+    let redacted: BTreeSet<usize> = [0].into_iter().collect();
+    let (out, _) = burrow_engines::redact_probe::redact_page_with_limits(
+        &document,
+        0,
+        redacted,
+        band(),
+        limits,
+    )
+    .expect("well inside the ceiling");
+    assert_absent(&out, b"SECRET", "the removed text");
 }

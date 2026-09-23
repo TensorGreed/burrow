@@ -34,6 +34,7 @@ use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
     Glyph, check_form_sharing, check_type_three_procedure, glyphs_in, remove_glyphs,
+    remove_glyphs_across,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -64,15 +65,15 @@ pub(crate) struct QpdfRedaction {
     /// agreeing.
     page: usize,
     region: Region,
+    /// The ceilings this operation applies. Carried because `page_contents` decodes content
+    /// streams and has to stop somewhere; see its header for the measurement.
+    limits: burrow_types::Limits,
     /// Counted once, before any edit: the sharing rule is about the document as it arrived.
     sharing: FormUseCounts,
     deadline: Deadline,
     clock: Arc<dyn Clock>,
     /// The glyphs the region reaches, resolved once by `affected_streams`.
     cut: Vec<Glyph>,
-    /// Each affected stream's rewritten bytes, so `codes_still_drawn` reads the finished
-    /// content rather than re-deriving it.
-    rewritten: BTreeMap<StreamId, Vec<u8>>,
 }
 
 impl QpdfRedaction {
@@ -86,6 +87,7 @@ impl QpdfRedaction {
         document: Document,
         page: usize,
         region: Region,
+        limits: burrow_types::Limits,
         deadline: Deadline,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
@@ -109,11 +111,11 @@ impl QpdfRedaction {
             document,
             page,
             region,
+            limits,
             sharing,
             deadline,
             clock,
             cut: Vec::new(),
-            rewritten: BTreeMap::new(),
         })
     }
 
@@ -154,13 +156,147 @@ impl QpdfRedaction {
     fn frame(&self, page: &ObjectHandle<'_>) -> Result<PageFrame> {
         super::redact_frame::of(&self.document, page)
     }
+
+    /// The page's content as one lexical stream, with the element handles behind it.
+    ///
+    /// # Read here rather than taken from qpdf's concatenation
+    ///
+    /// `qpdf_oh_get_page_content_data` returns the elements already joined and says nothing
+    /// about where the joins were. That is enough to *read* a page and not enough to *write*
+    /// one back: a rewriter holding only its output can emit the page as a single stream, which
+    /// collapses the array and rewrites the object graph of a document that asked for some text
+    /// to be removed. Spike 0006 measured the naive route doing exactly that.
+    ///
+    /// The handles come back in element order beside the map, because the write is per element
+    /// and matching by position is the only correspondence there is — two elements can be the
+    /// same object, so identity would not distinguish them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] naming `contents-not-a-stream` for a `/Contents` that is neither a
+    /// stream nor an array of streams, and `contents-unreadable` for an element whose data will
+    /// not decode. A page with **no** `/Contents` is `Ok(None)` rather than an error: it is a
+    /// blank page, which is legal and ordinary.
+    fn page_contents<'a>(
+        &'a self,
+        page: &ObjectHandle<'a>,
+    ) -> Result<Option<(crate::pdfsyntax::contents::Contents, Vec<ObjectHandle<'a>>)>> {
+        let contents = page.key(&CONTENTS);
+        if let Some(error) = self.document.take_error() {
+            return Err(error);
+        }
+        let handles: Vec<ObjectHandle<'a>> = match contents.type_code() {
+            object_type::STREAM => vec![contents],
+            object_type::ARRAY => {
+                let length = contents.array_len();
+                if let Some(error) = self.document.take_error() {
+                    return Err(error);
+                }
+                let mut out = Vec::new();
+                for at in 0..length {
+                    let element = contents.array_item(at);
+                    if let Some(error) = self.document.take_error() {
+                        return Err(error);
+                    }
+                    if element.type_code() != object_type::STREAM {
+                        // AN ELEMENT THAT IS NOT A STREAM IS NOT A GAP TO SKIP. Skipping it
+                        // would shift every later element's index, so the map from an offset
+                        // back to an object would name the wrong one -- a cut written to the
+                        // wrong stream, reported as success.
+                        return Err(Error::Malformed(
+                            "pdf redaction [contents-not-a-stream]: a /Contents array holding \
+                             something that is not a content stream"
+                                .to_owned(),
+                        ));
+                    }
+                    out.push(element);
+                }
+                out
+            }
+            // ABSENT. `/Contents` is optional (PDF 32000-1 §7.7.3.3) and a page without one
+            // is blank -- ordinary, not malformed. Refusing it was an undisclosed regression:
+            // the previous commit redacted such a page to a no-op, and this file's own
+            // `sharing_tests` argues in a comment that refusing here would refuse a document
+            // for a page nobody asked about. Found by a review measuring both commits.
+            object_type::NULL => return Ok(None),
+            _ => {
+                return Err(Error::Malformed(
+                    "pdf redaction [contents-not-a-stream]: a page whose /Contents is neither \
+                     a stream nor an array of them"
+                        .to_owned(),
+                ));
+            }
+        };
+
+        // NO ELEMENT CEILING HERE, and its absence is measured rather than assumed.
+        //
+        // A review suggested adding one for locality: the walk enforces `MAX_ELEMENTS` in
+        // `QpdfRedaction::new`, so this function's bound was an ordering property of a
+        // different function. Adding it made **both** untestable — each ceiling refuses with
+        // the same rule name, so deleting either leaves the other producing the same message
+        // and a mutation sweep caught neither. Two defences that mask each other are worth one
+        // defence and a lost test.
+        //
+        // So there is one ceiling, in the walk, where it also bounds the walk's own work — and
+        // `sharing_tests::a_contents_array_past_the_element_ceiling_is_refused_by_the_walk`
+        // asks it directly rather than through an operation that cannot reach it.
+
+        // BOUNDED AND CHECKPOINTED PER ELEMENT, and both were missing.
+        //
+        // `MAX_ELEMENTS` is 4096 and **the same object may be referenced by every element**, so
+        // the decoded total is 4096 x the element's size however small the file is — no
+        // compression needed. Measured by a security review, release build: 4096 references to
+        // one 1 MB stream is a **1.02 MB input** that reaches **8.2 GB** of resident memory in
+        // 2.9 s, and the operation then fails on a ceiling inside `glyphs_in` — after both
+        // allocations. On a phone or a browser tab that is an OOM kill rather than a refusal.
+        //
+        // `max_memory_bytes` detects rather than bounds and its check is after the engine call,
+        // so nothing fired first. This is a running total against the same ceiling, tested
+        // before each decode, which is the only place it can be tested cheaply: by the time
+        // `Contents::concatenate` sees the parts, `bodies` already holds the peak.
+        let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(handles.len());
+        let mut decoded: u64 = 0;
+        for handle in &handles {
+            self.deadline.checkpoint(self.clock.as_ref())?;
+            let Some(body) = handle.stream_data()? else {
+                return Err(Error::Malformed(
+                    "pdf redaction [contents-unreadable]: a content stream whose data burrow \
+                     could not decode, so what it draws is unknown"
+                        .to_owned(),
+                ));
+            };
+            decoded = decoded.saturating_add(u64::try_from(body.len()).unwrap_or(u64::MAX));
+            if decoded > self.limits.max_memory_bytes {
+                return Err(Error::Unsupported(format!(
+                    "pdf redaction [contents-too-large]: a page whose /Contents decodes to \
+                     more than the {} bytes this operation will hold",
+                    self.limits.max_memory_bytes
+                )));
+            }
+            bodies.push(body);
+        }
+        let borrowed: Vec<&[u8]> = bodies.iter().map(Vec::as_slice).collect();
+        let map = crate::pdfsyntax::contents::Contents::concatenate(&borrowed)?;
+        Ok(Some((map, handles)))
+    }
 }
 
 impl Steps for QpdfRedaction {
     fn affected_streams(&mut self) -> Result<Vec<StreamId>> {
         self.deadline.checkpoint(self.clock.as_ref())?;
         let page = self.page_handle()?;
-        let content = page.page_content()?;
+        // BURROW'S OWN CONCATENATION, not `qpdf_oh_get_page_content_data`'s.
+        //
+        // qpdf hands back the elements joined and nothing about where the joins were, so a
+        // rewriter holding only its output can write the page back as ONE stream and nothing
+        // else -- which silently rewrites the object graph of a document that asked for some
+        // text to be removed, and is what spike 0006 measured the naive route doing.
+        // `Contents` keeps the boundaries, and every offset below is into its bytes.
+        let Some((contents, elements)) = self.page_contents(&page)? else {
+            // A blank page draws nothing, so the region reaches nothing and there is no edit
+            // to plan. Not a refusal: see `page_contents`.
+            return Ok(Vec::new());
+        };
         let resources = PageResources::of(&page)?;
 
         let frame = self.frame(&page)?;
@@ -168,7 +304,7 @@ impl Steps for QpdfRedaction {
 
         // EVERY GLYPH, then the ones the region reaches. The conservative box, not the advance
         // box: a glyph's ink can sit far from its origin, so uncertainty removes more.
-        let glyphs = glyphs_in(&content, &resources)?;
+        let glyphs = glyphs_in(contents.bytes(), &resources)?;
         let cut: Vec<Glyph> = glyphs
             .iter()
             .filter(|glyph| glyph.conservative_box().intersects(&region))
@@ -179,6 +315,14 @@ impl Steps for QpdfRedaction {
         // drawn elsewhere is refused rather than edited -- editing it removes its text from a
         // page nobody selected, which §6's read-back cannot see.
         check_form_sharing(&cut, &self.sharing)?;
+
+        // THE SAME RULE FOR THE PAGE'S OWN CONTENT, which the form rule did not cover: a glyph
+        // drawn by the page rather than by a form has `form: None`, and nothing counted those.
+        // Checked PER ELEMENT rather than per page, because only the element the region
+        // actually reaches matters -- a two-element `/Contents` whose letterhead element is
+        // shared and whose body element is not is redactable, and refusing the page would
+        // refuse a document that could have been served.
+        check_contents_sharing(&cut, &contents, &elements, &self.sharing, self.page)?;
 
         // THE TYPE 3 RULE, the same shape and for the same reason. A glyph procedure is a
         // content stream the walk does not descend into, so text inside one is text nothing
@@ -199,6 +343,7 @@ impl Steps for QpdfRedaction {
         streams.sort_unstable();
         streams.dedup();
         drop(resources);
+        drop(elements);
         drop(page);
         self.cut = cut;
         Ok(streams)
@@ -208,42 +353,71 @@ impl Steps for QpdfRedaction {
         self.deadline.checkpoint(self.clock.as_ref())?;
         let page = self.page_handle()?;
         let resources = PageResources::of(&page)?;
+        let null = ObjectHandle::new_null(&self.document);
 
-        let (content, form) = match stream {
-            StreamId::Page => (page.page_content()?, None),
+        match stream {
+            // THE PAGE'S OWN CONTENT, WRITTEN BACK ELEMENT BY ELEMENT. An array `/Contents` is
+            // one lexical stream to read and several objects to write, so the cut is planned on
+            // the concatenation and the bytes are cut back along the element boundaries. A
+            // rewriter that wrote the whole concatenation into the first element would collapse
+            // the array -- which is a valid-looking document whose object graph this operation
+            // silently rewrote. ADR 0029 §4.
+            StreamId::Page => {
+                let Some((contents, elements)) = self.page_contents(&page)? else {
+                    // probe-allowed: a burrow invariant, not a judgement about the file
+                    return Err(Error::Internal(
+                        "pdf redaction: a page stream to rewrite on a page with no /Contents"
+                            .to_owned(),
+                    ));
+                };
+                let mine: Vec<Glyph> = self
+                    .cut
+                    .iter()
+                    .filter(|glyph| glyph.source.form.is_none())
+                    .cloned()
+                    .collect();
+                let parts = remove_glyphs_across(&contents, None, &mine)?;
+                if parts.len() != elements.len() {
+                    // probe-allowed: a burrow invariant, not a judgement about the file
+                    return Err(Error::Internal(
+                        "pdf redaction: the splice returned a different number of streams than \
+                         the page has elements"
+                            .to_owned(),
+                    ));
+                }
+                for (element, bytes) in elements.iter().zip(&parts) {
+                    // WRITTEN BACK THROUGH THE TRAPPED VERB, with a null filter: the
+                    // replacement is plain bytes, and a null `/Filter` is how "no filter" is
+                    // said. qpdf re-compresses on write and sets `/Length` itself -- measured
+                    // against 12.4.1 on the emitted file, not assumed.
+                    element.replace_stream_data(bytes, &null, &null)?;
+                }
+                // NOTHING IS RETURNED FROM HERE. `codes_still_drawn` re-reads the document
+                // through qpdf rather than any record this step keeps -- which is the point of
+                // running it after the write. The field that used to hold these bytes claimed
+                // otherwise in its own doc comment and was read by nobody; it is gone.
+            }
             StreamId::Object(id) => {
                 let form = find_form(&resources, id)?;
-                (form, Some(id))
+                let mine: Vec<Glyph> = self
+                    .cut
+                    .iter()
+                    .filter(|glyph| glyph.source.form == Some(id))
+                    .cloned()
+                    .collect();
+                let edited = remove_glyphs(&form, Some(id), &mine)?;
+                // NO TYPE CHECK HERE, and its absence is deliberate. `form_handle` returns
+                // only entries whose `type_code()` is `STREAM` and otherwise refuses with
+                // `form-vanished`, so a check here could not fire -- a review planted a
+                // mutation of it and nothing could fail. An unreachable guard reads as
+                // coverage and is not any.
+                let target = form_handle(&resources, id)?;
+                target.replace_stream_data(&edited, &null, &null)?;
+                drop(target);
             }
-        };
-        let mine: Vec<Glyph> = self
-            .cut
-            .iter()
-            .filter(|glyph| glyph.source.form == form)
-            .cloned()
-            .collect();
-        let edited = remove_glyphs(&content, form, &mine)?;
-
-        // WRITTEN BACK THROUGH THE TRAPPED VERB, with a null filter: the replacement is plain
-        // bytes, and a null `/Filter` is how "no filter" is said. Verified end to end against
-        // qpdf 12.4.1 -- the stream comes back re-compressed with a correct `/Length`.
-        let target = match stream {
-            StreamId::Page => page.key(&CONTENTS),
-            StreamId::Object(id) => form_handle(&resources, id)?,
-        };
-        if target.type_code() != object_type::STREAM {
-            return Err(Error::Malformed(
-                "pdf redaction [contents-not-a-stream]: a page whose /Contents is not a single \
-                 stream, which this operation does not yet rewrite"
-                    .to_owned(),
-            ));
         }
-        let null = ObjectHandle::new_null(&self.document);
-        target.replace_stream_data(&edited, &null, &null)?;
-        drop(target);
         drop(resources);
         drop(page);
-        self.rewritten.insert(stream, edited);
         Ok(())
     }
 
@@ -463,6 +637,89 @@ const fn pack(identity: (core::ffi::c_int, core::ffi::c_int)) -> u64 {
     // `PageResources::font_object`, because the two pack the same thing and a packing that
     // disagreed with itself would make one font look like two.
     ((identity.0.unsigned_abs() as u64) << 16) | (identity.1.unsigned_abs() as u64 & 0xffff)
+}
+
+/// Refuse when the region reaches a `/Contents` element that something else also references.
+///
+/// # The hazard, and why the form rule did not cover it
+///
+/// A glyph drawn by the page rather than by a Form XObject has `source.form == None`, and
+/// [`check_form_sharing`] only counts forms. Two pages pointing at one `/Contents` object is
+/// legal and ordinary — this crate's own `inheriting_document()` fixture builds one, because it
+/// was the shortest way to write a two-page document. Editing that stream removes the text from
+/// **both** pages, and §6's read-back is clean on the page it was given. ADR 0029 carried this
+/// as a named gap; this is it closed.
+///
+/// # Per element, and that is the whole difficulty
+///
+/// A page-level rule would be a line shorter and wrong in both directions. **Under-detecting**
+/// — asking only whether the `/Contents` *array object* is shared — edits a shared element in
+/// place. **Over-detecting** — refusing any page one of whose elements is shared — refuses a
+/// document whose shared element is a letterhead the region never reaches, which is a common
+/// shape and a page that could have been served.
+///
+/// So the question is asked of the element the cut actually lands in:
+/// [`Contents::locate`](crate::pdfsyntax::contents::Contents::locate) maps the glyph's operation
+/// offset back to an element index, and the handle at that index is the object to count.
+///
+/// # A repeat inside one page counts
+///
+/// `/Contents [5 0 R 5 0 R]` is one page referencing one object twice. The concatenation holds
+/// that text twice and an edit written back to the object applies at both positions, so a rule
+/// asking "does another *page* use this?" answers no and is wrong. The count is of references.
+///
+/// # Errors
+///
+/// [`Error::Malformed`] naming `shared-contents`. [`Error::Internal`] naming
+/// `contents-offset` for a glyph whose operation offset does not fall in any element — a
+/// burrow invariant failing rather than a document being unusual, which is why the variant is
+/// `Internal` and not `Malformed`. It is refused rather than skipped either way.
+fn check_contents_sharing(
+    cut: &[Glyph],
+    contents: &crate::pdfsyntax::contents::Contents,
+    elements: &[ObjectHandle<'_>],
+    sharing: &FormUseCounts,
+    page: usize,
+) -> Result<()> {
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    for glyph in cut {
+        if glyph.source.form.is_some() {
+            continue;
+        }
+        let Some((at, _)) = contents.locate(glyph.source.operation.0) else {
+            // probe-allowed: a burrow invariant, not a judgement about the file
+            return Err(Error::Internal(
+                "pdf redaction [contents-offset]: a glyph whose operation is not inside any \
+                 /Contents element"
+                    .to_owned(),
+            ));
+        };
+        if !seen.insert(at) {
+            continue;
+        }
+        let Some(element) = elements.get(at) else {
+            // probe-allowed: a burrow invariant, not a judgement about the file
+            return Err(Error::Internal(
+                "pdf redaction [contents-offset]: an element index the page does not have"
+                    .to_owned(),
+            ));
+        };
+        let identity = element.object()?;
+        // THE TOTAL, by any route. Asking `content_references` alone was a leak: an object
+        // reached once as this page's `/Contents` and once as a form elsewhere had a count of
+        // one in each map, and both rules passed. See `FormUseCounts::total_references`.
+        let references = sharing.total_references(identity);
+        if references > 1 {
+            let others = sharing.content_pages_of(identity);
+            let elsewhere = others.iter().filter(|other| **other != page).count();
+            return Err(Error::Malformed(format!(
+                "pdf redaction [shared-contents]: the region reaches a content stream this \
+                 document references {references} times, across {elsewhere} other page(s); \
+                 editing it would remove text from a page that was not selected"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse if any Type 3 font the page draws with has a procedure that shows text.

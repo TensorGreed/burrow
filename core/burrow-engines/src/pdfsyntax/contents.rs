@@ -570,4 +570,49 @@ mod tests {
         assert_eq!(contents.bytes(), b"BT ET\n");
         assert_eq!(contents.apply(&[]).expect("applies")[0], b"BT ET");
     }
+
+    #[test]
+    fn apply_always_returns_one_buffer_per_element() {
+        // THE INVARIANT THE OPERATION GUARDS AND CANNOT REACH. `redact_steps::rewrite` checks
+        // that the splice returned as many buffers as the page has elements, and a mutation
+        // sweep found that deleting the check changes nothing any test can see -- because
+        // `apply` cannot return a different count, by construction.
+        //
+        // That makes the guard defence in depth over a property, and this is the property. A
+        // guard whose invariant is untested is a guard nobody has checked is worth having;
+        // testing it here rather than there puts it where the invariant is actually decided.
+        let cases: [&[&[u8]]; 5] = [
+            &[b"BT ET"],
+            &[b"BT", b"ET"],
+            &[b"", b"BT ET", b""],
+            &[b"q", b"1 0 0 1 0 0 cm", b"Q"],
+            &[b"a", b"b", b"c", b"d", b"e"],
+        ];
+        for parts in cases {
+            let contents = joined(parts);
+            for edits in [
+                Vec::new(),
+                vec![Edit {
+                    span: (0, 1),
+                    replacement: b"Z".to_vec(),
+                }],
+                vec![Edit {
+                    span: (0, contents.bytes().len().saturating_sub(1)),
+                    replacement: Vec::new(),
+                }],
+            ] {
+                // An edit may be refused -- it can straddle a separator -- and a refusal is not
+                // this property's business. What must never happen is a different count.
+                if let Ok(applied) = contents.apply(&edits) {
+                    assert_eq!(
+                        applied.len(),
+                        parts.len(),
+                        "apply returned {} buffers for {} elements",
+                        applied.len(),
+                        parts.len()
+                    );
+                }
+            }
+        }
+    }
 }

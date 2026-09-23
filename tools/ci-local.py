@@ -410,6 +410,7 @@ JOBS: list[dict] = [
             "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
             "pdfsyntax_operations pdfsyntax_contents "
             "pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode "
+            "redact_shared_contents "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -435,6 +436,10 @@ JOBS: list[dict] = [
             # found two round-trip defects in three minutes on a module with eighteen passing
             # unit tests over it.
             "fuzz:pdfsyntax_tounicode",
+            # #132's, and the only target here that GENERATES its documents rather than parsing
+            # the fuzzer's bytes as one: the question is whether the sharing detection is right
+            # across structures nobody would write by hand, not whether the parser survives.
+            "fuzz:redact_shared_contents",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

@@ -801,3 +801,128 @@ fn the_ordinary_shape_retains_its_font_and_says_by_how_much() {
         "with the whole document redacted the font has nowhere else to affect"
     );
 }
+
+#[test]
+fn the_walk_counts_every_reference_to_every_page_content_stream() {
+    // THE WALK HALF OF THE SHARED-/CONTENTS RULE, asked directly. The operation's tests go in
+    // through `redact_page` and can only see the refusal; this sees the counts, which is what
+    // distinguishes "the walk found nothing" from "the walk found one".
+    //
+    // Object 5 is referenced three times: twice by page 1's array and once by page 2. Object 6
+    // once. A rule counting PAGES would say 5 is used by two pages and miss the repeat, which
+    // is the shape `/Contents [5 0 R 5 0 R]` makes ordinary.
+    let bytes = document(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> \
+         /Contents [5 0 R 5 0 R 6 0 R] >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> \
+         /Contents 5 0 R >>"
+            .to_owned(),
+        stream("", "BT ET\n"),
+        stream("", "q Q\n"),
+    ]);
+    let opened = open(bytes);
+    let counts = count(&opened).expect("the fixture walks");
+
+    let all = counts.all_contents();
+    assert_eq!(all.len(), 2, "two distinct content streams: {all:?}");
+    let mut references: Vec<usize> = all.values().copied().collect();
+    references.sort_unstable();
+    assert_eq!(
+        references,
+        vec![1, 3],
+        "object 5 is referenced three times and object 6 once: {all:?}"
+    );
+
+    // AND THE PAGE SETS, which are the diagnostic rather than the rule. Object 5 is reached by
+    // both pages; object 6 by one.
+    let (shared, _) = all
+        .iter()
+        .find(|(_, count)| **count == 3)
+        .expect("the shared stream");
+    assert_eq!(
+        counts.content_pages_of(*shared).len(),
+        2,
+        "three references across two pages"
+    );
+}
+
+#[test]
+fn a_page_with_no_contents_contributes_nothing_rather_than_refusing() {
+    // A page may legally have no `/Contents` -- it draws nothing. The walk must pass over it,
+    // because refusing here would refuse the whole document for a page the operation was never
+    // asked about.
+    let bytes = document(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> \
+         /Contents 5 0 R >>"
+            .to_owned(),
+        stream("", "BT ET\n"),
+    ]);
+    let opened = open(bytes);
+    let counts = count(&opened).expect("a page with no /Contents is not an error");
+    assert_eq!(counts.all_contents().len(), 1);
+    assert_eq!(counts.all_contents().values().copied().sum::<usize>(), 1);
+}
+
+#[test]
+fn a_contents_array_past_the_element_ceiling_is_refused_by_the_walk() {
+    // ASKED OF THE WALK DIRECTLY, and that is the point. The operation refuses this too, but
+    // only because the walk runs first inside `QpdfRedaction::new` -- so a test going in
+    // through `redact_page` cannot tell which ceiling fired, and for a while there were two
+    // ceilings with one rule name, each masking the other from a mutation sweep.
+    //
+    // The ceiling bounds the WALK's work: an `array_item` and an `object()` per element, before
+    // anything has decided the document is one this operation will touch.
+    let elements = crate::pdfsyntax::contents::MAX_ELEMENTS + 1;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+        String::new(),
+    ];
+    let content = objects.len() + 1;
+    objects.push(stream("", "BT ET\n"));
+    let refs: Vec<String> = std::iter::repeat_n(format!("{content} 0 R"), elements).collect();
+    objects[2] = format!(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> \
+         /Contents [{}] >>",
+        refs.join(" ")
+    );
+    let opened = open(document(&objects));
+    let error = count(&opened).expect_err("past the element ceiling");
+    assert!(
+        format!("{error}").contains("contents-too-many"),
+        "the walk must refuse by name, got: {error}"
+    );
+}
+
+#[test]
+fn a_contents_array_at_the_element_ceiling_is_walked() {
+    // THE NEAR-MISS. Without it the test above passes for a ceiling of one, which would refuse
+    // every two-element document there is.
+    let elements = crate::pdfsyntax::contents::MAX_ELEMENTS;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+        String::new(),
+    ];
+    let content = objects.len() + 1;
+    objects.push(stream("", "BT ET\n"));
+    let refs: Vec<String> = std::iter::repeat_n(format!("{content} 0 R"), elements).collect();
+    objects[2] = format!(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> \
+         /Contents [{}] >>",
+        refs.join(" ")
+    );
+    let opened = open(document(&objects));
+    let counts = count(&opened).expect("exactly at the ceiling");
+    assert_eq!(
+        counts.all_contents().values().copied().sum::<usize>(),
+        elements,
+        "every reference is counted, including the repeats"
+    );
+}
