@@ -125,15 +125,18 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     // AND THE OUTCOME DISTRIBUTION, not just the count examined. A mutation that made
     // `QpdfRedaction::new` refuse unconditionally left this test green — 43 of 43 examined, 0
     // redacted, 43 refused — because every per-document assertion is inside the `Ok` arm.
-    // `CLAUDE.md`: gate on the expected count where that count is knowable, and this one is:
-    // the four real-producer documents redact, and the reason the other 39 do not is the
-    // standard-14 refusal ADR 0029 records.
+    // `CLAUDE.md`: gate on the expected count where that count is knowable.
     //
-    // A floor rather than an equality, because closing that refusal should not turn an
-    // improvement into a test failure — the number can only go up.
+    // It was 4, with a comment saying the other 39 were held back by the standard-14 refusal.
+    // That refusal is now closed — the metrics are bundled — and 37 documents redact. Leaving
+    // the floor at 4 would have left this test passing over a regression that took 37 back to
+    // 5, which is the whole failure mode the floor exists to catch: "4 of 43" reads as success.
+    //
+    // A floor rather than an equality, because the six that still refuse are refusals this
+    // milestone intends to close, and closing one must not be a test failure.
     assert!(
-        redactions.len() >= 4,
-        "{} documents redacted, and the four real-producer documents must: a refusal widened \
+        redactions.len() >= 37,
+        "{} documents redacted, and 37 did when this floor was last measured: a refusal widened \
          far enough to cover them would take every per-document assertion here to zero while \
          this test still printed a pass",
         redactions.len()
@@ -162,22 +165,37 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
     let out = match support::redact_page(pdf, 0, redacted, region) {
         Ok((out, report)) => {
-            // THE DISCLOSURE COUNT, bounded by something that is not the sharing walk. Every
-            // document in this corpus has one page and that page is the redacted one, so no
-            // font can be used outside the redacted set and every count must be zero. It is a
-            // weak claim, and it is the strongest one a single-page corpus supports --
-            // `tests/redaction_disclosure.rs` carries the multi-page case, which the corpus
-            // does not contain.
+            // THE DISCLOSURE COUNT, bounded by something that is not the sharing walk, and
+            // bounded by THIS DOCUMENT'S page count rather than by a claim about the corpus.
+            //
+            // This said "every document in this corpus has one page" and asserted zero. That
+            // was false when it was written -- `evade-widget-on-another-page.pdf` has two, and
+            // says so in its name -- and it never fired, because that document refused at the
+            // door for a missing width table until the standard-14 metrics landed. The first
+            // run that reached the assertion failed it, on a report that was **correct**: the
+            // font is used by page 2, page 2 is outside the redacted set, so `also_used_by` is
+            // 1 and the font is retained rather than cut.
+            //
+            // A ceiling derived from the document is the check that survives the next fixture:
+            // a font cannot be used by more pages than the document has, outside the one page
+            // this redacts. `tests/redaction_disclosure.rs` carries the exact multi-page case.
+            let pages = page_count_of(pdf);
+            let outside = pages.saturating_sub(1);
             for font in &report.fonts {
-                assert_eq!(
-                    font.also_used_by, 0,
-                    "{name}: a one-page document reports a font used by                      {} other pages: {font:?}",
+                assert!(
+                    font.also_used_by <= outside,
+                    "{name}: a {pages}-page document redacting one page reports a font used by \
+                     {} other pages, and there are only {outside}: {font:?}",
                     font.also_used_by
                 );
             }
-            assert!(
-                !report.discloses_a_retained_font(),
-                "{name}: a one-page document has nothing to retain a font for: {:?}",
+            // AND THE TWO ANSWERS MUST AGREE. A retained font is exactly a font used outside
+            // the redacted set, so a document with nowhere else to use one must not disclose,
+            // and one that reports a nonzero count must.
+            assert_eq!(
+                report.discloses_a_retained_font(),
+                report.fonts.iter().any(|font| font.also_used_by > 0),
+                "{name}: the disclosure and the counts disagree: {:?}",
                 report.fonts
             );
             out
@@ -241,4 +259,14 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
             .len()
             .saturating_sub(reached + drawn_after.len()),
     }
+}
+
+/// How many pages the document has.
+///
+/// Read from the document rather than assumed, because the assumption that every corpus
+/// document has one page was already false — see the disclosure check in `outcome_for`.
+fn page_count_of(pdf: &[u8]) -> usize {
+    let document = support::open(pdf.to_vec()).expect("a committed corpus document opens");
+    let count = support::page_count(&document).expect("its page count is readable");
+    usize::try_from(count).expect("a corpus document's page count fits in a usize")
 }

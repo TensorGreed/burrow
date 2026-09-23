@@ -160,6 +160,29 @@ pub enum Refusal {
     VerticalWriting,
     /// A CMap whose writing mode the document does not determine.
     UndeterminedWritingMode,
+    /// A marked-content span carrying its own copy of the text reaches the region.
+    ///
+    /// `/ActualText` and `/Alt` state what a span of glyphs *says*, as a plain string beside
+    /// the glyphs, and a reader that honours them shows that string rather than what the font
+    /// decodes. Removing the glyphs does not touch it. ADR 0029 §1 assigns this channel to
+    /// **handle**, and handling it means rewriting a property list inside the content stream,
+    /// which burrow does not do yet -- so until it does, the page is refused rather than
+    /// emitted with the secret still in it.
+    MarkedContentCarriesText,
+    /// A marked-content span reaching the region names its property list through
+    /// `/Properties`, which this module does not resolve.
+    ///
+    /// **Separate from [`Self::MarkedContentCarriesText`] because it is a different claim.**
+    /// That one says burrow *saw* `/ActualText` or `/Alt`; this one says burrow could not tell.
+    /// Folding them would put a sentence in front of the user asserting a copy of their text
+    /// exists when what happened is that nothing could look — and it would make the corpus
+    /// census read as though every one of these documents carried the channel.
+    ///
+    /// Measured: `13-optional-content.pdf` refuses here, because `/OC /MC0 BDC` names an
+    /// optional-content group. ADR 0029 §1 refuses optional content on a kept page anyway, so
+    /// the outcome is right while the rule is broader than the reason; narrowing it wants a
+    /// `/Properties` resolver on [`Resources`].
+    MarkedContentPropertiesUnresolved,
 }
 
 impl Refusal {
@@ -197,6 +220,8 @@ impl Refusal {
         Self::FormDepth,
         Self::VerticalWriting,
         Self::UndeterminedWritingMode,
+        Self::MarkedContentCarriesText,
+        Self::MarkedContentPropertiesUnresolved,
     ];
 
     /// The rule's name, as it appears in the error message.
@@ -235,6 +260,8 @@ impl Refusal {
             Self::FormDepth => "form-depth",
             Self::VerticalWriting => "vertical-writing",
             Self::UndeterminedWritingMode => "writing-mode-undetermined",
+            Self::MarkedContentCarriesText => "marked-content-carries-text",
+            Self::MarkedContentPropertiesUnresolved => "marked-content-properties-unresolved",
         }
     }
 
@@ -248,6 +275,8 @@ impl Refusal {
                 | Self::TooManyGlyphs
                 | Self::TooManyFormDraws
                 | Self::PatternMayDrawText
+                | Self::MarkedContentCarriesText
+                | Self::MarkedContentPropertiesUnresolved
                 | Self::UnreadableCMap
                 | Self::SharedFormWouldChangeElsewhere
                 | Self::TypeThreeProcedureShowsText
@@ -1052,6 +1081,149 @@ pub fn check_form_sharing(remove: &[Glyph], uses: &dyn FormUses) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The marked-content keys that carry a span's text as a string beside its glyphs.
+const TEXT_CARRYING_KEYS: [&[u8]; 2] = [b"ActualText", b"Alt"];
+
+/// Refuse a stream where a glyph being removed sits inside a marked-content span that carries
+/// its own copy of the text.
+///
+/// # What this is for, and how it was found
+///
+/// `/ActualText` states what a span of glyphs *says*, as a plain string in the content stream
+/// next to them; `/Alt` does the same for assistive technology. A reader that honours either
+/// shows **that string**, not what the font decodes — so removing the glyphs removes the
+/// drawing and leaves the sentence.
+///
+/// Measured on `tests/redaction/generated/09-actualtext.pdf`, spike 0006's channel 9. The
+/// region reached `0` and `9`; the removal took both codes out of the content stream correctly,
+/// the font was narrowed correctly, and PDFium still read `BURROW-CARRIER-09` off the output —
+/// including the two characters the user had selected — because
+/// `/Span << /ActualText (BURROW-CARRIER-09) >> BDC` was emitted untouched. The document had
+/// been refused at the door for a missing width table until the standard-14 metrics landed,
+/// which is the only reason this was not already shipping.
+///
+/// # Why a refusal and not a rewrite
+///
+/// ADR 0029 §1 assigns this channel to **handle** — "it is in the page's own stream" — and
+/// handling means rewriting a property list inside a content stream, which is a rewriter burrow
+/// does not have. Until it does, refusing names the reason; emitting does not.
+///
+/// # What it refuses that it need not
+///
+/// A `BDC` whose property list is a **name** resolves through the page's `/Properties`, which
+/// this module does not resolve — it resolves nothing, by construction. Such a span is treated
+/// as carrying text. That is the conservative direction and it is not free: the cost is
+/// measured against the corpus rather than assumed, and is recorded in ADR 0029.
+///
+/// # Errors
+///
+/// [`Refusal::MarkedContentCarriesText`] when a removed glyph is inside such a span, and
+/// whatever reading the operations failed with.
+pub fn check_marked_content(content: &[u8], remove: &[Glyph], stream: Option<u64>) -> Result<()> {
+    use std::collections::BTreeSet;
+
+    use super::ops::operations;
+
+    // ONLY THIS STREAM'S GLYPHS. A `Span` indexes the stream it was read from, so comparing one
+    // against another stream's operations compares two unrelated offsets — the mistake
+    // `GlyphSource::form` exists to make unexpressible.
+    let mine: BTreeSet<Span> = remove
+        .iter()
+        .filter(|glyph| glyph.source.form == stream)
+        .map(|glyph| glyph.source.operation)
+        .collect();
+    if mine.is_empty() {
+        return Ok(());
+    }
+
+    // A STACK, NOT A FLAG, AND EVERY SPAN IS ON IT. Marked content nests, so an inner
+    // `/P << /MCID 3 >> BDC` must not clear an outer `/Span << /ActualText … >> BDC` when its
+    // `EMC` arrives. Pushing only the carrying spans would do exactly that: the inner span's
+    // `EMC` would pop the outer span's entry. `BMC` takes no property list and so carries
+    // nothing, but it still opens a span and still has to be on the stack.
+    let mut open: Vec<Carried> = Vec::new();
+    for operation in operations(content)? {
+        match operation.operator.as_slice() {
+            b"BDC" => open.push(carried_by(&operation)),
+            b"BMC" => open.push(Carried::Nothing),
+            // AN UNMATCHED `EMC` IS NOT A REFUSAL HERE. The walk that produced these glyphs has
+            // already accepted the stream, and this check exists to answer one question about
+            // it; inventing a second opinion on well-formedness would refuse documents over a
+            // rule nothing else in the walk applies.
+            b"EMC" => {
+                open.pop();
+            }
+            _ => {}
+        }
+        if !mine.contains(&operation.span) {
+            continue;
+        }
+        // THE STRONGEST CLAIM ANY OPEN SPAN SUPPORTS, and the two are reported apart. A span
+        // burrow *saw* carry `/ActualText` is a different sentence from one it could not read,
+        // and collapsing them would tell a user their text was copied when what happened is
+        // that nothing could look. Text wins over unknown so the more specific reason is the
+        // one reported when both are open.
+        if open.contains(&Carried::Text) {
+            return Refusal::MarkedContentCarriesText.refuse(
+                "the selected text is inside a marked-content span that carries its own copy \
+                 of the text, which removing the glyphs would leave behind",
+            );
+        }
+        if open.contains(&Carried::Unknown) {
+            return Refusal::MarkedContentPropertiesUnresolved.refuse(
+                "the selected text is inside a marked-content span whose properties are named \
+                 rather than written out, so burrow cannot tell whether they carry their own \
+                 copy of the text",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// What an open marked-content span was found to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carried {
+    /// Its property list was read and holds neither [`TEXT_CARRYING_KEYS`].
+    Nothing,
+    /// Its property list was read and holds one of them.
+    Text,
+    /// Its property list is a name this module does not resolve.
+    Unknown,
+}
+
+/// Whether a `BDC` operation's property list carries the span's text.
+fn carried_by(operation: &Operation) -> Carried {
+    match operation.operands.last() {
+        // AN INLINE DICTIONARY, read at any depth: a `/ActualText` under a nested key is still
+        // a copy of the text. `items` is flat per level, so this recurses rather than striding
+        // by two — striding would also mistake a *value* equal to `/Alt` for a key, which is
+        // the direction that refuses too much rather than too little, but is still wrong.
+        Some(Operand::Dict { items, .. }) => {
+            if items.iter().any(holds_text_key) {
+                Carried::Text
+            } else {
+                Carried::Nothing
+            }
+        }
+        // A NAME, resolved through `/Properties`, which this module resolves nothing through.
+        // Reported as unread rather than as read-and-found: see `MarkedContentPropertiesUnresolved`.
+        Some(Operand::Name { .. }) => Carried::Unknown,
+        // Anything else is not a property list this can read, which is the same claim.
+        _ => Carried::Unknown,
+    }
+}
+
+/// Whether this operand is, or contains, one of [`TEXT_CARRYING_KEYS`].
+fn holds_text_key(operand: &Operand) -> bool {
+    match operand {
+        Operand::Name { value, .. } => TEXT_CARRYING_KEYS.contains(&value.as_slice()),
+        Operand::Dict { items, .. } | Operand::Array { items, .. } => {
+            items.iter().any(holds_text_key)
+        }
+        _ => false,
+    }
 }
 
 /// Remove `remove` from `content`, leaving every other glyph exactly where it was.
@@ -2105,8 +2277,8 @@ mod tests {
     use super::{
         CMap, Encoding, Form, FormUses, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix,
         Rect, Refusal, Resources, TextPosition, TextState, WritingMode, check_form_sharing,
-        check_type_three_procedure, check_writing_mode, glyphs_in, remove_glyphs,
-        takes_word_spacing, writing_mode_of,
+        check_marked_content, check_type_three_procedure, check_writing_mode, glyphs_in,
+        remove_glyphs, takes_word_spacing, writing_mode_of,
     };
 
     /// A resources table with one font of known width and whatever forms a test names.
@@ -2232,7 +2404,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 32,
+            total, 34,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -3481,5 +3653,125 @@ mod tests {
             glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
             Refusal::VerticalWriting,
         );
+    }
+
+    /// Per-rule probes for [`check_marked_content`].
+    ///
+    /// Each rule matches its own positive fixture and rejects a near-miss, and the near-misses
+    /// are the point: a check that refuses every `BDC` would pass the positive cases while
+    /// refusing every tagged document in existence, and one that refuses none would pass
+    /// nothing. Both of those printed a clean corpus sweep before this existed.
+    mod marked_content_probes {
+        use super::{Fake, check_marked_content, glyphs_in};
+
+        /// The glyphs `content` draws, all of them, from the caller's own stream.
+        fn all_glyphs(content: &[u8]) -> Vec<super::super::Glyph> {
+            glyphs_in(content, &Fake::new()).expect("the fixture walks")
+        }
+
+        /// Assert `content`'s own glyphs are refused, **and by which rule**.
+        ///
+        /// By the variant rather than by the rule's string, for the reason `assert_refused`
+        /// gives one level up: a rule name is a `&str` any refusal could produce, and
+        /// `Refusal::caught` is the thing that distinguishes them.
+        #[track_caller]
+        fn assert_refused_by(content: &[u8], rule: super::Refusal) {
+            let glyphs = all_glyphs(content);
+            match check_marked_content(content, &glyphs, None) {
+                Err(error) => assert!(
+                    rule.caught(&error),
+                    "refused, but by a different rule: wanted `{}`, got {error:?}",
+                    rule.rule()
+                ),
+                Ok(()) => panic!("expected a refusal by `{}`, got none", rule.rule()),
+            }
+        }
+
+        /// Assert `content`'s own glyphs are allowed through.
+        #[track_caller]
+        fn assert_allowed(content: &[u8]) {
+            let glyphs = all_glyphs(content);
+            if let Err(error) = check_marked_content(content, &glyphs, None) {
+                panic!("expected no refusal, got {error:?}");
+            }
+        }
+
+        #[test]
+        fn an_actualtext_span_around_the_removed_glyph_is_refused_by_name() {
+            assert_refused_by(
+                b"/Span << /ActualText (secret) >> BDC BT /F1 12 Tf (AB) Tj ET EMC",
+                super::Refusal::MarkedContentCarriesText,
+            );
+        }
+
+        #[test]
+        fn an_alt_span_is_refused_the_same_way() {
+            assert_refused_by(
+                b"/Span << /Alt (secret) >> BDC BT /F1 12 Tf (AB) Tj ET EMC",
+                super::Refusal::MarkedContentCarriesText,
+            );
+        }
+
+        #[test]
+        fn a_named_property_list_is_refused_as_unread_rather_than_as_found() {
+            // THE NEAR-MISS THAT SEPARATES THE TWO RULES. Nothing here carries text as far as
+            // anyone knows; what is true is that this module cannot resolve `/MC0`. Reporting
+            // it as `carries-text` would be an assertion about the user's document that no
+            // measurement supports.
+            assert_refused_by(
+                b"/OC /MC0 BDC BT /F1 12 Tf (AB) Tj ET EMC",
+                super::Refusal::MarkedContentPropertiesUnresolved,
+            );
+        }
+
+        #[test]
+        fn an_ordinary_tagged_span_is_not_refused() {
+            // THE NEAR-MISS FOR THE WHOLE CHECK. `/P << /MCID 0 >> BDC` is what every tagged
+            // PDF is full of. A rule that refused this would refuse most real documents while
+            // still passing all three positives above.
+            assert_allowed(b"/P << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC");
+        }
+
+        #[test]
+        fn a_carrying_span_the_removal_does_not_reach_is_not_refused() {
+            // Scope: the rule is about spans the removed glyphs are *inside*. A document may
+            // carry `/ActualText` elsewhere on the page and still be redactable.
+            let content = b"/Span << /ActualText (secret) >> BDC BT /F1 12 Tf (AB) Tj ET EMC \
+                  BT /F1 12 Tf (CD) Tj ET";
+            let glyphs = all_glyphs(content);
+            // BY CODE, not by position: which glyph is "outside" is a fact about the fixture's
+            // text, and selecting by an x coordinate made this test depend on the fake's
+            // widths instead.
+            let outside: Vec<_> = glyphs
+                .iter()
+                .filter(|glyph| {
+                    glyph.source.code == u32::from(b'C') || glyph.source.code == u32::from(b'D')
+                })
+                .cloned()
+                .collect();
+            assert_eq!(
+                outside.len(),
+                2,
+                "the fixture must draw exactly the two glyphs outside the span"
+            );
+            assert!(check_marked_content(content, &outside, None).is_ok());
+        }
+
+        #[test]
+        fn a_nested_inner_span_does_not_close_the_carrying_outer_one() {
+            // The stack, not a flag. The inner `EMC` must not clear the outer `/ActualText`.
+            assert_refused_by(
+                b"/Span << /ActualText (secret) >> BDC /P << /MCID 0 >> BDC EMC \
+                  BT /F1 12 Tf (AB) Tj ET EMC",
+                super::Refusal::MarkedContentCarriesText,
+            );
+        }
+
+        #[test]
+        fn a_span_that_closed_before_the_glyph_does_not_refuse_it() {
+            // The other direction of the same stack: a carrying span that is properly closed
+            // must not keep refusing everything after it.
+            assert_allowed(b"/Span << /ActualText (secret) >> BDC EMC BT /F1 12 Tf (AB) Tj ET");
+        }
     }
 }

@@ -34,8 +34,8 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    Glyph, check_form_sharing, check_type_three_procedure, glyphs_in, remove_glyphs,
-    remove_glyphs_across,
+    Glyph, check_form_sharing, check_marked_content, check_type_three_procedure, glyphs_in,
+    remove_glyphs, remove_glyphs_across,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -336,6 +336,18 @@ impl Steps for QpdfRedaction {
             .map(|glyph| glyph.source.font.clone())
             .collect();
         check_type_three(&resources, &drawn_fonts)?;
+
+        // THE MARKED-CONTENT RULE, per stream, because a `Span` indexes the stream it was read
+        // from. The page's own content first, then each form the removal reaches -- a form
+        // carries its own `BDC`s and its own offsets.
+        check_marked_content(contents.bytes(), &cut, None)?;
+        let mut reached_forms: Vec<u64> =
+            cut.iter().filter_map(|glyph| glyph.source.form).collect();
+        reached_forms.sort_unstable();
+        reached_forms.dedup();
+        for form in reached_forms {
+            check_marked_content(&find_form(&resources, form)?, &cut, Some(form))?;
+        }
 
         let mut streams: Vec<StreamId> = cut
             .iter()
