@@ -166,3 +166,36 @@ trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
 # adds two table entries and their names. **+3,340 is still not the number to quote** -- it is
 # the middle of a range that now spans 16x in one direction and 274x in the other. Measure.
 
+
+# =================================================================================
+# THE ARRAY WRITE VERB (#131, ADR 0029 §1)
+# =================================================================================
+#
+# Declared natively by the qpdf redaction steps and not exported, which is the first time a
+# redaction verb has stood here rather than being exported alongside its declaration.
+#
+# The two that came before -- `qpdf_oh_replace_stream_data` and `qpdf_oh_new_null` -- were
+# exported in the same change because they are how a stream is written at all, and a web
+# redaction module without them could not exist in any form. This one is narrower: it is font
+# surgery's only write verb, and font surgery is the last step of an operation whose earlier
+# steps the web path does not have.
+#
+# The gate caught it on the pre-push sweep of the change that declared it, which is the moment
+# `qpdf_remove_page`'s four-month absence is the argument for.
+
+[[function]]
+name = "qpdf_oh_set_array_item"
+operation = "redact"
+reason = """\
+Font surgery's only write verb: `/Widths` is positional, so a removed code's entry is zeroed \
+rather than erased, and `/Differences` narrows by replacing a name with the integer for the \
+next code. Both need to replace an array item in place. \
+\
+Not exported because `bindings/burrow-wasm` has no redaction at all -- there is no web \
+implementation of `redact::Steps`, and ADR 0026 puts redaction in a separate wasm module that \
+does not exist yet. Exporting it today would make an array-mutation primitive callable from \
+JavaScript for an operation that path cannot run, which is the opposite of what the export \
+allowlist is for. \
+\
+Removed by the change that gives the web its `Steps` implementation, in the same change that \
+adds the export."""

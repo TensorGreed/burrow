@@ -147,3 +147,10 @@ path = "fuzz_targets/pdfsyntax_cmap_wmode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "pdfsyntax_tounicode"
+path = "fuzz_targets/pdfsyntax_tounicode.rs"
+test = false
+doc = false
+bench = false

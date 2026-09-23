@@ -440,6 +440,39 @@ impl<'a> Lexer<'a> {
     }
 }
 
+/// Read past a composite value in an inline image's dictionary, to its matching close.
+///
+/// Bounded by [`MAX_NESTING`], the same ceiling the operand reader uses: a value nested deeper
+/// than that is generated rather than written, and reading on would be unbounded recursion in
+/// the one place that must not have any.
+fn skip_composite(lexer: &mut Lexer<'_>, array: bool) -> Result<()> {
+    let mut depth = 1usize;
+    while let Some(token) = lexer.next_token()? {
+        match token {
+            Token::ArrayOpen | Token::DictOpen => {
+                depth += 1;
+                if depth > MAX_NESTING {
+                    return Err(Error::Unsupported(
+                        "an inline image dictionary nested deeper than burrow will read".to_owned(),
+                    ));
+                }
+            }
+            Token::ArrayClose | Token::DictClose => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(Error::Malformed(if array {
+        "pdf syntax: an inline image dictionary with an array that never closes".to_owned()
+    } else {
+        "pdf syntax: an inline image dictionary with a dictionary that never closes".to_owned()
+    }))
+}
+
 /// How many bytes of data an inline image's dictionary declares.
 ///
 /// `dictionary` is the bytes between `BI` and `ID`.
@@ -474,6 +507,20 @@ fn inline_image_length(dictionary: &[u8]) -> Result<usize> {
                     .to_owned(),
             ));
         };
+        // AN ARRAY OR DICTIONARY VALUE IS ONE VALUE, not four tokens. This loop alternates
+        // key, value, key, value, so `/D [1 0]` put `1` in a key position and the whole
+        // dictionary was refused -- and `/D` is the Decode array, which every one-bit image
+        // mask carries. Measured on `producer-latex.pdf`, whose Type 3 bitmap glyphs are
+        // inline images written exactly that way: fifty-five of them, and the first refused
+        // the page. Nothing caught it because the walk had no reason to read a glyph
+        // procedure until the Type 3 check did.
+        if matches!(token, Token::ArrayOpen | Token::DictOpen) {
+            skip_composite(&mut lexer, matches!(token, Token::ArrayOpen))?;
+            if matches!(name.as_slice(), b"F" | b"Filter") {
+                filtered = true;
+            }
+            continue;
+        }
         let number = || -> Option<u64> {
             let raw = dictionary.get(span.0..span.1)?;
             std::str::from_utf8(raw).ok()?.parse::<u64>().ok()
@@ -586,7 +633,7 @@ fn hex_value(pair: &[u8]) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Lexer, Token, hex_value, is_whitespace};
+    use super::{Lexer, MAX_NESTING, Token, hex_value, is_whitespace};
 
     fn tokens(bytes: &[u8]) -> Vec<Token> {
         let mut lexer = Lexer::new(bytes);
@@ -690,6 +737,100 @@ mod tests {
         assert_eq!(
             tokens(b"7 0 R"),
             [Token::Number, Token::Number, Token::Keyword(b"R".to_vec()),]
+        );
+    }
+
+    #[test]
+    fn a_composite_value_in_an_image_dictionary_is_one_value_and_not_four_tokens() {
+        // `/D [1 0]` is the Decode array every one-bit image mask carries, and this loop used
+        // to read the `1` as the next key and refuse the whole dictionary. `producer-latex.pdf`
+        // writes its Type 3 bitmap glyphs exactly this way.
+        let stream = b"q BI /W 9 /H 1 /D [1 0] ID \x00(/F9<<\xff\xfe EI Q /F2";
+        assert_eq!(names(stream), ["W", "H", "D", "F2"]);
+    }
+
+    #[test]
+    fn a_filter_written_as_an_array_still_counts_as_filtered() {
+        // `/F [/AHx]` is legal and means the same as `/F /AHx`. The extent is then whatever the
+        // filter produced, so without an `/L` it must still refuse rather than compute one from
+        // `/W` and `/H` -- which would end the image in the middle of its own data.
+        let stream = b"q BI /W 1 /H 1 /F [/AHx] ID abcd EI Q";
+        let mut lexer = Lexer::new(stream);
+        let mut refused = false;
+        loop {
+            match lexer.next_token() {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            refused,
+            "a filtered image with no /L has no derivable extent"
+        );
+    }
+
+    #[test]
+    fn an_image_dictionary_nested_past_the_ceiling_is_a_refusal() {
+        // A mutation sweep deleted `skip_composite`'s `MAX_NESTING` check and the suite stayed
+        // green: the bound was real and nothing failed for its absence, which `CLAUDE.md` says
+        // is not a defence. The depth here is one past the lexer's own ceiling.
+        let mut stream = b"q BI /W 1 /H 1 /D ".to_vec();
+        stream.extend(std::iter::repeat_n(b'[', MAX_NESTING + 1));
+        stream.extend_from_slice(b" 1 ");
+        stream.extend(std::iter::repeat_n(b']', MAX_NESTING + 1));
+        stream.extend_from_slice(b" ID a EI Q");
+        let mut lexer = Lexer::new(&stream);
+        let mut refused = None;
+        loop {
+            match lexer.next_token() {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(error) => {
+                    refused = Some(format!("{error}"));
+                    break;
+                }
+            }
+        }
+        let refused = refused.expect("nesting past the ceiling is a refusal");
+        assert!(
+            refused.contains("nested deeper than burrow will read"),
+            "the refusal must name the nesting, got: {refused}"
+        );
+    }
+
+    #[test]
+    fn an_image_dictionary_nested_to_the_ceiling_is_read() {
+        // THE NEAR-MISS. Without it the test above passes for a ceiling of one.
+        let mut stream = b"q BI /W 9 /H 1 /D ".to_vec();
+        stream.extend(std::iter::repeat_n(b'[', MAX_NESTING - 1));
+        stream.extend_from_slice(b" 1 ");
+        stream.extend(std::iter::repeat_n(b']', MAX_NESTING - 1));
+        stream.extend_from_slice(b" ID \x00(/F9<<\xff\xfe EI Q /F2");
+        assert_eq!(names(&stream), ["W", "H", "D", "F2"]);
+    }
+
+    #[test]
+    fn an_array_that_never_closes_in_an_image_dictionary_is_a_refusal() {
+        let stream = b"q BI /W 1 /H 1 /D [1 0 ID abcd EI Q";
+        let mut lexer = Lexer::new(stream);
+        let mut refused = false;
+        loop {
+            match lexer.next_token() {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            refused,
+            "an unclosed array is not a dictionary burrow can read"
         );
     }
 

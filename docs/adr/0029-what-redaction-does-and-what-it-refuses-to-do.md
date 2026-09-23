@@ -308,6 +308,13 @@ redacted page cannot see metadata**, so a disclosure they cannot act on is a cav
 > Not the words, and not the order — the set of characters. Rebuilding a font is a thing Not Only
 > PDF cannot do yet, so this is stated rather than fixed.
 >
+> **And a font other pages also use keeps more than that: the widths of the removed characters,
+> and the mapping from their codes to the letters they stood for.** Not the words, and not where
+> they were — but more than the character set, because the `/Widths` array and the `/ToUnicode`
+> map still have an entry per code. Not Only PDF leaves that font untouched on purpose: editing
+> it would change how the text looks on the other pages that use it, which is damage to a page
+> you did not ask about rather than a leak on the one you did.
+>
 > Not Only PDF refuses documents it cannot redact safely rather than doing its best, and says
 > which shape it found. **And it verifies that it did what it said, not that your secret is
 > gone:** it cannot read a secret drawn as a picture or as shapes, and it cannot tell whether a
@@ -408,8 +415,9 @@ fixture generator is the obvious first entry. Both `known_gap` entries in
 
 ## Conditions for revisiting
 
-Four, all named rather than general, each with the thing that would change. The fourth was
-added by #129 and is dated 2026-09-21.
+Five, all named rather than general, each with the thing that would change. The fourth was
+added by #129 on 2026-09-21; the fifth by #131 on 2026-09-22, when the real font resolver
+first met the corpus.
 
 **`hb-subset`, for the `cmap` residue.** §1 closes `/ToUnicode` and `/Differences`. The embedded
 font program itself still covers the removed run's alphabet in its own `cmap` — and its `post`
@@ -516,7 +524,114 @@ resolving it needs a seam the resources trait does not have. That is
 [#152](https://github.com/TensorGreed/burrow/issues/152), and until it closes, §6's assertions
 are bounded by "every operator the walk models, plus patterns refused" rather than by "the page".
 
-**None of the four is a plan.** They are written down so that the next person to look does not
+**The standard-14 metrics, for the font that carries none.** A font with no `/Widths` array
+has **no advances in the document at all**: the standard 14 — Helvetica, Times, Courier,
+Symbol, ZapfDingbats and their variants — are defined by tables every viewer bundles and no
+file repeats. PDFium has them built in. burrow does not, so the resolver refuses rather than
+guessing, and it is right to: an invented width misplaces every glyph after it on the line, and
+a region test over a misplaced glyph is a redaction that removes the wrong thing or nothing.
+
+**Measured, because a refusal this common would be a product decision rather than an
+implementation detail.** Over every committed fixture in `tests/redaction/fixtures` and
+`tests/conformance/fixtures` — 26 files:
+
+| outcome | count |
+|---|--:|
+| walked cleanly | 11 |
+| refused: **no `/Widths`** | **1** (`font-program-with-a-paren.pdf`) |
+| refused: the document does not open at all | 10 (the deliberately damaged fixtures) |
+| refused: the content names a font the resources do not provide | 3 |
+| refused: text shown with no font selected | 1 |
+
+So it fires **once** in the committed corpus, and **not at all** on the four real-producer
+documents — LibreOffice, pdfTeX and tesseract all embed the fonts they use and declare their
+widths. That is the shape to expect: a producer that embeds a subset has to declare widths,
+because the subset is not a standard font any more.
+
+Where it will fire is the hand-written PDF and the minimal generator — a document that says
+`/BaseFont /Helvetica` and stops. Those are real, and a user who brings one gets a refusal for
+a document every viewer opens happily.
+
+#### Amendment, 2026-09-22: the measurement above examined the wrong half of the corpus
+
+The table counts `tests/redaction/fixtures` and `tests/conformance/fixtures`, 26 files. It does
+not count **`tests/redaction/generated/`**, which is the 39-document survival corpus spike 0006
+produced and the one this operation exists to be measured against. Running the assembled
+operation over all 43 documents — the first time anything has, because until the qpdf `Steps`
+implementation there was nothing to run — gives:
+
+| outcome | generated (39) | producer (4) |
+|---|--:|--:|
+| redacted | **0** | **4** |
+| refused: no `/Widths` | **38** | 0 |
+| refused: a pattern that may draw text | 1 | 0 |
+
+So the refusal does not fire once. It fires on **38 of 43 documents**, and on **every document
+in the corpus this milestone is measured against**. The sentence above — *"it fires once in the
+committed corpus"* — was true of the files it looked at and false as a statement about the
+corpus, and it was load-bearing: it is why bundling the metrics was filed as the cheapest of
+five conditions rather than as a blocker.
+
+The earlier reading's other conclusion survives intact and is the reason the two halves differ
+so sharply: every real-producer document redacts, because a producer that embeds a subset must
+declare its widths. The hand-built corpus says `/BaseFont /Helvetica` and stops — which is what
+a hand-written PDF does, and what spike 0006 wrote because the channel under test was never the
+font.
+
+**This does not change the refusal.** Guessing a width is still the wrong answer, for the reason
+the paragraph above gives. What it changes is the priority: with the metrics bundled, 38 of
+these 43 documents become documents this operation can act on, and without them the conformance
+sweep for #134 has four documents to verify against rather than forty-two.
+
+**What would change it: bundling the standard-14 metrics.** They are 14 tables of a few hundred
+widths, they are not copyrightable data, and the Adobe Font Metrics files that carry them are
+redistributable. It is a few tens of kilobytes and no new dependency — which puts it in a
+different class from `hb-subset` and image re-encoding, both of which need code that does not
+exist here. It is the cheapest of the five conditions and the one whose absence a user is most
+likely to meet.
+
+Until then the refusal has to say why in the voice §7 established, and name the document shape
+rather than the missing table: *"this page uses a font whose measurements are not in the file,
+so burrow cannot tell where its text sits."*
+
+### Fonts follow the same rule as forms, and the same wall
+
+Font surgery removes the `/Widths`, `/ToUnicode` and `/Differences` entries for codes the
+document no longer draws (§1, and the ordering amendment). A font is shared by nearly every
+multi-page document, so the two obvious rules are both wrong:
+
+- **refuse on any shared font** refuses nearly every multi-page document;
+- **edit it in place** reflows the text on every other page that uses it. The glyphs are still
+  there at different widths, so the page still renders and still says something — slightly
+  different. That is **corruption rather than leakage**, and it is worse in one way: §6's
+  read-back asks about the page it was given, and that page is clean.
+
+So the rule is neither: **cut a font only when every page that uses it is being redacted in
+this operation.** Counted across the whole document by object identity, with the resolver's
+inherited-`/Resources` handling, and including fonts reached only *through* a form or pattern —
+a font named inside a form that page 3 draws is a font page 3 uses. Otherwise the font is left
+intact and disclosed (§7, which now says what it retains).
+
+**Measured, because the rule is only worth choosing if it lets documents through.** Redacting
+page 0 alone, over every openable committed fixture:
+
+| | |
+|---|--:|
+| fixtures examined | 15 |
+| have no fonts at all | 9 |
+| cut **every** font | 5 |
+| retain at least one, and disclose | 1 |
+
+The one that retains is a genuinely two-page document whose pages share a font, which is
+exactly the case the rule exists for. All four real-producer documents cut everything.
+
+**Copy-on-write is the answer that serves both, and it hits the same wall as forms**: cloning a
+font dictionary needs `qpdf_oh_new_dictionary`, which is not on the trapped list and does not
+meet `qpdf-untrapped-accepted.toml`'s non-parsing bar, exactly as `qpdf_oh_new_stream` does not.
+So fonts join forms under one condition for revisiting — upstream trapping those two verbs —
+rather than getting a condition of their own.
+
+**None of the five is a plan.** They are written down so that the next person to look does not
 have to re-derive why five channels are handled the way they are.
 
 ## Alternatives considered
@@ -1004,3 +1119,226 @@ step 2, after every rewrite succeeded, is asserted the same way: the rule is abo
 The non-vacuity control is that a clean run rewrites all four streams and does reach `write`.
 Without it, every assertion about what does *not* happen after a failure would be satisfied by
 an implementation that does nothing at all.
+
+## Amendment, 2026-09-22 — what the fakes got wrong
+
+Every test of the `Steps` seam before the qpdf implementation ran against a fake. This section
+is what changed when a real document went through it, kept as a list rather than folded into
+the sections it corrects, because the pattern across the six is the point: **not one of them was
+a mistake in the code the fake stood in for.** Five were in code the fake never exercised at
+all, and the sixth was in an instrument.
+
+That is the shape to expect from a fake, and it is not the shape the phrase "the fake was more
+forgiving" predicts. A fake is not usually wrong about the call it fakes. It is wrong about
+everything downstream of that call that nobody reached.
+
+### 1. `conservative_box` scaled its advance twice, so the box was the origin
+
+`Glyph::advance` and `Glyph::font_size` are text-space quantities and `Glyph::to_page` begins
+with the font matrix and the font size. `conservative_box` put the first two through the third,
+so every advance box came back scaled by `0.001 × size` a second time. Measured on
+`producer-writer.pdf` at 18 pt: a glyph PDFium boxes at 2.5 × 13 pt came out at **0.25 × 0.32
+pt**, a box barely larger than the pen position.
+
+A region overlapping a glyph's ink but not its origin therefore intersected nothing, and the
+redaction removed nothing and returned `Ok`. This is the defect the conservative box exists to
+prevent, inside the function that exists to prevent it.
+
+**Why nothing caught it.** Every hand-built fixture draws its region around the glyph origin,
+because that is the number a fixture author has to hand. It took a real producer document and a
+region derived from **PDFium's own ink boxes** — the instrument that is not burrow — to put a
+region somewhere a fixture author would not have thought to.
+
+`Glyph` now carries `text_to_page` beside `to_page`, and the rustdoc on each says which
+quantities belong in which space.
+
+### 2. Dropping `/ToUnicode` corrupted the text the redaction kept
+
+`narrow_font` removed the whole `/ToUnicode` stream, with a comment arguing that what it said
+about the *kept* codes was already in the font's own `cmap`. It is not: a simple font's `cmap`
+maps glyph selectors, and for a subset encoding there is nothing to fall back to. PDFium read
+**`U+0001`** at the origin where readable text had been.
+
+§1 already said "remove the entries for codes the document no longer draws", not "remove the
+stream". The code did the second and the comment argued for it. `pdfsyntax::tounicode` now reads
+a CMap and writes back one mapping exactly the kept codes; `qpdf_oh_replace_stream_data` is
+trapped, so nothing new was needed at the FFI boundary.
+
+### 3. Dropping `/Differences` was the same defect, and was found by looking rather than measuring
+
+`/Differences` is `[ 65 /S /e /c /r /e /t ]`: it names the glyph for every code, including the
+ones that stay. Removing it re-points every kept code at the base encoding — different
+characters drawn, which is corruption rather than redaction. It sat in the same function as (2)
+and had the same shape.
+
+Erasing one name renumbers the rest, and constructing a replacement array is closed: neither
+`qpdf_oh_new_array` nor `qpdf_oh_new_name` meets `engines/qpdf-untrapped-accepted.toml`'s
+non-parsing bar. What is available is `set_array_item` with an integer, and it is exactly right
+— replacing the name at index *i*, whose code is *c*, with the integer *c + 1* leaves the array
+the same length and re-anchors the run at the code the next entry already had.
+`[1 /a /b /c]` minus `/b` is `[1 /a 3 /c]`.
+
+**Recorded as a finding even though no test measured it**, because the honest account is that it
+was found by reading the other half of a function whose first half had just been shown wrong.
+
+### 4. burrow refused to read its own output
+
+A whole-page removal came back `Unsupported("a content stream gives an operator more operands
+than burrow will read")` — about a `TJ` whose operator has exactly one operand. `read_composite`
+pushed array *items* through the same check as an operation's operand run, so **any array of
+more than 64 entries was refused**, and a `TJ` holds one entry per kerned glyph pair. An
+ordinary justified line of forty characters is past it.
+
+This is a pre-existing parser defect with nothing to do with redaction, and it had been in the
+tree since the operand caps were added. No fixture had an array long enough. `MAX_COMPOSITE_ITEMS`
+is now its own cap, and `MAX_TOTAL_OPERANDS` still counts composite items so the aggregate bound
+is unchanged.
+
+### 5. An inline image's `/D [1 0]` refused the page
+
+`inline_image_length` alternates key, value, key, value. An array value is four tokens, so `/D`
+put `1` in a key position and the whole dictionary was refused — and `/D` is the Decode array
+every one-bit image mask carries. `producer-latex.pdf` writes its Type 3 bitmap glyphs exactly
+that way, fifty-five of them.
+
+**Found by a check that had never run.** `check_type_three_procedure` was written for the Type 3
+`/CharProcs` hazard and was not wired into the qpdf steps; wiring it up was a two-line change
+that immediately refused a real document, for a reason that had nothing to do with Type 3
+fonts. A check nobody calls examines nothing, and this one examined nothing until now.
+
+### 6. The standard-14 refusal fires on 38 of 43 corpus documents
+
+See the amendment in *The standard-14 metrics* above. The earlier measurement counted 26 files
+and did not include `tests/redaction/generated/`, which is the corpus this operation exists to
+be measured against.
+
+### What was checked and found sound
+
+Stated so the list above is not read as a survey of everything:
+
+- **`qpdf_oh_replace_stream_data` with a null `/Filter`.** The comment claimed the stream comes
+  back re-compressed with a correct `/Length`. Measured on the emitted bytes: the content stream
+  and both narrowed `/ToUnicode` streams come out `/FlateDecode` with correct lengths, and
+  `qpdf --check` reports no stream-encoding errors. The claim holds.
+- **Error latching.** Every new call site drains through `Document::take_error`, and the
+  drain-after-every-call rule was already what `prune.rs` established.
+- **Handle lifetimes.** `ObjectHandle<'a>` borrows the document, so the lifetime that made this
+  hazard a compile error in `prune` makes it one here. `tools/check-handle-identity.py` covers
+  the identity half and stays green.
+
+## Amendment, 2026-09-22 — what the reviews found, and the one number that frames it
+
+Two reviews went over the qpdf `Steps` implementation before its first push. The finding that
+organises the rest is not any one defect: it is that a security review planted twenty mutations
+and **nine survived, all nine in `qpdf/redact_steps.rs`**.
+
+The units that module drives were well covered. Deleting `MAX_ENTRIES`, `MAX_TOTAL_OPERANDS`,
+the `bfrange` bounds or the `keep` filter each turned something red. Deleting the **calls** to
+them did not. `narrow_differences` could be a no-op, `check_type_three` could stop refusing,
+`strip_page_keys` could strip nothing, and the suite stayed green.
+
+That is the shape of a seam nobody tested, and it is the same shape the previous amendment
+describes from the other side: a fake is not usually wrong about the call it fakes; it is wrong
+about everything downstream that nobody reached. `core/burrow-engines/tests/redaction_defences.rs`
+is one document per defence, named for the mutation it kills, and the sweep was re-run to
+confirm each one does.
+
+### Two leaks that returned `Ok` over a rendered secret
+
+**An annotation's appearance stream.** `affected_streams` walked the page content and the Form
+XObjects its `/Resources` reach, and never `/Annots → /AP → /N`. `/Annots` is on §2's allowlist,
+so an annotation drawing over the region survived untouched — and it was worse than a no-op,
+because `codes_still_drawn` did not see the codes it drew, so font surgery zeroed *their*
+widths in the shared font. The output kept the secret and drew it overlapping.
+
+§3 already said what to do, in words: *"annotations whose `/Rect` intersects the region —
+handle. Remove the annotation entirely."* It was an unimplemented ADR requirement producing a
+silent `Ok`, not a recorded residual. Now implemented, walking the array backwards because
+erasure renumbers, with an unreadable `/Rect` a refusal rather than an assumed miss.
+
+**A Type 3 glyph procedure drawing outside its own box.** The walk boxes a Type 3 glyph by its
+advance and its `/FontBBox`; it does not descend into the procedure. A glyph with a ten-unit
+box whose procedure draws a hundred units below the origin is therefore in no region's reach,
+so `check_type_three` — scoped to the glyphs the region reached — never ran. Input and output
+rendered to the same bytes.
+
+The scope cannot be "the glyphs the region reached", because that set is computed from the
+boxes that are wrong. It is now every Type 3 font the page draws with. The `/CharProcs` name
+resolution is gone with it: it took the **first** `/Differences` assignment for a code where a
+reader takes the last, so `[5 /g 5 /secret]` resolved to the harmless procedure, and a resolved
+name absent from `/CharProcs` scanned zero procedures while the doc comment claimed it
+over-refused. Every procedure is scanned instead.
+
+### `/Differences` narrowing was right about codes and wrong about names
+
+Several names can sit at one code. `[0 /S 0 /e 0 /c 0 /r]` is legal PDF — four assignments to
+code 0, of which a reader takes the last — and a pass that asked "is this code kept?" kept all
+four, carrying the removed text's spelling out intact. Two passes now: a name survives only if
+its code is kept **and** it is the last assignment to that code.
+
+Separately, `u32::try_from(anchor).unwrap_or(0)` turned an anchor of `-1` or `2^32` into code 0,
+so every name after it was tested against the wrong code. That is the silent truncation
+`core/CLAUDE.md` denies `as` casts for, spelled differently; it is a typed refusal now.
+
+### The font-sharing rule was keyed on the wrong object
+
+`fonts_wholly_within` asked about the font dictionary. `narrow_font` writes through the
+`/ToUnicode`, `/Encoding` and `/Widths` the font *names*, and those can be indirect and shared
+with a font on a page outside the operation. Two pages, one shared `/Encoding`, page 0 redacted:
+page 1 lost its mapping and the report said `cut: true, also_used_by: 0` — that nothing outside
+the operation had been affected.
+
+The sharing walk now records each font's indirect sub-objects and joins them to pages the same
+way fonts are joined. And the decision and the disclosure come from **one** expression,
+`pages_outside`: they were two, they are the same fact asked twice, and the cuttable branch was
+hardcoding `also_used_by: 0` and discarding the other answer — so a disagreement would have
+resolved in favour of cutting, suppressing the disclosure on exactly the font that needed it.
+
+### A `/ToUnicode` bomb
+
+`MAX_ENTRIES` bounds the map and bounds nothing about the work: a `bfrange` re-mapping codes
+already present passes the size check every time. Measured, release build: 47 kB of program
+took 3.9 s, 188 kB took 15.4 s, 752 kB took 61.8 s. That text Flate-compresses **343:1**, so a
+30 kB `/ToUnicode` stream decompresses to 10 MB and costs about **fourteen minutes inside one
+engine call** — against a `max_duration_ms` documented as tolerating "overshoot of up to one
+engine call". `MAX_INSERTS` bounds the work, and a range wider than the budget is refused
+before it is walked rather than after.
+
+### Three things that were threaded but unmeasured
+
+- **The deadline.** `redact_page_for_probe` built a `ManualClock::new(0)`, which never advances,
+  so all six checkpoints added with the implementation were inert on the only route in.
+- **The page bound.** `page_handle`'s `SAFETY` comment named the constructor as where the
+  invariant is established, and the constructor did not check it — the check lived in one
+  caller, and `new` is `pub(crate)`. The constructor checks it now, and the caller's duplicate
+  is **removed**: with both, deleting the one the comment names changed nothing a test could see.
+- **The `/Annots` RSS bound.** `peak_rss_kb` reads process-wide `VmHWM` while the lib test
+  binary runs in parallel threads, so the measurement depends on what a neighbouring test
+  allocated in between. It failed once in a full run and passed on four isolated ones — and
+  then reported a mutation as "caught" that it had nothing to do with. It is `#[ignore]`d and
+  run alone, with its own registered job. The dangerous direction is the quiet one: a spike
+  during the *control* run makes the assertion pass for free.
+
+### The corpus was regenerated by nothing
+
+`tests/redaction/generated/` is gitignored and regenerated rather than stored, which is the
+right call for 39 derived files. Nothing regenerated it — neither generator, and not
+`tools/check-redaction-corpus.py` either, appeared in any CI job. That was invisible until
+something read the directory, and then the sweep passed on the machine where the files were
+left over and panicked on a clean checkout. It also takes **two** generators, and only one was
+documented; the security review ran the first, got 28 files against a floor of 40, and found
+the second by reading the tools directory.
+
+`tools/check-redaction-corpus.sh` runs both and gates on 39 + 4, and it is registered in
+`ci.yml` and `tools/ci-local.py` — the parity check refused to run anything until it was.
+
+### The reviews also confirmed claims rather than only refuting them
+
+Stated so the list above is not read as a survey of everything. `qpdf_oh_replace_stream_data`
+with a null `/Filter` behaves as the code comment claims, and the mechanism was checked in
+qpdf's source rather than inferred: `Stream::replaceFilterData` overwrites both `/Filter` and
+`/DecodeParms` because `operator bool` is true for an initialized handle, `/Length` is set to
+the plain length, and the writer recompresses. One edge worth knowing and not currently
+reachable: a zero length **removes** `/Length` rather than setting it. The aggregate operand
+bound survives the `MAX_COMPOSITE_ITEMS` change; no raw handle is compared; no new error
+message carries file content.

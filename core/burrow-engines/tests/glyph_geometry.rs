@@ -30,10 +30,11 @@ use burrow_engines::pdfsyntax::geometry::{
     Encoding, Form, FormUses, Glyph, GlyphMetrics, Matrix, Rect as GeometryRect, Refusal,
     Resources, check_form_sharing, glyphs_in, remove_glyphs,
 };
+use burrow_engines::pdfsyntax::region::Region;
 use burrow_types::Result;
 use support::char_box_oracle::{
     MIN_FIXTURE_DISPLACEMENT_PT, OracleChar, Rect, TOLERANCE_PT, assert_fixture_is_discriminating,
-    chars_on_page,
+    chars_on_page, ink_overlaps, origins_close, page_size,
 };
 
 /// A one-page PDF drawing `text` with the given text-object body.
@@ -1010,46 +1011,26 @@ fn origins_across_a_redaction(body: &str, cut: usize) -> (Vec<OracleChar>, Vec<O
 
 /// The characters PDFium reports that the **file** actually draws.
 ///
-/// # PDFium invents characters, and not only spaces
+/// # PDFium invents characters, and it will say which
 ///
-/// Measured on this suite's own fixtures:
+/// A positioning adjustment wide enough to look like a gap produces a `U+0020`; a `T*` line
+/// move produces `U+000D U+000A`. Neither is in any string in the document, so a comparison
+/// against burrow's walk must not expect them — and a wide kern the producer wrote does the
+/// same thing before any redaction, so character indices and glyph indices are not the same
+/// sequence even on an untouched page.
 ///
-/// - a positioning adjustment wide enough to look like a gap produces a **`U+0020`** that is in
-///   no string in the file — which is what a redaction leaves behind by design;
-/// - a `T*` line move produces **`U+000D U+000A`**, so `(AB) ' (CD) '` reports six characters
-///   for four glyphs.
+/// # This guessed before it asked, and the guess was wrong
 ///
-/// A wide kern the producer wrote does the same thing before any redaction, so character
-/// indices and glyph indices are not the same sequence even on an untouched page. Anything
-/// correlating the two by position is wrong on documents nobody redacted.
+/// The rule used to be structural: *a synthetic character carries no advance, so its origin
+/// equals the next character's*. It held on every hand-built fixture in this file and failed
+/// on the first real document — a LaTeX page where PDFium gave a synthetic space an origin of
+/// its own, between the two glyphs it sat between. The walk found 138 glyphs and the filter
+/// left 140.
 ///
-/// # How a synthetic one is told apart, and why not "it is a space"
-///
-/// An earlier version skipped **every** `U+0020` while its doc claimed it skipped by position —
-/// a review caught that the doc described behaviour the code did not have. Skipping every space
-/// would skip the *real* ones too, which is how a fixture for word spacing quietly stops
-/// testing anything.
-///
-/// The rule here is structural instead: a synthetic character carries **no advance**, so its
-/// origin equals the next character's. A real space advances, so the next character is further
-/// along. Carriage return and line feed are synthetic unconditionally — no fixture in this file
-/// puts either in a string.
+/// `FPDFText_IsGenerated` is the renderer answering the question directly. A heuristic that
+/// agrees with it on the cases you thought of is not the same thing.
 fn drawn_characters(chars: &[OracleChar]) -> Vec<&OracleChar> {
-    let mut drawn = Vec::new();
-    for (at, char) in chars.iter().enumerate() {
-        let synthetic = match char.unicode {
-            0x000D | 0x000A => true,
-            0x0020 => chars.get(at + 1).is_some_and(|next| {
-                (next.origin.0 - char.origin.0).abs() < TOLERANCE_PT
-                    && (next.origin.1 - char.origin.1).abs() < TOLERANCE_PT
-            }),
-            _ => false,
-        };
-        if !synthetic {
-            drawn.push(char);
-        }
-    }
-    drawn
+    chars.iter().filter(|char| !char.generated).collect()
 }
 
 /// Every kept glyph is where it was, over the characters the file actually draws.
@@ -1427,4 +1408,211 @@ fn pdfium_synthesises_a_space_once_a_kern_is_wide_enough() {
             "which `drawn_characters` removes, leaving the four glyphs the file draws"
         );
     }
+}
+
+/// The real resolver's glyph origins, against PDFium's, on the committed producer corpus.
+///
+/// # The first time the walk has met a real document
+///
+/// Everything on #131 was tested against a `Resources` fake that returned one width for every
+/// code and never refused. This drives the **qpdf-backed** resolver over files four different
+/// producers wrote, and compares every origin against `FPDFText_GetCharOrigin`.
+///
+/// It is the join the fakes could not exercise: the walk's arithmetic was checked against
+/// PDFium already, and the resolver's reading of a font dictionary never was.
+#[test]
+fn the_real_resolver_agrees_with_pdfium_on_producer_documents() {
+    for name in [
+        "producer-writer.pdf",
+        "producer-latex.pdf",
+        "producer-vertical-writing.pdf",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/redaction/fixtures")
+            .join(name);
+        let pdf = std::fs::read(&path).expect("the committed fixture");
+
+        let walked = burrow_engines::redact_probe::walk_first_page(&pdf)
+            .unwrap_or_else(|error| panic!("{name}: the real resolver refused: {error:?}"));
+        let chars = chars_on_page(&pdf, 0);
+        let drawn = drawn_characters(&chars);
+
+        // NON-VACUITY FIRST: both sides must have found something, or every comparison below
+        // passes over nothing.
+        assert!(
+            !walked.is_empty() && !drawn.is_empty(),
+            "{name}: walk {} glyph(s), PDFium {} char(s)",
+            walked.len(),
+            drawn.len()
+        );
+        assert_eq!(
+            walked.len(),
+            drawn.len(),
+            "{name}: the walk found {} glyph(s) and PDFium {} -- a count mismatch makes the \
+             pairwise comparison below meaningless",
+            walked.len(),
+            drawn.len()
+        );
+
+        for (at, (glyph, char)) in walked.iter().zip(&drawn).enumerate() {
+            let apart = (glyph.origin.0 - char.origin.0).hypot(glyph.origin.1 - char.origin.1);
+            assert!(
+                apart < TOLERANCE_PT,
+                "{name}: glyph {at} is {apart} pt from where PDFium put it, {:?} against {:?} \
+                 -- the resolver read this font's metrics differently from the renderer",
+                glyph.origin,
+                char.origin
+            );
+        }
+    }
+}
+
+/// A redaction that emits bytes, held to PDFium on the corpus four real producers wrote.
+///
+/// # The join the fakes could not reach
+///
+/// Every step of the assembly was tested against a fake `Steps`. This drives the **qpdf** one
+/// over whole documents and reads the result back with a renderer: the glyphs inside the
+/// region must be gone, and every glyph outside it must be exactly where it was.
+///
+/// The second half is the one a fake cannot check at all. A fake cannot reflow a page.
+#[test]
+fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
+    // COUNTED, because every assertion below is inside the `Ok` arm and a refusal `continue`s.
+    // A mutation that refused unconditionally left this test green over all three fixtures.
+    let mut redacted_documents = 0usize;
+    for name in [
+        "producer-writer.pdf",
+        "producer-latex.pdf",
+        "producer-vertical-writing.pdf",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/redaction/fixtures")
+            .join(name);
+        let pdf = std::fs::read(&path).expect("the committed fixture");
+
+        let before = chars_on_page(&pdf, 0);
+        let drawn_before = drawn_characters(&before);
+        assert!(
+            !drawn_before.is_empty(),
+            "{name}: the fixture must draw text, or nothing below asks anything"
+        );
+
+        // THE REGION IS DERIVED FROM THE ORACLE, not guessed. Three hand-picked boxes were
+        // tried first and two of them reached no glyph at all, so the test reported a pass
+        // over a redaction that removed nothing -- a fixture that cannot fail, which is the
+        // failure `CLAUDE.md`'s harness rule is about. This puts the region tightly around one
+        // character PDFium actually found, and the assertion below is that THAT character is
+        // the one that goes.
+        let (_, height) = page_size(&pdf, 0);
+        let target = drawn_before
+            .iter()
+            .max_by(|a, b| a.ink.top.total_cmp(&b.ink.top))
+            .expect("at least one drawn character");
+        let region = Region {
+            left: target.ink.left - 1.0,
+            top: height - target.ink.top - 1.0,
+            width: (target.ink.right - target.ink.left) + 2.0,
+            height: (target.ink.top - target.ink.bottom) + 2.0,
+        };
+
+        let redacted: std::collections::BTreeSet<usize> = [0].into_iter().collect();
+        let (out, report) =
+            match burrow_engines::redact_probe::redact_page(&pdf, 0, redacted, region) {
+                Ok(result) => result,
+                Err(error) => {
+                    // A REFUSAL IS AN OUTCOME, not a failure -- but it must be a named one,
+                    // so a silent `Err` cannot pass for a redaction that did nothing.
+                    let text = format!("{error:?}");
+                    assert!(
+                        text.contains('[') && text.contains(']'),
+                        "{name}: refused without naming a rule: {text}"
+                    );
+                    eprintln!("  {name:<34} refused: {text}");
+                    continue;
+                }
+            };
+
+        let after = chars_on_page(&out, 0);
+        let drawn_after = drawn_characters(&after);
+        eprintln!(
+            "  {name:<34} {} -> {} glyph(s), {} font(s) cut, {} retained",
+            drawn_before.len(),
+            drawn_after.len(),
+            report.fonts.iter().filter(|f| f.cut).count(),
+            report.retained().count()
+        );
+
+        redacted_documents += 1;
+
+        // THE OUTPUT IS A DOCUMENT. A redaction that emitted something unreadable would
+        // satisfy "the secret is gone" trivially.
+        assert!(out.starts_with(b"%PDF"), "{name}: the output must be a PDF");
+
+        // The three properties, and they are not the same property.
+        //
+        // **Everything the region reaches is gone.** The leak direction, and the only one of
+        // the three that is a correctness failure rather than a fidelity one.
+        let mut reached = 0usize;
+        for want in &drawn_before {
+            if !ink_overlaps(
+                &want.ink,
+                region.left,
+                region.top,
+                region.width,
+                region.height,
+                height,
+            ) {
+                continue;
+            }
+            reached += 1;
+            assert!(
+                !drawn_after.iter().any(
+                    |got| got.unicode == want.unicode && origins_close(got.origin, want.origin)
+                ),
+                "{name}: U+{:04X} at {:?} has ink inside the region and is still drawn",
+                want.unicode,
+                want.origin
+            );
+        }
+        assert!(
+            reached > 0,
+            "{name}: the region reached no glyph, so every assertion here is vacuous"
+        );
+
+        // **Nothing appeared.** A new character at a new origin is a page that reflowed.
+        for got in &drawn_after {
+            assert!(
+                drawn_before
+                    .iter()
+                    .any(|want| want.unicode == got.unicode
+                        && origins_close(got.origin, want.origin)),
+                "{name}: U+{:04X} appears at {:?} after the redaction and was not there \
+                 before -- the page reflowed",
+                got.unicode,
+                got.origin
+            );
+        }
+
+        // **Over-removal is reported, not asserted against.** The conservative box is the
+        // advance box unioned with the scaled `/FontBBox`, which spans the whole em -- so a
+        // region drawn tightly around one glyph's ink legitimately reaches its neighbours'
+        // boxes. That is the direction that does not leak, and ADR 0029 records it as a
+        // disclosure rather than a defect. Counting it here is what keeps it visible: a number
+        // that grows is a question, and a silent pass is not.
+        // `saturating_sub`, matching `redaction_corpus.rs`. Plain `usize` subtraction panics on
+        // underflow, and PDFium synthesising a space can make `drawn_after` larger than the
+        // arithmetic here assumes -- a reporting line that panics is a test failing for the
+        // wrong reason.
+        let extra = drawn_before
+            .len()
+            .saturating_sub(reached + drawn_after.len());
+        eprintln!("  {name:<34} region reached {reached}, removed {extra} more");
+    }
+
+    assert_eq!(
+        redacted_documents, 3,
+        "all three real-producer documents must redact; a refusal that covered them would \
+         leave every assertion above unexecuted and this test still green"
+    );
 }

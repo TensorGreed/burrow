@@ -183,6 +183,34 @@ const TYPE_KEY: &[u8] = b"/Type";
 const AP_KEY: &[u8] = b"/AP";
 const CHARPROCS_KEY: &[u8] = b"/CharProcs";
 
+/// The keys on a page dictionary that ADR 0029 §2's allowlist does **not** name.
+///
+/// Shared with the redaction rather than written again: two lists that are supposed to agree
+/// are two lists that can disagree, and the one that drifts is the one nobody is looking at.
+/// `split`'s pruning and redaction's page strip are the same rule about the same keys.
+///
+/// # Errors
+///
+/// Whatever parsing the unparsed dictionary failed with.
+///
+/// # Gated to the configurations that have a caller
+///
+/// Its only caller today is the qpdf redaction's page strip, which is behind `native-engines`.
+/// Without this gate the wasm build fails `-D warnings` on dead code — found by the pre-push
+/// sweep, which applies `ci.yml`'s `RUSTFLAGS` and is the reason a plain `cargo build` did not
+/// show it.
+///
+/// The gate is on the callers rather than on the platform: ADR 0026 puts redaction in its own
+/// wasm module, and when that module's page strip arrives this list is what it must use. The
+/// allowlist itself is not gated, because `split`'s prune reads it everywhere.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+pub(crate) fn page_keys_outside_the_allowlist(unparsed: &[u8]) -> Result<Vec<Vec<u8>>> {
+    Ok(crate::pdfsyntax::dict::top_level_keys(unparsed)?
+        .into_iter()
+        .filter(|key| !KEPT_PAGE_KEYS.contains(&key.as_slice()))
+        .collect())
+}
+
 /// For each source page, the **other** source pages its `/Annots` array is shared with.
 ///
 /// **Computed on the source, once, before anything is copied**, because it cannot be recovered

@@ -39,7 +39,12 @@ mod name;
 mod limits;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod prune;
+mod redact_frame;
+mod redact_steps;
 mod reorder;
+mod resources;
+#[cfg(test)]
+mod resources_tests;
 mod rotate;
 mod sharing;
 #[cfg(test)]
@@ -531,4 +536,68 @@ impl crate::OutputReader for Qpdf {
         // had already accepted.
         crate::PageRotator::rotations(self, read, options, deadline)
     }
+}
+
+/// Walk a document's first page with the real font resolver, for the differential test.
+///
+/// Crate-internal on purpose: ADR 0022 forbids a public path that emits a redacted document,
+/// and this emits geometry rather than bytes. `redact_probe` is the one caller.
+pub(crate) fn walk_first_page_for_probe(
+    bytes: &[u8],
+) -> Result<Vec<crate::pdfsyntax::geometry::Glyph>> {
+    use std::sync::Arc;
+
+    use burrow_types::{Clock, Limits, ManualClock};
+
+    let options = crate::OpenOptions::new(
+        Limits::default(),
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+    );
+    let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+    if pages == 0 {
+        return Err(Error::Malformed(
+            "pdf redaction: a document with no pages".to_owned(),
+        ));
+    }
+    // SAFETY: page 0 is below the page count just read from this document.
+    let page = unsafe { handle::ObjectHandle::page(&document, 0) };
+    if let Some(error) = document.take_error() {
+        return Err(error);
+    }
+    let content = page.page_content()?;
+    let resources = resources::PageResources::of(&page)?;
+    crate::pdfsyntax::geometry::glyphs_in(&content, &resources)
+}
+
+/// Redact one page of a document, for the differential test and nothing else.
+///
+/// Crate-internal per ADR 0022: there is no caller-visible redaction until #134's verification
+/// exists. `redact_probe` is the one seam and it goes when that lands.
+pub(crate) fn redact_page_for_probe(
+    bytes: &[u8],
+    page: usize,
+    redacted: std::collections::BTreeSet<usize>,
+    region: crate::pdfsyntax::region::Region,
+) -> Result<(Vec<u8>, crate::redact::Report)> {
+    use std::sync::Arc;
+
+    use burrow_types::{Clock, Limits, SystemClock};
+
+    // A REAL CLOCK. It was `ManualClock::new(0)`, which never advances -- so every
+    // `deadline.checkpoint` in `redact_steps` was inert on the only route into the operation,
+    // and the time bound was threaded but unmeasured. A security review found six checkpoints
+    // that could not have fired.
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let options = crate::OpenOptions::new(Limits::default(), Arc::clone(&clock));
+    let (document, _, _, deadline) = open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+    // THE PAGE BOUND IS THE CONSTRUCTOR'S, and it is checked there and only there.
+    //
+    // It used to be checked here as well. That is one check too many rather than one too few:
+    // `QpdfRedaction::page_handle` calls the unsafe `ObjectHandle::page`, and its SAFETY
+    // comment names the constructor as where the invariant is established. With the check
+    // duplicated in this caller, deleting the constructor's changed nothing any test could
+    // see — a mutation sweep planted exactly that and the suite stayed green, which is a
+    // defence with no test standing behind an `unsafe` block.
+    let steps = redact_steps::QpdfRedaction::new(document, page, region, deadline, clock)?;
+    crate::redact::run(steps, redacted)
 }

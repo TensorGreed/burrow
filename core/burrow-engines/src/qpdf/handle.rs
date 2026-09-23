@@ -391,10 +391,15 @@ impl<'a> ObjectHandle<'a> {
     ///
     /// Empty for anything that is not a name, which qpdf returns rather than raising -- so the
     /// caller checks [`Self::type_code`] first, as everywhere else here.
-    pub(super) fn name(&self) -> Vec<u8> {
+    pub(super) fn name(&self) -> Result<Name> {
         // SAFETY: as `unparse`.
         let text = unsafe { ffi::qpdf_oh_get_name(self.data, self.handle) };
-        copy_c_string(text)
+        // A NAME COMES BACK WITH ITS SLASH -- `/Type0`, not `Type0` -- and comparing against the
+        // bare spelling is silently false. That is the read-side half of the bug `Name` exists
+        // to prevent, and it was live: every `/Subtype` check in `resources.rs` compared
+        // against the bare form, so a Type 0 font read as a simple one and refused with
+        // entirely the wrong rule. Returning a `Name` makes the mismatch a type error.
+        Name::from_canonical(&copy_c_string(text))
     }
 
     /// Remove `key` from this dictionary.
@@ -429,6 +434,17 @@ impl<'a> ObjectHandle<'a> {
     /// backwards. Forwards, erasing item 2 of 5 makes the old item 3 the new item 2 and the
     /// loop skips it -- which, for the annotation filter this exists for, means an annotation
     /// belonging to an excluded page is never examined and rides into the output.
+    /// Replace the array item at `at`.
+    ///
+    /// In place: this does **not** renumber, unlike [`Self::erase_item`]. `/Widths` is
+    /// positional and a removal would move every later code's width onto the wrong glyph.
+    pub(super) fn set_array_item(&self, at: c_int, item: &Self) {
+        // SAFETY: as `replace_key`; `item` belongs to the same document as `self`, which the
+        // caller establishes by obtaining both from it. Routes through `trap_errors` via
+        // `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
+        unsafe { ffi::qpdf_oh_set_array_item(self.data, self.handle, at, item.handle) }
+    }
+
     pub(super) fn erase_item(&self, at: c_int) {
         // SAFETY: as `unparse`.
         unsafe { ffi::qpdf_oh_erase_item(self.data, self.handle, at) }
@@ -661,7 +677,7 @@ mod tests {
     fn the_handle_api_is_reachable_only_from_here() {
         // Every sibling that could reach `ffi`, by name. `include_str!` needs a literal, so
         // the contents are listed; what is NOT listed is how many there should be.
-        let siblings: [(&str, &str); 10] = [
+        let siblings: [(&str, &str); 13] = [
             ("assemble.rs", include_str!("assemble.rs")),
             ("compress.rs", include_str!("compress.rs")),
             ("extract.rs", include_str!("extract.rs")),
@@ -669,7 +685,10 @@ mod tests {
             ("mod.rs", include_str!("mod.rs")),
             ("name.rs", include_str!("name.rs")),
             ("prune.rs", include_str!("prune.rs")),
+            ("redact_frame.rs", include_str!("redact_frame.rs")),
+            ("redact_steps.rs", include_str!("redact_steps.rs")),
             ("reorder.rs", include_str!("reorder.rs")),
+            ("resources.rs", include_str!("resources.rs")),
             ("rotate.rs", include_str!("rotate.rs")),
             ("sharing.rs", include_str!("sharing.rs")),
         ];

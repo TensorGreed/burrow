@@ -424,110 +424,72 @@ fn peak_rss_kb() -> u64 {
 }
 
 #[test]
+// PROCESS-ISOLATED, BECAUSE `VmHWM` IS PROCESS-WIDE.
+//
+// `peak_rss_kb` reads `/proc/self/status`, which reports the whole process, and the lib test
+// binary runs its tests in parallel threads. A neighbouring test allocating between the two
+// measurements below lands in exactly the number this compares. Measured: this failed once in
+// a full-suite run at 191,848 kB against 156,608 kB and passed on four isolated runs, and it
+// then reported a mutation as "caught" that it had nothing to do with, which is how a flake
+// stops being cosmetic.
+//
+// The comment above argues the ordering makes the comparison "strictly conservative". What the
+// ordering actually makes it is dependent on what ran in between, and the *dangerous* direction
+// is a spike during the control run: that inflates `dictionaries` and the assertion passes for
+// free, so the flake's visible failures are the harmless half of it.
+//
+// `#[ignore]` plus a dedicated `--test-threads=1` run is the shape this repository already uses
+// for tests that cannot share a process. A test nobody runs is no test, so it is registered in
+// `ci.yml` and `tools/ci-local.py` and the parity check refuses until it is.
+#[ignore = "reads process-wide VmHWM; run with --test-threads=1, see the ci-local job"]
 fn an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each() {
     // `qpdf_oh_get_key` on a NON-DICTIONARY reaches `QPDFObjectHandle::typeWarning` ->
     // `Common::warn`, which appends to qpdf's warning vector whatever `suppress_warnings` says
     // -- that flag only stops the printing -- and burrow sets no `max_warnings`. A review
-    // measured an `/Annots` of 400,000 integers peaking at **265 MB** from 800 kB of file:
-    // about 330x, linear in the array, inside the engine thread.
+    // measured an `/Annots` of 400,000 integers peaking at 265 MB from 800 kB of file.
     //
-    // The walk now checks the container's type before asking for a key.
-    const ITEMS: usize = 400_000;
-    let annots: String = (0..ITEMS)
-        .map(|n| format!("{n} "))
-        .collect::<Vec<_>>()
-        .join("");
-    let bytes = document(&[
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-             /Resources << >> /Contents 4 0 R /Annots [{}] >>",
-            annots.trim_end()
-        ),
-        stream("", "BT ET\n"),
-    ]);
-    let opened = open(bytes);
+    // THE MEASUREMENT IS DIFFERENTIAL, and the first version was not. It compared total RSS
+    // growth against a fixed ceiling, which also counts qpdf legitimately materialising
+    // 400,000 array items -- so it passed in release and failed in debug, for a reason that
+    // was not the defect. Two documents of the same shape, differing only in whether the array
+    // items are dictionaries, isolate the retention: the dictionary run is the control, and
+    // the integer run must not cost dramatically more.
+    const ITEMS: usize = 200_000;
 
-    // The mark is taken AFTER opening, so the document's own footprint is not counted against
-    // the walk. `VmHWM` is a high-water mark and never falls, which is the property that makes
-    // this readable at all.
-    let before = peak_rss_kb();
-    let counts = count(&opened).expect("an array of integers draws no forms");
-    let grew = peak_rss_kb().saturating_sub(before);
-
-    assert!(
-        counts.all().is_empty(),
-        "integers are not appearance streams: {:?}",
-        counts.all()
-    );
-    assert!(
-        grew < 64 * 1024,
-        "the walk grew the peak RSS by {grew} kB over {ITEMS} non-dictionary annotations -- \
-         the container type check is not holding, and each skipped check retains a qpdf warning"
-    );
-}
-
-#[test]
-fn the_live_handle_count_returns_to_its_baseline() {
-    // THE CACHE ONLY GROWS. `handle.rs` explains why a per-page walk is exactly the shape that
-    // fills it, and `rotate` already measures this for its ancestor climb. A walk that leaked
-    // one handle per page would be invisible on a two-page fixture and fatal on a real one, so
-    // the document here is large enough for a leak to show as a number rather than as noise.
-    let pages = 200;
-    let mut objects = vec![
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        String::new(), // filled in below, once the kid ids are known
-        stream("", "/Fm0 Do\n"),
-        form("/F1 10 Tf BT 0 0 Td (SHARED) Tj ET\n"),
-    ];
-    let first_page = 5;
-    let mut kids = Vec::new();
-    for index in 0..pages {
-        let page_id = first_page + index * 2;
-        let annot_id = page_id + 1;
-        kids.push(format!("{page_id} 0 R"));
-        objects.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
-             /Resources << /XObject << /Fm0 4 0 R >> >> /Contents 3 0 R /Annots [{annot_id} 0 R] >>"
-        ));
-        objects.push(
-            "<< /Type /Annot /Subtype /Widget /Rect [0 0 10 10] /AP << /N 4 0 R >> >>".to_owned(),
+    let grew = |item: &str| -> u64 {
+        let annots: String = (0..ITEMS)
+            .map(|n| format!("{} ", item.replace("{n}", &n.to_string())))
+            .collect();
+        let bytes = document(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+                 /Resources << >> /Contents 4 0 R /Annots [{}] >>",
+                annots.trim_end()
+            ),
+            stream("", "BT ET\n"),
+        ]);
+        let opened = open(bytes);
+        let before = peak_rss_kb();
+        let counts = count(&opened).expect("an array of these draws no forms");
+        assert!(
+            counts.all().is_empty(),
+            "neither shape is an appearance stream"
         );
-    }
-    objects[1] = format!(
-        "<< /Type /Pages /Count {pages} /Kids [{}] >>",
-        kids.join(" ")
-    );
-    let opened = open(document(&objects));
-
-    let baseline = handle::live();
-    let counts = count(&opened).expect("walks");
-    let after = handle::live();
-
-    // NON-VACUITY: the walk must actually have done the work whose handles are being counted.
-    assert_eq!(
-        counts.uses((4, 0)),
-        usize::try_from(pages * 2).expect("fits"),
-        "every page draws the form and every annotation is it"
-    );
-    assert_eq!(
-        after,
-        baseline,
-        "the walk leaked {} handle(s) over {pages} pages",
-        after.saturating_sub(baseline)
-    );
-}
-
-#[track_caller]
-fn assert_named(error: &Error, rule: &str) {
-    let message = match error {
-        Error::Unsupported(message) | Error::Malformed(message) => message,
-        other => panic!("expected a refusal naming `{rule}`, got {other:?}"),
+        peak_rss_kb().saturating_sub(before)
     };
+
+    // The control first, so its allocation is already in the high-water mark when the second
+    // runs -- `VmHWM` never falls, so the order makes the comparison strictly conservative.
+    let dictionaries = grew("<< >>");
+    let integers = grew("{n}");
+
     assert!(
-        message.contains(&format!("[{rule}]")),
-        "refused, but by a different rule: wanted `{rule}`, got `{message}`"
+        integers <= dictionaries + 32 * 1024,
+        "an /Annots of {ITEMS} integers grew the peak RSS by {integers} kB against \
+         {dictionaries} kB for the same array of dictionaries -- the container type check is \
+         not holding, and each skipped check retains a qpdf warning"
     );
 }
 
@@ -580,5 +542,262 @@ fn the_walk_honours_the_deadline_per_page() {
         counts.uses((4, 0)),
         40,
         "forty pages each draw the form once"
+    );
+}
+
+#[test]
+fn the_live_handle_count_returns_to_its_baseline() {
+    // THE CACHE ONLY GROWS. `handle.rs` explains why a per-page walk is exactly the shape that
+    // fills it, and `rotate` already measures this for its ancestor climb. A walk that leaked
+    // one handle per page would be invisible on a two-page fixture and fatal on a real one.
+    let pages = 200u64;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        String::new(),
+        stream("", "/Fm0 Do\n"),
+        form("/F1 10 Tf BT 0 0 Td (SHARED) Tj ET\n"),
+    ];
+    let mut kids = Vec::new();
+    for index in 0..pages {
+        let page_id = 5 + index * 2;
+        kids.push(format!("{page_id} 0 R"));
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /XObject << /Fm0 4 0 R >> >> /Contents 3 0 R /Annots [{} 0 R] >>",
+            page_id + 1
+        ));
+        objects.push(
+            "<< /Type /Annot /Subtype /Widget /Rect [0 0 10 10] /AP << /N 4 0 R >> >>".to_owned(),
+        );
+    }
+    objects[1] = format!(
+        "<< /Type /Pages /Count {pages} /Kids [{}] >>",
+        kids.join(" ")
+    );
+    let opened = open(document(&objects));
+
+    let baseline = handle::live();
+    let counts = count(&opened).expect("walks");
+    let after = handle::live();
+
+    // NON-VACUITY: the walk must actually have done the work whose handles are being counted.
+    assert_eq!(
+        counts.uses((4, 0)),
+        usize::try_from(pages * 2).expect("fits"),
+        "every page draws the form and every annotation is it"
+    );
+    assert_eq!(
+        after,
+        baseline,
+        "the walk leaked {} handle(s) over {pages} pages",
+        after.saturating_sub(baseline)
+    );
+}
+
+/// Assert a refusal names `rule`, rather than merely being a refusal.
+#[track_caller]
+fn assert_named(error: &Error, rule: &str) {
+    let message = match error {
+        Error::Unsupported(message) | Error::Malformed(message) => message,
+        other => panic!("expected a refusal naming `{rule}`, got {other:?}"),
+    };
+    assert!(
+        message.contains(&format!("[{rule}]")),
+        "refused, but by a different rule: wanted `{rule}`, got `{message}`"
+    );
+}
+
+/// A document whose two pages share one font, each also having a font of its own.
+fn two_pages_sharing_a_font() -> Vec<u8> {
+    document(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        // 3: page one — the shared font (6) and its own (7)
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /Shared 6 0 R /Mine 7 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        // 4: page two — the shared font (6) and its own (8)
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /Shared 6 0 R /Mine 8 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        stream("", "BT /Shared 12 Tf (a) Tj /Mine 12 Tf (b) Tj ET\n"),
+        simple_font(),
+        simple_font(),
+        simple_font(),
+    ])
+}
+
+fn simple_font() -> String {
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 97 /LastChar 98 \
+     /Widths [500 500] >>"
+        .to_owned()
+}
+
+#[test]
+fn a_font_only_the_redacted_pages_use_may_be_cut() {
+    // THE RULE. Cutting a font's `/Widths` changes the text of every page that uses it, so it
+    // is safe exactly when the operation already covers all of them.
+    let opened = open(two_pages_sharing_a_font());
+    let counts = count(&opened).expect("walks");
+
+    let pages = counts.font_pages();
+    assert_eq!(
+        pages.get(&(6, 0)).map(std::collections::BTreeSet::len),
+        Some(2),
+        "the shared font is used by both pages: {pages:?}"
+    );
+    assert_eq!(
+        pages.get(&(7, 0)).map(std::collections::BTreeSet::len),
+        Some(1),
+        "page one's own font is used by one page"
+    );
+
+    // Redacting page 0 only: page one's own font may be cut, the shared one may not.
+    let just_page_one: std::collections::BTreeSet<usize> = [0].into_iter().collect();
+    let cuttable = counts.fonts_wholly_within(&just_page_one);
+    assert!(
+        cuttable.contains(&(7, 0)),
+        "a font only the redacted page uses must be cuttable: {cuttable:?}"
+    );
+    assert!(
+        !cuttable.contains(&(6, 0)),
+        "a font another page uses must NOT be cuttable -- editing it reflows that page's \
+         text, which is corruption rather than leakage and invisible to §6's read-back"
+    );
+    assert!(
+        !cuttable.contains(&(8, 0)),
+        "page two's own font is not used by page one at all, so redacting page one must not \
+         touch it: {cuttable:?}"
+    );
+}
+
+#[test]
+fn redacting_every_page_makes_every_font_cuttable() {
+    // THE OTHER HALF, and it is the one that stops the rule being "refuse on any sharing":
+    // a single-page document, or an operation covering the whole document, cuts everything.
+    // Refusing whenever a font is shared would refuse nearly every multi-page document.
+    let opened = open(two_pages_sharing_a_font());
+    let counts = count(&opened).expect("walks");
+    let both: std::collections::BTreeSet<usize> = [0, 1].into_iter().collect();
+    let cuttable = counts.fonts_wholly_within(&both);
+    for font in [(6, 0), (7, 0), (8, 0)] {
+        assert!(
+            cuttable.contains(&font),
+            "with every page redacted, {font:?} has nowhere else to affect: {cuttable:?}"
+        );
+    }
+}
+
+#[test]
+fn a_font_reached_only_through_a_form_belongs_to_the_page_that_draws_the_form() {
+    // REACHED-THROUGH COUNTS. A font named inside a form that page two draws is a font page
+    // two uses, and cutting it changes page two. A direct-references-only join would miss
+    // that -- the direction that cuts a font somebody else still needs.
+    let bytes = document(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        // page one draws the form; page two draws it too
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /XObject << /Fm0 6 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /XObject << /Fm0 6 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        stream("", "/Fm0 Do\n"),
+        // 6: the form, whose own resources name the font
+        stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+             /Resources << /Font << /F1 7 0 R >> >>",
+            "BT /F1 12 Tf (a) Tj ET\n",
+        ),
+        simple_font(),
+    ]);
+    let opened = open(bytes);
+    let counts = count(&opened).expect("walks");
+    assert_eq!(
+        counts
+            .font_pages()
+            .get(&(7, 0))
+            .map(std::collections::BTreeSet::len),
+        Some(2),
+        "both pages reach the font through the form: {:?}",
+        counts.font_pages()
+    );
+    let just_page_one: std::collections::BTreeSet<usize> = [0].into_iter().collect();
+    assert!(
+        !counts.fonts_wholly_within(&just_page_one).contains(&(7, 0)),
+        "redacting page one must not cut a font page two reaches through the same form"
+    );
+}
+
+#[test]
+fn the_ordinary_shape_retains_its_font_and_says_by_how_much() {
+    // THE CASE THE COMMITTED CORPUS CANNOT SHOW. It is almost entirely single-page, where
+    // every font is cuttable by construction — so the retain path has one example in it and
+    // the rate the rule was chosen against is unmeasurable from fixtures alone.
+    //
+    // A several-page document sharing one font, redacted on a single page, is what a person
+    // actually brings: a report, a contract, a statement. Here the font is used by five pages
+    // and the operation covers one, so it is retained and §7's disclosure applies — and the
+    // count of pages it is retained *for* is what the disclosure is about.
+    const PAGES: u64 = 5;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        String::new(),
+        stream("", "BT /F1 12 Tf (a) Tj ET\n"),
+        simple_font(),
+    ];
+    let mut kids = Vec::new();
+    for index in 0..PAGES {
+        let id = 5 + index;
+        kids.push(format!("{id} 0 R"));
+        objects.push(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 3 0 R >>"
+                .to_owned(),
+        );
+    }
+    objects[1] = format!(
+        "<< /Type /Pages /Count {PAGES} /Kids [{}] >>",
+        kids.join(" ")
+    );
+
+    let opened = open(document(&objects));
+    let counts = count(&opened).expect("walks");
+
+    let pages = counts.font_pages();
+    assert_eq!(
+        pages.get(&(4, 0)).map(std::collections::BTreeSet::len),
+        Some(usize::try_from(PAGES).expect("fits")),
+        "every page uses the one font: {pages:?}"
+    );
+
+    // Redacting page 2 alone — a page in the middle, not the first, because an off-by-one in
+    // the page index would be invisible on page 0.
+    let one_page: std::collections::BTreeSet<usize> = [2].into_iter().collect();
+    let cuttable = counts.fonts_wholly_within(&one_page);
+    assert!(
+        cuttable.is_empty(),
+        "the font must be retained, not cut: cutting it would reflow the other four pages, \
+         which is damage to documents nobody asked about: {cuttable:?}"
+    );
+
+    // And the number the disclosure is about: four pages outside the operation.
+    let outside = pages
+        .get(&(4, 0))
+        .map(|used| used.difference(&one_page).count())
+        .expect("the font is used");
+    assert_eq!(
+        outside, 4,
+        "§7's disclosure is about the four pages that keep using this font"
+    );
+
+    // THE CONTROL: redacting every page makes the same font cuttable, so the retention above
+    // is the sharing and not something structural about the fixture.
+    let every_page: std::collections::BTreeSet<usize> =
+        (0..usize::try_from(PAGES).expect("fits")).collect();
+    assert!(
+        counts.fonts_wholly_within(&every_page).contains(&(4, 0)),
+        "with the whole document redacted the font has nowhere else to affect"
     );
 }

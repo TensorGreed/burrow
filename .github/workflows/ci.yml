@@ -136,7 +136,25 @@ jobs:
           [ "$found" = 1 ] || { echo "::error::no burrow_engines test binary found" >&2; exit 1; }
           echo "burrow-engines carries the pinned rpath"
 
+      # THE REDACTION CORPUS, BEFORE ANYTHING MEASURES AGAINST IT.
+      # `tests/redaction/generated/` is gitignored and regenerated; this is the only thing that
+      # regenerates it, and `core/burrow-engines/tests/redaction_corpus.rs` reads it in the run
+      # below. It lives in THIS job because the job has `engines/vendor` -- the generators need
+      # the vendored `cjpeg` and `qpdf`, and a job that fetches nothing would silently produce
+      # fewer fixtures. See CLAUDE.md on where a check lives being load-bearing.
+      - name: Build and check the redaction corpus
+        run: tools/check-redaction-corpus.sh
+
       - run: cargo test --workspace --all-features
+
+      # THE RSS MEASUREMENT, IN A PROCESS OF ITS OWN.
+      # `peak_rss_kb` reads `/proc/self/status`, which is process-wide, so the measurement is
+      # only meaningful when nothing else in the binary is allocating. `#[ignore]` keeps it out
+      # of the run above and this is the run that executes it -- an ignored test nobody runs is
+      # no test, which is the argument the `ignored-tests` steps below already make.
+      - name: The /Annots warning-retention bound, measured alone
+        run: |
+          cargo test -p burrow-engines --all-features --lib -- --ignored --exact qpdf::sharing_tests::an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each --test-threads=1
 
       # The native half of the differential conformance harness (ROADMAP item 12). Written by
       # `tests/conformance.rs` during the run above; the `web` job downloads it and diffs it
@@ -512,7 +530,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
-          for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys pdfsyntax_operations pdfsyntax_contents pdfsyntax_geometry pdfsyntax_cmap_wmode; do
+          for target in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys pdfsyntax_operations pdfsyntax_contents pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode; do
             rm -rf "corpus/$target"
             mkdir -p "corpus/$target"
             # REDACTED, NEVER RAW. cargo-fuzz prints the ENTIRE crashing input as a

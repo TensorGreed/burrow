@@ -85,9 +85,12 @@ impl<'a> ObjectGraph for QpdfGraph<'a> {
     }
 
     fn name(&self, of: &Self::Handle) -> Result<Vec<u8>> {
-        let name = of.name();
+        // The slashed spelling, which is what `prune`'s policy compares against -- `b"/Form"`,
+        // not `b"Form"`. It has always done so, which is why the read-side slash bug that bit
+        // `resources.rs` never reached here.
+        let name = of.name()?;
         self.drained()?;
-        Ok(name)
+        Ok(name.slashed().to_vec())
     }
 
     fn unparse(&self, of: &Self::Handle) -> Result<Vec<u8>> {

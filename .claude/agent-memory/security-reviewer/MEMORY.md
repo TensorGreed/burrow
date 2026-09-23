@@ -35,3 +35,4 @@
 - [Web handle newtype (b887eff)](m2_web_handle_newtype.md) — releases are correct; the type does not bind to its Session, and its scan test misses `const fn` and wrapped signatures.
 - [M2 glyph geometry (#129)](m2_glyph_geometry.md) — front-vs-back operand indexing beats PDFium, 405 B → 1.64 GiB form DAG, and two comment-satisfiable probes.
 - [Remove-glyphs + sharing (#156)](m2_remove_glyphs_and_sharing.md) — the quote-operator reflow measured in PDFium, the ragged-code leak, the transitive sharing under-count, and what real qpdf returns.
+- [M2 qpdf redact steps (22ceffa)](m2_qpdf_redact_steps.md) — measured annotation + Type 3 leaks, the shared-sub-object font edit, and 9 of 20 mutations surviving in redact_steps.rs.

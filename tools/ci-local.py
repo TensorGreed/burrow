@@ -175,10 +175,33 @@ JOBS: list[dict] = [
         "covers": ["cargo:clippy"],
     },
     {
+        # BEFORE `test`, and in this order deliberately: `redaction_corpus.rs` reads
+        # `tests/redaction/generated/`, which is gitignored and regenerated rather than stored.
+        # Nothing regenerated it until this job existed, so the sweep passed on machines where
+        # the files were left over and panicked on a clean checkout.
+        "name": "redaction-corpus",
+        "run": "tools/check-redaction-corpus.sh",
+        "covers": ["tools/check-redaction-corpus.sh"],
+    },
+    {
         "name": "test",
         "run": "cargo test --workspace --all-features",
         "covers": ["cargo:test"],
         "needs_qpdf_cli": True,
+    },
+    {
+        "name": "annots-rss",
+        "run": (
+            "cargo test -p burrow-engines --all-features --lib -- --ignored --exact "
+            "qpdf::sharing_tests::"
+            "an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each "
+            "--test-threads=1"
+        ),
+        "covers": [],
+        "why": (
+            "a peak-RSS measurement that reads process-wide /proc/self/status, so it is "
+            "meaningful only in a process of its own; ignored in the main run"
+        ),
     },
     {
         "name": "ignored-tests",
@@ -386,7 +409,7 @@ JOBS: list[dict] = [
             "export ASAN_OPTIONS=detect_leaks=0 && "
             "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
             "pdfsyntax_operations pdfsyntax_contents "
-            "pdfsyntax_geometry pdfsyntax_cmap_wmode "
+            "pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -408,6 +431,10 @@ JOBS: list[dict] = [
             "fuzz:pdfsyntax_contents",
             "fuzz:pdfsyntax_geometry",
             "fuzz:pdfsyntax_cmap_wmode",
+            # #131's, and the only target here whose subject WRITES a program back out. It
+            # found two round-trip defects in three minutes on a module with eighteen passing
+            # unit tests over it.
+            "fuzz:pdfsyntax_tounicode",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

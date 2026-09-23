@@ -93,7 +93,8 @@ pub mod prescan;
 pub(crate) mod blank;
 
 pub mod pdfsyntax;
-mod redact;
+pub mod redact;
+pub mod redact_probe;
 
 // The pruning policy ADR 0019 §2b states, written ONCE and implemented over a seam both engine
 // paths satisfy. Ungated like `pdfsyntax` and for a stronger reason: a divergence between two

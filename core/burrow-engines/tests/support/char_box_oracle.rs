@@ -186,6 +186,8 @@ unsafe extern "C" {
     fn FPDF_CloseDocument(document: *mut c_void);
     fn FPDF_LoadPage(document: *mut c_void, index: c_int) -> *mut c_void;
     fn FPDF_ClosePage(page: *mut c_void);
+    fn FPDF_GetPageWidthF(page: *mut c_void) -> f32;
+    fn FPDF_GetPageHeightF(page: *mut c_void) -> f32;
     fn FPDFText_LoadPage(page: *mut c_void) -> *mut c_void;
     fn FPDFText_ClosePage(text_page: *mut c_void);
     fn FPDFText_CountChars(text_page: *mut c_void) -> c_int;
@@ -199,6 +201,17 @@ unsafe extern "C" {
         top: *mut c_double,
     ) -> c_int;
     fn FPDFText_GetLooseCharBox(text_page: *mut c_void, index: c_int, rect: *mut FsRectF) -> c_int;
+    /// Whether PDFium **invented** this character rather than reading it from the file.
+    ///
+    /// A positioning adjustment wide enough to look like a gap produces a space; a `T*` line
+    /// move produces a CR/LF pair. Neither is in any string in the document.
+    ///
+    /// This suite guessed at that before it used this call -- "a synthetic character has no
+    /// advance, so its origin equals the next one's" -- and the guess was wrong on a real
+    /// LaTeX document, where PDFium gave a synthetic space an origin between the two glyphs it
+    /// sat between. Asking is not a heuristic.
+    fn FPDFText_IsGenerated(text_page: *mut core::ffi::c_void, index: c_int) -> c_int;
+
     fn FPDFText_GetCharOrigin(
         text_page: *mut c_void,
         index: c_int,
@@ -225,6 +238,18 @@ pub struct OracleChar {
     pub loose: Rect,
     /// `FPDFText_GetCharBox` — the inked box, which burrow's must contain.
     pub ink: Rect,
+    /// Whether PDFium **invented** this character rather than reading it from the file.
+    ///
+    /// `FPDFText_IsGenerated`. A wide positioning adjustment produces a space; a `T*` line move
+    /// produces a CR/LF pair. Neither is in any string in the document, and a comparison
+    /// against burrow's walk must not expect it.
+    ///
+    /// This suite guessed at this before it asked — "a synthetic character has no advance, so
+    /// its origin equals the next one's" — and the guess was wrong on a real LaTeX document,
+    /// where PDFium gave a synthetic space an origin of its own between two glyphs. The guess
+    /// held on every hand-built fixture and failed on the first real one, which is what a
+    /// corpus is for.
+    pub generated: bool,
 }
 
 /// Every character on page `index` of `bytes`, as PDFium reads them.
@@ -252,6 +277,72 @@ pub struct OracleChar {
 pub fn chars_on_page(bytes: &[u8], index: i32) -> Vec<OracleChar> {
     let owned = bytes.to_vec();
     on_the_pdfium_thread(move || read_chars(&owned, index))
+}
+
+/// Whether an oracle ink box overlaps a region, converting between the two frames.
+///
+/// PDFium's boxes are measured from the bottom of the page and a region from the top, so this
+/// is the one place the two meet. Written here rather than reached for from the operation: a
+/// test that used the operation's own conversion would be asking the instrument whether it
+/// agrees with itself.
+///
+/// Lives in the oracle because two test binaries need it and a copy in each is two things that
+/// can disagree about which way up a page is.
+#[must_use]
+pub fn ink_overlaps(
+    ink: &Rect,
+    region_left: f64,
+    region_top: f64,
+    width: f64,
+    height: f64,
+    page_height: f64,
+) -> bool {
+    let top = page_height - region_top;
+    let bottom = top - height;
+    ink.right > region_left
+        && ink.left < region_left + width
+        && ink.top > bottom
+        && ink.bottom < top
+}
+
+/// Two origins within the oracle's pre-registered tolerance.
+#[must_use]
+pub fn origins_close(a: (f64, f64), b: (f64, f64)) -> bool {
+    (a.0 - b.0).hypot(a.1 - b.1) < TOLERANCE_PT
+}
+
+/// The page's size in points, as PDFium computes it.
+///
+/// A region is measured from the top of the page and PDFium's origins are measured from the
+/// bottom, so a test that builds a region around a character PDFium found needs the height to
+/// convert between them. Reading it from PDFium rather than from the fixture's `/MediaBox`
+/// keeps the region derived entirely from the oracle: a region built from burrow's own reading
+/// of the page would be the #111 circularity, the instrument that decided what to remove also
+/// deciding where to look.
+///
+/// # Panics
+///
+/// If PDFium cannot open the document or the page.
+#[must_use]
+pub fn page_size(bytes: &[u8], index: i32) -> (f64, f64) {
+    let owned = bytes.to_vec();
+    on_the_pdfium_thread(move || {
+        // SAFETY: PDFium does not copy the buffer, and `owned` outlives every call below.
+        let doc =
+            unsafe { FPDF_LoadMemDocument64(owned.as_ptr().cast(), owned.len(), std::ptr::null()) };
+        assert!(!doc.is_null(), "PDFium could not open the fixture");
+        // SAFETY: `doc` is live and `index` is a page in it.
+        let page = unsafe { FPDF_LoadPage(doc, index) };
+        assert!(!page.is_null(), "PDFium could not load page {index}");
+        // SAFETY: `page` is live.
+        let size = unsafe { (FPDF_GetPageWidthF(page), FPDF_GetPageHeightF(page)) };
+        // SAFETY: each handle is live and released once, innermost first.
+        unsafe {
+            FPDF_ClosePage(page);
+            FPDF_CloseDocument(doc);
+        }
+        (f64::from(size.0), f64::from(size.1))
+    })
 }
 
 /// The worker every PDFium call in this module runs on. See [`chars_on_page`].
@@ -332,9 +423,15 @@ fn read_chars(bytes: &[u8], index: i32) -> Vec<OracleChar> {
         // SAFETY: as above; both pointers are to live locals.
         let ok = unsafe { FPDFText_GetCharOrigin(text, at, &mut ox, &mut oy) };
         assert!(ok != 0, "FPDFText_GetCharOrigin refused character {at}");
+        // SAFETY: as above.
+        let generated = unsafe { FPDFText_IsGenerated(text, at) };
         out.push(OracleChar {
             unicode,
             origin: (ox, oy),
+            // `FPDFText_IsGenerated` returns -1 when it cannot tell. Treating "cannot tell" as
+            // "from the file" keeps an unknown character in the comparison rather than
+            // silently dropping it, which is the direction that fails loudly.
+            generated: generated == 1,
             loose: Rect {
                 left: f64::from(loose.left),
                 bottom: f64::from(loose.bottom),

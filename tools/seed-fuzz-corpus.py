@@ -169,7 +169,32 @@ SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
         b"\x00(/WMode 1 def) pop /CMapName /Plain-H def",
         b"\x00Identity-V",
         b"\x00begincmap /WMode 1 def endcmap",
-    )
+    ),
+    # `pdfsyntax_tounicode` is not carved either, and for the same reason: its grammar is a
+    # `/ToUnicode` CMap and the corpus holds content streams. Unlike the target above it takes
+    # no parameter byte -- the whole input is the program, and the filter it narrows with is
+    # derived from the first byte of that program.
+    #
+    # One seed per shape the reader has to get right, because a target seeded only from valid
+    # producer output explores the front door and nothing past it. The last three are the
+    # shapes that were defects: a code wider than four bytes, a range whose destination runs
+    # past U+FFFF, and a section long enough to matter.
+    "pdfsyntax_tounicode": (
+        b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n"
+        b"1 begincodespacerange\n<00> <FF>\nendcodespacerange\n"
+        b"4 beginbfchar\n<01> <0053>\n<02> <0065>\n<03> <0063>\n<04> <0072>\nendbfchar\n"
+        b"endcmap\nend\nend\n",
+        b"1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+        b"1 beginbfchar\n<0041> <0061>\nendbfchar\n",
+        b"1 beginbfrange\n<20> <7E> <0020>\nendbfrange\n",
+        b"1 beginbfrange\n<10> <12> [<0041> <00C6> <0042>]\nendbfrange\n",
+        b"1 beginbfrange\n<10> <14> [<0041>]\nendbfrange\n",
+        b"1 beginbfchar\n<0000000041> <0041>\nendbfchar\n",
+        b"1 beginbfrange\n<00> <10> <FFFF>\nendbfrange\n",
+        b"1 beginbfrange\n<40> <20> <0041>\nendbfrange\n",
+        b"/CMapName /ABCDEF+Helvetica-UCS def\n1 beginbfchar\n<41> <0041>\nendbfchar\n",
+        b"2 beginbfchar\n<41> <D83DDE00>\n<42> <0042>\nendbfchar\n",
+    ),
 }
 
 # Not every span is worth writing, and a fixture with 277 dictionaries would otherwise
