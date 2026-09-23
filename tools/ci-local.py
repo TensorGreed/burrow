@@ -410,7 +410,7 @@ JOBS: list[dict] = [
             "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
             "pdfsyntax_operations pdfsyntax_contents "
             "pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode "
-            "redact_shared_contents "
+            "redact_shared_contents redact_verified_output "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -440,6 +440,11 @@ JOBS: list[dict] = [
             # the fuzzer's bytes as one: the question is whether the sharing detection is right
             # across structures nobody would write by hand, not whether the parser survives.
             "fuzz:redact_shared_contents",
+            # #134's. Generates REGIONS over the committed producer fixtures and asks whether
+            # the operation and its own read-back can ever disagree -- the region being the
+            # caller's only real degree of freedom, and where every geometry defect on this
+            # milestone showed up.
+            "fuzz:redact_verified_output",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",

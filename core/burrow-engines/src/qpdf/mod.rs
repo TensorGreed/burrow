@@ -41,6 +41,7 @@ mod limits;
 mod prune;
 mod redact_frame;
 mod redact_steps;
+mod redact_witness;
 mod reorder;
 mod resources;
 #[cfg(test)]
@@ -541,19 +542,17 @@ impl crate::OutputReader for Qpdf {
 /// Walk a document's first page with the real font resolver, for the differential test.
 ///
 /// Crate-internal on purpose: ADR 0022 forbids a public path that emits a redacted document,
-/// and this emits geometry rather than bytes. `redact_probe` is the one caller.
+/// and this emits geometry rather than bytes. `crate::glyphs_on_first_page` is the one caller.
 pub(crate) fn walk_first_page_for_probe(
     bytes: &[u8],
+    options: &crate::OpenOptions<'_>,
 ) -> Result<Vec<crate::pdfsyntax::geometry::Glyph>> {
-    use std::sync::Arc;
-
-    use burrow_types::{Clock, Limits, ManualClock};
-
-    let options = crate::OpenOptions::new(
-        Limits::default(),
-        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
-    );
-    let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+    // THE CALLER'S CEILINGS AND THE CALLER'S CLOCK. This built its own
+    // `OpenOptions::new(Limits::default(), ManualClock::new(0))` -- a stopped clock, so every
+    // deadline checkpoint inside the walk was inert, which is verbatim the defect the #134 diff
+    // removed from the redaction probe in the same change. A security review found it still
+    // here, in the function that change promoted to public API.
+    let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
     if pages == 0 {
         return Err(Error::Malformed(
             "pdf redaction: a document with no pages".to_owned(),
@@ -569,28 +568,81 @@ pub(crate) fn walk_first_page_for_probe(
     crate::pdfsyntax::geometry::glyphs_in(&content, &resources)
 }
 
-/// Redact one page of a document, for the differential test and nothing else.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+impl crate::PageRedactor for Qpdf {
+    fn name(&self) -> &'static str {
+        "qpdf"
+    }
+
+    fn redact_page(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        redacted: &std::collections::BTreeSet<usize>,
+        region: crate::pdfsyntax::region::Region,
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<(Vec<u8>, crate::redact::Report)> {
+        redact_page_inner(bytes, page, redacted, region, options)
+    }
+
+    fn input_rotations(
+        &self,
+        bytes: &[u8],
+        options: &crate::OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>> {
+        let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
+        rotations_of(&document, pages, options, deadline)
+    }
+}
+
+/// A page's frame, read from `bytes`.
 ///
-/// Crate-internal per ADR 0022: there is no caller-visible redaction until #134's verification
-/// exists. `redact_probe` is the one seam and it goes when that lands.
-pub(crate) fn redact_page_for_probe(
+/// The body of [`crate::page_frame`]; see there for why it is public.
+///
+/// # Errors
+///
+/// Whatever opening or reading the page refused.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+pub(crate) fn page_frame_for(
     bytes: &[u8],
     page: usize,
-    redacted: std::collections::BTreeSet<usize>,
+    options: &crate::OpenOptions<'_>,
+) -> Result<crate::pdfsyntax::region::PageFrame> {
+    let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
+    if page >= usize::try_from(pages).unwrap_or(0) {
+        return Err(Error::InvalidArgument(
+            "pdf geometry: a page index past the end of the document".to_owned(),
+        ));
+    }
+    // SAFETY: `page` is below the page count, checked immediately above.
+    let handle = unsafe { handle::ObjectHandle::page(&document, page) };
+    if let Some(error) = document.take_error() {
+        return Err(error);
+    }
+    redact_frame::of(&document, &handle)
+}
+
+/// Clear a region on one page, verify the emitted bytes, and return them.
+///
+/// The body of [`crate::PageRedactor::redact_page`] for qpdf. Separate from the trait method so
+/// the `#[cfg]` gate sits in one place rather than on every line of it.
+fn redact_page_inner(
+    bytes: &[u8],
+    page: usize,
+    redacted: &std::collections::BTreeSet<usize>,
     region: crate::pdfsyntax::region::Region,
-    limits: Limits,
+    options: &crate::OpenOptions<'_>,
 ) -> Result<(Vec<u8>, crate::redact::Report)> {
     use std::sync::Arc;
 
-    use burrow_types::{Clock, SystemClock};
-
-    // A REAL CLOCK. It was `ManualClock::new(0)`, which never advances -- so every
-    // `deadline.checkpoint` in `redact_steps` was inert on the only route into the operation,
-    // and the time bound was threaded but unmeasured. A security review found six checkpoints
-    // that could not have fired.
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
-    let options = crate::OpenOptions::new(limits, Arc::clone(&clock));
-    let (document, _, _, deadline) = open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+    // THE CALLER'S CLOCK AND THE CALLER'S CEILINGS. The probe built its own `SystemClock` and
+    // `Limits::default()`, which was right for a probe and wrong for an operation: an operation
+    // spends the budget it was given, and `verify::output` says so in capitals about the
+    // deadline.
+    let clock = Arc::clone(&options.clock);
+    let limits = options.limits;
+    let (document, _, _, deadline) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
     // THE PAGE BOUND IS THE CONSTRUCTOR'S, and it is checked there and only there.
     //
     // It used to be checked here as well. That is one check too many rather than one too few:
@@ -599,6 +651,48 @@ pub(crate) fn redact_page_for_probe(
     // duplicated in this caller, deleting the constructor's changed nothing any test could
     // see — a mutation sweep planted exactly that and the suite stayed green, which is a
     // defence with no test standing behind an `unsafe` block.
-    let steps = redact_steps::QpdfRedaction::new(document, page, region, limits, deadline, clock)?;
-    crate::redact::run(steps, redacted)
+    let steps = redact_steps::QpdfRedaction::new(
+        document,
+        page,
+        region,
+        limits,
+        deadline,
+        Arc::clone(&clock),
+    )?;
+
+    // #134. The bytes reach a caller only through this closure, because `emit_verified` takes
+    // it and there is no other way to a `Vec<u8>` from the finished state. A fresh qpdf opens
+    // the emitted bytes: the handle that wrote them holds a page tree it built and then edited,
+    // and an engine in a bad state agrees with itself.
+    // THE CUT SET COMES FROM THE REPORT, and `Cleared::cut_fonts` states what that leaves
+    // undetectable. It is filled after the steps run, so the closure reads it through a cell
+    // rather than closing over a value that does not exist yet.
+    let cut_fonts: std::cell::RefCell<std::collections::BTreeSet<u64>> =
+        std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let witness = redact_witness::QpdfWitness::new(limits, clock, deadline);
+    let verify = |emitted: &[u8]| {
+        let expected = crate::redact_verify::Cleared {
+            page,
+            region,
+            cut_fonts: cut_fonts.borrow().clone(),
+        };
+        // WHAT THE CHECK WAS TOLD, recorded so a test can read it back.
+        //
+        // This wiring is the seam a fake cannot reach: `redact_verify`'s `Liar` tests build a
+        // `Cleared` by hand, and `burrow-ops`' fake engine never verifies at all -- so a
+        // mutation forcing `cut_fonts` empty disabled the whole mapping check and the entire
+        // suite stayed green. A security review planted exactly that. The argument the check
+        // receives is now observable, which is the only way a test can say it was right.
+        #[cfg(test)]
+        tests::record_expectation(&expected);
+        crate::redact_verify::region_is_cleared(&witness, emitted, &expected)
+    };
+    crate::redact::run_reporting(steps, redacted.clone(), &verify, &|report| {
+        *cut_fonts.borrow_mut() = report
+            .fonts
+            .iter()
+            .filter(|font| font.cut)
+            .map(|font| font.font)
+            .collect();
+    })
 }

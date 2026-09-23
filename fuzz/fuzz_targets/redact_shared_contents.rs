@@ -41,6 +41,8 @@
 use std::collections::BTreeSet;
 
 use burrow_engines::pdfsyntax::region::Region;
+use burrow_engines::{OpenOptions, PageRedactor};
+use burrow_types::{Limits, SystemClock};
 use libfuzzer_sys::fuzz_target;
 
 /// `/Helvetica` widths for codes 32..=94, so the standard-14 refusal never fires and the target
@@ -181,7 +183,11 @@ fuzz_target!(|data: &[u8]| {
     };
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
 
-    let Ok((out, _)) = burrow_engines::redact_probe::redact_page(&document, 0, redacted, region)
+    // THE PUBLIC OPERATION. `redact_probe` went with #134; this target still called it and the
+    // fuzz workspace stopped compiling -- which `cargo fuzz run <one target>` does not show,
+    // because it builds one binary. `cargo +nightly check --bins` from `fuzz/` does.
+    let options = OpenOptions::new(Limits::default(), std::sync::Arc::new(SystemClock::new()));
+    let Ok((out, _)) = burrow_engines::qpdf::Qpdf.redact_page(&document, 0, &redacted, region, &options)
     else {
         // A refusal is an outcome. Which refusal is the unit suite's question, because a
         // fixture there can be built to be certain what the region reaches.

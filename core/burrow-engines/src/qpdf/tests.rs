@@ -219,3 +219,243 @@ fn a_report_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<StructureReport>();
 }
+
+// // What the last redaction told its region check, for the tests that assert on the wiring.
+//
+// The `Cleared` the verification receives is built inside a closure in `redact_page_inner` and
+// consumed immediately. Nothing returns it, and a security review measured what that costs:
+// forcing `cut_fonts` empty disabled the mapping check for every document and the whole suite
+// stayed green, because `redact_verify`'s fakes construct a `Cleared` by hand and `burrow-ops`'
+// fake engine never verifies. THE WIRING IS THE SEAM NEITHER FAKE REACHES.
+//
+// A `thread_local` rather than a parameter because the closure's signature is
+// `Fn(&[u8]) -> Result<()>`, and widening it for a test would put the test in the type.
+thread_local! {
+    static LAST_EXPECTATION: std::cell::RefCell<Option<crate::redact_verify::Cleared>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record what the check was handed. Called from `redact_page_inner` under `cfg(test)`.
+#[cfg(test)]
+pub(super) fn record_expectation(expected: &crate::redact_verify::Cleared) {
+    LAST_EXPECTATION.with(|slot| *slot.borrow_mut() = Some(expected.clone()));
+}
+
+/// What the last redaction on this thread told its check.
+#[cfg(test)]
+fn last_expectation() -> Option<crate::redact_verify::Cleared> {
+    LAST_EXPECTATION.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(all(test, feature = "native-engines", burrow_native_engines))]
+mod wiring {
+    use super::{LAST_EXPECTATION, last_expectation};
+    use crate::PageRedactor;
+    use crate::pdfsyntax::region::Region;
+    use burrow_types::{Limits, SystemClock};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    /// A one-page document whose font is cuttable and whose page draws two codes.
+    fn document() -> Vec<u8> {
+        let widths = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556]";
+        let content = "BT /F1 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (K) Tj ET\n";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 6 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                 /WinAnsiEncoding /FirstChar 32 /LastChar 94 /Widths {widths} >>"
+            ),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".to_owned(),
+        ];
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    fn redact(page: usize, redacted: &[usize]) -> burrow_types::Result<()> {
+        LAST_EXPECTATION.with(|slot| *slot.borrow_mut() = None);
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let covered: BTreeSet<usize> = redacted.iter().copied().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        super::super::Qpdf
+            .redact_page(&document(), page, &covered, region, &options)
+            .map(|_| ())
+    }
+
+    #[test]
+    fn the_check_is_told_the_fonts_the_report_says_were_cut() {
+        // KILLS: forcing `cut_fonts` empty in the observe closure, which disables the mapping
+        // assertion for every document. Nothing else in the suite observes this argument.
+        redact(0, &[0, 1]).expect("a redactable document");
+        let expected = last_expectation().expect("the check was called");
+        assert!(
+            !expected.cut_fonts.is_empty(),
+            "the page's font is cuttable and the check must be told so; it was told {:?}",
+            expected.cut_fonts
+        );
+    }
+
+    #[test]
+    fn the_check_is_told_the_page_that_was_redacted() {
+        // KILLS: `Cleared { page: 0 }` instead of `page`. Every end-to-end test redacts page 0,
+        // so a verification that always checked page 0 would ship.
+        redact(1, &[1]).ok();
+        let expected = last_expectation().expect("the check was called");
+        assert_eq!(
+            expected.page, 1,
+            "the check must be told the page it verifies"
+        );
+    }
+
+    #[test]
+    fn the_check_is_told_the_region_that_was_asked_for() {
+        // KILLS: a zeroed or constant region reaching the check. A zero region makes check 1
+        // pass over every document.
+        redact(0, &[0, 1]).expect("a redactable document");
+        let expected = last_expectation().expect("the check was called");
+        assert!(
+            expected.region.width > 1.0 && expected.region.height > 1.0,
+            "the check must be told a real region, got {:?}",
+            expected.region
+        );
+    }
+}
+
+// A read-back failure a test can force, for the one question no document can ask.
+//
+// `region_is_cleared` only fails on a document that a correct operation never produces, so
+// "does the operation propagate a rejection" has no fixture. Read by `QpdfWitness::open_output`
+// -- in the witness rather than in the verify closure, because a hook in the closure would be
+// bypassed by the very mutation this exists to catch.
+#[cfg(test)]
+thread_local! {
+    static FORCED_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the read-back should fail, and the error it fails with.
+#[cfg(test)]
+pub(super) fn forced_read_back_failure() -> Option<burrow_types::Error> {
+    FORCED_FAILURE
+        .with(std::cell::Cell::get)
+        .then(|| burrow_types::Error::Malformed("planted read-back failure".to_owned()))
+}
+
+#[cfg(all(test, feature = "native-engines", burrow_native_engines))]
+mod propagation {
+    use super::super::Qpdf;
+    use super::FORCED_FAILURE;
+    use crate::PageRedactor;
+    use crate::pdfsyntax::region::Region;
+    use burrow_types::{Limits, SystemClock};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    fn attempt() -> burrow_types::Result<Vec<u8>> {
+        let widths = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556]";
+        let content = "BT /F1 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (K) Tj ET\n";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                 /WinAnsiEncoding /FirstChar 32 /LastChar 94 /Widths {widths} >>"
+            ),
+        ];
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let covered: BTreeSet<usize> = [0].into_iter().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        Qpdf.redact_page(out.as_bytes(), 0, &covered, region, &options)
+            .map(|(bytes, _)| bytes)
+    }
+
+    #[test]
+    fn a_failing_read_back_stops_the_operation_returning_bytes() {
+        // KILLS: discarding the verification's result. That mutation survived the entire suite
+        // before this existed -- #134's central claim, with nothing behind it on the path that
+        // ships.
+        //
+        // NON-VACUITY FIRST: the same document must succeed with the hook off, or this test
+        // would pass for an operation that refuses everything.
+        FORCED_FAILURE.with(|flag| flag.set(false));
+        let bytes = attempt().expect("the document redacts when the read-back works");
+        assert!(bytes.starts_with(b"%PDF"));
+
+        FORCED_FAILURE.with(|flag| flag.set(true));
+        let result = attempt();
+        FORCED_FAILURE.with(|flag| flag.set(false));
+
+        let error = result.expect_err("a failing read-back must stop the bytes");
+        let text = format!("{error}");
+        assert!(
+            text.contains("planted read-back failure"),
+            "the read-back's failure must reach the caller: {text}"
+        );
+    }
+}

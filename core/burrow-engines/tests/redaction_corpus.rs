@@ -160,7 +160,7 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
     };
 
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    let out = match burrow_engines::redact_probe::redact_page(pdf, 0, redacted, region) {
+    let out = match support::redact_page(pdf, 0, redacted, region) {
         Ok((out, report)) => {
             // THE DISCLOSURE COUNT, bounded by something that is not the sharing walk. Every
             // document in this corpus has one page and that page is the redacted one, so no

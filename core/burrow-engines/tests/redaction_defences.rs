@@ -15,7 +15,7 @@
 //!
 //! # These are documents, not unit fixtures
 //!
-//! Every one goes in through `redact_probe::redact_page`, which is what the nine surviving
+//! Every one goes in through `burrow_ops::redact::page`, which is what the nine surviving
 //! mutations had in common: they were all reachable from the operation and none of them were
 //! reached. A unit test of `narrow_differences` would have passed with the call to it deleted.
 
@@ -34,6 +34,7 @@ mod support;
 use std::collections::BTreeSet;
 
 use burrow_engines::pdfsyntax::region::Region;
+use support::char_box_oracle::{TOLERANCE_PT, chars_on_page, ink_overlaps, page_size};
 use support::pdf_builder::{Builder, helvetica_with_widths};
 
 /// The region every fixture here is redacted with: the upper band of the page.
@@ -49,7 +50,7 @@ fn band() -> Region {
 /// Redact page 0 of `pdf`, naming only page 0.
 fn redact(pdf: &[u8]) -> burrow_types::Result<(Vec<u8>, burrow_engines::redact::Report)> {
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    burrow_engines::redact_probe::redact_page(pdf, 0, redacted, band())
+    support::redact_page(pdf, 0, redacted, band())
 }
 
 /// The refusal `pdf` produces, or a panic naming `what` — **without printing the document**.
@@ -847,11 +848,17 @@ fn an_annotation_whose_rect_is_not_four_numbers_refuses_by_name() {
 
 #[test]
 fn a_page_index_past_the_end_refuses_rather_than_reaching_for_the_page() {
-    // KILLS: the page-count check `page_handle`'s SAFETY comment relies on. Before this the
-    // check lived in one caller and the comment claimed the constructor made it.
+    // KILLS: the page-count check `page_handle`'s SAFETY comment relies on.
+    //
+    // **`redacted` NAMES PAGE 7, and that is the point.** With `{0}` the `burrow-ops` guard
+    // fires first -- "the page being redacted must be one the operation covers" -- and the
+    // constructor's bound is never reached. A review disabled that bound and the whole suite
+    // stayed green, because this test was asserting on a rule it had been silently re-pointed
+    // at when #134 added the guard. `a_page_outside_the_redacted_set_is_refused` covers the
+    // guard separately, so naming page 7 here loses nothing.
     let document = page_with_font("");
-    let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    let text = match burrow_engines::redact_probe::redact_page(&document, 7, redacted, band()) {
+    let redacted: BTreeSet<usize> = [7].into_iter().collect();
+    let text = match support::redact_page(&document, 7, redacted, band()) {
         Ok((out, _)) => panic!(
             "redacted {} bytes for a page that does not exist",
             out.len()
@@ -859,8 +866,8 @@ fn a_page_index_past_the_end_refuses_rather_than_reaching_for_the_page() {
         Err(error) => format!("{error:?}"),
     };
     assert!(
-        text.contains("page"),
-        "the refusal must name the page, got: {text}"
+        text.contains("page-out-of-range"),
+        "the CONSTRUCTOR's bound must be what refuses, got: {text}"
     );
 }
 
@@ -875,9 +882,15 @@ fn a_form_xobject_drawn_twice_refuses_when_the_region_reaches_inside_it() {
     let first = pdf.reserve();
     let second = pdf.reserve();
     let font = pdf.add(&helvetica_with_widths());
+    // THE FORM'S RESOURCES NAME THE REAL FONT. They said `/F1 3 0 R` -- a hardcoded object
+    // number that is not the font -- and the fixture passed anyway, because the walk ignored a
+    // form's own `/Resources` entirely. Fixing that leak turned this fixture red, which is the
+    // fixture telling the truth for the first time.
     let form = pdf.stream(
-        "/Type /XObject /Subtype /Form /BBox [0 0 400 40] \
-         /Resources << /Font << /F1 3 0 R >> >>",
+        &format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 400 40] \
+             /Resources << /Font << /F1 {font} 0 R >> >>"
+        ),
         "BT /F1 24 Tf 2 8 Td (SECRET) Tj ET\n",
     );
     let first_content = pdf.stream("", "q 1 0 0 1 72 700 cm /Fx Do Q\n");
@@ -918,8 +931,10 @@ fn a_form_xobject_drawn_twice_is_not_refused_when_the_region_misses_it() {
     let second = pdf.reserve();
     let font = pdf.add(&helvetica_with_widths());
     let form = pdf.stream(
-        "/Type /XObject /Subtype /Form /BBox [0 0 400 40] \
-         /Resources << /Font << /F1 3 0 R >> >>",
+        &format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 400 40] \
+             /Resources << /Font << /F1 {font} 0 R >> >>"
+        ),
         "BT /F1 24 Tf 2 8 Td (LETTERHEAD) Tj ET\n",
     );
     // The shared form is drawn at the FOOT of page 0, well clear of the band; the text the
@@ -1056,9 +1071,17 @@ fn a_parent_chain_that_never_terminates_refuses_by_name() {
     let document = pdf.build(catalog);
 
     let text = refusal(&document, "a /Parent chain that does not terminate");
+    // THE RULE THAT FIRES MOVED WHEN #134 LANDED, and the new one is earlier. The operation now
+    // reads the input's `/Rotate` vector before anything is edited -- that is the promise
+    // `Expected::RegionCleared` carries -- and the sweep walks the page tree, so a cycle is
+    // refused there rather than in `redact_frame`'s climb. Both are bounded walks of the same
+    // tree naming the same shape; the earlier one is the better place to refuse from, because
+    // nothing has been touched yet.
     assert!(
-        text.contains("page-tree-depth") || text.contains("no-display-box"),
-        "the refusal must name the climb or the missing box, got: {text}"
+        text.contains("page tree is deeper")
+            || text.contains("page-tree-depth")
+            || text.contains("no-display-box"),
+        "the refusal must name the page-tree walk or the missing box, got: {text}"
     );
 }
 
@@ -1426,13 +1449,7 @@ fn a_contents_array_that_decodes_past_the_memory_ceiling_is_refused_before_it_is
     let mut limits = burrow_types::Limits::default();
     limits.max_memory_bytes = 32 * 1024 * 1024;
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    let text = match burrow_engines::redact_probe::redact_page_with_limits(
-        &document,
-        0,
-        redacted,
-        band(),
-        limits,
-    ) {
+    let text = match support::redact_page_with(&document, 0, redacted, band(), limits) {
         Ok((out, _)) => panic!("redacted {} bytes past the memory ceiling", out.len()),
         Err(error) => format!("{error:?}"),
     };
@@ -1472,13 +1489,233 @@ fn a_contents_array_inside_the_memory_ceiling_is_read() {
     let mut limits = burrow_types::Limits::default();
     limits.max_memory_bytes = 32 * 1024 * 1024;
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    let (out, _) = burrow_engines::redact_probe::redact_page_with_limits(
-        &document,
-        0,
-        redacted,
-        band(),
-        limits,
-    )
-    .expect("well inside the ceiling");
+    let (out, _) = support::redact_page_with(&document, 0, redacted, band(), limits)
+        .expect("well inside the ceiling");
     assert_absent(&out, b"SECRET", "the removed text");
+}
+
+#[test]
+fn a_page_outside_the_redacted_set_is_refused() {
+    // KILLS: dropping the page-in-set check. `cut_fonts` decides cuttability across `redacted`,
+    // so redacting a page the set does not contain judges that page's fonts against a set that
+    // excludes it -- not a wrong answer so much as an unanswerable question.
+    let document = page_with_font("");
+    let elsewhere: BTreeSet<usize> = [1].into_iter().collect();
+    let text = match support::redact_page(&document, 0, elsewhere, band()) {
+        Ok((out, _)) => panic!("redacted {} bytes for a page it does not cover", out.len()),
+        Err(error) => format!("{error:?}"),
+    };
+    assert!(
+        text.contains("must be one the operation covers"),
+        "got: {text}"
+    );
+}
+
+#[test]
+fn the_read_back_reports_what_it_examined_rather_than_nothing() {
+    // NON-VACUITY FOR THE INSTRUMENT. Every assertion the verification makes is of the form
+    // "this set is empty"; a witness that reported empty sets for everything would satisfy all
+    // three checks over any document at all. A mutation sweep planted exactly that for the
+    // mapped codes and for the page keys and nothing failed.
+    //
+    // So: a document whose font HAS mappings and whose page HAS keys, redacted successfully,
+    // with the emitted document's own numbers read back and asserted non-zero.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let to_unicode = pdf.stream(
+        "",
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n\
+         1 begincodespacerange\n<00> <FF>\nendcodespacerange\n\
+         2 beginbfchar\n<53> <0053>\n<4B> <004B>\nendbfchar\nendcmap\nend\nend\n",
+    );
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} /ToUnicode {to_unicode} 0 R \
+         /Encoding << /Type /Encoding /Differences [83 /Sacute 75 /Kcommaaccent] >> >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let content = pdf.stream(
+        "",
+        "BT /F1 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (K) Tj ET\n",
+    );
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let document = pdf.build(catalog);
+
+    let (out, report) = support::redact_page(&document, 0, [0].into_iter().collect(), band())
+        .expect("a document with mappings and page keys redacts");
+
+    // THE FONT WAS CUT, so the mapping check applied to it rather than exempting it.
+    assert!(
+        report.fonts.iter().any(|font| font.cut),
+        "the mapping check only applies to cut fonts, so one must have been cut: {:?}",
+        report.fonts
+    );
+
+    // AND THE OUTPUT STILL HAS BOTH THINGS THE CHECK LOOKS AT. If the emitted document had no
+    // mappings and no page keys at all, every check would pass over nothing.
+    let normalised = decompressed(&out);
+    let text = String::from_utf8_lossy(&normalised);
+    assert!(
+        text.contains("beginbfchar"),
+        "the output must still carry a /ToUnicode for the check to have examined one"
+    );
+    assert!(
+        text.contains("/Differences"),
+        "the output must still carry a /Differences for the check to have examined one"
+    );
+    assert!(
+        text.contains("/Contents"),
+        "the output must still carry page keys for the check to have examined them"
+    );
+    // The removed code's mapping is gone and the kept one's survives -- which is what makes the
+    // two sets the check compares genuinely different.
+    assert!(!text.contains("<53> <0053>"), "the removed code's mapping");
+    assert!(text.contains("<4B> <004B>"), "the kept code's mapping");
+}
+
+/// A page whose `/F1` has zero widths and a form whose own `/F1` has real ones, drawing
+/// `SECRETSECRET` inside the form.
+///
+/// **The fixture that would have caught the form-resources leak**, and the reason it is built
+/// with two fonts under one name: a form resolving `/F1` against the page places every glyph at
+/// the same point (zero advance), while a form resolving it against its own `/Resources` spreads
+/// them across 160 points. PDFium does the second. Any fixture whose page font and form font
+/// agree cannot tell the two apart, which is why none of the existing ones did.
+fn form_with_its_own_font() -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let zeros = "[".to_owned() + &"0 ".repeat(63) + "]";
+    let page_font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+         /FirstChar 32 /LastChar 94 /Widths {zeros} >>"
+    ));
+    let form_font = pdf.add(&helvetica_with_widths());
+    let form = pdf.stream(
+        &format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+             /Resources << /Font << /F1 {form_font} 0 R >> >>"
+        ),
+        "BT /F1 24 Tf 72 700 Td (SECRETSECRET) Tj ET\n",
+    );
+    let content = pdf.stream("", "q 1 0 0 1 0 0 cm /Fm0 Do Q\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {page_font} 0 R >> /XObject << /Fm0 {form} 0 R >> >> \
+             /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+#[test]
+fn a_form_resolves_its_font_against_its_own_resources_and_not_the_pages() {
+    // THE LEAK, AS A FIXTURE. Before the fix: PDFium rendered twelve characters from x=73 to
+    // x=233; burrow placed all twelve in a zero-width box at x=72, a region over the rendered
+    // text reached nothing, the redaction returned `Ok`, both verification passes agreed, and
+    // SEVEN characters were still drawn inside the rectangle the user selected.
+    //
+    // The assertion is against PDFium rather than against a remembered number: this is exactly
+    // the disagreement ADR 0029 §6's oracle exists to catch, and it had never been asked
+    // because no fixture gave a form resources of its own.
+    let document = form_with_its_own_font();
+    let oracle: Vec<_> = chars_on_page(&document, 0)
+        .into_iter()
+        .filter(|char| !char.generated)
+        .collect();
+    assert_eq!(oracle.len(), 12, "the fixture draws twelve characters");
+
+    let walked = burrow_engines::glyphs_on_first_page(&document, &support::walk_options())
+        .expect("the walk succeeds");
+    assert_eq!(walked.len(), 12, "and burrow places twelve");
+
+    // EVERY GLYPH AGREES WITH PDFIUM'S ORIGIN. The zero-width failure put them all at x=72.
+    for (at, (glyph, char)) in walked.iter().zip(&oracle).enumerate() {
+        assert!(
+            (glyph.origin.0 - char.origin.0).abs() < TOLERANCE_PT,
+            "glyph {at}: burrow places x={:.1}, PDFium reads x={:.1}",
+            glyph.origin.0,
+            char.origin.0
+        );
+    }
+}
+
+#[test]
+fn a_region_over_a_forms_rendered_text_removes_it() {
+    // The consequence, end to end. The region covers the middle of what PDFium renders; every
+    // character whose ink is inside it must be gone from the output.
+    let document = form_with_its_own_font();
+    let (_, height) = page_size(&document, 0);
+    let region = Region {
+        left: 150.0,
+        top: height - 724.0,
+        width: 300.0,
+        height: 40.0,
+    };
+    let before: Vec<_> = chars_on_page(&document, 0)
+        .into_iter()
+        .filter(|char| !char.generated)
+        .collect();
+    let reached = before
+        .iter()
+        .filter(|char| {
+            ink_overlaps(
+                &char.ink,
+                region.left,
+                region.top,
+                region.width,
+                region.height,
+                height,
+            )
+        })
+        .count();
+    assert!(
+        reached >= 5,
+        "the region must reach several characters, reached {reached}"
+    );
+
+    let (out, _) = support::redact_page(&document, 0, [0].into_iter().collect(), region)
+        .expect("a form's text is redactable");
+    let after: Vec<_> = chars_on_page(&out, 0)
+        .into_iter()
+        .filter(|char| !char.generated)
+        .collect();
+    let left_inside = after
+        .iter()
+        .filter(|char| {
+            ink_overlaps(
+                &char.ink,
+                region.left,
+                region.top,
+                region.width,
+                region.height,
+                height,
+            )
+        })
+        .count();
+    assert_eq!(
+        left_inside, 0,
+        "{left_inside} character(s) are still rendered inside the region the user selected"
+    );
 }

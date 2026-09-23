@@ -60,14 +60,14 @@
 //! contract `Steps` states and the compiler cannot. A review found that gap while the trait
 //! had no implementation, which is the cheapest time to find it.
 //!
-//! # What is public here, and what narrows again with #134
+//! # What is public here
 //!
-//! The module is `pub` so that `redact_probe::redact_page` can name [`Report`] and
-//! [`FontOutcome`] in its signature. Those two types and their accessors are the whole public
-//! surface: `Steps`, `Redaction` and `run` are `pub(crate)`, and there is no
-//! caller-visible way to start a redaction. ADR 0022 forbids one until verification exists.
+//! The module is `pub` so that [`crate::PageRedactor`] and `burrow_ops::redact` can name
+//! [`Report`] and [`FontOutcome`] in their signatures. Those two types and their accessors are
+//! the whole public surface: `Steps`, `Redaction`, `run` and `run_reporting` are `pub(crate)`,
+//! and the only way to a `Vec<u8>` is `Finished::emit_verified`, which takes the check.
 //!
-//! When #134 lands, `redact_probe` goes and this narrows with it.
+//! #134 landed, `redact_probe` is gone, and the operation is `burrow_ops::redact::page`.
 
 use std::collections::BTreeSet;
 
@@ -297,19 +297,30 @@ impl<S: Steps> FontsCut<S> {
 }
 
 impl<S: Steps> Finished<S> {
-    /// Emit the bytes.
+    /// Write the document out and hand the bytes to `verify` before returning them.
     ///
-    /// # The crate's own boundary, not a public one
+    /// # There is no unverified way out, and that is the signature's job
     ///
-    /// Reaching this state means every step succeeded. It does **not** mean the output is
-    /// verified: that is #134, and until it exists nothing outside this crate may call a path
-    /// that reaches here.
+    /// ADR 0022: an operation verifies its own output before returning it. Reaching this state
+    /// means every step succeeded, which is **not** the same as the output being what was
+    /// promised — a rewriter that believed it had removed a glyph and had not would arrive
+    /// here.
+    ///
+    /// `verify` is taken rather than called internally because the check needs an engine and
+    /// this module holds none; it is taken as a parameter rather than left to the caller
+    /// because a caller that could get bytes without one is a caller that will. The previous
+    /// signature was `emit(self) -> Result<Vec<u8>>` with a comment saying nothing outside the
+    /// crate may reach it, which is a rule rather than a mechanism.
     ///
     /// # Errors
     ///
-    /// Whatever writing failed with.
-    pub(crate) fn emit(mut self) -> Result<Vec<u8>> {
-        self.steps.write()
+    /// Whatever writing failed with, or whatever `verify` rejected. **The bytes are dropped on
+    /// a rejection** rather than returned with a warning: a document that failed its own
+    /// read-back is not a document to hand back.
+    pub(crate) fn emit_verified(mut self, verify: &dyn Fn(&[u8]) -> Result<()>) -> Result<Vec<u8>> {
+        let bytes = self.steps.write()?;
+        verify(&bytes)?;
+        Ok(bytes)
     }
 
     /// What the operation did, beyond the bytes.
@@ -327,13 +338,40 @@ impl<S: Steps> Finished<S> {
 /// # Errors
 ///
 /// The first failing step's error, with the document discarded. See the module header.
-pub(crate) fn run<S: Steps>(steps: S, redacted: BTreeSet<usize>) -> Result<(Vec<u8>, Report)> {
+pub(crate) fn run<S: Steps>(
+    steps: S,
+    redacted: BTreeSet<usize>,
+    verify: &dyn Fn(&[u8]) -> Result<()>,
+) -> Result<(Vec<u8>, Report)> {
+    run_reporting(steps, redacted, verify, &|_| {})
+}
+
+/// As [`run`], telling `observe` what the report says **before** the bytes are verified.
+///
+/// # Why the report is needed before verification and not after
+///
+/// The mapping check is scoped to the fonts the operation cut — see
+/// [`crate::redact_verify::Cleared::cut_fonts`] — so the verifier has to know that set, and the
+/// set is only decided in step 2. Handing it over through a callback keeps the ordering the
+/// type states: the report exists at `Finished`, and `emit_verified` is still the only way to
+/// bytes.
+///
+/// # Errors
+///
+/// The first failing step's error, with the document discarded, or whatever `verify` rejected.
+pub(crate) fn run_reporting<S: Steps>(
+    steps: S,
+    redacted: BTreeSet<usize>,
+    verify: &dyn Fn(&[u8]) -> Result<()>,
+    observe: &dyn Fn(&Report),
+) -> Result<(Vec<u8>, Report)> {
     let finished = Redaction::new(steps, redacted)
         .edit_content()?
         .cut_fonts()?
         .strip_page()?;
     let report = finished.report().clone();
-    Ok((finished.emit()?, report))
+    observe(&report);
+    Ok((finished.emit_verified(verify)?, report))
 }
 
 /// The refusal a poisoned document produces, so callers can name it.
@@ -349,7 +387,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{FontOutcome, Redaction, Steps, StreamId, poisoned, run};
-    use burrow_types::Result;
+    use burrow_types::{Error, Result};
 
     /// The pages a test's operation covers, when the fixture is single-page.
     fn page_zero() -> BTreeSet<usize> {
@@ -467,12 +505,53 @@ mod tests {
     }
 
     #[test]
+    fn the_bytes_go_through_the_check_and_a_rejection_discards_them() {
+        // ADR 0022's rule as a signature rather than a comment. `emit_verified` takes the
+        // check, so there is no path to a `Vec<u8>` that skips it -- and a mutation sweep
+        // planted `let _ = verify;` and nothing failed until this existed.
+        let (fake, _log) = Fake::with_streams(1);
+        let calls = Rc::new(RefCell::new(0usize));
+        let seen = Rc::clone(&calls);
+        let (bytes, _) = run(fake, page_zero(), &move |emitted: &[u8]| {
+            *seen.borrow_mut() += 1;
+            assert!(
+                emitted.starts_with(b"%PDF"),
+                "the check is handed the emitted bytes, not something else"
+            );
+            Ok(())
+        })
+        .expect("a clean run succeeds");
+        assert!(bytes.starts_with(b"%PDF"));
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "the check runs exactly once, on the output"
+        );
+    }
+
+    #[test]
+    fn a_rejected_output_is_not_returned() {
+        // A document that failed its own read-back is not a document to hand back, and the
+        // rejection reaches the caller as itself rather than as something the operation
+        // invented.
+        let (fake, _log) = Fake::with_streams(1);
+        let error = run(fake, page_zero(), &|_| {
+            Err(Error::OutputRejected("planted".to_owned()))
+        })
+        .expect_err("a rejected output is not returned");
+        assert!(
+            matches!(error, Error::OutputRejected(ref what) if what == "planted"),
+            "the rejection reaches the caller unchanged: {error:?}"
+        );
+    }
+
+    #[test]
     fn the_order_is_every_content_edit_then_fonts_then_the_page() {
         // THE ORDER IS THE ASSERTION, and it is asserted against `run` rather than against the
         // same calls made by hand -- a first draft drove the fake directly, which established
         // the fake's order and nothing about the code under test.
         let (fake, log) = Fake::with_streams(4);
-        run(fake, page_zero()).expect("a clean run succeeds");
+        run(fake, page_zero(), &|_| Ok(())).expect("a clean run succeeds");
 
         assert_eq!(
             log.borrow().as_slice(),
@@ -496,7 +575,7 @@ mod tests {
         // The specific ordering claim the type exists for, stated as an index comparison so a
         // failure names the two steps rather than printing two lists to diff by eye.
         let (fake, log) = Fake::with_streams(4);
-        run(fake, page_zero()).expect("succeeds");
+        run(fake, page_zero(), &|_| Ok(())).expect("succeeds");
         let log = log.borrow();
         let last_rewrite = log
             .iter()
@@ -521,7 +600,7 @@ mod tests {
         // to the partly-edited state.
         let (mut fake, log) = Fake::with_streams(4);
         fake.fail_rewrite = Some(3);
-        let error = run(fake, page_zero())
+        let error = run(fake, page_zero(), &|_| Ok(()))
             .expect_err("the third rewrite fails, so the redaction must refuse");
 
         assert!(
@@ -555,8 +634,8 @@ mod tests {
         // The rule is about ANY step, not only the content edits.
         let (mut fake, log) = Fake::with_streams(4);
         fake.fail_codes = true;
-        let error =
-            run(fake, page_zero()).expect_err("font surgery fails, so the redaction must refuse");
+        let error = run(fake, page_zero(), &|_| Ok(()))
+            .expect_err("font surgery fails, so the redaction must refuse");
         assert!(
             format!("{error:?}").contains("[document-poisoned]"),
             "refused, but by a different rule: {error:?}"
@@ -580,7 +659,8 @@ mod tests {
         let (mut fake, log) = Fake::with_streams(4);
         fake.fail_rewrite = Some(2);
         fake.mutate_before_failing = true;
-        let error = run(fake, page_zero()).expect_err("a mutating failure still refuses");
+        let error =
+            run(fake, page_zero(), &|_| Ok(())).expect_err("a mutating failure still refuses");
         assert!(
             format!("{error:?}").contains("[document-poisoned]"),
             "refused, but by a different rule: {error:?}"
@@ -603,7 +683,7 @@ mod tests {
         // be shown selectively -- nothing would tell the caller which documents it is about.
         let (mut fake, _) = Fake::with_streams(2);
         fake.fonts = vec![(11, 0), (22, 4)];
-        let (_, report) = run(fake, page_zero()).expect("succeeds");
+        let (_, report) = run(fake, page_zero(), &|_| Ok(())).expect("succeeds");
 
         assert_eq!(
             report.fonts,
@@ -640,7 +720,7 @@ mod tests {
         // untrue about their own document.
         let (mut fake, _) = Fake::with_streams(2);
         fake.fonts = vec![(11, 0), (22, 0)];
-        let (_, report) = run(fake, page_zero()).expect("succeeds");
+        let (_, report) = run(fake, page_zero(), &|_| Ok(())).expect("succeeds");
         assert!(
             !report.discloses_a_retained_font(),
             "nothing was retained, so nothing is disclosed: {report:?}"
@@ -656,7 +736,7 @@ mod tests {
         fake.fail_rewrite = Some(2);
         fake.fonts = vec![(11, 3)];
         assert!(
-            run(fake, page_zero()).is_err(),
+            run(fake, page_zero(), &|_| Ok(())).is_err(),
             "the failure must not yield a report through the success channel"
         );
     }
@@ -679,7 +759,7 @@ mod tests {
             .expect("cuts")
             .strip_page()
             .expect("strips")
-            .emit()
+            .emit_verified(&|_| Ok(()))
             .expect("emits");
         assert!(bytes.starts_with(b"%PDF"), "a successful run emits bytes");
         assert!(log.borrow().iter().any(|entry| entry == "write"));

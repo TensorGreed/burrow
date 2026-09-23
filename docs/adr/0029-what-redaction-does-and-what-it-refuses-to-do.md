@@ -1504,3 +1504,250 @@ touched. That shape is now one of the eight committed seeds, named for what it c
 
 **Non-vacuity checked rather than assumed**: with the refusal disabled the target panics inside
 45 seconds naming the condition, and with it restored 150,809 runs in 121 s produce nothing.
+
+## Amendment, 2026-09-23 — #134: redaction is an operation, and it verifies
+
+`redact_probe` is gone. Redaction is `burrow_ops::redact::page`, reached through a
+`burrow_engines::PageRedactor` seam, and the bytes reach a caller only after a read-back.
+
+### The variant is named for what it checks
+
+`Expected::RegionCleared`, not `Expected::Redacted`. A reader who sees the second will take it
+to mean **the secret is gone**, and that is the one thing this cannot say. What it says is that
+the region was cleared, which is a smaller sentence and a true one.
+
+### What it asserts, all re-derived from the emitted bytes
+
+1. **No glyph inside the region is still drawn.** The walk runs again over the output.
+2. **No `/ToUnicode` or `/Differences` entry remains for a code the output no longer draws** —
+   for the fonts the operation **cut**; see below.
+3. **No page key outside §2's allowlist.**
+4. **The same pages came out, displaying the same way** — `verify::output`'s half, shared with
+   every other operation.
+
+### The mapping assertion was specified wrongly, and wiring it up is what showed that
+
+The assertion as first written is **false for a retained font, by design**. A font shared with a
+page outside the operation is left intact *precisely so that page keeps working*, so it still
+maps every code it ever mapped. `a_font_whose_encoding_is_shared_with_another_page_is_retained_
+rather_than_cut` began failing verification, and it was right and the check was wrong.
+
+So the check is scoped to the fonts the report says were cut. That takes a fact from the
+operation's own account, which is #111's circularity, so the direction it fails in is written
+down rather than implied:
+
+| the operation claims | reality | caught? |
+|---|---|---|
+| cut | not cut | orphaned mappings remain — **yes** |
+| retained | actually cut | **no** — but the failure is another page's text reflowing, which no read-back of *this* page could see anyway |
+
+### The frame is read from the output
+
+Not carried from the input. A redaction that changed the display box or the rotation would
+otherwise be checked against the frame it was *asked* about rather than the one it *produced*.
+
+### What it does not assert, stated because the wording could be read as though it did
+
+Not that the secret is absent; not that the embedded font no longer describes the removed run;
+not that the region is visually blank; not that text outside the region is untouched beyond the
+page count and the rotation vector. §7's disclosure covers those and is a disclosure precisely
+because no read-back can turn them into assertions.
+
+**The geometry is #111's shape and this does not close it.** The region-to-content conversion
+and the did-it-go check come from the same walk that decided what to remove: a glyph placed
+wrongly is placed wrongly twice and the two agree. What narrows it is that the *input* to the
+second pass is different — the emitted bytes, reparsed — so every defect in writing, splicing
+and re-encoding is caught even though defects in *placing* are not. The residue is placement,
+and `tests/glyph_geometry.rs`'s `FPDFText_GetCharOrigin` comparison is the calibration this
+inherits rather than performs.
+
+### A leak, found by review: a form's text was placed where PDFium does not draw it
+
+`pdfsyntax::geometry::draw_form` recursed into a Form XObject with the **caller's** resolver, so
+a `Tf /F1` inside a form resolved `/F1` against the **page's** `/Font` dictionary. [`Form`]'s
+own rustdoc says *"each form carries its own `/Resources`"*, `prune` walks them and `sharing`
+walks them; the geometry walk did not.
+
+**Measured.** A page `/F1` with zero widths, a form-local `/F1` with real ones, the form drawing
+`SECRETSECRET`:
+
+| | |
+|---|---|
+| PDFium renders | twelve characters, x=73 to x=233 |
+| burrow placed | twelve glyphs, all in a zero-width box at x=72 |
+| a region over the rendered text | reached nothing |
+| the operation returned | **`Ok`**, both verification passes agreeing |
+| still drawn inside the user's rectangle | **seven characters** |
+
+The font surgery then narrowed the *page* font — whose codes had nothing to do with the removal
+— and reported `cut: true` for it.
+
+**This is not the `#111` residue this record discloses.** That residue is *imprecision*: burrow's
+geometry might be slightly wrong. This was a **resolution defect** that PDFium disagrees with
+outright, which is exactly what §6's oracle exists to catch. `redact_verify` is structurally
+unable to see it, because both of its passes call the same walk and misplace the glyphs
+identically.
+
+`Resources::within` returns the form's own resources, `None` where it declares none so names
+resolve outwards. The trait has **no default**: an implementor that forgot it would inherit
+silently, which is the defect. The compiler required an answer from all six implementors.
+
+**Two of this branch's own form fixtures were nonsense** and only passed because form resources
+were ignored — both declared `/Resources << /Font << /F1 3 0 R >> >>`, a hardcoded object number
+that is not the font. Fixing the leak turned them red, which is those fixtures telling the truth
+for the first time.
+
+### The calibration was specified for this and had never been asked
+
+§6 names `FPDFText_GetCharOrigin` as the calibration the read-back **inherits rather than
+performs**. It stood behind a handful of remembered cases, and **not one gave a form
+`/Resources` of its own**. `tests/geometry_calibration.rs` now runs it over shapes:
+
+```
+12 committed candidates, 11 containing a form, plus 3 built here;
+7 walked (3 of them with a form), 329 glyph origins compared, 0 disagreements
+the walk refused 8 documents -- every one `no-widths`
+```
+
+**The committed corpus contributes zero walkable form documents.** All eight are stopped by the
+standard-14 gap, so before the synthetic shapes this sweep compared 305 origins and *not one*
+came from a document with a form: it would have reported agreement over the shape it never
+walked. `walked_forms >= 3` is gated, not printed.
+
+The three shapes are a form with its own `/Font` differing from the page's, a form declaring
+none that must inherit — the near-miss, since a `within` returning an empty dictionary rather
+than `None` would refuse every name — and a form inside a form where only the inner declares.
+
+### Measured: 12 of 15, then 0 — and then 9 more the reviews found somewhere else
+
+The sweep ran before the tests, which was the point, and 12 of 15 survived.
+
+The ordering was asked for after the previous piece, and this is what it bought. With the
+verification written, wired in, running on every redaction and green across the workspace,
+**twelve of fifteen mutations survived**: every one of the three checks could be disabled, the
+fresh-engine call could go, `emit_verified` could ignore its argument, and `verify::output`
+could be skipped — silently.
+
+That number was not guessable, and it pointed at the shape of the tests: not documents that
+redact, but **a witness that lies**. No correct operation produces output that should be
+rejected, so nothing a document can do exercises the checking.
+
+| stage | survived |
+|---|--:|
+| before any tests | **12 of 15** |
+| after the lying-witness tests | 4 of 15 |
+| after correcting two no-op mutations and testing the witness directly | **0 of 15** |
+
+**And that zero was worthless as a statement about the change.** Two reviews then planted their
+own and found **nine survivors**, every one in the same place: `qpdf/mod.rs` and the witness.
+Discarding the verification's result, forcing `cut_fonts` empty, checking page 0 whatever was
+redacted, `glyphs_on` returning nothing — each left the whole workspace green.
+
+The reason is one sentence and it is the most useful thing to come out of this piece:
+
+> **A fake implementing a trait is reachable by tests. The file that constructs the real
+> implementation is not.**
+
+My fifteen were pointed at `redact_verify` and at `run`/`emit_verified` driven by fakes — the
+policy. The wiring that builds the real `Cleared`, fills `cut_fonts` and calls the real check
+had none. So the sweep is split and the two halves are counted separately:
+
+| group | planted | first run | final |
+|---|--:|--:|--:|
+| **wiring** — `qpdf/mod.rs`, the witness, the walk | 13 | 4 survived | **0** |
+| **policy** — `redact_verify`, `redact`, `burrow-ops` | 11 | 0 survived | **0** |
+
+The four wiring survivors needed instruments no document can provide. *Did the operation use the
+verification's result* has no fixture, because a correct operation never emits output that should
+be rejected — so the hook that makes the read-back fail lives in the **witness**, not in the
+closure, since a hook in the closure would be bypassed by the very mutation it exists to catch.
+*Does `mapped_codes` see two-byte codes* survived because no fixture had one above `0x00FF`,
+which is the Identity-H shape this record calls legible-and-invisible.
+
+**Two of the four were bad mutations of mine.** One added zero
+(`page.saturating_add(usize::from(false))`); the other left a `?` in place, so the "skipped"
+call still propagated. Both reported `SURVIVED`, which is the worst reading available: a
+mutation that does not mutate is indistinguishable from a defence that holds, and here it would
+have sent someone looking for a test that already existed. The `NOT APPLIED` column does not
+catch this class — the mutation *did* apply, it just had no effect — so the control is reading
+each survivor and asking whether it could have changed anything.
+
+**The two real gaps were both the witness returning empty.** Every assertion the check makes has
+the form *this set is empty*, so a witness reporting empty sets satisfies all three over any
+document. The end-to-end tests could not see it: they assert on the emitted bytes, not on what
+the check was told. Four direct tests of the qpdf witness now pin the counts.
+
+### Measured: verification costs about 0.29x the operation
+
+The question was whether the read-back can exhaust the deadline it shares with the edit. It
+cannot, and the prior that it might was wrong by about an order of magnitude.
+
+| shape | operation | verification | ratio |
+|---|--:|--:|--:|
+| `producer-writer.pdf` | 0.3 ms | 0.1 ms | 0.25x |
+| `producer-latex.pdf` | 1.9 ms | 0.3 ms | 0.17x |
+| `producer-ocr-scan.pdf` | 6.8 ms | 0.1 ms | 0.01x |
+| `big_book.pdf` | 107.4 ms | 15.5 ms | 0.14x |
+| 1,000 glyphs, one removed | 1.9 ms | 0.6 ms | 0.29x |
+| 10,000 glyphs, one removed | 21.4 ms | 5.7 ms | 0.27x |
+| 50,000 glyphs, one removed | 133.2 ms | 38.0 ms | 0.29x |
+
+Medians of five. The last three are the shape built to be worst for verification — a large page
+with a tiny edit, where the operation walks everything and then does almost nothing. It pins at
+0.29x and does not climb. At 50,000 glyphs on a 1.26 MB input the pair is **0.29% of the 60 s
+default**, and `MAX_GLYPHS` (200,000) with `MAX_OPERATIONS` (1,048,576) puts a ceiling-hitting
+document at a few seconds. **The budget was not adjusted**; there was nothing to adjust it for.
+
+The prior was that verification roughly doubles the operation, because it redoes `glyphs_in` —
+the expensive half. It does, and the operation is open plus sharing walk plus geometry walk plus
+edits plus font surgery plus write, so the geometry walk is a minority of it. One open and one
+walk against five phases.
+
+**One limit on the measurement**: only documents that pass every refusal produce output to
+verify, which is **4 of the 43 corpus documents**. The synthetic shapes cover the large-page
+case; every real document in that table is a producer fixture.
+
+**And the deadline that measurement talked about did not exist.** The sentence above called it
+"the deadline it shares with the edit"; the witness took `open_document`'s freshly started one,
+and `Deadline::start` resets the origin *and* the budget — a second full `max_duration_ms`.
+`burrow_ops::verify::output` forbids exactly this in capitals and `qpdf/rotate.rs` records it as
+a security-review finding. The witness carries the operation's deadline now, and the ratio above
+is unaffected: it was measured on wall-clock time, not on budget accounting.
+
+Two more from the same review, both in the read-back: a `LimitExceeded` was wrapped into
+**"the region is not cleared"**, telling a person their redaction failed when the work ran out of
+time — `verify::rejected` has that guard and this module was written without it; and the per-font
+loop checkpointed once at entry with the trip count coming from the file, which is the shape a
+review measured at 19.8 s against a 100 ms budget in the operation's own font loop (#131, filed
+separately — it is not this change's, and this change added a second instance of it).
+
+### The fuzz target, and what it cannot catch
+
+`redact_verified_output` generates **regions** over the committed producer fixtures — the region
+being the caller's only real degree of freedom, and where every geometry defect on this
+milestone showed up.
+
+**Claim 2 is not falsifiable by a single fault, and that was measured rather than assumed.**
+Planting `contents.apply(&[])` — a removal that removes nothing — and running the target for
+60 s produced **no crash**: every affected region made the operation reject its own output, so
+the target took the refusal arm and passed. The verification caught the fault first.
+
+So it fires on a **two-fault** shape only: a removal that leaves something *and* a check that
+does not see it.
+
+**And it is a second path through the witness, not a second implementation of the question** —
+a review read the header and found it claiming more than that. The target calls
+`glyphs_on_first_page`, `page_frame`, `to_content_space` and `conservative_box`: the same four
+functions the check uses, differing only in the marshalling between them. So it catches a defect
+in that marshalling and **cannot catch one in the geometry**, which is the wrong reason that
+would matter most. The form-resources leak is precisely a geometry defect, and this target would
+not have found it.
+
+Its seeds were wrong too, and hand-decoding was what showed it: "the whole page" started at
+(900, 900) — past both edges — and "a degenerate one" was 100×100, because `.abs()` turns
+`coordinate(0, 0) = -100` into 100. Four of five were off-page and **none covered the page**, so
+the seeded run mostly exercised the arm where the region reaches nothing and the check trivially
+passes. They are computed now and each was checked against what its comment claims.
+
+The single-fault case is covered where it can be made to fail on demand: `redact_verify`'s
+`Liar` witness, which breaks the *reading* rather than the writing.

@@ -30,6 +30,7 @@ pub use burrow_engines as engines;
 
 pub mod compress;
 pub mod merge;
+pub mod redact;
 pub mod render;
 pub mod reorder;
 pub mod rotate;

@@ -37,3 +37,4 @@
 - [Remove-glyphs + sharing (#156)](m2_remove_glyphs_and_sharing.md) — the quote-operator reflow measured in PDFium, the ragged-code leak, the transitive sharing under-count, and what real qpdf returns.
 - [M2 qpdf redact steps (22ceffa)](m2_qpdf_redact_steps.md) — measured annotation + Type 3 leaks, the shared-sub-object font edit, and 9 of 20 mutations surviving in redact_steps.rs.
 - [Shared /Contents (#132)](m2_shared_contents.md) — the two disjoint sharing counters that miss every cross-route sharer, 1 MB → 8.2 GB, and 4 of 16 survivors.
+- [Redaction read-back (#134)](m2_redact_verify.md) — the form-local /Resources leak measured against PDFium, 6 of 16 mutations surviving, and the cost that was not the read-back's.

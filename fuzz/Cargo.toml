@@ -161,3 +161,10 @@ path = "fuzz_targets/redact_shared_contents.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "redact_verified_output"
+path = "fuzz_targets/redact_verified_output.rs"
+test = false
+doc = false
+bench = false

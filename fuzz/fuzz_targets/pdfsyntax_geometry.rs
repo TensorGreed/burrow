@@ -50,6 +50,13 @@ struct Hostile {
 }
 
 impl Resources for Hostile {
+    fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+        // THE HOSTILE RESOLVER IS ONE FLAT SET, so a form inherits it. Stated rather than
+        // defaulted: a trait default of `Ok(None)` would let a real resolver inherit silently,
+        // which is the defect `within` exists to fix.
+        Ok(None)
+    }
+
     fn form(&self, name: &[u8]) -> Result<Option<Form>> {
         Ok(self
             .forms

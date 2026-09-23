@@ -205,10 +205,23 @@ const CHARPROCS_KEY: &[u8] = b"/CharProcs";
 /// allowlist itself is not gated, because `split`'s prune reads it everywhere.
 #[cfg(all(feature = "native-engines", burrow_native_engines))]
 pub(crate) fn page_keys_outside_the_allowlist(unparsed: &[u8]) -> Result<Vec<Vec<u8>>> {
-    Ok(crate::pdfsyntax::dict::top_level_keys(unparsed)?
-        .into_iter()
+    Ok(page_keys_outside_the_allowlist_of(
+        &crate::pdfsyntax::dict::top_level_keys(unparsed)?,
+    ))
+}
+
+/// The same question asked of keys already read.
+///
+/// The verification has the page's keys from the engine rather than an unparsed dictionary, and
+/// making it re-serialise one to ask would be a second route to the same answer. **One list,
+/// two callers**: the allowlist is the thing that must not be duplicated, and this is what lets
+/// both the strip and the read-back that checks the strip consult it.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+pub(crate) fn page_keys_outside_the_allowlist_of(keys: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    keys.iter()
         .filter(|key| !KEPT_PAGE_KEYS.contains(&key.as_slice()))
-        .collect())
+        .cloned()
+        .collect()
 }
 
 /// For each source page, the **other** source pages its `/Annots` array is shared with.

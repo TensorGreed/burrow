@@ -41,6 +41,7 @@ dependencies = [
 name = "burrow-engines"
 version = "0.0.0"
 dependencies = [
+ "burrow-ops",
  "burrow-types",
  "proptest",
  "serde",

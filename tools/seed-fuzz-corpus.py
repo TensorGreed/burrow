@@ -222,6 +222,31 @@ SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
         # Four pages all pointing at stream 0: maximum sharing.
         bytes([3, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     ),
+    # `redact_verified_output` reads its bytes as [document index, then four 16-bit
+    # coordinates], each decoded by `coordinate(low, high) = ((high<<8)|low)/65535*1000 - 100`.
+    #
+    # THE FIRST VERSION'S COMMENTS DID NOT MATCH ITS BYTES. Hand-decoding them showed "the whole
+    # page" was a region starting at (900, 900) -- past both edges -- and "a degenerate one" was
+    # 100x100, because `.abs()` turns `coordinate(0, 0) = -100` into 100. Four of five seeds were
+    # off-page or tiny and NO seed covered the page, so the seeded run mostly exercised the arm
+    # where the region reaches nothing and the check trivially passes.
+    #
+    # These are computed rather than guessed. A genuinely zero-size region is unreachable through
+    # `coordinate` (it needs raw = 6553.5), so the small one is 1 pt and says so.
+    "redact_verified_output": (
+        # The whole page: (0, 0) 612 x 792.
+        bytes([0, 0x9A, 0x19, 0x9A, 0x19, 0x45, 0xB6, 0x59, 0xE4]),
+        # A band across the top: (0, 0) 612 x 100.
+        bytes([1, 0x9A, 0x19, 0x9A, 0x19, 0x45, 0xB6, 0x9A, 0x33]),
+        # One point square at the origin -- the smallest region this encoding can express.
+        bytes([2, 0x9A, 0x19, 0x9A, 0x19, 0xDB, 0x19, 0xDB, 0x19]),
+        # Off the top-left: (-100, -100), 1 x 1.
+        bytes([3, 0x00, 0x00, 0x00, 0x00, 0xDB, 0x19, 0xDB, 0x19]),
+        # Off the bottom-right: (900, 900), 1 x 1.
+        bytes([0, 0xFF, 0xFF, 0xFF, 0xFF, 0xDB, 0x19, 0xDB, 0x19]),
+        # A band straddling the right edge: (500, 0) 612 x 100.
+        bytes([1, 0xC2, 0x9D, 0x9A, 0x19, 0x45, 0xB6, 0x9A, 0x33]),
+    ),
 }
 
 # Not every span is worth writing, and a fixture with 277 dictionaries would otherwise
