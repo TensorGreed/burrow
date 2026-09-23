@@ -64,6 +64,7 @@ pub mod geometry;
 pub mod names;
 pub mod ops;
 pub mod region;
+pub mod standard14;
 pub mod strings;
 pub mod tounicode;
 

@@ -45,7 +45,7 @@ cd "$repo"
 # burrow-ops when the corpus grew an OPERATION, and `merge` was born there. Naming a suite
 # under the wrong crate is an immediate hard failure -- "no test target named `conformance` in
 # `burrow-engines`" -- which is how the inline version found that out.
-engines_suites="parallelism limits properties structure secret_leak prescan glyph_geometry redaction_corpus redaction_defences redaction_disclosure geometry_calibration"
+engines_suites="parallelism limits properties structure secret_leak prescan glyph_geometry redaction_corpus redaction_defences redaction_disclosure geometry_calibration standard14_calibration oracle_canonicalisation"
 ops_suites="compress compress_keeps_everything conformance merge optimistic_counts render reorder reorder_keeps_everything rotate rotate_keeps_everything split split_no_leak subset_closure"
 
 # AN ARGUMENT, NOT AN ENVIRONMENT VARIABLE. It was `BURROW_SUITES_LIST_ONLY`, and an

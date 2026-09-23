@@ -81,6 +81,11 @@ struct FontFacts {
     default_width: Option<f64>,
     /// What to say when a code has no width, rather than inventing one.
     no_metrics: Option<String>,
+    /// The `/BaseFont` name to look a bundled width up by, when and only when the document
+    /// declares no `/Widths`. See `read_font`'s precedence comment.
+    standard_14: Option<Vec<u8>>,
+    /// Which base encoding the font names, for the two codes whose width depends on it.
+    base_encoding: crate::pdfsyntax::standard14::BaseEncoding,
 }
 
 impl<'a> PageResources<'a> {
@@ -306,16 +311,60 @@ impl<'a> Resources for PageResources<'a> {
     }
 }
 
-/// The width for `code`, or `None` when the document declares none.
+/// The width for `code`, or `None` when neither the document nor the bundled tables have one.
+///
+/// # The order is the precedence, and it is the document first
+///
+/// `/W` and `/DW` for a CID font; then the document's own `/Widths` indexed from `/FirstChar`;
+/// then `/MissingWidth`; and only then the bundled standard-14 table — which `read_font` fills
+/// **only when `/Widths` is empty**, so a font that declares its own widths cannot reach it.
+///
+/// A document may declare widths that differ from the published metrics, and it is entitled to:
+/// drawing with the table would then place every glyph where the file does not.
 fn width_of(facts: &FontFacts, code: u32) -> Option<f64> {
     if facts.bytes_per_code > 1 {
         return facts.cid_widths.get(&code).copied().or(facts.default_width);
     }
     let index = i64::from(code) - facts.first_char;
-    usize::try_from(index)
+    let declared = usize::try_from(index)
         .ok()
         .and_then(|at| facts.widths.get(at).copied())
-        .or(facts.missing_width)
+        .or(facts.missing_width);
+    if declared.is_some() {
+        return declared;
+    }
+    let base = facts.standard_14.as_deref()?;
+    crate::pdfsyntax::standard14::width_of(base, code, facts.base_encoding)
+}
+
+/// Which base encoding a simple font's `/Encoding` names.
+///
+/// A name, or the `/BaseEncoding` inside an `/Encoding` dictionary. Anything else — including a
+/// dictionary with only `/Differences` — is `Standard`, which is what PDF 32000-1 §9.6.6.1 says
+/// a font with no stated base encoding uses for a non-symbolic font.
+fn base_encoding(font: &ObjectHandle<'_>) -> crate::pdfsyntax::standard14::BaseEncoding {
+    use crate::pdfsyntax::standard14::BaseEncoding;
+    const BASE_ENCODING: Name = Name::literal(b"/BaseEncoding\0");
+    const WIN_ANSI: Name = Name::literal(b"/WinAnsiEncoding\0");
+
+    let encoding = font.key(&ENCODING);
+    match encoding.type_code() {
+        object_type::NAME => {
+            if names(&encoding, &WIN_ANSI) {
+                BaseEncoding::WinAnsi
+            } else {
+                BaseEncoding::Standard
+            }
+        }
+        object_type::DICTIONARY => {
+            if names(&encoding.key(&BASE_ENCODING), &WIN_ANSI) {
+                BaseEncoding::WinAnsi
+            } else {
+                BaseEncoding::Standard
+            }
+        }
+        _ => BaseEncoding::Standard,
+    }
 }
 
 /// Read one font dictionary.
@@ -333,6 +382,8 @@ fn read_font(font: &ObjectHandle<'_>) -> Result<FontFacts> {
         cid_widths: BTreeMap::new(),
         default_width: None,
         no_metrics: None,
+        standard_14: None,
+        base_encoding: crate::pdfsyntax::standard14::BaseEncoding::Standard,
     };
 
     let descriptor = font.key(&FONT_DESCRIPTOR);
@@ -366,15 +417,27 @@ fn read_font(font: &ObjectHandle<'_>) -> Result<FontFacts> {
     if names(&subtype, &SUBTYPE_TYPE0) {
         read_composite(font, &mut facts)?;
     } else if facts.widths.is_empty() {
-        // NO METRICS IN THE DOCUMENT AT ALL. A standard-14 font's advances live in the
-        // viewer, not the file; PDFium has them built in and burrow does not. Guessing puts
-        // every glyph on the page somewhere, and "somewhere" is what a redaction cannot use.
+        // NO METRICS IN THE DOCUMENT. A standard-14 font's advances live in the viewer rather
+        // than the file, and burrow now bundles them -- see `pdfsyntax::standard14` for the
+        // provenance and for what is deliberately not tabulated.
+        //
+        // **THIS BRANCH IS THE PRECEDENCE.** It is reached only when `/Widths` is empty, so a
+        // font that declares its own widths never consults the table: the document's numbers
+        // win over the bundled ones, always. That is not a preference -- a document may declare
+        // widths that differ from the published metrics, and drawing with the table would then
+        // place every glyph where the file does not.
         let base = font.key(&BASE_FONT).name();
+        facts.standard_14 = base.as_ref().ok().map(|name| name.plain().to_vec());
+        facts.base_encoding = base_encoding(font);
+        // SET EVEN WHEN A TABLE IS FOUND, because the table may not carry the particular code
+        // the page draws -- an untabulated font, a code outside 32..=126, or one of the pairs
+        // the calibration found the two sources disagreeing on. `width_of` falls back to this
+        // message whenever the lookup comes back empty, so the reason a page refuses is the
+        // informative one rather than the generic "no width for this code".
         facts.no_metrics = Some(format!(
-            "pdf resources [no-widths]: a font with no `/Widths` array, so the document \
-             carries no advance for any of its codes. Its metrics are the viewer's built-in \
-             ones ({} bytes of `/BaseFont`), which burrow does not bundle -- see ADR 0029's \
-             condition for revisiting",
+            "pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` \
+             ({} bytes) is not one burrow carries metrics for, at least not for every code \
+             this page draws -- see `pdfsyntax::standard14` for what is carried and why",
             base.map_or(0, |name| name.plain().len())
         ));
     }

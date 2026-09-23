@@ -1751,3 +1751,269 @@ passes. They are computed now and each was checked against what its comment clai
 
 The single-fault case is covered where it can be made to fail on demand: `redact_verify`'s
 `Liar` witness, which breaks the *reading* rather than the writing.
+
+## Amendment, 2026-09-23 — the standard-14 metrics, and the census they unlocked
+
+### The door
+
+Before this change **4 of the 43 corpus documents redacted**. The other 39 never reached a rule
+this ADR wrote: they were stopped at the width table. A font with no `/Widths` array had no
+width for any code, the walk could not place a glyph, and the page refused with `no-widths`
+before any of §2 through §8 was consulted. The four that got through were the real-producer
+documents, which embed their fonts and declare their widths.
+
+The fourteen standard fonts are fixed, published values — not an engine. They are now bundled in
+`core/burrow-engines/src/pdfsyntax/standard14.rs`.
+
+### The table is data, and it is calibrated rather than trusted
+
+Six width arrays of 95 entries each for codes 32–126, plus Courier's single fixed 600, plus the
+two codes where `WinAnsiEncoding` and `StandardEncoding` disagree (39 and 96). Provenance is
+recorded in the module header.
+
+A transcription error in a table like this is invisible — it produces a plausible number in the
+wrong slot, and every test written against the table agrees with it. So the table is checked
+against **PDFium's own metrics for the same fonts**, in
+`core/burrow-engines/tests/standard14_calibration.rs`:
+
+| | |
+|---|--:|
+| `/BaseFont` spellings swept | **21** |
+| widths compared against PDFium | **3,930** |
+| agreed | **3,930** |
+| unmeasurable (code 32; PDFium does not report the space as a character) | 42 |
+| deliberately not carried — see below | 18 |
+
+21 × 2 encodings × 95 codes is 3,990, and 3,930 + 42 + 18 accounts for all of it. The gate is
+that equality, not a tolerance: it was a 95 % floor, and a mutation that silently uncarried sixty
+Helvetica widths passed it.
+
+The calibration earned its place immediately: a test of mine asserted Helvetica `A` = 722. The
+correct value is 667; 722 is Helvetica-**Bold**. The table was right and the test was wrong, and
+the calibration is what said so.
+
+#### The eight that are not carried
+
+Four (style, code) pairs where the published metrics and PDFium disagree, measured as the
+advance between two consecutive origins at 100 pt — the same instrument every agreeing width in
+the table is measured with.
+
+An earlier draft of this section said they had been "probed with four-glyph strings to rule out a
+single-glyph measurement artifact". That probing happened, but nothing committed re-runs it: the
+calibration draws each character twice. Stated as a standing measurement it was a claim the tree
+does not support, which is the thing this file treats as a defect rather than a wording
+preference.
+
+| font | code | published | PDFium |
+|---|--:|--:|--:|
+| `Helvetica-Bold` | 64 `@` | 975 | 1072 |
+| `Helvetica-BoldOblique` | 64 `@` | 975 | 1072 |
+| `Helvetica-Oblique` | 64 `@` | 1015 | 1116 |
+| `Helvetica-BoldOblique` | 53 `5` | 556 | 528 |
+
+These are listed in `DISPUTED` and the table **refuses** them rather than picking a side. A
+width burrow is not sure of places a glyph somewhere burrow is not sure of, and the whole point
+of the geometry is that the region's answer is trustworthy. Failing closed costs a refusal;
+guessing costs a redaction that misses.
+
+### It applies only where the font has none of its own
+
+`width_of` in `core/burrow-engines/src/qpdf/resources.rs` states its precedence explicitly: CID
+`/W` and `/DW`, then `/Widths` with `/FirstChar`, then `/MissingWidth`, then — and only then —
+the bundled table. A font that declares its widths keeps using them, including a standard-14
+font that declares them differently from the published metrics, which is a thing producers do.
+
+The mutation that deletes the precedence (`if declared.is_some() { return declared; }`) is
+caught by `a_declared_width_wins_over_the_bundled_table`.
+
+### The census
+
+43 documents, one page each except where noted, region derived from PDFium's own char boxes
+around the highest-inked glyph. Printed on every run by
+`core/burrow-engines/tests/redaction_corpus.rs`.
+
+**37 redact. 6 refuse.** Every refusal names a rule:
+
+| document | rule | |
+|---|---|---|
+| `08-type3-glyph.pdf` | `type-three-procedure-shows-text` | §8 — a glyph procedure is a stream the walk does not descend into |
+| `09-actualtext.pdf` | `marked-content-carries-text` | **new; see below** |
+| `13-optional-content.pdf` | `marked-content-properties-unresolved` | **new**, and broader than its reason — §1 refuses optional content anyway |
+| `evade-image-as-pattern.pdf` | `pattern-may-draw-text` | a pattern may draw text the walk cannot see |
+| `evade-oc-two-levels-down.pdf` | `form-vanished` | **a defect, filed** — see below |
+| `nearmiss-nested-forms-no-oc.pdf` | `form-vanished` | the same defect |
+
+The floor in `redaction_corpus.rs` moved from 4 to 37 with it. A floor of 4 over a corpus where
+37 redact would have passed a regression that took 37 back to 5 — "4 of 43" reads as success.
+
+### What unlocking the door found
+
+Three defects, all of them **pre-existing and unreachable** while the documents refused at the
+width table. This is the argument for doing the metrics before #125: #125's refusals guard paths
+most documents never reached.
+
+#### 1. `/ActualText` survived the redaction — a leak
+
+Spike 0006's channel 9, which §1 of this ADR assigns to **handle**: *"it is in the page's own
+stream"*. It was never implemented.
+
+Measured on `09-actualtext.pdf`. The region reached `0` and `9`; the glyphs came out of the
+content stream correctly and the font was narrowed correctly — and PDFium read
+`BURROW-CARRIER-09` off the output, including the two characters the user had selected, because
+`/Span << /ActualText (BURROW-CARRIER-09) >> BDC` was emitted untouched.
+
+Handling it means rewriting a property list inside a content stream, which burrow has no
+rewriter for. **Until it does, the page is refused** — `Refusal::MarkedContentCarriesText`,
+raised by `check_marked_content` in `pdfsyntax/geometry.rs`. Refusing names the reason; emitting
+did not.
+
+`MarkedContentPropertiesUnresolved` is a **separate** rule, on purpose. A `BDC` whose property
+list is a name resolves through `/Properties`, which that module resolves nothing through, so
+burrow cannot tell whether it carries text. Folding the two would put a sentence in front of a
+user asserting a copy of their text exists when what actually happened is that nothing could
+look — and would make this census read as though every such document carried the channel. The
+narrower rule wants a `/Properties` resolver on `Resources`; it is filed, not done.
+
+#### 2. A duplicate `/ToUnicode` entry changed what a **kept** code decoded to
+
+`ToUnicode`'s map was keyed by code with a plain `insert`, so a CMap naming a code twice kept
+only the last destination. `21-cid-lying-tounicode.pdf` names `<0003>` three times and `<0008>`
+twice, and narrowing it — an operation that removed neither code — turned `-` into `L` at two
+origins the region never reached.
+
+Making it first-wins moved the damage rather than removing it: three other codes changed
+instead. PDFium's answers on that fixture are **not one rule** — `<0003>` and `<0006>` read as
+their last entry, `<0008>` as its first.
+
+So burrow does not pick. It keeps the whole sequence for a code and re-emits it in order, and
+whatever rule the reader applies, it applies to the same input. Fidelity by construction rather
+than matching a guess at another implementation's precedence. Bounded by
+`MAX_DESTINATIONS_PER_CODE` (8), which is a refusal rather than a lossy truncation.
+
+#### 3. `form-vanished` on a form nested inside another form
+
+`find_form`/`form_handle` search the **page's** `/XObject` only, so a form reached through
+another form's own `/Resources` is not found and the redaction fails with
+`Error::Malformed("a form the walk found is not in the page's resources")`. Two documents hit
+it. The outcome is a refusal, so nothing leaks, but the rule blames the file for burrow's
+limitation — the walk found the form; the handle lookup could not. Filed.
+
+### The oracle re-labels, and the corpus test was reading it as a reflow
+
+`FPDFText_GetUnicode` is not a function of the character. For a hyphen that is the last
+character of its line **and has another line after it**, PDFium reports `U+0002` — its
+soft-hyphen-at-a-line-break marker — rather than `U+002D`. Four variants of one page, differing
+only in their content stream, separate the condition exactly; it reproduces with an unembedded
+Helvetica and a four-character string.
+
+A redaction changes that condition **without moving anything**: removing `04` from the end of
+`BURROW-SECRET-04` leaves the hyphen at the identical origin, drawn by the identical code,
+through a font whose `/Differences` still names it — and the oracle's answer for it changes.
+`redaction_corpus.rs` read that as *"appears and was not drawn before — the page reflowed"*,
+which is exactly backwards.
+
+`canonical_unicode` folds `0002` into `002D` on **both** sides. Both, because the reverse
+direction is the dangerous one: a redaction that removes the *following* line turns a `0002`
+into a `002D`, and the corpus test's other half asks whether a glyph the region reached is
+**gone** by comparing unicodes — so an un-canonicalised hyphen would read as removed while still
+being drawn. A leak check failing open.
+
+`OracleChar::raw_unicode` keeps what PDFium said, and
+`core/burrow-engines/tests/oracle_canonicalisation.rs` asserts the re-labelling happens on the
+positive shape and does not on two near-misses. If PDFium ever stops, that test fails and the
+canonicalisation can be deleted rather than left inert.
+
+### And one stale assertion the census exposed
+
+`redaction_corpus.rs` asserted every font's `also_used_by` was 0, on the stated grounds that
+*"every document in this corpus has one page"*. That was false when it was written —
+`evade-widget-on-another-page.pdf` has two, and says so in its name — and it never fired,
+because that document refused at the width table. The first run that reached it failed it, on a
+report that was **correct**. The assertion now derives its ceiling from the document's own page
+count, and cross-checks the disclosure against the counts rather than asserting both separately.
+
+### What the two reviews found, and why the first refusal was not enough
+
+Both reviews ran in throwaway worktrees at the commit, before it was pushed. Between them they
+planted 38 mutations. The four findings that changed the code are below; the mutation sweep
+afterwards re-plants every one and none survives.
+
+#### The `/ActualText` refusal was evaded by moving the glyphs into a Form XObject
+
+The refusal above closed the shape the corpus had. It did not close the shape one step away, and
+a security review built it from this repo's own fixture generators:
+
+```
+/Span << /ActualText (BURROW-CARRIER-09) >> BDC   /X1 Do   EMC
+```
+
+`check_marked_content` is called once per stream and each call filtered to *that stream's*
+removed glyphs — so the page call's set was empty, because every removed glyph had
+`form: Some(id)`, and the form's own stream has no `BDC` in it. **Marked content descends through
+`Do`; the walk did not.** Measured end to end: the operation returned `Ok`, the form's glyphs
+came out, and both PDFium and `pdftotext` read the carrier off the output.
+
+A `Do` is now a removal site in its own right when it draws a form the removal reaches, which
+needed the caller to say which those are — this module resolves nothing. `FormsReached` carries
+that, with `Unresolved` for a form's own stream, where resolving a nested `Do` would need that
+form's `/Resources`. Nested forms are refused today by `form-vanished`, and `Unresolved` does not
+lean on that: a defect is not a control, and relying on one for a leak boundary is how it becomes
+load-bearing before anybody notices it was a defect.
+
+Three fixtures now cover the channel: the span and the glyphs both on the page (`09-actualtext`),
+the span on the page and the glyphs in a form (`evade-actualtext-around-a-form`), and both inside
+a form (`evade-actualtext-inside-a-form`). The third exists because **the per-form pass could be
+deleted outright with the whole crate green** — every fixture had kept its `BDC` in the page
+stream, so that branch was unverified code on a leak path.
+
+#### `DISPUTED` was keyed on the `/BaseFont` as written, so every alias walked past it
+
+Found independently by both reviews. `/Arial-Bold` drew `@` at 975 where PDFium places 1072 —
+nine tenths of an em — while the byte-identical page named `/Helvetica-Bold` refused. Every glyph
+after it drifted, so the region test reached a neighbour or nothing: a redaction removing the
+wrong thing, with no error and nothing in the read-back able to see it.
+
+The calibration could not find it, because its font list was twelve hand-written canonical names
+while `width_of` accepted twenty-one spellings. That is the same shape as the coverage table
+`tools/ci-local.py` exists to replace, and it rotted the same way.
+
+Both halves are fixed: the exclusion is keyed on the **style** a spelling canonicalises to, and
+the calibration iterates `standard14::ACCEPTED` so a spelling cannot be added without being
+measured. The style is finer than the width table on purpose — `Helvetica` and `Helvetica-Oblique`
+share a table because a slant does not change an advance, and PDFium still reports different `@`
+widths for them, so keying on the table would have excluded a width the two sources agree on.
+
+#### A 161-byte `/ToUnicode` stream drove the operation to 2.5 GB
+
+`MAX_ENTRIES`, `MAX_INSERTS` and `MAX_DESTINATIONS_PER_CODE` all bound *how many* mappings there
+are. None of them bounded how long one destination is, and a `bfrange` clones its destination
+once per code. Measured, release build: an 80 kB program that Flate-compresses to 161 bytes took
+a 1,038-byte PDF to 2,525 MB peak RSS with a 5.25 GB narrowed output — returning `Ok`, with
+`Limits::DEFAULT`'s 1 GiB `max_memory_bytes` never firing.
+
+The class pre-dates this change; keeping every duplicate multiplies it. `MAX_DESTINATION_BYTES`
+bounds the held bytes at 4 MiB, against a largest-legitimate-CMap of about 512 kB. Its near-miss
+test is the whole two-byte space mapped one unit deep, which must still parse — and had to be
+written with a `<0000>` destination, because `bfrange` increments the last unit per code and
+anything higher is refused by *that* rule instead. Two earlier spellings of that near-miss were,
+which would have left the test green while measuring nothing about this ceiling.
+
+#### Two checks whose probes could not tell they were broken
+
+- `open.contains(&Carried::Text)` mutated to `open.last() == …` survived everything. The nesting
+  probe closed its inner span before the glyph, so `last()` was still the carrier there. The
+  commonest tagged-PDF shape — a carrying span with an inner `/P << /MCID 0 >>` span still open
+  over the glyphs — leaks under that mutation, and is now a probe.
+- `base_encoding`'s `/Encoding` **dictionary** arm had no witness: every fixture wrote the name
+  form. Mutating the dictionary to always answer `Standard` survived. It is now a shape in
+  `geometry_calibration.rs`, drawing code 39 — the one code where the two encodings disagree —
+  against PDFium's own origins rather than against a number written in the test.
+
+### One limit of the geometry oracle, recorded rather than tolerated
+
+`geometry_calibration.rs` compares burrow's glyph origins against PDFium's. It cannot do that for
+a document carrying `/ActualText`: PDFium replaces the span's decoded text with the string and
+reports **every** character of it at the span's starting origin — 17 characters at one point over
+16 glyphs. Those documents are skipped **and named**, not tolerated with a wider tolerance.
+Nothing downstream depends on the comparison, because they are refused by
+`marked-content-carries-text` before any redaction reads their geometry.

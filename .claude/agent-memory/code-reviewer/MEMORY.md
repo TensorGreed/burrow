@@ -15,3 +15,4 @@
 - [Mutate the wiring, not the policy](feedback_mutate_the_wiring_not_the_policy.md) — a check whose policy has a lying fake still lets the real call site discard its result.
 - [New guard shadows an old refusal test](feedback_new_guard_shadows_old_refusal_test.md) — an earlier argument check makes a re-pointed test pass on the wrong rule; print the real error.
 - [Fuzz workspace is a separate build](feedback_fuzz_workspace_separate_build.md) — deleting a module can break sibling fuzz targets; `cargo +nightly check` every bin, not just the new one.
+- [Calibration list vs accepted set](feedback_calibration_list_vs_accepted_set.md) — a hand-written FONTS array measures itself; diff it against the names the code accepts, and check exclusion lists survive aliasing.

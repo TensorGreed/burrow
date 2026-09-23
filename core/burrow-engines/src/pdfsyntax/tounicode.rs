@@ -61,6 +61,39 @@ const MAX_CODESPACES: usize = 256;
 /// (producers do) and refuses the one that is buying work with it.
 const MAX_INSERTS: usize = MAX_ENTRIES * 4;
 
+/// The most destinations one code may be given before burrow stops rewriting the CMap.
+///
+/// A CMap may name the same code twice, and burrow keeps **every** destination for a kept code
+/// so that narrowing cannot change what that code decodes to — see [`ToUnicode::insert`]. That
+/// makes what the map holds grow with the duplicates rather than with the distinct codes, so it
+/// needs a ceiling of its own: without one the bound would be [`MAX_INSERTS`], four times
+/// [`MAX_ENTRIES`], all of it reachable for a single code.
+///
+/// Eight, because a producer re-stating a code a handful of times is a thing that happens and a
+/// producer stating it nine times is not. Past it the CMap is refused rather than rewritten
+/// lossily, which is the direction that cannot silently alter text.
+const MAX_DESTINATIONS_PER_CODE: usize = 8;
+
+/// The most destination bytes one CMap may hold, across every code and every duplicate.
+///
+/// # The count was bounded and the bytes were not
+///
+/// [`MAX_ENTRIES`], [`MAX_INSERTS`] and [`MAX_DESTINATIONS_PER_CODE`] all bound *how many*
+/// mappings there are. None of them bounds how long one destination is, and a `bfrange` clones
+/// its destination once per code — so `<0000> <FFFF> <…5,000 UTF-16 units…>` is 65,536 copies
+/// of 10 kB from one line of source text.
+///
+/// Measured by a security review, release build: a program of four such ranges is 80 kB, which
+/// Flate-compresses to **161 bytes**, and drove `redact::page` to a peak RSS of **2,525 MB**
+/// with a `narrowed()` output of 5.25 GB — returning `Ok`, with `Limits::DEFAULT`'s 1 GiB
+/// `max_memory_bytes` never firing, from a 1,038-byte PDF. An OOM kill of the tab with no
+/// signal at all.
+///
+/// Four mebibytes, because a real `/ToUnicode` destination is one to four UTF-16 units and a
+/// legitimate CMap mapping every one of [`MAX_ENTRIES`] codes to four of them is 512 kB. This
+/// leaves eight times that and refuses the program that is buying memory with a range.
+const MAX_DESTINATION_BYTES: usize = 4 << 20;
+
 /// A `/ToUnicode` CMap, read.
 #[derive(Debug, Default)]
 pub struct ToUnicode {
@@ -68,15 +101,23 @@ pub struct ToUnicode {
     /// exactly what the original did. The byte width of the source codes lives here and nowhere
     /// else, and getting it wrong re-frames every code in the stream.
     codespace: Vec<(Vec<u8>, Vec<u8>)>,
-    /// Code to its UTF-16BE destination bytes, with the byte width the source was written at.
-    map: BTreeMap<u32, (usize, Vec<u8>)>,
+    /// Code to its UTF-16BE destinations, each with the byte width its source was written at.
+    ///
+    /// **Every** destination, in the order the program gave them, not the last one to arrive.
+    /// [`ToUnicode::insert`] has the measurement that made this a list.
+    map: BTreeMap<u32, Vec<(usize, Vec<u8>)>>,
     /// How many mappings have been performed, which is not how many are held. See
     /// [`MAX_INSERTS`].
     inserts: usize,
+    /// How many destination bytes are held, against `MAX_DESTINATION_BYTES`.
+    destination_bytes: usize,
 }
 
 impl ToUnicode {
-    /// How many entries the CMap carries.
+    /// How many **codes** the CMap maps.
+    ///
+    /// Not how many entries it carries: a code named twice is one code. The distinction is the
+    /// subject of `MAX_DESTINATIONS_PER_CODE`, which is private.
     #[must_use]
     pub fn len(&self) -> usize {
         self.map.len()
@@ -249,7 +290,39 @@ impl ToUnicode {
                 "a /ToUnicode CMap maps more codes than burrow will read".to_owned(),
             ));
         }
-        self.map.insert(code, (digits, destination));
+        // EVERY DESTINATION IS KEPT, IN ORDER, and the alternative was measured rather than
+        // reasoned about. A `/ToUnicode` CMap may name the same code more than once —
+        // `21-cid-lying-tounicode.pdf` names `<0003>` three times and `<0008>` twice — and
+        // §9.10.3 does not say which one a consumer takes.
+        //
+        // This was `insert`, so the last one won, and narrowing such a CMap changed what two
+        // **kept** codes decoded to: `-` became `L` at two origins the region never reached.
+        // Replacing it with first-wins moved the damage rather than removing it — three other
+        // codes changed instead. PDFium's answers on that fixture are not one rule: `<0003>`
+        // and `<0006>` read as their last entry, `<0008>` as its first.
+        //
+        // So burrow does not pick. It keeps the whole sequence for a code and re-emits it in
+        // the same order, and whatever rule the reader applies it applies to the same input.
+        // Fidelity by construction beats matching a guess at someone else's precedence — and a
+        // redaction silently rewriting text it was asked to leave alone is the failure
+        // `narrow_to_unicode`'s own doc comment is about, one level further in: keeping the
+        // entry is not enough, the entry has to still mean what it meant.
+        let destinations = self.map.entry(code).or_default();
+        if destinations.len() >= MAX_DESTINATIONS_PER_CODE {
+            return Err(Error::Unsupported(
+                "a /ToUnicode CMap gives one code more destinations than burrow will carry"
+                    .to_owned(),
+            ));
+        }
+        // THE BYTES, NOT JUST THE COUNT. See `MAX_DESTINATION_BYTES`: every other ceiling here
+        // bounds how many mappings there are, and a `bfrange` buys memory with how long one is.
+        self.destination_bytes = self.destination_bytes.saturating_add(destination.len());
+        if self.destination_bytes > MAX_DESTINATION_BYTES {
+            return Err(Error::Unsupported(
+                "a /ToUnicode CMap holds more destination text than burrow will carry".to_owned(),
+            ));
+        }
+        destinations.push((digits, destination));
         Ok(())
     }
 
@@ -260,8 +333,15 @@ impl ToUnicode {
     /// it, so nothing readable is lost.
     #[must_use]
     pub fn narrowed(&self, keep: &dyn Fn(u32) -> bool) -> Option<Vec<u8>> {
-        let kept: Vec<(&u32, &(usize, Vec<u8>))> =
-            self.map.iter().filter(|(code, _)| keep(**code)).collect();
+        // FLATTENED, so a code named twice is written twice. `chunk`ing the codes instead
+        // would put a code's own entries in one section and is not what changes here; what
+        // changes is that both entries survive at all.
+        let kept: Vec<(&u32, &(usize, Vec<u8>))> = self
+            .map
+            .iter()
+            .filter(|(code, _)| keep(**code))
+            .flat_map(|(code, destinations)| destinations.iter().map(move |entry| (code, entry)))
+            .collect();
         if kept.is_empty() {
             return None;
         }
@@ -428,6 +508,23 @@ fn push_code(out: &mut Vec<u8>, code: u32, digits: usize) {
 
 #[cfg(test)]
 mod tests {
+    /// The one destination `code` maps to, asserting there is exactly one.
+    ///
+    /// The map holds a **list** per code so a CMap naming a code twice survives narrowing
+    /// unchanged. Every case below is written against a CMap that names each code once, so
+    /// taking the last would hide a duplicate these tests never meant to create; this refuses
+    /// instead.
+    fn sole_destination(read: &super::ToUnicode, code: u32) -> Option<Vec<u8>> {
+        let destinations = read.map.get(&code)?;
+        assert_eq!(
+            destinations.len(),
+            1,
+            "code {code} has {} destinations; this fixture states it once",
+            destinations.len()
+        );
+        destinations.first().map(|(_, text)| text.clone())
+    }
+
     use super::ToUnicode;
 
     /// What a producer writes for a four-glyph subset.
@@ -445,21 +542,15 @@ mod tests {
 
     fn text_for(program: &[u8], code: u32) -> Option<Vec<u8>> {
         let read = ToUnicode::parse(program).expect("a CMap burrow wrote");
-        read.map.get(&code).map(|(_, text)| text.clone())
+        sole_destination(&read, code)
     }
 
     #[test]
     fn a_producers_bfchar_section_reads_back_entry_for_entry() {
         let read = ToUnicode::parse(SUBSET).expect("parses");
         assert_eq!(read.len(), 4);
-        assert_eq!(
-            read.map.get(&1).map(|(_, t)| t.clone()),
-            Some(vec![0x00, 0x53])
-        );
-        assert_eq!(
-            read.map.get(&4).map(|(_, t)| t.clone()),
-            Some(vec![0x00, 0x72])
-        );
+        assert_eq!(sole_destination(&read, 1), Some(vec![0x00, 0x53]));
+        assert_eq!(sole_destination(&read, 4), Some(vec![0x00, 0x72]));
         assert_eq!(read.codespace.len(), 1);
     }
 
@@ -496,24 +587,15 @@ mod tests {
         let program = b"1 beginbfrange\n<20> <23> <0041>\nendbfrange\n";
         let read = ToUnicode::parse(program).expect("parses");
         assert_eq!(read.len(), 4);
-        assert_eq!(
-            read.map.get(&0x20).map(|(_, t)| t.clone()),
-            Some(vec![0, 0x41])
-        );
-        assert_eq!(
-            read.map.get(&0x23).map(|(_, t)| t.clone()),
-            Some(vec![0, 0x44])
-        );
+        assert_eq!(sole_destination(&read, 0x20), Some(vec![0, 0x41]));
+        assert_eq!(sole_destination(&read, 0x23), Some(vec![0, 0x44]));
     }
 
     #[test]
     fn a_bfrange_with_an_array_takes_each_destination_in_turn() {
         let program = b"1 beginbfrange\n<10> <12> [<0041> <00C6> <0042>]\nendbfrange\n";
         let read = ToUnicode::parse(program).expect("parses");
-        assert_eq!(
-            read.map.get(&0x11).map(|(_, t)| t.clone()),
-            Some(vec![0x00, 0xC6])
-        );
+        assert_eq!(sole_destination(&read, 0x11), Some(vec![0x00, 0xC6]));
         assert_eq!(read.len(), 3);
     }
 
@@ -641,11 +723,104 @@ mod tests {
         let program = b"1 beginbfrange\n<00> <FF> <0000>\nendbfrange\n\
                         1 beginbfrange\n<00> <FF> <0100>\nendbfrange\n";
         let read = ToUnicode::parse(program).expect("parses");
-        assert_eq!(read.len(), 256, "the second range re-maps rather than adds");
         assert_eq!(
-            read.map.get(&0).map(|(_, t)| t.clone()),
-            Some(vec![0x01, 0x00]),
-            "the later section wins, as a reader taking them in order would have it"
+            read.len(),
+            256,
+            "the second range re-maps rather than adds codes"
+        );
+        // BOTH DESTINATIONS, IN ORDER. `len` counts codes, and a re-mapped code is still one
+        // code -- which is what this test was written to pin. What it must *also* pin now is
+        // that the re-mapping did not throw the first destination away: burrow does not decide
+        // which of them a reader takes, it re-emits the sequence and lets the reader decide.
+        assert_eq!(
+            read.map.get(&0).map(|destinations| destinations
+                .iter()
+                .map(|(_, text)| text.clone())
+                .collect::<Vec<_>>()),
+            Some(vec![vec![0x00, 0x00], vec![0x01, 0x00]]),
+            "both destinations survive, in the order the program gave them"
+        );
+    }
+
+    #[test]
+    fn a_code_named_twice_is_narrowed_to_both_of_its_destinations() {
+        // THE FIDELITY CASE, from `21-cid-lying-tounicode.pdf`. Narrowing must not decide
+        // which duplicate wins, because burrow and PDFium do not agree on one rule and the
+        // fixture proves there is not one to agree on: it reads `<0003>` as its last entry and
+        // `<0008>` as its first. Emitting one entry per code changed what a kept code decoded
+        // to -- text the region never reached.
+        let program = b"3 beginbfchar
+<0008> <002D>
+<0009> <0046>
+<0008> <004C>
+endbfchar
+";
+        let read = ToUnicode::parse(program).expect("parses");
+        let narrowed = read.narrowed(&|code| code == 0x0008).expect("keeps a code");
+        let text = String::from_utf8_lossy(&narrowed);
+        assert!(
+            text.contains("<0008> <002D>") && text.contains("<0008> <004C>"),
+            "both destinations for the kept code must be re-emitted: {text}"
+        );
+        assert!(
+            !text.contains("<0009>"),
+            "the removed code must not survive: {text}"
+        );
+        assert!(
+            text.contains("2 beginbfchar"),
+            "the section must count the entries it writes, not the codes: {text}"
+        );
+    }
+
+    #[test]
+    fn a_range_buying_memory_with_a_long_destination_is_refused() {
+        use super::MAX_DESTINATION_BYTES;
+
+        // THE 161-BYTE FILE. A security review measured this shape at 2,525 MB peak RSS and a
+        // 5.25 GB narrowed output, returning `Ok` under the default ceilings. The per-code and
+        // per-entry ceilings all passed it: it is 65,536 codes with one destination each, and
+        // the whole cost is in how long that destination is.
+        let long = "0041".repeat(5_000);
+        let program = format!("1 beginbfrange\n<0000> <FFFF> <{long}>\nendbfrange\n");
+        let error = ToUnicode::parse(program.as_bytes()).expect_err("past the byte ceiling");
+        assert!(
+            format!("{error}").contains("more destination text than burrow will carry"),
+            "got: {error}"
+        );
+
+        // AND THE NEAR-MISS, so the ceiling is not simply "refuse every wide range". The same
+        // range with an ordinary one-unit destination maps the whole two-byte space -- the
+        // largest legitimate CMap there is -- and must still parse.
+        //
+        // The destination has to be `<0000>`, and that is a fact about `bfrange` rather than
+        // about this ceiling: the destination's last unit is incremented per code, so anything
+        // higher runs past U+FFFF over a range this wide and is refused for **that** reason.
+        // Two earlier spellings of this near-miss were refused by that rule instead, which
+        // would have left this test passing while measuring nothing about the byte ceiling.
+        let real = "1 beginbfrange\n<0000> <FFFF> <0000>\nendbfrange\n";
+        let read = ToUnicode::parse(real.as_bytes()).expect("the whole two-byte space is ordinary");
+        assert_eq!(read.len(), 65_536);
+        assert!(
+            read.destination_bytes <= MAX_DESTINATION_BYTES,
+            "{} bytes held, against a ceiling of {MAX_DESTINATION_BYTES}",
+            read.destination_bytes
+        );
+    }
+
+    #[test]
+    fn a_code_given_more_destinations_than_the_ceiling_is_a_refusal() {
+        // Keeping every duplicate makes what the map holds grow with the duplicates, so the
+        // growth needs a ceiling of its own rather than inheriting MAX_INSERTS.
+        use super::MAX_DESTINATIONS_PER_CODE;
+        let mut program = format!("{} beginbfchar\n", MAX_DESTINATIONS_PER_CODE + 1);
+        for at in 0..=MAX_DESTINATIONS_PER_CODE {
+            program.push_str(&format!("<0001> <{:04X}>\n", 0x41 + at));
+        }
+        program.push_str("endbfchar\n");
+        let error = ToUnicode::parse(program.as_bytes()).expect_err("past the ceiling");
+        assert!(
+            format!("{error}").contains("more destinations than burrow will carry"),
+            "got: {error}"
         );
     }
 

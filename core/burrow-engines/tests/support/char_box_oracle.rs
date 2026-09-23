@@ -220,14 +220,77 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+/// PDFium's marker for a hyphen it has decided ends a line.
+const PDFIUM_LINE_FINAL_HYPHEN: u32 = 0x0002;
+
+/// What PDFium reports for a hyphen it has not.
+const HYPHEN_MINUS: u32 = 0x002D;
+
+/// Undo the one re-labelling PDFium applies that depends on the *rest of the page*.
+///
+/// # Why this exists, and what was measured
+///
+/// `FPDFText_GetUnicode` is not a function of the character. For a hyphen that is the last
+/// character of its line **and has another line after it**, PDFium reports `U+0002` — its
+/// internal soft-hyphen-at-a-line-break marker — instead of `U+002D`. Four variants of one
+/// page, differing only in their content stream, separate the condition exactly:
+///
+/// | line 1 | line 2 present | reported |
+/// |---|---|---|
+/// | `BURROW-SECRET-` | yes | `… 0054` **`0002`** |
+/// | `BURROW-SECRET-` | no | `… 0054 002D` |
+/// | `BURROW-SECRET` | yes | `… 0054` |
+/// | `BURROW-SECRET-04` | yes | `… 0054 002D 0030 0034` |
+///
+/// It reproduces with an unembedded Helvetica and a four-character string, so it is PDFium's
+/// text layer and not anything about the fixture's subset font.
+///
+/// # Why the redaction tests cannot live with it
+///
+/// **A redaction changes this condition without moving anything.** Removing `04` from the end
+/// of `BURROW-SECRET-04` leaves the hyphen at the identical origin, drawn by the identical
+/// code, through a font whose `/Differences` still names it — and PDFium's answer for it
+/// changes from `002D` to `0002`. `redaction_corpus.rs` read that as a glyph that "appears and
+/// was not drawn before — the page reflowed", which is exactly backwards: nothing reflowed,
+/// and the instrument re-labelled.
+///
+/// The reverse direction is the one that would have mattered more. A redaction that removes
+/// the *following line* turns a `0002` into a `002D`, and the corpus test's other half asks
+/// whether a glyph the region reached is **gone** by comparing unicodes — so an un-canonicalised
+/// hyphen would read as removed while still being drawn. That is a leak check failing open,
+/// which is why this normalises **both** sides rather than special-casing the direction that
+/// was observed.
+///
+/// Folding `0002` into `002D` is the conservative direction for both: it can only make two
+/// characters compare equal that PDFium already agrees are the same glyph.
+#[must_use]
+pub fn canonical_unicode(unicode: u32) -> u32 {
+    if unicode == PDFIUM_LINE_FINAL_HYPHEN {
+        HYPHEN_MINUS
+    } else {
+        unicode
+    }
+}
+
 /// One character as PDFium sees it: what it is, and where both of its boxes are.
 #[derive(Debug, Clone, Copy)]
 pub struct OracleChar {
-    /// The Unicode PDFium decoded, for identifying the character in a failure message.
+    /// The Unicode PDFium decoded, **canonicalised** by [`canonical_unicode`].
     ///
     /// **Not used to decide anything.** A lying `/ToUnicode` moves no glyph, which is precisely
     /// why geometry is checkable by this oracle when mapping is not — see the module header.
+    ///
+    /// It is canonicalised because PDFium's answer for one character is not a property of that
+    /// character alone: see [`canonical_unicode`] for the measurement. [`Self::raw_unicode`]
+    /// keeps what PDFium actually said.
     pub unicode: u32,
+    /// What `FPDFText_GetUnicode` returned, before [`canonical_unicode`].
+    ///
+    /// Kept so the canonicalisation is a rule with a probe behind it rather than a smoothing
+    /// nobody can see the effect of: `a_line_final_hyphen_is_relabelled_by_pdfium` asserts this
+    /// field is `0x0002` on a shape where [`Self::unicode`] is `0x002D`. A rule that matches
+    /// nothing passes everything.
+    pub raw_unicode: u32,
     /// `FPDFText_GetCharOrigin` — the pen position, in page space.
     ///
     /// **The instrument P1 uses**, because it is the one quantity with no font-metric
@@ -426,7 +489,8 @@ fn read_chars(bytes: &[u8], index: i32) -> Vec<OracleChar> {
         // SAFETY: as above.
         let generated = unsafe { FPDFText_IsGenerated(text, at) };
         out.push(OracleChar {
-            unicode,
+            unicode: canonical_unicode(unicode),
+            raw_unicode: unicode,
             origin: (ox, oy),
             // `FPDFText_IsGenerated` returns -1 when it cannot tell. Treating "cannot tell" as
             // "from the file" keeps an unknown character in the comparison rather than
