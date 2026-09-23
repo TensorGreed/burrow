@@ -1719,3 +1719,72 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
         "{left_inside} character(s) are still rendered inside the region the user selected"
     );
 }
+
+/// The `/ActualText` evasion fixtures, and the canary each carries.
+///
+/// Read from the generated corpus rather than rebuilt here: these three exist to probe the
+/// cross-stream shapes, and a copy written in this file would be a copy that can drift from the
+/// generator that writes them.
+const ACTUALTEXT_EVASIONS: [(&str, &str); 3] = [
+    (
+        "evade-actualtext-around-a-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-FORM",
+    ),
+    (
+        "evade-actualtext-inside-a-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-IN-FORM",
+    ),
+    (
+        "evade-actualtext-around-a-nested-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NESTED",
+    ),
+];
+
+#[test]
+fn the_actualtext_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
+    // WHY THIS IS NOT LEFT TO `redaction_corpus.rs`, which already runs these documents.
+    //
+    // That harness asks whether a glyph the region reached is still drawn, by comparing
+    // PDFium's unicode **and origin**. For a span carrying `/ActualText` the origin does not
+    // discriminate: PDFium reports every character of the replacement string at the span's
+    // starting point, so all of them share one origin and the comparison turns on the unicode
+    // alone. Measured (#164): with the nested descent in `form_names_for` disabled, this
+    // document redacted, the carrier survived verbatim in the output, and the corpus sweep
+    // stayed green and reported `reached 1, removed 2 more`.
+    //
+    // So the assertion that matters is made here, on the bytes: the carrier is not in the
+    // output. That is the claim a user cares about, and it is the one the corpus cannot make.
+    //
+    // WRITTEN TO SURVIVE #165. A refusal satisfies it and so does a rewriter that narrows or
+    // drops the entry — the test pins "the secret does not come out", not "burrow refuses". If
+    // it pinned the refusal, landing the rewriter would turn an improvement into a failure,
+    // which is what `redaction_corpus.rs`'s header warns against.
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
+    let mut examined = 0usize;
+    for (name, canary) in ACTUALTEXT_EVASIONS {
+        let path = directory.join(name);
+        let pdf = std::fs::read(&path).unwrap_or_else(|error| {
+            panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
+        });
+        // NON-VACUITY FIRST. A fixture whose canary is not in it measures nothing, and these
+        // are generated, so a generator change could quietly empty one.
+        assert_present(&pdf, canary.as_bytes(), name);
+        examined += 1;
+        match redact(&pdf) {
+            Err(error) => {
+                let text = format!("{error:?}");
+                assert!(
+                    text.contains('[') && text.contains(']'),
+                    "{name}: refused without naming a rule: {text}"
+                );
+            }
+            Ok((out, _)) => assert_absent(&out, canary.as_bytes(), name),
+        }
+    }
+    assert_eq!(
+        examined,
+        ACTUALTEXT_EVASIONS.len(),
+        "every /ActualText evasion fixture must be examined"
+    );
+}

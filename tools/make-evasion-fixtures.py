@@ -628,6 +628,45 @@ def evade_actualtext_inside_a_form() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_actualtext_around_a_nested_form() -> bytes:
+    """The `/ActualText` is on the page; the glyphs are two levels down, inside a nested form.
+
+    The deeper twin of `evade-actualtext-around-a-form`, and it exists because **fixing one bug
+    re-opened another**. While #164 refused every nested form with `form-vanished`, a removed
+    glyph's form was always a direct child of the page, so matching the page's `/XObject` by
+    object identity was enough to answer "does this `Do` draw something the removal reaches".
+
+    Making nested forms redactable breaks that assumption: the removed glyph's form is `Inner`,
+    which the page's `/XObject` never names, so the name set came back empty and the page's
+    `/ActualText` span had nothing to answer for. The same cross-stream hole a security review
+    measured, one level further down.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    inner = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-NESTED")) + b" Tj ET\n",
+    )
+    outer = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /XObject << /Inner " + str(inner).encode() + b" 0 R >> >>",
+        b"/Inner Do\n",
+    )
+    content = (
+        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-NESTED")) + b" >> BDC\n"
+        b"/Outer Do\n"
+        b"EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Outer " + str(outer).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_actualtext_around_an_untouched_form() -> bytes:
     """The same shape, with the `/ActualText` span around a form the region never reaches.
 
@@ -680,6 +719,7 @@ CASES: list[tuple[str, str, str]] = [
     ("nearmiss-nested-forms-no-oc", "optional content", "handle"),
     ("evade-actualtext-around-a-form", "/ActualText", "refuse"),
     ("evade-actualtext-inside-a-form", "/ActualText", "refuse"),
+    ("evade-actualtext-around-a-nested-form", "/ActualText", "refuse"),
     ("nearmiss-actualtext-around-an-untouched-form", "/ActualText", "handle"),
 ]
 
@@ -701,6 +741,7 @@ BUILDERS = {
     "nearmiss-nested-forms-no-oc": nearmiss_nested_forms_no_oc,
     "evade-actualtext-around-a-form": evade_actualtext_around_a_form,
     "evade-actualtext-inside-a-form": evade_actualtext_inside_a_form,
+    "evade-actualtext-around-a-nested-form": evade_actualtext_around_a_nested_form,
     "nearmiss-actualtext-around-an-untouched-form": nearmiss_actualtext_around_an_untouched_form,
 }
 

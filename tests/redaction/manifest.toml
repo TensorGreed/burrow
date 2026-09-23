@@ -932,3 +932,136 @@ pages = 1
   witness_observes = "canary"
   expect_after = "gone"
   notes = "MUST NOT be refused. Nested forms are ordinary; every drawing program emits them."
+
+[[fixture]]
+name = "00-control-no-canary"
+file = "generated/00-control-no-canary.pdf"
+kind = "hand-built"
+pages = 1
+no_placements_because = """
+It has no canary, by design. This is the INERTNESS control for every witness in
+`tools/check-redaction-corpus.py`: a scanner that matches everything fails everything, and this
+is the document that proves none of them does. A placement here would assert the presence of
+something the fixture exists to lack.
+"""
+
+[[fixture]]
+name = "17-incremental-update"
+file = "generated/17-incremental-update.pdf"
+kind = "hand-built"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a superseded object from a previous revision"
+  canary = "BURROW-SECRET-17"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+ADR 0029's table says **nothing** is needed here: qpdf's writer emits only objects reachable
+from the current trailer, so the superseded object does not survive a rewrite. The ADR also says
+that claim is narrower than it reads, which is why the canary is still witnessed before — an
+outcome that comes free is still an outcome, and one nobody measures is a claim.
+"""
+
+[[fixture]]
+name = "producer-vertical-writing"
+file = "fixtures/producer-vertical-writing.pdf"
+kind = "producer"
+producer = "LibreOffice Writer, vertical tb-rl Japanese"
+pages = 1
+no_placements_because = """
+Its subject is the **writing mode**, not a canary: six Japanese glyphs set `tb-rl`, kept because
+#129 needed a real producer's answer to what a vertical document looks like. There is no ASCII
+canary to witness, and inventing one would change the file this fixture exists to be. Its
+assertion lives in `core/burrow-engines/tests/redaction_corpus.rs` and the geometry calibration,
+which read its glyph origins rather than its strings.
+"""
+
+[[fixture]]
+name = "evade-actualtext-around-a-form"
+file = "generated/evade-actualtext-around-a-form.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText on a page span whose glyphs are in a Form XObject"
+  canary = "BURROW-EVADE-ACTUALTEXT-FORM"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+The cross-stream shape. `check_marked_content` runs once per stream and each call saw only its
+own stream's removed glyphs, so a `BDC` on the page wrapping a `Do` was seen by neither. Measured
+as a working leak: the operation returned `Ok` and both PDFium and `pdftotext` read this canary
+off the output.
+"""
+
+[[fixture]]
+name = "evade-actualtext-inside-a-form"
+file = "generated/evade-actualtext-inside-a-form.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText inside a Form XObject's own stream"
+  canary = "BURROW-EVADE-ACTUALTEXT-IN-FORM"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+Exists because the per-form pass could be deleted outright with the whole crate green: every
+other fixture kept its `BDC` in the page stream, so that branch was unverified code on a leak
+path.
+"""
+
+[[fixture]]
+name = "evade-actualtext-around-a-nested-form"
+file = "generated/evade-actualtext-around-a-nested-form.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText on a page span whose glyphs are two levels down"
+  canary = "BURROW-EVADE-ACTUALTEXT-NESTED"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+Added with #164. While nested forms were refused, a removed glyph's form was always a direct
+child of the page, so matching the page's `/XObject` by identity answered "does this `Do` draw
+something the removal reaches". Making nested forms redactable broke that assumption and
+re-opened the cross-stream hole one level down — one fix re-opening another.
+"""
+
+[[fixture]]
+name = "nearmiss-actualtext-around-an-untouched-form"
+file = "generated/nearmiss-actualtext-around-an-untouched-form.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText — near-miss twin, around a form the region never reaches"
+  canary = "BURROW-EVADE-ACTUALTEXT-NEARMISS"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The canary is drawn by the page itself, outside the span; the span covers a
+form drawing the keep line well away from the region. A rule that refuses any page whose content
+carries `/ActualText` passes every evasion above and refuses most tagged documents.
+"""

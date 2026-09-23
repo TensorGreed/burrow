@@ -2017,3 +2017,104 @@ reports **every** character of it at the span's starting origin — 17 character
 16 glyphs. Those documents are skipped **and named**, not tolerated with a wider tolerance.
 Nothing downstream depends on the comparison, because they are refused by
 `marked-content-carries-text` before any redaction reads their geometry.
+
+## Amendment, 2026-09-23 — #164: a form inside a form is reachable, and two gates stop being lists
+
+### The lookup searched one level and the walk descends many
+
+`form_handle` resolved a Form XObject by object identity against **the page's** `/XObject`
+dictionary. The geometry walk descends into a form's own `/Resources` — that is what
+`Resources::within` exists for — so a glyph can carry `source.form: Some(id)` for a form the
+page never names. The lookup then failed and the operation returned
+`Error::Malformed("… a form the walk found is not in the page's resources")`: true, irrelevant,
+and phrased as though the document were at fault.
+
+Two corpus documents hit it, and the second is the instructive one.
+`nearmiss-nested-forms-no-oc.pdf` is a **near-miss twin** whose entire purpose is that it has no
+optional content and must therefore redact — so the corpus was reporting a refusal that its own
+fixture design says should not exist. Nothing leaked; it refused. What it did was take a
+document offline that the operation can handle, and blame the file for it.
+
+The lookup now descends the same way the walk does, bounded by `MAX_FORM_DEPTH` and guarded by
+the set of forms already open. `form-vanished` no longer fires on any corpus document.
+
+### Fixing it re-opened the `/ActualText` hole one level down
+
+`form_names_for` tells `check_marked_content` which `Do` operations draw a form the removal
+reaches. It matched the page's `/XObject` entries by identity, which was **correct exactly while
+nested forms could not be redacted**: a removed glyph's form was always a direct child of the
+page. Making them redactable broke that assumption, and a page-level
+`/Span << /ActualText … >> BDC /Outer Do EMC` whose glyphs live inside `Outer`'s own form came
+back with an empty name set — the same cross-stream hole the security review measured on the
+previous PR, re-opened by the fix for a different bug.
+
+One fix re-opening another is the reason `evade-actualtext-around-a-nested-form.pdf` exists. It
+is the third fixture on this channel, and the three now cover the span and the glyphs in the same
+stream, in adjacent streams, and two levels apart.
+
+### The corpus could not see that leak, and a byte assertion was needed
+
+`redaction_corpus.rs` asks whether a glyph the region reached is still drawn, comparing PDFium's
+unicode **and origin**. For a span carrying `/ActualText` the origin does not discriminate:
+PDFium reports every character of the replacement string at the span's starting point, so they
+all share one origin and the comparison turns on the unicode alone.
+
+Measured: with the nested descent disabled, the document redacted, the carrier survived verbatim,
+and the sweep stayed green reporting `reached 1, removed 2 more`.
+
+So the claim that matters is asserted on the bytes instead, in `redaction_defences.rs`: the
+carrier is not in the output. It is written to be satisfied by a refusal **or** by a rewriter
+that narrows or drops the entry, so landing #165 will not turn an improvement into a failure.
+
+### The census
+
+**39 of 47 redact.** `form-vanished` is gone; `evade-oc-two-levels-down.pdf` now refuses as
+`marked-content-properties-unresolved`, which is honest — it names its optional-content group
+through `/Properties`, and #166 is what narrows that to the reason.
+
+| document | rule |
+|---|---|
+| `08-type3-glyph.pdf` | `type-three-procedure-shows-text` |
+| `09-actualtext.pdf`, `evade-actualtext-around-a-form.pdf`, `evade-actualtext-inside-a-form.pdf`, `evade-actualtext-around-a-nested-form.pdf` | `marked-content-carries-text` (#165) |
+| `13-optional-content.pdf`, `evade-oc-two-levels-down.pdf` | `marked-content-properties-unresolved` (#166) |
+| `evade-image-as-pattern.pdf` | `pattern-may-draw-text` |
+
+### Two gates stop being hand-maintained lists
+
+Both were edited by hand for the previous PR, and a list edited alongside the thing it mirrors is
+the shape this file has now named four times — `git add -A`, the `ci-local` coverage table,
+`DISPUTED` against the calibration's font list, and these two.
+
+**`check-integration-suites.sh` derives its suite list from disk.** Cargo compiles every
+`core/*/tests/*.rs` as a test binary, so the files *are* the set of suites and no second opinion
+about them can be more correct. The old gate compared a hand-written list against disk; the goal
+was never that they agree, it was that CI runs every suite, and deriving satisfies that by
+construction. What replaces it is the failure deriving newly makes possible: a glob that matches
+nothing exits 0 and would sweep an empty set under an `OK`, so each crate carries a floor.
+
+Writing the self-test case for that floor found a real defect in the derivation: under
+`set -euo pipefail`, `grep -v` on empty input exits 1, so with both crates empty the script died
+**silently with no message** before the floor could speak. The case reported "it refused, but not
+for the stated reason", which was exactly right.
+
+**`check-redaction-corpus.sh` derives its expected file count from
+`tests/redaction/manifest.toml`.** That manifest is the right source because it is not a
+restatement of the file listing: it assigns each fixture the verdict this ADR owes it, so a file
+that exists and is not declared there is a document with **no assigned verdict**. Seven had
+accumulated — `00-control-no-canary`, `17-incremental-update`, `producer-vertical-writing` and the
+four `/ActualText` fixtures. `check-redaction-corpus.py` now refuses that in both directions, and
+a fixture with no placements must say `no_placements_because`, so declaring one cannot become a
+way to opt out of being checked.
+
+Two things the derivation needed:
+
+- **A `raw-file` witness.** `17-incremental-update`'s canary lives in a *superseded* revision, and
+  every other byte witness reads the `qpdf --qdf` normalisation — whose writer emits only objects
+  reachable from the current trailer, so the canary is gone from it by construction. That is the
+  very property this ADR records for the channel; witnessing it against the normalised bytes was
+  asking the wrong file.
+- **Cleaning `tests/redaction/generated/` before regenerating.** The directory is gitignored, so a
+  stale file is invisible to git and indistinguishable from a live one — and the count is taken
+  from the directory. Measured: deleting an entry from a generator's `CASES` left the gate green,
+  because its last output was still sitting there. Cleaning is what makes the derived count able
+  to catch a fixture that stops being generated.

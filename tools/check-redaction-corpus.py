@@ -368,6 +368,7 @@ WITNESS_OBSERVES = {
     "pdfium-text": "canary",
     "pdfium-text-loose": "canary",
     "raw-utf16-hex": "canary",
+    "raw-file": "canary",
     "font-mapping": "canary-or-alphabet",
     "font-cmap": "alphabet",
     "thumb-ink": "carrier",
@@ -412,6 +413,46 @@ def main() -> int:
     if not fixtures:
         sys.exit("check-redaction-corpus: the manifest declares no fixtures; this run is vacuous")
 
+    # COMPLETENESS, BOTH WAYS, BEFORE ANY WITNESS RUNS.
+    #
+    # This manifest's own header says it "asserts decisions, not files" — so a fixture on disk
+    # that it does not declare is a document with no assigned verdict, quietly outside the table
+    # ADR 0029 owes. Nothing checked that, and seven had accumulated: `00-control-no-canary`,
+    # `17-incremental-update`, `producer-vertical-writing`, and the four `/ActualText` fixtures
+    # added with the marked-content refusal.
+    #
+    # It is also what lets `check-redaction-corpus.sh` DERIVE its expected file count instead of
+    # carrying a hand-typed integer. That integer had to be edited by hand twice in one batch,
+    # and a count somebody bumps without looking is worse than no count: it reads as a
+    # measurement while asserting whatever the last person typed. Deriving is only sound if the
+    # manifest is complete, so completeness is enforced here rather than assumed.
+    declared = {f["file"].split("/")[-1] for f in fixtures}
+    on_disk = {
+        path.name
+        for directory in ("generated", "fixtures")
+        for path in (MANIFEST.parent / directory).glob("*.pdf")
+    }
+    undeclared = sorted(on_disk - declared)
+    if undeclared:
+        sys.exit(
+            "check-redaction-corpus: on disk but not declared in the manifest, so no verdict is "
+            "assigned to them:\n  " + "\n  ".join(undeclared)
+        )
+
+    # AND EVERY FIXTURE SAYS SOMETHING. A fixture with no placements is skipped by the loop
+    # below in silence, which would make declaring one a way to opt out of being checked.
+    silent = [
+        f["name"]
+        for f in fixtures
+        if not f.get("placement") and not f.get("no_placements_because")
+    ]
+    if silent:
+        sys.exit(
+            "check-redaction-corpus: declared with no placement and no "
+            "`no_placements_because`, so nothing is asserted about them:\n  "
+            + "\n  ".join(silent)
+        )
+
     checked = 0
     failures: list[str] = []
     verdicts: dict[str, int] = {}
@@ -434,7 +475,15 @@ def main() -> int:
             verdicts[placement["verdict"]] = verdicts.get(placement["verdict"], 0) + 1
             kind = placement["witness_before"]
             canary = placement["canary"]
-            if kind == "pdfium-text":
+            if kind == "raw-file":
+                # THE FILE AS IT ARRIVED, not the qpdf normalisation every other byte witness
+                # reads. `expanded()` runs `qpdf --qdf`, whose writer emits only objects
+                # reachable from the current trailer — so a canary that lives in a SUPERSEDED
+                # revision is gone from it by construction. That is the very property ADR 0029
+                # records for the incremental-update channel, and reading the normalised bytes
+                # to witness it would be asking the wrong file.
+                ok = witness_raw(path.read_bytes(), canary)
+            elif kind == "pdfium-text":
                 ok = witness_pdfium_text(path, canary, text_cache)
             elif kind == "pdfium-text-loose":
                 ok = witness_pdfium_text_loose(path, canary, text_cache)

@@ -16,16 +16,29 @@
 # a name both CI and the local runner can invoke. A gate written inline is a gate betting that
 # the extractor happens to have a pattern for its shape.
 #
-# WHAT IT CHECKS, in both directions, because one direction is not a check:
+# THE LIST IS DERIVED FROM DISK, AND THAT IS A CHANGE. It used to be two hand-written strings
+# compared against `core/*/tests/*.rs` in both directions, which made adding a suite a two-step
+# edit -- and the second step is the one people miss. It was missed here: `standard14_calibration`
+# and `oracle_canonicalisation` were added, CI named neither, and would have run neither. This
+# gate caught it, so the comparison worked; but a list that has to be edited alongside the thing
+# it mirrors is the rotting-list shape CLAUDE.md already names twice, and the same batch saw it
+# rot twice more -- `DISPUTED` against `FONTS` in the standard-14 calibration, and the fixture
+# count in `check-redaction-corpus.sh`.
 #
-#   1. Every suite named below discovers at least one test. A suite that compiles to zero
-#      tests is the `native-engines` feature not taking effect, which is silent otherwise.
-#   2. Every `core/*/tests/*.rs` on disk is named below. A new suite nobody added would be
-#      covered by nothing -- the shape of a fuzz target declared and never run.
-#   3. Every suite named below exists on disk, checked per suite in `run_suites` before any
-#      cargo call. The inline version omitted this: a renamed file left a name pointing at
-#      nothing, and it surfaced as `cargo`'s own "no test target named X" rather than as this
-#      gate's message -- a worse error at a later moment.
+# Deriving does not weaken the gate, because the goal was never "the list agrees with disk" --
+# it was "CI runs every suite on disk". Derivation satisfies that **by construction**, and disk
+# is the right source: cargo compiles every `core/*/tests/*.rs` as a test binary, so the files
+# ARE the set of suites, and no second opinion about them can be more correct.
+#
+# WHAT IT CHECKS:
+#
+#   1. Every suite discovers at least one test. A suite that compiles to zero tests is the
+#      `native-engines` feature not taking effect, which is silent otherwise. **This is the
+#      substantive rule**, and it is untouched by deriving the list.
+#   2. Each crate has suites at all. A glob that matched nothing would otherwise make this
+#      script pass over an empty set, which is the failure deriving newly makes possible and
+#      which the old hand-written list could not have -- so it is gated explicitly.
+#   3. Every suite is run under the crate it lives in, which the directory says.
 #
 # Shared helpers live in `core/*/tests/support/` and are excluded by `-maxdepth 1`. A future
 # FLAT helper -- `core/burrow-ops/tests/testsupport.rs` -- would be demanded as a named suite
@@ -45,8 +58,18 @@ cd "$repo"
 # burrow-ops when the corpus grew an OPERATION, and `merge` was born there. Naming a suite
 # under the wrong crate is an immediate hard failure -- "no test target named `conformance` in
 # `burrow-engines`" -- which is how the inline version found that out.
-engines_suites="parallelism limits properties structure secret_leak prescan glyph_geometry redaction_corpus redaction_defences redaction_disclosure geometry_calibration standard14_calibration oracle_canonicalisation"
-ops_suites="compress compress_keeps_everything conformance merge optimistic_counts render reorder reorder_keeps_everything rotate rotate_keeps_everything split split_no_leak subset_closure"
+# DERIVED, not written out. `-maxdepth 1` excludes `core/*/tests/support/`; `sed` rather than
+# `find -printf`, which is GNU-only and this repository has an iOS milestone.
+# `|| true` ON THE PIPELINE, so a missing directory reaches the floor check below instead of
+# killing the script. Without it, `set -euo pipefail` turned a moved `tests/` directory into a
+# silent exit 1 with no message at all -- the failure mode this file exists to prevent, produced
+# by the check meant to prevent it. Measured while writing the self-test case for it.
+suites_in() {
+  { find "core/$1/tests" -maxdepth 1 -name '*.rs' 2>/dev/null |
+      sed -e 's#.*/##' -e 's/\.rs$//' | LC_ALL=C sort -u | tr '\n' ' '; } || true
+}
+engines_suites="$(suites_in burrow-engines)"
+ops_suites="$(suites_in burrow-ops)"
 
 # AN ARGUMENT, NOT AN ENVIRONMENT VARIABLE. It was `BURROW_SUITES_LIST_ONLY`, and an
 # environment variable can be inherited by accident: set it anywhere in CI's environment and
@@ -92,40 +115,39 @@ run_suites() {
 run_suites burrow-engines $engines_suites
 run_suites burrow-ops $ops_suites
 
-# AND THE LIST ITSELF IS CHECKED, in both directions. It is hand-maintained, and this gate
-# exists precisely to stop a suite going unrun.
-# `LC_ALL=C` on both: `sort` collates by locale and `comm` compares bytes, so a name with a
-# capital or a dash could make `comm` report spurious both-only lines. And `sed` rather than
-# `find -printf`, which is GNU-only -- this repository has an iOS milestone, so a checker that
-# dies on a macOS `find` is a checker somebody will have to fix later.
-named=$(printf '%s %s' "$engines_suites" "$ops_suites" | tr ' ' '\n' | grep -v '^$' | LC_ALL=C sort -u)
-on_disk=$(find core/*/tests -maxdepth 1 -name '*.rs' | sed -e 's#.*/##' -e 's/\.rs$//' | LC_ALL=C sort -u)
-
+# THE SET IS NOW DERIVED, SO THE OLD COMPARISON IS GONE. It compared a hand-written list
+# against disk in one direction; with the list coming from disk that comparison can only ever
+# agree with itself, and a tautology that prints `OK` is the thing this repository treats as
+# worse than no check.
+#
+# WHAT REPLACES IT IS THE FAILURE DERIVING MAKES POSSIBLE. A hand-written list could not
+# silently become empty; a glob can. `find` on a mistyped or moved directory prints nothing and
+# exits 0, so every loop below would run zero times and this script would report success over
+# an empty sweep -- "0 of 26 reads exactly like success". So each crate must yield suites, and
+# the floor is stated per crate rather than over the total, because one crate going empty while
+# the other still has twenty would pass any total-based gate.
+# `|| true` HERE TOO, and for a subtler reason than the `find`. Under `pipefail` the pipeline's
+# status is `grep`'s, and `grep -v` on empty input exits 1 -- so with both crates empty this
+# assignment killed the script under `set -e` before the floor check below could name the
+# problem. Traced with `bash -x` after the self-test case for it reported a refusal "for the
+# wrong reason": the refusal was a silent exit, which is what the case was right to reject.
+named=$(printf '%s %s' "$engines_suites" "$ops_suites" | tr ' ' '\n' | grep -v '^$' | LC_ALL=C sort -u || true)
 named_count=$(printf '%s\n' "$named" | grep -vc '^$' || true)
-disk_count=$(printf '%s\n' "$on_disk" | grep -vc '^$' || true)
 
-echo "named:   $(printf '%s' "$named" | tr '\n' ' ')"
-echo "on disk: $(printf '%s' "$on_disk" | tr '\n' ' ')"
+engines_count=$(printf '%s' "$engines_suites" | tr ' ' '\n' | grep -vc '^$' || true)
+ops_count=$(printf '%s' "$ops_suites" | tr ' ' '\n' | grep -vc '^$' || true)
 
-missing=$(comm -13 <(printf '%s\n' "$named") <(printf '%s\n' "$on_disk"))
-[ -z "$missing" ] ||
-  fail "integration suites on disk but not named in this step: $(printf '%s' "$missing" | tr '\n' ' ')"
+echo "derived: $(printf '%s' "$named" | tr '\n' ' ')"
 
-# NO `comm -23` HERE, DELIBERATELY. The other direction -- a name with no file -- is owned by
-# the per-suite existence check in `run_suites`, which fires earlier and with a better message
-# naming the crate. A second rule for the same condition was UNREACHABLE, and its self-test
-# case passed by matching a string that appears in both messages, so it reported "ok" for a
-# rule it never exercised. Code review found it. One condition, one owner.
-
-# THE COUNT IS A TRIPWIRE, and is labelled as one rather than dressed up as a rule: over two
-# `sort -u` sets whose one-way difference is already empty, the counts cannot disagree. It is
-# here so that a future edit which breaks the comparison above cannot also silently agree with
-# itself, and the self-test reaches it by mutating `named_count` directly.
-[ "$named_count" -eq "$disk_count" ] ||
-  fail "named $named_count suite(s) against $disk_count on disk, and neither direction reported it"
+[ "$engines_count" -ge 5 ] ||
+  fail "found $engines_count suite(s) under core/burrow-engines/tests, which is not that \
+directory -- a glob matching nothing would make this whole sweep vacuous"
+[ "$ops_count" -ge 5 ] ||
+  fail "found $ops_count suite(s) under core/burrow-ops/tests, which is not that directory -- \
+a glob matching nothing would make this whole sweep vacuous"
 
 if [ "$list_only" = "1" ]; then
-  echo "OK -- $named_count suite(s) named, all present on disk (list-only: tests not discovered)"
+  echo "OK -- $named_count suite(s) derived from disk ($engines_count engines, $ops_count ops; list-only: tests not discovered)"
 else
-  echo "OK -- $named_count suite(s) named and on disk, $total_tests tests discovered across $total_suites"
+  echo "OK -- $named_count suite(s) derived from disk ($engines_count engines, $ops_count ops), $total_tests tests discovered across $total_suites"
 fi

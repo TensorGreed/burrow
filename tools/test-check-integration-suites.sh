@@ -68,9 +68,15 @@ else
   exit 1
 fi
 
-# --- Rule 1: a suite on disk that nobody named -----------------------------------------------
+# --- Rule 1: a suite on disk is PICKED UP, not refused ---------------------------------------
 #
-# The miss that took PR #76 red: `optimistic_counts.rs` arrived and was named nowhere.
+# This case used to plant a suite and require a refusal, because the list was hand-written and
+# the gate's job was to notice the list had not been updated. The list is derived from disk now,
+# so the correct behaviour for a new suite is the opposite: it is swept, silently and
+# immediately. That is the point of deriving, and it is what this case must therefore assert.
+#
+# The miss it was written for -- PR #76's `optimistic_counts.rs`, named nowhere -- is no longer
+# expressible. It is not that the rule got weaker; the condition it detected cannot arise.
 planted="$repo/core/burrow-ops/tests/zz_planted_by_self_test.rs"
 cat >"$planted" <<'RSEOF'
 //! Planted by tools/test-check-integration-suites.sh; removed on the way out.
@@ -78,11 +84,32 @@ cat >"$planted" <<'RSEOF'
 fn planted_by_test_check_integration_suites() {}
 RSEOF
 [ -f "$planted" ] || { echo "  FAIL the plant did not apply"; exit 1; }
-expect_refusal "a suite on disk that nothing names is refused, by name" \
-  "zz_planted_by_self_test" \
-  "$checker" --list-only
+if "$checker" --list-only 2>&1 | grep -q "zz_planted_by_self_test"; then
+  echo "  ok   a suite newly on disk is swept without being named anywhere"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a suite newly on disk is swept without being named anywhere: it was not picked up"
+  fail=$((fail + 1))
+fi
 rm -f "$planted"
 planted=""
+
+# --- Rule 1b: a crate whose suites cannot be found is refused --------------------------------
+#
+# The failure deriving newly makes possible, and the reason Rule 1 could be relaxed rather than
+# dropped. A hand-written list could not silently become empty; a glob can -- `find` on a moved
+# directory prints nothing and exits 0, and every loop would then run zero times under an `OK`.
+sed 's#find "core/$1/tests"#find "core/$1/tests-moved-away"#' "$checker" >"$copy"
+chmod +x "$copy"
+if cmp -s "$checker" "$copy"; then
+  echo "  FAIL the empty-glob mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  expect_refusal "a crate whose suite directory yields nothing is refused, not swept as empty" \
+    "which is not that directory" \
+    "$copy" --list-only
+fi
+rm -f "$copy"
 
 # --- Rule 2: a named suite with no file on disk ----------------------------------------------
 #
@@ -94,7 +121,7 @@ planted=""
 # that and reported it, which is the whole reason it is there: a mutation that does not apply
 # is indistinguishable from a defence that holds. Fixing the anchor rather than the list,
 # because the list will keep growing and the next suite would break it again.
-sed 's/^ops_suites="/ops_suites="zz_phantom_suite /' \
+sed 's/^ops_suites="\$(suites_in burrow-ops)"/ops_suites="zz_phantom_suite $(suites_in burrow-ops)"/' \
   "$checker" >"$copy"
 chmod +x "$copy"
 if cmp -s "$checker" "$copy"; then
@@ -142,16 +169,16 @@ planted=""
 
 # --- The count comparison itself --------------------------------------------------------------
 #
-# Both list checks can pass while the totals disagree only if one of them is broken, so this
-# breaks the comparison's input directly and requires the count line to catch it.
-sed 's/^named_count=.*/named_count=999/' "$checker" >"$copy"
+# The per-crate floors are the gate now, so this breaks one of them directly. Without a case
+# here the floors would be two numbers nobody had ever seen fire.
+sed 's/^engines_count=.*/engines_count=0/' "$checker" >"$copy"
 chmod +x "$copy"
 if cmp -s "$checker" "$copy"; then
   echo "  FAIL the count mutation did not apply, so this case measured nothing"
   fail=$((fail + 1))
 else
-  expect_refusal "a disagreeing suite count is refused even when both lists match" \
-    "neither direction reported it" \
+  expect_refusal "a crate reporting zero suites is refused rather than swept as empty" \
+    "which is not that directory" \
     "$copy" --list-only
 fi
 rm -f "$copy"

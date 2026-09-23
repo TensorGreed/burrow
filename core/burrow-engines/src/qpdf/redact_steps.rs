@@ -853,7 +853,23 @@ fn form_names_for(
     let xobjects = resources.dictionary().key(&XOBJECT);
     for key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
         let entry = xobjects.key(&Name::from_stripped(&key)?);
-        if entry.type_code() == object_type::STREAM && wanted.contains(&pack(entry.object()?)) {
+        if entry.type_code() != object_type::STREAM {
+            continue;
+        }
+        // THE NAME COUNTS IF ANYTHING BELOW IT IS WANTED, not only if it is wanted itself.
+        //
+        // This matched the top-level object alone, which was correct exactly while a nested
+        // form could not be redacted -- #164 refused those, so a `wanted` id was always a
+        // direct child. Fixing that lookup makes them reachable, and a page-level
+        // `/Span << /ActualText … >> BDC /X1 Do EMC` whose glyphs live **inside** `/X1`'s own
+        // form would have had an empty name set again: the same cross-stream hole a security
+        // review measured, one level further down and re-opened by the fix for a different bug.
+        //
+        // `check_marked_content` asks "does this `Do` draw something the removal reaches", and
+        // the honest answer follows the whole subtree.
+        let mut open = BTreeSet::new();
+        let here = pack(entry.object()?);
+        if wanted.contains(&here) || reaches_wanted(&entry, wanted, 0, &mut open)? {
             // WITHOUT THE LEADING SLASH, which is how `Operand::Name` carries a decoded name.
             names.insert(key.strip_prefix(b"/".as_slice()).unwrap_or(&key).to_vec());
         }
@@ -861,20 +877,116 @@ fn form_names_for(
     Ok(names)
 }
 
-/// The handle for the form with this identity.
-fn form_handle<'a>(resources: &PageResources<'a>, id: u64) -> Result<ObjectHandle<'a>> {
+/// Whether any form reachable from this one's `/Resources` is in `wanted`.
+///
+/// Bounded and cycle-guarded like [`find_form_below`], and for the same reasons.
+fn reaches_wanted(
+    form: &ObjectHandle<'_>,
+    wanted: &BTreeSet<u64>,
+    depth: usize,
+    open: &mut BTreeSet<u64>,
+) -> Result<bool> {
     const XOBJECT: Name = Name::literal(b"/XObject\0");
-    let xobjects = resources.dictionary().key(&XOBJECT);
+    const RESOURCES: Name = Name::literal(b"/Resources\0");
+    if depth >= crate::pdfsyntax::geometry::MAX_FORM_DEPTH {
+        return Ok(false);
+    }
+    let own = form.stream_dict().key(&RESOURCES);
+    if own.type_code() != object_type::DICTIONARY {
+        return Ok(false);
+    }
+    let xobjects = own.key(&XOBJECT);
     for key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
         let entry = xobjects.key(&Name::from_stripped(&key)?);
-        if entry.type_code() == object_type::STREAM && pack(entry.object()?) == id {
-            return Ok(entry);
+        if entry.type_code() != object_type::STREAM {
+            continue;
         }
+        let here = pack(entry.object()?);
+        if wanted.contains(&here) {
+            return Ok(true);
+        }
+        if !open.insert(here) {
+            continue;
+        }
+        if reaches_wanted(&entry, wanted, depth.saturating_add(1), open)? {
+            return Ok(true);
+        }
+        open.remove(&here);
     }
-    Err(Error::Malformed(
-        "pdf redaction [form-vanished]: a form the walk found is not in the page's resources"
-            .to_owned(),
-    ))
+    Ok(false)
+}
+
+/// The handle for the form with this identity, searched the way the walk reached it.
+///
+/// # It searched the page's `/XObject` only, and the walk does not stop there
+///
+/// The geometry walk descends into a form's **own** `/Resources` — that is what
+/// `Resources::within` exists for — so a glyph can legitimately carry
+/// `source.form: Some(id)` for a form the page's `/XObject` never names. This looked in the page
+/// only, failed to find such a form, and returned `Error::Malformed` saying the form "is not in
+/// the page's resources": true, irrelevant, and phrased as though the document were at fault.
+///
+/// Measured (#164): `evade-oc-two-levels-down.pdf` and `nearmiss-nested-forms-no-oc.pdf` were
+/// both refused by `form-vanished`. The second is a **near-miss twin** whose entire purpose is
+/// that it has no optional content and must therefore redact — so the corpus was reporting a
+/// refusal where its own fixture design says there should be none.
+///
+/// Nothing leaked: it refuses. What it did was blame the file for an incomplete lookup, and take
+/// a document offline that the operation can handle.
+///
+/// # The same ceilings as the walk, for the same reasons
+///
+/// [`MAX_FORM_DEPTH`] bounds the descent and the set of forms already open stops a cycle, which
+/// is the pair `glyphs_in` uses. A form that names itself is a document that exists; without the
+/// open set this recursion would not return.
+fn form_handle<'a>(resources: &PageResources<'a>, id: u64) -> Result<ObjectHandle<'a>> {
+    let mut open = BTreeSet::new();
+    find_form_below(resources.dictionary(), id, 0, &mut open)?.ok_or_else(|| {
+        Error::Malformed(
+            "pdf redaction [form-vanished]: a form the walk found is not reachable from the \
+             page's resources"
+                .to_owned(),
+        )
+    })
+}
+
+/// Search `resources`' `/XObject` for the form with `id`, then each form's own `/Resources`.
+fn find_form_below<'a>(
+    resources: &ObjectHandle<'a>,
+    id: u64,
+    depth: usize,
+    open: &mut BTreeSet<u64>,
+) -> Result<Option<ObjectHandle<'a>>> {
+    const XOBJECT: Name = Name::literal(b"/XObject\0");
+    const RESOURCES: Name = Name::literal(b"/Resources\0");
+    if depth >= crate::pdfsyntax::geometry::MAX_FORM_DEPTH {
+        return Ok(None);
+    }
+    let xobjects = resources.key(&XOBJECT);
+    for key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
+        let entry = xobjects.key(&Name::from_stripped(&key)?);
+        if entry.type_code() != object_type::STREAM {
+            continue;
+        }
+        let here = pack(entry.object()?);
+        if here == id {
+            return Ok(Some(entry));
+        }
+        // A CYCLE IS A DOCUMENT THAT EXISTS, not a malformed one: `open` is what makes this
+        // terminate, and it is checked before the recursion rather than inside it so a form
+        // that names itself costs one lookup rather than one per level.
+        if !open.insert(here) {
+            continue;
+        }
+        let own = entry.stream_dict().key(&RESOURCES);
+        if own.type_code() == object_type::DICTIONARY
+            && let Some(found) = find_form_below(&own, id, depth.saturating_add(1), open)?
+        {
+            return Ok(Some(found));
+        }
+        open.remove(&here);
+    }
+    Ok(None)
 }
 
 /// Remove a font's entries for codes the document no longer draws.
