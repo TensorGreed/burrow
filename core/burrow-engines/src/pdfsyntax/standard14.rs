@@ -27,6 +27,11 @@
 //! font at each tabulated code and compares the advance PDFium reports against the value here.
 //! A digit typed wrongly fails that test rather than misplacing a glyph in a redaction.
 //!
+//! "The whole table" means **every spelling in [`ACCEPTED`]**, not every canonical name. It used
+//! to mean the latter, and the gap was the nine alias spellings — measured, and it had already
+//! let `/Arial-Bold` draw a width `/Helvetica-Bold` refuses. The calibration iterates `ACCEPTED`
+//! now, so a spelling cannot be added without being measured. See [`DISPUTED`].
+//!
 //! # What is tabulated, and what still refuses
 //!
 //! **Codes 32 to 126 only.** That is the range every corpus document draws in, and it is a
@@ -115,13 +120,18 @@ const TIMES_BOLD_ITALIC: [u16; 95] = [
     278, 778, 556, 500, 500, 500, 389, 389, 278, 556, 444, 667, 500, 444, 389, 348, 220, 348, 570,
 ];
 
-/// The `(base font, code)` pairs where the published metrics and PDFium **disagree**, and
-/// which this module therefore does not carry.
+/// The `(style, code)` pairs where the published metrics and PDFium **disagree**, and which
+/// this module therefore does not carry.
+///
+/// Keyed on the **style** [`ACCEPTED`] canonicalises to, not on the `/BaseFont` as written, so
+/// every alias spelling of a disputed font is excluded with it. It was keyed on the raw name,
+/// and `/Arial-Bold` drew a width `/Helvetica-Bold` refused.
 ///
 /// # A width two sources disagree on is a width burrow does not draw with
 ///
-/// The calibration is not decoration: it found these. Measured, stable across glyph positions
-/// and across repeated runs, at 100 pt:
+/// The calibration is not decoration: it found these. Measured at 100 pt, as the advance
+/// between two consecutive origins — the same instrument the calibration uses for every other
+/// width, so a disagreement here is a disagreement on the same footing as an agreement there:
 ///
 /// | font | code | published | PDFium |
 /// |---|--:|--:|--:|
@@ -140,7 +150,19 @@ const TIMES_BOLD_ITALIC: [u16; 95] = [
 /// no `/Widths` refuses, exactly as it did before any of this. The rule the module can then
 /// state is a real one — **every width here is one two independent sources agree on** — which is
 /// stronger than "transcribed carefully".
-const DISPUTED: [(&[u8], u32); 4] = [
+///
+/// # Keyed on the style, and what keying it on the name cost
+///
+/// These were matched against the `/BaseFont` as the file spells it, above the canonicalisation
+/// rather than below it, so an alias walked straight past the exclusion its own table carried. A
+/// security review measured it: `/Arial-Bold` drew `@` at 975 where PDFium places 1072, nine
+/// tenths of an em out, while the byte-identical page named `/Helvetica-Bold` refused. Every
+/// glyph after it on the line drifted, so the region test then reached a neighbour or nothing —
+/// a redaction removing the wrong thing, with no error.
+///
+/// The exclusion is now keyed on the style [`ACCEPTED`] maps a spelling to, and the calibration
+/// iterates `ACCEPTED` rather than its own list of names.
+pub const DISPUTED: [(&[u8], u32); 4] = [
     (b"Helvetica-Bold", 64),
     (b"Helvetica-BoldOblique", 64),
     (b"Helvetica-Oblique", 64),
@@ -181,21 +203,73 @@ const WIN_ANSI_96: [(&[u8], u16); 6] = [
 /// §9.6.4), and a name carrying one is rejected here rather than stripped: a subset that
 /// somehow lacked `/Widths` is a document whose metrics genuinely are not knowable, and
 /// borrowing the base font's would be the invention this module exists to avoid.
-fn family(base: &[u8]) -> Option<(&'static [u16; 95], &'static [u8])> {
+/// Every `/BaseFont` spelling this module answers for, and the **style** each canonicalises to.
+///
+/// # One table, because a hand-written list beside a `match` rots
+///
+/// This was a `match` with alias arms, and `standard14_calibration.rs` had its own list of the
+/// twelve canonical names. The `match` accepted twenty-one spellings; the calibration measured
+/// twelve. The nine aliases were never compared against PDFium — and a security review measured
+/// what that cost: `DISPUTED` was keyed on the raw `/BaseFont`, so `/Arial-Bold` walked past the
+/// exclusion its own table had and drew `@` at 975 where PDFium places 1072. A page named
+/// `/Helvetica-Bold` refused; the byte-identical page named `/Arial-Bold` redacted with every
+/// glyph after the `@` about 10 % of an em out of place.
+///
+/// So the calibration iterates **this**, and an alias cannot be added without being measured.
+///
+/// # Style, not table
+///
+/// The style is finer than the width table: `Helvetica` and `Helvetica-Oblique` share
+/// one width table because a slant does not change an advance — and PDFium nonetheless reports a
+/// different width for `@` in each. So [`DISPUTED`] is keyed on the style, which keeps
+/// `Helvetica-Oblique`'s disputed `@` from excluding plain `Helvetica`'s agreeing one.
+pub const ACCEPTED: [(&[u8], &[u8]); 21] = [
+    (b"Courier", b"Courier"),
+    (b"Courier-Bold", b"Courier-Bold"),
+    (b"Courier-Oblique", b"Courier-Oblique"),
+    (b"Courier-BoldOblique", b"Courier-BoldOblique"),
+    (b"Helvetica", b"Helvetica"),
+    (b"Arial", b"Helvetica"),
+    (b"Helvetica-Oblique", b"Helvetica-Oblique"),
+    (b"Helvetica-Italic", b"Helvetica-Oblique"),
+    (b"Arial-Italic", b"Helvetica-Oblique"),
+    (b"Helvetica-Bold", b"Helvetica-Bold"),
+    (b"Arial-Bold", b"Helvetica-Bold"),
+    (b"Helvetica-BoldOblique", b"Helvetica-BoldOblique"),
+    (b"Arial-BoldItalic", b"Helvetica-BoldOblique"),
+    (b"Times-Roman", b"Times-Roman"),
+    (b"TimesNewRoman", b"Times-Roman"),
+    (b"Times-Bold", b"Times-Bold"),
+    (b"TimesNewRoman-Bold", b"Times-Bold"),
+    (b"Times-Italic", b"Times-Italic"),
+    (b"TimesNewRoman-Italic", b"Times-Italic"),
+    (b"Times-BoldItalic", b"Times-BoldItalic"),
+    (b"TimesNewRoman-BoldItalic", b"Times-BoldItalic"),
+];
+
+/// The style `base` canonicalises to, or `None` for a font this module does not carry.
+fn style_of(base: &[u8]) -> Option<&'static [u8]> {
     if base.len() > 7 && base.get(6) == Some(&b'+') {
         return None;
     }
-    let table: (&'static [u16; 95], &'static [u8]) = match base {
-        b"Helvetica" | b"Arial" => (&HELVETICA, b"Helvetica"),
-        b"Helvetica-Oblique" | b"Helvetica-Italic" | b"Arial-Italic" => (&HELVETICA, b"Helvetica"),
-        b"Helvetica-Bold" | b"Arial-Bold" => (&HELVETICA_BOLD, b"Helvetica-Bold"),
-        b"Helvetica-BoldOblique" | b"Arial-BoldItalic" => (&HELVETICA_BOLD, b"Helvetica-Bold"),
-        b"Times-Roman" | b"TimesNewRoman" => (&TIMES_ROMAN, b"Times-Roman"),
-        b"Times-Bold" | b"TimesNewRoman-Bold" => (&TIMES_BOLD, b"Times-Bold"),
-        b"Times-Italic" | b"TimesNewRoman-Italic" => (&TIMES_ITALIC, b"Times-Italic"),
-        b"Times-BoldItalic" | b"TimesNewRoman-BoldItalic" => {
-            (&TIMES_BOLD_ITALIC, b"Times-BoldItalic")
-        }
+    ACCEPTED
+        .iter()
+        .find(|(spelling, _)| *spelling == base)
+        .map(|(_, style)| *style)
+}
+
+/// The width table for a style, and the name [`WIN_ANSI_39`] and [`WIN_ANSI_96`] key on.
+///
+/// `None` for the Courier styles, which are monospaced and need no table — [`width_of`] answers
+/// them before this is reached.
+fn table_of(style: &[u8]) -> Option<(&'static [u16; 95], &'static [u8])> {
+    let table: (&'static [u16; 95], &'static [u8]) = match style {
+        b"Helvetica" | b"Helvetica-Oblique" => (&HELVETICA, b"Helvetica"),
+        b"Helvetica-Bold" | b"Helvetica-BoldOblique" => (&HELVETICA_BOLD, b"Helvetica-Bold"),
+        b"Times-Roman" => (&TIMES_ROMAN, b"Times-Roman"),
+        b"Times-Bold" => (&TIMES_BOLD, b"Times-Bold"),
+        b"Times-Italic" => (&TIMES_ITALIC, b"Times-Italic"),
+        b"Times-BoldItalic" => (&TIMES_BOLD_ITALIC, b"Times-BoldItalic"),
         _ => return None,
     };
     Some(table)
@@ -212,21 +286,23 @@ pub fn width_of(base: &[u8], code: u32, encoding: BaseEncoding) -> Option<f64> {
     if !(FIRST_CODE..=LAST_CODE).contains(&code) {
         return None;
     }
+    // CANONICALISED FIRST, AND EVERY LATER TEST KEYS ON THE STYLE. `DISPUTED` used to be
+    // consulted against the raw `/BaseFont`, above this line, so every alias spelling walked
+    // past it -- see `ACCEPTED` for what that measured.
+    let style = style_of(base)?;
+
     // Courier is monospaced, so it needs no table and no encoding question.
-    if matches!(
-        base,
-        b"Courier" | b"Courier-Bold" | b"Courier-Oblique" | b"Courier-BoldOblique"
-    ) {
+    if style.starts_with(b"Courier") {
         return Some(f64::from(COURIER_WIDTH));
     }
-    // EXCLUDED BEFORE ANYTHING ELSE. See `DISPUTED`.
+    // EXCLUDED BEFORE THE TABLE IS READ. See `DISPUTED`.
     if DISPUTED
         .iter()
-        .any(|(disputed, at)| *disputed == base && *at == code)
+        .any(|(disputed, at)| *disputed == style && *at == code)
     {
         return None;
     }
-    let (table, canonical) = family(base)?;
+    let (table, canonical) = table_of(style)?;
 
     // THE TWO CODES WHERE THE ENCODING DECIDES THE GLYPH. See the module header.
     if encoding == BaseEncoding::WinAnsi {
@@ -242,6 +318,9 @@ pub fn width_of(base: &[u8], code: u32, encoding: BaseEncoding) -> Option<f64> {
         }
     }
 
-    let at = usize::try_from(code - FIRST_CODE).ok()?;
+    // CHECKED, though the range guard above already makes it impossible. An arithmetic
+    // overflow here would be a panic in library code rather than a `None`, and the guard is
+    // four lines away from the subtraction that depends on it.
+    let at = usize::try_from(code.checked_sub(FIRST_CODE)?).ok()?;
     table.get(at).map(|width| f64::from(*width))
 }

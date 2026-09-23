@@ -34,8 +34,8 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    Glyph, check_form_sharing, check_marked_content, check_type_three_procedure, glyphs_in,
-    remove_glyphs, remove_glyphs_across,
+    FormsReached, Glyph, check_form_sharing, check_marked_content, check_type_three_procedure,
+    glyphs_in, remove_glyphs, remove_glyphs_across,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -340,13 +340,29 @@ impl Steps for QpdfRedaction {
         // THE MARKED-CONTENT RULE, per stream, because a `Span` indexes the stream it was read
         // from. The page's own content first, then each form the removal reaches -- a form
         // carries its own `BDC`s and its own offsets.
-        check_marked_content(contents.bytes(), &cut, None)?;
-        let mut reached_forms: Vec<u64> =
+        //
+        // EACH CALL IS ALSO TOLD WHICH `Do`s DRAW A REACHED FORM. A span in the page stream can
+        // cover glyphs that live in a form, and without that the page call saw no removed glyph
+        // of its own and returned early over a `/ActualText` wrapping the whole thing. See
+        // `FormsReached`.
+        let reached_forms: BTreeSet<u64> =
             cut.iter().filter_map(|glyph| glyph.source.form).collect();
-        reached_forms.sort_unstable();
-        reached_forms.dedup();
-        for form in reached_forms {
-            check_marked_content(&find_form(&resources, form)?, &cut, Some(form))?;
+        let reached_names = form_names_for(&resources, &reached_forms)?;
+        check_marked_content(
+            contents.bytes(),
+            &cut,
+            None,
+            &FormsReached::Named(&reached_names),
+        )?;
+        for form in &reached_forms {
+            // UNRESOLVED FOR A FORM'S OWN STREAM: resolving a `Do` inside it needs that form's
+            // `/Resources`, which this seam does not carry down.
+            check_marked_content(
+                &find_form(&resources, *form)?,
+                &cut,
+                Some(*form),
+                &FormsReached::Unresolved,
+            )?;
         }
 
         let mut streams: Vec<StreamId> = cut
@@ -817,6 +833,32 @@ fn find_form(resources: &PageResources<'_>, id: u64) -> Result<Vec<u8>> {
                 .to_owned(),
         )
     })
+}
+
+/// The page-resource names whose Form XObject is one of `wanted`.
+///
+/// [`check_marked_content`] asks its questions about a stream's own byte offsets, so it needs
+/// the `Do` operand as the content stream spells it, not an object identity. This is the one
+/// place that crossing is made, and it is made by object identity on both sides -- the name is
+/// what the stream says and `pack(entry.object()?)` is what it means, per `core/CLAUDE.md`.
+fn form_names_for(
+    resources: &PageResources<'_>,
+    wanted: &BTreeSet<u64>,
+) -> Result<BTreeSet<Vec<u8>>> {
+    const XOBJECT: Name = Name::literal(b"/XObject\0");
+    let mut names = BTreeSet::new();
+    if wanted.is_empty() {
+        return Ok(names);
+    }
+    let xobjects = resources.dictionary().key(&XOBJECT);
+    for key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
+        let entry = xobjects.key(&Name::from_stripped(&key)?);
+        if entry.type_code() == object_type::STREAM && wanted.contains(&pack(entry.object()?)) {
+            // WITHOUT THE LEADING SLASH, which is how `Operand::Name` carries a decoded name.
+            names.insert(key.strip_prefix(b"/".as_slice()).unwrap_or(&key).to_vec());
+        }
+    }
+    Ok(names)
 }
 
 /// The handle for the form with this identity.

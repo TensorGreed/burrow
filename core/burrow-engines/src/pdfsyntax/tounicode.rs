@@ -74,6 +74,26 @@ const MAX_INSERTS: usize = MAX_ENTRIES * 4;
 /// lossily, which is the direction that cannot silently alter text.
 const MAX_DESTINATIONS_PER_CODE: usize = 8;
 
+/// The most destination bytes one CMap may hold, across every code and every duplicate.
+///
+/// # The count was bounded and the bytes were not
+///
+/// [`MAX_ENTRIES`], [`MAX_INSERTS`] and [`MAX_DESTINATIONS_PER_CODE`] all bound *how many*
+/// mappings there are. None of them bounds how long one destination is, and a `bfrange` clones
+/// its destination once per code — so `<0000> <FFFF> <…5,000 UTF-16 units…>` is 65,536 copies
+/// of 10 kB from one line of source text.
+///
+/// Measured by a security review, release build: a program of four such ranges is 80 kB, which
+/// Flate-compresses to **161 bytes**, and drove `redact::page` to a peak RSS of **2,525 MB**
+/// with a `narrowed()` output of 5.25 GB — returning `Ok`, with `Limits::DEFAULT`'s 1 GiB
+/// `max_memory_bytes` never firing, from a 1,038-byte PDF. An OOM kill of the tab with no
+/// signal at all.
+///
+/// Four mebibytes, because a real `/ToUnicode` destination is one to four UTF-16 units and a
+/// legitimate CMap mapping every one of [`MAX_ENTRIES`] codes to four of them is 512 kB. This
+/// leaves eight times that and refuses the program that is buying memory with a range.
+const MAX_DESTINATION_BYTES: usize = 4 << 20;
+
 /// A `/ToUnicode` CMap, read.
 #[derive(Debug, Default)]
 pub struct ToUnicode {
@@ -89,13 +109,15 @@ pub struct ToUnicode {
     /// How many mappings have been performed, which is not how many are held. See
     /// [`MAX_INSERTS`].
     inserts: usize,
+    /// How many destination bytes are held, against `MAX_DESTINATION_BYTES`.
+    destination_bytes: usize,
 }
 
 impl ToUnicode {
     /// How many **codes** the CMap maps.
     ///
     /// Not how many entries it carries: a code named twice is one code. The distinction is the
-    /// subject of [`MAX_DESTINATIONS_PER_CODE`].
+    /// subject of `MAX_DESTINATIONS_PER_CODE`, which is private.
     #[must_use]
     pub fn len(&self) -> usize {
         self.map.len()
@@ -290,6 +312,14 @@ impl ToUnicode {
             return Err(Error::Unsupported(
                 "a /ToUnicode CMap gives one code more destinations than burrow will carry"
                     .to_owned(),
+            ));
+        }
+        // THE BYTES, NOT JUST THE COUNT. See `MAX_DESTINATION_BYTES`: every other ceiling here
+        // bounds how many mappings there are, and a `bfrange` buys memory with how long one is.
+        self.destination_bytes = self.destination_bytes.saturating_add(destination.len());
+        if self.destination_bytes > MAX_DESTINATION_BYTES {
+            return Err(Error::Unsupported(
+                "a /ToUnicode CMap holds more destination text than burrow will carry".to_owned(),
             ));
         }
         destinations.push((digits, destination));
@@ -739,6 +769,41 @@ endbfchar
         assert!(
             text.contains("2 beginbfchar"),
             "the section must count the entries it writes, not the codes: {text}"
+        );
+    }
+
+    #[test]
+    fn a_range_buying_memory_with_a_long_destination_is_refused() {
+        use super::MAX_DESTINATION_BYTES;
+
+        // THE 161-BYTE FILE. A security review measured this shape at 2,525 MB peak RSS and a
+        // 5.25 GB narrowed output, returning `Ok` under the default ceilings. The per-code and
+        // per-entry ceilings all passed it: it is 65,536 codes with one destination each, and
+        // the whole cost is in how long that destination is.
+        let long = "0041".repeat(5_000);
+        let program = format!("1 beginbfrange\n<0000> <FFFF> <{long}>\nendbfrange\n");
+        let error = ToUnicode::parse(program.as_bytes()).expect_err("past the byte ceiling");
+        assert!(
+            format!("{error}").contains("more destination text than burrow will carry"),
+            "got: {error}"
+        );
+
+        // AND THE NEAR-MISS, so the ceiling is not simply "refuse every wide range". The same
+        // range with an ordinary one-unit destination maps the whole two-byte space -- the
+        // largest legitimate CMap there is -- and must still parse.
+        //
+        // The destination has to be `<0000>`, and that is a fact about `bfrange` rather than
+        // about this ceiling: the destination's last unit is incremented per code, so anything
+        // higher runs past U+FFFF over a range this wide and is refused for **that** reason.
+        // Two earlier spellings of this near-miss were refused by that rule instead, which
+        // would have left this test passing while measuring nothing about the byte ceiling.
+        let real = "1 beginbfrange\n<0000> <FFFF> <0000>\nendbfrange\n";
+        let read = ToUnicode::parse(real.as_bytes()).expect("the whole two-byte space is ordinary");
+        assert_eq!(read.len(), 65_536);
+        assert!(
+            read.destination_bytes <= MAX_DESTINATION_BYTES,
+            "{} bytes held, against a ceiling of {MAX_DESTINATION_BYTES}",
+            read.destination_bytes
         );
     }
 

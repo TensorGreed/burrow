@@ -37,8 +37,12 @@ generated=$(find "$out" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')
 committed=$(find "$root/tests/redaction/fixtures" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')
 
 # THE EXPECTED COUNT, not a non-zero gate. A generator that wrote four files prints `OK` just
-# as loudly as one that wrote thirty-nine, and "4 of 39" reads exactly like success.
-expected_generated=39
+# as loudly as one that wrote forty-two, and "4 of 42" reads exactly like success.
+#
+# 39 -> 42 when the /ActualText channel gained its three: the span and the glyphs both on the
+# page, the span on the page with the glyphs in a form, and both inside a form. This gate is
+# what noticed they had been added, which is the job.
+expected_generated=42
 expected_committed=4
 if [ "$generated" -ne "$expected_generated" ] || [ "$committed" -ne "$expected_committed" ]; then
     echo "redaction corpus: $generated generated (expected $expected_generated), \

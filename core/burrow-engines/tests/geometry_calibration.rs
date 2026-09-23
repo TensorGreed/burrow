@@ -74,6 +74,35 @@ fn form_shapes() -> Vec<(String, Vec<u8>)> {
     // 1. A form with its own /Font, DIFFERENT from the page's. The shape the leak went through:
     //    resolving against the page places every glyph at one point.
     vec![
+        // 0. A font with NO /Widths whose `/Encoding` is a DICTIONARY rather than a name, drawing
+        //    code 39 -- the one code where `WinAnsiEncoding` (quotesingle, 191) and
+        //    `StandardEncoding` (quoteright, 222) disagree.
+        //
+        //    `base_encoding`'s `DICTIONARY` arm had no witness: every fixture wrote the name
+        //    form, and a security review's mutation making the dictionary always answer
+        //    `Standard` survived the entire suite. Under it burrow advances 222 where PDFium
+        //    advances 191 -- the same silent drift as an uncalibrated width, and the reason it
+        //    belongs against PDFium's own origins rather than against a number written here.
+        (
+            "encoding-dictionary-no-widths".to_owned(),
+            assemble(&[
+                "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >> \
+             /Contents 4 0 R >>"
+                    .to_owned(),
+                stream("", "q 1 0 0 1 0 0 cm /Fm0 Do Q\n"),
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica \
+                  /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding >> >>"
+                    .to_owned(),
+                stream(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+                 /Resources << /Font << /F1 5 0 R >> >>",
+                    "BT /F1 24 Tf 72 700 Td ('''') Tj ET\n",
+                ),
+            ]),
+        ),
         (
             "form-with-its-own-font".to_owned(),
             assemble(&[
@@ -235,6 +264,7 @@ fn burrows_placement_agrees_with_pdfium_on_every_document_that_draws_a_form() {
     let mut examined = 0usize;
     let mut with_forms = 0usize;
     let mut empty = Vec::new();
+    let mut substituted = Vec::new();
     let mut refused = Vec::new();
     let mut disagreed = Vec::new();
     let mut compared = 0usize;
@@ -256,6 +286,23 @@ fn burrows_placement_agrees_with_pdfium_on_every_document_that_draws_a_form() {
         if oracle.is_empty() {
             // A COMPARISON OVER ZERO CHARACTERS AGREES WITH EVERYTHING. Counted, not passed.
             empty.push(name.clone());
+            continue;
+        }
+        // AN `/ActualText` SPAN MAKES THE ORACLE UNCOMPARABLE, and that is a fact about the
+        // instrument rather than about the document. PDFium replaces a marked-content span's
+        // decoded text with the `/ActualText` string and reports **every** character of it at
+        // the span's starting origin -- 17 characters at one point over 16 glyphs, on
+        // `09-actualtext.pdf`. Comparing burrow's per-glyph origins against that measures the
+        // substitution, not the placement.
+        //
+        // Skipped and named rather than tolerated: these documents are refused by
+        // `marked-content-carries-text` before any redaction reads their geometry, so nothing
+        // downstream depends on the comparison this cannot make.
+        if bytes
+            .windows(b"/ActualText".len())
+            .any(|window| window == b"/ActualText")
+        {
+            substituted.push(name.clone());
             continue;
         }
         let walked = match burrow_engines::glyphs_on_first_page(bytes, &support::walk_options()) {
@@ -300,6 +347,16 @@ fn burrows_placement_agrees_with_pdfium_on_every_document_that_draws_a_form() {
         candidates.len(),
         synthetic.len()
     );
+    if !substituted.is_empty() {
+        eprintln!(
+            "  the oracle substitutes /ActualText on {} document(s), so per-glyph origins are \
+             not comparable:",
+            substituted.len()
+        );
+        for name in &substituted {
+            eprintln!("    {name}");
+        }
+    }
     if !empty.is_empty() {
         eprintln!("  PDFium reads no text on {} document(s):", empty.len());
         for name in &empty {

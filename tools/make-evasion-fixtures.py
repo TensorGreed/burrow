@@ -552,6 +552,115 @@ def nearmiss_nested_forms_no_oc() -> bytes:
 
 # ===========================================================================================
 
+def _form_drawing_the_secret(pdf: Pdf, helv: int) -> int:
+    """A Form XObject drawing the canary at the region's origin, in the page's Helvetica."""
+    return pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 "
+        + f"{PAGE_W} {PAGE_H}".encode()
+        + b"] /Resources << /Font << /Helv "
+        + str(helv).encode()
+        + b" 0 R >> >>",
+        b"BT /Helv "
+        + str(SECRET_SIZE).encode()
+        + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-FORM"))
+        + b" Tj ET\n",
+    )
+
+
+def evade_actualtext_around_a_form() -> bytes:
+    """The `/ActualText` is in the PAGE stream; the glyphs it covers are in a Form XObject.
+
+    The cross-stream case. `check_marked_content` is called once per stream, and each call sees
+    only its own stream's removed glyphs -- so a `BDC` on the page wrapping a `Do` was seen by
+    neither: the page call had no removed glyph of its own, and the form's stream has no `BDC`.
+
+    Measured before the fix: the operation returned `Ok`, the form's glyphs were removed, and
+    both PDFium and `pdftotext` read the carrier off the output. Marked content descends through
+    `Do`; the walk did not.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = _form_drawing_the_secret(pdf, helv)
+    content = (
+        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-FORM")) + b" >> BDC\n"
+        b"/X1 Do\n"
+        b"EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_actualtext_inside_a_form() -> bytes:
+    """The `/ActualText` and the glyphs it covers are both inside a Form XObject.
+
+    The twin of `evade-actualtext-around-a-form`, one level in. It exists because the per-form
+    `check_marked_content` pass could be deleted outright with the whole suite green: every
+    fixture kept its `BDC` in the page stream, so the form branch was unverified code on a leak
+    path. A security review measured that as a surviving mutation.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 "
+        + f"{PAGE_W} {PAGE_H}".encode()
+        + b"] /Resources << /Font << /Helv "
+        + str(helv).encode()
+        + b" 0 R >> >>",
+        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-IN-FORM")) + b" >> BDC\n"
+        b"BT /Helv "
+        + str(SECRET_SIZE).encode()
+        + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-IN-FORM"))
+        + b" Tj ET\n"
+        b"EMC\n",
+    )
+    content = b"/X1 Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_actualtext_around_an_untouched_form() -> bytes:
+    """The same shape, with the `/ActualText` span around a form the region never reaches.
+
+    The twin that stops the rule being "refuse any page whose content has a `/ActualText`".
+    The covered form draws the keep line, well outside the region; the canary is drawn by the
+    page itself, outside the span. A check that refuses this refuses most tagged documents.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    elsewhere = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 "
+        + f"{PAGE_W} {PAGE_H}".encode()
+        + b"] /Resources << /Font << /Helv "
+        + str(helv).encode()
+        + b" 0 R >> >>",
+        keep_line_ops(),
+    )
+    content = (
+        b"/Span << /ActualText " + literal(KEEP_LINE) + b" >> BDC\n"
+        b"/X1 Do\n"
+        b"EMC\n"
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-NEARMISS"))
+        + b" Tj ET\n"
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(elsewhere).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 CASES: list[tuple[str, str, str]] = [
     # (filename stem, refusal it probes, expected verdict)
     ("evade-image-in-form", "image", "refuse"),
@@ -569,6 +678,9 @@ CASES: list[tuple[str, str, str]] = [
     ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot", "handle"),
     ("evade-oc-two-levels-down", "optional content", "refuse"),
     ("nearmiss-nested-forms-no-oc", "optional content", "handle"),
+    ("evade-actualtext-around-a-form", "/ActualText", "refuse"),
+    ("evade-actualtext-inside-a-form", "/ActualText", "refuse"),
+    ("nearmiss-actualtext-around-an-untouched-form", "/ActualText", "handle"),
 ]
 
 BUILDERS = {
@@ -587,6 +699,9 @@ BUILDERS = {
     "nearmiss-structparents-but-nothing-in-region": nearmiss_structparents_but_nothing_in_region,
     "evade-oc-two-levels-down": evade_oc_two_levels_down,
     "nearmiss-nested-forms-no-oc": nearmiss_nested_forms_no_oc,
+    "evade-actualtext-around-a-form": evade_actualtext_around_a_form,
+    "evade-actualtext-inside-a-form": evade_actualtext_inside_a_form,
+    "nearmiss-actualtext-around-an-untouched-form": nearmiss_actualtext_around_an_untouched_form,
 }
 
 

@@ -128,15 +128,15 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     // `CLAUDE.md`: gate on the expected count where that count is knowable.
     //
     // It was 4, with a comment saying the other 39 were held back by the standard-14 refusal.
-    // That refusal is now closed — the metrics are bundled — and 37 documents redact. Leaving
-    // the floor at 4 would have left this test passing over a regression that took 37 back to
+    // That refusal is now closed — the metrics are bundled — and 38 documents redact. Leaving
+    // the floor at 4 would have left this test passing over a regression that took 38 back to
     // 5, which is the whole failure mode the floor exists to catch: "4 of 43" reads as success.
     //
     // A floor rather than an equality, because the six that still refuse are refusals this
     // milestone intends to close, and closing one must not be a test failure.
     assert!(
-        redactions.len() >= 37,
-        "{} documents redacted, and 37 did when this floor was last measured: a refusal widened \
+        redactions.len() >= 38,
+        "{} documents redacted, and 38 did when this floor was last measured: a refusal widened \
          far enough to cover them would take every per-document assertion here to zero while \
          this test still printed a pass",
         redactions.len()

@@ -38,24 +38,43 @@
 
 mod support;
 
-use burrow_engines::pdfsyntax::standard14::{BaseEncoding, FIRST_CODE, LAST_CODE, width_of};
+use burrow_engines::pdfsyntax::standard14::{
+    ACCEPTED, BaseEncoding, DISPUTED, FIRST_CODE, LAST_CODE, width_of,
+};
 use support::char_box_oracle::chars_on_page;
 
 /// The fonts this module tabulates, by `/BaseFont` name.
-const FONTS: [&str; 12] = [
-    "Helvetica",
-    "Helvetica-Bold",
-    "Helvetica-Oblique",
-    "Helvetica-BoldOblique",
-    "Times-Roman",
-    "Times-Bold",
-    "Times-Italic",
-    "Times-BoldItalic",
-    "Courier",
-    "Courier-Bold",
-    "Courier-Oblique",
-    "Courier-BoldOblique",
-];
+/// How many `(spelling, code)` pairs `DISPUTED` excludes across every spelling in `ACCEPTED`.
+///
+/// Not `DISPUTED.len()`: it is keyed on the style, and several spellings share one style, so a
+/// single disputed pair excludes `@` under `Helvetica-Bold` **and** under `Arial-Bold`.
+fn disputed_spellings() -> usize {
+    ACCEPTED
+        .iter()
+        .map(|(_, style)| {
+            DISPUTED
+                .iter()
+                .filter(|(disputed, _)| disputed == style)
+                .count()
+        })
+        .sum()
+}
+
+/// Every `/BaseFont` spelling `width_of` answers for, taken from the module itself.
+///
+/// **Not written out here.** This was a hand-written list of the twelve canonical names while
+/// `width_of` accepted twenty-one spellings, so the nine aliases were never measured — and a
+/// security review found that `/Arial-Bold` drew `@` at a width PDFium disagrees with, while
+/// `/Helvetica-Bold` correctly refused the same glyph. A list beside the thing it is supposed to
+/// mirror is the shape that rots; the person adding an alias is the person who will not update
+/// it. `burrow_engines::pdfsyntax::standard14::ACCEPTED` is now the single source, and adding a
+/// spelling to it adds it to this sweep.
+fn fonts() -> Vec<String> {
+    ACCEPTED
+        .iter()
+        .map(|(spelling, _)| String::from_utf8_lossy(spelling).into_owned())
+        .collect()
+}
 
 /// A one-page document drawing `code` twice at 100 pt, with **no `/Widths`**.
 ///
@@ -63,6 +82,16 @@ const FONTS: [&str; 12] = [
 /// origin and nothing to measure against, and PDFium's box functions carry metric
 /// interpretation the origin does not.
 fn page_drawing(base: &str, encoding: &str, code: u32) -> Vec<u8> {
+    page_drawing_with_encoding(base, &format!("/Encoding /{encoding}"), code)
+}
+
+/// As [`page_drawing`], with the whole `/Encoding` entry written out.
+///
+/// The `/Encoding` **dictionary** form needs it: `base_encoding` has a `DICTIONARY` arm reading
+/// `/BaseEncoding`, every fixture here built the `NAME` form, and a security review's mutation
+/// making that arm always answer `Standard` survived the entire sweep. Two spellings of the
+/// same thing, one of them measured.
+fn page_drawing_with_encoding(base: &str, encoding: &str, code: u32) -> Vec<u8> {
     let byte = u8::try_from(code).expect("a code in 32..=126");
     // Escaped, because `(`, `)` and `\` are the three bytes a literal string cannot carry raw.
     let mut text = Vec::new();
@@ -86,7 +115,7 @@ fn page_drawing(base: &str, encoding: &str, code: u32) -> Vec<u8> {
             "<< /Length {} >>\nstream\n{content}endstream",
             content.len()
         ),
-        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /{encoding} >>"),
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} {encoding} >>"),
     ];
     let mut out = String::from("%PDF-1.7\n");
     let mut offsets = Vec::new();
@@ -136,7 +165,8 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
     let mut excluded = Vec::new();
     let mut disagreed = Vec::new();
 
-    for base in FONTS {
+    let all_fonts = fonts();
+    for base in &all_fonts {
         for (encoding_name, encoding) in [
             ("WinAnsiEncoding", BaseEncoding::WinAnsi),
             ("StandardEncoding", BaseEncoding::Standard),
@@ -171,7 +201,7 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
         "\n  standard-14 calibration: {} font(s) x 2 encoding(s) x {} code(s); \
          {compared} width(s) compared against PDFium, {} unmeasurable, {} deliberately not \
          carried",
-        FONTS.len(),
+        all_fonts.len(),
         LAST_CODE - FIRST_CODE + 1,
         unmeasurable.len(),
         excluded.len()
@@ -192,13 +222,38 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
         }
     }
 
-    // THE EXPECTED COUNT, not a non-zero gate. 12 fonts x 2 encodings x 95 codes is 2,280, and
-    // a run that compared four of them would print `OK` just as loudly.
-    let expected = FONTS.len() * 2 * usize::try_from(LAST_CODE - FIRST_CODE + 1).unwrap();
+    // THE EXACT COUNT, and every residual accounted for by name. This was a 95 %% tolerance,
+    // and a mutation that made `width_of` return `None` for sixty Helvetica codes passed it —
+    // the slack was about 114 widths wide. Both residuals are derivable, so neither needs slack:
+    //
+    //   - `excluded` is exactly the `DISPUTED` pairs, seen once per encoding;
+    //   - `unmeasurable` is exactly code 32, the space, which PDFium does not report as a
+    //     character, seen once per font per encoding.
+    //
+    // With both pinned, `compared` is forced and a silently uncarried width has nowhere to hide.
+    let expected = all_fonts.len() * 2 * usize::try_from(LAST_CODE - FIRST_CODE + 1).unwrap();
+    assert_eq!(
+        excluded.len(),
+        disputed_spellings() * 2,
+        "the not-carried set is exactly `DISPUTED`, once per encoding:\n  {}",
+        excluded.join("\n  ")
+    );
+    assert_eq!(
+        unmeasurable.len(),
+        all_fonts.len() * 2,
+        "the unmeasurable set is exactly code 32 once per font per encoding:\n  {}",
+        unmeasurable.join("\n  ")
+    );
     assert!(
-        compared * 20 >= expected * 19,
-        "only {compared} of {expected} widths were measurable against PDFium; a calibration \
-         that skipped a twentieth of the table is not one"
+        unmeasurable.iter().all(|what| what.ends_with("code 32")),
+        "something other than the space was unmeasurable:\n  {}",
+        unmeasurable.join("\n  ")
+    );
+    assert_eq!(
+        compared,
+        expected - excluded.len() - unmeasurable.len(),
+        "only {compared} of {expected} widths were measurable against PDFium, and the \
+         residuals do not account for the difference"
     );
     assert!(
         disagreed.is_empty(),
@@ -208,8 +263,52 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
     );
 }
 
+#[test]
+fn an_encoding_dictionary_selects_winansi_just_as_the_name_does() {
+    // CODE 39, where `WinAnsiEncoding` has `quotesingle` (191) and `StandardEncoding` has
+    // `quoteright` (222) — the one code where the encoding changes the answer, so the only
+    // place this branch can be measured at all.
+    //
+    // Against PDFium rather than against 191, so the test cannot agree with a table that is
+    // itself wrong; that is the whole argument of this file.
+    let pdf = page_drawing_with_encoding(
+        "Helvetica",
+        "/Encoding << /BaseEncoding /WinAnsiEncoding >>",
+        39,
+    );
+    let chars: Vec<_> = chars_on_page(&pdf, 0)
+        .into_iter()
+        .filter(|char| !char.generated)
+        .collect();
+    assert!(
+        chars.len() >= 2,
+        "PDFium must read both characters for there to be an advance to measure"
+    );
+    let theirs = (chars[1].origin.0 - chars[0].origin.0) * 10.0;
+    let mine = f64::from(WIN_ANSI_39_HELVETICA);
+    assert!(
+        (mine - theirs).abs() <= 0.5,
+        "an /Encoding dictionary must select WinAnsi as the name form does: the override is \
+         {mine} and PDFium measures {theirs:.1}"
+    );
+}
+
+/// `WinAnsiEncoding`'s width at code 39 in Helvetica, named here so the test above says which
+/// branch it is asserting rather than only that two numbers agree.
+const WIN_ANSI_39_HELVETICA: u16 = 191;
+
 /// A one-page document naming `base` with the `/Widths` fragment `widths` — empty for none.
 fn page_with(base: &str, widths: &str) -> Vec<u8> {
+    page_with_encoding(base, widths, "/Encoding /WinAnsiEncoding")
+}
+
+/// As [`page_with`], with the `/Encoding` entry written out.
+///
+/// The `/Encoding` **dictionary** form needs this: `base_encoding` has a `DICTIONARY` arm that
+/// reads `/BaseEncoding`, and nothing built one, so a mutation making that arm always answer
+/// `Standard` survived a security review's whole sweep. The two forms mean the same thing to a
+/// reader and only one of them was ever measured.
+fn page_with_encoding(base: &str, widths: &str, encoding: &str) -> Vec<u8> {
     let content = "BT /F1 100 Tf 50 400 Td (AA) Tj ET\n";
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
@@ -221,10 +320,7 @@ fn page_with(base: &str, widths: &str) -> Vec<u8> {
             "<< /Length {} >>\nstream\n{content}endstream",
             content.len()
         ),
-        format!(
-            "<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding \
-             {widths} >>"
-        ),
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} {encoding} {widths} >>"),
     ];
     let mut out = String::from("%PDF-1.7\n");
     let mut offsets = Vec::new();

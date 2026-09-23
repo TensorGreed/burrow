@@ -74,6 +74,8 @@
 //! `tests/glyph_geometry.rs` pins that shape. The `WMode` refusal covers the other case, and
 //! saying so here is the difference between a bound and a hope.
 
+use std::collections::BTreeSet;
+
 use burrow_types::{Error, Result};
 
 use super::ops::{Operand, Operation, Span};
@@ -1121,9 +1123,12 @@ const TEXT_CARRYING_KEYS: [&[u8]; 2] = [b"ActualText", b"Alt"];
 ///
 /// [`Refusal::MarkedContentCarriesText`] when a removed glyph is inside such a span, and
 /// whatever reading the operations failed with.
-pub fn check_marked_content(content: &[u8], remove: &[Glyph], stream: Option<u64>) -> Result<()> {
-    use std::collections::BTreeSet;
-
+pub fn check_marked_content(
+    content: &[u8],
+    remove: &[Glyph],
+    stream: Option<u64>,
+    draws: &FormsReached<'_>,
+) -> Result<()> {
     use super::ops::operations;
 
     // ONLY THIS STREAM'S GLYPHS. A `Span` indexes the stream it was read from, so comparing one
@@ -1134,7 +1139,20 @@ pub fn check_marked_content(content: &[u8], remove: &[Glyph], stream: Option<u64
         .filter(|glyph| glyph.source.form == stream)
         .map(|glyph| glyph.source.operation)
         .collect();
-    if mine.is_empty() {
+    // AND `Do` IS A REMOVAL SITE TOO, which is the hole this signature grew a parameter to
+    // close. Marked content descends through `Do`; this walk does not. A `BDC` in the **page**
+    // stream wrapping a `Do` whose form holds the removed glyphs was seen by neither call: the
+    // page call's `mine` was empty, because every removed glyph had `form: Some(id)`, and the
+    // form call walked a stream with no `BDC` in it.
+    //
+    // Measured on a fixture a security review built from this repo's own generators: the
+    // operation returned `Ok`, the form's glyphs came out, and both PDFium and `pdftotext` read
+    // `BURROW-CARRIER-09` off the output. Spike 0006 channel 9, reached by putting the covered
+    // text in a Form XObject — which `07-form-xobject.pdf` shows is an ordinary producer shape.
+    //
+    // So a stream with no removed glyphs of its own still has something to answer for when it
+    // draws a form that has.
+    if mine.is_empty() && draws.is_empty() {
         return Ok(());
     }
 
@@ -1157,7 +1175,9 @@ pub fn check_marked_content(content: &[u8], remove: &[Glyph], stream: Option<u64
             }
             _ => {}
         }
-        if !mine.contains(&operation.span) {
+        let removes_here = mine.contains(&operation.span)
+            || (operation.operator == b"Do" && draws.reached(&operation));
+        if !removes_here {
             continue;
         }
         // THE STRONGEST CLAIM ANY OPEN SPAN SUPPORTS, and the two are reported apart. A span
@@ -1180,6 +1200,52 @@ pub fn check_marked_content(content: &[u8], remove: &[Glyph], stream: Option<u64
         }
     }
     Ok(())
+}
+
+/// Which `Do` operations in a stream draw a form the removal reaches.
+///
+/// [`check_marked_content`] needs this because marked content descends through `Do` and its own
+/// walk does not: a span opened in one stream covers glyphs drawn from another. This module
+/// resolves nothing, so the answer is supplied by the caller — or declared unavailable, which is
+/// a different thing and says so.
+#[derive(Debug, Clone, Copy)]
+pub enum FormsReached<'a> {
+    /// The resource names in this stream whose form the removal reaches, resolved by the caller.
+    ///
+    /// An empty set means "this stream draws no form the removal touches", not "unknown".
+    Named(&'a BTreeSet<Vec<u8>>),
+    /// Every `Do` in this stream must be treated as drawing one.
+    ///
+    /// **For a form's own stream**, where resolving a nested `Do` would need that form's
+    /// `/Resources` and this module has none. Nested forms are refused today by `form-vanished`
+    /// in the qpdf handle lookup, and this does not lean on that: a defect is not a control, and
+    /// relying on one for a leak boundary is how it becomes load-bearing before anybody notices
+    /// it was a defect.
+    Unresolved,
+}
+
+impl FormsReached<'_> {
+    /// Whether this stream draws nothing the removal reaches, so a stream with no removed glyphs
+    /// of its own has nothing to answer for.
+    ///
+    /// [`Self::Unresolved`] is never empty: not knowing is not the same as knowing there is none.
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Named(names) => names.is_empty(),
+            Self::Unresolved => false,
+        }
+    }
+
+    /// Whether this `Do` draws a form the removal reaches.
+    fn reached(&self, operation: &Operation) -> bool {
+        match self {
+            Self::Named(names) => operation.operands.iter().any(|operand| match operand {
+                Operand::Name { value, .. } => names.contains(value),
+                _ => false,
+            }),
+            Self::Unresolved => true,
+        }
+    }
 }
 
 /// What an open marked-content span was found to carry.
@@ -3664,6 +3730,12 @@ mod tests {
     mod marked_content_probes {
         use super::{Fake, check_marked_content, glyphs_in};
 
+        /// A stream that draws no form the removal reaches — the ordinary case for these
+        /// probes, whose fixtures draw their glyphs inline.
+        fn nothing_drawn() -> std::collections::BTreeSet<Vec<u8>> {
+            std::collections::BTreeSet::new()
+        }
+
         /// The glyphs `content` draws, all of them, from the caller's own stream.
         fn all_glyphs(content: &[u8]) -> Vec<super::super::Glyph> {
             glyphs_in(content, &Fake::new()).expect("the fixture walks")
@@ -3677,7 +3749,12 @@ mod tests {
         #[track_caller]
         fn assert_refused_by(content: &[u8], rule: super::Refusal) {
             let glyphs = all_glyphs(content);
-            match check_marked_content(content, &glyphs, None) {
+            match check_marked_content(
+                content,
+                &glyphs,
+                None,
+                &super::super::FormsReached::Named(&nothing_drawn()),
+            ) {
                 Err(error) => assert!(
                     rule.caught(&error),
                     "refused, but by a different rule: wanted `{}`, got {error:?}",
@@ -3691,7 +3768,12 @@ mod tests {
         #[track_caller]
         fn assert_allowed(content: &[u8]) {
             let glyphs = all_glyphs(content);
-            if let Err(error) = check_marked_content(content, &glyphs, None) {
+            if let Err(error) = check_marked_content(
+                content,
+                &glyphs,
+                None,
+                &super::super::FormsReached::Named(&nothing_drawn()),
+            ) {
                 panic!("expected no refusal, got {error:?}");
             }
         }
@@ -3754,7 +3836,15 @@ mod tests {
                 2,
                 "the fixture must draw exactly the two glyphs outside the span"
             );
-            assert!(check_marked_content(content, &outside, None).is_ok());
+            assert!(
+                check_marked_content(
+                    content,
+                    &outside,
+                    None,
+                    &super::super::FormsReached::Named(&nothing_drawn())
+                )
+                .is_ok()
+            );
         }
 
         #[test]
@@ -3764,6 +3854,70 @@ mod tests {
                 b"/Span << /ActualText (secret) >> BDC /P << /MCID 0 >> BDC EMC \
                   BT /F1 12 Tf (AB) Tj ET EMC",
                 super::Refusal::MarkedContentCarriesText,
+            );
+        }
+
+        #[test]
+        fn an_inner_span_left_open_does_not_mask_the_carrying_outer_one() {
+            // THE PROBE THAT WAS MISSING, and a security review measured its absence: mutating
+            // `open.contains(&Carried::Text)` to `open.last() == Some(&Carried::Text)` --
+            // "only the innermost span counts" -- survived the entire suite. The nesting probe
+            // above closes the inner span before the glyph, so `last()` is still the carrier
+            // there and the two spellings cannot be told apart by it.
+            //
+            // `/Span << /ActualText … >> BDC /P << /MCID 0 >> BDC  BT … Tj ET  EMC EMC` is the
+            // commonest shape in a tagged PDF there is, and under that mutation it leaks.
+            assert_refused_by(
+                b"/Span << /ActualText (secret) >> BDC /P << /MCID 0 >> BDC \
+                  BT /F1 12 Tf (AB) Tj ET EMC EMC",
+                super::Refusal::MarkedContentCarriesText,
+            );
+        }
+
+        #[test]
+        fn an_inner_span_left_open_does_not_mask_an_unresolved_outer_one() {
+            // The same, for the other rule, so neither can regress to `last()`.
+            assert_refused_by(
+                b"/OC /MC0 BDC /P << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC EMC",
+                super::Refusal::MarkedContentPropertiesUnresolved,
+            );
+        }
+
+        #[test]
+        fn a_do_inside_a_carrying_span_is_a_removal_site() {
+            // THE CROSS-STREAM CASE, at the unit level. The glyphs are not in this stream at
+            // all -- `remove` is empty for it -- and the span still has to answer for the `Do`
+            // it wraps. Measured as a working leak before this existed.
+            let content = b"/Span << /ActualText (secret) >> BDC /X1 Do EMC";
+            let names: std::collections::BTreeSet<Vec<u8>> = [b"X1".to_vec()].into_iter().collect();
+            let error = check_marked_content(
+                content,
+                &[],
+                None,
+                &super::super::FormsReached::Named(&names),
+            )
+            .expect_err("a span wrapping a reached form must refuse");
+            assert!(
+                super::Refusal::MarkedContentCarriesText.caught(&error),
+                "{error:?}"
+            );
+        }
+
+        #[test]
+        fn a_do_drawing_a_form_the_removal_never_reaches_is_not_a_removal_site() {
+            // The near-miss: the same page, with the removal touching a different form. A rule
+            // that refused every `Do` under a carrying span would pass the test above and
+            // refuse every tagged document that draws a logo inside a tagged span.
+            let content = b"/Span << /ActualText (secret) >> BDC /X1 Do EMC /X2 Do";
+            let names: std::collections::BTreeSet<Vec<u8>> = [b"X2".to_vec()].into_iter().collect();
+            assert!(
+                check_marked_content(
+                    content,
+                    &[],
+                    None,
+                    &super::super::FormsReached::Named(&names),
+                )
+                .is_ok()
             );
         }
 
