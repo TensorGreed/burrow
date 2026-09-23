@@ -142,7 +142,7 @@ fn a_font_other_pages_use_is_retained_and_the_count_names_how_many() {
         height: 120.0,
     };
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    let (out, report) = burrow_engines::redact_probe::redact_page(&pdf, 0, redacted, region)
+    let (out, report) = support::redact_page(&pdf, 0, redacted, region)
         .expect("a four-page document redacted on its first page");
 
     assert!(out.starts_with(b"%PDF"));
@@ -183,8 +183,8 @@ fn redacting_every_page_leaves_nothing_to_disclose() {
         height: 120.0,
     };
     let redacted: BTreeSet<usize> = (0..4).collect();
-    let (out, report) = burrow_engines::redact_probe::redact_page(&pdf, 0, redacted, region)
-        .expect("every page redacted");
+    let (out, report) =
+        support::redact_page(&pdf, 0, redacted, region).expect("every page redacted");
 
     // THE PAGES THE OPERATION DID NOT EDIT, READ BACK. This assertion is the one that was
     // missing, and its absence is how a real defect passed: `codes_still_drawn` read one
@@ -241,8 +241,8 @@ fn the_count_can_never_exceed_the_pages_that_exist() {
             height: 120.0,
         };
         let redacted: BTreeSet<usize> = [0].into_iter().collect();
-        let (_, report) = burrow_engines::redact_probe::redact_page(&pdf, 0, redacted, region)
-            .expect("a document of this many pages");
+        let (_, report) =
+            support::redact_page(&pdf, 0, redacted, region).expect("a document of this many pages");
         for font in &report.fonts {
             assert!(
                 font.also_used_by < pages,

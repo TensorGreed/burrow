@@ -225,6 +225,37 @@ pub enum Expected {
         /// How many pages each input added, in the order they were appended.
         contributions: Vec<u64>,
     },
+
+    /// The same pages came out as went in, displaying as `rotations` says, and the region that
+    /// was asked about no longer has glyphs in it.
+    ///
+    /// # The name is the promise, and `Redacted` would have been a different one
+    ///
+    /// **`RegionCleared` says what was checked.** A variant called `Redacted` would be read as
+    /// *the secret is gone*, and that is the one thing this cannot say: the secret may survive
+    /// in the embedded font program, on the unreachable catalogue, or as pixels — all of which
+    /// ADR 0029 §7 **discloses** precisely because no read-back can turn them into assertions.
+    ///
+    /// # What this variant covers here, and what covers the rest
+    ///
+    /// This one carries the half every operation shares: the page count and the `/Rotate`
+    /// vector. The region check itself is `burrow_engines::redact_verify`, which needs the
+    /// page's glyphs, its fonts' mappings and its dictionary keys — three reads no other
+    /// operation has ever wanted, so widening [`OutputReader`] for them would make four
+    /// implementors grow methods they never call.
+    ///
+    /// **`redact` cannot return bytes without both.** The engine's only path to a `Vec<u8>`
+    /// runs the region check, and this runs after it.
+    ///
+    /// **Undetectable:** everything §6 and `redact_verify`'s header list — that the secret is
+    /// absent, that the font no longer describes the removed run, that the region is visually
+    /// blank, that an annotation intersecting the region is gone, and that text outside the
+    /// region is untouched beyond these two numbers. A page whose text reflowed has the same
+    /// count and the same rotation.
+    RegionCleared {
+        /// Every page's `/Rotate` as written, in page order, read before the redaction.
+        rotations: Vec<i64>,
+    },
 }
 
 impl Expected {
@@ -239,7 +270,10 @@ impl Expected {
             Self::Rotated { rotations }
             | Self::Reordered { rotations }
             | Self::Split { rotations }
-            | Self::Compressed { rotations } => u64::try_from(rotations.len()).unwrap_or(u64::MAX),
+            | Self::Compressed { rotations }
+            | Self::RegionCleared { rotations } => {
+                u64::try_from(rotations.len()).unwrap_or(u64::MAX)
+            }
             Self::Merged { contributions } => contributions.iter().sum(),
         }
     }
@@ -250,7 +284,8 @@ impl Expected {
             Self::Rotated { rotations }
             | Self::Reordered { rotations }
             | Self::Split { rotations }
-            | Self::Compressed { rotations } => Some(rotations),
+            | Self::Compressed { rotations }
+            | Self::RegionCleared { rotations } => Some(rotations),
             // See the variant's rustdoc: knowing it would cost a second parse of every input.
             Self::Merged { .. } => None,
         }
@@ -263,6 +298,7 @@ impl Expected {
             Self::Reordered { .. } => "reorder",
             Self::Split { .. } => "split",
             Self::Compressed { .. } => "compress",
+            Self::RegionCleared { .. } => "redact",
             Self::Merged { .. } => "merge",
         }
     }

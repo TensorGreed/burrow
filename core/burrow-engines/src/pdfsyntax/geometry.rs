@@ -1524,6 +1524,33 @@ pub trait Resources {
     ///
     /// As [`Self::glyph`].
     fn bytes_per_code(&self, name: &[u8]) -> Result<u8>;
+
+    /// The resources the Form XObject named `name` draws against, or `None` when it declares
+    /// none and inherits the enclosing ones.
+    ///
+    /// # This existed as a comment before it existed as a method, and the gap was a leak
+    ///
+    /// [`Form`]'s own rustdoc says *"each form carries its own `/Resources`"*, `prune` walks
+    /// them and `sharing` walks them — and this walk did not. `draw_form` recursed with the
+    /// **caller's** resolver, so a `Tf /F1` inside a form resolved `/F1` against the **page's**
+    /// `/Font` dictionary.
+    ///
+    /// Measured, with a page `/F1` of zero widths and a form-local `/F1` of real ones: PDFium
+    /// renders twelve characters spanning x=73 to x=233; burrow placed all twelve in a
+    /// zero-width box at x=72. A region over the rendered text reached nothing, the redaction
+    /// returned `Ok`, both verification passes agreed — and **seven characters were still
+    /// drawn inside the rectangle the user selected**. The font surgery then narrowed the page
+    /// font, whose codes had nothing to do with the removal.
+    ///
+    /// **`redact_verify` cannot catch this**, because both passes call the same walk and
+    /// misplace the glyphs identically. It is not the `#111` placement residue ADR 0029 §6
+    /// discloses — that residue is imprecision, and this was a resolution defect PDFium
+    /// disagrees with outright.
+    ///
+    /// # Errors
+    ///
+    /// Whatever resolving the form or its resources failed with.
+    fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>>;
 }
 
 /// Everything `q` saves and `Q` restores.
@@ -1770,9 +1797,13 @@ fn draw_form(
     let enclosing = budget.in_form.replace(form.id);
     // THE FORM'S MATRIX COMPOSES WITH THE CTM AT THE `Do`, in that order. The other order puts
     // the form's own transform outside the page's, which is plausible and wrong.
+    // THE FORM'S OWN RESOURCES, falling back to the enclosing ones where it declares none.
+    // Recursing with the caller's was a leak; see `Resources::within` for the measurement.
+    let scoped = resources.within(name)?;
+    let inner: &dyn Resources = scoped.as_deref().unwrap_or(resources);
     let result = walk(
         &form.content,
-        resources,
+        inner,
         GraphicsState {
             ctm: form.matrix.then(&state.ctm),
             ..state.clone()
@@ -2115,6 +2146,12 @@ mod tests {
     }
 
     impl Resources for Fake {
+        fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+            // ONE FLAT RESOURCE SET; see the fakes in `tests/glyph_geometry.rs` for why this
+            // is stated rather than defaulted.
+            Ok(None)
+        }
+
         fn form(&self, name: &[u8]) -> Result<Option<Form>> {
             Ok(self
                 .forms

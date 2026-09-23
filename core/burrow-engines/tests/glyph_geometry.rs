@@ -490,6 +490,14 @@ fn a_vertical_run_laid_out_by_positioning_is_not_a_vertical_writing_mode() {
 struct Helvetica;
 
 impl Resources for Helvetica {
+    fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+        // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
+        // of their own, so every name resolves outwards -- which is what `None` means. It is
+        // stated rather than defaulted: a trait default of `Ok(None)` would let a REAL
+        // resolver inherit silently, and inheriting silently is the defect `within` exists to
+        // fix.
+        Ok(None)
+    }
     fn form(&self, _name: &[u8]) -> Result<Option<Form>> {
         Ok(None)
     }
@@ -694,6 +702,14 @@ struct CidFont {
 }
 
 impl Resources for CidFont {
+    fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+        // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
+        // of their own, so every name resolves outwards -- which is what `None` means. It is
+        // stated rather than defaulted: a trait default of `Ok(None)` would let a REAL
+        // resolver inherit silently, and inheriting silently is the defect `within` exists to
+        // fix.
+        Ok(None)
+    }
     fn form(&self, _name: &[u8]) -> Result<Option<Form>> {
         Ok(None)
     }
@@ -941,6 +957,14 @@ fn page_with_declared_widths(body: &str) -> Vec<u8> {
 struct DeclaredWidths;
 
 impl Resources for DeclaredWidths {
+    fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+        // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
+        // of their own, so every name resolves outwards -- which is what `None` means. It is
+        // stated rather than defaulted: a trait default of `Ok(None)` would let a REAL
+        // resolver inherit silently, and inheriting silently is the defect `within` exists to
+        // fix.
+        Ok(None)
+    }
     fn form(&self, _name: &[u8]) -> Result<Option<Form>> {
         Ok(None)
     }
@@ -1315,6 +1339,14 @@ impl TestResources {
 }
 
 impl Resources for TestResources {
+    fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+        // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
+        // of their own, so every name resolves outwards -- which is what `None` means. It is
+        // stated rather than defaulted: a trait default of `Ok(None)` would let a REAL
+        // resolver inherit silently, and inheriting silently is the defect `within` exists to
+        // fix.
+        Ok(None)
+    }
     fn form(&self, name: &[u8]) -> Result<Option<Form>> {
         Ok((name == b"Fm0").then(|| self.form.clone()))
     }
@@ -1432,7 +1464,7 @@ fn the_real_resolver_agrees_with_pdfium_on_producer_documents() {
             .join(name);
         let pdf = std::fs::read(&path).expect("the committed fixture");
 
-        let walked = burrow_engines::redact_probe::walk_first_page(&pdf)
+        let walked = burrow_engines::glyphs_on_first_page(&pdf, &support::walk_options())
             .unwrap_or_else(|error| panic!("{name}: the real resolver refused: {error:?}"));
         let chars = chars_on_page(&pdf, 0);
         let drawn = drawn_characters(&chars);
@@ -1517,21 +1549,20 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         };
 
         let redacted: std::collections::BTreeSet<usize> = [0].into_iter().collect();
-        let (out, report) =
-            match burrow_engines::redact_probe::redact_page(&pdf, 0, redacted, region) {
-                Ok(result) => result,
-                Err(error) => {
-                    // A REFUSAL IS AN OUTCOME, not a failure -- but it must be a named one,
-                    // so a silent `Err` cannot pass for a redaction that did nothing.
-                    let text = format!("{error:?}");
-                    assert!(
-                        text.contains('[') && text.contains(']'),
-                        "{name}: refused without naming a rule: {text}"
-                    );
-                    eprintln!("  {name:<34} refused: {text}");
-                    continue;
-                }
-            };
+        let (out, report) = match support::redact_page(&pdf, 0, redacted, region) {
+            Ok(result) => result,
+            Err(error) => {
+                // A REFUSAL IS AN OUTCOME, not a failure -- but it must be a named one,
+                // so a silent `Err` cannot pass for a redaction that did nothing.
+                let text = format!("{error:?}");
+                assert!(
+                    text.contains('[') && text.contains(']'),
+                    "{name}: refused without naming a rule: {text}"
+                );
+                eprintln!("  {name:<34} refused: {text}");
+                continue;
+            }
+        };
 
         let after = chars_on_page(&out, 0);
         let drawn_after = drawn_characters(&after);

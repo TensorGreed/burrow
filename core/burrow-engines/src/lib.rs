@@ -94,7 +94,61 @@ pub(crate) mod blank;
 
 pub mod pdfsyntax;
 pub mod redact;
-pub mod redact_probe;
+/// #134's read-back. Behind the engine gate because its only implementation is qpdf's and its
+/// allowlist helper is too; without the engines there is nothing to verify.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+pub mod redact_verify;
+
+/// Every glyph the walk places on a document's first page.
+///
+/// # Geometry, not redaction
+///
+/// This returns **where things are**, never bytes, and it exists for the differential test that
+/// pins the walk against PDFium's `FPDFText_GetCharOrigin` — the calibration
+/// [`redact_verify`]'s header says the read-back inherits rather than performs. It is not a
+/// redaction entry point and ADR 0022 has nothing to say about it: there is no output to verify.
+///
+/// It replaces `redact_probe`, which returned bytes and went when #134 landed.
+///
+/// # The caller's ceilings and the caller's clock
+///
+/// Both are `options`'. The first version hardcoded `Limits::default()` and a `ManualClock`
+/// that never advances, so every deadline checkpoint inside the walk was inert — verbatim the
+/// defect #134 removed from the redaction probe, left in the function the same change made
+/// public. A caller that cannot bound a walk over bytes it did not choose has no ceiling at all.
+///
+/// # Errors
+///
+/// Whatever opening or walking refused.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+pub fn glyphs_on_first_page(
+    bytes: &[u8],
+    options: &OpenOptions<'_>,
+) -> Result<Vec<pdfsyntax::geometry::Glyph>> {
+    qpdf::walk_first_page_for_probe(bytes, options)
+}
+
+/// A page's frame, for converting a region into content space.
+///
+/// # Geometry, not redaction, and the same reasoning as [`glyphs_on_first_page`]
+///
+/// It returns the page's display box, rotation and `/UserUnit` — three numbers the document
+/// states about itself. It exists so a check outside this crate can convert a region the way
+/// the operation does: a caller holding glyphs in content space and a region in display space
+/// has nothing to compare without it, and the alternative is every such caller reimplementing
+/// the conversion `pdfsyntax::region` exists to have exactly one of.
+///
+/// # Errors
+///
+/// Whatever opening the document or reading its boxes refused.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+pub fn page_frame(
+    bytes: &[u8],
+    page: usize,
+    options: &OpenOptions<'_>,
+) -> Result<pdfsyntax::region::PageFrame> {
+    qpdf::page_frame_for(bytes, page, options)
+}
 
 // The pruning policy ADR 0019 §2b states, written ONCE and implemented over a seam both engine
 // paths satisfy. Ungated like `pdfsyntax` and for a stronger reason: a divergence between two
@@ -937,6 +991,71 @@ pub trait DocumentCompressor {
     ///   caller must not be able to loosen a limit after the document is already in memory.
     ///   `options` is still read for the clock.
     fn compress(&self, source: &Self::Source, options: &OpenOptions<'_>) -> Result<Vec<u8>>;
+}
+
+/// An engine that can clear a region of a page and emit the document.
+///
+/// # One method, where every other seam has several
+///
+/// `rotate`, `split` and `merge` hand their engines a document and drive it step by step,
+/// because the steps are the operation. Redaction's steps are an **ordered state machine whose
+/// order is load-bearing** — every content edit, then font surgery computed from the complete
+/// result, then the page strip — and each step consumes the one before it so a partly-edited
+/// document cannot be emitted from. Exposing those steps here would put that ordering in the
+/// caller, where the type system could not hold it.
+///
+/// So the seam is one call. What `burrow-ops` adds is the half ADR 0022 shares with every other
+/// operation: the page count and the `/Rotate` vector, through `verify::output`.
+///
+/// # This does not put redaction on the web
+///
+/// A seam is not a route. `#125` blocks the redaction tool reaching the site and is untouched by
+/// this: there is no wasm binding and no page, and the web has no implementation of this trait.
+pub trait PageRedactor {
+    /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
+    fn name(&self) -> &'static str;
+
+    /// Clear `region` on `page`, verify the emitted bytes, and return them.
+    ///
+    /// `redacted` is the set of pages the whole operation covers, which decides which fonts may
+    /// be cut; see `ADR 0029`'s font-sharing rule.
+    ///
+    /// **The bytes returned have already been read back** through a fresh engine and checked
+    /// against what a cleared region looks like. That check cannot be skipped by a caller: the
+    /// implementation's only path to bytes takes it. `burrow_ops` still adds the page count and
+    /// rotation vector on top, because those are the promise every operation makes.
+    ///
+    /// # Errors
+    ///
+    /// Every refusal the walk and the sharing rules raise;
+    /// [`Error::OutputRejected`](burrow_types::Error::OutputRejected) if the
+    /// emitted document does not read back as promised. A failure discards the whole in-memory
+    /// document: there is no partial output.
+    fn redact_page(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        redacted: &std::collections::BTreeSet<usize>,
+        region: crate::pdfsyntax::region::Region,
+        options: &OpenOptions<'_>,
+    ) -> Result<(Vec<u8>, crate::redact::Report)>;
+
+    /// Every page's `/Rotate` **as written**, in page order, read from the **input**.
+    ///
+    /// On this trait rather than reached through another because the alternative is a caller
+    /// bounded by three traits to make one call. The vector is the promise
+    /// `verify::Expected::RegionCleared` carries, and it has to be read before anything is
+    /// edited: reading it afterwards would be reading a document the edit produced.
+    ///
+    /// # Errors
+    ///
+    /// As [`OutputReader::rotations`], and it checkpoints per page for the same reason.
+    fn input_rotations(
+        &self,
+        bytes: &[u8],
+        options: &OpenOptions<'_>,
+        deadline: &Deadline,
+    ) -> Result<Vec<i64>>;
 }
 
 /// One page, rasterised.

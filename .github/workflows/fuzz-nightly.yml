@@ -80,6 +80,7 @@ jobs:
           - pdfsyntax_cmap_wmode
           - pdfsyntax_tounicode
           - redact_shared_contents
+          - redact_verified_output
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Same pinned action as every other job (its `stable` branch); the `toolchain`

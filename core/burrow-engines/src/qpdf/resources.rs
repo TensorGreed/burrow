@@ -215,7 +215,26 @@ impl<'a> PageResources<'a> {
     }
 }
 
-impl Resources for PageResources<'_> {
+impl<'a> Resources for PageResources<'a> {
+    fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+        let key = Name::from_stripped(name)?;
+        let entry = self.category(&XOBJECT).key(&key);
+        if entry.type_code() != object_type::STREAM {
+            return Ok(None);
+        }
+        let own = entry.stream_dict().key(&RESOURCES);
+        if own.type_code() != object_type::DICTIONARY {
+            // THE FORM DECLARES NONE, so it inherits the enclosing ones. `None` says that
+            // rather than returning an empty dictionary, because an empty one would refuse
+            // every name the form uses instead of resolving it outwards.
+            return Ok(None);
+        }
+        Ok(Some(Box::new(Self {
+            dictionary: own,
+            fonts: std::cell::RefCell::new(BTreeMap::new()),
+        })))
+    }
+
     fn form(&self, name: &[u8]) -> Result<Option<Form>> {
         let key = Name::from_stripped(name)?;
         let entry = self.category(&XOBJECT).key(&key);

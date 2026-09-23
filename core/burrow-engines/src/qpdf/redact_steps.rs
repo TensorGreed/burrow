@@ -12,11 +12,12 @@
 //! `&mut Document` would leave the caller able to write out a half-edited one. This takes the
 //! `Document` by value and the only path to bytes is [`redact::Finished::emit`].
 //!
-//! # Crate-internal, per ADR 0022
+//! # Crate-internal, and reached only through a verified path
 //!
-//! Nothing here is exported. There is no caller-visible redaction until #134's verification
-//! exists, and `redact_probe` — the one narrow seam, returning geometry rather than bytes —
-//! goes when it lands.
+//! Nothing here is exported. The operation is `burrow_ops::redact::page`, which goes through
+//! [`crate::PageRedactor`] — whose only route to a `Vec<u8>` is `Finished::emit_verified`, and
+//! that takes the read-back as a parameter. ADR 0022's rule is the signature rather than a
+//! comment now.
 
 use core::ffi::c_int;
 

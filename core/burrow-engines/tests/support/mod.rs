@@ -40,3 +40,63 @@ pub fn open(bytes: Vec<u8>) -> Result<PdfiumDocument> {
 pub fn page_count(doc: &PdfiumDocument) -> Result<u64> {
     Pdfium::new().page_count(doc)
 }
+
+/// Redact one page through the public operation, for the tests that were written against the
+/// probe.
+///
+/// **The probe is gone** — `burrow_ops::redact::page` is the entry point now, and it verifies.
+/// This is the two lines of setup those tests would otherwise each repeat: a real clock, the
+/// default ceilings, and the page in its own redacted set.
+///
+/// # Errors
+///
+/// Whatever the operation refused.
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+pub fn redact_page(
+    bytes: &[u8],
+    page: usize,
+    redacted: std::collections::BTreeSet<usize>,
+    region: burrow_engines::pdfsyntax::region::Region,
+) -> Result<(Vec<u8>, burrow_engines::redact::Report)> {
+    redact_page_with(bytes, page, redacted, region, Limits::default())
+}
+
+/// As [`redact_page`], with the ceilings stated.
+///
+/// # Errors
+///
+/// Whatever the operation refused.
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+pub fn redact_page_with(
+    bytes: &[u8],
+    page: usize,
+    redacted: std::collections::BTreeSet<usize>,
+    region: burrow_engines::pdfsyntax::region::Region,
+    limits: Limits,
+) -> Result<(Vec<u8>, burrow_engines::redact::Report)> {
+    use burrow_types::SystemClock;
+
+    let options = OpenOptions::new(limits, Arc::new(SystemClock::new()));
+    let done = burrow_ops::redact::page(
+        &burrow_engines::qpdf::Qpdf,
+        bytes,
+        page,
+        &redacted,
+        region,
+        &options,
+    )?;
+    Ok((done.document, done.report))
+}
+
+/// The open options the geometry helpers take, with a real clock.
+///
+/// A `ManualClock` here would make every deadline checkpoint inside the walk inert, which is
+/// the defect these helpers were changed to stop having built into them.
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+#[must_use]
+pub fn walk_options() -> OpenOptions<'static> {
+    OpenOptions::new(
+        Limits::default(),
+        Arc::new(burrow_types::SystemClock::new()),
+    )
+}

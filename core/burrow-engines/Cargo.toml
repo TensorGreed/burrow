@@ -35,6 +35,12 @@ burrow-types.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+# THE OPERATION, FOR THE TESTS THAT DRIVE IT. `burrow-ops` depends on this crate, so this is a
+# dev-dependency cycle -- which Cargo permits, because a dev-dependency does not participate in
+# the lib target's graph. It is here rather than the tests moving to `burrow-ops/tests/` because
+# the PDFium oracle they need lives in this crate's test support and is the instrument the
+# redaction tests are calibrated against.
+burrow-ops.workspace = true
 # The provenance test hashes whichever libpdfium the loader actually mapped, so it needs
 # the same digest the build script uses. The conformance tests reuse it to pin each
 # committed fixture by content.
