@@ -98,6 +98,8 @@ const MAX_RESOURCE_DICTIONARIES: usize = 4096;
 
 /// `/Resources`.
 const RESOURCES: Name = Name::literal(b"/Resources\0");
+/// `/Contents`.
+const CONTENTS: Name = Name::literal(b"/Contents\0");
 /// `/ToUnicode`, `/Encoding`, `/Widths` — the three keys font surgery writes through.
 const TO_UNICODE: Name = Name::literal(b"/ToUnicode\0");
 const ENCODING: Name = Name::literal(b"/Encoding\0");
@@ -168,6 +170,10 @@ pub(crate) struct FormUseCounts {
     font_parts: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
     /// Which objects each font names, the other way round from `font_parts`.
     font_part_names: BTreeMap<ObjectId, std::collections::BTreeSet<ObjectId>>,
+    /// How many times each page content stream object is referenced, document-wide.
+    content_refs: BTreeMap<ObjectId, usize>,
+    /// Which pages reference each content stream object.
+    content_pages: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
 }
 
 impl FormUseCounts {
@@ -213,6 +219,53 @@ impl FormUseCounts {
             .collect()
     }
 
+    /// How many references there are to this page content stream object, document-wide.
+    ///
+    /// Zero for an object this walk never reached, which a caller must treat as "not a page
+    /// content stream this document uses" rather than as "unshared" — the same reading
+    /// [`Self::uses`] requires, and for the same reason.
+    ///
+    /// **Not the sharing question.** [`Self::total_references`] is; see its header for the leak
+    /// that asking this one on its own produced.
+    pub(crate) fn content_references(&self, object: ObjectId) -> usize {
+        self.content_refs.get(&object).copied().unwrap_or(0)
+    }
+
+    /// How many references there are to this object **by any route** this walk counts.
+    ///
+    /// # Two counters, and one reference of each kind read as unshared to both
+    ///
+    /// The form rule consulted [`Self::uses`] and the content rule
+    /// [`Self::content_references`], and **neither was the total**. An object reached once as a
+    /// page's `/Contents` and once as a Form XObject has one reference in each map, so both
+    /// checks saw a count of one and both passed — and the object was edited, removing the text
+    /// from the page that draws it the other way, with §6's read-back clean on the page that
+    /// was asked for.
+    ///
+    /// Three legal documents were measured returning `Ok` this way. The one worth naming is
+    /// that a content stream may carry extra dictionary keys, so a single object can be a valid
+    /// page content stream **and** a valid Form XObject at once; the other two —
+    /// a form that is another page's `/Contents`, and a `/Contents` that is another page's
+    /// annotation appearance — need no trickery at all.
+    ///
+    /// A per-route count under-counts by construction, and under-counting is the direction that
+    /// edits a shared object in place. So there is one number and both rules ask for it.
+    pub(crate) fn total_references(&self, object: ObjectId) -> usize {
+        self.uses(object)
+            .saturating_add(self.content_references(object))
+    }
+
+    /// Which pages reference this page content stream object.
+    pub(crate) fn content_pages_of(&self, object: ObjectId) -> std::collections::BTreeSet<usize> {
+        self.content_pages.get(&object).cloned().unwrap_or_default()
+    }
+
+    /// Every content stream this walk counted, for the tests that need the whole answer.
+    #[cfg(test)]
+    pub(crate) const fn all_contents(&self) -> &BTreeMap<ObjectId, usize> {
+        &self.content_refs
+    }
+
     /// How many pages outside `redacted` an edit to this font would reach.
     ///
     /// **One expression, and it is the one [`Self::fonts_wholly_within`] filters on.** The
@@ -252,13 +305,19 @@ impl FormUseCounts {
     }
 }
 
-/// Count every place each Form XObject is drawn.
+/// Count every place each shared object is reached: Form XObjects, fonts and their
+/// sub-objects, and page `/Contents` streams.
+///
+/// The name is older than what it counts. It began as the form rule and grew the font rule and
+/// then the `/Contents` rule, each of which needed the same traversal — see
+/// [`FormUseCounts::total_references`] for why they are one number rather than three.
 ///
 /// # Errors
 ///
 /// [`Error::Unsupported`] naming `resource-graph-cycle` or `resource-graph-depth` if the graph
-/// is cyclic or nests past [`MAX_RESOURCE_DEPTH`]; [`Error::Malformed`] for a page tree that
-/// does not terminate. Whatever the engine failed with.
+/// is cyclic or nests past [`MAX_RESOURCE_DEPTH`], or `contents-too-many` for a `/Contents`
+/// array past [`crate::pdfsyntax::contents::MAX_ELEMENTS`]; [`Error::Malformed`] for a page
+/// tree that does not terminate. Whatever the engine failed with.
 pub(crate) fn count_form_uses(
     document: &Document,
     deadline: &Deadline,
@@ -276,6 +335,8 @@ pub(crate) fn count_form_uses(
         page_fonts: BTreeMap::new(),
         container_fonts: BTreeMap::new(),
         font_parts: BTreeMap::new(),
+        content_refs: BTreeMap::new(),
+        content_pages: BTreeMap::new(),
         page_reaches: BTreeMap::new(),
         at_page: 0,
     };
@@ -302,6 +363,8 @@ pub(crate) fn count_form_uses(
         counts: propagate(&walk.from_pages, &walk.edges),
         font_parts: join_parts_to_pages(&walk, &fonts),
         font_part_names: walk.font_parts.clone(),
+        content_refs: walk.content_refs.clone(),
+        content_pages: walk.content_pages.clone(),
         fonts,
     })
 }
@@ -443,6 +506,11 @@ struct Walk<'a> {
     /// Each font's indirect `/ToUnicode`, `/Encoding` and `/Widths` — the objects font surgery
     /// writes through. See where this is filled for what keying on the font alone missed.
     font_parts: BTreeMap<ObjectId, std::collections::BTreeSet<ObjectId>>,
+    /// How many times each page content stream object is referenced, across every page's
+    /// `/Contents`. Counted per reference: see `page_contents`.
+    content_refs: BTreeMap<ObjectId, usize>,
+    /// Which pages reference each content stream object, for the diagnostic.
+    content_pages: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
     page_reaches: BTreeMap<usize, std::collections::BTreeSet<ObjectId>>,
     /// The page whose subtree is being walked.
     at_page: usize,
@@ -451,11 +519,96 @@ struct Walk<'a> {
 impl Walk<'_> {
     /// One page: its inherited resources, then its annotations' appearance streams.
     fn page(&mut self, page: &ObjectHandle<'_>) -> Result<()> {
+        self.page_contents(page)?;
         let resources = self.inherited_resources(page)?;
         if let Some(resources) = resources {
             self.resources(&resources, 0)?;
         }
         self.annotations(page)?;
+        Ok(())
+    }
+
+    /// Count every reference to each page content stream object.
+    ///
+    /// # The hazard this exists for, which the form rule did not cover
+    ///
+    /// The sharing rule was scoped to Form XObjects, and a page's own content stream has
+    /// `form: None`, so nothing counted it. **Two pages pointing at one `/Contents` object is
+    /// legal and not exotic** — `inheriting_document()` in this crate's own tests builds one,
+    /// because it was the shortest way to write a two-page document. Editing that stream
+    /// removes the text from both pages, with §6's read-back clean on the page it was given.
+    /// ADR 0029 recorded it as a named gap; this closes it.
+    ///
+    /// # Counted per reference, not per page, and the repeat is the reason
+    ///
+    /// `/Contents [5 0 R 5 0 R]` is one page referencing one object twice. The concatenation
+    /// then holds that stream's text twice, and an edit written back to the object applies at
+    /// both positions — so a rule that asked "is another page using this?" would say no and be
+    /// wrong. The count is of references, and `pages` is carried beside it for the diagnostic.
+    ///
+    /// # In this walk rather than a second one
+    ///
+    /// It is one key read per page, on a traversal that already visits every page and already
+    /// drains after every call. A separate traversal would be a second thing to keep in step
+    /// with the page tree, and `inherited_resources` above is the evidence that staying in step
+    /// is the hard part.
+    fn page_contents(&mut self, page: &ObjectHandle<'_>) -> Result<()> {
+        let contents = page.key(&CONTENTS);
+        if let Some(error) = self.document.take_error() {
+            return Err(error);
+        }
+        match contents.type_code() {
+            object_type::STREAM => self.record_content(&contents)?,
+            object_type::ARRAY => {
+                let length = contents.array_len();
+                if let Some(error) = self.document.take_error() {
+                    return Err(error);
+                }
+                // `try_from` RATHER THAN A SATURATING FALLBACK. A negative `array_len` is an
+                // engine error state, not a long array, and folding it onto `usize::MAX` made
+                // it come back as `contents-too-many` — a rule name describing something that
+                // was not what happened.
+                let length = usize::try_from(length).map_err(|_| {
+                    Error::Internal("qpdf: a /Contents array of negative length".to_owned())
+                })?;
+                if length > crate::pdfsyntax::contents::MAX_ELEMENTS {
+                    return Err(Error::Unsupported(
+                        "pdf redaction [contents-too-many]: a /Contents array with more \
+                         elements than burrow will read"
+                            .to_owned(),
+                    ));
+                }
+                for at in 0..length {
+                    let at = c_int::try_from(at).map_err(|_| {
+                        Error::Internal("qpdf: a /Contents index that does not fit".to_owned())
+                    })?;
+                    let element = contents.array_item(at);
+                    if let Some(error) = self.document.take_error() {
+                        return Err(error);
+                    }
+                    // A non-stream element is not a content stream and is left to the operation
+                    // to refuse: this walk counts what it can identify and claims nothing about
+                    // the rest.
+                    if element.type_code() == object_type::STREAM {
+                        self.record_content(&element)?;
+                    }
+                }
+            }
+            // No content, or a `/Contents` that is neither. Nothing to count, and the operation
+            // refuses the shapes it cannot rewrite.
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Record one reference to a content stream object.
+    fn record_content(&mut self, stream: &ObjectHandle<'_>) -> Result<()> {
+        let identity = stream.object()?;
+        *self.content_refs.entry(identity).or_insert(0) += 1;
+        self.content_pages
+            .entry(identity)
+            .or_default()
+            .insert(self.at_page);
         Ok(())
     }
 
@@ -790,6 +943,9 @@ impl crate::pdfsyntax::geometry::FormUses for FormUseCounts {
         let generation = i32::try_from(form & 0xffff).map_err(|_| {
             Error::Internal("pdf sharing: a form identity with no generation".to_owned())
         })?;
-        Ok(self.uses((number, generation)))
+        // THE TOTAL, not this map's share of it. `check_form_sharing` asks this question, and
+        // a form that is also some page's `/Contents` is shared however the references are
+        // spread between the two maps. See `total_references`.
+        Ok(self.total_references((number, generation)))
     }
 }

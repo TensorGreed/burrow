@@ -902,6 +902,12 @@ anything does, and there are two ways:
 **Recorded as a named gap rather than an assumption**, because §8's rule cuts both ways: a
 hazard nobody wrote down is a hazard nobody will look for.
 
+**CLOSED 2026-09-23** by the first route, per element rather than per page — see
+[the amendment below](#amendment-2026-09-23--the-shared-contents-gap-is-closed-per-element).
+This section is kept as written because what it got right is the part worth keeping: it named
+the hazard before anything could reach it, which is the only reason there was something to
+close rather than something to find later.
+
 ### Copy-on-write is the alternative, and the C API wall is in the way
 
 The better answer is to clone the form, edit the clone, and repoint **only this `Do`'s**
@@ -1342,3 +1348,159 @@ the plain length, and the writer recompresses. One edge worth knowing and not cu
 reachable: a zero length **removes** `/Length` rather than setting it. The aggregate operand
 bound survives the `MAX_COMPOSITE_ITEMS` change; no raw handle is compared; no new error
 message carries file content.
+
+## Amendment, 2026-09-23 — the shared `/Contents` gap is closed, per element
+
+The [shared `/Contents` section](#a-shared-page-contents-is-the-same-hazard-and-it-is-not-covered)
+above recorded a named gap: the sharing rule was scoped to Form XObjects, a page's own content
+stream has `form: None`, and nothing counted it. Two pages pointing at one `/Contents` object is
+legal and ordinary. This closes it, by the first of the two routes that section offered —
+counting page-`/Contents` objects in the same walk — and the second route, copy-on-write, stays
+blocked on the same C API wall as forms.
+
+### Counted per reference, in the walk that was already there
+
+`sharing.rs` visits every page and drains after every call, so this is one key read per page on
+a traversal that already exists. A second traversal would be a second thing to keep in step with
+the page tree, and `inherited_resources` is the standing evidence that staying in step is the
+hard part.
+
+**The count is of references, not of pages**, and the difference is a real document shape:
+`/Contents [5 0 R 5 0 R]` is one page referencing one object twice. The concatenation then holds
+that stream's text twice, and an edit written back to the object applies at both positions — so
+a rule asking "does another *page* use this?" answers no and is wrong.
+
+### Per element, because a page-level rule is wrong in both directions
+
+This is the part worth writing down, because both wrong answers are cheap to reach:
+
+- **Under-detecting** asks whether the `/Contents` *array object* is shared. It usually is not —
+  the array is written inline on the page — so a shared *element* inside it is edited in place.
+- **Over-detecting** refuses any page one of whose elements is shared. A shared letterhead
+  element across every page of a document is an ordinary shape, and refusing it refuses a page
+  that could have been served.
+
+So the question is asked of the element the cut actually lands in.
+`Contents::locate` maps the glyph's operation offset back to an element index, and that
+element's object is what is counted. Both directions have a fixture, and the near-miss —
+shared element present, region reaching only the unshared one — is what stops the rule
+tightening back to a page-level one without anything going red.
+
+### Array `/Contents` now rewrites rather than being refused
+
+§4 specified this and `pdfsyntax::contents` already implemented it; what was missing was the
+operation using it for more than one element. `remove_glyphs` was doing the edit-building over a
+one-element `Contents` already, so the change was to lift that into `remove_glyphs_across` and
+call it with the real array. Two implementations of "which operations does this glyph belong to"
+is how they stop agreeing, and the agreement is what keeps a cut at the right offset.
+
+The operation stops taking **the bytes it writes back** from `qpdf_oh_get_page_content_data`.
+That entry point returns the elements joined and says nothing about where the joins were, which
+is enough to read a page and not enough to write one back: a rewriter holding only its output
+emits the page as a single stream, collapsing the array. Spike 0006 measured the naive route
+doing exactly that.
+
+**The read-back still uses it**, and deliberately: `codes_still_drawn` wants the codes each font
+still draws, not offsets into anything, so the missing join positions cost it nothing. Said
+plainly because the unqualified version of this sentence was in the commit message, and the
+read-back is the path a reader would most want the qualification on.
+
+**The corpus is unchanged, and the first version of this paragraph said something false about
+why.** It claimed `22-split-content-streams.pdf` "now refuses with `no-widths` where it
+previously refused with `contents-not-a-stream`", offered as the evidence that the array
+handling reaches further. A code review ran the sweep on both commits: the blocks are
+byte-identical, and the parent refused that file with **`no-widths` too**.
+
+It could not have been otherwise, and the mechanism was there to be read: `no-widths` is raised
+inside `glyphs_in`, which runs in `affected_streams`, and `contents-not-a-stream` lived in
+`rewrite`, which runs after. There is no input for which the old code reached the second first.
+
+**I inferred a before-state instead of measuring one, in a paragraph whose subject is that a
+change's evidence is the rule name.** The correction is kept here rather than quietly replaced,
+because the failure is the interesting part: the claim was plausible, it was about my own
+change, and nothing in the sweep output contradicted it — the only thing that would have was
+running it on the parent, which takes one worktree and two minutes.
+
+What is true: **the corpus does not exercise this change at all.** Every array document in it is
+stopped earlier by the standard-14 gap, so 4 of 43 redact before and after, and the evidence for
+the array handling is the fixtures in `redaction_defences.rs` and nothing in `corpus/`.
+
+### Measured: 3 of 14, then 4 of 16, then 1 of 18
+
+Three sweeps, and the numbers only mean something together.
+
+**Mine: 13 planted, 2 survived** — then a third, reported `NOT APPLIED` because the needle did
+not match, turned out to be a **real survivor** when re-planted correctly. So **3 of 14**, and
+the corrected one is the most important of the three: the array-collapse mutation, which the
+`rewrite` comment names as the hazard the whole per-element write exists for. The test meant to
+catch it asserted that `/Contents` still contained a `[`, and collapsing the *distribution of
+bytes across elements* leaves the array of references untouched.
+
+**A security review: 16 planted, 4 survived**, including one mine could not have reached — asking
+the sharing question of a **constant** element index. Every array fixture had two elements with
+the reached one last, so `locate`'s answer and `len() - 1` were the same number everywhere.
+
+**Combined, after the fixes: 18 planted, 1 survived.** The survivor is `rewrite`'s
+`parts.len() != elements.len()` guard, which `Contents::apply` cannot violate by construction;
+the property is tested in `contents.rs` where the invariant is decided, and the guard stays as
+defence in depth.
+
+The comparable number for the previous piece was **9 of 20**.
+
+#### Two ceilings masked each other, and the second one was mine
+
+The review's suggestion was that `page_contents` had no element ceiling of its own — its bound
+was an ordering property of a different function, since the walk enforces one and runs first.
+Adding a local one made **both untestable**: each refuses with the same rule name, so deleting
+either left the other producing an identical message and the sweep caught neither.
+
+So there is one ceiling, in the walk, where it also bounds the walk's own work — and
+`sharing_tests` asks it **directly**, because only a direct call can tell which ceiling fired.
+Two defences that mask each other are worth one defence and a lost test, and the same standard
+removed the unreachable `form-not-a-stream` guard in the same pass.
+
+#### Twice a needle matched nothing
+
+Both times it was reported as `NOT APPLIED` rather than folded into a column, which is the only
+reason either was caught — and both times the needle was mine and the mutation was real. The
+lesson is not "check the needle", which was already the rule. It is that a sweep's output has
+**three** columns, and a report that collapses them to two has thrown away the column where its
+own errors live.
+
+### The leak the sweeps did not find, and the reviews did
+
+Neither sweep would have found this, because every mutation asks whether a defence still fires
+and this was a defence **asking the wrong question correctly**.
+
+`check_form_sharing` consulted the form counts and `check_contents_sharing` the content counts,
+and **neither was the total**. An object reached once as a page's `/Contents` and once as a Form
+XObject has one reference in each map, so both rules saw a count of one and both passed — and
+the object was edited, removing the text from the page that draws it the other way, with §6's
+read-back clean on the page that was asked for. Three legal documents were measured returning
+`Ok` this way; the one worth naming is that a content stream may carry extra dictionary keys, so
+one object can be a valid page content stream **and** a valid Form XObject at once. The other
+two need no trickery: a form that is another page's `/Contents`, and a `/Contents` that is
+another page's annotation appearance.
+
+There is now one number, `total_references`, and both rules ask for it. A per-route count
+under-counts by construction, and under-counting is the direction that edits in place.
+
+**This is the second time on this milestone that the defect was in the seam between two things
+that were each correct.** The previous piece's was nine surviving mutations in the module that
+drove every other one; this one's is two counters that were each right about their own half.
+
+### A generative fuzz target, and the flaw in its own oracle
+
+`fuzz_targets/redact_shared_contents.rs` reads the fuzzer's bytes as a **shape** — page count,
+element count, and which slots point at the same stream object — and assembles a correct
+document from it. The question is whether the detection is right across sharing structures
+nobody would write by hand, not whether the parser survives arbitrary bytes.
+
+Its oracle is arithmetic over the generator's own construction and reads nothing from
+`sharing.rs`. It was wrong on the first attempt: it assumed the element the region reaches is
+page 0's element **0**, when it is whichever element points at the stream that draws there. A
+shape whose page 0 is `[1, 0]` would have had references counted for a stream the cut never
+touched. That shape is now one of the eight committed seeds, named for what it caught.
+
+**Non-vacuity checked rather than assumed**: with the refusal disabled the target panics inside
+45 seconds naming the condition, and with it restored 150,809 runs in 121 s produce nothing.
