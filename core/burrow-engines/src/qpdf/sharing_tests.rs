@@ -588,3 +588,198 @@ fn assert_named(error: &Error, rule: &str) {
         "refused, but by a different rule: wanted `{rule}`, got `{message}`"
     );
 }
+
+/// A document whose two pages share one font, each also having a font of its own.
+fn two_pages_sharing_a_font() -> Vec<u8> {
+    document(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        // 3: page one — the shared font (6) and its own (7)
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /Shared 6 0 R /Mine 7 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        // 4: page two — the shared font (6) and its own (8)
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /Shared 6 0 R /Mine 8 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        stream("", "BT /Shared 12 Tf (a) Tj /Mine 12 Tf (b) Tj ET\n"),
+        simple_font(),
+        simple_font(),
+        simple_font(),
+    ])
+}
+
+fn simple_font() -> String {
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 97 /LastChar 98 \
+     /Widths [500 500] >>"
+        .to_owned()
+}
+
+#[test]
+fn a_font_only_the_redacted_pages_use_may_be_cut() {
+    // THE RULE. Cutting a font's `/Widths` changes the text of every page that uses it, so it
+    // is safe exactly when the operation already covers all of them.
+    let opened = open(two_pages_sharing_a_font());
+    let counts = count(&opened).expect("walks");
+
+    let pages = counts.font_pages();
+    assert_eq!(
+        pages.get(&(6, 0)).map(std::collections::BTreeSet::len),
+        Some(2),
+        "the shared font is used by both pages: {pages:?}"
+    );
+    assert_eq!(
+        pages.get(&(7, 0)).map(std::collections::BTreeSet::len),
+        Some(1),
+        "page one's own font is used by one page"
+    );
+
+    // Redacting page 0 only: page one's own font may be cut, the shared one may not.
+    let just_page_one: std::collections::BTreeSet<usize> = [0].into_iter().collect();
+    let cuttable = counts.fonts_wholly_within(&just_page_one);
+    assert!(
+        cuttable.contains(&(7, 0)),
+        "a font only the redacted page uses must be cuttable: {cuttable:?}"
+    );
+    assert!(
+        !cuttable.contains(&(6, 0)),
+        "a font another page uses must NOT be cuttable -- editing it reflows that page's \
+         text, which is corruption rather than leakage and invisible to §6's read-back"
+    );
+    assert!(
+        !cuttable.contains(&(8, 0)),
+        "page two's own font is not used by page one at all, so redacting page one must not \
+         touch it: {cuttable:?}"
+    );
+}
+
+#[test]
+fn redacting_every_page_makes_every_font_cuttable() {
+    // THE OTHER HALF, and it is the one that stops the rule being "refuse on any sharing":
+    // a single-page document, or an operation covering the whole document, cuts everything.
+    // Refusing whenever a font is shared would refuse nearly every multi-page document.
+    let opened = open(two_pages_sharing_a_font());
+    let counts = count(&opened).expect("walks");
+    let both: std::collections::BTreeSet<usize> = [0, 1].into_iter().collect();
+    let cuttable = counts.fonts_wholly_within(&both);
+    for font in [(6, 0), (7, 0), (8, 0)] {
+        assert!(
+            cuttable.contains(&font),
+            "with every page redacted, {font:?} has nowhere else to affect: {cuttable:?}"
+        );
+    }
+}
+
+#[test]
+fn a_font_reached_only_through_a_form_belongs_to_the_page_that_draws_the_form() {
+    // REACHED-THROUGH COUNTS. A font named inside a form that page two draws is a font page
+    // two uses, and cutting it changes page two. A direct-references-only join would miss
+    // that -- the direction that cuts a font somebody else still needs.
+    let bytes = document(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        // page one draws the form; page two draws it too
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /XObject << /Fm0 6 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /XObject << /Fm0 6 0 R >> >> /Contents 5 0 R >>"
+            .to_owned(),
+        stream("", "/Fm0 Do\n"),
+        // 6: the form, whose own resources name the font
+        stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+             /Resources << /Font << /F1 7 0 R >> >>",
+            "BT /F1 12 Tf (a) Tj ET\n",
+        ),
+        simple_font(),
+    ]);
+    let opened = open(bytes);
+    let counts = count(&opened).expect("walks");
+    assert_eq!(
+        counts
+            .font_pages()
+            .get(&(7, 0))
+            .map(std::collections::BTreeSet::len),
+        Some(2),
+        "both pages reach the font through the form: {:?}",
+        counts.font_pages()
+    );
+    let just_page_one: std::collections::BTreeSet<usize> = [0].into_iter().collect();
+    assert!(
+        !counts.fonts_wholly_within(&just_page_one).contains(&(7, 0)),
+        "redacting page one must not cut a font page two reaches through the same form"
+    );
+}
+
+#[test]
+fn the_ordinary_shape_retains_its_font_and_says_by_how_much() {
+    // THE CASE THE COMMITTED CORPUS CANNOT SHOW. It is almost entirely single-page, where
+    // every font is cuttable by construction — so the retain path has one example in it and
+    // the rate the rule was chosen against is unmeasurable from fixtures alone.
+    //
+    // A several-page document sharing one font, redacted on a single page, is what a person
+    // actually brings: a report, a contract, a statement. Here the font is used by five pages
+    // and the operation covers one, so it is retained and §7's disclosure applies — and the
+    // count of pages it is retained *for* is what the disclosure is about.
+    const PAGES: u64 = 5;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        String::new(),
+        stream("", "BT /F1 12 Tf (a) Tj ET\n"),
+        simple_font(),
+    ];
+    let mut kids = Vec::new();
+    for index in 0..PAGES {
+        let id = 5 + index;
+        kids.push(format!("{id} 0 R"));
+        objects.push(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R >> >> /Contents 3 0 R >>"
+                .to_owned(),
+        );
+    }
+    objects[1] = format!(
+        "<< /Type /Pages /Count {PAGES} /Kids [{}] >>",
+        kids.join(" ")
+    );
+
+    let opened = open(document(&objects));
+    let counts = count(&opened).expect("walks");
+
+    let pages = counts.font_pages();
+    assert_eq!(
+        pages.get(&(4, 0)).map(std::collections::BTreeSet::len),
+        Some(usize::try_from(PAGES).expect("fits")),
+        "every page uses the one font: {pages:?}"
+    );
+
+    // Redacting page 2 alone — a page in the middle, not the first, because an off-by-one in
+    // the page index would be invisible on page 0.
+    let one_page: std::collections::BTreeSet<usize> = [2].into_iter().collect();
+    let cuttable = counts.fonts_wholly_within(&one_page);
+    assert!(
+        cuttable.is_empty(),
+        "the font must be retained, not cut: cutting it would reflow the other four pages, \
+         which is damage to documents nobody asked about: {cuttable:?}"
+    );
+
+    // And the number the disclosure is about: four pages outside the operation.
+    let outside = pages
+        .get(&(4, 0))
+        .map(|used| used.difference(&one_page).count())
+        .expect("the font is used");
+    assert_eq!(
+        outside, 4,
+        "§7's disclosure is about the four pages that keep using this font"
+    );
+
+    // THE CONTROL: redacting every page makes the same font cuttable, so the retention above
+    // is the sharing and not something structural about the fixture.
+    let every_page: std::collections::BTreeSet<usize> =
+        (0..usize::try_from(PAGES).expect("fits")).collect();
+    assert!(
+        counts.fonts_wholly_within(&every_page).contains(&(4, 0)),
+        "with the whole document redacted the font has nowhere else to affect"
+    );
+}

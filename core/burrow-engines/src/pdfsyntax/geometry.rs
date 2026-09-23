@@ -517,12 +517,36 @@ impl TextPosition {
 }
 
 /// One glyph, placed.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Glyph {
     /// The pen position in page space — what `FPDFText_GetCharOrigin` reports.
     pub origin: (f64, f64),
     /// The transform from glyph space to page space, for boxing the glyph's own extents.
+    ///
+    /// **Only `/FontBBox` is in glyph space.** `advance` and `font_size` are in text space, so
+    /// putting them through this matrix scales them by the font matrix and the font size a
+    /// second time — see [`Self::text_to_page`] for the measurement.
     pub to_page: Matrix,
+    /// The transform from text space to page space, for boxing the advance.
+    ///
+    /// # Why there are two matrices, and what having one cost
+    ///
+    /// `conservative_box` built its advance rectangle from `advance` and `font_size` and put it
+    /// through [`Self::to_page`]. Both are already in text space, and `to_page` begins with the
+    /// font matrix and the font size — so every advance box came out scaled by `0.001 × size`
+    /// twice. Measured on `producer-writer.pdf` at 18 pt: a glyph PDFium boxes at 2.5 × 13 pt
+    /// came back as **0.25 × 0.32 pt**, a box barely larger than the origin point.
+    ///
+    /// That is the defect the conservative box exists to prevent, in the function that exists
+    /// to prevent it. A region overlapping a glyph's ink but not its pen position intersected
+    /// nothing, so the redaction removed nothing and returned `Ok` — and no test caught it,
+    /// because every hand-built fixture puts its region around the origin. It took a real
+    /// producer document and a region derived from PDFium's own boxes.
+    ///
+    /// `Tz` is folded in here rather than into `advance`, which is recorded without it for the
+    /// same reason `displacement` is recorded with it: each is used where it is, and neither is
+    /// recomputed.
+    pub text_to_page: Matrix,
     /// The advance this glyph contributes, in unscaled text-space units.
     pub advance: f64,
     /// The font's `/FontBBox`, in glyph space, if the font declared one.
@@ -559,8 +583,22 @@ pub struct Glyph {
 /// Enough to rewrite the operation that drew it, and no more. The span is the **operation's**,
 /// not the string's, because a cut inside a `Tj` becomes a `TJ` -- the operator changes, so the
 /// whole operation is what gets replaced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlyphSource {
+    /// The font resource name in force — what `Tf` selected.
+    ///
+    /// # Why the glyph carries it
+    ///
+    /// Font surgery removes the entries for codes the document **no longer draws**, and that
+    /// is a fact per font and per code. Without both on the glyph, "which codes does this font
+    /// still draw" has to be re-derived by a second walk that tracks the text state again —
+    /// two readings of one document that are supposed to agree.
+    ///
+    /// A resource **name** rather than an object identity, because this module resolves
+    /// nothing: the name is what the content stream says, and the engine side maps it.
+    pub font: Vec<u8>,
+    /// The character code this glyph was drawn from.
+    pub code: u32,
     /// The form this glyph was drawn from, by object identity, or `None` for the caller's own
     /// stream. A span means nothing without knowing which stream it indexes.
     pub form: Option<u64>,
@@ -595,17 +633,30 @@ impl Glyph {
     /// recorded as such rather than silently treated as complete.
     #[must_use]
     pub fn conservative_box(&self) -> Rect {
+        // TEXT SPACE THROUGH THE TEXT MATRIX, glyph space through the glyph matrix. See
+        // `text_to_page` for what conflating the two measured.
         let advance = Rect {
             left: 0.0,
             bottom: 0.0,
-            right: self.advance,
+            right: self.advance_with_horizontal_scale(),
             top: self.font_size,
         }
-        .transformed(&self.to_page);
+        .transformed(&self.text_to_page);
         match self.font_bbox {
             Some(bbox) => advance.union(&bbox.transformed(&self.to_page)),
             None => advance,
         }
+    }
+
+    /// The advance with `Tz` applied, which is the width it occupies on the page.
+    ///
+    /// `advance` is recorded without `Tz` because that is the quantity a `TJ` adjustment is
+    /// expressed against. `Tz` belongs in the box, and nowhere else.
+    fn advance_with_horizontal_scale(&self) -> f64 {
+        if self.font_size == 0.0 {
+            return self.advance;
+        }
+        self.advance * (self.scaled_font_size / self.font_size)
     }
 }
 
@@ -1917,6 +1968,15 @@ fn show(
             return Refusal::NonFiniteGeometry
                 .refuse("a glyph transform that composes to a value that is not finite");
         }
+        // TEXT SPACE -> PAGE SPACE. The same tail as `to_page` without the font matrix and the
+        // font size, because the advance and the font size are already text-space quantities.
+        let text_to_page = Matrix::translate(0.0, state.text.rise)
+            .then(&place.text)
+            .then(&state.ctm);
+        if !text_to_page.is_finite() {
+            return Refusal::NonFiniteGeometry
+                .refuse("a text transform that composes to a value that is not finite");
+        }
         let origin = place.text.then(&state.ctm).apply(0.0, state.text.rise);
 
         let width = metrics.width * metrics.font_matrix.a;
@@ -1935,12 +1995,15 @@ fn show(
         let glyph = Glyph {
             origin,
             to_page,
+            text_to_page,
             advance: width * state.text.font_size,
             font_bbox: metrics.font_bbox,
             font_size: state.text.font_size,
             scaled_font_size: state.text.font_size * scale,
             displacement,
             source: GlyphSource {
+                font: font.clone(),
+                code,
                 form: shown.form,
                 operation: at.0,
                 operand: at.1,
@@ -3116,7 +3179,7 @@ mod tests {
         // in this suite keys on it too -- so a test could assert the right refusal for the
         // wrong reason, and the user would be told the wrong thing.
         let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
-        let mut stray = glyphs[1];
+        let mut stray = glyphs[1].clone();
         stray.source.operation = (9_999, 10_000);
         assert_refused_bytes(
             remove_glyphs(&content, None, &[stray]),
@@ -3133,7 +3196,7 @@ mod tests {
             .iter()
             .find(|operation| operation.operator == b"cm")
             .expect("the fixture has a `cm`");
-        let mut stray = glyphs[1];
+        let mut stray = glyphs[1].clone();
         stray.source.operation = cm.span;
         assert_refused_bytes(
             remove_glyphs(content, None, &[stray]),

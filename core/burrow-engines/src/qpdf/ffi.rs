@@ -581,6 +581,26 @@ unsafe extern "C" {
         n: c_int,
     ) -> QpdfObjectHandle;
 
+    /// `void qpdf_oh_set_array_item(qpdf_data qpdf, qpdf_oh oh, int at, qpdf_oh item)` —
+    /// `qpdf-c.h:862`.
+    /// **Trapped** via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
+    ///
+    /// Replaces in place, so it does **not** renumber — unlike `qpdf_oh_erase_item` above,
+    /// whose renumbering is why the pruning walks backwards.
+    ///
+    /// Declared for font surgery. `/Widths` is **positional**: the width for code `c` is at
+    /// index `c - /FirstChar`, so an entry cannot be removed without moving every later code's
+    /// width onto the wrong glyph. Zeroing the removed ones keeps the array's shape and says
+    /// nothing about what was there. Building a replacement array is the other route and it is
+    /// closed — `qpdf_oh_new_array` is not trapped and does not meet
+    /// `engines/qpdf-untrapped-accepted.toml`'s non-parsing bar.
+    pub(super) fn qpdf_oh_set_array_item(
+        qpdf: QpdfData,
+        oh: QpdfObjectHandle,
+        at: c_int,
+        item: QpdfObjectHandle,
+    );
+
     /// `void qpdf_oh_erase_item(qpdf_data qpdf, qpdf_oh oh, int at)` — `qpdf-c.h:864`.
     /// **Trapped** via `do_with_oh_void` -> `do_with_oh` -> `trap_oh_errors`.
     ///

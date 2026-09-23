@@ -65,6 +65,7 @@ pub mod names;
 pub mod ops;
 pub mod region;
 pub mod strings;
+pub mod tounicode;
 
 pub use contents::{Contents, Edit};
 pub use dict::top_level_keys;

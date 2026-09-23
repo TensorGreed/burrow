@@ -140,6 +140,20 @@ type ObjectId = (c_int, c_int);
 #[derive(Debug, Default)]
 pub(crate) struct FormUseCounts {
     counts: BTreeMap<ObjectId, usize>,
+    /// Which pages use each font object.
+    ///
+    /// # Why pages and not a count
+    ///
+    /// A form's question is "is it drawn more than once"; a font's is different. Font surgery
+    /// removes `/Widths`, `/ToUnicode` and `/Differences` entries for codes nothing draws any
+    /// more, and a font is shared by nearly every multi-page document — so refusing on a shared
+    /// font would refuse nearly every multi-page document, and editing one in place reflows
+    /// text on pages nobody redacted. That second outcome is **corruption, not leakage**, and
+    /// it is worse: the other page still says something, and it says something different.
+    ///
+    /// So the rule is neither refuse-always nor edit-always: **cut a font only when every page
+    /// that uses it is being redacted in this operation.** That needs the set, not a total.
+    fonts: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
 }
 
 impl FormUseCounts {
@@ -155,6 +169,47 @@ impl FormUseCounts {
     #[cfg(test)]
     pub(crate) fn all(&self) -> &BTreeMap<ObjectId, usize> {
         &self.counts
+    }
+
+    /// The fonts whose every using page is in `redacted`, so cutting them changes nothing else.
+    ///
+    /// # The rule, and why it is this one
+    ///
+    /// Editing a font used by a page outside the operation reflows that page's text — the
+    /// glyphs are still there, at different widths, so it renders and says something slightly
+    /// different. Corruption rather than leakage, and invisible to §6's read-back because that
+    /// asks about the page it was given.
+    ///
+    /// Refusing whenever a font is shared would refuse nearly every multi-page document, since
+    /// one font per document is the ordinary case rather than the exotic one. Copy-on-write is
+    /// the answer that serves both, and it hits the same untrapped-verb wall as forms —
+    /// `qpdf_oh_new_dictionary` is not on the trapped list either. ADR 0029 records both under
+    /// one condition for revisiting.
+    ///
+    /// So: cut when the operation already covers every page that would be affected, and
+    /// otherwise leave the font intact and disclose it (§7).
+    pub(crate) fn fonts_wholly_within(
+        &self,
+        redacted: &std::collections::BTreeSet<usize>,
+    ) -> std::collections::BTreeSet<ObjectId> {
+        self.fonts
+            .iter()
+            .filter(|(_, pages)| pages.is_subset(redacted))
+            .map(|(font, _)| *font)
+            .collect()
+    }
+
+    /// Which pages use each font.
+    pub(crate) const fn font_pages_map(
+        &self,
+    ) -> &BTreeMap<ObjectId, std::collections::BTreeSet<usize>> {
+        &self.fonts
+    }
+
+    /// Which pages use each font, for the survey and the tests.
+    #[cfg(test)]
+    pub(crate) fn font_pages(&self) -> &BTreeMap<ObjectId, std::collections::BTreeSet<usize>> {
+        &self.fonts
     }
 }
 
@@ -179,6 +234,10 @@ pub(crate) fn count_form_uses(
         container: None,
         fonts_read: BTreeSet::new(),
         dictionaries_read: 0,
+        page_fonts: BTreeMap::new(),
+        container_fonts: BTreeMap::new(),
+        page_reaches: BTreeMap::new(),
+        at_page: 0,
     };
     let pages = document.page_count()?;
     for index in 0..pages {
@@ -195,11 +254,52 @@ pub(crate) fn count_form_uses(
         if let Some(error) = document.take_error() {
             return Err(error);
         }
+        walk.at_page = at;
         walk.page(&page)?;
     }
     Ok(FormUseCounts {
         counts: propagate(&walk.from_pages, &walk.edges),
+        fonts: join_fonts_to_pages(&walk),
     })
+}
+
+/// Which pages reach each font, joining the per-container sets over the reference graph.
+///
+/// A font named inside a form that page 3 draws is a font page 3 uses, and cutting it changes
+/// page 3 — so the closure matters and a direct-references-only join would under-report it,
+/// which is the direction that cuts a font somebody else still needs.
+fn join_fonts_to_pages(walk: &Walk<'_>) -> BTreeMap<ObjectId, std::collections::BTreeSet<usize>> {
+    let mut fonts: BTreeMap<ObjectId, std::collections::BTreeSet<usize>> = BTreeMap::new();
+    for (page, direct) in &walk.page_reaches {
+        // Everything this page reaches, transitively. Bounded by the graph, which the cycle
+        // check has already established is acyclic.
+        let mut seen: std::collections::BTreeSet<ObjectId> = direct.clone();
+        let mut stack: Vec<ObjectId> = direct.iter().copied().collect();
+        while let Some(object) = stack.pop() {
+            for child in walk
+                .edges
+                .get(&object)
+                .into_iter()
+                .flatten()
+                .map(|(c, _)| *c)
+            {
+                if seen.insert(child) {
+                    stack.push(child);
+                }
+            }
+        }
+        for container in &seen {
+            for font in walk.container_fonts.get(container).into_iter().flatten() {
+                fonts.entry(*font).or_default().insert(*page);
+            }
+        }
+    }
+    for (page, named) in &walk.page_fonts {
+        for font in named {
+            fonts.entry(*font).or_default().insert(*page);
+        }
+    }
+    fonts
 }
 
 /// Push the page-level counts down the reference graph.
@@ -258,6 +358,24 @@ struct Walk<'a> {
     fonts_read: BTreeSet<ObjectId>,
     /// How many resource dictionaries have been read, against [`MAX_RESOURCE_DICTIONARIES`].
     dictionaries_read: usize,
+    /// Fonts each page names directly, and fonts each container names.
+    ///
+    /// # Collected separately, then joined
+    ///
+    /// The memo that makes this walk linear -- a subtree is descended once -- is right for
+    /// counting form *references*, which are propagated afterwards. It is wrong for a font's
+    /// **page set**: a subtree skipped on page 7 because page 3 already walked it would lose
+    /// page 7 from every font inside it, and the rule would then cut a font page 7 still uses.
+    /// Clearing the memo per page fixes that and double-counts every form edge instead;
+    /// measured, it broke the nested-form fixture.
+    ///
+    /// So the page set is computed from the graph rather than during it: which fonts each
+    /// container names, which objects each page reaches, and a closure over the edges.
+    page_fonts: BTreeMap<usize, std::collections::BTreeSet<ObjectId>>,
+    container_fonts: BTreeMap<ObjectId, std::collections::BTreeSet<ObjectId>>,
+    page_reaches: BTreeMap<usize, std::collections::BTreeSet<ObjectId>>,
+    /// The page whose subtree is being walked.
+    at_page: usize,
 }
 
 impl Walk<'_> {
@@ -359,7 +477,13 @@ impl Walk<'_> {
         let object = entry.object()?;
         if count {
             match self.container {
-                None => *self.from_pages.entry(object).or_insert(0) += 1,
+                None => {
+                    *self.from_pages.entry(object).or_insert(0) += 1;
+                    self.page_reaches
+                        .entry(self.at_page)
+                        .or_default()
+                        .insert(object);
+                }
                 Some(parent) => {
                     *self
                         .edges
@@ -413,6 +537,26 @@ impl Walk<'_> {
             if let Some(error) = self.document.take_error() {
                 return Err(error);
             }
+            // EVERY FONT, not only the Type 3 ones: the page set is what decides whether a
+            // font may be cut, and a TrueType font shared with another page matters exactly as
+            // much as a Type 3 one. Recorded against the CONTAINER, and joined to pages after
+            // the walk -- see `Walk::page_fonts`.
+            let identity = font.object()?;
+            match self.container {
+                None => {
+                    self.page_fonts
+                        .entry(self.at_page)
+                        .or_default()
+                        .insert(identity);
+                }
+                Some(parent) => {
+                    self.container_fonts
+                        .entry(parent)
+                        .or_default()
+                        .insert(identity);
+                }
+            }
+
             let Some(procs) = self.dictionary_key(&font, &CHARPROCS)? else {
                 continue;
             };
@@ -538,5 +682,22 @@ impl Walk<'_> {
             .iter()
             .map(|key| Name::from_stripped(key))
             .collect()
+    }
+}
+
+/// The counts, as the geometry layer's sharing rule asks for them.
+///
+/// `pdfsyntax` holds the rule and knows nothing about qpdf object identities, so the packing
+/// happens here — the same `(number << 16) | generation` shape `Form::id` uses, which is what
+/// the walk put on every glyph.
+impl crate::pdfsyntax::geometry::FormUses for FormUseCounts {
+    fn uses(&self, form: u64) -> Result<usize> {
+        let number = i32::try_from(form >> 16).map_err(|_| {
+            Error::Internal("pdf sharing: a form identity that is not an object number".to_owned())
+        })?;
+        let generation = i32::try_from(form & 0xffff).map_err(|_| {
+            Error::Internal("pdf sharing: a form identity with no generation".to_owned())
+        })?;
+        Ok(self.uses((number, generation)))
     }
 }

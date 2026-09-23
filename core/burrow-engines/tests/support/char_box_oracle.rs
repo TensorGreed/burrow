@@ -186,6 +186,8 @@ unsafe extern "C" {
     fn FPDF_CloseDocument(document: *mut c_void);
     fn FPDF_LoadPage(document: *mut c_void, index: c_int) -> *mut c_void;
     fn FPDF_ClosePage(page: *mut c_void);
+    fn FPDF_GetPageWidthF(page: *mut c_void) -> f32;
+    fn FPDF_GetPageHeightF(page: *mut c_void) -> f32;
     fn FPDFText_LoadPage(page: *mut c_void) -> *mut c_void;
     fn FPDFText_ClosePage(text_page: *mut c_void);
     fn FPDFText_CountChars(text_page: *mut c_void) -> c_int;
@@ -275,6 +277,40 @@ pub struct OracleChar {
 pub fn chars_on_page(bytes: &[u8], index: i32) -> Vec<OracleChar> {
     let owned = bytes.to_vec();
     on_the_pdfium_thread(move || read_chars(&owned, index))
+}
+
+/// The page's size in points, as PDFium computes it.
+///
+/// A region is measured from the top of the page and PDFium's origins are measured from the
+/// bottom, so a test that builds a region around a character PDFium found needs the height to
+/// convert between them. Reading it from PDFium rather than from the fixture's `/MediaBox`
+/// keeps the region derived entirely from the oracle: a region built from burrow's own reading
+/// of the page would be the #111 circularity, the instrument that decided what to remove also
+/// deciding where to look.
+///
+/// # Panics
+///
+/// If PDFium cannot open the document or the page.
+#[must_use]
+pub fn page_size(bytes: &[u8], index: i32) -> (f64, f64) {
+    let owned = bytes.to_vec();
+    on_the_pdfium_thread(move || {
+        // SAFETY: PDFium does not copy the buffer, and `owned` outlives every call below.
+        let doc =
+            unsafe { FPDF_LoadMemDocument64(owned.as_ptr().cast(), owned.len(), std::ptr::null()) };
+        assert!(!doc.is_null(), "PDFium could not open the fixture");
+        // SAFETY: `doc` is live and `index` is a page in it.
+        let page = unsafe { FPDF_LoadPage(doc, index) };
+        assert!(!page.is_null(), "PDFium could not load page {index}");
+        // SAFETY: `page` is live.
+        let size = unsafe { (FPDF_GetPageWidthF(page), FPDF_GetPageHeightF(page)) };
+        // SAFETY: each handle is live and released once, innermost first.
+        unsafe {
+            FPDF_ClosePage(page);
+            FPDF_CloseDocument(doc);
+        }
+        (f64::from(size.0), f64::from(size.1))
+    })
 }
 
 /// The worker every PDFium call in this module runs on. See [`chars_on_page`].

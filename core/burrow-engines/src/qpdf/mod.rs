@@ -39,6 +39,8 @@ mod name;
 mod limits;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod prune;
+mod redact_frame;
+mod redact_steps;
 mod reorder;
 mod resources;
 #[cfg(test)]
@@ -565,4 +567,31 @@ pub(crate) fn walk_first_page_for_probe(
     let content = page.page_content()?;
     let resources = resources::PageResources::of(&page)?;
     crate::pdfsyntax::geometry::glyphs_in(&content, &resources)
+}
+
+/// Redact one page of a document, for the differential test and nothing else.
+///
+/// Crate-internal per ADR 0022: there is no caller-visible redaction until #134's verification
+/// exists. `redact_probe` is the one seam and it goes when that lands.
+pub(crate) fn redact_page_for_probe(
+    bytes: &[u8],
+    page: usize,
+    redacted: std::collections::BTreeSet<usize>,
+    region: crate::pdfsyntax::region::Region,
+) -> Result<(Vec<u8>, crate::redact::Report)> {
+    use std::sync::Arc;
+
+    use burrow_types::{Clock, Limits, ManualClock};
+
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(0));
+    let options = crate::OpenOptions::new(Limits::default(), Arc::clone(&clock));
+    let (document, pages, _, deadline) =
+        open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+    if page >= usize::try_from(pages).unwrap_or(0) {
+        return Err(Error::Malformed(
+            "pdf redaction: a page index past the end of the document".to_owned(),
+        ));
+    }
+    let steps = redact_steps::QpdfRedaction::new(document, page, region, deadline, clock)?;
+    crate::redact::run(steps, redacted)
 }

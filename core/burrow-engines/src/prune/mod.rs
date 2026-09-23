@@ -212,6 +212,22 @@ const CHARPROCS_KEY: &[u8] = b"/CharProcs";
 /// # Errors
 ///
 /// Whatever qpdf latched while reading a page or its `/Annots`.
+/// The keys on a page dictionary that ADR 0029 §2's allowlist does **not** name.
+///
+/// Shared with the redaction rather than written again: two lists that are supposed to agree
+/// are two lists that can disagree, and the one that drifts is the one nobody is looking at.
+/// `split`'s pruning and redaction's page strip are the same rule about the same keys.
+///
+/// # Errors
+///
+/// Whatever parsing the unparsed dictionary failed with.
+pub(crate) fn page_keys_outside_the_allowlist(unparsed: &[u8]) -> Result<Vec<Vec<u8>>> {
+    Ok(crate::pdfsyntax::dict::top_level_keys(unparsed)?
+        .into_iter()
+        .filter(|key| !KEPT_PAGE_KEYS.contains(&key.as_slice()))
+        .collect())
+}
+
 pub(crate) fn annots_sharing<G: ObjectGraph>(
     graph: &G,
     pages: u64,

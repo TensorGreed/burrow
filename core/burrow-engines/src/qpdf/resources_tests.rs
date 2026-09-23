@@ -159,3 +159,90 @@ fn walk_bytes(bytes: &[u8]) -> Result<usize, String> {
         .map(|glyphs| glyphs.len())
         .map_err(|e| format!("{e:?}"))
 }
+
+/// How much of the corpus can cut its fonts, under the every-using-page-is-redacted rule.
+///
+/// # Why this is measured rather than assumed
+///
+/// The rule was chosen because refusing on any shared font would refuse nearly every
+/// multi-page document. That reasoning is only worth anything if the rule it produced actually
+/// lets documents through, so the rate is counted: per fixture, redacting **page 0 alone** —
+/// the commonest operation — how many of its fonts may be cut, and how many must be left
+/// intact and disclosed under §7.
+#[test]
+fn how_much_of_the_corpus_can_cut_its_fonts() {
+    let page_zero: std::collections::BTreeSet<usize> = [0].into_iter().collect();
+    let mut examined = 0;
+    let mut all_cuttable = 0;
+    let mut some_retained = 0;
+    let mut fontless = 0;
+
+    eprintln!("\n  FONT-CUTTING SURVEY: redacting page 0 alone");
+    for directory in [
+        "../../tests/redaction/fixtures",
+        "../../tests/conformance/fixtures",
+    ] {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(directory);
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        let mut names: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        names.sort();
+        for path in names {
+            if path.extension().and_then(|e| e.to_str()) != Some("pdf") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok((document, _, _, deadline)) = open_document(
+                bytes.into_boxed_slice(),
+                &OpenOptions::new(
+                    Limits::default(),
+                    Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+                ),
+            ) else {
+                continue;
+            };
+            let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(0));
+            let Ok(counts) = super::sharing::count_form_uses(&document, &deadline, &clock) else {
+                continue;
+            };
+            examined += 1;
+            let fonts = counts.font_pages();
+            let cuttable = counts.fonts_wholly_within(&page_zero);
+            if fonts.is_empty() {
+                fontless += 1;
+                continue;
+            }
+            if cuttable.len() == fonts.len() {
+                all_cuttable += 1;
+                eprintln!("      {name:<38} {} font(s), all cuttable", fonts.len());
+            } else {
+                some_retained += 1;
+                eprintln!(
+                    "      {name:<38} {} font(s), {} cuttable, {} retained and disclosed",
+                    fonts.len(),
+                    cuttable.len(),
+                    fonts.len() - cuttable.len()
+                );
+            }
+        }
+    }
+    eprintln!(
+        "\n  of {examined} openable fixture(s): {all_cuttable} cut every font, \
+         {some_retained} retain at least one, {fontless} have none"
+    );
+
+    // NON-VACUITY: a survey that opened nothing would report zero of everything and read as
+    // "the rule never blocks".
+    assert!(
+        examined >= 15,
+        "the survey examined {examined} fixture(s), too few to be both corpora"
+    );
+}

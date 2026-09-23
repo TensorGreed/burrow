@@ -183,6 +183,24 @@ pub const MAX_TOTAL_OPERANDS: usize = 1_048_576;
 /// is also what stops a single 256 MiB run of name characters being copied into a `Vec` verbatim.
 pub const MAX_OPERAND_BYTES: usize = 255;
 
+/// The most items one array or dictionary operand may hold.
+///
+/// Separate from [`MAX_OPERANDS`], and the separation is the fix for a defect this module
+/// shipped with. An array's items were pushed through the same check as an operation's operand
+/// run, so a `TJ` array was capped at sixty-four entries — and a `TJ` array holds one entry per
+/// kerned glyph pair, so an ordinary line of justified text has more than that. `operations`
+/// returned `Unsupported("a content stream gives an operator more operands than burrow will
+/// read")` on a stream whose operator had exactly one operand. No fixture had a long enough
+/// array, so nothing caught it until the redaction rewriter emitted one and burrow refused to
+/// read its own output.
+///
+/// The number is not the aggregate bound — [`MAX_TOTAL_OPERANDS`] is, and it is threaded
+/// through composites too, so a million one-item arrays and one million-item array are bounded
+/// by the same counter. This exists so that a *single* composite cannot be the whole of it, and
+/// is set far above what a producer writes: the redaction corpus's largest measured array is
+/// recorded in `docs/adr/0029`'s amendment.
+pub const MAX_COMPOSITE_ITEMS: usize = 65_536;
+
 /// Every operation in `content`, in order.
 ///
 /// # Errors
@@ -337,27 +355,25 @@ fn read_composite(
             Token::ArrayOpen => {
                 let nested =
                     read_composite(lexer, content, span.0, Bracket::Array, depth + 1, seen)?;
-                push_operand(&mut items, seen, nested)?;
+                push_item(&mut items, seen, nested)?;
             }
             Token::DictOpen => {
                 let nested =
                     read_composite(lexer, content, span.0, Bracket::Dict, depth + 1, seen)?;
-                push_operand(&mut items, seen, nested)?;
+                push_item(&mut items, seen, nested)?;
             }
             Token::Brace => {
                 return Err(Error::Malformed(
                     "pdf syntax: a '{' or '}' in a content stream".to_owned(),
                 ));
             }
-            Token::Number => push_operand(&mut items, seen, number(content, span)?)?,
-            Token::Str => push_operand(&mut items, seen, Operand::Str { span })?,
-            Token::Name(value) => push_operand(&mut items, seen, Operand::Name { span, value })?,
+            Token::Number => push_item(&mut items, seen, number(content, span)?)?,
+            Token::Str => push_item(&mut items, seen, Operand::Str { span })?,
+            Token::Name(value) => push_item(&mut items, seen, Operand::Name { span, value })?,
             // Inside brackets a bare word is `true`, `false`, `null` or a `R` reference's `R` --
             // a VALUE, never an operator. This is the one place the positional rule needs the
             // context, and it gets it from the bracket rather than from a list of words.
-            Token::Keyword(value) => {
-                push_operand(&mut items, seen, Operand::Keyword { span, value })?
-            }
+            Token::Keyword(value) => push_item(&mut items, seen, Operand::Keyword { span, value })?,
         }
     }
     Err(Error::Malformed(
@@ -378,6 +394,27 @@ fn push_operand(into: &mut Vec<Operand>, seen: &mut usize, operand: Operand) -> 
             "a content stream gives an operator more operands than burrow will read".to_owned(),
         ));
     }
+    push_checked(into, seen, operand)
+}
+
+/// Push into an array or dictionary, refusing past [`MAX_COMPOSITE_ITEMS`].
+///
+/// The cap an item is measured against is the composite's, not [`MAX_OPERANDS`]: see
+/// [`MAX_COMPOSITE_ITEMS`] for the defect that distinction closes. Everything else — the
+/// stream-wide total and the per-name byte cap — is shared, which is why both routes end in
+/// [`push_checked`].
+fn push_item(into: &mut Vec<Operand>, seen: &mut usize, operand: Operand) -> Result<()> {
+    if into.len() >= MAX_COMPOSITE_ITEMS {
+        return Err(Error::Unsupported(
+            "a content stream holds an array or dictionary with more items than burrow will read"
+                .to_owned(),
+        ));
+    }
+    push_checked(into, seen, operand)
+}
+
+/// The checks both routes share: the stream-wide total and the per-operand byte cap.
+fn push_checked(into: &mut Vec<Operand>, seen: &mut usize, operand: Operand) -> Result<()> {
     if *seen >= MAX_TOTAL_OPERANDS {
         return Err(Error::Unsupported(
             "a content stream holds more operands than burrow will read".to_owned(),
@@ -496,7 +533,9 @@ pub fn numbers_in(fragment: &[u8]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_OPERANDS, Operand, Operation, operations};
+    use super::{
+        MAX_COMPOSITE_ITEMS, MAX_OPERANDS, MAX_TOTAL_OPERANDS, Operand, Operation, operations,
+    };
 
     fn ops(content: &[u8]) -> Vec<Operation> {
         operations(content).expect("reads")
@@ -707,6 +746,60 @@ mod tests {
         }
         content.extend_from_slice(b"cm");
         assert!(operations(&content).is_err());
+    }
+
+    #[test]
+    fn an_ordinary_kerned_line_is_not_refused_for_having_operands() {
+        // The defect `MAX_COMPOSITE_ITEMS` closes. A `TJ` array holds one entry per kerned glyph
+        // pair, so a justified line of forty characters is already past `MAX_OPERANDS`; this
+        // used to come back as "gives an operator more operands than burrow will read" about an
+        // operator with exactly one operand. Two hundred items is an ordinary paragraph line.
+        let mut content = b"BT [".to_vec();
+        for step in 0..100 {
+            content.extend_from_slice(format!("(ab) -{step} ").as_bytes());
+        }
+        content.extend_from_slice(b"] TJ ET");
+        let read = ops(&content);
+        let Some(Operand::Array { items, .. }) = read[1].operands.first() else {
+            panic!("the TJ operand is an array");
+        };
+        assert_eq!(items.len(), 200);
+        assert_eq!(read[1].operands.len(), 1, "one operand: the array");
+    }
+
+    #[test]
+    fn a_composite_past_its_own_cap_is_a_refusal_naming_the_composite() {
+        let mut content = b"[".to_vec();
+        for _ in 0..=MAX_COMPOSITE_ITEMS {
+            content.extend_from_slice(b"0 ");
+        }
+        content.extend_from_slice(b"] TJ");
+        let error = operations(&content).expect_err("past MAX_COMPOSITE_ITEMS");
+        // Named for what it is. The whole reason this cap is separate is that the operand
+        // message described a condition that was not the one that fired.
+        assert!(
+            format!("{error}").contains("array or dictionary"),
+            "the refusal names the composite, got: {error}"
+        );
+    }
+
+    #[test]
+    fn the_stream_wide_total_still_counts_items_inside_composites() {
+        // `MAX_COMPOSITE_ITEMS` bounds one composite. The aggregate is what stops a stream of
+        // them, and it is only a bound if composite items are counted into it -- so this is the
+        // control on the constant above rather than a second test of it.
+        let mut content = Vec::new();
+        let arrays = MAX_TOTAL_OPERANDS / MAX_COMPOSITE_ITEMS + 1;
+        for _ in 0..arrays {
+            content.push(b'[');
+            content.extend_from_slice(b"0 ".repeat(MAX_COMPOSITE_ITEMS).as_slice());
+            content.extend_from_slice(b"] TJ ");
+        }
+        let error = operations(&content).expect_err("past MAX_TOTAL_OPERANDS");
+        assert!(
+            format!("{error}").contains("more operands than burrow will read"),
+            "got: {error}"
+        );
     }
 
     #[test]

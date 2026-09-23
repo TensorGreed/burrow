@@ -37,3 +37,19 @@ pub fn walk_first_page(_bytes: &[u8]) -> Result<Vec<Glyph>> {
 pub use crate::pdfsyntax::geometry::Glyph as ProbeGlyph;
 
 const _: fn(&[u8]) -> Result<Vec<Glyph>> = walk_first_page;
+
+/// Redact one page and return the bytes and the report.
+///
+/// # Errors
+///
+/// Every refusal the walk, the sharing rule and the write path raise. A failure discards the
+/// document: there is no partial output.
+#[cfg(all(feature = "native-engines", burrow_native_engines))]
+pub fn redact_page(
+    bytes: &[u8],
+    page: usize,
+    redacted: std::collections::BTreeSet<usize>,
+    region: crate::pdfsyntax::region::Region,
+) -> Result<(Vec<u8>, crate::redact::Report)> {
+    crate::qpdf::redact_page_for_probe(bytes, page, redacted, region)
+}

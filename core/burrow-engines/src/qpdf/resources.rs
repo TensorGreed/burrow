@@ -132,8 +132,57 @@ impl<'a> PageResources<'a> {
         })
     }
 
+    /// The resource dictionary, for a caller that walks it itself.
+    pub(crate) const fn dictionary(&self) -> &ObjectHandle<'a> {
+        &self.dictionary
+    }
+
     fn category(&self, category: &Name) -> ObjectHandle<'a> {
         self.dictionary.key(category)
+    }
+
+    /// The object identity of the font a content stream selects by `name`, packed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] when the resources do not name that font.
+    pub(crate) fn font_object(&self, name: &[u8]) -> Result<u64> {
+        let key = Name::from_stripped(name)?;
+        let font = self.category(&FONT).key(&key);
+        if font.type_code() != object_type::DICTIONARY {
+            return Err(Error::Malformed(
+                "pdf resources [font-missing]: the content stream selects a font the page's \
+                 resources do not name"
+                    .to_owned(),
+            ));
+        }
+        let (number, generation) = font.object()?;
+        Ok(
+            (u64::from(number.unsigned_abs()) << 16)
+                | u64::from(generation.unsigned_abs() & 0xffff),
+        )
+    }
+
+    /// The font dictionary a content stream selects by `name`.
+    ///
+    /// Separate from [`Self::font_object`], which answers the identity question. This hands
+    /// back the handle, for the two callers that must read further into the font: the Type 3
+    /// `/CharProcs` check and font surgery.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] when the resources do not name that font.
+    pub(crate) fn font_handle(&self, name: &[u8]) -> Result<ObjectHandle<'a>> {
+        let key = Name::from_stripped(name)?;
+        let font = self.category(&FONT).key(&key);
+        if font.type_code() != object_type::DICTIONARY {
+            return Err(Error::Malformed(
+                "pdf resources [font-missing]: the content stream selects a font the page's \
+                 resources do not name"
+                    .to_owned(),
+            ));
+        }
+        Ok(font)
     }
 
     fn font_facts(&self, name: &[u8]) -> Result<FontFacts> {
@@ -423,7 +472,7 @@ fn names(handle: &ObjectHandle<'_>, want: &Name) -> bool {
 ///
 /// `as` truncates silently and this crate denies it: a `/FirstChar` of `65.7` is not a
 /// character code, and rounding it to 65 would place every glyph in the font by one code.
-fn whole(value: f64) -> Option<i64> {
+pub(super) fn whole(value: f64) -> Option<i64> {
     (value.is_finite() && value.fract() == 0.0 && value.abs() < 9e15).then(|| {
         // Exact: the guard above establishes the value is integral and inside i64.
         #[expect(
