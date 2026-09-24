@@ -1122,39 +1122,47 @@ def nearmiss_ordinary_string_in_a_property_list() -> bytes:
     return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
 
 
-CASES: list[tuple[str, str, str]] = [
-    # (filename stem, refusal it probes, expected verdict)
-    ("evade-image-in-form", "image", "refuse"),
-    ("evade-inline-image", "image", "refuse"),
-    ("evade-image-as-pattern", "image", "refuse"),
-    ("evade-image-in-type3-glyph", "image", "refuse"),
-    ("evade-text-in-type3-via-form", "Type 3 procedure", "refuse"),
-    ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure", "handle"),
-    ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure", "refuse"),
-    ("nearmiss-form-carrying-its-own-font", "Type 3 procedure", "handle"),
-    ("evade-tounicode-in-a-form-local-font", "font surgery", "refuse"),
-    ("nearmiss-tounicode-on-a-page-font", "font surgery", "handle"),
-    ("nearmiss-image-outside-region", "image", "handle"),
-    ("evade-paths-in-form", "vector paths", "refuse"),
-    ("evade-paths-in-type3-glyph", "vector paths", "refuse"),
-    ("nearmiss-paths-outside-region", "vector paths", "handle"),
-    ("evade-widget-on-another-page", "/AcroForm", "refuse"),
-    ("evade-field-with-no-widget", "/AcroForm", "refuse"),
-    ("nearmiss-annotation-not-a-widget", "/AcroForm", "handle"),
-    ("evade-struct-without-structparents", "/StructTreeRoot", "refuse"),
-    ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot", "handle"),
-    ("evade-oc-two-levels-down", "optional content", "refuse"),
-    ("nearmiss-nested-forms-no-oc", "optional content", "handle"),
-    ("evade-actualtext-around-a-form", "/ActualText", "refuse"),
-    ("evade-actualtext-inside-a-form", "/ActualText", "refuse"),
-    ("evade-actualtext-around-a-nested-form", "/ActualText", "refuse"),
-    ("evade-actualtext-in-the-middle-form", "/ActualText", "refuse"),
-    ("evade-actualtext-over-a-form-without-resources", "/ActualText", "refuse"),
-    ("evade-actualtext-under-a-form-with-two-parents", "/ActualText", "refuse"),
-    ("evade-actualtext-on-a-page-that-draws-nothing-itself", "/ActualText", "refuse"),
-    ("nearmiss-actualtext-around-an-untouched-form", "/ActualText", "handle"),
-    ("evade-actualtext-named-outside-key-position", "/ActualText", "refuse"),
-    ("nearmiss-ordinary-string-in-a-property-list", "/ActualText", "handle"),
+CASES: list[tuple[str, str]] = [
+    # (filename stem, refusal it probes)
+    #
+    # THE VERDICT COLUMN IS GONE. It held "refuse" or "handle" per fixture, was interpolated into
+    # a string this script never prints, and was read only by `startswith` on the *stem* -- so it
+    # was dead. It was also wrong: all seven `evade-actualtext-*` entries still said "refuse"
+    # after they started redacting, while `tests/redaction/manifest.toml` said "handle". Two
+    # sources of truth, one of them stale, neither checked against the other. The manifest owns
+    # the verdict and `tools/check-redaction-corpus.py` validates it; this list owns only which
+    # refusal each fixture probes, which is what the twin-coverage report below needs.
+    ("evade-image-in-form", "image"),
+    ("evade-inline-image", "image"),
+    ("evade-image-as-pattern", "image"),
+    ("evade-image-in-type3-glyph", "image"),
+    ("evade-text-in-type3-via-form", "Type 3 procedure"),
+    ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
+    ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
+    ("nearmiss-form-carrying-its-own-font", "Type 3 procedure"),
+    ("evade-tounicode-in-a-form-local-font", "font surgery"),
+    ("nearmiss-tounicode-on-a-page-font", "font surgery"),
+    ("nearmiss-image-outside-region", "image"),
+    ("evade-paths-in-form", "vector paths"),
+    ("evade-paths-in-type3-glyph", "vector paths"),
+    ("nearmiss-paths-outside-region", "vector paths"),
+    ("evade-widget-on-another-page", "/AcroForm"),
+    ("evade-field-with-no-widget", "/AcroForm"),
+    ("nearmiss-annotation-not-a-widget", "/AcroForm"),
+    ("evade-struct-without-structparents", "/StructTreeRoot"),
+    ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot"),
+    ("evade-oc-two-levels-down", "optional content"),
+    ("nearmiss-nested-forms-no-oc", "optional content"),
+    ("evade-actualtext-around-a-form", "/ActualText"),
+    ("evade-actualtext-inside-a-form", "/ActualText"),
+    ("evade-actualtext-around-a-nested-form", "/ActualText"),
+    ("evade-actualtext-in-the-middle-form", "/ActualText"),
+    ("evade-actualtext-over-a-form-without-resources", "/ActualText"),
+    ("evade-actualtext-under-a-form-with-two-parents", "/ActualText"),
+    ("evade-actualtext-on-a-page-that-draws-nothing-itself", "/ActualText"),
+    ("nearmiss-actualtext-around-an-untouched-form", "/ActualText"),
+    ("evade-actualtext-named-outside-key-position", "/ActualText"),
+    ("nearmiss-ordinary-string-in-a-property-list", "/ActualText"),
 ]
 
 BUILDERS = {
@@ -1204,7 +1212,7 @@ def main(argv: list[str]) -> int:
     written = 0
     by_refusal: dict[str, list[str]] = {}
 
-    for stem, refusal, verdict in CASES:
+    for stem, refusal in CASES:
         data = BUILDERS[stem]()
         path = out / f"{stem}.pdf"
         path.write_bytes(data)
@@ -1213,7 +1221,7 @@ def main(argv: list[str]) -> int:
         result = subprocess.run([str(qpdf), "--check", str(path)], capture_output=True, text=True)
         if result.returncode not in (0, 3):
             unreadable.append(f"{path.name}: {result.stdout.strip()[:200]}")
-        by_refusal.setdefault(refusal, []).append(f"{stem} -> {verdict}")
+        by_refusal.setdefault(refusal, []).append(stem)
         written += 1
 
     for refusal, names in by_refusal.items():

@@ -473,15 +473,10 @@ impl Steps for QpdfRedaction {
                 // because both are spans into these same bytes. See
                 // `remove_glyphs_and_carried_text`.
                 // COUNTED INTO A LOCAL, ADDED AFTER THE HANDLES GO. `page` borrows `self`,
-                // so `self.dropped_carried_text += …` here borrows it twice.
-                let dropped = carried_text_edits(
-                    contents.bytes(),
-                    &mine,
-                    None,
-                    &FormsReached::Named(&self.page_draws),
-                )?
-                .len();
-                let parts = remove_glyphs_and_carried_text(
+                // so `self.dropped_carried_text += …` here borrows it twice. The count comes
+                // back from the same walk that did the work; asking for it separately ran the
+                // covering-span walk twice per stream.
+                let (parts, dropped) = remove_glyphs_and_carried_text(
                     &contents,
                     None,
                     &mine,
@@ -521,9 +516,7 @@ impl Steps for QpdfRedaction {
                 // that -- so doing only the glyphs here would leave the text it replaces.
                 let empty = BTreeSet::new();
                 let draws = self.form_draws.get(&id).unwrap_or(&empty);
-                let dropped =
-                    carried_text_edits(&form, &mine, Some(id), &FormsReached::Named(draws))?.len();
-                let parts = remove_glyphs_and_carried_text(
+                let (parts, dropped) = remove_glyphs_and_carried_text(
                     &crate::pdfsyntax::contents::Contents::concatenate(&[&form])?,
                     Some(id),
                     &mine,

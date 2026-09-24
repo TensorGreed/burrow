@@ -1299,9 +1299,9 @@ pub fn carried_text_edits(
             // and leaving it emits it. Refused by name rather than leaked.
             Carried::OpaqueString => {
                 return Refusal::MarkedContentCarriesOpaqueString.refuse(
-                    "the selected text is inside a marked-content span whose properties hold a \
-                     string burrow cannot relate to the glyphs it is removing, so it cannot tell \
-                     whether that string repeats them",
+                    "the selected text is inside a marked-content span whose properties name \
+                     one of the entries that carry a span's text, in a position burrow cannot \
+                     remove it from, so it cannot tell whether that text repeats the glyphs",
                 );
             }
             Carried::Nothing => {}
@@ -1356,9 +1356,9 @@ fn without_carried_keys(dictionary: &[u8]) -> Result<Vec<u8>> {
         // knows and emit the one it does not. Decided on the rewritten bytes, so it cannot be
         // wrong about what actually survived.
         return Refusal::MarkedContentCarriesOpaqueString.refuse(
-            "the selected text is inside a marked-content span whose properties still name \
-             replacement text after burrow removed the entries it knows how to remove, so it \
-             cannot tell whether that text repeats the glyphs",
+            "the selected text is inside a marked-content span whose properties still name one \
+             of the entries that carry a span's text after burrow removed the ones it knows how \
+             to remove, so it cannot tell whether that text repeats the glyphs",
         );
     }
     if still_carries {
@@ -1745,6 +1745,13 @@ pub fn remove_glyphs_across(
 
 /// As [`remove_glyphs_across`], and also drop the text any covering span carries.
 ///
+/// Returns the rewritten elements **and how many property lists were stripped**, because the
+/// caller needs that number for the disclosure and the only other way to get it is to run the
+/// covering-span walk a second time. It did: `rewrite` called [`carried_text_edits`] for its
+/// `.len()` and then called this, which calls it again — doubling the worst case of the walk
+/// this module measured at 18.3s over 250,000 spans, and giving two answers to the question
+/// this module's own doc says must have one.
+///
 /// Both edit sets are computed against the **original** bytes and applied in one pass, because
 /// each is a span into those bytes: stripping first would move every glyph span, and stripping
 /// afterwards would be looking for glyphs that are no longer there to say which spans covered
@@ -1759,10 +1766,12 @@ pub fn remove_glyphs_and_carried_text(
     stream: Option<u64>,
     remove: &[Glyph],
     draws: &FormsReached<'_>,
-) -> Result<Vec<Vec<u8>>> {
+) -> Result<(Vec<Vec<u8>>, usize)> {
     let content = contents.bytes();
     let mut edits = glyph_edits(content, stream, remove)?;
-    for (span, replacement) in carried_text_edits(content, remove, stream, draws)? {
+    let carried = carried_text_edits(content, remove, stream, draws)?;
+    let dropped = carried.len();
+    for (span, replacement) in carried {
         // A PROPERTY LIST SPLIT ACROSS TWO `/Contents` ELEMENTS IS REFUSED BY NAME.
         //
         // §7.8.2 puts the divisions between lexical tokens, so a `BDC`'s dictionary may legally
@@ -1787,8 +1796,8 @@ pub fn remove_glyphs_and_carried_text(
         }
         edits.push(super::contents::Edit { span, replacement });
     }
-    edits.sort_by_key(|edit| edit.span);
-    contents.apply(&edits)
+    edits.sort_unstable_by_key(|edit| edit.span);
+    Ok((contents.apply(&edits)?, dropped))
 }
 
 /// The edits that remove `remove`'s glyphs from `content`, in ascending order.
@@ -4179,10 +4188,16 @@ mod tests {
             .expect("the fixture is readable");
             for (_, replacement) in &edits {
                 let text = String::from_utf8_lossy(replacement);
-                assert!(
-                    !text.contains("ActualText") && !text.contains("/Alt"),
-                    "a rewritten property list still carries text: {text}"
-                );
+                // EVERY KEY IN THE CONSTANT, not the two that were there when this was
+                // written. `/E` was added to `TEXT_CARRYING_KEYS` and not here, which left the
+                // helper guarding a smaller set than the thing it guards.
+                for key in super::super::TEXT_CARRYING_KEYS {
+                    let key = String::from_utf8_lossy(key);
+                    assert!(
+                        !text.contains(key.as_ref()),
+                        "a rewritten property list still carries /{key}: {text}"
+                    );
+                }
             }
             edits.len()
         }
@@ -4210,8 +4225,6 @@ mod tests {
             }
         }
 
-        /// Assert `content`'s own glyphs are allowed through.
-        #[track_caller]
         /// A carried key named where the rewriter cannot remove it is refused, not emitted.
         ///
         /// This shape — a *name* in array position rather than a key — is the gap the narrowing
@@ -4248,6 +4261,8 @@ mod tests {
             assert_allowed(b"/Span << /MCID 0 /Lang (en-US) >> BDC BT /F1 12 Tf (x) Tj ET EMC");
         }
 
+        /// Assert `content`'s own glyphs are allowed through.
+        #[track_caller]
         fn assert_allowed(content: &[u8]) {
             let glyphs = all_glyphs(content);
             match super::super::carried_text_edits(
@@ -4313,7 +4328,10 @@ mod tests {
 
         /// Assert a combined pass refused, by the named rule.
         #[track_caller]
-        fn assert_split_refusal(outcome: burrow_types::Result<Vec<Vec<u8>>>, rule: super::Refusal) {
+        fn assert_split_refusal(
+            outcome: burrow_types::Result<(Vec<Vec<u8>>, usize)>,
+            rule: super::Refusal,
+        ) {
             match outcome {
                 Err(error) => assert!(
                     rule.caught(&error),

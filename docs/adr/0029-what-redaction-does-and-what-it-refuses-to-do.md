@@ -2444,6 +2444,48 @@ Two fixtures, because a rule with probes and no corpus witness is a rule nothing
 `evade-actualtext-named-outside-key-position` (refuses) and
 `nearmiss-ordinary-string-in-a-property-list` (redacts).
 
+### A near-miss that was allowed to refuse, which is the same hole from the other side
+
+The near-miss fixture added above — `nearmiss-ordinary-string-in-a-property-list`, the `/Lang
+(en-US)` twin — **could not fail**. A code review reinstated the rejected wide rule with one line,
+and measured it: the fixture flipped from redacted to refused, the census moved 51/8 to 50/9, and
+`redaction_corpus` and `redaction_defences` both stayed green.
+
+The reason is the shape of the assertion rather than an oversight in the list. A refusal keeps
+the canary out of the output, so a rule that grows until it fires on the ordinary shape satisfies
+every byte-level check there is. `CARRIER_REFUSALS`, added in the same commit, closes the *other*
+half — a fixture refusing for an unrelated reason — and cannot close this one, because here the
+right rule fires on the wrong document.
+
+So the sweep now asserts that a `nearmiss-` fixture does not refuse at all. The prefix was already
+load-bearing (`make-evasion-fixtures.py` counts twins by it), and the durable version of this is
+the manifest's `expect_after`, which `check-redaction-corpus.py` still prints as unchecked because
+until #134 there was no operation to check it with. There is now; that is worth doing and is filed
+rather than done here.
+
+The commit that added the fixture said it existed "because a rule with probes and no corpus
+witness is a rule nothing runs". As written it was not a witness. That sentence was true about
+the positive fixture and false about its twin, which is exactly the asymmetry this project keeps
+finding: the evasion half of a pair gets the assertion and the near-miss half gets the name.
+
+### Three more things the reviews found, recorded because each is a class
+
+- **The refusal's message said "hold a string" and the rule tests for a *name*.** `/Span << /MCID
+  0 /Subtype /E >>` refuses, and there is no string in it. An overclaiming message is a bug here,
+  not a wording preference; it now says the list *names* one of the entries in a position burrow
+  cannot remove it from, which is what was tested.
+- **The covering-span walk ran twice per stream.** `rewrite` called `carried_text_edits` for its
+  `.len()` and then called `remove_glyphs_and_carried_text`, which calls it again — doubling the
+  worst case of the walk measured at 18.3s over 250,000 spans, and giving two answers to the
+  question this module's own doc says must have one. The count now comes back from the walk that
+  computed it.
+- **`CARRIER_EVASIONS`' doc comment claimed the list was read from the corpus rather than written
+  in the file, and called it "these three" over ten entries.** It was a hand-written copy then and
+  is now, and the claim is deleted rather than restated. The cross-check that found it also found
+  that all fifteen canaries match `manifest.toml` exactly, and that `09-actualtext.pdf` — the
+  headline fixture for this whole feature — was not in the list, so no byte-level absence
+  assertion ran on it. It is now.
+
 ### The `Err` arm that accepted any refusal
 
 `CARRIER_EVASIONS` asserted a refusal **named a rule**, and nothing about which. A fixture that
@@ -2455,8 +2497,9 @@ declined; anything else fails and names itself.
 ### The census
 
 **59 of 59 documents examined: 51 redacted, 8 refused, 0 quiet** — up from 42 redacting before
-this work. All seven `/ActualText` fixtures flipped from refusing to redacting with their canaries
-gone from the bytes. What still refuses is four Type 3 procedures that draw, a pattern, two
+this work. Of the eight `evade-actualtext-*` fixtures, the seven that predate this work flipped
+from refusing to redacting with their canaries gone from the bytes; the eighth is the
+detector/rewriter gap fixture below, which refuses by design. What still refuses is four Type 3 procedures that draw, a pattern, two
 documents whose marked-content properties are named through `/Properties` — which is #166, and the
 only marked-content refusal left that is about a document rather than a shape — and the
 detector/rewriter gap fixture above.
