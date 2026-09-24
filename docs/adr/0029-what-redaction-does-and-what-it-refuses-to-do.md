@@ -2486,6 +2486,79 @@ finding: the evasion half of a pair gets the assertion and the near-miss half ge
   headline fixture for this whole feature — was not in the list, so no byte-level absence
   assertion ran on it. It is now.
 
+### The quadratic was fixed, and then it was fixed again, and then a third time
+
+Recorded at length because the first two fixes were believed complete and the belief was
+checkable.
+
+| | shape | measured | |
+|---|---|--:|---|
+| 1 | 250,000 spans over **one** removal | 18.34 s | found by review; `BTreeSet` → 0.59 s |
+| 2 | 60,000 spans over **60,000** removals | **109 s**, 417 MB | the same quadratic, still there |
+| 3 | the same, after a stack cursor | **13.8 s** | a *second* quadratic, in `glyph_edits` |
+| — | the same, after grouping | **0.72 s** | 8k/16k/60k now scale linearly |
+
+Every one of those inputs is a few kilobytes: case 2 gzips to 11,775 bytes.
+
+**Fix 1 deduplicated the push, not the scan.** `carrying_spans_over_removals` still ran once per
+open span per removal; the set only stopped the same span being recorded twice. The measurement
+that confirmed it varied the span count and held removals at one, so it could not distinguish a
+fixed quadratic from a half-fixed one. *One measurement that varies one factor cannot tell those
+apart* — that is the transferable part, and it is the same shape as this file's rule about a
+harness measuring what it can generate.
+
+**Fix 2** replaced the set with a cursor into the stack, which is ordered, so "have I recorded
+this one" is O(1) with no lookup. It also removed a defence nothing tested: a mutation making the
+dedup set inert had survived the suite, failing closed but anonymously — duplicate edits and a
+`Malformed` from `Contents::apply`, blaming the file. With a cursor a duplicate cannot be
+constructed, so there is no inert defence left.
+
+**Fix 3 came from measuring fix 2 instead of reporting it.** 13.8 s remained, in `glyph_edits`,
+which filtered the whole `remove` slice inside a loop over every operation: 3.6e9 comparisons on
+an 11,842-byte file. Grouped once into a map.
+
+The residual is stated rather than smoothed: 0.72 s is still **7x** a default `max_duration_ms`
+of 100, and this module takes no `Limits` at all — every deadline checkpoint is between calls in
+`redact_steps.rs`, none inside the walk. That is filed, not fixed here, because giving the
+geometry module a deadline is a change to its signature and its callers.
+
+`nested_carriers_over_many_removals_do_not_go_quadratic` now pins 8k, 16k and 60k under a
+wall-clock ceiling. A timing assertion is the thing this suite otherwise avoids, and it is what
+belongs here: both quadratics produced **correct output, slowly**, so no assertion about bytes
+could ever have seen them. It also asserts the work was done — a walk that found nothing would be
+very fast and would pass a bare timing bound while leaking every carrier it skipped.
+
+### A property list that is not key/value pairs is refused rather than rebuilt
+
+`as_chunks::<2>()` assumes a dictionary's flat `items` are pairs. Where they are not, the rebuild
+emitted a document burrow had corrupted while reporting success:
+
+- `/Span << /MCID 0 /ActualText 4 0 R >> BDC` → `/Span << /MCID 0 0 R >>`, a dictionary keyed by
+  the number `0`.
+- `/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >> BDC` → `/Tail` silently gone.
+
+Neither leaked; `names_a_text_key` iterates every item, so a stray carried name is still seen.
+Silently producing worse output than it was given is the thing this operation may least afford,
+so both are now `marked-content-property-list-malformed`.
+
+The check needs **two** conditions and the obvious one alone misses the case it was written for.
+An odd item count catches `/Tail`. It does not catch `/ActualText 4 0 R`: this module's lexer has
+no indirect references — there is no such thing inside a content stream — so `4 0 R` is three
+operands, the dictionary has six items, and it is perfectly even. What is wrong is that the fifth
+item, in key position, is the *number* `0`. So: an odd count, **or** a non-name where a key
+belongs.
+
+### What the second review's surviving mutations said about which half is load-bearing
+
+Widening `holds_text_key` back to "a name anywhere" **survived** — and re-running all 28
+adversarial shapes under that mutation produced **no leak**. Every one was caught by the
+post-rewrite `still_names_one` check, which decides on the rewritten bytes.
+
+So the narrowing is not the load-bearing half of this fix; the post-rewrite check is. The obvious
+reading of the commit is the opposite, which is why it is written down: the narrowing makes the
+detector *true*, and re-asking the detector after the rewrite is what makes a divergence
+unshippable. If only one of the two could be kept, it is the second.
+
 ### The `Err` arm that accepted any refusal
 
 `CARRIER_EVASIONS` asserted a refusal **named a rule**, and nothing about which. A fixture that

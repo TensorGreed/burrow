@@ -40,4 +40,4 @@
 - [Redaction read-back (#134)](m2_redact_verify.md) — the form-local /Resources leak measured against PDFium, 6 of 16 mutations surviving, and the cost that was not the read-back's.
 - [Nested form lookup (#164)](m2_nested_form_lookup.md) — rounds 1-3: four /ActualText-class leaks, the or_insert first-path-wins, Type 3 font one level down, 6 of 20 mutations surviving.
 - [Standard-14 + marked content (16e4c56)](m2_standard14_and_marked_content.md) — the /ActualText refusal evaded through a Form XObject, alias fonts bypassing DISPUTED, 161 B → 2.5 GB.
-- [/ActualText rewriter (#165)](m2_actualtext_rewriter.md) — nested keys detected but not removed, 19 kB to 18.3 s, and the page-stream widening band() masks.
+- [/ActualText rewriter (#165)](m2_actualtext_rewriter.md) — 2 rounds: the leak closed, but the quadratic moved (12 kB to 109 s) and the post-rewrite check is the only load-bearing half.

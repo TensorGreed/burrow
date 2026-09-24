@@ -1720,6 +1720,90 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
     );
 }
 
+/// Nested carrying spans over many removals stay linear, measured rather than argued.
+///
+/// # Why a wall clock, which this suite otherwise avoids
+///
+/// This was quadratic twice, in two different places, and neither was visible to any assertion
+/// about output — both produced *correct* output, slowly. The first was the covering-span walk,
+/// found by a security review at 250,000 spans over one removal: 18.34 s. A `BTreeSet` took it
+/// to 0.59 s and looked like the fix.
+///
+/// It was not. The set deduplicated the push and not the scan, so the cost stayed `spans x
+/// removals` — and the measurement that "confirmed" the fix had varied only one of those two
+/// factors. A second review varied both: 60,000 x 60,000, an 11,842-byte file, **109 s** and
+/// 417 MB. A cursor into the stack fixed that one, and measuring the result found 13.8 s still
+/// there, in `glyph_edits`, which rescanned every removal for every operation — 3.6e9
+/// comparisons. Grouping once gives 0.72 s.
+///
+/// So: 8k, 16k and 60k, and the bound is wall clock because that is what was wrong. The margin
+/// is wide (roughly 14x the measured 0.72 s) so an ordinary slow machine does not fail it, and a
+/// return to either quadratic is 15x to 150x over it. A tighter bound would be a flaky test; a
+/// looser one would not have caught the 13.8 s intermediate state, which is the one that was
+/// believed fixed.
+#[test]
+fn nested_carriers_over_many_removals_do_not_go_quadratic() {
+    fn page(n: usize) -> Vec<u8> {
+        let mut pdf = Builder::new();
+        let catalog = pdf.reserve();
+        let pages = pdf.reserve();
+        let page = pdf.reserve();
+        let font = pdf.add(&format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+             /Widths {} >>",
+            support::pdf_builder::HELVETICA_WIDTHS
+        ));
+        let mut body = String::new();
+        for _ in 0..n {
+            body.push_str("/S << /MCID 0 /ActualText (x) >> BDC\n");
+        }
+        body.push_str("BT /F1 24 Tf\n");
+        for _ in 0..n {
+            body.push_str("1 0 0 1 72 700 Tm (S) Tj\n");
+        }
+        body.push_str("ET\n");
+        for _ in 0..n {
+            body.push_str("EMC\n");
+        }
+        let content = pdf.stream("", &body);
+        pdf.put(
+            page,
+            &format!(
+                "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {font} 0 R >> >> /Contents {content} 0 R >>"
+            ),
+        );
+        pdf.put(
+            pages,
+            &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+        );
+        pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+        pdf.build(catalog)
+    }
+
+    const CEILING: std::time::Duration = std::time::Duration::from_secs(10);
+    for n in [8_000usize, 16_000, 60_000] {
+        let pdf = page(n);
+        let started = std::time::Instant::now();
+        let (_, report) = redact(&pdf).unwrap_or_else(|error| {
+            panic!("{n} nested carriers over {n} removals should redact: {error:?}")
+        });
+        let took = started.elapsed();
+        // AND THE WORK WAS ACTUALLY DONE. A walk that found nothing would be very fast and
+        // would pass a timing bound while leaking every carrier it skipped.
+        assert_eq!(
+            report.dropped_carried_text, n,
+            "{n} nested carriers: stripped {} of them",
+            report.dropped_carried_text
+        );
+        assert!(
+            took < CEILING,
+            "{n} nested carriers over {n} removals took {took:?}, over the {CEILING:?} ceiling \
+             -- the covering-span walk or the glyph grouping has gone quadratic again"
+        );
+    }
+}
+
 /// The disclosure's **count** is the number of property lists stripped, not merely non-zero.
 ///
 /// Only `discloses_dropped_alternative_text()` — a bool — drove §7, and the corpus's only

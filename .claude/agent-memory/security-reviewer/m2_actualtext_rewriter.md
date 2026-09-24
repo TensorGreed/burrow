@@ -1,97 +1,100 @@
 ---
 name: m2-actualtext-rewriter
-description: Review of d37556c (#165, the /ActualText marked-content rewriter) — the nested-key detect/remove asymmetry, the quadratic found.contains (19 kB to 18.3 s), the untested page-stream widening masked by band(), and 3 of 20 mutations surviving.
+description: Reviews of #165's /ActualText marked-content rewriter (d37556c, then cc1d0b9 + be385aa) — the detect/remove asymmetry and its fix, the spans x removals quadratic (109 s from 12 kB), what the post-rewrite check really carries, and the surviving mutations.
 metadata:
   type: project
 ---
 
-Reviewed `d37556c` on `m2/165-actualtext-rewriter`, 2026-09-24, in `/tmp/sec165`. Everything
-below was **run**. Baseline `cargo test -p burrow-engines --all-features` was green.
+Two rounds. Round 1 on `d37556c` (2026-09-24, `/tmp/sec165`); round 2 on `cc1d0b9`+`be385aa`
+in a detached worktree. Everything below was **run**. Baselines green both times
+(`cargo test --release -p burrow-engines --all-features`, 556 unit + 13 integration suites).
 
-## The asymmetry that matters: detection recurses, removal does not
+## Round 2: what closed, and what the fix actually rests on
 
-`carried_by` → `holds_text_key` matches `/ActualText` or `/Alt` **at any depth** (its own comment
-says so). `without_carried_keys` drops only **top-level** keys. So a span burrow classifies
-`Carried::Text` can be "handled" while the string stays in the file. Measured, both `Ok`, canary
-verbatim in `qpdf --qdf` of the output:
+`holds_text_key` was narrowed to **key position** and the difference refused by
+`Refusal::MarkedContentCarriesOpaqueString`. Round 1's two leaks
+(`/K [ /ActualText (S) ]`, `/Extra << /ActualText (S) >>`) are gone — verified end to end.
+28 adversarial shapes tried, **no leak found**.
 
-- `/Span << /MCID 0 /Extra << /ActualText (SEC) >> >>` → output `/Span << /MCID 0 /Extra << /ActualText (SEC) >> >>`
-- `/Span << /MCID 0 /K [ /ActualText (SEC) ] >>` → unchanged
+**But the narrowing is not the load-bearing half.** Mutation M6, widening `holds_text_key`
+back to "a name anywhere", **survived the whole suite** — and re-running the 28-shape sweep
+under it produced *no leak either*: every shape was caught by the **post-rewrite
+`still_names_one` check in `without_carried_keys`**, which decides on the rewritten bytes.
+That check is the defence; the narrowing is an optimisation that keeps burrow from blaming
+itself. Only mutation M1 (disabling `still_names_one`) turns anything red.
 
-`main` **refused** both (`MarkedContentCarriesText`). So this is refuse → emit-with-the-string.
-Not extractable by PDFium (a nested entry is not spec-honoured), but the commit's own doctrine is
-byte presence: *"the string is still in the file — `qpdf --qdf` returns it."*
+## The quadratic moved, it did not go: 12 kB -> 109 s
 
-**Clean, all verified end to end:** `#`-escaped `/Actual#54ext`, `%` comments inside the dict,
-hex-string values, a value containing `>>`, a dict-valued `/ActualText`, `<<>>`, two sibling
-spans, an indirect ref (`/K 9 0 R`) before the key, `/Contents` array with `BDC` and glyphs in
-different elements, one BDC over two removed show operations (one edit, dedup by
-`!found.contains`).
+Round 1 found `!found.contains(covering)` over a `Vec`; cc1d0b9 replaced it with
+`BTreeSet<Span>`. **The set dedups the push, not the scan.** `carrying_spans_over_removals`
+still runs `for covering in &open` **once per removal**, so the cost is
+`open_spans x removals`. Release, `max_duration_ms = 100`:
 
-## `/E` (expansion text) is a third carrier and is in neither list
+| nested carrying BDCs x removed show ops | input | gzip | time |
+|---|--:|--:|--:|
+| 2k x 2k | 133 kB | 871 B | 0.15 s |
+| 8k x 8k | 529 kB | 2.0 kB | 1.45 s |
+| 16k x 16k | 1.06 MB | 3.5 kB | 7.00 s |
+| **60k x 60k** | 3.96 MB | **11.8 kB** | **109.05 s** (1090x), 417 MB RSS |
 
-PDF 32000-1 §14.9.5 allows `/E` in a marked-content property list. `TEXT_CARRYING_KEYS` is
-`[ActualText, Alt]`. Measured: `/Span << /E (canary) /MCID 0 >>` redacts `Ok` with `/E` intact.
-Pre-existing on `main` (same two keys), so not a regression.
+Attribution proved by fixing it. Replace `seen` with an amortised cursor: `recorded: usize`,
+scan `open[recorded..]` then `recorded = open.len()`, and `recorded = recorded.min(open.len())`
+after each `EMC` pop. O(pushes+pops+removals). Measured: 60k x 60k **0.23 s**, 16k x 16k 0.59 s,
+full suite still green. There is **no deadline checkpoint inside the walk** — checkpoints are
+between calls in `redact_steps.rs` — and the walk runs **three times per stream**
+(`page_carries` in `affected_streams`, `dropped` in `rewrite`, and again inside
+`remove_glyphs_and_carried_text`).
 
-## The quadratic is new in this commit: 19,776 bytes → 18.3 s
+## Odd-length property lists: no leak, but the rewriter emits malformed output
 
-`carrying_spans_over_removals` ends with `for covering in &open { … !found.contains(covering) }`
-— a **linear** scan of a growing `Vec`. `main` returned at the first removal site, so this is new.
-No deadline checkpoint in the loop. Release, `max_duration_ms = 100`:
+`as_chunks::<2>()` drops the trailing item in both `holds_text_key` and
+`rebuilt_without_carried`. Odd `items` **is** reachable, and every odd shape either refuses
+(`names_a_text_key` iterates *all* items, so a stray carried name is still seen) or rewrites
+safely. Two measured manglings, canary absent in both:
 
-| fixture | | |
-|---|--:|--:|
-| 100 k nested `/S << /MCID 0 >> BDC` (no carrier) | 2.5 MB | 0.17 s |
-| 100 k nested `/S << /ActualText (x) >> BDC` | 3.3 MB | 3.09 s |
-| the same at 250 k, Flate-compressed | **19,776 B** | **18.3 s** (183x the deadline) |
+- `<< /MCID 0 /ActualText 4 0 R >>` -> emitted `<< /MCID 0 0 R >>` — a dictionary keyed by a number.
+- `<< /MCID 0 /Pad << /ActualText (X) >> /Tail >>` -> `<< /MCID 0 /Pad << >> >>`, `/Tail` silently gone.
 
-Attribution proved by fixing it: `seen: BTreeSet<Span>` + `seen.insert(covering.properties)` →
-**0.59 s** on the same file, suite still green. `MAX_TOTAL_OPERANDS` caps N near 262 k.
+## Round 2 mutation sweep: 12 planted, 11 applied and compiled, 1 discarded, **3 survived**
 
-## The headline widening is untested, and `band()` is why
+- **M6** widen `holds_text_key` back — survived; not a leak, see above.
+- **M8** dedup set made inert — survived. Consequence measured: duplicate edits for the same
+  span, and `Contents::apply` fails closed with `Malformed("pdf syntax: a content-stream edit
+  that overlaps another...")` — an **unnamed, file-blaming** refusal that `redaction_corpus.rs`
+  panics on, exactly the class `MarkedContentSplitAcrossElements` was added for.
+- **M12** the `still_carries` internal self-check — survived; unreachable under the narrowing.
+- Killed: M1 (`still_names_one`), M3 (`names_a_text_key`), M4 (nested recursion in the rebuild),
+  M5 (`MarkedContentSplitAcrossElements`), M7 (`/E`), M9 (`BMC` opens a span — **now covered**,
+  it survived in round 1), M10 (named `/Properties`), M11 (page-stream widening — **now covered**,
+  it survived in round 1).
+- M2 (`Carried::OpaqueString if false`) **did not compile** (non-exhaustive match). Discarded
+  rather than counted — the reason this sweep checks compilation.
 
-Mutation: delete the `streams.push(StreamId::Page)` widening in `affected_streams`. Full suite
-**green** — and with a region over the secret only (`30,88,370,132`), three committed fixtures
-leak their canary into the output: `evade-actualtext-around-a-form`,
-`-around-a-nested-form`, `-over-a-form-without-resources`.
+## Checked and could not break (round 2, all end to end through `redact::page`)
 
-`redaction_defences.rs::band()` is `left 40, top 40, w 500, h 120`, which on the 400x200 fixture
-page covers **both** the secret (y=100) and the keep line (y=40). The keep line is in the **page**
-stream, so `StreamId::Page` is already in `streams` from a cut glyph and the widening never has to
-fire. Any carrier test whose band also cuts a page glyph cannot exercise it.
+Nested dict, array item, `#`-escaped key `/Actual#54ext`, escaped **and** named together, hex
+string, UTF-16BE, a string containing `>> \) <<`, dict-valued and array-valued `/ActualText`,
+`%` comment inside the dict, empty-name key `/`, `/E`, three odd-dict shapes, indirect-reference
+value, an extra operand after the dict (-> `properties-unresolved`), `BX`/`EX`, unbalanced `q`/`Q`,
+stray `EMC`, an inner `BDC`, `/Contents` straddle in the dict and inside the string (both ->
+`marked-content-split-across-elements`), carrier and glyphs in different elements, two removals
+under one carrier, a 30,000-key property list, nesting to 62. **Depth 63+ is refused by the
+lexer's `MAX_NESTING = 64`, so no recursion in this module can overflow the stack.** Inline
+images whose data contains `EMC` are refused before the walk. PDFium extracted only the keep
+line from every emitted output; each output has exactly one `%%EOF`/`startxref`, so no
+incremental history.
 
-**How to apply:** when reviewing anything that widens `affected_streams`, check whether the test
-band cuts a glyph in the stream being widened. Same class as [[m2_redact_verify]]'s `glyphs_on`.
+Two shapes my scanner flagged are **correct**: a stray `EMC` closing the carrier before the
+secret is drawn leaves the `/ActualText` in the file, but it belongs to an empty span and
+PDFium extracts nothing from it.
 
-## Mutation sweep: 20 planted, 20 applied and compiled, **3 survived**
+## Round 1 findings, for the history
 
-- **`BMC` no longer opens a span** — survived, and it is a live leak: `/Span<</ActualText(S)>>BDC
-  BMC EMC BT (S) Tj ET EMC` emits the canary verbatim under the mutation. The inner `EMC` pops the
-  carrying span. Exactly the "stack, not a flag" case the comment warns about, with no test.
-- **The page-stream widening** — above.
-- **`carried_text_edits`' `Carried::Unknown` refusal arm** — unreachable: `check_marked_content`
-  runs first over page and every `form_scope` entry with identical arguments. Defence in depth,
-  no probe.
+`/E` was missing from `TEXT_CARRYING_KEYS` (fixed here); `carrying_spans_over_removals` was
+19,776 B -> 18.3 s (fixed, then re-found above); the page-stream widening and `BMC` had no
+test (both now killed by mutations); `redaction_corpus.rs`'s reflow skip was a **byte scan**
+for `/ActualText` or `/Alt` that disabled the check on 11 of 56 fixtures — now gated exactly
+on `report.dropped_carried_text == 0`, which closes it.
 
-## Two checks weakened, both worth remembering
-
-- `redaction_corpus.rs` now skips the **reflow** assertion for any input whose raw bytes contain
-  `/ActualText` **or `/Alt`** anywhere. The ADR says "skipped by name"; it is a substring scan.
-  11 of 56 fixtures lose it today, three of them (`evade-struct-without-structparents`, both
-  `nearmiss-*`) because their `/ActualText` is in the **structure tree**, which #165 never edits.
-  `/Alt` is also a prefix of `/Alternate`, the ICCBased colour-space key.
-- A `/Contents` array whose `BDC` dictionary **straddles** an element boundary (legal — §7.8.2 puts
-  divisions between tokens) is now refused `Error::Malformed("pdf syntax: a content-stream edit
-  that would write across the boundary…")` — a file-blaming variant with **no `[rule]` name**,
-  which `redaction_corpus.rs`'s `Err` arm would panic on. `main` refused it by a named rule.
-
-## Clean
-
-No `unsafe`, no network, no logging, no `as` cast, no library-code `unwrap`/`expect` in the diff.
-No file content in any new error message. `Contents::apply` fails closed on every overlap and
-cross-boundary replacement I could construct. `Report` gained nothing, so the new §7 alternative-
-text disclosure is documentation-only — there is no per-document accessor a frontend could show.
-
-Related: [[m2_standard14_and_marked_content]] (the refusal this replaces),
-[[m2_nested_form_lookup]], [[m2_redact_verify]], [[spike_0006_redaction_survival]].
+Related: [[m2_standard14_and_marked_content]], [[m2_nested_form_lookup]], [[m2_redact_verify]],
+[[spike_0006_redaction_survival]], [[m2_glyph_geometry]].

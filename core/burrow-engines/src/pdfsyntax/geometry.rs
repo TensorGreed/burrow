@@ -74,7 +74,7 @@
 //! `tests/glyph_geometry.rs` pins that shape. The `WMode` refusal covers the other case, and
 //! saying so here is the difference between a bound and a hope.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use burrow_types::{Error, Result};
 
@@ -209,6 +209,20 @@ pub enum Refusal {
     /// `names_a_text_key` for why this is the gap between the wide detector and the narrow
     /// rewriter rather than "the list holds a string", which refuses `/Lang (en-US)`.
     MarkedContentCarriesOpaqueString,
+    /// A covering span's property list is not a sequence of key/value pairs.
+    ///
+    /// `as_chunks::<2>()` walks a dictionary's flat `items` in key/value pairs and **silently
+    /// drops a trailing odd one**, which is fine for reading and wrong for rewriting: the
+    /// rebuild then emits a dictionary missing that item. Measured, end to end —
+    /// `/Span << /MCID 0 /ActualText 4 0 R >> BDC` became `/Span << /MCID 0 0 R >>`, a
+    /// dictionary keyed by the number `0`, and
+    /// `/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >>` lost `/Tail` without a word.
+    ///
+    /// Neither leaked — `names_a_text_key` iterates every item, so a stray carried name is still
+    /// seen. But burrow emitted a document it had corrupted while reporting success, and
+    /// silently producing worse output than it was given is the thing this operation may least
+    /// afford. An odd property list is refused instead.
+    MarkedContentPropertyListMalformed,
 }
 
 impl Refusal {
@@ -249,6 +263,7 @@ impl Refusal {
         Self::MarkedContentPropertiesUnresolved,
         Self::MarkedContentSplitAcrossElements,
         Self::MarkedContentCarriesOpaqueString,
+        Self::MarkedContentPropertyListMalformed,
     ];
 
     /// The rule's name, as it appears in the error message.
@@ -290,6 +305,7 @@ impl Refusal {
             Self::MarkedContentPropertiesUnresolved => "marked-content-properties-unresolved",
             Self::MarkedContentSplitAcrossElements => "marked-content-split-across-elements",
             Self::MarkedContentCarriesOpaqueString => "marked-content-carries-opaque-string",
+            Self::MarkedContentPropertyListMalformed => "marked-content-property-list-malformed",
         }
     }
 
@@ -306,6 +322,7 @@ impl Refusal {
                 | Self::MarkedContentPropertiesUnresolved
                 | Self::MarkedContentSplitAcrossElements
                 | Self::MarkedContentCarriesOpaqueString
+                | Self::MarkedContentPropertyListMalformed
                 | Self::UnreadableCMap
                 | Self::SharedFormWouldChangeElsewhere
                 | Self::TypeThreeProcedureShowsText
@@ -1324,6 +1341,13 @@ fn without_carried_keys(dictionary: &[u8]) -> Result<Vec<u8>> {
             "pdf geometry: a property list that does not re-read as a dictionary".to_owned(),
         ));
     };
+    if is_not_key_value_pairs(operand) {
+        return Refusal::MarkedContentPropertyListMalformed.refuse(
+            "a marked-content property list that is not a sequence of key/value pairs, which \
+             burrow will not rebuild because doing so would drop or re-pair its items and emit a \
+             dictionary the document did not have",
+        );
+    }
     let rebuilt = rebuilt_without_carried(dictionary, operand)?;
 
     // AND THE REWRITE IS CHECKED AGAINST THE DETECTOR THAT DECIDED IT, which is the part that
@@ -1457,15 +1481,33 @@ fn carrying_spans_over_removals(
     // nothing, but it still opens a span and still has to be on the stack.
     let mut open: Vec<CoveringSpan> = Vec::new();
     let mut found: Vec<CoveringSpan> = Vec::new();
-    // A SET FOR THE MEMBERSHIP TEST, because `found` is scanned once per open span per removal.
+    // A CURSOR INTO THE STACK, NOT A MEMBERSHIP TEST. `recorded` is how much of `open`'s prefix
+    // has already been emitted, so each span is recorded once, when the first removal passes
+    // under it.
     //
-    // This was `!found.contains(covering)` over a `Vec`. Before the rewriter, this walk returned
-    // at the FIRST covering span it found; collecting them made the scan quadratic in the number
-    // of nested carrying spans. A security review measured it: 250,000 nested
-    // `/S << /ActualText (x) >> BDC`, which Flate-compresses to **19,776 bytes**, took 18.34 s
-    // against a `max_duration_ms` of 100 -- 183x. The same file with no carried key took 0.17 s,
-    // which is the attribution: identical shape, one key apart. With this set, 0.59 s.
-    let mut seen: BTreeSet<Span> = BTreeSet::new();
+    // # Two measurements, and why the first one was not enough
+    //
+    // This began as `!found.contains(covering)` over a `Vec`. Before the rewriter, the walk
+    // returned at the FIRST covering span; collecting them all made the scan quadratic. A
+    // security review measured 250,000 nested `/S << /ActualText (x) >> BDC` -- 19,776 bytes
+    // Flate-compressed -- at 18.34 s against a `max_duration_ms` of 100. A `BTreeSet` took that
+    // to 0.59 s and looked like the fix.
+    //
+    // It was not. **The set deduplicated the push, not the scan.** The loop below still ran once
+    // per open span per removal, so the cost is `open x removals`, and the 250,000-span
+    // measurement varied only one of those two factors -- it held removals at one. The next
+    // review varied both and the quadratic was still there, worse: 60,000 spans over 60,000
+    // removals, an 11,775-byte gzip, took **109 s** and 417 MB. 1,090x the deadline.
+    //
+    // A stack is ordered, so a cursor answers "have I recorded this one" in O(1) without a
+    // lookup, and the amortised cost becomes pushes + pops + removals. Measured on the same
+    // fixtures: 60k x 60k 109.05 s -> 0.23 s, 16k x 16k 7.00 s -> 0.59 s.
+    //
+    // It also removes a defence nothing tested. A mutation making the set inert survived the
+    // suite: the consequence was duplicate edits for one span and a `Malformed` from
+    // `Contents::apply` -- failing closed, but anonymously, blaming the file. With a cursor a
+    // duplicate cannot be constructed, so there is no inert defence left to test.
+    let mut recorded: usize = 0;
     for operation in operations(content)? {
         match operation.operator.as_slice() {
             b"BDC" => open.push(CoveringSpan {
@@ -1485,6 +1527,9 @@ fn carrying_spans_over_removals(
             // rule nothing else in the walk applies.
             b"EMC" => {
                 open.pop();
+                // THE CURSOR FOLLOWS THE STACK DOWN. A span that was recorded and has now closed
+                // must not hold the cursor above a span that reopens at the same depth.
+                recorded = recorded.min(open.len());
             }
             _ => {}
         }
@@ -1493,11 +1538,12 @@ fn carrying_spans_over_removals(
         if !removes_here {
             continue;
         }
-        for covering in &open {
-            if covering.carried != Carried::Nothing && seen.insert(covering.properties) {
+        for covering in open.get(recorded..).unwrap_or_default() {
+            if covering.carried != Carried::Nothing {
                 found.push(*covering);
             }
         }
+        recorded = open.len();
     }
     Ok(found)
 }
@@ -1590,6 +1636,38 @@ fn carried_by(operation: &Operation) -> Carried {
         Some(Operand::Name { .. }) => Carried::Unknown,
         // Anything else is not a property list this can read, which is the same claim.
         _ => Carried::Unknown,
+    }
+}
+
+/// Whether this operand is, or contains, a dictionary that is not key/value pairs.
+///
+/// See [`Refusal::MarkedContentPropertyListMalformed`]. Asked before the rebuild rather than
+/// during it, so the refusal names the document's shape rather than a step burrow got part-way
+/// through.
+///
+/// # Two conditions, because the first one alone missed the case it was written for
+///
+/// The odd-length test is the obvious one and it does not catch
+/// `/Span << /MCID 0 /ActualText 4 0 R >>`, which is the shape a security review measured
+/// rebuilding into `<< /MCID 0 0 R >>`. This module's lexer has no indirect references — there
+/// is no such thing inside a content stream — so `4 0 R` is three operands, the dictionary has
+/// six items, and it is perfectly even. What is wrong with it is that the fifth item, in key
+/// position, is the *number* `0`.
+///
+/// So both: an odd count, and a non-name where a key belongs. Each catches a shape the other
+/// does not, and together they are the condition `as_chunks::<2>()` silently assumes.
+fn is_not_key_value_pairs(operand: &Operand) -> bool {
+    match operand {
+        Operand::Dict { items, .. } => {
+            items.len() % 2 != 0
+                || items
+                    .iter()
+                    .step_by(2)
+                    .any(|key| !matches!(key, Operand::Name { .. }))
+                || items.iter().any(is_not_key_value_pairs)
+        }
+        Operand::Array { items, .. } => items.iter().any(is_not_key_value_pairs),
+        _ => false,
     }
 }
 
@@ -1811,16 +1889,31 @@ fn glyph_edits(
             .refuse("a glyph drawn in a different stream, whose span does not index this one");
     }
     let operations = super::ops::operations(content)?;
+    // GROUPED ONCE, NOT RESCANNED PER OPERATION. This filtered the whole `remove` slice inside
+    // the loop, so the cost was operations x removals. A security review found the covering-span
+    // walk quadratic in the same two factors and a cursor fixed that one; measuring the result
+    // showed 60,000 spans over 60,000 removals still took 13.8 s, which is this loop -- the walk
+    // above it was no longer the slowest thing, only the first thing found. 3.6e9 comparisons
+    // over an 11,842-byte file.
+    //
+    // Worth stating because the first fix looked complete and was not: one measurement that
+    // varies one factor cannot tell a fixed quadratic from a moved one.
+    let mut by_operation: BTreeMap<Span, Vec<&Glyph>> = BTreeMap::new();
+    for glyph in remove {
+        by_operation
+            .entry(glyph.source.operation)
+            .or_default()
+            .push(glyph);
+    }
     let mut edits: Vec<super::contents::Edit> = Vec::new();
     for operation in &operations {
-        let cuts: Vec<&Glyph> = remove
-            .iter()
-            .filter(|glyph| glyph.source.operation == operation.span)
-            .collect();
+        let cuts: &[&Glyph] = by_operation
+            .get(&operation.span)
+            .map_or(&[], std::vec::Vec::as_slice);
         if !cuts.is_empty() {
             edits.push(super::contents::Edit {
                 span: operation.span,
-                replacement: rewrite_without(content, operation, &cuts)?,
+                replacement: rewrite_without(content, operation, cuts)?,
             });
         }
     }
@@ -2894,7 +2987,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 35,
+            total, 36,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -4259,6 +4352,45 @@ mod tests {
         #[test]
         fn an_ordinary_string_under_an_ordinary_key_is_not_refused() {
             assert_allowed(b"/Span << /MCID 0 /Lang (en-US) >> BDC BT /F1 12 Tf (x) Tj ET EMC");
+        }
+
+        /// A key with no value is refused, not rebuilt into something the document did not have.
+        ///
+        /// Measured end to end before this: `/ActualText 4 0 R` (an indirect reference, three
+        /// items after `/MCID 0`) rebuilt as `<< /MCID 0 0 R >>`.
+        #[test]
+        fn an_odd_property_list_is_refused_rather_than_silently_repaired() {
+            assert_refused_by(
+                b"/Span << /MCID 0 /ActualText 4 0 R >> BDC BT /F1 12 Tf (x) Tj ET EMC",
+                super::Refusal::MarkedContentPropertyListMalformed,
+            );
+        }
+
+        /// The same, one dictionary down, where the loss was of an unrelated key.
+        ///
+        /// `/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >>` dropped `/Tail`.
+        #[test]
+        fn an_odd_nested_property_list_is_refused_too() {
+            assert_refused_by(
+                b"/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >> BDC BT /F1 12 Tf (x) Tj \
+                  ET EMC",
+                super::Refusal::MarkedContentPropertyListMalformed,
+            );
+        }
+
+        /// THE NEAR-MISS: an even property list carrying the same key is rewritten, not refused.
+        ///
+        /// A rule that refused every nested dictionary would pass both probes above and take the
+        /// nesting case — the one a previous round's leak was about — offline with it.
+        #[test]
+        fn an_even_property_list_with_a_nested_carrier_is_still_rewritten() {
+            assert_eq!(
+                strips(
+                    b"/Span << /MCID 0 /Pad << /ActualText (X) >> >> BDC BT /F1 12 Tf (x) Tj \
+                         ET EMC"
+                ),
+                1
+            );
         }
 
         /// Assert `content`'s own glyphs are allowed through.
