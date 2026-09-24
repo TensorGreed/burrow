@@ -48,7 +48,13 @@ impl PageRedactor for Fake {
         _region: Region,
         _options: &OpenOptions<'_>,
     ) -> Result<(Vec<u8>, Report)> {
-        Ok((b"%PDF-1.7\n".to_vec(), Report { fonts: Vec::new() }))
+        Ok((
+            b"%PDF-1.7\n".to_vec(),
+            Report {
+                fonts: Vec::new(),
+                dropped_carried_text: 0,
+            },
+        ))
     }
 
     fn input_rotations(

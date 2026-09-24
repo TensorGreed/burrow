@@ -1720,12 +1720,167 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
     );
 }
 
-/// The evasion fixtures whose canary must never reach the output, and the canary each carries.
+/// Nested carrying spans over many removals stay linear, measured rather than argued.
 ///
-/// Read from the generated corpus rather than rebuilt here: these three exist to probe the
-/// cross-stream shapes, and a copy written in this file would be a copy that can drift from the
-/// generator that writes them.
-const CARRIER_EVASIONS: [(&str, &str); 10] = [
+/// # Why a wall clock, which this suite otherwise avoids
+///
+/// This was quadratic twice, in two different places, and neither was visible to any assertion
+/// about output — both produced *correct* output, slowly. The first was the covering-span walk,
+/// found by a security review at 250,000 spans over one removal: 18.34 s. A `BTreeSet` took it
+/// to 0.59 s and looked like the fix.
+///
+/// It was not. The set deduplicated the push and not the scan, so the cost stayed `spans x
+/// removals` — and the measurement that "confirmed" the fix had varied only one of those two
+/// factors. A second review varied both: 60,000 x 60,000, an 11,842-byte file, **109 s** and
+/// 417 MB. A cursor into the stack fixed that one, and measuring the result found 13.8 s still
+/// there, in `glyph_edits`, which rescanned every removal for every operation — 3.6e9
+/// comparisons. Grouping once gives 0.72 s.
+///
+/// So: 8k, 16k and 60k, and the bound is wall clock because that is what was wrong. The margin
+/// is wide (roughly 14x the measured 0.72 s) so an ordinary slow machine does not fail it, and a
+/// return to either quadratic is 15x to 150x over it. A tighter bound would be a flaky test; a
+/// looser one would not have caught the 13.8 s intermediate state, which is the one that was
+/// believed fixed.
+#[test]
+fn nested_carriers_over_many_removals_do_not_go_quadratic() {
+    fn page(n: usize) -> Vec<u8> {
+        let mut pdf = Builder::new();
+        let catalog = pdf.reserve();
+        let pages = pdf.reserve();
+        let page = pdf.reserve();
+        let font = pdf.add(&format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+             /Widths {} >>",
+            support::pdf_builder::HELVETICA_WIDTHS
+        ));
+        let mut body = String::new();
+        for _ in 0..n {
+            body.push_str("/S << /MCID 0 /ActualText (x) >> BDC\n");
+        }
+        body.push_str("BT /F1 24 Tf\n");
+        for _ in 0..n {
+            body.push_str("1 0 0 1 72 700 Tm (S) Tj\n");
+        }
+        body.push_str("ET\n");
+        for _ in 0..n {
+            body.push_str("EMC\n");
+        }
+        let content = pdf.stream("", &body);
+        pdf.put(
+            page,
+            &format!(
+                "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {font} 0 R >> >> /Contents {content} 0 R >>"
+            ),
+        );
+        pdf.put(
+            pages,
+            &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+        );
+        pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+        pdf.build(catalog)
+    }
+
+    const CEILING: std::time::Duration = std::time::Duration::from_secs(10);
+    for n in [8_000usize, 16_000, 60_000] {
+        let pdf = page(n);
+        let started = std::time::Instant::now();
+        let (_, report) = redact(&pdf).unwrap_or_else(|error| {
+            panic!("{n} nested carriers over {n} removals should redact: {error:?}")
+        });
+        let took = started.elapsed();
+        // AND THE WORK WAS ACTUALLY DONE. A walk that found nothing would be very fast and
+        // would pass a timing bound while leaking every carrier it skipped.
+        assert_eq!(
+            report.dropped_carried_text, n,
+            "{n} nested carriers: stripped {} of them",
+            report.dropped_carried_text
+        );
+        assert!(
+            took < CEILING,
+            "{n} nested carriers over {n} removals took {took:?}, over the {CEILING:?} ceiling \
+             -- the covering-span walk or the glyph grouping has gone quadratic again"
+        );
+    }
+}
+
+/// The disclosure's **count** is the number of property lists stripped, not merely non-zero.
+///
+/// Only `discloses_dropped_alternative_text()` — a bool — drove §7, and the corpus's only
+/// assertion about the field compared that accessor against its own body. Measured: mutating
+/// `self.dropped_carried_text += dropped_here` to `+= dropped_here.min(1)` survived
+/// `redaction_corpus`, `redaction_defences` and `redaction_disclosure`. Silencing it entirely was
+/// caught; undercounting was not, and `dropped_carried_text` is a `pub` field a caller may show.
+///
+/// Three covering spans inside the band and one outside it, so the number also pins that the
+/// walk does not strip a span the region never reached.
+#[test]
+fn the_number_of_stripped_property_lists_is_reported_not_just_its_sign() {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let mut body = String::new();
+    for (index, y) in [740, 700, 660].into_iter().enumerate() {
+        body.push_str(&format!(
+            "/Span << /MCID {index} /ActualText (CARRIED-{index}) >> BDC\n\
+             BT /F1 24 Tf 72 {y} Td (SECRET) Tj ET\nEMC\n"
+        ));
+    }
+    // OUTSIDE THE BAND. Its glyphs are never removed, so its `/ActualText` must survive and must
+    // not be counted -- a walk that stripped every span on the page would still report 4.
+    body.push_str(
+        "/Span << /MCID 3 /ActualText (KEPT) >> BDC\n\
+         BT /F1 24 Tf 72 300 Td (KIN) Tj ET\nEMC\n",
+    );
+    let content = pdf.stream("", &body);
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let (out, report) = redact(&pdf.build(catalog)).expect("three carried spans are rewritable");
+    assert_eq!(
+        report.dropped_carried_text, 3,
+        "expected exactly the three spans the band covers, got {}",
+        report.dropped_carried_text
+    );
+    assert!(report.discloses_dropped_alternative_text());
+    for index in 0..3 {
+        assert_absent(
+            &out,
+            format!("CARRIED-{index}").as_bytes(),
+            "a stripped span",
+        );
+    }
+    assert_present(&out, b"KEPT", "the span the region never reached");
+}
+
+/// The carrier fixtures whose canary must never reach the output, and the canary each carries.
+///
+/// The **documents** are read from the generated corpus rather than rebuilt here; this list is a
+/// hand-written selection over them. A previous version of this comment claimed the list itself
+/// was read from the corpus and called it "these three" over ten entries — it was neither, and
+/// the claim is removed rather than restated.
+///
+/// Every canary here was cross-checked against `tests/redaction/manifest.toml`: 15 of 15 resolve
+/// to a fixture and match its `placement.canary` exactly. That makes the second column pure
+/// duplication of a file CI already validates, and deriving it is filed rather than done here,
+/// because the *membership* predicate — which fixtures are carrier shapes — stays hand-written
+/// either way and is the half that rots.
+const CARRIER_EVASIONS: [(&str, &str); 15] = [
     (
         "evade-actualtext-around-a-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-FORM",
@@ -1771,6 +1926,55 @@ const CARRIER_EVASIONS: [(&str, &str); 10] = [
     // it exists at all -- if narrowing broke outright, only the twin would tell them apart.
     ("evade-tounicode-in-a-form-local-font.pdf", "<0058>"),
     ("nearmiss-tounicode-on-a-page-font.pdf", "<0058>"),
+    // THE PAGE-WIDENING CASE. Its keep line is below the band these tests redact, so the page
+    // contributes no removed glyph and is in the stream list only because it carries the span.
+    (
+        "evade-actualtext-on-a-page-that-draws-nothing-itself.pdf",
+        "BURROW-EVADE-ACTUALTEXT-BARE-PAGE",
+    ),
+    // THE DETECTOR/REWRITER GAP. `/ActualText` named as an array item is not a key, so the
+    // rewriter removes nothing; before the rule that refuses this, the string reached the output.
+    (
+        "evade-actualtext-named-outside-key-position.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NOT-A-KEY",
+    ),
+    // ITS NEAR-MISS, here rather than only in the corpus because the claim is the same one: an
+    // ordinary `/Lang (en-US)` beside the glyphs must be redacted, not refused, and either way
+    // the canary must not come out.
+    (
+        "nearmiss-ordinary-string-in-a-property-list.pdf",
+        "BURROW-EVADE-ACTUALTEXT-ORDINARY-STRING",
+    ),
+    // THE HEADLINE FIXTURE FOR THIS FEATURE, which was not in this list. Spike 0006's channel 9
+    // is `/ActualText` on a marked-content span — the plain shape the whole rewriter is about —
+    // and the byte-level absence assertion ran on every evasion of it and not on it.
+    ("09-actualtext.pdf", "BURROW-CARRIER-09"),
+    // Its near-miss: the span is around a form the region never reaches, and the canary is drawn
+    // by the page outside the span. It must be redacted rather than refused, and either way the
+    // canary must not come out.
+    (
+        "nearmiss-actualtext-around-an-untouched-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NEARMISS",
+    ),
+];
+
+/// The rules this suite will accept a refusal *by*.
+///
+/// The `Err` arm below asserted only that the refusal **named** a rule. That passes for any named
+/// refusal at all, including one about input size or page count — so a fixture that stopped
+/// reaching the carrier logic entirely, because a generator change made it malformed or oversized,
+/// would still have read as "the defence held". The canary would not be in the output, which is
+/// true and says nothing.
+///
+/// These are the rules that mean burrow looked at the carrier and declined. Adding one is a
+/// deliberate act; a refusal outside the list fails and names itself in the message.
+const CARRIER_REFUSALS: [&str; 6] = [
+    "marked-content-properties-unresolved",
+    "marked-content-split-across-elements",
+    "marked-content-carries-opaque-string",
+    "form-vanished",
+    "shared-form-would-change-elsewhere",
+    "type-three-procedure-shows-text",
 ];
 
 #[test]
@@ -1807,9 +2011,28 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
         match redact(&pdf) {
             Err(error) => {
                 let text = format!("{error:?}");
+                // A `nearmiss-` FIXTURE MUST NOT REFUSE, AND NOTHING HERE SAID SO. A refusal
+                // keeps the canary out of the output, so a rule that grew until it fired on the
+                // ordinary shape passed this suite unchanged: measured by reinstating the
+                // rejected "refuse any property list holding a string" rule, which flipped
+                // `nearmiss-ordinary-string-in-a-property-list` from redacted to refused, moved
+                // the census 51/8 to 50/9, and failed nothing. `CARRIER_REFUSALS` below closes
+                // the other half -- a fixture refusing for an unrelated reason -- and could not
+                // close this one, because the rule it refuses by is the right rule fired on the
+                // wrong document.
+                assert!(
+                    !name.starts_with("nearmiss-"),
+                    "{name}: a near-miss must be redacted, not refused -- the rule fired on the \
+                     ordinary shape it exists to stay off: {text}"
+                );
                 assert!(
                     text.contains('[') && text.contains(']'),
                     "{name}: refused without naming a rule: {text}"
+                );
+                assert!(
+                    CARRIER_REFUSALS.iter().any(|rule| text.contains(rule)),
+                    "{name}: refused by a rule that is not about the carrier, so this fixture \
+                     stopped measuring what it was written for: {text}"
                 );
             }
             Ok((out, _)) => assert_absent(&out, canary.as_bytes(), name),

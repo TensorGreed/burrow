@@ -195,7 +195,7 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
     };
 
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
-    let out = match support::redact_page(pdf, 0, redacted, region) {
+    let (out, dropped_carried_text) = match support::redact_page(pdf, 0, redacted, region) {
         Ok((out, report)) => {
             // THE DISCLOSURE COUNT, bounded by something that is not the sharing walk, and
             // bounded by THIS DOCUMENT'S page count rather than by a claim about the corpus.
@@ -230,7 +230,14 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
                 "{name}: the disclosure and the counts disagree: {:?}",
                 report.fonts
             );
-            out
+            // AND THE SAME AGREEMENT FOR THE OTHER DISCLOSURE. A count with no predicate beside
+            // it is the shape `discloses_a_retained_font` was given a cross-check for.
+            assert_eq!(
+                report.discloses_dropped_alternative_text(),
+                report.dropped_carried_text > 0,
+                "{name}: the alternative-text disclosure and its count disagree"
+            );
+            (out, report.dropped_carried_text)
         }
         Err(error) => {
             // A REFUSAL IS AN OUTCOME AND MUST NAME ITS RULE. An unnamed one cannot be told
@@ -272,15 +279,41 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
             want.origin
         );
     }
-    for got in &drawn_after {
-        assert!(
-            drawn_before
-                .iter()
-                .any(|want| want.unicode == got.unicode && origins_close(got.origin, want.origin)),
-            "{name}: U+{:04X} appears at {:?} and was not drawn before -- the page reflowed",
-            got.unicode,
-            got.origin
-        );
+    // THE REFLOW CHECK DOES NOT APPLY TO A DOCUMENT WHOSE CARRIED TEXT WAS DROPPED, and the
+    // reason is the instrument rather than the operation. PDFium reports a marked-content span's
+    // **replacement** text, not its glyphs; drop the replacement and it starts reporting what the
+    // glyphs say. Every one of those characters was drawn all along — the span was hiding them —
+    // so "appears and was not drawn before" is false about the document and true about the
+    // oracle. The same shape as the line-final hyphen `canonical_unicode` exists for.
+    //
+    // GATED ON WHAT THE OPERATION DID, not on a byte scan of the input. The first version
+    // skipped any document containing the bytes `/ActualText` or `/Alt`, and a code review
+    // measured the cost: **11 of 56 documents** lost the check, three of them for nothing —
+    // `10-structure-tree` and `evade-struct-without-structparents` carry the key on a
+    // `/StructElem` this operation never touches, and `nearmiss-actualtext-around-an-untouched-form`
+    // is the twin whose entire point is that nothing happens, which is where the assertion
+    // matters most. `/Alt` is also a prefix of `/Alternate`, in the ICC colour-space dictionary
+    // of a large share of real files, so the predicate was latently far wider than 20 %.
+    //
+    // `report.dropped_carried_text` is exact, cannot go stale when the rewriter's scope changes,
+    // and re-arms the check for all three.
+    //
+    // What carries the weight instead is stronger, not weaker: the reached-glyph check above
+    // still runs, and `redaction_defences.rs::CARRIER_EVASIONS` asserts the canary is absent from
+    // the **bytes** of the output — the claim a user cares about and the one the text layer
+    // cannot make.
+    if dropped_carried_text == 0 {
+        for got in &drawn_after {
+            assert!(
+                drawn_before
+                    .iter()
+                    .any(|want| want.unicode == got.unicode
+                        && origins_close(got.origin, want.origin)),
+                "{name}: U+{:04X} appears at {:?} and was not drawn before -- the page reflowed",
+                got.unicode,
+                got.origin
+            );
+        }
     }
     if reached == 0 {
         return Outcome::NothingToRemove;

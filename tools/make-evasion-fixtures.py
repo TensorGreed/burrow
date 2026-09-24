@@ -1005,6 +1005,42 @@ def evade_actualtext_under_a_form_with_two_parents() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_actualtext_on_a_page_that_draws_nothing_itself() -> bytes:
+    """The page's ONLY involvement is the covering span: its own text is outside the region.
+
+    `affected_streams` builds the stream list from the removed glyphs and then widens it to the
+    streams that carry a span. A code review showed the widening was dead in every test: each
+    existing fixture's keep line falls inside the band `redaction_defences` redacts, so the page
+    already had removed glyphs of its own and was already in the list. Deleting the page half of
+    the widening survived the whole suite.
+
+    Here the keep line sits at the very bottom of the page, below the band, so the page
+    contributes no removed glyph at all — and the stream holding the text to drop is the page.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-BARE-PAGE")) + b" Tj ET\n",
+    )
+    # THE KEEP LINE AT y=5, not `keep_line_ops()`'s y=40: 40 is inside the band the defence
+    # tests redact, which is what made every other fixture's page a removal site by accident.
+    content = (
+        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-BARE-PAGE")) + b" >> BDC\n"
+        b"/X1 Do\n"
+        b"EMC\n"
+        b"BT /Helv 10 Tf 40 5 Td " + literal(KEEP_LINE) + b" Tj ET\n"
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_actualtext_around_an_untouched_form() -> bytes:
     """The same shape, with the `/ActualText` span around a form the region never reaches.
 
@@ -1038,36 +1074,95 @@ def nearmiss_actualtext_around_an_untouched_form() -> bytes:
     return simple_page(pdf, content, res)
 
 
-CASES: list[tuple[str, str, str]] = [
-    # (filename stem, refusal it probes, expected verdict)
-    ("evade-image-in-form", "image", "refuse"),
-    ("evade-inline-image", "image", "refuse"),
-    ("evade-image-as-pattern", "image", "refuse"),
-    ("evade-image-in-type3-glyph", "image", "refuse"),
-    ("evade-text-in-type3-via-form", "Type 3 procedure", "refuse"),
-    ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure", "handle"),
-    ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure", "refuse"),
-    ("nearmiss-form-carrying-its-own-font", "Type 3 procedure", "handle"),
-    ("evade-tounicode-in-a-form-local-font", "font surgery", "refuse"),
-    ("nearmiss-tounicode-on-a-page-font", "font surgery", "handle"),
-    ("nearmiss-image-outside-region", "image", "handle"),
-    ("evade-paths-in-form", "vector paths", "refuse"),
-    ("evade-paths-in-type3-glyph", "vector paths", "refuse"),
-    ("nearmiss-paths-outside-region", "vector paths", "handle"),
-    ("evade-widget-on-another-page", "/AcroForm", "refuse"),
-    ("evade-field-with-no-widget", "/AcroForm", "refuse"),
-    ("nearmiss-annotation-not-a-widget", "/AcroForm", "handle"),
-    ("evade-struct-without-structparents", "/StructTreeRoot", "refuse"),
-    ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot", "handle"),
-    ("evade-oc-two-levels-down", "optional content", "refuse"),
-    ("nearmiss-nested-forms-no-oc", "optional content", "handle"),
-    ("evade-actualtext-around-a-form", "/ActualText", "refuse"),
-    ("evade-actualtext-inside-a-form", "/ActualText", "refuse"),
-    ("evade-actualtext-around-a-nested-form", "/ActualText", "refuse"),
-    ("evade-actualtext-in-the-middle-form", "/ActualText", "refuse"),
-    ("evade-actualtext-over-a-form-without-resources", "/ActualText", "refuse"),
-    ("evade-actualtext-under-a-form-with-two-parents", "/ActualText", "refuse"),
-    ("nearmiss-actualtext-around-an-untouched-form", "/ActualText", "handle"),
+def evade_actualtext_named_outside_key_position() -> bytes:
+    """The `/ActualText` name is an ARRAY ITEM, not a key, and a string sits beside it.
+
+    The residue of narrowing the detector to keys. The wide detector matched a name anywhere, so
+    this classified as carrying text; the rewriter only removes keys, so it removed nothing and
+    produced a replacement byte-identical to its input. Measured: the string reached the output
+    and a raw byte scan found it.
+
+    Refused by `marked-content-carries-opaque-string`, which is exactly the gap between the two
+    readings. The glyphs are drawn by the page inside the span, so the span genuinely covers a
+    removal and the rule is reached.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = (
+        b"/Span << /MCID 0 /K [ /ActualText "
+        + literal(secret("ACTUALTEXT-NOT-A-KEY"))
+        + b" ] >> BDC\n"
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-NOT-A-KEY"))
+        + b" Tj ET\n"
+        b"EMC\n" + keep_line_ops()
+    )
+    return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
+
+
+def nearmiss_ordinary_string_in_a_property_list() -> bytes:
+    """The same covering span, carrying `/Lang (en-US)` instead.
+
+    The twin that stops the rule being "refuse any property list holding a string". `/Lang` is
+    ordinary tagged output and repeats no glyphs; the first version of this rule refused it, and
+    would have refused most tagged documents. The canary is drawn inside the span and must be
+    redacted rather than refused.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = (
+        b"/Span << /MCID 0 /Lang (en-US) >> BDC\n"
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-ORDINARY-STRING"))
+        + b" Tj ET\n"
+        b"EMC\n" + keep_line_ops()
+    )
+    return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
+
+
+CASES: list[tuple[str, str]] = [
+    # (filename stem, refusal it probes)
+    #
+    # THE VERDICT COLUMN IS GONE. It held "refuse" or "handle" per fixture, was interpolated into
+    # a string this script never prints, and was read only by `startswith` on the *stem* -- so it
+    # was dead. It was also wrong: all seven `evade-actualtext-*` entries still said "refuse"
+    # after they started redacting, while `tests/redaction/manifest.toml` said "handle". Two
+    # sources of truth, one of them stale, neither checked against the other. The manifest owns
+    # the verdict and `tools/check-redaction-corpus.py` validates it; this list owns only which
+    # refusal each fixture probes, which is what the twin-coverage report below needs.
+    ("evade-image-in-form", "image"),
+    ("evade-inline-image", "image"),
+    ("evade-image-as-pattern", "image"),
+    ("evade-image-in-type3-glyph", "image"),
+    ("evade-text-in-type3-via-form", "Type 3 procedure"),
+    ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
+    ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
+    ("nearmiss-form-carrying-its-own-font", "Type 3 procedure"),
+    ("evade-tounicode-in-a-form-local-font", "font surgery"),
+    ("nearmiss-tounicode-on-a-page-font", "font surgery"),
+    ("nearmiss-image-outside-region", "image"),
+    ("evade-paths-in-form", "vector paths"),
+    ("evade-paths-in-type3-glyph", "vector paths"),
+    ("nearmiss-paths-outside-region", "vector paths"),
+    ("evade-widget-on-another-page", "/AcroForm"),
+    ("evade-field-with-no-widget", "/AcroForm"),
+    ("nearmiss-annotation-not-a-widget", "/AcroForm"),
+    ("evade-struct-without-structparents", "/StructTreeRoot"),
+    ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot"),
+    ("evade-oc-two-levels-down", "optional content"),
+    ("nearmiss-nested-forms-no-oc", "optional content"),
+    ("evade-actualtext-around-a-form", "/ActualText"),
+    ("evade-actualtext-inside-a-form", "/ActualText"),
+    ("evade-actualtext-around-a-nested-form", "/ActualText"),
+    ("evade-actualtext-in-the-middle-form", "/ActualText"),
+    ("evade-actualtext-over-a-form-without-resources", "/ActualText"),
+    ("evade-actualtext-under-a-form-with-two-parents", "/ActualText"),
+    ("evade-actualtext-on-a-page-that-draws-nothing-itself", "/ActualText"),
+    ("nearmiss-actualtext-around-an-untouched-form", "/ActualText"),
+    ("evade-actualtext-named-outside-key-position", "/ActualText"),
+    ("nearmiss-ordinary-string-in-a-property-list", "/ActualText"),
 ]
 
 BUILDERS = {
@@ -1098,7 +1193,10 @@ BUILDERS = {
     "evade-actualtext-in-the-middle-form": evade_actualtext_in_the_middle_form,
     "evade-actualtext-over-a-form-without-resources": evade_actualtext_over_a_form_without_resources,
     "evade-actualtext-under-a-form-with-two-parents": evade_actualtext_under_a_form_with_two_parents,
+    "evade-actualtext-on-a-page-that-draws-nothing-itself": evade_actualtext_on_a_page_that_draws_nothing_itself,
     "nearmiss-actualtext-around-an-untouched-form": nearmiss_actualtext_around_an_untouched_form,
+    "evade-actualtext-named-outside-key-position": evade_actualtext_named_outside_key_position,
+    "nearmiss-ordinary-string-in-a-property-list": nearmiss_ordinary_string_in_a_property_list,
 }
 
 
@@ -1114,7 +1212,7 @@ def main(argv: list[str]) -> int:
     written = 0
     by_refusal: dict[str, list[str]] = {}
 
-    for stem, refusal, verdict in CASES:
+    for stem, refusal in CASES:
         data = BUILDERS[stem]()
         path = out / f"{stem}.pdf"
         path.write_bytes(data)
@@ -1123,7 +1221,7 @@ def main(argv: list[str]) -> int:
         result = subprocess.run([str(qpdf), "--check", str(path)], capture_output=True, text=True)
         if result.returncode not in (0, 3):
             unreadable.append(f"{path.name}: {result.stdout.strip()[:200]}")
-        by_refusal.setdefault(refusal, []).append(f"{stem} -> {verdict}")
+        by_refusal.setdefault(refusal, []).append(stem)
         written += 1
 
     for refusal, names in by_refusal.items():

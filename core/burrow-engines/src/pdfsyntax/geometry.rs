@@ -74,7 +74,7 @@
 //! `tests/glyph_geometry.rs` pins that shape. The `WMode` refusal covers the other case, and
 //! saying so here is the difference between a bound and a hope.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use burrow_types::{Error, Result};
 
@@ -170,12 +170,12 @@ pub enum Refusal {
     /// **handle**, and handling it means rewriting a property list inside the content stream,
     /// which burrow does not do yet -- so until it does, the page is refused rather than
     /// emitted with the secret still in it.
-    MarkedContentCarriesText,
     /// A marked-content span reaching the region names its property list through
     /// `/Properties`, which this module does not resolve.
     ///
-    /// **Separate from [`Self::MarkedContentCarriesText`] because it is a different claim.**
-    /// That one says burrow *saw* `/ActualText` or `/Alt`; this one says burrow could not tell.
+    /// **It says burrow could not tell**, which is not the same as saying the span carries
+    /// text. A span whose properties are written out and *do* carry text is handled — the
+    /// rewriter drops the entry — so the only marked-content refusal left is this one.
     /// Folding them would put a sentence in front of the user asserting a copy of their text
     /// exists when what happened is that nothing could look — and it would make the corpus
     /// census read as though every one of these documents carried the channel.
@@ -185,6 +185,44 @@ pub enum Refusal {
     /// the outcome is right while the rule is broader than the reason; narrowing it wants a
     /// `/Properties` resolver on [`Resources`].
     MarkedContentPropertiesUnresolved,
+    /// A marked-content property list that must be rewritten spans two `/Contents` elements.
+    ///
+    /// Legal — §7.8.2 divides the array between lexical tokens, not between operations — and
+    /// `Contents::apply` already refuses to replace across a boundary because deleting across
+    /// one is defined and replacing is not. This gives that outcome a **name**: without it the
+    /// operation refused with a `Malformed` about content-stream edits, which blames the
+    /// document's syntax for a limit of burrow's rewriter and which the corpus sweep would
+    /// panic on rather than record.
+    MarkedContentSplitAcrossElements,
+    /// A covering span's property list holds a string burrow cannot account for.
+    ///
+    /// The rewriter removes `TEXT_CARRYING_KEYS` where they are **keys**, because that is
+    /// where assistive technology reads them. A producer may also write one of those names
+    /// somewhere else — §14.6.2 restricts a property list's contents not at all. Then the name is
+    /// there, a string is beside it, and the rewriter removes nothing.
+    ///
+    /// Left alone that is a leak a raw byte scan finds, which is the one outcome redaction may
+    /// not have. Measured on `/Span << /MCID 0 /K [ /ActualText (secret) ] >>`: a name in array
+    /// position is not a key, nothing was removed, and the string reached the output.
+    ///
+    /// So the span is refused, and the check runs on the **rewritten** bytes. See
+    /// `names_a_text_key` for why this is the gap between the wide detector and the narrow
+    /// rewriter rather than "the list holds a string", which refuses `/Lang (en-US)`.
+    MarkedContentCarriesOpaqueString,
+    /// A covering span's property list is not a sequence of key/value pairs.
+    ///
+    /// `as_chunks::<2>()` walks a dictionary's flat `items` in key/value pairs and **silently
+    /// drops a trailing odd one**, which is fine for reading and wrong for rewriting: the
+    /// rebuild then emits a dictionary missing that item. Measured, end to end —
+    /// `/Span << /MCID 0 /ActualText 4 0 R >> BDC` became `/Span << /MCID 0 0 R >>`, a
+    /// dictionary keyed by the number `0`, and
+    /// `/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >>` lost `/Tail` without a word.
+    ///
+    /// Neither leaked — `names_a_text_key` iterates every item, so a stray carried name is still
+    /// seen. But burrow emitted a document it had corrupted while reporting success, and
+    /// silently producing worse output than it was given is the thing this operation may least
+    /// afford. An odd property list is refused instead.
+    MarkedContentPropertyListMalformed,
 }
 
 impl Refusal {
@@ -222,8 +260,10 @@ impl Refusal {
         Self::FormDepth,
         Self::VerticalWriting,
         Self::UndeterminedWritingMode,
-        Self::MarkedContentCarriesText,
         Self::MarkedContentPropertiesUnresolved,
+        Self::MarkedContentSplitAcrossElements,
+        Self::MarkedContentCarriesOpaqueString,
+        Self::MarkedContentPropertyListMalformed,
     ];
 
     /// The rule's name, as it appears in the error message.
@@ -262,8 +302,10 @@ impl Refusal {
             Self::FormDepth => "form-depth",
             Self::VerticalWriting => "vertical-writing",
             Self::UndeterminedWritingMode => "writing-mode-undetermined",
-            Self::MarkedContentCarriesText => "marked-content-carries-text",
             Self::MarkedContentPropertiesUnresolved => "marked-content-properties-unresolved",
+            Self::MarkedContentSplitAcrossElements => "marked-content-split-across-elements",
+            Self::MarkedContentCarriesOpaqueString => "marked-content-carries-opaque-string",
+            Self::MarkedContentPropertyListMalformed => "marked-content-property-list-malformed",
         }
     }
 
@@ -277,8 +319,10 @@ impl Refusal {
                 | Self::TooManyGlyphs
                 | Self::TooManyFormDraws
                 | Self::PatternMayDrawText
-                | Self::MarkedContentCarriesText
                 | Self::MarkedContentPropertiesUnresolved
+                | Self::MarkedContentSplitAcrossElements
+                | Self::MarkedContentCarriesOpaqueString
+                | Self::MarkedContentPropertyListMalformed
                 | Self::UnreadableCMap
                 | Self::SharedFormWouldChangeElsewhere
                 | Self::TypeThreeProcedureShowsText
@@ -1172,92 +1216,320 @@ pub fn check_form_sharing(remove: &[Glyph], uses: &dyn FormUses) -> Result<()> {
 }
 
 /// The marked-content keys that carry a span's text as a string beside its glyphs.
-const TEXT_CARRYING_KEYS: [&[u8]; 2] = [b"ActualText", b"Alt"];
+///
+/// Three, not two. `/ActualText` (§14.9.4) replaces the span's text and `/Alt` (§14.9.3)
+/// describes it; **`/E` (§14.9.5) is expansion text** — what an abbreviation stands for — and
+/// assistive technology reads it in place of the glyphs just as it reads the other two. It was
+/// missing from this list, so `/Span << /E (SECRET) /MCID 0 >>` redacted `Ok` with the string
+/// intact. Found by a security review; the gap predates the rewriter, but the claim that this
+/// channel is handled did not, and a third of the channel was not.
+///
+/// Both halves read this one list, so a key added here is detected and removed together.
+const TEXT_CARRYING_KEYS: [&[u8]; 3] = [b"ActualText", b"Alt", b"E"];
 
-/// Refuse a stream where a glyph being removed sits inside a marked-content span that carries
-/// its own copy of the text.
+// `check_marked_content` IS GONE. It became `carried_text_edits(..).map(|_| ())` the moment the
+// rewriter landed -- same walk, same early return, and its one remaining refusal (`Unknown`) is
+// raised by the rewriter too. Keeping it cost a second `find_form` per form in the caller, which
+// is the loop whose own comment records 22.5 s against a 100 ms deadline.
+
+/// Remove `/ActualText` and `/Alt` from every marked-content span covering a removal here.
 ///
-/// # What this is for, and how it was found
+/// # Dropped, not narrowed, and the measurement is why
 ///
-/// `/ActualText` states what a span of glyphs *says*, as a plain string in the content stream
-/// next to them; `/Alt` does the same for assistive technology. A reader that honours either
-/// shows **that string**, not what the font decodes — so removing the glyphs removes the
-/// drawing and leaves the sentence.
+/// `/ActualText` replaces a span's text for anything that reads the document. The obvious
+/// alternative — shorten it to match the glyphs that remain — was rejected on evidence rather
+/// than taste. One page, one sixteen-character `/ActualText`, varying how many of the span's
+/// glyphs are drawn:
 ///
-/// Measured on `tests/redaction/generated/09-actualtext.pdf`, spike 0006's channel 9. The
-/// region reached `0` and `9`; the removal took both codes out of the content stream correctly,
-/// the font was narrowed correctly, and PDFium still read `BURROW-CARRIER-09` off the output —
-/// including the two characters the user had selected — because
-/// `/Span << /ActualText (BURROW-CARRIER-09) >> BDC` was emitted untouched. The document had
-/// been refused at the door for a missing width table until the standard-14 metrics landed,
-/// which is the only reason this was not already shipping.
+/// | glyphs drawn | what PDFium extracts |
+/// |---|---|
+/// | 16 of 16 | the whole string |
+/// | 12 | the whole string |
+/// | 8 | the whole string |
+/// | 4 | the whole string |
+/// | 0 | nothing |
 ///
-/// # Why a refusal and not a rewrite
+/// **Removing part of a span reduces what a reader shows by nothing.** So narrowing is not a
+/// tidier version of dropping; it is the only operation that would reduce exposure, and
+/// `/ActualText` is a *replacement* with no character-to-glyph correspondence to narrow along.
+/// There is nothing to compute it from, and inventing it puts words a screen reader will speak
+/// into a document that does not contain them.
 ///
-/// ADR 0029 §1 assigns this channel to **handle** — "it is in the page's own stream" — and
-/// handling means rewriting a property list inside a content stream, which is a rewriter burrow
-/// does not have. Until it does, refusing names the reason; emitting does not.
+/// Refusing when the span is only partly removed was the third option, and it refuses the
+/// ordinary case: a paragraph containing one redacted name **is** a partly-removed span.
 ///
-/// # What it refuses that it need not
+/// Dropping is also required when the span goes wholly. A reader then shows nothing, and the
+/// string is still in the file — `qpdf --qdf` returns it.
 ///
-/// A `BDC` whose property list is a **name** resolves through the page's `/Properties`, which
-/// this module does not resolve — it resolves nothing, by construction. Such a span is treated
-/// as carrying text. That is the conservative direction and it is not free: the cost is
-/// measured against the corpus rather than assumed, and is recorded in ADR 0029.
+/// # What it costs
+///
+/// A screen-reader user loses the alternative text for content that **remains**, because a span
+/// usually covers more than the region. That is disclosed rather than absorbed; see ADR 0029.
+///
+/// `/Alt` goes with it. It is a description rather than a replacement, but a description of
+/// content that has been partly removed is false, and false alternative text is worse than
+/// absent alternative text.
 ///
 /// # Errors
 ///
-/// [`Refusal::MarkedContentCarriesText`] when a removed glyph is inside such a span, and
-/// whatever reading the operations failed with.
-pub fn check_marked_content(
+/// Whatever reading the operations failed with, and [`Refusal::MarkedContentPropertiesUnresolved`]
+/// for a span whose properties are named through `/Properties` — those are not rewritten here
+/// and must not be silently left alone.
+pub fn carried_text_edits(
     content: &[u8],
     remove: &[Glyph],
     stream: Option<u64>,
     draws: &FormsReached<'_>,
-) -> Result<()> {
-    use super::ops::operations;
-
-    // ONLY THIS STREAM'S GLYPHS. A `Span` indexes the stream it was read from, so comparing one
-    // against another stream's operations compares two unrelated offsets — the mistake
-    // `GlyphSource::form` exists to make unexpressible.
+) -> Result<Vec<(Span, Vec<u8>)>> {
     let mine: BTreeSet<Span> = remove
         .iter()
         .filter(|glyph| glyph.source.form == stream)
         .map(|glyph| glyph.source.operation)
         .collect();
-    // AND `Do` IS A REMOVAL SITE TOO, which is the hole this signature grew a parameter to
-    // close. Marked content descends through `Do`; this walk does not. A `BDC` in the **page**
-    // stream wrapping a `Do` whose form holds the removed glyphs was seen by neither call: the
-    // page call's `mine` was empty, because every removed glyph had `form: Some(id)`, and the
-    // form call walked a stream with no `BDC` in it.
-    //
-    // Measured on a fixture a security review built from this repo's own generators: the
-    // operation returned `Ok`, the form's glyphs came out, and both PDFium and `pdftotext` read
-    // `BURROW-CARRIER-09` off the output. Spike 0006 channel 9, reached by putting the covered
-    // text in a Form XObject — which `07-form-xobject.pdf` shows is an ordinary producer shape.
-    //
-    // So a stream with no removed glyphs of its own still has something to answer for when it
-    // draws a form that has.
     if mine.is_empty() && draws.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let mut edits = Vec::new();
+    for covering in carrying_spans_over_removals(content, &mine, draws)? {
+        match covering.carried {
+            Carried::Text => {
+                let (from, to) = covering.properties;
+                let original = content.get(from..to).ok_or_else(|| {
+                    // probe-allowed: a burrow invariant, not a judgement about the file
+                    Error::Internal(
+                        "pdf geometry: a property list span outside the stream it came from"
+                            .to_owned(),
+                    )
+                })?;
+                edits.push((covering.properties, without_carried_keys(original)?));
+            }
+            // NOT SILENTLY LEFT ALONE. A named property list may carry the text and this cannot
+            // read it, so the operation refuses exactly as it did before the rewriter existed.
+            Carried::Unknown => {
+                return Refusal::MarkedContentPropertiesUnresolved.refuse(
+                    "the selected text is inside a marked-content span whose properties are \
+                     named rather than written out, so burrow cannot tell whether they carry \
+                     their own copy of the text",
+                );
+            }
+            // A STRING UNDER A KEY THE REWRITER DOES NOT TOUCH, so there is nothing to narrow
+            // and leaving it emits it. Refused by name rather than leaked.
+            Carried::OpaqueString => {
+                return Refusal::MarkedContentCarriesOpaqueString.refuse(
+                    "the selected text is inside a marked-content span whose properties name \
+                     one of the entries that carry a span's text, in a position burrow cannot \
+                     remove it from, so it cannot tell whether that text repeats the glyphs",
+                );
+            }
+            Carried::Nothing => {}
+        }
+    }
+    Ok(edits)
+}
+
+/// The same property dictionary with every [`TEXT_CARRYING_KEYS`] entry removed.
+///
+/// Rebuilt from the parsed operand rather than spliced out of the bytes: a key's value may be a
+/// string containing `>>`, and cutting on a byte pattern would end the dictionary early. The
+/// lexer already knows where each item begins and ends.
+fn without_carried_keys(dictionary: &[u8]) -> Result<Vec<u8>> {
+    let read = super::ops::operations(&[dictionary, b" BDC"].concat())?;
+    let Some(operand @ Operand::Dict { .. }) = read.first().and_then(|op| op.operands.last())
+    else {
+        // probe-allowed: the caller only offers spans it read as a dictionary.
+        return Err(Error::Internal(
+            "pdf geometry: a property list that does not re-read as a dictionary".to_owned(),
+        ));
+    };
+    if is_not_key_value_pairs(operand) {
+        return Refusal::MarkedContentPropertyListMalformed.refuse(
+            "a marked-content property list that is not a sequence of key/value pairs, which \
+             burrow will not rebuild because doing so would drop or re-pair its items and emit a \
+             dictionary the document did not have",
+        );
+    }
+    let rebuilt = rebuilt_without_carried(dictionary, operand)?;
+
+    // AND THE REWRITE IS CHECKED AGAINST THE DETECTOR THAT DECIDED IT, which is the part that
+    // matters more than the recursion below.
+    //
+    // `holds_text_key` reads `/ActualText` at **any** depth — its own comment says so — and this
+    // rebuilt only the top level. A code review measured the consequence: for
+    // `<< /A << /ActualText (secret) >> /MCID 0 >> BDC` the module classified the span as
+    // carrying text, produced an edit whose replacement was **byte-identical to the input**, and
+    // -- because the refusal was deleted in the same commit -- emitted the document. Detector
+    // wider than rewriter, with nothing left to catch the difference: a safe-to-unsafe change on
+    // the one channel the commit is about.
+    //
+    // Recursing fixes that shape. Asking the detector again fixes the class: any future
+    // divergence between "what counts as carrying text" and "what the rewrite removes" fails
+    // here rather than shipping. ADR 0022's argument, one level down.
+    let verify = super::ops::operations(&[rebuilt.as_slice(), b" BDC"].concat())?;
+    let still_carries = verify
+        .first()
+        .and_then(|op| op.operands.last())
+        .is_some_and(holds_text_key);
+    let still_names_one = verify
+        .first()
+        .and_then(|op| op.operands.last())
+        .is_some_and(names_a_text_key);
+    if still_names_one {
+        // A LIST THAT HELD A HANDLED KEY **AND** NAMED ONE SOMEWHERE ELSE. The
+        // `Carried::OpaqueString` arm above never sees it, because `holds_text_key` answered
+        // first and classified it as rewritable; without this the rewrite would strip the key it
+        // knows and emit the one it does not. Decided on the rewritten bytes, so it cannot be
+        // wrong about what actually survived.
+        return Refusal::MarkedContentCarriesOpaqueString.refuse(
+            "the selected text is inside a marked-content span whose properties still name one \
+             of the entries that carry a span's text after burrow removed the ones it knows how \
+             to remove, so it cannot tell whether that text repeats the glyphs",
+        );
+    }
+    if still_carries {
+        // probe-allowed: burrow disagreeing with itself about bytes it just wrote.
+        return Err(Error::Internal(
+            "pdf geometry: a rewritten property list that still carries its own copy of the \
+             text, so the detector and the rewriter disagree"
+                .to_owned(),
+        ));
+    }
+    Ok(rebuilt)
+}
+
+/// One operand rebuilt with every [`TEXT_CARRYING_KEYS`] entry removed, at any depth.
+///
+/// Dictionaries and arrays are rebuilt so a nested `/ActualText` is reached; everything else is
+/// copied by span, which is what keeps a string containing `>>` intact.
+fn rebuilt_without_carried(source: &[u8], operand: &Operand) -> Result<Vec<u8>> {
+    let verbatim = |operand: &Operand| -> Result<Vec<u8>> {
+        let (from, to) = operand.span();
+        source.get(from..to).map(<[u8]>::to_vec).ok_or_else(|| {
+            // probe-allowed: a burrow invariant, not a judgement about the file
+            Error::Internal(
+                "pdf geometry: an operand span outside the property list it came from".to_owned(),
+            )
+        })
+    };
+    match operand {
+        Operand::Dict { items, .. } => {
+            let mut out = Vec::from(b"<<".as_slice());
+            // PAIRWISE by `as_chunks`: a dictionary with an odd number of items is malformed, and
+            // this drops the trailing one rather than indexing past the end.
+            for [key, value] in items.as_chunks::<2>().0 {
+                if matches!(key, Operand::Name { value: name, .. }
+                    if TEXT_CARRYING_KEYS.contains(&name.as_slice()))
+                {
+                    continue;
+                }
+                out.push(b' ');
+                out.extend_from_slice(&verbatim(key)?);
+                out.push(b' ');
+                out.extend_from_slice(&rebuilt_without_carried(source, value)?);
+            }
+            out.extend_from_slice(b" >>");
+            Ok(out)
+        }
+        Operand::Array { items, .. } => {
+            let mut out = Vec::from(b"[".as_slice());
+            for item in items {
+                out.push(b' ');
+                out.extend_from_slice(&rebuilt_without_carried(source, item)?);
+            }
+            out.extend_from_slice(b" ]");
+            Ok(out)
+        }
+        other => verbatim(other),
+    }
+}
+
+/// One marked-content span that is open over a removal in this stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CoveringSpan {
+    /// The `BDC`'s property-list operand, for rewriting it in place.
+    pub(crate) properties: Span,
+    /// What reading that property list established.
+    carried: Carried,
+}
+
+/// Every marked-content span open over a removal in this stream, outermost first.
+///
+/// # One walk, two callers, on purpose
+///
+/// [`carried_text_edits`] is the only caller now, but the split stays: finding which spans
+/// cover a removal is a different question from deciding what to do about each.
+/// Two walks answering "which spans cover a removal" is two walks that can disagree, and the
+/// whole history of this seam is answers that were smaller than the truth — the scope that
+/// stopped at the forms holding a glyph, the descent that stopped at a form with no
+/// `/Resources`, the memo that kept the first path's answer. A stripper that found fewer spans
+/// than the checker would leak exactly the difference, silently, in the direction where the
+/// checker had already said `Ok`.
+///
+/// # Errors
+///
+/// Whatever reading the operations failed with.
+fn carrying_spans_over_removals(
+    content: &[u8],
+    mine: &BTreeSet<Span>,
+    draws: &FormsReached<'_>,
+) -> Result<Vec<CoveringSpan>> {
+    use super::ops::operations;
 
     // A STACK, NOT A FLAG, AND EVERY SPAN IS ON IT. Marked content nests, so an inner
     // `/P << /MCID 3 >> BDC` must not clear an outer `/Span << /ActualText … >> BDC` when its
     // `EMC` arrives. Pushing only the carrying spans would do exactly that: the inner span's
     // `EMC` would pop the outer span's entry. `BMC` takes no property list and so carries
     // nothing, but it still opens a span and still has to be on the stack.
-    let mut open: Vec<Carried> = Vec::new();
+    let mut open: Vec<CoveringSpan> = Vec::new();
+    let mut found: Vec<CoveringSpan> = Vec::new();
+    // A CURSOR INTO THE STACK, NOT A MEMBERSHIP TEST. `recorded` is how much of `open`'s prefix
+    // has already been emitted, so each span is recorded once, when the first removal passes
+    // under it.
+    //
+    // # Two measurements, and why the first one was not enough
+    //
+    // This began as `!found.contains(covering)` over a `Vec`. Before the rewriter, the walk
+    // returned at the FIRST covering span; collecting them all made the scan quadratic. A
+    // security review measured 250,000 nested `/S << /ActualText (x) >> BDC` -- 19,776 bytes
+    // Flate-compressed -- at 18.34 s against a `max_duration_ms` of 100. A `BTreeSet` took that
+    // to 0.59 s and looked like the fix.
+    //
+    // It was not. **The set deduplicated the push, not the scan.** The loop below still ran once
+    // per open span per removal, so the cost is `open x removals`, and the 250,000-span
+    // measurement varied only one of those two factors -- it held removals at one. The next
+    // review varied both and the quadratic was still there, worse: 60,000 spans over 60,000
+    // removals, an 11,775-byte gzip, took **109 s** and 417 MB. 1,090x the deadline.
+    //
+    // A stack is ordered, so a cursor answers "have I recorded this one" in O(1) without a
+    // lookup, and the amortised cost becomes pushes + pops + removals. Measured on the same
+    // fixtures: 60k x 60k 109.05 s -> 0.23 s, 16k x 16k 7.00 s -> 0.59 s.
+    //
+    // It also removes a defence nothing tested. A mutation making the set inert survived the
+    // suite: the consequence was duplicate edits for one span and a `Malformed` from
+    // `Contents::apply` -- failing closed, but anonymously, blaming the file. With a cursor a
+    // duplicate cannot be constructed, so there is no inert defence left to test.
+    let mut recorded: usize = 0;
     for operation in operations(content)? {
         match operation.operator.as_slice() {
-            b"BDC" => open.push(carried_by(&operation)),
-            b"BMC" => open.push(Carried::Nothing),
+            b"BDC" => open.push(CoveringSpan {
+                properties: operation
+                    .operands
+                    .last()
+                    .map_or(operation.span, super::ops::Operand::span),
+                carried: carried_by(&operation),
+            }),
+            b"BMC" => open.push(CoveringSpan {
+                properties: operation.span,
+                carried: Carried::Nothing,
+            }),
             // AN UNMATCHED `EMC` IS NOT A REFUSAL HERE. The walk that produced these glyphs has
             // already accepted the stream, and this check exists to answer one question about
             // it; inventing a second opinion on well-formedness would refuse documents over a
             // rule nothing else in the walk applies.
             b"EMC" => {
                 open.pop();
+                // THE CURSOR FOLLOWS THE STACK DOWN. A span that was recorded and has now closed
+                // must not hold the cursor above a span that reopens at the same depth.
+                recorded = recorded.min(open.len());
             }
             _ => {}
         }
@@ -1266,31 +1538,19 @@ pub fn check_marked_content(
         if !removes_here {
             continue;
         }
-        // THE STRONGEST CLAIM ANY OPEN SPAN SUPPORTS, and the two are reported apart. A span
-        // burrow *saw* carry `/ActualText` is a different sentence from one it could not read,
-        // and collapsing them would tell a user their text was copied when what happened is
-        // that nothing could look. Text wins over unknown so the more specific reason is the
-        // one reported when both are open.
-        if open.contains(&Carried::Text) {
-            return Refusal::MarkedContentCarriesText.refuse(
-                "the selected text is inside a marked-content span that carries its own copy \
-                 of the text, which removing the glyphs would leave behind",
-            );
+        for covering in open.get(recorded..).unwrap_or_default() {
+            if covering.carried != Carried::Nothing {
+                found.push(*covering);
+            }
         }
-        if open.contains(&Carried::Unknown) {
-            return Refusal::MarkedContentPropertiesUnresolved.refuse(
-                "the selected text is inside a marked-content span whose properties are named \
-                 rather than written out, so burrow cannot tell whether they carry their own \
-                 copy of the text",
-            );
-        }
+        recorded = open.len();
     }
-    Ok(())
+    Ok(found)
 }
 
 /// Which `Do` operations in a stream draw a form the removal reaches.
 ///
-/// [`check_marked_content`] needs this because marked content descends through `Do` and its own
+/// [`carried_text_edits`] needs this because marked content descends through `Do` and its own
 /// walk does not: a span opened in one stream covers glyphs drawn from another. This module
 /// resolves nothing, so the answer is supplied by the caller — or declared unavailable, which is
 /// a different thing and says so.
@@ -1347,18 +1607,26 @@ enum Carried {
     Text,
     /// Its property list is a name this module does not resolve.
     Unknown,
+    /// Its property list names one of [`TEXT_CARRYING_KEYS`] somewhere it is not a key.
+    ///
+    /// See [`Refusal::MarkedContentCarriesOpaqueString`]. Separate from [`Self::Text`] because
+    /// there is nothing to rewrite: the refusal is the whole outcome.
+    OpaqueString,
 }
 
 /// Whether a `BDC` operation's property list carries the span's text.
 fn carried_by(operation: &Operation) -> Carried {
     match operation.operands.last() {
         // AN INLINE DICTIONARY, read at any depth: a `/ActualText` under a nested key is still
-        // a copy of the text. `items` is flat per level, so this recurses rather than striding
-        // by two — striding would also mistake a *value* equal to `/Alt` for a key, which is
-        // the direction that refuses too much rather than too little, but is still wrong.
-        Some(Operand::Dict { items, .. }) => {
-            if items.iter().any(holds_text_key) {
+        // a copy of the text. The whole dictionary is handed over rather than its items one by
+        // one, because `holds_text_key` now asks whether a name is a **key**, and an item seen
+        // alone has lost the position that answers that. Passing the items individually is how
+        // this read `/ActualText` in value position as though it were a key.
+        Some(dictionary @ Operand::Dict { .. }) => {
+            if holds_text_key(dictionary) {
                 Carried::Text
+            } else if names_a_text_key(dictionary) {
+                Carried::OpaqueString
             } else {
                 Carried::Nothing
             }
@@ -1371,13 +1639,92 @@ fn carried_by(operation: &Operation) -> Carried {
     }
 }
 
-/// Whether this operand is, or contains, one of [`TEXT_CARRYING_KEYS`].
-fn holds_text_key(operand: &Operand) -> bool {
+/// Whether this operand is, or contains, a dictionary that is not key/value pairs.
+///
+/// See [`Refusal::MarkedContentPropertyListMalformed`]. Asked before the rebuild rather than
+/// during it, so the refusal names the document's shape rather than a step burrow got part-way
+/// through.
+///
+/// # Two conditions, because the first one alone missed the case it was written for
+///
+/// The odd-length test is the obvious one and it does not catch
+/// `/Span << /MCID 0 /ActualText 4 0 R >>`, which is the shape a security review measured
+/// rebuilding into `<< /MCID 0 0 R >>`. This module's lexer has no indirect references — there
+/// is no such thing inside a content stream — so `4 0 R` is three operands, the dictionary has
+/// six items, and it is perfectly even. What is wrong with it is that the fifth item, in key
+/// position, is the *number* `0`.
+///
+/// So both: an odd count, and a non-name where a key belongs. Each catches a shape the other
+/// does not, and together they are the condition `as_chunks::<2>()` silently assumes.
+fn is_not_key_value_pairs(operand: &Operand) -> bool {
+    match operand {
+        Operand::Dict { items, .. } => {
+            items.len() % 2 != 0
+                || items
+                    .iter()
+                    .step_by(2)
+                    .any(|key| !matches!(key, Operand::Name { .. }))
+                || items.iter().any(is_not_key_value_pairs)
+        }
+        Operand::Array { items, .. } => items.iter().any(is_not_key_value_pairs),
+        _ => false,
+    }
+}
+
+/// Whether this operand *names* one of [`TEXT_CARRYING_KEYS`] anywhere, key position or not.
+///
+/// Exactly the reach [`holds_text_key`] used to have, kept as its own function because the
+/// difference between the two is the thing that needs a decision rather than a silent drop.
+///
+/// # Why this is the discriminator, and "holds any string" is not
+///
+/// The first attempt refused a covering span whose property list held **any** string, on the
+/// argument that burrow cannot relate it to the glyphs. That is true and it refuses far too much:
+/// `/Span << /MCID 0 /Lang (en-US) >>` is ordinary tagged output and repeats no text. It failed
+/// `the_rewritten_property_list_keeps_every_other_key`, which is that probe earning its place.
+///
+/// The residue worth refusing is narrower and needs no allowlist to describe: a list where the
+/// producer wrote one of the three accessibility keys in a position the rewriter does not remove
+/// from, such as `/K [ /ActualText (secret) ]`. The key is *named*, so the string beside it is
+/// plausibly that channel; nothing is removed, so leaving it emits it. Refusing exactly the gap
+/// between the wide reading and the narrow one is what keeps the narrowing from being a leak.
+fn names_a_text_key(operand: &Operand) -> bool {
     match operand {
         Operand::Name { value, .. } => TEXT_CARRYING_KEYS.contains(&value.as_slice()),
         Operand::Dict { items, .. } | Operand::Array { items, .. } => {
-            items.iter().any(holds_text_key)
+            items.iter().any(names_a_text_key)
         }
+        _ => false,
+    }
+}
+
+/// Whether this operand holds one of [`TEXT_CARRYING_KEYS`] **as a key**, at any depth.
+///
+/// # A key, not a name anywhere
+///
+/// This matched any `Operand::Name` equal to one of the keys, wherever it appeared — including as
+/// a *value* and as a bare item inside an array. The comment defending that said treating a value
+/// as a key "refuses too much rather than too little", which was sound while the outcome was a
+/// refusal and stopped being sound when the outcome became a rewrite: `/K [ /ActualText (x) ]`
+/// was reported as carrying text, and there is no key there to remove, so the rewrite was a
+/// no-op that the self-check below then had to catch as an internal error. Burrow blaming itself
+/// for a document it should simply handle.
+///
+/// The scope it leaves out is the honest one. `/ActualText`, `/Alt` and `/E` are read by
+/// assistive technology **because they are those keys**; a string sitting under some other key is
+/// not that channel, and could not be — every operand in a content stream may be a string.
+///
+/// Dictionaries and arrays are still descended, so a carrying dictionary nested inside either is
+/// found. What changed is that the detector now matches exactly what [`rebuilt_without_carried`]
+/// removes, which is what keeps the two from disagreeing.
+fn holds_text_key(operand: &Operand) -> bool {
+    match operand {
+        Operand::Dict { items, .. } => items.as_chunks::<2>().0.iter().any(|[key, value]| {
+            matches!(key, Operand::Name { value: name, .. }
+                if TEXT_CARRYING_KEYS.contains(&name.as_slice()))
+                || holds_text_key(value)
+        }),
+        Operand::Array { items, .. } => items.iter().any(holds_text_key),
         _ => false,
     }
 }
@@ -1471,22 +1818,102 @@ pub fn remove_glyphs_across(
     stream: Option<u64>,
     remove: &[Glyph],
 ) -> Result<Vec<Vec<u8>>> {
+    contents.apply(&glyph_edits(contents.bytes(), stream, remove)?)
+}
+
+/// As [`remove_glyphs_across`], and also drop the text any covering span carries.
+///
+/// Returns the rewritten elements **and how many property lists were stripped**, because the
+/// caller needs that number for the disclosure and the only other way to get it is to run the
+/// covering-span walk a second time. It did: `rewrite` called [`carried_text_edits`] for its
+/// `.len()` and then called this, which calls it again — doubling the worst case of the walk
+/// this module measured at 18.3s over 250,000 spans, and giving two answers to the question
+/// this module's own doc says must have one.
+///
+/// Both edit sets are computed against the **original** bytes and applied in one pass, because
+/// each is a span into those bytes: stripping first would move every glyph span, and stripping
+/// afterwards would be looking for glyphs that are no longer there to say which spans covered
+/// them. `Contents::apply` owns the offset arithmetic and wants them ascending, so they are
+/// merged and sorted rather than applied twice.
+///
+/// # Errors
+///
+/// As [`remove_glyphs_across`] and [`carried_text_edits`].
+pub fn remove_glyphs_and_carried_text(
+    contents: &super::contents::Contents,
+    stream: Option<u64>,
+    remove: &[Glyph],
+    draws: &FormsReached<'_>,
+) -> Result<(Vec<Vec<u8>>, usize)> {
+    let content = contents.bytes();
+    let mut edits = glyph_edits(content, stream, remove)?;
+    let carried = carried_text_edits(content, remove, stream, draws)?;
+    let dropped = carried.len();
+    for (span, replacement) in carried {
+        // A PROPERTY LIST SPLIT ACROSS TWO `/Contents` ELEMENTS IS REFUSED BY NAME.
+        //
+        // §7.8.2 puts the divisions between lexical tokens, so a `BDC`'s dictionary may legally
+        // begin in one element and end in the next. `Contents::apply` already refuses to
+        // *replace* across a boundary -- deleting across one is defined, replacing is not -- but
+        // it refuses with a `Malformed` about content-stream edits, which names no rule and
+        // reads as a complaint about the file. A security review measured that: the message
+        // blames the user's syntax for a legal document, and `redaction_corpus.rs` would panic
+        // on it ("refused without naming a rule") rather than record it.
+        //
+        // Failing closed is right; failing closed anonymously is not.
+        let (from, to) = span;
+        if contents.locate(from).map(|(element, _)| element)
+            != contents
+                .locate(to.saturating_sub(1))
+                .map(|(element, _)| element)
+        {
+            return Refusal::MarkedContentSplitAcrossElements.refuse(
+                "a marked-content property list that begins in one /Contents element and ends \
+                 in the next, which burrow will not rewrite in place",
+            );
+        }
+        edits.push(super::contents::Edit { span, replacement });
+    }
+    edits.sort_unstable_by_key(|edit| edit.span);
+    Ok((contents.apply(&edits)?, dropped))
+}
+
+/// The edits that remove `remove`'s glyphs from `content`, in ascending order.
+fn glyph_edits(
+    content: &[u8],
+    stream: Option<u64>,
+    remove: &[Glyph],
+) -> Result<Vec<super::contents::Edit>> {
     if remove.iter().any(|glyph| glyph.source.form != stream) {
         return Refusal::GlyphFromAnotherStream
             .refuse("a glyph drawn in a different stream, whose span does not index this one");
     }
-    let content = contents.bytes();
     let operations = super::ops::operations(content)?;
+    // GROUPED ONCE, NOT RESCANNED PER OPERATION. This filtered the whole `remove` slice inside
+    // the loop, so the cost was operations x removals. A security review found the covering-span
+    // walk quadratic in the same two factors and a cursor fixed that one; measuring the result
+    // showed 60,000 spans over 60,000 removals still took 13.8 s, which is this loop -- the walk
+    // above it was no longer the slowest thing, only the first thing found. 3.6e9 comparisons
+    // over an 11,842-byte file.
+    //
+    // Worth stating because the first fix looked complete and was not: one measurement that
+    // varies one factor cannot tell a fixed quadratic from a moved one.
+    let mut by_operation: BTreeMap<Span, Vec<&Glyph>> = BTreeMap::new();
+    for glyph in remove {
+        by_operation
+            .entry(glyph.source.operation)
+            .or_default()
+            .push(glyph);
+    }
     let mut edits: Vec<super::contents::Edit> = Vec::new();
     for operation in &operations {
-        let cuts: Vec<&Glyph> = remove
-            .iter()
-            .filter(|glyph| glyph.source.operation == operation.span)
-            .collect();
+        let cuts: &[&Glyph] = by_operation
+            .get(&operation.span)
+            .map_or(&[], std::vec::Vec::as_slice);
         if !cuts.is_empty() {
             edits.push(super::contents::Edit {
                 span: operation.span,
-                replacement: rewrite_without(content, operation, &cuts)?,
+                replacement: rewrite_without(content, operation, cuts)?,
             });
         }
     }
@@ -1494,7 +1921,7 @@ pub fn remove_glyphs_across(
         return Refusal::GlyphWithoutItsOperation
             .refuse("a glyph attributed to an operation this stream does not contain");
     }
-    contents.apply(&edits)
+    Ok(edits)
 }
 
 /// How many distinct operations the cuts name, so an unmatched one is caught rather than ignored.
@@ -2433,8 +2860,8 @@ mod tests {
     use super::{
         CMap, Encoding, Form, FormUses, Glyph, GlyphMetrics, MAX_FORM_DEPTH, MAX_GLYPHS, Matrix,
         Rect, Refusal, Resources, TextPosition, TextState, WritingMode, check_form_sharing,
-        check_marked_content, check_type_three_procedure, check_writing_mode, glyphs_in,
-        remove_glyphs, takes_word_spacing, writing_mode_of,
+        check_type_three_procedure, check_writing_mode, glyphs_in, remove_glyphs,
+        takes_word_spacing, writing_mode_of,
     };
 
     /// A resources table with one font of known width and whatever forms a test names.
@@ -2560,7 +2987,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 34,
+            total, 36,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -2681,10 +3108,15 @@ mod tests {
         // AND HOW MANY WERE EXEMPTED, with an expectation beside it. An allowlist that grows
         // unnoticed is how a structural probe stops being one.
         assert_eq!(
-            allowlisted, 4,
-            "the allowlist holds {allowlisted} lines; it is for exactly three -- the two \
-             `Internal`s reporting a span that left its stream, the splice invariant, and the \
-             foreign error the `caught` test builds"
+            allowlisted, 8,
+            "the allowlist holds {allowlisted} lines; it is for exactly eight -- the two \
+             `Internal`s reporting a span that left its stream, the splice invariant, the \
+             foreign error the `caught` test builds, and the two the `/ActualText` rewriter \
+             adds: a property-list span outside its stream, and a property list that does not \
+             re-read as a dictionary, an operand span outside the property list it came from, \
+             and a rewritten property list that still carries text. All four of the rewriter's \
+             are burrow disagreeing with itself about bytes it just parsed, which is what \
+             `Internal` is for"
         );
     }
 
@@ -3811,14 +4243,14 @@ mod tests {
         );
     }
 
-    /// Per-rule probes for [`check_marked_content`].
+    /// Per-rule probes for the marked-content rewriter.
     ///
     /// Each rule matches its own positive fixture and rejects a near-miss, and the near-misses
     /// are the point: a check that refuses every `BDC` would pass the positive cases while
     /// refusing every tagged document in existence, and one that refuses none would pass
     /// nothing. Both of those printed a clean corpus sweep before this existed.
     mod marked_content_probes {
-        use super::{Fake, check_marked_content, glyphs_in};
+        use super::{Fake, glyphs_in};
 
         /// A stream that draws no form the removal reaches — the ordinary case for these
         /// probes, whose fixtures draw their glyphs inline.
@@ -3831,6 +4263,38 @@ mod tests {
             glyphs_in(content, &Fake::new()).expect("the fixture walks")
         }
 
+        /// How many property lists the rewriter would strip from `content`.
+        ///
+        /// The positive shapes assert on THIS now rather than on a refusal: `/ActualText` is
+        /// handled, so "does it refuse" stopped being the question and "does it find the span
+        /// to strip" became it. A probe left asserting the refusal would have gone green by
+        /// asserting the old behaviour of a rule that no longer has it.
+        #[track_caller]
+        fn strips(content: &[u8]) -> usize {
+            let glyphs = all_glyphs(content);
+            let edits = super::super::carried_text_edits(
+                content,
+                &glyphs,
+                None,
+                &super::super::FormsReached::Named(&nothing_drawn()),
+            )
+            .expect("the fixture is readable");
+            for (_, replacement) in &edits {
+                let text = String::from_utf8_lossy(replacement);
+                // EVERY KEY IN THE CONSTANT, not the two that were there when this was
+                // written. `/E` was added to `TEXT_CARRYING_KEYS` and not here, which left the
+                // helper guarding a smaller set than the thing it guards.
+                for key in super::super::TEXT_CARRYING_KEYS {
+                    let key = String::from_utf8_lossy(key);
+                    assert!(
+                        !text.contains(key.as_ref()),
+                        "a rewritten property list still carries /{key}: {text}"
+                    );
+                }
+            }
+            edits.len()
+        }
+
         /// Assert `content`'s own glyphs are refused, **and by which rule**.
         ///
         /// By the variant rather than by the rule's string, for the reason `assert_refused`
@@ -3839,7 +4303,7 @@ mod tests {
         #[track_caller]
         fn assert_refused_by(content: &[u8], rule: super::Refusal) {
             let glyphs = all_glyphs(content);
-            match check_marked_content(
+            match super::super::carried_text_edits(
                 content,
                 &glyphs,
                 None,
@@ -3850,37 +4314,257 @@ mod tests {
                     "refused, but by a different rule: wanted `{}`, got {error:?}",
                     rule.rule()
                 ),
-                Ok(()) => panic!("expected a refusal by `{}`, got none", rule.rule()),
+                Ok(_) => panic!("expected a refusal by `{}`, got none", rule.rule()),
             }
+        }
+
+        /// A carried key named where the rewriter cannot remove it is refused, not emitted.
+        ///
+        /// This shape — a *name* in array position rather than a key — is the gap the narrowing
+        /// of `holds_text_key` opened, and it reached the emitted file once. The positive probe
+        /// is that exact shape.
+        #[test]
+        fn a_carried_key_named_outside_key_position_is_refused() {
+            assert_refused_by(
+                b"/Span << /MCID 0 /K [ /ActualText (secret) ] >> BDC BT /F1 12 Tf (x) Tj ET EMC",
+                super::Refusal::MarkedContentCarriesOpaqueString,
+            );
+        }
+
+        /// The same refusal when the list ALSO held a handled key, decided on the rewritten bytes.
+        ///
+        /// The `Carried::OpaqueString` arm never sees this list, because it holds `/ActualText`
+        /// and so classifies as `Carried::Text`. Without the second check the rewrite would strip
+        /// the key it knows and emit the string it does not.
+        #[test]
+        fn a_leftover_naming_beside_a_handled_key_is_refused_too() {
+            assert_refused_by(
+                b"/Span << /ActualText (a) /K [ /Alt (secret) ] >> BDC BT /F1 12 Tf (x) Tj ET EMC",
+                super::Refusal::MarkedContentCarriesOpaqueString,
+            );
+        }
+
+        /// THE NEAR-MISS: an ordinary string under an ordinary key is left alone, not refused.
+        ///
+        /// `/Lang` is the case that killed the first version of this rule, which refused any
+        /// property list holding a string. A rule that refuses every covering span passes both
+        /// probes above while making the operation useless, which is what a near-miss is for.
+        #[test]
+        fn an_ordinary_string_under_an_ordinary_key_is_not_refused() {
+            assert_allowed(b"/Span << /MCID 0 /Lang (en-US) >> BDC BT /F1 12 Tf (x) Tj ET EMC");
+        }
+
+        /// A key with no value is refused, not rebuilt into something the document did not have.
+        ///
+        /// Measured end to end before this: `/ActualText 4 0 R` (an indirect reference, three
+        /// items after `/MCID 0`) rebuilt as `<< /MCID 0 0 R >>`.
+        #[test]
+        fn an_odd_property_list_is_refused_rather_than_silently_repaired() {
+            assert_refused_by(
+                b"/Span << /MCID 0 /ActualText 4 0 R >> BDC BT /F1 12 Tf (x) Tj ET EMC",
+                super::Refusal::MarkedContentPropertyListMalformed,
+            );
+        }
+
+        /// The same, one dictionary down, where the loss was of an unrelated key.
+        ///
+        /// `/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >>` dropped `/Tail`.
+        #[test]
+        fn an_odd_nested_property_list_is_refused_too() {
+            assert_refused_by(
+                b"/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >> BDC BT /F1 12 Tf (x) Tj \
+                  ET EMC",
+                super::Refusal::MarkedContentPropertyListMalformed,
+            );
+        }
+
+        /// THE NEAR-MISS: an even property list carrying the same key is rewritten, not refused.
+        ///
+        /// A rule that refused every nested dictionary would pass both probes above and take the
+        /// nesting case — the one a previous round's leak was about — offline with it.
+        #[test]
+        fn an_even_property_list_with_a_nested_carrier_is_still_rewritten() {
+            assert_eq!(
+                strips(
+                    b"/Span << /MCID 0 /Pad << /ActualText (X) >> >> BDC BT /F1 12 Tf (x) Tj \
+                         ET EMC"
+                ),
+                1
+            );
         }
 
         /// Assert `content`'s own glyphs are allowed through.
         #[track_caller]
         fn assert_allowed(content: &[u8]) {
             let glyphs = all_glyphs(content);
-            if let Err(error) = check_marked_content(
+            match super::super::carried_text_edits(
                 content,
                 &glyphs,
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
             ) {
-                panic!("expected no refusal, got {error:?}");
+                Err(error) => panic!("expected no refusal, got {error:?}"),
+                // AND NOTHING STRIPPED. "Allowed" used to mean "did not refuse"; with the
+                // rewriter it has to mean "and left the document alone", or a probe for an
+                // ordinary tagged span would pass while the span was being rewritten.
+                Ok(edits) => assert!(
+                    edits.is_empty(),
+                    "expected nothing stripped, got {} edit(s)",
+                    edits.len()
+                ),
             }
         }
 
         #[test]
-        fn an_actualtext_span_around_the_removed_glyph_is_refused_by_name() {
-            assert_refused_by(
-                b"/Span << /ActualText (secret) >> BDC BT /F1 12 Tf (AB) Tj ET EMC",
-                super::Refusal::MarkedContentCarriesText,
+        fn the_rewritten_property_list_keeps_every_other_key() {
+            let out = super::super::without_carried_keys(
+                b"<< /Type /Span /ActualText (secret) /MCID 4 /Lang (en-GB) >>",
+            )
+            .expect("re-reads");
+            let text = String::from_utf8_lossy(&out);
+            assert!(!text.contains("ActualText"), "{text}");
+            assert!(text.contains("/Type /Span"), "{text}");
+            assert!(text.contains("/MCID 4"), "{text}");
+            assert!(text.contains("/Lang (en-GB)"), "{text}");
+        }
+
+        #[test]
+        fn a_value_containing_the_dictionary_terminator_does_not_end_it_early() {
+            // WHY IT IS REBUILT FROM THE PARSE RATHER THAN SPLICED OUT OF THE BYTES. A string
+            // value may contain `>>`, and cutting on that byte pattern would truncate the
+            // dictionary and take every later key with it -- including `/MCID`, which is how a
+            // tagged document is stitched to its structure tree.
+            let out = super::super::without_carried_keys(
+                b"<< /ActualText (ends with >> inside) /MCID 7 >>",
+            )
+            .expect("re-reads");
+            let text = String::from_utf8_lossy(&out);
+            assert!(!text.contains("ActualText"), "{text}");
+            assert!(text.contains("/MCID 7"), "{text}");
+        }
+
+        #[test]
+        fn alt_goes_with_actualtext() {
+            let out = super::super::without_carried_keys(b"<< /Alt (a description) /MCID 1 >>")
+                .expect("re-reads");
+            let text = String::from_utf8_lossy(&out);
+            assert!(!text.contains("/Alt"), "{text}");
+            assert!(text.contains("/MCID 1"), "{text}");
+        }
+
+        #[test]
+        fn a_property_list_carrying_nothing_comes_back_equivalent() {
+            let out = super::super::without_carried_keys(b"<< /MCID 0 >>").expect("re-reads");
+            assert!(String::from_utf8_lossy(&out).contains("/MCID 0"));
+        }
+
+        /// Assert a combined pass refused, by the named rule.
+        #[track_caller]
+        fn assert_split_refusal(
+            outcome: burrow_types::Result<(Vec<Vec<u8>>, usize)>,
+            rule: super::Refusal,
+        ) {
+            match outcome {
+                Err(error) => assert!(
+                    rule.caught(&error),
+                    "refused by the wrong rule: wanted `{}`, got {error:?}",
+                    rule.rule()
+                ),
+                Ok(_) => panic!("expected a refusal by `{}`", rule.rule()),
+            }
+        }
+
+        #[test]
+        fn a_property_list_split_across_two_contents_elements_refuses_by_name() {
+            // §7.8.2 divides a `/Contents` array between lexical tokens, so a `BDC`'s dictionary
+            // may legally begin in one element and end in the next. `Contents::apply` refuses to
+            // replace across a boundary; this gives that outcome a rule name so the corpus sweep
+            // records it rather than panicking on an unnamed refusal.
+            let first = b"/Span << /ActualText (secret)".as_slice();
+            let second = b" >> BDC BT /F1 12 Tf (AB) Tj ET EMC".as_slice();
+            let contents = super::super::super::contents::Contents::concatenate(&[first, second])
+                .expect("two elements");
+            let glyphs = glyphs_in(contents.bytes(), &Fake::new()).expect("walks");
+            let outcome = super::super::remove_glyphs_and_carried_text(
+                &contents,
+                None,
+                &glyphs,
+                &super::super::FormsReached::Named(&nothing_drawn()),
+            );
+            // THE RULE PASSED AS AN ARGUMENT, so `every_refusal_is_both_raised_and_tested` can
+            // see it. That gate scans the test half for `Refusal::X)` or `Refusal::X,`; a method
+            // call on the variant reads as `Refusal::X.caught(..)` and matches neither, so a
+            // probe written that way leaves the variant reported as untested.
+            assert_split_refusal(outcome, super::Refusal::MarkedContentSplitAcrossElements);
+        }
+
+        #[test]
+        fn an_inner_bmc_does_not_close_the_carrying_span() {
+            // THE `BMC` HALF OF "A STACK, NOT A FLAG", which the nesting probes never covered:
+            // they all used an inner `BDC`. A security review deleted the `BMC` push and the
+            // whole suite stayed green, while `/Span << /ActualText … >> BDC BMC EMC BT … EMC`
+            // emitted the canary verbatim -- the inner `EMC` popped the carrying span.
+            assert_eq!(
+                strips(
+                    b"/Span << /ActualText (secret) >> BDC BMC EMC \
+                      BT /F1 12 Tf (AB) Tj ET EMC"
+                ),
+                1
             );
         }
 
         #[test]
-        fn an_alt_span_is_refused_the_same_way() {
-            assert_refused_by(
-                b"/Span << /Alt (secret) >> BDC BT /F1 12 Tf (AB) Tj ET EMC",
-                super::Refusal::MarkedContentCarriesText,
+        fn expansion_text_is_carried_text_too() {
+            // `/E` is §14.9.5's expansion text -- what an abbreviation stands for -- and a screen
+            // reader reads it in place of the glyphs, exactly as it does `/ActualText`. It was
+            // missing from `TEXT_CARRYING_KEYS`, so this redacted with the string intact.
+            assert_eq!(
+                strips(b"/Span << /E (secret) /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC"),
+                1
+            );
+        }
+
+        #[test]
+        fn an_actualtext_nested_under_another_key_is_stripped_too() {
+            // THE DETECTOR READS ANY DEPTH AND THE REWRITER ONLY READ THE TOP. A code review
+            // measured the result: this shape was classified as carrying text, produced an edit
+            // whose replacement was byte-identical to the input, and -- with the refusal gone --
+            // shipped. Every probe here had been written at the shallow shape.
+            assert_eq!(
+                strips(
+                    b"/Span << /A << /ActualText (secret) >> /MCID 0 >> BDC \
+                      BT /F1 12 Tf (AB) Tj ET EMC"
+                ),
+                1
+            );
+        }
+
+        #[test]
+        fn an_actualtext_inside_an_array_is_stripped_too() {
+            assert_eq!(
+                strips(
+                    b"/Span << /A [ << /ActualText (secret) >> ] /MCID 0 >> BDC \
+                      BT /F1 12 Tf (AB) Tj ET EMC"
+                ),
+                1
+            );
+        }
+
+        #[test]
+        fn an_actualtext_span_around_the_removed_glyph_is_stripped() {
+            assert_eq!(
+                strips(b"/Span << /ActualText (secret) >> BDC BT /F1 12 Tf (AB) Tj ET EMC"),
+                1
+            );
+        }
+
+        #[test]
+        fn an_alt_span_is_stripped_the_same_way() {
+            // `/Alt` is a description rather than a replacement, and a description of content
+            // that has been partly removed is false. False alternative text is worse than none.
+            assert_eq!(
+                strips(b"/Span << /Alt (secret) >> BDC BT /F1 12 Tf (AB) Tj ET EMC"),
+                1
             );
         }
 
@@ -3897,11 +4581,15 @@ mod tests {
         }
 
         #[test]
-        fn an_ordinary_tagged_span_is_not_refused() {
+        fn an_ordinary_tagged_span_is_untouched() {
             // THE NEAR-MISS FOR THE WHOLE CHECK. `/P << /MCID 0 >> BDC` is what every tagged
             // PDF is full of. A rule that refused this would refuse most real documents while
             // still passing all three positives above.
             assert_allowed(b"/P << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC");
+            assert_eq!(
+                strips(b"/P << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC"),
+                0
+            );
         }
 
         #[test]
@@ -3926,24 +4614,31 @@ mod tests {
                 2,
                 "the fixture must draw exactly the two glyphs outside the span"
             );
+            // NO EDITS, not merely no refusal. `carried_text_edits` returning `Ok` now says
+            // only that nothing was unreadable; the near-miss claim is that nothing was
+            // stripped, and asserting `is_ok()` would pass on a rewrite of a span the removal
+            // never reached.
             assert!(
-                check_marked_content(
+                super::super::carried_text_edits(
                     content,
                     &outside,
                     None,
                     &super::super::FormsReached::Named(&nothing_drawn())
                 )
-                .is_ok()
+                .expect("readable")
+                .is_empty()
             );
         }
 
         #[test]
         fn a_nested_inner_span_does_not_close_the_carrying_outer_one() {
             // The stack, not a flag. The inner `EMC` must not clear the outer `/ActualText`.
-            assert_refused_by(
-                b"/Span << /ActualText (secret) >> BDC /P << /MCID 0 >> BDC EMC \
-                  BT /F1 12 Tf (AB) Tj ET EMC",
-                super::Refusal::MarkedContentCarriesText,
+            assert_eq!(
+                strips(
+                    b"/Span << /ActualText (secret) >> BDC /P << /MCID 0 >> BDC EMC \
+                      BT /F1 12 Tf (AB) Tj ET EMC"
+                ),
+                1
             );
         }
 
@@ -3957,10 +4652,12 @@ mod tests {
             //
             // `/Span << /ActualText … >> BDC /P << /MCID 0 >> BDC  BT … Tj ET  EMC EMC` is the
             // commonest shape in a tagged PDF there is, and under that mutation it leaks.
-            assert_refused_by(
-                b"/Span << /ActualText (secret) >> BDC /P << /MCID 0 >> BDC \
-                  BT /F1 12 Tf (AB) Tj ET EMC EMC",
-                super::Refusal::MarkedContentCarriesText,
+            assert_eq!(
+                strips(
+                    b"/Span << /ActualText (secret) >> BDC /P << /MCID 0 >> BDC \
+                      BT /F1 12 Tf (AB) Tj ET EMC EMC"
+                ),
+                1
             );
         }
 
@@ -3977,19 +4674,26 @@ mod tests {
         fn a_do_inside_a_carrying_span_is_a_removal_site() {
             // THE CROSS-STREAM CASE, at the unit level. The glyphs are not in this stream at
             // all -- `remove` is empty for it -- and the span still has to answer for the `Do`
-            // it wraps. Measured as a working leak before this existed.
+            // it wraps. Measured as a working leak before the refusal existed, and the span
+            // has to be found by the rewriter for the same reason it had to be found by the check.
             let content = b"/Span << /ActualText (secret) >> BDC /X1 Do EMC";
             let names: std::collections::BTreeSet<Vec<u8>> = [b"X1".to_vec()].into_iter().collect();
-            let error = check_marked_content(
+            let edits = super::super::carried_text_edits(
                 content,
                 &[],
                 None,
                 &super::super::FormsReached::Named(&names),
             )
-            .expect_err("a span wrapping a reached form must refuse");
+            .expect("readable");
+            assert_eq!(
+                edits.len(),
+                1,
+                "a span wrapping a reached form must be stripped"
+            );
             assert!(
-                super::Refusal::MarkedContentCarriesText.caught(&error),
-                "{error:?}"
+                !String::from_utf8_lossy(&edits[0].1).contains("ActualText"),
+                "{:?}",
+                String::from_utf8_lossy(&edits[0].1)
             );
         }
 
@@ -4001,21 +4705,26 @@ mod tests {
             let content = b"/Span << /ActualText (secret) >> BDC /X1 Do EMC /X2 Do";
             let names: std::collections::BTreeSet<Vec<u8>> = [b"X2".to_vec()].into_iter().collect();
             assert!(
-                check_marked_content(
+                super::super::carried_text_edits(
                     content,
                     &[],
                     None,
                     &super::super::FormsReached::Named(&names),
                 )
-                .is_ok()
+                .expect("readable")
+                .is_empty()
             );
         }
 
         #[test]
-        fn a_span_that_closed_before_the_glyph_does_not_refuse_it() {
+        fn a_span_that_closed_before_the_glyph_is_untouched() {
             // The other direction of the same stack: a carrying span that is properly closed
             // must not keep refusing everything after it.
             assert_allowed(b"/Span << /ActualText (secret) >> BDC EMC BT /F1 12 Tf (AB) Tj ET");
+            assert_eq!(
+                strips(b"/Span << /ActualText (secret) >> BDC EMC BT /F1 12 Tf (AB) Tj ET"),
+                0
+            );
         }
     }
 }

@@ -16,3 +16,6 @@
 - [New guard shadows an old refusal test](feedback_new_guard_shadows_old_refusal_test.md) — an earlier argument check makes a re-pointed test pass on the wrong rule; print the real error.
 - [Fuzz workspace is a separate build](feedback_fuzz_workspace_separate_build.md) — deleting a module can break sibling fuzz targets; `cargo +nightly check` every bin, not just the new one.
 - [Calibration list vs accepted set](feedback_calibration_list_vs_accepted_set.md) — a hand-written FONTS array measures itself; diff it against the names the code accepts, and check exclusion lists survive aliasing.
+- [Rewriter reach vs detector reach](feedback_rewriter_reach_vs_detector_reach.md) — a refusal replaced by a rewrite: feed the detector's widest shape to the rewriter; nesting is where they diverge.
+- [Near-miss accepted as a refusal](feedback_nearmiss_fixture_accepted_as_refusal.md) — a corpus `Err` arm that accepts an allowed rule accepts it for the near-miss twin too; widen the rule and watch it stay green.
+- [Text-scan gate passes a dead rule](feedback_text_scan_gate_passes_dead_rule.md) — geometry.rs's refusal gates grep source; a variant raised from unreachable code and mentioned in an array literal passes all three.

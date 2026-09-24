@@ -4,7 +4,7 @@
 //!
 //! This checks that **the region is cleared**. It does not check that the secret is gone, and
 //! the two are not the same sentence. A reader who sees `Redacted` will take it to mean the
-//! second, so the variant is [`crate::redact::Cleared`] and every message here says *region*.
+//! second, so the variant is `Cleared` and every message here says *region*.
 //!
 //! # What it asserts
 //!
@@ -17,7 +17,7 @@
 //! 2. **No `/ToUnicode` or `/Differences` entry remains for a code the output no longer draws
 //!    — for the fonts the operation reports having cut.** Computed from the output alone: the
 //!    codes each font still draws against the codes it still maps. The qualification belongs in
-//!    the bullet rather than four screens away in [`Cleared::cut_fonts`], because it is the
+//!    the bullet rather than four screens away in `Cleared::cut_fonts`, because it is the
 //!    difference between a true sentence and a false one: a *retained* font still maps
 //!    everything it ever mapped, by design.
 //! 3. **No page key outside ADR 0029 §2's allowlist.** The same list `prune` uses.

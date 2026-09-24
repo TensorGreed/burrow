@@ -115,7 +115,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | text in a **Form XObject** | **handle** — follow the resource graph |
 | text in a **Type 3 `/CharProcs`** | **handle** — same walk |
 | text straddling **two `/Contents` streams** | **handle** — see §4 |
-| `/ActualText` and `/Alt` on marked content in the region | **handle** — it is in the page's own stream |
+| `/ActualText` and `/Alt` on marked content in the region | **handle** — it is in the page's own stream. Implemented #165; the entry is **dropped**, not narrowed, and §7 says what that costs |
 | **annotations** whose `/Rect` intersects the region | **handle** — `/Annots` is on the page. Remove the annotation entirely; pruning its `/Contents` and keeping its appearance is two chances to miss one |
 | the page's **`/Thumb`** | **handle** — strip unconditionally on any redacted page |
 | page **`/Metadata`**, **`/PieceInfo`**, and every unlisted page key | **handle** — §2's allowlist |
@@ -303,6 +303,18 @@ redacted page cannot see metadata**, so a disclosure they cannot act on is a cav
 > saved, it is still in this file. **Check File → Properties, and check the attachments panel.**
 > If either holds what you were removing, the fix is in the program you made the document with,
 > not here.
+>
+> **If the passage you redacted from had alternative text, all of it is gone — not just the part
+> you removed.** A tagged document can carry a written-out version of what a passage says, which
+> a screen reader reads *instead of* the letters on the page. That version covers the whole
+> passage as one piece of writing, with nothing in it to say which words belong to the part you
+> removed — so Not Only PDF removes the whole thing rather than guessing at a shorter one. A
+> screen reader then falls back to the letters on the page. Usually those are fine. But the
+> reason an author supplies that text in the first place is often that the letters do **not**
+> read correctly on their own — a ligature that is one character in the file and two in the word,
+> or a word broken across two lines — and in those documents the fallback is worse than what was
+> there. **Nothing on the page shows this**, and the person it affects is not the person doing
+> the redacting, which is why it is written here rather than left to be discovered.
 >
 > **A font that was used only for the text you removed still says which letters that text used.**
 > Not the words, and not the order — the set of characters. Rebuilding a font is a thing Not Only
@@ -2295,3 +2307,272 @@ Two other things went wrong that are worth writing down rather than quietly fixi
   worktree with a `timeout` per run, and a hang is reported as `caught (HUNG)` — which is the
   honest verdict, since a suite that cannot finish without the bound is a suite the bound is
   load-bearing in.
+
+## Amendment, 2026-09-24 — #165: the marked-content rewriter, and why the entry is dropped
+
+§1 assigned `/ActualText` and `/Alt` on marked content to **handle** and nothing implemented it;
+the previous amendment closed the resulting leak by refusing. This implements the decision.
+
+### The measurement the choice turns on
+
+The obvious alternative to dropping is narrowing — shorten the replacement to match the glyphs
+that remain. One page, one sixteen-character `/ActualText`, varying how many of the span's glyphs
+are drawn:
+
+| glyphs drawn | what PDFium extracts |
+|---|---|
+| 16 of 16 | the whole string |
+| 12 | the whole string |
+| 8 | the whole string |
+| 4 | the whole string |
+| 0 | nothing |
+
+**Removing part of a span reduces what a reader shows by nothing.** The replacement survives
+whole until the last glyph is gone.
+
+That changes what narrowing *is*. It is not a tidier drop; it is the only operation that would
+reduce exposure at all — and `/ActualText` is a **replacement** for the span, with no
+character-to-glyph correspondence to narrow along. There is nothing to compute a shorter version
+from, and inventing one puts words into a document that a screen reader then speaks as the
+author's.
+
+I had previously recorded, in conversation rather than here, that PDFium truncates the string to
+the glyph count. That was wrong, and it was the premise the narrowing option rested on.
+
+### The third option, and why it is not the answer either
+
+Refusing when a span is only *partly* removed is safe and was considered. It refuses the ordinary
+case: a paragraph containing one redacted name **is** a partly-removed span. §5's rule about
+near-misses is the same argument — a signal that fires on the ordinary shape is an outage, not a
+signal.
+
+### So: drop the entry
+
+Both keys, for both reasons. `/ActualText` is a replacement and cannot be shortened honestly.
+`/Alt` is a *description* rather than a replacement — but a description of content that has been
+partly removed is false, and false alternative text is worse than absent alternative text.
+
+Dropping is required even when the span goes wholly: a reader then shows nothing, and the string
+is still in the file, recoverable with `qpdf --qdf` by anyone holding it.
+
+**§7 now carries what this costs**, in ADR 0019 §4's voice and for a reason that is not the usual
+one.
+
+A first draft of that paragraph said a screen reader would read "the passage's own letters, which
+are right for everything that stayed". A code review pointed out that this is false of precisely
+the documents that carry `/ActualText`: §14.9.4's canonical uses are a ligature, a word hyphenated
+across a line break, a decorative dropped cap — cases where the glyph codes are *known* not to
+read correctly, which is why the author supplied a replacement. Dropping it there leaves a reader
+with `ﬁ` for `fi` and `redac- tion` for `redaction`. The paragraph now says that, because a
+disclosure that understates the cost is worse than none: it reassures exactly the person who
+should be checking. Every other disclosure there is a limit on what the redaction achieved, addressed to the
+person who asked for it. This one is a cost imposed on a **different person** — a screen-reader
+user, reading content that was never redacted — and nothing on the page reveals it. That is
+exactly the kind of limit that is never discovered until someone complains, which is the argument
+for writing it down rather than for treating it as an implementation detail.
+
+### How it is implemented
+
+`carried_text_edits` returns the property-list spans to rewrite; `without_carried_keys` rebuilds
+each dictionary **from the parse** rather than splicing the bytes, because a string value may
+contain `>>` and cutting on that pattern would truncate the dictionary and take every later key
+with it — including `/MCID`, which is how a tagged document is stitched to its structure tree.
+
+`remove_glyphs_and_carried_text` applies the glyph cuts and the property rewrites **in one pass**.
+Both are spans into the same original bytes: stripping first moves every glyph span, and stripping
+afterwards means looking for glyphs that are no longer there to decide which spans covered them.
+
+The scope walk is shared with the checker rather than written twice. Two walks answering "which
+spans cover a removal" is two walks that can disagree, and every leak on this seam has been an
+answer smaller than the truth — a stripper finding fewer spans than the checker would leak
+exactly the difference, silently, where the checker had already said `Ok`.
+
+### What changed as a consequence
+
+- **`Refusal::MarkedContentCarriesText` is gone.** Nothing raises it; the case is handled. A
+  first draft kept the variant with a comment about a future non-rewriting caller, and this
+  module's own gate calls an unraised variant a rule that cannot fire.
+- **The corpus reflow check does not apply to these documents.** Dropping the replacement makes
+  PDFium stop reporting it and start reporting what the glyphs say — characters that were drawn
+  all along and that the span was hiding. "Appears and was not drawn before" is false about the
+  document and true about the oracle, the same shape as the line-final hyphen `canonical_unicode`
+  exists for. Skipped by name; `redaction_defences.rs::CARRIER_EVASIONS` asserts the canary is
+  absent from the output **bytes**, which is the claim that matters and the one the text layer
+  cannot make.
+
+### A key is a position, not a name — and the gap between those two leaked
+
+The detector and the rewriter did not mean the same thing by "carries text", and the review that
+found it stated the requirement exactly: *make removal as deep as detection, or make detection as
+shallow as removal; the two must not disagree.*
+
+`holds_text_key` matched `/ActualText` as an `Operand::Name` **anywhere** — value position,
+array element, any depth. `rebuilt_without_carried` removes a key and its value. For
+
+```
+/Span << /MCID 0 /K [ /ActualText (secret) ] >> BDC … EMC
+```
+
+the name is an array *item*. The detector said the span carried text; the rewriter found no key
+and removed nothing; the replacement was byte-identical to its input. Measured: **the string
+reached the output and a raw byte scan found it.** The self-check added in this branch caught it
+as an `Error::Internal` — failing closed, but blaming burrow for a document it should handle.
+
+The two were made to agree by narrowing the detector, because that is the reading that is true:
+`/ActualText`, `/Alt` and `/E` are read by assistive technology **because they are those keys**,
+and a string under some other key is not that channel and could not be — every operand in a
+content stream may be a string. `carried_by` now hands `holds_text_key` the whole dictionary
+rather than its items one at a time, since an item seen alone has lost the position that answers
+the question. Passing them individually is *how* a name in value position was read as a key.
+
+But narrowing a detector turns a caught leak into an uncaught one unless the difference is
+decided rather than dropped. So the gap is its own refusal,
+**`marked-content-carries-opaque-string`**: a covering span whose property list *names* one of
+the three keys somewhere nothing can be removed from is refused, not emitted. It is checked on
+the **rewritten** bytes, so it cannot be wrong about what actually survived, and it fires for a
+list that held a real key *and* named one elsewhere — a case the classification never sees,
+because `holds_text_key` answers first.
+
+The first version of this rule refused any property list holding **any** string, on the argument
+that burrow cannot relate an arbitrary string to the glyphs. True, and far too wide:
+`/Span << /MCID 0 /Lang (en-US) >>` is ordinary tagged output that repeats nothing. It was caught
+by an existing probe — `the_rewritten_property_list_keeps_every_other_key` — rather than by
+review, which is that probe earning its place. Refusing exactly the gap between the wide reading
+and the narrow one needs no allowlist and so cannot rot into one.
+
+Two fixtures, because a rule with probes and no corpus witness is a rule nothing runs:
+`evade-actualtext-named-outside-key-position` (refuses) and
+`nearmiss-ordinary-string-in-a-property-list` (redacts).
+
+### A near-miss that was allowed to refuse, which is the same hole from the other side
+
+The near-miss fixture added above — `nearmiss-ordinary-string-in-a-property-list`, the `/Lang
+(en-US)` twin — **could not fail**. A code review reinstated the rejected wide rule with one line,
+and measured it: the fixture flipped from redacted to refused, the census moved 51/8 to 50/9, and
+`redaction_corpus` and `redaction_defences` both stayed green.
+
+The reason is the shape of the assertion rather than an oversight in the list. A refusal keeps
+the canary out of the output, so a rule that grows until it fires on the ordinary shape satisfies
+every byte-level check there is. `CARRIER_REFUSALS`, added in the same commit, closes the *other*
+half — a fixture refusing for an unrelated reason — and cannot close this one, because here the
+right rule fires on the wrong document.
+
+So the sweep now asserts that a `nearmiss-` fixture does not refuse at all. The prefix was already
+load-bearing (`make-evasion-fixtures.py` counts twins by it), and the durable version of this is
+the manifest's `expect_after`, which `check-redaction-corpus.py` still prints as unchecked because
+until #134 there was no operation to check it with. There is now; that is worth doing and is filed
+rather than done here.
+
+The commit that added the fixture said it existed "because a rule with probes and no corpus
+witness is a rule nothing runs". As written it was not a witness. That sentence was true about
+the positive fixture and false about its twin, which is exactly the asymmetry this project keeps
+finding: the evasion half of a pair gets the assertion and the near-miss half gets the name.
+
+### Three more things the reviews found, recorded because each is a class
+
+- **The refusal's message said "hold a string" and the rule tests for a *name*.** `/Span << /MCID
+  0 /Subtype /E >>` refuses, and there is no string in it. An overclaiming message is a bug here,
+  not a wording preference; it now says the list *names* one of the entries in a position burrow
+  cannot remove it from, which is what was tested.
+- **The covering-span walk ran twice per stream.** `rewrite` called `carried_text_edits` for its
+  `.len()` and then called `remove_glyphs_and_carried_text`, which calls it again — doubling the
+  worst case of the walk measured at 18.3s over 250,000 spans, and giving two answers to the
+  question this module's own doc says must have one. The count now comes back from the walk that
+  computed it.
+- **`CARRIER_EVASIONS`' doc comment claimed the list was read from the corpus rather than written
+  in the file, and called it "these three" over ten entries.** It was a hand-written copy then and
+  is now, and the claim is deleted rather than restated. The cross-check that found it also found
+  that all fifteen canaries match `manifest.toml` exactly, and that `09-actualtext.pdf` — the
+  headline fixture for this whole feature — was not in the list, so no byte-level absence
+  assertion ran on it. It is now.
+
+### The quadratic was fixed, and then it was fixed again, and then a third time
+
+Recorded at length because the first two fixes were believed complete and the belief was
+checkable.
+
+| | shape | measured | |
+|---|---|--:|---|
+| 1 | 250,000 spans over **one** removal | 18.34 s | found by review; `BTreeSet` → 0.59 s |
+| 2 | 60,000 spans over **60,000** removals | **109 s**, 417 MB | the same quadratic, still there |
+| 3 | the same, after a stack cursor | **13.8 s** | a *second* quadratic, in `glyph_edits` |
+| — | the same, after grouping | **0.72 s** | 8k/16k/60k now scale linearly |
+
+Every one of those inputs is a few kilobytes: case 2 gzips to 11,775 bytes.
+
+**Fix 1 deduplicated the push, not the scan.** `carrying_spans_over_removals` still ran once per
+open span per removal; the set only stopped the same span being recorded twice. The measurement
+that confirmed it varied the span count and held removals at one, so it could not distinguish a
+fixed quadratic from a half-fixed one. *One measurement that varies one factor cannot tell those
+apart* — that is the transferable part, and it is the same shape as this file's rule about a
+harness measuring what it can generate.
+
+**Fix 2** replaced the set with a cursor into the stack, which is ordered, so "have I recorded
+this one" is O(1) with no lookup. It also removed a defence nothing tested: a mutation making the
+dedup set inert had survived the suite, failing closed but anonymously — duplicate edits and a
+`Malformed` from `Contents::apply`, blaming the file. With a cursor a duplicate cannot be
+constructed, so there is no inert defence left.
+
+**Fix 3 came from measuring fix 2 instead of reporting it.** 13.8 s remained, in `glyph_edits`,
+which filtered the whole `remove` slice inside a loop over every operation: 3.6e9 comparisons on
+an 11,842-byte file. Grouped once into a map.
+
+The residual is stated rather than smoothed: 0.72 s is still **7x** a default `max_duration_ms`
+of 100, and this module takes no `Limits` at all — every deadline checkpoint is between calls in
+`redact_steps.rs`, none inside the walk. That is filed, not fixed here, because giving the
+geometry module a deadline is a change to its signature and its callers.
+
+`nested_carriers_over_many_removals_do_not_go_quadratic` now pins 8k, 16k and 60k under a
+wall-clock ceiling. A timing assertion is the thing this suite otherwise avoids, and it is what
+belongs here: both quadratics produced **correct output, slowly**, so no assertion about bytes
+could ever have seen them. It also asserts the work was done — a walk that found nothing would be
+very fast and would pass a bare timing bound while leaking every carrier it skipped.
+
+### A property list that is not key/value pairs is refused rather than rebuilt
+
+`as_chunks::<2>()` assumes a dictionary's flat `items` are pairs. Where they are not, the rebuild
+emitted a document burrow had corrupted while reporting success:
+
+- `/Span << /MCID 0 /ActualText 4 0 R >> BDC` → `/Span << /MCID 0 0 R >>`, a dictionary keyed by
+  the number `0`.
+- `/Span << /MCID 0 /Pad << /ActualText (X) >> /Tail >> BDC` → `/Tail` silently gone.
+
+Neither leaked; `names_a_text_key` iterates every item, so a stray carried name is still seen.
+Silently producing worse output than it was given is the thing this operation may least afford,
+so both are now `marked-content-property-list-malformed`.
+
+The check needs **two** conditions and the obvious one alone misses the case it was written for.
+An odd item count catches `/Tail`. It does not catch `/ActualText 4 0 R`: this module's lexer has
+no indirect references — there is no such thing inside a content stream — so `4 0 R` is three
+operands, the dictionary has six items, and it is perfectly even. What is wrong is that the fifth
+item, in key position, is the *number* `0`. So: an odd count, **or** a non-name where a key
+belongs.
+
+### What the second review's surviving mutations said about which half is load-bearing
+
+Widening `holds_text_key` back to "a name anywhere" **survived** — and re-running all 28
+adversarial shapes under that mutation produced **no leak**. Every one was caught by the
+post-rewrite `still_names_one` check, which decides on the rewritten bytes.
+
+So the narrowing is not the load-bearing half of this fix; the post-rewrite check is. The obvious
+reading of the commit is the opposite, which is why it is written down: the narrowing makes the
+detector *true*, and re-asking the detector after the rewrite is what makes a divergence
+unshippable. If only one of the two could be kept, it is the second.
+
+### The `Err` arm that accepted any refusal
+
+`CARRIER_EVASIONS` asserted a refusal **named a rule**, and nothing about which. A fixture that
+stopped reaching the carrier logic at all — a generator change making it oversized or malformed —
+would refuse by some other rule, keep its canary out of the output, and read as the defence
+holding. `CARRIER_REFUSALS` now lists the six rules that mean burrow looked at the carrier and
+declined; anything else fails and names itself.
+
+### The census
+
+**59 of 59 documents examined: 51 redacted, 8 refused, 0 quiet** — up from 42 redacting before
+this work. Of the eight `evade-actualtext-*` fixtures, the seven that predate this work flipped
+from refusing to redacting with their canaries gone from the bytes; the eighth is the
+detector/rewriter gap fixture below, which refuses by design. What still refuses is four Type 3 procedures that draw, a pattern, two
+documents whose marked-content properties are named through `/Properties` — which is #166, and the
+only marked-content refusal left that is about a document rather than a shape — and the
+detector/rewriter gap fixture above.

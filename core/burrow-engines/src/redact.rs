@@ -110,6 +110,21 @@ pub struct FontOutcome {
 pub struct Report {
     /// One entry per font the operation considered.
     pub fonts: Vec<FontOutcome>,
+    /// How many marked-content property lists had their carried text dropped.
+    ///
+    /// # Why this is counted rather than inferred
+    ///
+    /// §7 owes the reader a sentence about alternative text going with the redaction, and a
+    /// disclosure shown on documents it does not apply to is the caveat ADR 0019 §4 argues
+    /// against. Without this a frontend can only show it always or never.
+    ///
+    /// It is also the honest predicate for "did this operation change what a text extractor
+    /// reads". `redaction_corpus.rs` first answered that by scanning the input for the bytes
+    /// `/ActualText` — which disabled a check on 11 of 56 documents, three of which carry the
+    /// key on a `/StructElem` this operation never touches, and one of which is the near-miss
+    /// whose entire point is that nothing happens. `/Alt` is also a prefix of `/Alternate`, in
+    /// the ICC colour-space dictionary of a large share of real files.
+    pub dropped_carried_text: usize,
 }
 
 impl Report {
@@ -121,6 +136,15 @@ impl Report {
     /// Whether the page must carry §7's retained-font disclosure at all.
     pub fn discloses_a_retained_font(&self) -> bool {
         self.retained().next().is_some()
+    }
+
+    /// Whether the page must carry §7's lost-alternative-text disclosure.
+    ///
+    /// Separate from [`Self::discloses_a_retained_font`] because it is a different sentence to a
+    /// different reader: that one tells the person redacting what the file still says, this one
+    /// tells them that someone using a screen reader will lose text the redaction did not remove.
+    pub const fn discloses_dropped_alternative_text(&self) -> bool {
+        self.dropped_carried_text > 0
     }
 }
 
@@ -149,6 +173,12 @@ pub(crate) trait Steps {
     /// # Errors
     /// Whatever the edit failed with. **This poisons the document**; see the module header.
     fn rewrite(&mut self, stream: StreamId) -> Result<()>;
+
+    /// How many marked-content property lists have had their carried text dropped so far.
+    ///
+    /// Asked after the rewrites, and on the seam rather than returned from [`Self::rewrite`]
+    /// because §7's disclosure is about the whole operation rather than about one stream.
+    fn dropped_carried_text(&self) -> usize;
 
     /// Which character codes each font still draws, **after** every content edit.
     ///
@@ -274,9 +304,13 @@ impl<S: Steps> ContentEdited<S> {
         // fact about the finished content rather than about a snapshot taken part-way.
         let still_drawn = self.steps.codes_still_drawn(&self.redacted)?;
         let fonts = self.steps.cut_fonts(&still_drawn, &self.redacted)?;
+        let dropped_carried_text = self.steps.dropped_carried_text();
         Ok(FontsCut {
             steps: self.steps,
-            report: Report { fonts },
+            report: Report {
+                fonts,
+                dropped_carried_text,
+            },
         })
     }
 }
@@ -442,6 +476,10 @@ mod tests {
     }
 
     impl Steps for Fake {
+        fn dropped_carried_text(&self) -> usize {
+            0
+        }
+
         fn affected_streams(&mut self) -> Result<Vec<StreamId>> {
             self.note("streams");
             Ok(self.streams.clone())
