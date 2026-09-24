@@ -12,7 +12,7 @@ use burrow_types::{Clock, Deadline, Limits, Result};
 use super::name::Name;
 use super::resources::PageResources;
 use crate::codes::qpdf::object_type;
-use crate::pdfsyntax::geometry::{Glyph, glyphs_in};
+use crate::pdfsyntax::geometry::{Glyph, Watch, glyphs_in};
 use crate::pdfsyntax::region::PageFrame;
 use crate::redact_verify::ClearedWitness;
 
@@ -119,7 +119,11 @@ impl ClearedWitness for QpdfWitness {
         let handle = read.page(page)?;
         let content = read.content(page)?;
         let resources = PageResources::of(&handle)?;
-        glyphs_in(&content, &resources)
+        glyphs_in(
+            &content,
+            &resources,
+            &Watch::new(read.deadline, self.clock.as_ref()),
+        )
     }
 
     fn drawn_codes(&self, read: &Self::Read, page: usize) -> Result<BTreeMap<u64, BTreeSet<u32>>> {
@@ -128,7 +132,11 @@ impl ClearedWitness for QpdfWitness {
         let content = read.content(page)?;
         let resources = PageResources::of(&handle)?;
         let mut drawn: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
-        for glyph in &glyphs_in(&content, &resources)? {
+        for glyph in &glyphs_in(
+            &content,
+            &resources,
+            &Watch::new(read.deadline, self.clock.as_ref()),
+        )? {
             // IN THE SCOPE THAT DREW IT. The read-back resolved against the page too, so
             // it refused documents the redaction had handled correctly.
             let font =

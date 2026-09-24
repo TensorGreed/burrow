@@ -1815,6 +1815,69 @@ fn nested_carriers_over_many_removals_do_not_go_quadratic() {
     }
 }
 
+/// One form drawn 4,000 times is refused by its deadline while the walk runs, not after (#175).
+///
+/// # Why a wall clock, again
+///
+/// Before the geometry walk took a deadline, this document was refused by `max_duration_ms` too
+/// -- at the next checkpoint between engine calls, **17.9 s** into a 100 ms budget. The rule was
+/// right and the time was not, so asserting the rule alone would pass the defect. Each `Do`
+/// re-walks the form's 100,000 operations; the cost is draws x form size, from a 233 KB file.
+///
+/// Measured after: 104 ms. The ceiling is 2 s, ~9x under the defect and ~19x over the fix,
+/// so a slow machine does not fail it and a regression cannot pass it. Which checkpoint fires is
+/// pinned deterministically by `geometry`'s unit tests; this pins that the operation reaches them.
+#[test]
+fn a_form_drawn_thousands_of_times_is_stopped_by_its_deadline_inside_the_walk() {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let form = pdf.stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 612 792]",
+        &"q Q\n".repeat(50_000),
+    );
+    let mut body = String::from("BT /F1 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\n");
+    body.push_str(&"/Fm0 Do\n".repeat(4_000));
+    let content = pdf.stream("", &body);
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] /Resources << /Font \
+             << /F1 {font} 0 R >> /XObject << /Fm0 {form} 0 R >> >> /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let pdf = pdf.build(catalog);
+
+    const CEILING: std::time::Duration = std::time::Duration::from_secs(2);
+    let limits = burrow_types::Limits::with(|limits| limits.max_duration_ms = 100);
+    let started = std::time::Instant::now();
+    let outcome = support::redact_page_with(&pdf, 0, [0].into_iter().collect(), band(), limits);
+    let took = started.elapsed();
+    match outcome {
+        Err(burrow_types::Error::LimitExceeded { limit, .. }) => {
+            assert_eq!(limit, "max_duration_ms", "refused by the wrong limit");
+        }
+        Err(error) => panic!("refused, but not by its deadline: {error:?}"),
+        Ok((out, _)) => panic!("redacted {} bytes past a 100 ms deadline", out.len()),
+    }
+    assert!(
+        took < CEILING,
+        "4,000 draws of a 100,000-operation form took {took:?} to refuse, over the {CEILING:?} \
+         ceiling -- the geometry walk is no longer reading the deadline while it works"
+    );
+}
+
 /// The disclosure's **count** is the number of property lists stripped, not merely non-zero.
 ///
 /// Only `discloses_dropped_alternative_text()` — a bool — drove §7, and the corpus's only

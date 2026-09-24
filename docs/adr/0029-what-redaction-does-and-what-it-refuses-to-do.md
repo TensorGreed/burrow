@@ -2522,6 +2522,9 @@ of 100, and this module takes no `Limits` at all — every deadline checkpoint i
 `redact_steps.rs`, none inside the walk. That is filed, not fixed here, because giving the
 geometry module a deadline is a change to its signature and its callers.
 
+*Superseded by the #175 amendment below: the walk now reads the deadline while it runs, and the
+residual is one lex of one stream.*
+
 `nested_carriers_over_many_removals_do_not_go_quadratic` now pins 8k, 16k and 60k under a
 wall-clock ceiling. A timing assertion is the thing this suite otherwise avoids, and it is what
 belongs here: both quadratics produced **correct output, slowly**, so no assertion about bytes
@@ -3000,3 +3003,87 @@ before the run, so a narrowed sweep cannot read as a full one.
 manifest. It now keeps only the membership, meaning which fixtures are carrier shapes, which is a
 judgement no manifest field states. It takes each canary from the manifest. Removing a carrier
 fixture from the manifest fails by name, and so does renaming its canary; both are measured.
+
+## Amendment, 2026-09-24 — #175: the geometry walk reads the deadline while it works
+
+Every `max_duration_ms` checkpoint for redaction sat **between** engine calls in
+`redact_steps.rs`, and the geometry module took no deadline at all. `CLAUDE.md` allows overshoot of
+"up to one engine call", and this was not an engine call. It was burrow's own loop, so the
+overshoot was whatever the loop cost.
+
+### What it cost, measured before the change
+
+Native release build, aarch64, `max_duration_ms = 100`, through the public operation. **Every
+factor was varied**: spans, removals, kept glyphs, glyphs per string, form draws and form size.
+
+| shape | file | before | after |
+|---|--:|--:|--:|
+| 60,000 carrying spans over 60,000 removals | 3.96 MB | 229 ms | 201 ms |
+| 1 span, 140,000 removals | 3.50 MB | 265 ms | 121 ms |
+| 140,000 kept glyphs | 3.50 MB | 218 ms | 117 ms |
+| one form of 1,000,000 operations, drawn once | 2.00 MB | 170 ms | 150 ms |
+| a 100,000-operation form drawn 256 times | 203 KB | 1.89 s | 104 ms |
+| a 10,000-operation form drawn 4,000 times | 53 KB | 1.74 s | 101 ms |
+| a 100,000-operation form drawn 1,024 times | 209 KB | 4.44 s | 104 ms |
+| **a 100,000-operation form drawn 4,000 times** | **233 KB** | **17.86 s** | **104 ms** |
+
+Every row was refused by `max_duration_ms` both before and after. **The rule was always right,
+and the time was not**, which is why the document-level test asserts both.
+
+The spans-and-removals shapes are capped by `MAX_TOTAL_OPERANDS` and `MAX_GLYPHS` before they can
+grow: 150,000 spans or 20,000 strings of 200 glyphs are refused by those ceilings within about
+110 ms. The shape those ceilings did not bound was the product: a form is walked again at every
+`Do`, so the cost is draws x form size. `MAX_FORM_DRAWS` (4,096) times `MAX_OPERATIONS` (1M) is
+about 180 s at the measured rate, from a file that compresses to almost nothing.
+
+### What changed
+
+`geometry::Watch` carries the operation's deadline and clock into the walk. That is the same
+`Deadline` and the same clock, never a second one, since a second clock is how `max_duration_ms`
+once stopped existing (M1 PR 2). Each of the three walks reads it at two points:
+
+- `glyphs_in` (with every form it recurses into), the covering-span walk and `glyph_edits`
+  each read the clock **once their stream is lexed**;
+- they read it again **every `WATCH_EVERY` (256) operations** after that.
+
+A form is re-walked at every `Do`, so every draw is read at least once. Expiry is the ordinary
+`Error::LimitExceeded` naming `max_duration_ms`. The deadline is the caller's ceiling and not a
+property of the document, so it is not a `Refusal`.
+
+`remove_glyphs` and `remove_glyphs_across` have no production caller and take the watch too. A
+public walk without a deadline is the next caller's denial of service.
+
+### The residual, with its number
+
+**Lexing one content stream is still one uncooperative step.** `ops::operations` runs to the
+end of a stream before any read, and it is bounded by `MAX_OPERATIONS` and `MAX_TOTAL_OPERANDS`
+(both 1M) and `MAX_OPERAND_BYTES` (255). Measured on the same machine:
+
+| stream | bytes | lex |
+|---|--:|--:|
+| 1,000,000 × `q` | 2 MB | 50 ms |
+| the 60,000 × 60,000 span shape | 3.96 MB | 68 ms |
+| 500,000 × a 253-byte string | 130 MB | 123 ms |
+| **1,000,000 × a 253-byte string, the ceiling** | **259 MB** | **255 ms** |
+
+So **the worst remaining overshoot inside the geometry walk is one lex, about 255 ms natively on a
+259 MB stream at the operand ceiling**, and 50–70 ms on streams of a few megabytes. The web engine
+is slower per operation, and this was not measured there. The first row of the table above (201 ms
+against 100) is mostly this residual: its stream takes 68 ms to lex. The rest is spread across the
+steps around the walk, which have their own checkpoints and were not attributed further.
+
+The fix, if it is wanted, is a watch inside the lexer. It is not done here: `ops::operations` has
+its own fuzz target and callers outside redaction, and a stream that large already needs
+`max_input_bytes` to admit a quarter-gigabyte input.
+
+### How it is held
+
+- `every_walk_reads_the_clock_once_its_stream_is_lexed` and
+  `every_walk_reads_the_clock_while_it_works`. They use a clock that moves one millisecond per
+  read, and each is built so exactly one of the two reads expires the budget. **Deleting any of
+  the six reads fails one of them by name**, and the sweep that showed this is in the PR.
+- `a_form_drawn_many_times_is_read_at_every_draw` covers the product shape, deterministically.
+- `a_form_drawn_thousands_of_times_is_stopped_by_its_deadline_inside_the_walk`. This one runs the
+  public operation on the 17.9 s shape, at half the form size, under a 2 s ceiling, and asserts
+  the rule.
+

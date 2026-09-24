@@ -34,7 +34,7 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, NamedProperties, PropertyList, ScopedFont, carried_text_edits,
+    FormsReached, Glyph, NamedProperties, PropertyList, ScopedFont, Watch, carried_text_edits,
     check_form_sharing, check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
@@ -344,7 +344,11 @@ impl Steps for QpdfRedaction {
 
         // EVERY GLYPH, then the ones the region reaches. The conservative box, not the advance
         // box: a glyph's ink can sit far from its origin, so uncertainty removes more.
-        let glyphs = glyphs_in(contents.bytes(), &resources)?;
+        let glyphs = glyphs_in(
+            contents.bytes(),
+            &resources,
+            &Watch::new(self.deadline, self.clock.as_ref()),
+        )?;
         let cut: Vec<Glyph> = glyphs
             .iter()
             .filter(|glyph| glyph.conservative_box().intersects(&region))
@@ -409,6 +413,7 @@ impl Steps for QpdfRedaction {
             None,
             &FormsReached::Named(&scope.page_names),
             &scope.page_properties,
+            &Watch::new(self.deadline, self.clock.as_ref()),
         )?
         .is_empty();
         let mut carrying_forms: Vec<u64> = Vec::new();
@@ -432,6 +437,7 @@ impl Steps for QpdfRedaction {
                 Some(*form),
                 &FormsReached::Named(names),
                 properties,
+                &Watch::new(self.deadline, self.clock.as_ref()),
             )?
             .is_empty()
             {
@@ -511,6 +517,7 @@ impl Steps for QpdfRedaction {
                     &mine,
                     &FormsReached::Named(&self.page_draws),
                     &self.page_properties,
+                    &Watch::new(self.deadline, self.clock.as_ref()),
                 )?;
                 if parts.len() != elements.len() {
                     // probe-allowed: a burrow invariant, not a judgement about the file
@@ -556,6 +563,7 @@ impl Steps for QpdfRedaction {
                     &mine,
                     &FormsReached::Named(draws),
                     properties,
+                    &Watch::new(self.deadline, self.clock.as_ref()),
                 )?;
                 let edited = parts.into_iter().next().ok_or_else(|| {
                     // probe-allowed: a burrow invariant, not a judgement about the file
@@ -608,7 +616,11 @@ impl Steps for QpdfRedaction {
             }
             let content = page.page_content()?;
             let resources = PageResources::of(&page)?;
-            for glyph in &glyphs_in(&content, &resources)? {
+            for glyph in &glyphs_in(
+                &content,
+                &resources,
+                &Watch::new(self.deadline, self.clock.as_ref()),
+            )? {
                 // KEYED BY THE FONT'S OBJECT, not its resource name: two names can mean one
                 // object and one name can mean different objects on different pages, and font
                 // surgery edits objects. `core/CLAUDE.md`'s identity rule, one level up.

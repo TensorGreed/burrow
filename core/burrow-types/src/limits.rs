@@ -117,7 +117,9 @@ pub struct Limits {
     /// Wall-clock ceiling for one operation, in milliseconds.
     ///
     /// Cooperative: checked at page boundaries and between engine calls, so overshoot
-    /// of up to one engine call is possible.
+    /// of up to one engine call is possible. Burrow's own redaction walk reads it while it runs
+    /// (#175), and what it cannot interrupt there is the lex of one content stream: about
+    /// 255 ms natively at the operand ceiling, measured in ADR 0029's #175 amendment.
     ///
     /// **THE RENDER PATH USED TO BE THE EXCEPTION AND NO LONGER IS.** One
     /// `FPDF_RenderPageBitmap` on a hostile content stream was measured at 112 seconds with no
