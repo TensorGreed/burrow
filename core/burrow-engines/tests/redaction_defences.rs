@@ -2084,7 +2084,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 26] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 27] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2163,6 +2163,10 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 26] = [
     ),
     (
         "evade-properties-as-a-stream-holding-a-layer.pdf",
+        Some("stream-where-a-dictionary-belongs"),
+    ),
+    (
+        "evade-property-list-as-a-stream.pdf",
         Some("stream-where-a-dictionary-belongs"),
     ),
     ("nearmiss-resources-inherited-from-pages.pdf", None),
@@ -2381,6 +2385,49 @@ fn page_with_property_lists(on_page: usize, in_form: usize) -> Vec<u8> {
     );
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     pdf.build(catalog)
+}
+
+#[test]
+fn many_names_on_one_large_property_list_classify_it_once() {
+    // KILLS: disabling `PropertyScopes`' identity memo. A security review measured the shape
+    // before the memo existed: thousands of names pointing at one large list, each unparsed and
+    // lexed again. Correct output, slowly -- so no assertion about bytes could see it, and the
+    // bound is on time, as `nested_carriers_over_many_removals_do_not_go_quadratic` is.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let padding = "0 ".repeat(50_000);
+    let list = pdf.add(&format!("<< /MCID 0 /K [{padding}] >>"));
+    let names: String = (0..4000).map(|at| format!("/M{at} {list} 0 R ")).collect();
+    let content = pdf.stream("", "/P /M0 BDC BT /F1 24 Tf 72 700 Td (SECRET) Tj ET EMC\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /Properties << {names}>> >> \
+             /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let started = std::time::Instant::now();
+    let (out, _) = redact(&pdf.build(catalog)).expect("an ordinary named list redacts");
+    let took = started.elapsed();
+    // THE WORK WAS DONE, not skipped: a walk that resolved nothing would be fast too.
+    assert_absent(&out, b"SECRET", "a page naming one large list 4,000 times");
+    assert!(
+        took < std::time::Duration::from_secs(10),
+        "4,000 names on one 100 kB list took {took:?}; the list is being re-read per name"
+    );
 }
 
 #[test]

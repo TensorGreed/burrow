@@ -1682,6 +1682,27 @@ def evade_properties_as_a_stream_holding_a_layer() -> bytes:
     )
 
 
+def evade_property_list_as_a_stream() -> bytes:
+    """A `/Properties` ENTRY is a stream whose dictionary carries `/ActualText`.
+
+    The category is a dictionary; the entry under it is not. Read as absent, the name resolves to
+    nothing and refuses as unresolved, which is safe and names the wrong reason; PDFium reads the
+    stream's dictionary as the property list. A mutation dropping the entry check survived until
+    this fixture pinned the rule.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    entry = pdf.stream(b"/ActualText " + literal(secret("PROPERTY-ENTRY-STREAM")), b"")
+    content = (
+        b"/Span /MC0 BDC\n" + _secret_run("PROPERTY-ENTRY-STREAM") + b"EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 " + str(entry).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_resources_inherited_from_pages() -> bytes:
     """The page declares no `/Resources` and `/Pages` holds an ordinary dictionary. MUST redact.
 
@@ -1762,6 +1783,7 @@ CASES: list[tuple[str, str]] = [
     ("evade-font-decoy-behind-a-resources-stream", "stream as dictionary"),
     ("evade-xobject-category-as-a-stream", "stream as dictionary"),
     ("evade-properties-as-a-stream-holding-a-layer", "stream as dictionary"),
+    ("evade-property-list-as-a-stream", "stream as dictionary"),
     ("nearmiss-resources-inherited-from-pages", "stream as dictionary"),
 ]
 
@@ -1819,6 +1841,7 @@ BUILDERS = {
     "evade-font-decoy-behind-a-resources-stream": evade_font_decoy_behind_a_resources_stream,
     "evade-xobject-category-as-a-stream": evade_xobject_category_as_a_stream,
     "evade-properties-as-a-stream-holding-a-layer": evade_properties_as_a_stream_holding_a_layer,
+    "evade-property-list-as-a-stream": evade_property_list_as_a_stream,
     "nearmiss-resources-inherited-from-pages": nearmiss_resources_inherited_from_pages,
 }
 

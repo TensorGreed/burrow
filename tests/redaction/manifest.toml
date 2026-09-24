@@ -1768,3 +1768,23 @@ PDFium defaults an untyped entry under an /OC mark to an OCG, so the layer hides
 the type-keyed resource walk passes it. Caught by the mark (`optional-content-marked`). Found by the
 #166 code review, measured by rendering.
 """
+
+[[fixture]]
+name = "evade-property-list-as-a-stream"
+file = "generated/evade-property-list-as-a-stream.pdf"
+kind = "hand-built"
+probes_refusal = "stream as dictionary"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Properties entry that is a stream carrying /ActualText — evasion"
+  canary = "BURROW-EVADE-PROPERTY-ENTRY-STREAM"
+  verdict = "refuse"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The entry, not the category. Read as absent it refuses as unresolved; the rule this pins is the
+stream one, which a mutation dropping the entry check survived until this fixture existed.
+"""

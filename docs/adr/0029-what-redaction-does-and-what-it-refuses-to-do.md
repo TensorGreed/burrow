@@ -2769,13 +2769,36 @@ beside the corpus, and each near-miss is checked for its canary in the output by
   falls back, in PDFium, to the page's `/Properties`. burrow refuses that as unresolved. This is
   over-refusal, not a leak, and it comes from a reading of PDFium's source that was not run.
 
+### The mutation sweeps, and one that measured a stale binary
+
+My first sweep, run while the reviews were in progress, reported 22 of 23 caught. **One of those
+catches was false.** Cargo decides whether to rebuild by comparing modification times. The sweep
+restored a file and wrote the next mutation into it within the same second, and the test run then
+used the previous mutation's binary. "Deadline checkpoint removed" reported the failures of the
+mutation before it. Run in isolation, it survived. So every catch in a run of consecutive
+mutations to one file was untrustworthy as recorded.
+
+The sweep now steps the modification time before each write. It requires the build output to say
+`Compiling burrow-engines`, and anything that does not is reported in its own `NOT REBUILT`
+column, never as a catch. Run that way over the fix commit, it planted 31 mutations and **caught
+26**. Three of the survivors now have tests, each re-planted and caught:
+- the ranking of named text over an unreadable candidate;
+- the property-list identity memo, pinned by time on 4,000 names sharing one 100 kB list;
+- the stream check on a `/Properties` *entry*, as opposed to the category.
+
+Two survive and are stated rather than tested:
+- **the optional-content walk's per-object deadline checkpoint**, which the sharing walk's page
+  checkpoints always precede;
+- **its resource-dictionary memo**, which only affects speed. The sharing walk's 4,096-dictionary
+  budget bounds the work without it.
+
 ### The census
 
-**82 of 82 documents examined: 56 redacted, 26 refused, 0 quiet**, up from 59 documents (51/8).
+**83 of 83 documents examined: 56 redacted, 27 refused, 0 quiet**, up from 59 documents (51/8).
 None of the original 59 changed column. Two changed **rule**: `13-optional-content` and
 `evade-oc-two-levels-down` now refuse as `optional-content` rather than
-`marked-content-properties-unresolved`. The new fixtures are 5 near-misses that redact and 18
-evasions that refuse, each by the rule it was written for. `redaction_defences.rs` pins all 26 of
+`marked-content-properties-unresolved`. The new fixtures are 5 near-misses that redact and 19
+evasions that refuse, each by the rule it was written for. `redaction_defences.rs` pins all 27 of
 the #166 group, because `CARRIER_REFUSALS` accepts any of seven rules: a named carrier refused as
 *unresolved* would pass it, and that is the pre-#166 outcome.
 

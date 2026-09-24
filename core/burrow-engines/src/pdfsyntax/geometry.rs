@@ -4944,6 +4944,25 @@ mod tests {
         }
 
         #[test]
+        fn named_text_outranks_an_unreadable_candidate() {
+            // Both refuse; the rule is what a user reads. A list that was read and found to carry
+            // text is the more specific true statement, so it names the refusal. The ranking
+            // survived a mutation sweep until this probe.
+            let mut properties = resolving(&[("MC0", "<< /K 5 0 R >>")]);
+            properties.extend(&resolving(&[("MC0", "<< /ActualText (secret) >>")]));
+            assert_named_refusal(
+                edits_with(NAMED, &properties),
+                super::Refusal::MarkedContentNamedPropertiesCarryText,
+            );
+            let mut reversed = resolving(&[("MC0", "<< /ActualText (secret) >>")]);
+            reversed.extend(&resolving(&[("MC0", "<< /K 5 0 R >>")]));
+            assert_named_refusal(
+                edits_with(NAMED, &reversed),
+                super::Refusal::MarkedContentNamedPropertiesCarryText,
+            );
+        }
+
+        #[test]
         fn a_named_carrying_span_the_removal_is_not_inside_is_not_refused() {
             // SCOPED TO THE SPANS THE REMOVAL IS INSIDE, as the form rule is scoped to glyphs
             // being removed. The carrying span covers `AB`; the removal is `CD`.
