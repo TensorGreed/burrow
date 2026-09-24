@@ -272,6 +272,7 @@ JOBS: list[dict] = [
     {
         "name": "doc",
         "run": "tools/check-rustdoc.sh && tools/test-check-rustdoc.sh",
+        "paths_as": "cargo doc --workspace --no-deps --all-features",
         "covers": ["tools/check-rustdoc.sh", "tools/test-check-rustdoc.sh"],
         "why": "rustdoc with the engines linked, and every crate and gated item documented (#174)",
     },
@@ -1604,6 +1605,20 @@ def job_paths(job: dict) -> tuple[set[str] | None, str]:
     command = job["run"]
     directories = crate_directories()
     dependencies = crate_dependencies(directories)
+
+    # A SCRIPT THAT WRAPS A CARGO BUILD SAYS WHICH ONE, and the claim is checked, not trusted.
+    # `tools/check-rustdoc.sh` (#174) runs `cargo doc --workspace` and then reports on it; read as
+    # an ordinary checker it would run on every change, a web-only one included, at the price of
+    # a documentation build. `paths_as` names the command it wraps, and its paths are derived from
+    # that -- provided the script still contains it. A script that stopped running it would
+    # otherwise keep a narrowing it no longer earned.
+    wrapped = job.get("paths_as")
+    if wrapped is not None:
+        scripts = re.findall(r"tools/[A-Za-z0-9_.-]+\.sh", command)
+        wrapper = scripts[0] if scripts else None
+        if wrapper is None or wrapped not in (REPO / wrapper).read_text():
+            return None, f"declares it wraps `{wrapped}`, and {wrapper or 'no script'} does not contain it"
+        command = wrapped
 
     # A checker reads whatever it reads, and that is not derivable from its invocation. They
     # are seconds each, so they always run -- the conservative direction, stated.

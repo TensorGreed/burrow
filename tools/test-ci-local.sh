@@ -870,6 +870,34 @@ scenario "a workflow change narrows nothing" \
 scenario "a checker always runs, whatever changed" \
   "apps/web/src/pages/index.astro" "checkers,checker-self-tests,integration-suites" "test"
 
+# `paths_as` NARROWS ONLY WHILE THE SCRIPT STILL RUNS WHAT IT CLAIMS (#174). The `doc` job wraps
+# `cargo doc --workspace` in `tools/check-rustdoc.sh` and declares so, which is what lets a web
+# change skip it -- the case above. A declaration the script does not contain must not narrow:
+# with it, the same web change runs `doc`.
+paths_as_probe="$here/.ci-local-paths-as-fixture.py"
+python3 - "$here/ci-local.py" "$paths_as_probe" <<'PYEOF'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+old = '"paths_as": "cargo doc --workspace --no-deps --all-features",'
+assert old in text, "the doc job's paths_as is not spelled as this test expects"
+# A DECLARATION THAT WOULD NARROW IF TRUSTED: it names `--workspace`, so paths derive from it. A
+# first version wrote `cargo doc --no-such-flag`, from which nothing derives, so `doc` ran
+# anyway and the case passed with the verification deleted -- measured, and fixed here.
+pathlib.Path(sys.argv[2]).write_text(
+    text.replace(old, '"paths_as": "cargo doc --workspace --no-deps --no-such-flag",', 1)
+)
+PYEOF
+out="$(python3 "$scenario_driver" "$paths_as_probe" "apps/web/src/pages/index.astro" 2>&1)"
+rm -f "$paths_as_probe"
+if grep -q '^RUNS:.*\bdoc\b' <<<"$out"; then
+  echo "  ok   a paths_as the script does not contain narrows nothing: a web change runs doc"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a paths_as the script does not contain still let a web change skip doc"
+  echo "$out" | tail -3
+  fail=$((fail + 1))
+fi
+
 # AND THE RULE THAT MUST NOT BE BREAKABLE: with the fuzz exclusion removed, a fuzz-target
 # change must still run them -- but an UNRELATED change must not. A mutation that dropped the
 # `touched_fuzz` condition would put a minute of searching on every push, which is the cost
