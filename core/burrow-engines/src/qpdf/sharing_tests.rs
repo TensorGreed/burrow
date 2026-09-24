@@ -472,7 +472,7 @@ fn an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each() {
         ]);
         let opened = open(bytes);
         let before = peak_rss_kb();
-        let counts = count(&opened).expect("an array of these draws no forms");
+        let counts = count(&opened).expect("an array of these draws no forms and is walked");
         assert!(
             counts.all().is_empty(),
             "neither shape is an appearance stream"
@@ -482,14 +482,35 @@ fn an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each() {
 
     // The control first, so its allocation is already in the high-water mark when the second
     // runs -- `VmHWM` never falls, so the order makes the comparison strictly conservative.
+    //
+    // `null`, NOT INTEGERS, since #166. An annotation entry that is not a dictionary is now
+    // refused by name at the first one, so an integer array stops before it could retain
+    // anything, and measuring it would measure one item. `null` is still skipped, so a `null`
+    // array is the shape that walks every item without being a dictionary, which is the path
+    // the container check exists for.
     let dictionaries = grew("<< >>");
-    let integers = grew("{n}");
+    let nulls = grew("null");
 
     assert!(
-        integers <= dictionaries + 32 * 1024,
-        "an /Annots of {ITEMS} integers grew the peak RSS by {integers} kB against \
-         {dictionaries} kB for the same array of dictionaries -- the container type check is \
-         not holding, and each skipped check retains a qpdf warning"
+        nulls <= dictionaries + 32 * 1024,
+        "an /Annots of {ITEMS} nulls grew the peak RSS by {nulls} kB against {dictionaries} kB \
+         for the same array of dictionaries -- the container type check is not holding, and \
+         each skipped check retains a qpdf warning"
+    );
+
+    // AND THE INTEGERS ARE REFUSED BY NAME, which is why they are no longer the measured shape.
+    let integers = document(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> \
+         /Contents 4 0 R /Annots [0 1 2] >>"
+            .to_owned(),
+        stream("", "BT ET\n"),
+    ]);
+    let refused = count(&open(integers)).expect_err("an /Annots of integers is refused");
+    assert!(
+        format!("{refused:?}").contains("[not-a-dictionary-where-one-belongs]"),
+        "{refused:?}"
     );
 }
 
