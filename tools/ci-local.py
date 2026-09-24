@@ -522,6 +522,18 @@ JOBS: list[dict] = [
         "why": "PDFium reaches the render bundle and no other part of the web build (ADR 0026)",
     },
     {
+        # AFTER `web`, for the same reason as the job above: it reads the production `dist/`.
+        "name": "redaction-not-in-base",
+        "run": (
+            "tools/check-redaction-not-in-base.sh && tools/test-check-redaction-not-in-base.sh"
+        ),
+        "covers": [
+            "tools/check-redaction-not-in-base.sh",
+            "tools/test-check-redaction-not-in-base.sh",
+        ],
+        "why": "redaction's code reaches no part of the base web payload (ADR 0029)",
+    },
+    {
         # AFTER `web`, BECAUSE IT READS `apps/web/dist`. It was in `checker-self-tests` for one
         # commit, which builds nothing and runs BEFORE `web` -- so on a fresh clone the whole
         # sweep refused with "no build at apps/web/dist" before reaching the job that would
