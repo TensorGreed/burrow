@@ -24,12 +24,18 @@
 #   witness_before   how we know the canary is in this file NOW. `tools/check-redaction-corpus.py`
 #                    verifies every one of these on every run. A placement whose canary cannot be
 #                    witnessed is a placement measuring nothing, and the checker refuses.
-#   expect_after     what must be true once redaction runs. NOT verifiable yet — the operation
-#                    does not exist (#131, #132, #133). Recorded now so the assertion is written
-#                    before the code it judges, rather than fitted to whatever the code does.
-#
-# Stating that split plainly matters: half of §8's rule is live today and half is a promise. A
-# manifest that implied both were checked would be the exact failure §8 is about.
+#   expect_after     what must be true once redaction runs: `gone`, `refused` or `present`.
+#                    Checked by `tools/check-redaction-corpus.py --after` (#176) against a real
+#                    run, with the SAME witness as `witness_before`. Written before the code it
+#                    judges; a disagreement is a finding, not a number to re-fit.
+#   owed_by          an issue whose work the outcome is owed to: a refusal signal not yet built
+#                    (#125) lets the document redact, a handling not yet built (#131) lets it
+#                    refuse. Never excuses a canary still witnessed after a redaction, and FAILS
+#                    once the work arrives, so it cannot outlive what it waits for.
+#   after_unwitnessed  a reason no permitted instrument can judge this placement after the run
+#                    (ADR 0029 §6). Printed on every run.
+#   region           on a fixture: the rectangle redacted, in display coordinates. Hand-built
+#                    fixtures default to `tools/pdfbuild.py`'s REGION, which draws them.
 
 [meta]
 version = 1
@@ -49,6 +55,9 @@ keep_line = "KEEP-THIS-LINE"
 
 [[fixture]]
 name = "producer-writer"
+# THE REGION: PDFium's ink boxes around the canary, with 2 pt of margin, in display
+# coordinates. Measured once against this committed file, which does not change.
+region = [174, 96, 154, 13]
 file = "fixtures/producer-writer.pdf"
 kind = "producer"
 producer = "LibreOffice Writer 24.2.7.2"
@@ -102,6 +111,7 @@ processor put the document title in the metadata without being asked.
   witness_before = "structure-tree-present"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = """
 The document carries a structure tree, so §3 refuses it outright. The refusal's page-side
 signal is one of the three #125 marks OWED — the page's /StructParents is a proposal, not a
@@ -111,6 +121,9 @@ proposed signal must be shown to catch.
 
 [[fixture]]
 name = "producer-latex"
+# THE REGION: PDFium's ink boxes around the canary, with 2 pt of margin, in display
+# coordinates. Measured once against this committed file, which does not change.
+region = [180, 169, 111, 11]
 file = "fixtures/producer-latex.pdf"
 kind = "producer"
 producer = "pdfTeX 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian)"
@@ -157,6 +170,9 @@ Measured in the qdf expansion:
 
 [[fixture]]
 name = "producer-ocr-scan"
+# THE REGION: PDFium's ink boxes around the canary, with 2 pt of margin, in display
+# coordinates. Measured once against this committed file, which does not change.
+region = [460, 288, 533, 55]
 file = "fixtures/producer-ocr-scan.pdf"
 kind = "producer"
 producer = "pdfTeX + PDFium raster + tesseract 5.3.4"
@@ -184,6 +200,7 @@ Measured in the qdf expansion:
   witness_before = "image-covers-page"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
   [[fixture.placement]]
   channel = "the invisible OCR text layer (3 Tr)"
@@ -193,6 +210,7 @@ Measured in the qdf expansion:
   witness_before = "pdfium-text"
   witness_observes = "canary"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
   [fixture.decision]
   # ---------------------------------------------------------------------------------
@@ -372,6 +390,7 @@ pages = 1
   witness_before = "font-cmap"
   witness_observes = "alphabet"
   expect_after = "gone"
+  after_unwitnessed = "the only witness is the font program's own cmap, which ADR 0029 §7 discloses as residue and the next placement expects present; the glyphs' removal is asserted by the operation's geometry read-back, and no permitted instrument reads this page's text (§6)"
   notes = "No /ToUnicode and no /Differences, so the font program's own cmap is the only witness. One of the five channels spike 0006 measured as invisible to every scan."
 
   [[fixture.placement]]
@@ -416,6 +435,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "gone"
+  owed_by = 131  # the handling is owed; refusing is the fail-closed stand-in until #131 lands
   notes = "Extraction reads the character code, never the text the glyph procedure draws."
 
 [[fixture]]
@@ -450,6 +470,7 @@ pages = 1
   witness_before = "structure-tree-present"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "The page-side signal for this refusal is one of the three #125 marks OWED."
 
 [[fixture]]
@@ -484,6 +505,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "The field /V is on the catalogue and unreachable. Page-side signal OWED — #125."
 
 [[fixture]]
@@ -569,6 +591,7 @@ pages = 1
   witness_before = "vector-fills"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "Indistinguishable from a chart, a logo or a signature. Witnessed structurally: there is no text to witness."
 
 [[fixture]]
@@ -603,6 +626,7 @@ pages = 1
   witness_before = "image-drawn"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "Refused because burrow cannot write an edited image back — ADR 0029's third condition."
 
 [[fixture]]
@@ -620,6 +644,7 @@ pages = 1
   witness_before = "font-cmap"
   witness_observes = "alphabet"
   expect_after = "gone"
+  after_unwitnessed = "the only witness is the font program's own cmap, which ADR 0029 §7 discloses as residue and the next placement expects present; the glyphs' removal is asserted by the operation's geometry read-back, and no permitted instrument reads this page's text (§6)"
   notes = "Extraction reads a decoy while the font's cmap tells the truth. Two halves of one object disagreeing."
 
   [[fixture.placement]]
@@ -695,6 +720,7 @@ pages = 1
   witness_before = "image-drawn"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "A `Do` inside a Form XObject. The page's content stream says only `/X1 Do`."
 
 [[fixture]]
@@ -712,6 +738,7 @@ pages = 1
   witness_before = "inline-image"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "Not an XObject at all, so a signal enumerating `/XObject` finds nothing."
 
 [[fixture]]
@@ -780,6 +807,7 @@ pages = 1
   witness_before = "vector-fills"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
 [[fixture]]
 name = "evade-paths-in-type3-glyph"
@@ -796,6 +824,7 @@ pages = 1
   witness_before = "vector-fills"
   witness_observes = "carrier"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
 [[fixture]]
 name = "nearmiss-paths-outside-region"
@@ -829,6 +858,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "ADR 0029 §5 names this bypass in those words: the widget is on page 2."
 
 [[fixture]]
@@ -846,6 +876,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "No `/Annots` entry on any page names the field."
 
 [[fixture]]
@@ -880,6 +911,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
+  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "The element points at the page through `/Pg`; the page has nothing pointing back."
 
 [[fixture]]

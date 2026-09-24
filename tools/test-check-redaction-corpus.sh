@@ -242,6 +242,90 @@ else
 fi
 mv -f "$backup" "$manifest"
 
+# --- The "after" half (#176): one planted case per rule, each run against ONE fixture --------
+#
+# Each case edits one fixture's block of the manifest, runs `--after` filtered to that fixture,
+# and requires a refusal naming the rule. `after_case <name> <fixture> <old> <new> <wanted>`;
+# the edit is asserted to have applied, inside that fixture's block and nowhere else.
+after_case() {
+  local name="$1" fixture="$2" old="$3" new="$4" wanted="$5"
+  cp "$manifest" "$backup"
+  if ! python3 - "$manifest" "$fixture" "$old" "$new" <<'PYEOF'
+import pathlib, sys
+path, fixture, old, new = pathlib.Path(sys.argv[1]), *sys.argv[2:5]
+text = path.read_text()
+start = text.index(f'name = "{fixture}"\n')
+end = text.find("\n[[fixture]]", start)
+end = len(text) if end < 0 else end
+block = text[start:end]
+assert block.count(old) == 1, f"{old!r} occurs {block.count(old)} times in {fixture}'s block"
+path.write_text(text[:start] + block.replace(old, new, 1) + text[end:])
+PYEOF
+  then
+    echo "  FAIL $name: the mutation did not apply, so this case measured nothing"
+    fail=$((fail + 1))
+    mv -f "$backup" "$manifest"
+    return
+  fi
+  BURROW_AFTER_ONLY="$fixture" expect_refusal "$name" "$wanted" python3 "$checker" --after
+  mv -f "$backup" "$manifest"
+}
+
+# The baseline for every case below: the real manifest's after-half holds.
+if BURROW_AFTER_ONLY="evade-image-in-form,plain-tj,cid-without-tounicode" python3 "$checker" --after >/dev/null 2>&1; then
+  echo "  ok   the after-half holds on the real manifest for the fixtures the cases plant into"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the after-half fails before any mutation"
+  fail=$((fail + 1))
+fi
+
+after_case "an owed refusal with its marker removed is refused: redacted where the manifest says refused" \
+  evade-image-in-form $'  owed_by = 125' '' "redacted where the manifest says refused"
+after_case "an owed marker on a document that refuses now is stale" \
+  evade-oc-outside-the-region $'expect_after = "refused"' $'expect_after = "refused"\n  owed_by = 125' \
+  "outlived the work it waited for"
+after_case "a refusal where the manifest expects a redaction is refused" \
+  type3-glyph $'  owed_by = 131' '' "where the manifest expects it redacted"
+after_case "an owed handling that is handled now is stale" \
+  plain-tj $'expect_after = "gone"' $'expect_after = "gone"\n  owed_by = 131' "drop the marker"
+after_case "an owed marker never excuses a canary still witnessed after redaction" \
+  cid-without-tounicode $'expect_after = "present"' $'expect_after = "gone"\n  owed_by = 131' \
+  "still finds the canary after redaction"
+after_case "a gone placement whose canary survives is refused" \
+  cid-without-tounicode $'expect_after = "present"' $'expect_after = "gone"' \
+  "still finds the canary after redaction"
+after_case "a disclosed placement that is no longer found is refused" \
+  plain-tj $'expect_after = "gone"' $'expect_after = "present"' "manifest says is disclosed"
+after_case "a producer fixture with no region is refused" \
+  producer-writer $'region = [174, 96, 154, 13]' '' "must declare \`region\`"
+after_case "a document that must refuse and also promises a removal contradicts itself" \
+  evade-oc-outside-the-region $'  [[fixture.placement]]' \
+  $'  [[fixture.placement]]\n  channel = "planted"\n  canary = "BURROW-EVADE-OC-ELSEWHERE"\n  verdict = "handle"\n  adr = "§1"\n  witness_before = "raw-file"\n  witness_observes = "canary"\n  expect_after = "gone"\n\n  [[fixture.placement]]' \
+  "contradicts itself"
+
+# And the field validation, on the ordinary run.
+after_case_before() {
+  local name="$1" fixture="$2" old="$3" new="$4" wanted="$5"
+  cp "$manifest" "$backup"
+  python3 - "$manifest" "$fixture" "$old" "$new" <<'PYEOF'
+import pathlib, sys
+path, fixture, old, new = pathlib.Path(sys.argv[1]), *sys.argv[2:5]
+text = path.read_text()
+start = text.index(f'name = "{fixture}"\n')
+end = text.find("\n[[fixture]]", start)
+block = text[start:end]
+assert block.count(old) == 1
+path.write_text(text[:start] + block.replace(old, new, 1) + text[end:])
+PYEOF
+  expect_refusal "$name" "$wanted" python3 "$checker"
+  mv -f "$backup" "$manifest"
+}
+after_case_before "an expect_after outside gone, refused and present is refused" \
+  plain-tj $'expect_after = "gone"' $'expect_after = "vanished"' "must be gone, refused or present"
+after_case_before "an owed_by that is not an issue number is refused" \
+  evade-image-in-form $'owed_by = 125' $'owed_by = "soon"' "must be an issue number"
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

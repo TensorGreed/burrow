@@ -2915,3 +2915,51 @@ remains true of the new one.
 The redaction floor in `redaction_corpus.rs` moves from 39 to 56. It had not moved since #164,
 although 51 were redacting after #165, so a regression could have fallen twelve documents
 towards it without a word.
+
+## Amendment, 2026-09-24 — #176: `expect_after` is judged against a real run
+
+§8's rule has two halves, and until now only one was checked. `witness_before` has been verified
+on every run since #135. `expect_after` — what must be true once redaction runs — was a column
+in `tests/redaction/manifest.toml` that nothing compared against anything, because until #134
+there was no operation to compare it with. The #165 near-miss that refused where it should have
+redacted, and the #164 Type 3 evasion that redacted where it should have refused, both went
+unnoticed for exactly that reason.
+
+`tools/check-redaction-corpus.py --after` now redacts every fixture through the public operation
+and judges each placement **by the witness that proved its canary present before**. Using a
+different instrument after than before is how spike 0006 scored four channels "gone" that nothing
+could see.
+
+### What the first run found
+
+Sixteen disagreements, and none was a leak:
+
+- **Thirteen are #125.** Image, vector-path, `/AcroForm` and `/StructTreeRoot` shapes redact
+  today where the manifest says *refused*: §5's owed signals, exactly as §5 describes them. They
+  now carry `owed_by = 125`, which is printed on every run and **fails once the document
+  refuses**, so a marker cannot outlive the work it waits for.
+- **`08-type3-glyph` refuses where §3 says *handle*.** The walk does not descend a glyph
+  procedure, so the fail-closed refusal stands in until #131. It carries `owed_by = 131` in the
+  other direction: a refusal is allowed, and **a canary still witnessed after a redaction never
+  is**.
+- **Channels 6 and 21 contradicted themselves in the manifest.** Each had two placements with the
+  same canary and the same `font-cmap` witness: the page text expected *gone*, and the cmap
+  residue expected *present*. One instrument cannot show both. The cmap is §7's disclosed
+  residue, and the page text of a CID font with no usable `/ToUnicode` is one of §6's channels
+  that no permitted instrument can read. So the page-text placements carry `after_unwitnessed`
+  with that reason, printed on every run rather than judged by a witness that cannot see them.
+  The glyphs' removal is asserted by the operation's own geometry read-back, and **#111's
+  circularity applies to it unchanged**.
+
+### The count
+
+**90 of 90 placements judged: 42 gone, 5 present, 26 refused, 15 owed to their issue, 2 that no
+instrument can judge after.** The denominator is every placement that declares an after-state,
+including any fixture refused before the run, so a narrowed sweep cannot read as a full one.
+
+### And the carrier canaries stop being a copy
+
+`redaction_defences.rs::CARRIER_EVASIONS` held a second column of canaries copied from the
+manifest. It now keeps only the membership, meaning which fixtures are carrier shapes, which is a
+judgement no manifest field states. It takes each canary from the manifest. Removing a carrier
+fixture from the manifest fails by name, and so does renaming its canary; both are measured.

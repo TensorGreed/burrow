@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Every canary the redaction manifest claims is present must actually be present.
 
-    python3 tools/check-redaction-corpus.py
+    python3 tools/check-redaction-corpus.py           # the "before" half
+    python3 tools/check-redaction-corpus.py --after   # the "after" half, against a real run
 
 ADR 0029 §8's rule has two halves:
 
     Where a check reports that something is GONE, it must also show that something CHANGED.
 
-The "after" half needs the operation, which does not exist yet (#131, #132, #133). The "before"
-half is checkable today, and it is the half a corpus can get wrong on its own: a manifest that
+The "after" half is `--after` (#176): every placement's `expect_after`, judged by its own witness on
+the operation's output -- see `after()`. The "before" half, below, is the half a corpus can get
+wrong on its own: a manifest that
 says a canary is in a file, where it is not, produces a fixture that will later report the
 secret "removed" having never contained it. That is the shape spike 0006 measured — four
 channels scored gone by instruments that were never able to see them.
@@ -43,6 +45,7 @@ A witness that cannot be evaluated is an ERROR, never a silent pass.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -594,6 +597,20 @@ def main() -> int:
             verdicts[placement["verdict"]] = verdicts.get(placement["verdict"], 0) + 1
             kind = placement["witness_before"]
             canary = placement["canary"]
+            # THE AFTER-HALF FIELDS, validated on every run, not only under --after.
+            if placement.get("expect_after") not in ("gone", "refused", "present"):
+                failures.append(
+                    f"{fixture['name']} / {placement['channel']}: `expect_after` must be gone, "
+                    f"refused or present, not {placement.get('expect_after')!r}"
+                )
+            if "owed_by" in placement and not isinstance(placement["owed_by"], int):
+                failures.append(
+                    f"{fixture['name']} / {placement['channel']}: `owed_by` must be an issue number"
+                )
+            if "after_unwitnessed" in placement and not str(placement["after_unwitnessed"]).strip():
+                failures.append(
+                    f"{fixture['name']} / {placement['channel']}: `after_unwitnessed` needs a reason"
+                )
             if kind == "raw-file":
                 # THE FILE AS IT ARRIVED, not the qpdf normalisation every other byte witness
                 # reads. `expanded()` runs `qpdf --qdf`, whose writer emits only objects
@@ -662,12 +679,240 @@ def main() -> int:
             sys.stderr.write(f"  - {f}\n")
         return 1
     print("OK — every canary the manifest claims is present was witnessed present.")
-    print(
-        "     The `expect_after` half of ADR 0029 §8's rule is NOT checked here: it needs the "
-        "operation (#131, #132, #133)."
+    print("     The `expect_after` half of ADR 0029 §8's rule is `--after`, against a real run.")
+    return 0
+
+
+# ------------------------------------------------------------------------------------------------
+# THE "AFTER" HALF (#176): every placement's `expect_after`, against a real run.
+#
+# The operation exists (#134), so `expect_after` stops being a promise. Each fixture is redacted
+# through the public operation -- `burrow_ops::redact::page`, verification included -- by the
+# `redact-batch` example, and each placement is judged by THE SAME WITNESS that established its
+# canary was present before. A different instrument after than before is how spike 0006 scored
+# four channels "gone" that nothing could see.
+#
+#   refused   the document is refused, by a named rule
+#   gone      it is redacted, and the witness no longer finds the canary in the output
+#   present   it is redacted, and the witness still finds it: a disclosure, and burrow must not
+#             claim to have removed it
+#
+# `owed_by = <issue>` marks a placement whose outcome is owed to open work, in either direction:
+#   - on a `refused` placement, the refusal SIGNAL is not implemented (ADR 0029 §5's four, #125),
+#     so the document may be redacted today;
+#   - on a `gone` placement, the HANDLING is not implemented (Type 3 procedures, #131), so the
+#     document may be refused today -- failing closed.
+# It never excuses a canary still witnessed after a redaction. It is counted and printed, and it
+# FAILS once the owed work has arrived, so a marker cannot outlive what it waits for.
+#
+# `after_unwitnessed = "<reason>"` marks a placement no instrument can judge after the run --
+# ADR 0029 §6's channels that no permitted instrument can confirm. Printed with its reason on
+# every run, never judged by a witness that cannot see it.
+# ------------------------------------------------------------------------------------------------
+
+
+def default_region() -> tuple[float, float, float, float]:
+    """`pdfbuild.REGION`, in the display coordinates the operation takes.
+
+    Every hand-built fixture draws its canary inside that rectangle by construction; it is "the
+    rectangle a redaction is asked to clear" in `tools/pdfbuild.py`'s own words.
+    """
+    sys.path.insert(0, str(REPO / "tools"))
+    import pdfbuild  # noqa: PLC0415
+
+    x0, y0, x1, y1 = pdfbuild.REGION
+    return (float(x0), float(pdfbuild.PAGE_H - y1), float(x1 - x0), float(y1 - y0))
+
+
+def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
+    fixtures = manifest.get("fixture", [])
+    # ONE FIXTURE AT A TIME, for the self-test's planted cases -- a whole-corpus run per case
+    # would make the probes the slowest part of the gate. Named, and its count printed, so a
+    # filtered run can never read as a sweep.
+    only = [n for n in os.environ.get("BURROW_AFTER_ONLY", "").split(",") if n]
+    if only:
+        fixtures = [f for f in fixtures if f["name"] in only]
+        if len(fixtures) != len(only):
+            sys.exit(f"check-redaction-corpus --after: BURROW_AFTER_ONLY names {only}, found {len(fixtures)}")
+        print(f"check-redaction-corpus --after: FILTERED to {', '.join(only)}")
+    out_dir = scratch / "after"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    failures: list[str] = []
+    jobs: list[str] = []
+    planned: dict[str, tuple[dict, Path, Path]] = {}
+    for fixture in fixtures:
+        placements = [p for p in fixture.get("placement", []) if "expect_after" in p]
+        if not placements:
+            continue
+        region = fixture.get("region")
+        if region is None:
+            if fixture.get("kind") != "hand-built":
+                failures.append(
+                    f"{fixture['name']}: a {fixture.get('kind')} fixture must declare `region`; "
+                    "only hand-built fixtures are drawn inside pdfbuild.REGION by construction"
+                )
+                continue
+            region = default_region()
+        if len(region) != 4:
+            failures.append(f"{fixture['name']}: `region` is not four numbers")
+            continue
+        source = MANIFEST.parent / fixture["file"]
+        output = out_dir / f"{fixture['name']}.after.pdf"
+        output.unlink(missing_ok=True)
+        planned[str(source)] = (fixture, source, output)
+        jobs.append("\t".join([str(source), "0", *(str(v) for v in region), str(output)]))
+
+    # NOTHING TO RUN IS NOT A RUN THAT FAILED: every fixture refused before the operation, and
+    # those refusals are the report. Handing the batch an empty line buried them under its own
+    # usage error -- measured by the self-test's region case.
+    outcomes: dict[str, tuple[str, str]] = {}
+    if jobs:
+        cargo = shutil.which("cargo")
+        if cargo is None:
+            sys.exit("check-redaction-corpus: `cargo` is required to run the operation")
+        run = subprocess.run(
+            [
+                cargo, "run", "-q", "-p", "burrow-ops", "--features", "native-engines",
+                "--release", "--example", "redact-batch",
+            ],
+            input="\n".join(jobs) + "\n", capture_output=True, text=True, cwd=REPO,
+        )
+        if run.returncode != 0:
+            sys.exit(f"check-redaction-corpus: redact-batch failed:\n{run.stderr[-800:]}")
+        for line in run.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                outcomes[parts[1]] = (parts[0], parts[2] if len(parts) > 2 else "")
+
+    text_cache: dict[Path, str] = {}
+    tally = {"refused": 0, "gone": 0, "present": 0, "owed": 0, "unwitnessed": 0}
+    notes: list[str] = []
+    examined = 0
+    # THE DENOMINATOR IS EVERY PLACEMENT THE MANIFEST DECLARES AN AFTER-STATE FOR, not the ones
+    # that reached the run: a fixture refused while planning -- no region -- must still count
+    # against the total, or "72 of 72" reads as a sweep that skipped nine.
+    expected = sum(
+        1 for f in fixtures for p in f.get("placement", []) if "expect_after" in p
     )
+    for key, (fixture, source, output) in planned.items():
+        name = fixture["name"]
+        status, message = outcomes.get(key, ("MISSING", ""))
+        if status == "MISSING":
+            failures.append(f"{name}: redact-batch reported no outcome")
+            continue
+        placements = fixture["placement"]
+        unwitnessed = [p for p in placements if "after_unwitnessed" in p]
+        judged = [p for p in placements if "after_unwitnessed" not in p]
+        owed = [p for p in judged if p["expect_after"] == "refused" and "owed_by" in p]
+        must_refuse = [p for p in judged if p["expect_after"] == "refused" and "owed_by" not in p]
+        promised = [p for p in judged if p["expect_after"] in ("gone", "present")]
+        examined += len(unwitnessed)
+        tally["unwitnessed"] += len(unwitnessed)
+        for placement in unwitnessed:
+            notes.append(f"{name} / {placement['channel']}: {placement['after_unwitnessed']}")
+        if status == "REFUSED":
+            rule = message.split("[", 1)[1].split("]", 1)[0] if "[" in message and "]" in message else None
+            if rule is None:
+                failures.append(f"{name}: refused without naming a rule: {message[:160]}")
+                continue
+            if owed:
+                failures.append(
+                    f"{name}: refuses now (`{rule}`), and still marks {len(owed)} refused "
+                    "placement(s) `owed_by` -- the marker has outlived the work it waited for"
+                )
+                continue
+            if not must_refuse:
+                # A REFUSAL IS ALLOWED where every promised placement is owed its handling.
+                blocking = [p for p in promised if "owed_by" not in p]
+                if blocking:
+                    failures.append(
+                        f"{name}: refused by `{rule}` where the manifest expects it redacted"
+                    )
+                    continue
+                examined += len(promised)
+                tally["owed"] += len(promised)
+                continue
+            if promised:
+                failures.append(
+                    f"{name}: must refuse, and also promises {len(promised)} placement(s) gone "
+                    "or present, which a refused document cannot show -- the manifest "
+                    "contradicts itself"
+                )
+                continue
+            examined += len(must_refuse)
+            tally["refused"] += len(must_refuse)
+            continue
+        if must_refuse:
+            failures.append(
+                f"{name}: redacted where the manifest says refused "
+                f"({', '.join(p['channel'][:50] for p in must_refuse)})"
+            )
+            continue
+        examined += len(owed)
+        tally["owed"] += len(owed)
+        data = expanded(qpdf, output, scratch)
+        for placement in promised:
+            kind, canary = placement["witness_before"], placement["canary"]
+            if kind == "raw-file":
+                # THE OUTPUT AS WRITTEN AND AS EXPANDED: qpdf compresses what it writes, so a raw
+                # scan alone would find nothing and read as "gone" for the wrong reason.
+                seen = witness_raw(output.read_bytes(), canary) or witness_raw(data, canary)
+            elif kind == "pdfium-text":
+                seen = witness_pdfium_text(output, canary, text_cache)
+            elif kind == "pdfium-text-loose":
+                seen = witness_pdfium_text_loose(output, canary, text_cache)
+            elif kind in BYTE_WITNESSES:
+                seen = BYTE_WITNESSES[kind](data, canary)
+            else:
+                failures.append(f"{name} / {placement['channel']}: unknown witness `{kind}`")
+                continue
+            examined += 1
+            want = placement["expect_after"]
+            if "owed_by" in placement:
+                # OWED HANDLING, AND IT WAS HANDLED: the marker is stale. Still seen: a leak, which
+                # an owed marker never excuses -- it excuses a refusal, nothing else.
+                if want == "gone" and not seen:
+                    failures.append(
+                        f"{name} / {placement['channel']}: handled now, and still marked "
+                        f"`owed_by = {placement['owed_by']}` -- drop the marker"
+                    )
+                    continue
+            if want == "gone" and seen:
+                failures.append(
+                    f"{name} / {placement['channel']}: `{kind}` still finds the canary after "
+                    "redaction, where the manifest says gone"
+                )
+            elif want == "present" and not seen:
+                failures.append(
+                    f"{name} / {placement['channel']}: `{kind}` no longer finds a canary the "
+                    "manifest says is disclosed, not removed"
+                )
+            else:
+                tally[want] += 1
+
+    print(
+        f"check-redaction-corpus --after: {len(planned)} fixture(s) run; {examined} of {expected} "
+        f"placement(s) judged -- {tally['gone']} gone, {tally['present']} present, "
+        f"{tally['refused']} refused, {tally['owed']} owed to their issue, "
+        f"{tally['unwitnessed']} no instrument can judge after"
+    )
+    for note in notes:
+        print(f"  unwitnessed after: {note}")
+    if examined != expected and not failures:
+        failures.append(f"judged {examined} of {expected} placements")
+    if failures:
+        sys.stderr.write("\nFAILED — %d problem(s):\n" % len(failures))
+        for f in failures:
+            sys.stderr.write(f"  - {f}\n")
+        return 1
+    print("OK — every placement's expect_after holds against a real run.")
     return 0
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--after"]:
+        manifest = tomllib.loads(MANIFEST.read_text())
+        scratch = REPO / "target" / "redaction-corpus-check"
+        scratch.mkdir(parents=True, exist_ok=True)
+        raise SystemExit(after(manifest, qpdf_cli(), scratch))
     raise SystemExit(main())

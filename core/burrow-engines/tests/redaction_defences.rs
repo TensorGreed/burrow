@@ -1868,125 +1868,71 @@ fn the_number_of_stripped_property_lists_is_reported_not_just_its_sign() {
     assert_present(&out, b"KEPT", "the span the region never reached");
 }
 
-/// The carrier fixtures whose canary must never reach the output, and the canary each carries.
+/// The carrier fixtures whose canary must never reach the output.
 ///
-/// The **documents** are read from the generated corpus rather than rebuilt here; this list is a
-/// hand-written selection over them. A previous version of this comment claimed the list itself
-/// was read from the corpus and called it "these three" over ten entries — it was neither, and
-/// the claim is removed rather than restated.
+/// # The membership is hand-written; the canaries are not
 ///
-/// Every canary here was cross-checked against `tests/redaction/manifest.toml`: 15 of 15 resolve
-/// to a fixture and match its `placement.canary` exactly. That makes the second column pure
-/// duplication of a file CI already validates, and deriving it is filed rather than done here,
-/// because the *membership* predicate — which fixtures are carrier shapes — stays hand-written
-/// either way and is the half that rots.
-const CARRIER_EVASIONS: [(&str, &str); 22] = [
-    (
-        "evade-actualtext-around-a-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-FORM",
-    ),
-    (
-        "evade-actualtext-inside-a-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-IN-FORM",
-    ),
-    (
-        "evade-actualtext-around-a-nested-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NESTED",
-    ),
-    (
-        "evade-actualtext-in-the-middle-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-MIDFORM",
-    ),
-    (
-        "evade-actualtext-over-a-form-without-resources.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NORES",
-    ),
+/// **Which fixtures are carrier shapes** is a judgement, and nothing in the manifest states it:
+/// the list mixes `/ActualText` evasions, a Type 3 procedure that draws, and a `/ToUnicode` in a
+/// form-local font, and their `probes_refusal` groups do not line up with "burrow looked at the
+/// carrier". So the names stay here.
+///
+/// **Each canary is the manifest's** (#176). It was a second column copying
+/// `tests/redaction/manifest.toml`'s `placement.canary` -- 15 of 15 matching when a review
+/// cross-checked them, and `09-actualtext.pdf`, the headline fixture, missing until someone
+/// noticed. A copy beside the thing it mirrors is the shape that rotted three times on this
+/// milestone. Now a fixture removed from the manifest fails by name, and a canary changed there
+/// fails the presence check on the generated file.
+const CARRIER_EVASIONS: [&str; 22] = [
+    "evade-actualtext-around-a-form.pdf",
+    "evade-actualtext-inside-a-form.pdf",
+    "evade-actualtext-around-a-nested-form.pdf",
+    "evade-actualtext-in-the-middle-form.pdf",
+    "evade-actualtext-over-a-form-without-resources.pdf",
     // NOT AN `/ActualText` SHAPE, and here for exactly that reason. A Type 3 glyph procedure
     // that draws a form keeps the secret's drawing operators in the output while rendering
     // nothing -- covered, not gone. The corpus reports it refusing; without this, restoring the
     // defect only moved it from the refused column to the redacted one, and the floor is a
     // floor, so the sweep stayed green. Measured: that mutation SURVIVED until this line.
-    (
-        "evade-text-in-type3-via-form.pdf",
-        "BURROW-EVADE-TYPE3-VIA-FORM",
-    ),
+    "evade-text-in-type3-via-form.pdf",
     // THE MEMO CASE. Six fixtures above and none of them reached it: a code review measured
     // that emptying the memo entirely is caught by `evade-actualtext-in-the-middle-form`, while
     // **path-dependent truncation** of it was caught by nothing.
-    (
-        "evade-actualtext-under-a-form-with-two-parents.pdf",
-        "BURROW-EVADE-ACTUALTEXT-TWOPARENT",
-    ),
-    (
-        "evade-type3-font-named-only-inside-a-form.pdf",
-        "BURROW-EVADE-TYPE3-IN-FORM",
-    ),
+    "evade-actualtext-under-a-form-with-two-parents.pdf",
+    "evade-type3-font-named-only-inside-a-form.pdf",
     // THE CANARY IS A CMap ENTRY, not a drawn string: `/ToUnicode` is where the removed
     // character survives when the font is never narrowed. Its twin is here for the same reason
     // it exists at all -- if narrowing broke outright, only the twin would tell them apart.
-    ("evade-tounicode-in-a-form-local-font.pdf", "<0058>"),
-    ("nearmiss-tounicode-on-a-page-font.pdf", "<0058>"),
+    "evade-tounicode-in-a-form-local-font.pdf",
+    "nearmiss-tounicode-on-a-page-font.pdf",
     // THE PAGE-WIDENING CASE. Its keep line is below the band these tests redact, so the page
     // contributes no removed glyph and is in the stream list only because it carries the span.
-    (
-        "evade-actualtext-on-a-page-that-draws-nothing-itself.pdf",
-        "BURROW-EVADE-ACTUALTEXT-BARE-PAGE",
-    ),
+    "evade-actualtext-on-a-page-that-draws-nothing-itself.pdf",
     // THE DETECTOR/REWRITER GAP. `/ActualText` named as an array item is not a key, so the
     // rewriter removes nothing; before the rule that refuses this, the string reached the output.
-    (
-        "evade-actualtext-named-outside-key-position.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NOT-A-KEY",
-    ),
+    "evade-actualtext-named-outside-key-position.pdf",
     // ITS NEAR-MISS, here rather than only in the corpus because the claim is the same one: an
     // ordinary `/Lang (en-US)` beside the glyphs must be redacted, not refused, and either way
     // the canary must not come out.
-    (
-        "nearmiss-ordinary-string-in-a-property-list.pdf",
-        "BURROW-EVADE-ACTUALTEXT-ORDINARY-STRING",
-    ),
+    "nearmiss-ordinary-string-in-a-property-list.pdf",
     // THE HEADLINE FIXTURE FOR THIS FEATURE, which was not in this list. Spike 0006's channel 9
     // is `/ActualText` on a marked-content span — the plain shape the whole rewriter is about —
     // and the byte-level absence assertion ran on every evasion of it and not on it.
-    ("09-actualtext.pdf", "BURROW-CARRIER-09"),
+    "09-actualtext.pdf",
     // Its near-miss: the span is around a form the region never reaches, and the canary is drawn
     // by the page outside the span. It must be redacted rather than refused, and either way the
     // canary must not come out.
-    (
-        "nearmiss-actualtext-around-an-untouched-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NEARMISS",
-    ),
+    "nearmiss-actualtext-around-an-untouched-form.pdf",
     // #166: A PROPERTY LIST NAMED THROUGH `/Properties`. The four evasions put the text where a
     // page-level or own-resources-only resolver misses it; the three twins are the shapes a
     // resolver that refused too much would take offline.
-    (
-        "evade-actualtext-named-through-properties.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED",
-    ),
-    (
-        "evade-actualtext-named-in-a-form-scope.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED-FORM",
-    ),
-    (
-        "evade-actualtext-named-in-a-form-that-inherits.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED-INHERITED",
-    ),
-    (
-        "evade-actualtext-behind-a-reference-in-named-properties.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED-REF",
-    ),
-    (
-        "nearmiss-named-properties-without-text.pdf",
-        "BURROW-EVADE-NAMED-NEARMISS",
-    ),
-    (
-        "nearmiss-named-actualtext-outside-the-region.pdf",
-        "BURROW-EVADE-NAMED-OUTSIDE",
-    ),
-    (
-        "nearmiss-named-properties-decoy-on-the-page.pdf",
-        "BURROW-EVADE-NAMED-DECOY",
-    ),
+    "evade-actualtext-named-through-properties.pdf",
+    "evade-actualtext-named-in-a-form-scope.pdf",
+    "evade-actualtext-named-in-a-form-that-inherits.pdf",
+    "evade-actualtext-behind-a-reference-in-named-properties.pdf",
+    "nearmiss-named-properties-without-text.pdf",
+    "nearmiss-named-actualtext-outside-the-region.pdf",
+    "nearmiss-named-properties-decoy-on-the-page.pdf",
 ];
 
 /// The rules this suite will accept a refusal *by*.
@@ -2031,7 +1977,16 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
     let mut examined = 0usize;
-    for (name, canary) in CARRIER_EVASIONS {
+    let declared = declared();
+    for name in CARRIER_EVASIONS {
+        let canary = declared
+            .iter()
+            .find(|(file, _, _)| file == name)
+            .and_then(|(_, _, canary)| canary.clone())
+            .unwrap_or_else(|| {
+                panic!("{name}: a carrier fixture the manifest does not declare, or declares no canary for")
+            });
+        let canary = canary.as_str();
         let path = directory.join(name);
         let pdf = std::fs::read(&path).unwrap_or_else(|error| {
             panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
@@ -2052,6 +2007,11 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
                 // the other half -- a fixture refusing for an unrelated reason -- and could not
                 // close this one, because the rule it refuses by is the right rule fired on the
                 // wrong document.
+                // NOT THE AUTHORITY ANY MORE, and kept as a fast local guard. What a fixture must do
+                // is its manifest `expect_after`, which `tools/check-redaction-corpus.py --after`
+                // judges against a real run (#176); every `nearmiss-` fixture there says `gone`.
+                // This prefix check predates that and catches the same mistake sooner, in the
+                // suite that runs the carriers.
                 assert!(
                     !name.starts_with("nearmiss-"),
                     "{name}: a near-miss must be redacted, not refused -- the rule fired on the \

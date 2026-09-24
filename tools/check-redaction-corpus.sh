@@ -89,6 +89,11 @@ fi
 
 python3 "$root/tools/check-redaction-corpus.py"
 
+# AND THE "AFTER" HALF (#176): every placement's `expect_after`, judged by its own witness on a real
+# run of the operation. It was a promise in the manifest until #134 existed, and a near-miss that
+# refused where it should have redacted went unnoticed because nothing compared the two.
+python3 "$root/tools/check-redaction-corpus.py" --after
+
 # THE MANIFEST, AS JSON, BESIDE THE DOCUMENTS IT DESCRIBES. The Rust suites need to derive their
 # expectations from it -- which fixtures a check covers, which canary each carries -- and they
 # have `serde_json` and no TOML parser. Converting here, from the one file, keeps the manifest the
