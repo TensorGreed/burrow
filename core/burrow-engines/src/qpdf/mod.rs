@@ -40,6 +40,7 @@ mod limits;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod prune;
 mod redact_frame;
+mod redact_optional_content;
 mod redact_steps;
 mod redact_witness;
 mod reorder;

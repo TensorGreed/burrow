@@ -162,29 +162,41 @@ pub enum Refusal {
     VerticalWriting,
     /// A CMap whose writing mode the document does not determine.
     UndeterminedWritingMode,
-    /// A marked-content span carrying its own copy of the text reaches the region.
-    ///
-    /// `/ActualText` and `/Alt` state what a span of glyphs *says*, as a plain string beside
-    /// the glyphs, and a reader that honours them shows that string rather than what the font
-    /// decodes. Removing the glyphs does not touch it. ADR 0029 §1 assigns this channel to
-    /// **handle**, and handling it means rewriting a property list inside the content stream,
-    /// which burrow does not do yet -- so until it does, the page is refused rather than
-    /// emitted with the secret still in it.
-    /// A marked-content span reaching the region names its property list through
-    /// `/Properties`, which this module does not resolve.
+    /// A marked-content span reaching the region names a property list burrow could not read.
     ///
     /// **It says burrow could not tell**, which is not the same as saying the span carries
-    /// text. A span whose properties are written out and *do* carry text is handled — the
-    /// rewriter drops the entry — so the only marked-content refusal left is this one.
-    /// Folding them would put a sentence in front of the user asserting a copy of their text
-    /// exists when what happened is that nothing could look — and it would make the corpus
-    /// census read as though every one of these documents carried the channel.
+    /// text. Folding the two would put a sentence in front of the user asserting a copy of
+    /// their text exists when what happened is that nothing could look — and it would make the
+    /// corpus census read as though every one of these documents carried the channel.
     ///
-    /// Measured: `13-optional-content.pdf` refuses here, because `/OC /MC0 BDC` names an
-    /// optional-content group. ADR 0029 §1 refuses optional content on a kept page anyway, so
-    /// the outcome is right while the rule is broader than the reason; narrowing it wants a
-    /// `/Properties` resolver on [`Resources`].
+    /// # Narrower since #166, and what is left in it
+    ///
+    /// This used to fire on **every** named property list, because nothing resolved
+    /// `/Properties`. `13-optional-content.pdf` refused here for a reason that was not its
+    /// reason, and every ordinary tagged span written as `/P /MC0 BDC` refused with it. A name
+    /// is now resolved through the `/Properties` of the scope that drew the stream
+    /// ([`NamedProperties`]), and what remains is what genuinely cannot be read: a name the
+    /// scope does not define, an entry that is not a dictionary, and a dictionary holding an
+    /// indirect reference — whose target could hold the text and is not in the bytes resolved.
     MarkedContentPropertiesUnresolved,
+    /// A marked-content span reaching the region names, through `/Properties`, a property list
+    /// that carries its own copy of the text.
+    ///
+    /// **Refused, not handled, and not for want of a rewriter.** An inline list lives in the
+    /// content stream, and dropping its `/ActualText` touches exactly the span it describes. A
+    /// named list lives in a **resource dictionary**, which is shared by construction: other
+    /// spans may name the same entry, and a page's `/Resources` is very often the one every
+    /// page inherits. Dropping the key there removes alternative text from content nobody
+    /// asked to redact — the damage-elsewhere hazard ADR 0029 answers with a refusal for shared
+    /// forms and a disclosure for shared fonts. Rewriting only the `BDC` operand to an inline
+    /// dictionary would leave the string in the resource, and a raw byte scan would still find
+    /// it.
+    ///
+    /// Scoped to spans the removal is inside, as the form rule is scoped to glyphs being
+    /// removed: a named carrying span elsewhere on the page does not refuse it. ADR 0029 records
+    /// this under the same condition for revisiting as shared forms and fonts, since all three
+    /// want the same thing — a count of who else uses the object.
+    MarkedContentNamedPropertiesCarryText,
     /// A marked-content property list that must be rewritten spans two `/Contents` elements.
     ///
     /// Legal — §7.8.2 divides the array between lexical tokens, not between operations — and
@@ -261,6 +273,7 @@ impl Refusal {
         Self::VerticalWriting,
         Self::UndeterminedWritingMode,
         Self::MarkedContentPropertiesUnresolved,
+        Self::MarkedContentNamedPropertiesCarryText,
         Self::MarkedContentSplitAcrossElements,
         Self::MarkedContentCarriesOpaqueString,
         Self::MarkedContentPropertyListMalformed,
@@ -303,6 +316,9 @@ impl Refusal {
             Self::VerticalWriting => "vertical-writing",
             Self::UndeterminedWritingMode => "writing-mode-undetermined",
             Self::MarkedContentPropertiesUnresolved => "marked-content-properties-unresolved",
+            Self::MarkedContentNamedPropertiesCarryText => {
+                "marked-content-named-properties-carry-text"
+            }
             Self::MarkedContentSplitAcrossElements => "marked-content-split-across-elements",
             Self::MarkedContentCarriesOpaqueString => "marked-content-carries-opaque-string",
             Self::MarkedContentPropertyListMalformed => "marked-content-property-list-malformed",
@@ -320,6 +336,7 @@ impl Refusal {
                 | Self::TooManyFormDraws
                 | Self::PatternMayDrawText
                 | Self::MarkedContentPropertiesUnresolved
+                | Self::MarkedContentNamedPropertiesCarryText
                 | Self::MarkedContentSplitAcrossElements
                 | Self::MarkedContentCarriesOpaqueString
                 | Self::MarkedContentPropertyListMalformed
@@ -1272,14 +1289,17 @@ const TEXT_CARRYING_KEYS: [&[u8]; 3] = [b"ActualText", b"Alt", b"E"];
 ///
 /// # Errors
 ///
-/// Whatever reading the operations failed with, and [`Refusal::MarkedContentPropertiesUnresolved`]
-/// for a span whose properties are named through `/Properties` — those are not rewritten here
-/// and must not be silently left alone.
+/// Whatever reading the operations failed with; [`Refusal::MarkedContentNamedPropertiesCarryText`]
+/// for a covering span whose property list is named through `/Properties` and carries text —
+/// that list lives in a resource dictionary, not in this stream, and is not rewritten here; and
+/// [`Refusal::MarkedContentPropertiesUnresolved`] for a named list `properties` cannot resolve.
+/// Neither may be silently left alone.
 pub fn carried_text_edits(
     content: &[u8],
     remove: &[Glyph],
     stream: Option<u64>,
     draws: &FormsReached<'_>,
+    properties: &NamedProperties,
 ) -> Result<Vec<(Span, Vec<u8>)>> {
     let mine: BTreeSet<Span> = remove
         .iter()
@@ -1290,7 +1310,7 @@ pub fn carried_text_edits(
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
-    for covering in carrying_spans_over_removals(content, &mine, draws)? {
+    for covering in carrying_spans_over_removals(content, &mine, draws, properties)? {
         match covering.carried {
             Carried::Text => {
                 let (from, to) = covering.properties;
@@ -1303,13 +1323,23 @@ pub fn carried_text_edits(
                 })?;
                 edits.push((covering.properties, without_carried_keys(original)?));
             }
-            // NOT SILENTLY LEFT ALONE. A named property list may carry the text and this cannot
-            // read it, so the operation refuses exactly as it did before the rewriter existed.
+            // NOT SILENTLY LEFT ALONE. A property list this could not read may carry the text,
+            // so the operation refuses exactly as it did before the rewriter existed.
             Carried::Unknown => {
                 return Refusal::MarkedContentPropertiesUnresolved.refuse(
-                    "the selected text is inside a marked-content span whose properties are \
-                     named rather than written out, so burrow cannot tell whether they carry \
-                     their own copy of the text",
+                    "the selected text is inside a marked-content span whose properties burrow \
+                     could not read, so it cannot tell whether they carry their own copy of the \
+                     text",
+                );
+            }
+            // READ, AND IT CARRIES THE TEXT -- IN A RESOURCE, NOT IN THIS STREAM. See the
+            // variant: the dictionary is shared by construction, and dropping the key there
+            // edits spans and pages nobody asked about.
+            Carried::NamedText => {
+                return Refusal::MarkedContentNamedPropertiesCarryText.refuse(
+                    "the selected text is inside a marked-content span whose alternative text \
+                     is kept in the page's shared resources rather than beside the text, and \
+                     removing it there would remove it from other text too",
                 );
             }
             // A STRING UNDER A KEY THE REWRITER DOES NOT TOUCH, so there is nothing to narrow
@@ -1471,6 +1501,7 @@ fn carrying_spans_over_removals(
     content: &[u8],
     mine: &BTreeSet<Span>,
     draws: &FormsReached<'_>,
+    properties: &NamedProperties,
 ) -> Result<Vec<CoveringSpan>> {
     use super::ops::operations;
 
@@ -1515,7 +1546,7 @@ fn carrying_spans_over_removals(
                     .operands
                     .last()
                     .map_or(operation.span, super::ops::Operand::span),
-                carried: carried_by(&operation),
+                carried: carried_by(&operation, properties),
             }),
             b"BMC" => open.push(CoveringSpan {
                 properties: operation.span,
@@ -1598,6 +1629,125 @@ impl FormsReached<'_> {
     }
 }
 
+/// The property lists a stream's `BDC` operands may name, as the stream's own scope defines them.
+///
+/// # A name is scoped, and this is where the scope is decided
+///
+/// `/P /MC0 BDC` looks `MC0` up in the `/Properties` of **whatever drew the stream** — the page,
+/// or a Form XObject's own `/Resources`, or, for a form declaring none, whatever encloses it. The
+/// same resolution fonts needed, and five consumers got that wrong for fonts before
+/// [`ScopedFont`] made the scope part of the type. This module holds no document, so the caller
+/// resolves against the right scope and hands over the answer as data; the caller is where the
+/// scope is known.
+///
+/// **Several lists per name, not one.** A form declaring no `/Resources` inherits from whatever
+/// encloses it, and a form reached by two routes has two enclosures. Every candidate is kept and
+/// the most cautious reading wins — the union-over-paths rule the `Do` scope learnt from a leak.
+///
+/// # Empty is the cautious answer, by construction
+///
+/// A name this does not hold resolves to nothing, and nothing is
+/// [`Refusal::MarkedContentPropertiesUnresolved`]. So the `Default` value refuses every named
+/// span rather than passing it: a caller that forgot to resolve fails closed, which is the
+/// answer the `within` precedent wanted when it gave [`Resources`] no default method.
+#[derive(Debug, Clone, Default)]
+pub struct NamedProperties {
+    /// Name, without the `/`, to each property list it may resolve to, as PDF syntax.
+    lists: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+}
+
+impl NamedProperties {
+    /// Record that `name` (without the `/`) may resolve to `list`, a dictionary written as PDF.
+    pub fn insert(&mut self, name: Vec<u8>, list: Vec<u8>) {
+        let candidates = self.lists.entry(name).or_default();
+        if !candidates.contains(&list) {
+            candidates.push(list);
+        }
+    }
+
+    /// Every candidate from `other`, for a stream that resolves through more than one scope.
+    pub fn extend(&mut self, other: &Self) {
+        for (name, lists) in &other.lists {
+            for list in lists {
+                self.insert(name.clone(), list.clone());
+            }
+        }
+    }
+
+    /// How many names this resolves.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lists.len()
+    }
+
+    /// Whether this resolves no name at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lists.is_empty()
+    }
+
+    /// What a `BDC` naming `name` carries, by the most cautious of its candidates.
+    ///
+    /// `NamedText` over `Unknown` over `Nothing`: a list that was read and found to carry text
+    /// is the more specific true statement, and either refuses.
+    fn carried(&self, name: &[u8]) -> Carried {
+        let Some(candidates) = self.lists.get(name).filter(|lists| !lists.is_empty()) else {
+            return Carried::Unknown;
+        };
+        let mut outcome = Carried::Nothing;
+        for list in candidates {
+            match named_list_carries(list) {
+                Carried::NamedText => return Carried::NamedText,
+                Carried::Nothing => {}
+                _ => outcome = Carried::Unknown,
+            }
+        }
+        outcome
+    }
+}
+
+/// What one resolved property list carries.
+///
+/// The **same detectors** an inline list is read with, on the same parse — a second classifier
+/// for named lists would be a second answer to "does this carry text", and the rewriter's history
+/// is two answers disagreeing by exactly the leak.
+fn named_list_carries(list: &[u8]) -> Carried {
+    let Ok(read) = super::ops::operations(&[list, b" BDC"].concat()) else {
+        return Carried::Unknown;
+    };
+    let Some(dictionary @ Operand::Dict { .. }) = read
+        .first()
+        .filter(|_| read.len() == 1)
+        .and_then(|operation| operation.operands.last())
+    else {
+        return Carried::Unknown;
+    };
+    // A KEY NAMED ANYWHERE, not only a key in key position. Nothing here is rewritten, so the
+    // distinction `holds_text_key` draws for the rewriter does not apply: either way the text is
+    // in a resource this operation will not edit.
+    if holds_text_key(dictionary) || names_a_text_key(dictionary) {
+        return Carried::NamedText;
+    }
+    // AN INDIRECT REFERENCE IS A DOOR THIS DID NOT OPEN. `/K 5 0 R` points at an object whose
+    // bytes are not in the list, and that object could be a dictionary holding `/ActualText`.
+    // The lexer reads `5 0 R` as two numbers and the keyword `R`; the keyword is the witness.
+    if holds_reference(dictionary) {
+        return Carried::Unknown;
+    }
+    Carried::Nothing
+}
+
+/// Whether `operand` holds an indirect reference anywhere.
+fn holds_reference(operand: &Operand) -> bool {
+    match operand {
+        Operand::Keyword { value, .. } => value.as_slice() == b"R",
+        Operand::Dict { items, .. } | Operand::Array { items, .. } => {
+            items.iter().any(holds_reference)
+        }
+        _ => false,
+    }
+}
+
 /// What an open marked-content span was found to carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Carried {
@@ -1605,7 +1755,12 @@ enum Carried {
     Nothing,
     /// Its property list was read and holds one of them.
     Text,
-    /// Its property list is a name this module does not resolve.
+    /// Its property list is named, was resolved, and carries one of them — in a resource.
+    ///
+    /// See [`Refusal::MarkedContentNamedPropertiesCarryText`]. Separate from [`Self::Text`]
+    /// because the text is not in the stream, so there is nothing here to rewrite.
+    NamedText,
+    /// Its property list could not be read: an unresolved name, or one this could not follow.
     Unknown,
     /// Its property list names one of [`TEXT_CARRYING_KEYS`] somewhere it is not a key.
     ///
@@ -1615,7 +1770,7 @@ enum Carried {
 }
 
 /// Whether a `BDC` operation's property list carries the span's text.
-fn carried_by(operation: &Operation) -> Carried {
+fn carried_by(operation: &Operation, properties: &NamedProperties) -> Carried {
     match operation.operands.last() {
         // AN INLINE DICTIONARY, read at any depth: a `/ActualText` under a nested key is still
         // a copy of the text. The whole dictionary is handed over rather than its items one by
@@ -1631,9 +1786,10 @@ fn carried_by(operation: &Operation) -> Carried {
                 Carried::Nothing
             }
         }
-        // A NAME, resolved through `/Properties`, which this module resolves nothing through.
-        // Reported as unread rather than as read-and-found: see `MarkedContentPropertiesUnresolved`.
-        Some(Operand::Name { .. }) => Carried::Unknown,
+        // A NAME, resolved through the `/Properties` of the scope that drew this stream -- which
+        // the caller supplies, because this module holds no document. A name the scope does not
+        // define is reported as unread rather than as read-and-found.
+        Some(Operand::Name { value, .. }) => properties.carried(value),
         // Anything else is not a property list this can read, which is the same claim.
         _ => Carried::Unknown,
     }
@@ -1844,10 +2000,11 @@ pub fn remove_glyphs_and_carried_text(
     stream: Option<u64>,
     remove: &[Glyph],
     draws: &FormsReached<'_>,
+    properties: &NamedProperties,
 ) -> Result<(Vec<Vec<u8>>, usize)> {
     let content = contents.bytes();
     let mut edits = glyph_edits(content, stream, remove)?;
-    let carried = carried_text_edits(content, remove, stream, draws)?;
+    let carried = carried_text_edits(content, remove, stream, draws, properties)?;
     let dropped = carried.len();
     for (span, replacement) in carried {
         // A PROPERTY LIST SPLIT ACROSS TWO `/Contents` ELEMENTS IS REFUSED BY NAME.
@@ -2987,7 +3144,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 36,
+            total, 37,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -4277,6 +4434,7 @@ mod tests {
                 &glyphs,
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
+                &super::super::NamedProperties::default(),
             )
             .expect("the fixture is readable");
             for (_, replacement) in &edits {
@@ -4308,6 +4466,7 @@ mod tests {
                 &glyphs,
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
+                &super::super::NamedProperties::default(),
             ) {
                 Err(error) => assert!(
                     rule.caught(&error),
@@ -4402,6 +4561,7 @@ mod tests {
                 &glyphs,
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
+                &super::super::NamedProperties::default(),
             ) {
                 Err(error) => panic!("expected no refusal, got {error:?}"),
                 // AND NOTHING STRIPPED. "Allowed" used to mean "did not refuse"; with the
@@ -4490,6 +4650,7 @@ mod tests {
                 None,
                 &glyphs,
                 &super::super::FormsReached::Named(&nothing_drawn()),
+                &super::super::NamedProperties::default(),
             );
             // THE RULE PASSED AS AN ARGUMENT, so `every_refusal_is_both_raised_and_tested` can
             // see it. That gate scans the test half for `Refusal::X)` or `Refusal::X,`; a method
@@ -4580,6 +4741,170 @@ mod tests {
             );
         }
 
+        /// `names` resolving through one scope, each `(name, list)` a property list as PDF.
+        fn resolving(names: &[(&str, &str)]) -> super::super::NamedProperties {
+            let mut properties = super::super::NamedProperties::default();
+            for (name, list) in names {
+                properties.insert(name.as_bytes().to_vec(), list.as_bytes().to_vec());
+            }
+            properties
+        }
+
+        /// What `content`'s own removal gets, with `properties` resolving its names.
+        fn edits_with(
+            content: &[u8],
+            properties: &super::super::NamedProperties,
+        ) -> burrow_types::Result<Vec<(super::super::Span, Vec<u8>)>> {
+            super::super::carried_text_edits(
+                content,
+                &all_glyphs(content),
+                None,
+                &super::super::FormsReached::Named(&nothing_drawn()),
+                properties,
+            )
+        }
+
+        #[track_caller]
+        fn assert_named_refusal(
+            outcome: burrow_types::Result<Vec<(super::super::Span, Vec<u8>)>>,
+            rule: super::Refusal,
+        ) {
+            match outcome {
+                Err(error) => assert!(
+                    rule.caught(&error),
+                    "refused, but by a different rule: wanted `{}`, got {error:?}",
+                    rule.rule()
+                ),
+                Ok(edits) => panic!(
+                    "expected a refusal by `{}`, got {} edit(s)",
+                    rule.rule(),
+                    edits.len()
+                ),
+            }
+        }
+
+        const NAMED: &[u8] = b"/Span /MC0 BDC BT /F1 12 Tf (AB) Tj ET EMC";
+
+        #[test]
+        fn a_named_list_that_resolves_to_an_ordinary_one_is_untouched() {
+            // THE PROBE THAT MEASURES WHETHER #166 BOUGHT ANYTHING. Before the resolver this
+            // refused as unresolved, and it is what tagged output looks like.
+            let outcome = edits_with(NAMED, &resolving(&[("MC0", "<< /MCID 0 >>")]));
+            assert!(
+                outcome.as_ref().is_ok_and(Vec::is_empty),
+                "an ordinary named list must pass with nothing stripped: {outcome:?}"
+            );
+        }
+
+        #[test]
+        fn a_named_list_that_carries_text_is_refused_by_name() {
+            assert_named_refusal(
+                edits_with(
+                    NAMED,
+                    &resolving(&[("MC0", "<< /MCID 0 /ActualText (secret) >>")]),
+                ),
+                super::Refusal::MarkedContentNamedPropertiesCarryText,
+            );
+        }
+
+        #[test]
+        fn a_named_list_naming_a_carried_key_outside_key_position_is_refused_too() {
+            // Nothing is rewritten for a named list, so the key/non-key distinction the
+            // rewriter draws does not apply: the name is there, beside a string, in a resource
+            // this operation will not edit.
+            assert_named_refusal(
+                edits_with(NAMED, &resolving(&[("MC0", "<< /K [ /Alt (secret) ] >>")])),
+                super::Refusal::MarkedContentNamedPropertiesCarryText,
+            );
+        }
+
+        #[test]
+        fn a_named_list_holding_a_reference_is_unresolved_rather_than_passed() {
+            // `5 0 R` lexes as two numbers and the keyword `R`. The target is not in the bytes
+            // and could be `<< /ActualText … >>`.
+            assert_named_refusal(
+                edits_with(NAMED, &resolving(&[("MC0", "<< /MCID 0 /Pad 5 0 R >>")])),
+                super::Refusal::MarkedContentPropertiesUnresolved,
+            );
+        }
+
+        #[test]
+        fn a_name_the_scope_does_not_define_is_unresolved() {
+            // Resolving `MC1` does not resolve `MC0`. A resolver that answered "nothing" for a
+            // name it did not hold would pass exactly the span it never looked at.
+            assert_named_refusal(
+                edits_with(NAMED, &resolving(&[("MC1", "<< /MCID 0 >>")])),
+                super::Refusal::MarkedContentPropertiesUnresolved,
+            );
+        }
+
+        #[test]
+        fn a_named_list_that_is_not_a_dictionary_is_unresolved() {
+            assert_named_refusal(
+                edits_with(NAMED, &resolving(&[("MC0", "(not a dictionary)")])),
+                super::Refusal::MarkedContentPropertiesUnresolved,
+            );
+        }
+
+        #[test]
+        fn the_most_cautious_candidate_wins_when_a_name_resolves_two_ways() {
+            // A form declaring no `/Resources` inherits from whatever encloses it, and a form
+            // reached by two routes has two enclosures. First-wins or last-wins would let the
+            // order of the walk decide whether the text is seen -- the memo defect again.
+            let mut properties = resolving(&[("MC0", "<< /MCID 0 >>")]);
+            properties.extend(&resolving(&[("MC0", "<< /ActualText (secret) >>")]));
+            assert_named_refusal(
+                edits_with(NAMED, &properties),
+                super::Refusal::MarkedContentNamedPropertiesCarryText,
+            );
+            let mut reversed = resolving(&[("MC0", "<< /ActualText (secret) >>")]);
+            reversed.extend(&resolving(&[("MC0", "<< /MCID 0 >>")]));
+            assert_named_refusal(
+                edits_with(NAMED, &reversed),
+                super::Refusal::MarkedContentNamedPropertiesCarryText,
+            );
+        }
+
+        #[test]
+        fn a_named_carrying_span_the_removal_is_not_inside_is_not_refused() {
+            // SCOPED TO THE SPANS THE REMOVAL IS INSIDE, as the form rule is scoped to glyphs
+            // being removed. The carrying span covers `AB`; the removal is `CD`.
+            let content = b"/Span /MC0 BDC BT /F1 12 Tf (AB) Tj ET EMC BT /F1 12 Tf (CD) Tj ET";
+            let outside: Vec<_> = all_glyphs(content)
+                .into_iter()
+                .filter(|glyph| glyph.source.code == u32::from(b'C'))
+                .collect();
+            assert_eq!(
+                outside.len(),
+                1,
+                "the fixture must draw one C outside the span"
+            );
+            let outcome = super::super::carried_text_edits(
+                content,
+                &outside,
+                None,
+                &super::super::FormsReached::Named(&nothing_drawn()),
+                &resolving(&[("MC0", "<< /ActualText (secret) >>")]),
+            );
+            assert!(
+                outcome.as_ref().is_ok_and(Vec::is_empty),
+                "a carrying span elsewhere must not refuse the removal: {outcome:?}"
+            );
+        }
+
+        #[test]
+        fn an_inner_span_left_open_does_not_mask_a_named_carrying_outer_one() {
+            // The `last()` mutation, for the named arm: the inner inline `/P` span is open over
+            // the glyph and carries nothing.
+            assert_named_refusal(
+                edits_with(
+                    b"/Span /MC0 BDC /P << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC EMC",
+                    &resolving(&[("MC0", "<< /ActualText (secret) >>")]),
+                ),
+                super::Refusal::MarkedContentNamedPropertiesCarryText,
+            );
+        }
+
         #[test]
         fn an_ordinary_tagged_span_is_untouched() {
             // THE NEAR-MISS FOR THE WHOLE CHECK. `/P << /MCID 0 >> BDC` is what every tagged
@@ -4623,7 +4948,8 @@ mod tests {
                     content,
                     &outside,
                     None,
-                    &super::super::FormsReached::Named(&nothing_drawn())
+                    &super::super::FormsReached::Named(&nothing_drawn()),
+                    &super::super::NamedProperties::default(),
                 )
                 .expect("readable")
                 .is_empty()
@@ -4683,6 +5009,7 @@ mod tests {
                 &[],
                 None,
                 &super::super::FormsReached::Named(&names),
+                &super::super::NamedProperties::default(),
             )
             .expect("readable");
             assert_eq!(
@@ -4710,6 +5037,7 @@ mod tests {
                     &[],
                     None,
                     &super::super::FormsReached::Named(&names),
+                    &super::super::NamedProperties::default(),
                 )
                 .expect("readable")
                 .is_empty()

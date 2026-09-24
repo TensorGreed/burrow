@@ -1122,6 +1122,363 @@ def nearmiss_ordinary_string_in_a_property_list() -> bytes:
     return simple_page(pdf, content, b"/Font << /Helv " + str(helv).encode() + b" 0 R >>")
 
 
+# ===========================================================================================
+# #166 — a marked-content property list NAMED through `/Properties`. A name is scoped: `/MC0`
+# resolves in the `/Properties` of whatever drew the stream -- the page, or a form's own
+# `/Resources`, or, for a form declaring none, its enclosure. Five consumers got that wrong for
+# fonts; these put the list somewhere a page-level answer gets wrong in each direction.
+# ===========================================================================================
+
+
+def _secret_run(tag: str) -> bytes:
+    """The canary drawn at the region, as a text object."""
+    return (
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret(tag)) + b" Tj ET\n"
+    )
+
+
+def evade_actualtext_named_through_properties() -> bytes:
+    """`/Span /MC0 BDC` over the canary, `/MC0` carrying `/ActualText` in the page's `/Properties`.
+
+    The plain named shape. The text is in a resource dictionary rather than the stream, so the
+    rewriter has nothing to drop, and dropping it from the resource would edit every span that
+    names it. Refused by `marked-content-named-properties-carry-text`.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = b"/Span /MC0 BDC\n" + _secret_run("ACTUALTEXT-NAMED") + b"EMC\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /ActualText " + literal(secret("ACTUALTEXT-NAMED")) + b" >> >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_actualtext_named_in_a_form_scope() -> bytes:
+    """The span is in a form, and the form's OWN `/Properties` carries the text. The page's does not.
+
+    A resolver answering from the page would read the page's `/MC0` -- an ordinary `/MCID` list --
+    and pass the span, emitting the form's `/ActualText` untouched. The font defect, in property
+    lists: a decoy in the wrong scope shadowing the one that is read.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /ActualText " + literal(secret("ACTUALTEXT-NAMED-FORM"))
+        + b" >> >> >>",
+        b"/Span /MC0 BDC\n" + _secret_run("ACTUALTEXT-NAMED-FORM") + b"EMC\n",
+    )
+    content = b"/X1 Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 >> >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_actualtext_named_in_a_form_that_inherits() -> bytes:
+    """The span is in a form declaring NO `/Resources`, so `/MC0` resolves in the page's.
+
+    The other direction of the scope rule: a resolver that looked only in a form's own resources
+    would find nothing here and, if it read "nothing" as "no text", pass the span. It must
+    inherit exactly as `Resources::within` does for fonts.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]",
+        b"/Span /MC0 BDC\n" + _secret_run("ACTUALTEXT-NAMED-INHERITED") + b"EMC\n",
+    )
+    content = b"/X1 Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /ActualText "
+        + literal(secret("ACTUALTEXT-NAMED-INHERITED")) + b" >> >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_actualtext_behind_a_reference_in_named_properties() -> bytes:
+    """`/MC0` resolves, and holds an INDIRECT REFERENCE whose target carries `/ActualText`.
+
+    Resolving the name reads the list itself; a reference inside it is a door that was not
+    opened, and the object behind it could hold the text. Refused as unresolved, not passed.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    hidden = pdf.add(b"<< /ActualText " + literal(secret("ACTUALTEXT-NAMED-REF")) + b" >>")
+    content = (
+        b"/Span /MC0 BDC\n" + _secret_run("ACTUALTEXT-NAMED-REF") + b"EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 /Pad " + str(hidden).encode() + b" 0 R >> >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_named_properties_without_text() -> bytes:
+    """`/P /MC0 BDC` over the canary, `/MC0` an ordinary `/MCID` list. MUST be redacted.
+
+    The twin that measures whether the resolver bought anything: before it, every named list
+    refused as unresolved, including this one, which is what tagged output looks like.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    content = (
+        b"/P /MC0 BDC\n" + _secret_run("NAMED-NEARMISS") + b"EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 >> >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_named_actualtext_outside_the_region() -> bytes:
+    """A named span carrying `/ActualText` around a footnote, and the canary outside any span.
+
+    MUST be redacted. The refusal is scoped to spans the removal is inside, as the form rule is
+    scoped to glyphs being removed; a carrying span elsewhere on the page is not a bar. Its
+    `/ActualText` is not the canary -- it survives, untouched, because nothing asked about it.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    # ITS OWN LINE, AT THE FOOT OF THE PAGE. Around the keep line it sat inside the band
+    # `redaction_defences.rs` redacts, which covers the keep line -- so the span was genuinely
+    # covered and the refusal was right. A near-miss has to be outside EVERY region a harness
+    # asks about, and y=10 is below both that band and the census's single-glyph region.
+    content = (
+        _secret_run("NAMED-OUTSIDE") + keep_line_ops()
+        + b"/Span /MC0 BDC BT /Helv 8 Tf 40 10 Td " + literal("SPANNED-FOOTNOTE")
+        + b" Tj ET EMC\n"
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /ActualText " + literal("ALT-FOR-THE-KEPT-LINE") + b" >> >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_named_properties_decoy_on_the_page() -> bytes:
+    """The span is in a form whose OWN `/MC0` is ordinary; the page's `/MC0` carries text.
+
+    MUST be redacted. The twin of `evade-actualtext-named-in-a-form-scope`: a resolver answering
+    from the page would read the page's carrying list and refuse a document it can handle. Scope
+    errors fail in both directions, and only this one shows the refusing direction.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 >> >> >>",
+        b"/P /MC0 BDC\n" + _secret_run("NAMED-DECOY") + b"EMC\n",
+    )
+    content = b"/X1 Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /ActualText " + literal("ALT-DECOY-ON-THE-PAGE") + b" >> >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+# ===========================================================================================
+# #166 — optional content, which redaction never refused. ADR 0029 §3 refuses optional content
+# referenced by a kept page, and until #166 `13-optional-content.pdf` refused only because its
+# span was named and nothing resolved names. These are the shapes a region-scoped or
+# `/Properties`-only signal walks past.
+# ===========================================================================================
+
+
+def _ocg(pdf: Pdf, label: str) -> int:
+    return pdf.add(b"<< /Type /OCG /Name " + literal(label) + b" >>")
+
+
+def _layer_off(ocg: int) -> bytes:
+    return (
+        b" /OCProperties << /OCGs [" + str(ocg).encode() + b" 0 R]"
+        b" /D << /OFF [" + str(ocg).encode() + b" 0 R] >> >>"
+    )
+
+
+def evade_oc_outside_the_region() -> bytes:
+    """A hidden layer on the page, nowhere near the region. The canary is drawn in plain view.
+
+    A refusal keyed on the spans the removal is inside -- the way the marked-content rules are
+    scoped -- walks straight past this. §3's rule is about the page, not the region.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer elsewhere on the page")
+    content = (
+        _secret_run("OC-ELSEWHERE")
+        + b"/OC /L0 BDC BT /Helv 10 Tf 40 175 Td " + literal("HIDDEN-LAYER-TEXT")
+        + b" Tj ET EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /L0 " + str(ocg).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res, catalog_extra=_layer_off(ocg))
+
+
+def evade_oc_on_an_annotation() -> bytes:
+    """The layer is an annotation's `/OC`. Nothing in `/Resources` names it."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered note")
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Text /Rect [300 170 320 190] /F 4"
+        b" /Contents " + literal("a note on a hidden layer")
+        + b" /OC " + str(ocg).encode() + b" 0 R >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("OC-ANNOT") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+        catalog_extra=_layer_off(ocg),
+    )
+
+
+def evade_oc_on_an_image() -> bytes:
+    """The layer is an IMAGE XObject's `/OC`. No `BDC` names it and it is not a form."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered image")
+    image = pdf.stream(
+        b"/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray"
+        b" /BitsPerComponent 8 /OC " + str(ocg).encode() + b" 0 R",
+        b"\x00",
+    )
+    content = _secret_run("OC-IMAGE") + b"q 20 0 0 20 300 170 cm /Im0 Do Q\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Im0 " + str(image).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res, catalog_extra=_layer_off(ocg))
+
+
+def evade_oc_inside_an_unused_pattern() -> bytes:
+    """The layer is in a tiling pattern's own `/Resources`, and the page never fills with it.
+
+    Unused on purpose: a pattern the page fills with is refused by `pattern-may-draw-text`, which
+    would answer first and leave this reach unmeasured. The page still references the pattern,
+    and the pattern references the layer.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer inside a pattern")
+    pattern = pdf.stream(
+        b"/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10]"
+        b" /XStep 10 /YStep 10 /Resources << /Properties << /L0 " + str(ocg).encode()
+        + b" 0 R >> >>",
+        b"/OC /L0 BDC 0 0 5 5 re f EMC\n",
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Pattern << /P0 " + str(pattern).encode() + b" 0 R >>"
+    )
+    return simple_page(
+        pdf, _secret_run("OC-PATTERN") + keep_line_ops(), res, catalog_extra=_layer_off(ocg)
+    )
+
+
+def evade_oc_inside_an_unused_type3_font() -> bytes:
+    """The layer is in a Type 3 font's `/Resources`, and the page never draws with the font.
+
+    Unused for the same reason as the pattern: a drawn Type 3 font's procedures are checked by
+    the Type 3 rule, which would answer first.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer inside a Type 3 font")
+    proc = pdf.stream(b"", b"1000 0 d0 /OC /L0 BDC 0 0 500 500 re f EMC\n")
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000]"
+        b" /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a " + str(proc).encode() + b" 0 R >>"
+        b" /Encoding << /Type /Encoding /Differences [97 /a] >>"
+        b" /FirstChar 97 /LastChar 97 /Widths [1000]"
+        b" /Resources << /Properties << /L0 " + str(ocg).encode() + b" 0 R >> >> >>"
+    )
+    res = b"/Font << /Helv " + str(helv).encode() + b" 0 R /T3 " + str(font).encode() + b" 0 R >>"
+    return simple_page(
+        pdf, _secret_run("OC-TYPE3") + keep_line_ops(), res, catalog_extra=_layer_off(ocg)
+    )
+
+
+def evade_oc_on_an_appearance_stream() -> bytes:
+    """The layer is the `/OC` of an annotation's APPEARANCE stream; the annotation has none."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered appearance")
+    appearance = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 20 20] /OC " + str(ocg).encode() + b" 0 R",
+        b"0 0 20 20 re f\n",
+    )
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Square /Rect [300 170 320 190] /F 4"
+        b" /AP << /N " + str(appearance).encode() + b" 0 R >> >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("OC-APPEARANCE") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+        catalog_extra=_layer_off(ocg),
+    )
+
+
+def nearmiss_oc_on_another_page() -> bytes:
+    """Page 2 has a hidden layer; page 1, the one redacted, references none. MUST be redacted.
+
+    The twin for all three above: the rule is about the page being redacted, and a document with
+    a layer somewhere else is not a page that has one.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer on page two")
+    pages = pdf.reserve()
+    page1 = pdf.reserve()
+    page2 = pdf.reserve()
+    body1 = pdf.stream(b"", _secret_run("OC-OTHER-PAGE") + keep_line_ops())
+    body2 = pdf.stream(
+        b"",
+        b"/OC /L0 BDC BT /Helv 10 Tf 40 175 Td " + literal("PAGE-TWO-LAYER") + b" Tj ET EMC\n"
+        + keep_line_ops(),
+    )
+    font = b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+    box = b" /MediaBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+    pdf.put(
+        page1,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R" + box
+        + b" /Resources << " + font + b" >> /Contents " + str(body1).encode() + b" 0 R >>",
+    )
+    pdf.put(
+        page2,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R" + box
+        + b" /Resources << " + font + b" /Properties << /L0 " + str(ocg).encode() + b" 0 R >> >>"
+        b" /Contents " + str(body2).encode() + b" 0 R >>",
+    )
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count 2 /Kids ["
+        + str(page1).encode() + b" 0 R " + str(page2).encode() + b" 0 R] >>",
+    )
+    root = pdf.add(
+        b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R" + _layer_off(ocg) + b" >>"
+    )
+    return pdf.build(root)
+
+
 CASES: list[tuple[str, str]] = [
     # (filename stem, refusal it probes)
     #
@@ -1163,6 +1520,20 @@ CASES: list[tuple[str, str]] = [
     ("nearmiss-actualtext-around-an-untouched-form", "/ActualText"),
     ("evade-actualtext-named-outside-key-position", "/ActualText"),
     ("nearmiss-ordinary-string-in-a-property-list", "/ActualText"),
+    ("evade-actualtext-named-through-properties", "named /Properties"),
+    ("evade-actualtext-named-in-a-form-scope", "named /Properties"),
+    ("evade-actualtext-named-in-a-form-that-inherits", "named /Properties"),
+    ("evade-actualtext-behind-a-reference-in-named-properties", "named /Properties"),
+    ("nearmiss-named-properties-without-text", "named /Properties"),
+    ("nearmiss-named-actualtext-outside-the-region", "named /Properties"),
+    ("nearmiss-named-properties-decoy-on-the-page", "named /Properties"),
+    ("evade-oc-outside-the-region", "optional content"),
+    ("evade-oc-on-an-annotation", "optional content"),
+    ("evade-oc-on-an-image", "optional content"),
+    ("evade-oc-inside-an-unused-pattern", "optional content"),
+    ("evade-oc-inside-an-unused-type3-font", "optional content"),
+    ("evade-oc-on-an-appearance-stream", "optional content"),
+    ("nearmiss-oc-on-another-page", "optional content"),
 ]
 
 BUILDERS = {
@@ -1197,6 +1568,20 @@ BUILDERS = {
     "nearmiss-actualtext-around-an-untouched-form": nearmiss_actualtext_around_an_untouched_form,
     "evade-actualtext-named-outside-key-position": evade_actualtext_named_outside_key_position,
     "nearmiss-ordinary-string-in-a-property-list": nearmiss_ordinary_string_in_a_property_list,
+    "evade-actualtext-named-through-properties": evade_actualtext_named_through_properties,
+    "evade-actualtext-named-in-a-form-scope": evade_actualtext_named_in_a_form_scope,
+    "evade-actualtext-named-in-a-form-that-inherits": evade_actualtext_named_in_a_form_that_inherits,
+    "evade-actualtext-behind-a-reference-in-named-properties": evade_actualtext_behind_a_reference_in_named_properties,
+    "nearmiss-named-properties-without-text": nearmiss_named_properties_without_text,
+    "nearmiss-named-actualtext-outside-the-region": nearmiss_named_actualtext_outside_the_region,
+    "nearmiss-named-properties-decoy-on-the-page": nearmiss_named_properties_decoy_on_the_page,
+    "evade-oc-outside-the-region": evade_oc_outside_the_region,
+    "evade-oc-on-an-annotation": evade_oc_on_an_annotation,
+    "evade-oc-on-an-image": evade_oc_on_an_image,
+    "evade-oc-inside-an-unused-pattern": evade_oc_inside_an_unused_pattern,
+    "evade-oc-inside-an-unused-type3-font": evade_oc_inside_an_unused_type3_font,
+    "evade-oc-on-an-appearance-stream": evade_oc_on_an_appearance_stream,
+    "nearmiss-oc-on-another-page": nearmiss_oc_on_another_page,
 }
 
 

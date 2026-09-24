@@ -1880,7 +1880,7 @@ fn the_number_of_stripped_property_lists_is_reported_not_just_its_sign() {
 /// duplication of a file CI already validates, and deriving it is filed rather than done here,
 /// because the *membership* predicate — which fixtures are carrier shapes — stays hand-written
 /// either way and is the half that rots.
-const CARRIER_EVASIONS: [(&str, &str); 15] = [
+const CARRIER_EVASIONS: [(&str, &str); 22] = [
     (
         "evade-actualtext-around-a-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-FORM",
@@ -1956,6 +1956,37 @@ const CARRIER_EVASIONS: [(&str, &str); 15] = [
         "nearmiss-actualtext-around-an-untouched-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-NEARMISS",
     ),
+    // #166: A PROPERTY LIST NAMED THROUGH `/Properties`. The four evasions put the text where a
+    // page-level or own-resources-only resolver misses it; the three twins are the shapes a
+    // resolver that refused too much would take offline.
+    (
+        "evade-actualtext-named-through-properties.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED",
+    ),
+    (
+        "evade-actualtext-named-in-a-form-scope.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED-FORM",
+    ),
+    (
+        "evade-actualtext-named-in-a-form-that-inherits.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED-INHERITED",
+    ),
+    (
+        "evade-actualtext-behind-a-reference-in-named-properties.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED-REF",
+    ),
+    (
+        "nearmiss-named-properties-without-text.pdf",
+        "BURROW-EVADE-NAMED-NEARMISS",
+    ),
+    (
+        "nearmiss-named-actualtext-outside-the-region.pdf",
+        "BURROW-EVADE-NAMED-OUTSIDE",
+    ),
+    (
+        "nearmiss-named-properties-decoy-on-the-page.pdf",
+        "BURROW-EVADE-NAMED-DECOY",
+    ),
 ];
 
 /// The rules this suite will accept a refusal *by*.
@@ -1968,8 +1999,9 @@ const CARRIER_EVASIONS: [(&str, &str); 15] = [
 ///
 /// These are the rules that mean burrow looked at the carrier and declined. Adding one is a
 /// deliberate act; a refusal outside the list fails and names itself in the message.
-const CARRIER_REFUSALS: [&str; 6] = [
+const CARRIER_REFUSALS: [&str; 7] = [
     "marked-content-properties-unresolved",
+    "marked-content-named-properties-carry-text",
     "marked-content-split-across-elements",
     "marked-content-carries-opaque-string",
     "form-vanished",
@@ -2045,7 +2077,162 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
     );
 }
 
-/// A page declaring a form the region reaches, plus an **undrawn** chain of `levels` forms each
+/// #166's fixtures, each with the **one** rule its design says it must refuse by, or `None` for a
+/// twin that must redact.
+///
+/// `CARRIER_REFUSALS` accepts any of seven rules, which is right for its question -- did burrow
+/// look at the carrier and decline -- and too loose for this one. A named list carrying text
+/// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
+/// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 16] = [
+    (
+        "evade-actualtext-named-through-properties.pdf",
+        Some("marked-content-named-properties-carry-text"),
+    ),
+    (
+        "evade-actualtext-named-in-a-form-scope.pdf",
+        Some("marked-content-named-properties-carry-text"),
+    ),
+    (
+        "evade-actualtext-named-in-a-form-that-inherits.pdf",
+        Some("marked-content-named-properties-carry-text"),
+    ),
+    (
+        "evade-actualtext-behind-a-reference-in-named-properties.pdf",
+        Some("marked-content-properties-unresolved"),
+    ),
+    ("nearmiss-named-properties-without-text.pdf", None),
+    ("nearmiss-named-actualtext-outside-the-region.pdf", None),
+    ("nearmiss-named-properties-decoy-on-the-page.pdf", None),
+    // OPTIONAL CONTENT, WHICH REDACTION NEVER REFUSED. The first two refused before #166 as
+    // `marked-content-properties-unresolved` -- by the accident of being named, not by the rule
+    // ADR 0029 §3 wrote for them.
+    ("13-optional-content.pdf", Some("optional-content")),
+    ("evade-oc-two-levels-down.pdf", Some("optional-content")),
+    ("evade-oc-outside-the-region.pdf", Some("optional-content")),
+    ("evade-oc-on-an-annotation.pdf", Some("optional-content")),
+    ("evade-oc-on-an-image.pdf", Some("optional-content")),
+    // THE REACHES A RESOURCES-ONLY WALK MISSES. Each is unused on the page, so the pattern and
+    // Type 3 rules do not answer first and leave the reach unmeasured.
+    (
+        "evade-oc-inside-an-unused-pattern.pdf",
+        Some("optional-content"),
+    ),
+    (
+        "evade-oc-inside-an-unused-type3-font.pdf",
+        Some("optional-content"),
+    ),
+    (
+        "evade-oc-on-an-appearance-stream.pdf",
+        Some("optional-content"),
+    ),
+    ("nearmiss-oc-on-another-page.pdf", None),
+];
+
+#[test]
+fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
+    let mut examined = 0usize;
+    for (name, wanted) in RESOLVED_OUTCOMES {
+        let pdf = std::fs::read(directory.join(name)).unwrap_or_else(|error| {
+            panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
+        });
+        examined += 1;
+        match (redact(&pdf), wanted) {
+            (Err(error), Some(rule)) => {
+                // THE RULE, BRACKETED, not a substring of the message: `optional-content`
+                // appears in prose elsewhere and a bare `contains` would be satisfied by it.
+                let text = format!("{error:?}");
+                assert!(
+                    text.contains(&format!("[{rule}]")),
+                    "{name}: refused, but not by `{rule}`: {text}"
+                );
+            }
+            (Err(error), None) => panic!(
+                "{name}: a near-miss must be redacted, not refused -- the rule fired on the \
+                 ordinary shape it exists to stay off: {error:?}"
+            ),
+            (Ok((out, report)), Some(rule)) => panic!(
+                "{name}: redacted {} bytes where `{rule}` should have refused, report {report:?}",
+                out.len()
+            ),
+            (Ok(_), None) => {}
+        }
+    }
+    assert_eq!(
+        examined,
+        RESOLVED_OUTCOMES.len(),
+        "every #166 fixture must be examined"
+    );
+}
+
+/// A page whose `/Properties` holds `on_page` ordinary lists, drawing the secret inside a form
+/// whose own `/Properties` holds `in_form` more, one of them covering the secret.
+///
+/// **Two scopes, because one cannot reach the ceiling.** `pdfsyntax::dict::MAX_KEYS` refuses a
+/// single dictionary past 4,096 keys before this ceiling sees it, so what `MAX_PROPERTY_LISTS`
+/// actually bounds is the total across scopes -- a form per scope, each at the per-dictionary
+/// cap. A one-scope fixture measured the other ceiling and reported this one as tested.
+fn page_with_property_lists(on_page: usize, in_form: usize) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let lists = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("/M{at} << /MCID {at} >> "))
+            .collect()
+    };
+    let form = pdf.stream(
+        &format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /Properties << {}>> >>",
+            lists(in_form)
+        ),
+        "/P /M0 BDC BT /F1 24 Tf 72 700 Td (SECRET) Tj ET EMC\n",
+    );
+    let content = pdf.stream("", "/X1 Do\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /XObject << /X1 {form} 0 R >> \
+             /Properties << {}>> >> /Contents {content} 0 R >>",
+            lists(on_page)
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+#[test]
+fn property_lists_past_the_ceiling_are_refused_by_name_and_at_it_are_resolved() {
+    // KILLS: deleting `MAX_PROPERTY_LISTS`' check. Each entry is an `unparse` through the
+    // engine, and the scopes a redaction reads are as many as the forms on a path to a glyph.
+    //
+    // THE BOUNDARY, BOTH SIDES. At the ceiling the named span resolves to an ordinary list and
+    // the page redacts -- which is also the proof the ceiling is not refusing ordinary pages.
+    let (out, _) = redact(&page_with_property_lists(4095, 1))
+        .expect("4096 property lists across two scopes is the ceiling, not past it");
+    assert_absent(&out, b"SECRET", "a page at the property-list ceiling");
+    let refused = refusal(&page_with_property_lists(4096, 1), "one past the ceiling");
+    assert!(
+        refused.contains("[properties-too-many]"),
+        "one past the ceiling must refuse by name: {refused}"
+    );
+}
+
+/// A page declaring a form the region reaches, plus an **undrawn** chain of `levels` forms each/// A page declaring a form the region reaches, plus an **undrawn** chain of `levels` forms each
 /// naming the next `branch` times.
 ///
 /// Undrawn is the whole point: the geometry walk's own `MAX_FORM_DRAWS` counts forms it

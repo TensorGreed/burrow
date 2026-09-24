@@ -166,9 +166,14 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     // outcome against it, so a fixture can disagree with its own declared decision in silence.
     // That is the `expect_after` half of ADR 0029 §8, which `check-redaction-corpus.py` says it
     // does not check.
+    //
+    // 39 -> 55 with #166. It had not moved since #164 although 51 redacted after #165, which is
+    // the rot the paragraph above warns about: "39 of 70" is a number a regression could fall
+    // twelve documents towards without a word. Raised to what the census prints, which is the
+    // only number this assertion can defend.
     assert!(
-        redactions.len() >= 39,
-        "{} documents redacted, and 39 did when this floor was last measured: a refusal widened \
+        redactions.len() >= 55,
+        "{} documents redacted, and 55 did when this floor was last measured: a refusal widened \
          far enough to cover them would take every per-document assertion here to zero while \
          this test still printed a pass",
         redactions.len()

@@ -2576,3 +2576,148 @@ detector/rewriter gap fixture below, which refuses by design. What still refuses
 documents whose marked-content properties are named through `/Properties` — which is #166, and the
 only marked-content refusal left that is about a document rather than a shape — and the
 detector/rewriter gap fixture above.
+
+## Amendment, 2026-09-24 — #166: a named property list is resolved, and optional content is refused for its own reason
+
+### What the rule was hiding
+
+`marked-content-properties-unresolved` fired on **every** `BDC` whose property list is a name,
+because nothing resolved `/Properties`. Two corpus documents refused under it, and both are
+optional content — `/OC /MC0 BDC` is named by construction. The outcome was right and the rule
+was not: ADR §1 refuses optional content, and the census said "burrow could not read this span"
+about a document whose actual shape is "this page has layers".
+
+A rule broader than its reason hides how often the narrow reason fires, and here it hid more
+than a count. **Redaction had no optional-content refusal at all.** §3 assigns optional content
+referenced by a kept page to *refuse*, §5 names its signal as the resource-graph walk `prune`
+performs for `split`, and nothing in the redaction steps called it. `13-optional-content.pdf`
+refused because its span happened to be named. Resolving the name removes the accident, and a
+layered page whose layer the region does not cover would then have redacted with nothing saying
+no. §3's decision was being honoured by a coincidence, and the census could not show it.
+
+So #166 is two changes, and the second is the one that mattered.
+
+### 1. A name is resolved against the scope that drew the stream
+
+`/MC0` resolves in the `/Properties` of whatever drew the stream: the page, a form's own
+`/Resources`, or, for a form declaring none, its enclosure. That is the same rule fonts needed,
+and five consumers got it wrong for fonts before `ScopedFont` put the scope in the type. The
+walk that already finds every stream on a path to a removed glyph (`scope_of`) records the
+scope each form resolves through on each path. `pdfsyntax::geometry::NamedProperties` carries
+the result as data, because the geometry module holds no document.
+
+- **Several candidates per name, and the most cautious wins.** A form declaring no `/Resources`
+  reached from two enclosures has two answers. That is the union-over-paths rule the `Do` scope
+  learnt from a leak (#164). First-wins would let the order of the walk decide whether the text
+  is seen.
+- **Empty is the cautious answer.** A name the scope does not define, an entry that is not a
+  dictionary, and a dictionary holding an indirect reference all refuse as
+  `marked-content-properties-unresolved`, which now means exactly that. A reference is a door
+  that was not opened: `/K 5 0 R` could point at `<< /ActualText … >>`.
+- **The same detectors an inline list uses**, on the same parse. A second classifier would be a
+  second answer to "does this carry text", and this seam's history is two answers disagreeing by
+  exactly the leak.
+
+Ceiling: `MAX_PROPERTY_LISTS` (4,096) resolved entries **across all scopes**, refused as
+`properties-too-many`. `pdfsyntax::dict::MAX_KEYS` already caps one dictionary, so this bounds
+forms × keys. Its test has to use two scopes: a one-dictionary fixture measured `MAX_KEYS` and
+would have reported this ceiling as tested.
+
+### 2. A named list carrying text is refused, not rewritten
+
+**`marked-content-named-properties-carry-text`.** §3 assigns `/ActualText` on marked content to
+*handle*, and the inline form is handled by dropping the entry (#165). The named form is
+refused, a narrowing of §3 decided with the project owner on 2026-09-24:
+
+- An inline list lives in the content stream. Dropping its key touches exactly the span it
+  describes.
+- A named list lives in a **resource dictionary**, which is shared by construction. Other spans
+  can name the same entry, and a page's `/Resources` is very often the one every page
+  inherits. Dropping the key there removes alternative text from content nobody asked to
+  redact. That is the damage-elsewhere hazard this record answers with a refusal for shared
+  forms and a disclosure for shared fonts.
+- Rewriting only the `BDC` operand to an inline dictionary leaves the string in the resource,
+  where a raw byte scan finds it.
+
+The session brief for #166 said to handle a named span like an inline one. That was an error
+in the brief, not in the issue: it overlooked that the dictionary is shared while the span is
+not. The issue's original "refuse" was right.
+
+**Scoped to spans the removal is inside**, as the form rule is scoped to glyphs being removed.
+A named carrying span elsewhere on the page does not refuse it:
+`nearmiss-named-actualtext-outside-the-region` redacts. Its first draft put the span round the
+keep line, which `redaction_defences.rs`' band covers, so the span *was* covered and the refusal
+was right. A near-miss has to be outside every region a harness asks about.
+
+**Condition for revisiting: the same as shared forms and fonts.** All three want a count of who
+else uses the object, and then copy-on-write for the shared case, which is blocked on
+`qpdf_oh_new_dictionary`, as the fonts section records.
+
+### 3. The decision is made on what is emitted
+
+`#165`'s lesson was that the post-rewrite check, not the detector, carries the guarantee. For a
+named list the property list is never rewritten, and no step writes a `/Properties` entry: font
+surgery writes font objects, the page strip removes page keys, and annotation removal edits
+`/Annots`. So the lists resolved before the first edit are the lists the emitted document holds.
+They are resolved once and carried into `rewrite`, where the combined pass classifies again
+through the same walk. If the two answers ever differed, the rewrite would refuse; it would not
+emit. The scope is carried as data rather than re-derived, for the reason `page_draws` is:
+two answers to one question is how this seam has leaked before.
+
+### 4. Optional content, refused by the page
+
+`qpdf/redact_optional_content.rs` walks the redacted page's graph before anything else in
+`affected_streams`, and before a blank page's early return. It has the reach of `prune`'s check,
+extended to the three places a resources-only walk misses, each with an evasion fixture:
+
+| reach | fixture |
+|---|---|
+| a `/Properties` OCG or OCMD, in any resource dictionary the page reaches | `13-optional-content`, `evade-oc-outside-the-region`, `evade-oc-two-levels-down` |
+| an image XObject's own `/OC` | `evade-oc-on-an-image` |
+| an annotation's `/OC` | `evade-oc-on-an-annotation` |
+| an appearance stream's `/OC` | `evade-oc-on-an-appearance-stream` |
+| a tiling pattern's `/Resources`, unused so the pattern rule does not answer first | `evade-oc-inside-an-unused-pattern` |
+| a Type 3 font's `/Resources`, unused so the Type 3 rule does not answer first | `evade-oc-inside-an-unused-type3-font` |
+
+The near-miss twin is `nearmiss-oc-on-another-page`: the rule is about the page being redacted,
+and a layer on page 2 is not a layer on page 1.
+
+**Page-scoped, not region-scoped, and that is §3 rather than a choice made here.** The
+marked-content refusals are scoped to the region because their hazard is a copy of the removed
+text. §3's hazard is the page's content depending on a setting burrow does not control.
+`evade-oc-outside-the-region` is the fixture that pins the difference.
+
+**What it does not reach:** a soft mask's group form, reached through `/ExtGState`. Neither
+`prune` nor the sharing walk follows `/ExtGState`, and a luminosity mask draws no text a reader
+extracts. That is stated here so the list above reads as a list rather than as "everything".
+
+**No ceiling of its own, deliberately.** It is a work list with an identity memo, so each object
+is read once and neither a cycle nor a deep chain can hold it. It checkpoints the deadline at
+every object. The sharing walk runs first, over every page, with a dictionary budget and a depth
+cap. A second ceiling here would always fire second, which makes it a defence no test can reach:
+the masking `page_contents` records.
+
+### The census
+
+**73 of 73 documents examined: 55 redacted, 18 refused, 0 quiet**, up from 59 documents (51/8).
+Of the original 59, none changed column. Two changed **rule**:
+`13-optional-content` and `evade-oc-two-levels-down` now refuse as `optional-content` rather than
+`marked-content-properties-unresolved`. The fourteen new fixtures are 4 near-misses that redact
+and 10 evasions that refuse, each by the rule it was written for.
+`redaction_defences.rs::RESOLVED_OUTCOMES` pins every one to its rule, because
+`CARRIER_REFUSALS` accepts any of seven. A named carrier refused as *unresolved* would pass
+that list, and that is the pre-#166 outcome: the resolver could be deleted and the carrier test
+would stay green.
+
+`marked-content-properties-unresolved` now fires on **one** document, the reference fixture,
+where before it fired on two, neither of which was about properties. What it measures has
+become what it says.
+
+**What the resolver buys outside this corpus is still unmeasured.** No committed or generated
+document other than the three new twins has an ordinary named list, so the corpus cannot show
+how many real tagged documents #166 un-refuses. The issue said so of the old rule, and it
+remains true of the new one.
+
+The redaction floor in `redaction_corpus.rs` moves from 39 to 55. It had not moved since #164,
+although 51 were redacting after #165, so a regression could have fallen twelve documents
+towards it without a word.

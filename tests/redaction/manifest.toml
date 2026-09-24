@@ -1329,3 +1329,269 @@ Every other fixture's keep line falls inside the band the defence tests redact, 
 always already in the list and the widening was dead in every test. Here the keep line is at the
 bottom of the page and the page's only involvement is the span.
 """
+
+[[fixture]]
+name = "evade-actualtext-named-through-properties"
+file = "generated/evade-actualtext-named-through-properties.pdf"
+kind = "hand-built"
+probes_refusal = "named /Properties"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a named property list carrying /ActualText — evasion"
+  canary = "BURROW-EVADE-ACTUALTEXT-NAMED"
+  verdict = "refuse"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The plain named shape. The text lives in a resource dictionary, which other spans and pages may name, so it is refused (`marked-content-named-properties-carry-text`) rather than edited. #166.
+"""
+
+[[fixture]]
+name = "evade-actualtext-named-in-a-form-scope"
+file = "generated/evade-actualtext-named-in-a-form-scope.pdf"
+kind = "hand-built"
+probes_refusal = "named /Properties"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a named list in a form's own /Properties, with a plain decoy on the page — evasion"
+  canary = "BURROW-EVADE-ACTUALTEXT-NAMED-FORM"
+  verdict = "refuse"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+A name is scoped. A resolver answering from the page reads the decoy, passes the span, and emits the form's /ActualText. The font-scope defect, in property lists.
+"""
+
+[[fixture]]
+name = "evade-actualtext-named-in-a-form-that-inherits"
+file = "generated/evade-actualtext-named-in-a-form-that-inherits.pdf"
+kind = "hand-built"
+probes_refusal = "named /Properties"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a named list resolved through a form that declares no /Resources — evasion"
+  canary = "BURROW-EVADE-ACTUALTEXT-NAMED-INHERITED"
+  verdict = "refuse"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The form declares no /Resources, so /MC0 resolves in the page's. A resolver that looked only in a form's own resources finds nothing here.
+"""
+
+[[fixture]]
+name = "evade-actualtext-behind-a-reference-in-named-properties"
+file = "generated/evade-actualtext-behind-a-reference-in-named-properties.pdf"
+kind = "hand-built"
+probes_refusal = "named /Properties"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a named list holding an indirect reference to /ActualText — evasion"
+  canary = "BURROW-EVADE-ACTUALTEXT-NAMED-REF"
+  verdict = "refuse"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Resolving the name reads the list; a reference inside it is a door not opened. Refused as `marked-content-properties-unresolved`, not passed.
+"""
+
+[[fixture]]
+name = "nearmiss-named-properties-without-text"
+file = "generated/nearmiss-named-properties-without-text.pdf"
+kind = "hand-built"
+probes_refusal = "named /Properties"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a named ordinary /MCID list — near-miss twin"
+  canary = "BURROW-EVADE-NAMED-NEARMISS"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The twin that measures whether the resolver bought anything: before #166 every named list refused as unresolved, this one included, and this is what tagged output looks like.
+"""
+
+[[fixture]]
+name = "nearmiss-named-actualtext-outside-the-region"
+file = "generated/nearmiss-named-actualtext-outside-the-region.pdf"
+kind = "hand-built"
+probes_refusal = "named /Properties"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a named carrying span the removal is not inside — near-miss twin"
+  canary = "BURROW-EVADE-NAMED-OUTSIDE"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The refusal is scoped to spans the removal is inside, as the form rule is scoped to glyphs being removed. Its /ActualText is not the canary and survives untouched.
+"""
+
+[[fixture]]
+name = "nearmiss-named-properties-decoy-on-the-page"
+file = "generated/nearmiss-named-properties-decoy-on-the-page.pdf"
+kind = "hand-built"
+probes_refusal = "named /Properties"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a form's own ordinary list, with a carrying decoy on the page — near-miss twin"
+  canary = "BURROW-EVADE-NAMED-DECOY"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The twin of evade-actualtext-named-in-a-form-scope: a resolver answering from the page refuses a document it can handle. Scope errors fail in both directions.
+"""
+
+[[fixture]]
+name = "evade-oc-outside-the-region"
+file = "generated/evade-oc-outside-the-region.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content nowhere near the region — evasion"
+  canary = "BURROW-EVADE-OC-ELSEWHERE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+ADR 0029 §3 refuses optional content referenced by a kept page. A signal scoped to the spans the removal is inside walks past this. #166 found redaction had no optional-content refusal at all.
+"""
+
+[[fixture]]
+name = "evade-oc-on-an-annotation"
+file = "generated/evade-oc-on-an-annotation.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content on an annotation's /OC — evasion"
+  canary = "BURROW-EVADE-OC-ANNOT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+No /Properties entry names the layer; only the annotation does.
+"""
+
+[[fixture]]
+name = "evade-oc-on-an-image"
+file = "generated/evade-oc-on-an-image.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content on an image XObject's /OC — evasion"
+  canary = "BURROW-EVADE-OC-IMAGE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+No BDC names the layer, and the XObject is an image, not a form.
+"""
+
+[[fixture]]
+name = "nearmiss-oc-on-another-page"
+file = "generated/nearmiss-oc-on-another-page.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 2
+
+  [[fixture.placement]]
+  channel = "optional content on a page that is not redacted — near-miss twin"
+  canary = "BURROW-EVADE-OC-OTHER-PAGE"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The rule is about the page being redacted; a layer on page 2 is not a layer on page 1.
+"""
+
+[[fixture]]
+name = "evade-oc-inside-an-unused-pattern"
+file = "generated/evade-oc-inside-an-unused-pattern.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content in a tiling pattern's own /Resources — evasion"
+  canary = "BURROW-EVADE-OC-PATTERN"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The page never fills with the pattern, so `pattern-may-draw-text` does not answer first; the page references the pattern and the pattern references the layer.
+"""
+
+[[fixture]]
+name = "evade-oc-inside-an-unused-type3-font"
+file = "generated/evade-oc-inside-an-unused-type3-font.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content in a Type 3 font's /Resources — evasion"
+  canary = "BURROW-EVADE-OC-TYPE3"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The page never draws with the font, so the Type 3 rule does not answer first.
+"""
+
+[[fixture]]
+name = "evade-oc-on-an-appearance-stream"
+file = "generated/evade-oc-on-an-appearance-stream.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content on an annotation's appearance stream — evasion"
+  canary = "BURROW-EVADE-OC-APPEARANCE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The annotation carries no /OC; its /AP /N form does. Reached through /Annots, not /Resources.
+"""
