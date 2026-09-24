@@ -897,12 +897,12 @@ def evade_actualtext_in_the_middle_form() -> bytes:
         b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
         b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
         + f"{SECRET_X} {SECRET_Y} Td ".encode()
-        + literal(secret("ACTUALTEXT-MIDFORM")) + b" Tj ET\n",
+        + literal(secret("AT-MIDFORM")) + b" Tj ET\n",
     )
     outer = pdf.stream(
         b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
         b" /Resources << /XObject << /Inner " + str(inner).encode() + b" 0 R >> >>",
-        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-MIDFORM")) + b" >> BDC\n"
+        b"/Span << /ActualText " + literal(secret("AT-MIDFORM")) + b" >> BDC\n"
         b"/Inner Do\n"
         b"EMC\n",
     )
@@ -970,20 +970,20 @@ def evade_actualtext_under_a_form_with_two_parents() -> bytes:
         b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
         b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
         + f"{SECRET_X} {SECRET_Y} Td ".encode()
-        + literal(secret("ACTUALTEXT-TWOPARENT-A")) + b" Tj ET\n",
+        + literal(secret("AT-2PARENT-A")) + b" Tj ET\n",
     )
     held_b = pdf.stream(
         b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
         b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
         b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
         + f"{SECRET_X} {SECRET_Y - SECRET_SIZE} Td ".encode()
-        + literal(secret("ACTUALTEXT-TWOPARENT")) + b" Tj ET\n",
+        + literal(secret("AT-2PARENT")) + b" Tj ET\n",
     )
     # NO /Resources: what `/W1` and `/W2` mean here depends on which route reached this form.
     middle = pdf.stream(
         b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]",
         b"/W1 Do\n"
-        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-TWOPARENT")) + b" >> BDC\n"
+        b"/Span << /ActualText " + literal(secret("AT-2PARENT")) + b" >> BDC\n"
         b"/W2 Do\n"
         b"EMC\n",
     )
@@ -1024,12 +1024,12 @@ def evade_actualtext_on_a_page_that_draws_nothing_itself() -> bytes:
         b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
         b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
         + f"{SECRET_X} {SECRET_Y} Td ".encode()
-        + literal(secret("ACTUALTEXT-BARE-PAGE")) + b" Tj ET\n",
+        + literal(secret("AT-BARE-PAGE")) + b" Tj ET\n",
     )
     # THE KEEP LINE AT y=5, not `keep_line_ops()`'s y=40: 40 is inside the band the defence
     # tests redact, which is what made every other fixture's page a removal site by accident.
     content = (
-        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-BARE-PAGE")) + b" >> BDC\n"
+        b"/Span << /ActualText " + literal(secret("AT-BARE-PAGE")) + b" >> BDC\n"
         b"/X1 Do\n"
         b"EMC\n"
         b"BT /Helv 10 Tf 40 5 Td " + literal(KEEP_LINE) + b" Tj ET\n"
@@ -1064,7 +1064,7 @@ def nearmiss_actualtext_around_an_untouched_form() -> bytes:
         b"EMC\n"
         b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
         + f"{SECRET_X} {SECRET_Y} Td ".encode()
-        + literal(secret("ACTUALTEXT-NEARMISS"))
+        + literal(secret("AT-NEARMISS"))
         + b" Tj ET\n"
     )
     res = (
@@ -1115,7 +1115,7 @@ def nearmiss_ordinary_string_in_a_property_list() -> bytes:
         b"/Span << /MCID 0 /Lang (en-US) >> BDC\n"
         b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
         + f"{SECRET_X} {SECRET_Y} Td ".encode()
-        + literal(secret("ACTUALTEXT-ORDINARY-STRING"))
+        + literal(secret("AT-ORDINARY"))
         + b" Tj ET\n"
         b"EMC\n" + keep_line_ops()
     )
@@ -1713,7 +1713,7 @@ def nearmiss_resources_inherited_from_pages() -> bytes:
     helv = helvetica(pdf)
     return _page_with_resources(
         pdf,
-        b"/P /MC0 BDC\n" + _secret_run("INHERITED-RESOURCES") + b"EMC\n" + keep_line_ops(),
+        b"/P /MC0 BDC\n" + _secret_run("INHERITED") + b"EMC\n" + keep_line_ops(),
         b"",
         b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >>"
         b" /Properties << /MC0 << /MCID 0 >> >> >>",

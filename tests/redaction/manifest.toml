@@ -32,8 +32,9 @@
 #                    (#125) lets the document redact, a handling not yet built (#131) lets it
 #                    refuse. Never excuses a canary still witnessed after a redaction, and FAILS
 #                    once the work arrives, so it cannot outlive what it waits for.
-#   after_unwitnessed  a reason no permitted instrument can judge this placement after the run
-#                    (ADR 0029 §6). Printed on every run.
+#   witness_after    the witness used after the run instead of `witness_before`, where that one
+#                    reads only residue a redaction keeps by design (§7). It must also find the
+#                    canary before the run -- the checker enforces it.
 #   region           on a fixture: the rectangle redacted, in display coordinates. Hand-built
 #                    fixtures default to `tools/pdfbuild.py`'s REGION, which draws them.
 
@@ -390,7 +391,7 @@ pages = 1
   witness_before = "font-cmap"
   witness_observes = "alphabet"
   expect_after = "gone"
-  after_unwitnessed = "the only witness is the font program's own cmap, which ADR 0029 §7 discloses as residue and the next placement expects present; the glyphs' removal is asserted by the operation's geometry read-back, and no permitted instrument reads this page's text (§6)"
+  witness_after = "cid-codes"
   notes = "No /ToUnicode and no /Differences, so the font program's own cmap is the only witness. One of the five channels spike 0006 measured as invisible to every scan."
 
   [[fixture.placement]]
@@ -644,7 +645,7 @@ pages = 1
   witness_before = "font-cmap"
   witness_observes = "alphabet"
   expect_after = "gone"
-  after_unwitnessed = "the only witness is the font program's own cmap, which ADR 0029 §7 discloses as residue and the next placement expects present; the glyphs' removal is asserted by the operation's geometry read-back, and no permitted instrument reads this page's text (§6)"
+  witness_after = "cid-codes"
   notes = "Extraction reads a decoy while the font's cmap tells the truth. Two halves of one object disagreeing."
 
   [[fixture.placement]]
@@ -1118,7 +1119,7 @@ pages = 1
 
   [[fixture.placement]]
   channel = "an ordinary string in a covering span's property list"
-  canary = "BURROW-EVADE-ACTUALTEXT-ORDINARY-STRING"
+  canary = "BURROW-EVADE-AT-ORDINARY"
   verdict = "handle"
   adr = "§1"
   witness_before = "raw-file"
@@ -1141,7 +1142,7 @@ pages = 1
 
   [[fixture.placement]]
   channel = "/ActualText — near-miss twin, around a form the region never reaches"
-  canary = "BURROW-EVADE-ACTUALTEXT-NEARMISS"
+  canary = "BURROW-EVADE-AT-NEARMISS"
   verdict = "handle"
   adr = "§1"
   witness_before = "pdfium-text"
@@ -1162,7 +1163,7 @@ pages = 1
 
   [[fixture.placement]]
   channel = "/ActualText in an intermediate form, covering a leaf form's glyphs"
-  canary = "BURROW-EVADE-ACTUALTEXT-MIDFORM"
+  canary = "BURROW-EVADE-AT-MIDFORM"
   verdict = "handle"
   adr = "§1"
   witness_before = "raw-utf16-hex"
@@ -1224,7 +1225,7 @@ pages = 1
 
   [[fixture.placement]]
   channel = "/ActualText in a form reachable by two routes that resolve its names differently"
-  canary = "BURROW-EVADE-ACTUALTEXT-TWOPARENT"
+  canary = "BURROW-EVADE-AT-2PARENT"
   verdict = "handle"
   adr = "§1"
   witness_before = "raw-utf16-hex"
@@ -1349,7 +1350,7 @@ pages = 1
 
   [[fixture.placement]]
   channel = "/ActualText on a page whose own text is outside the region"
-  canary = "BURROW-EVADE-ACTUALTEXT-BARE-PAGE"
+  canary = "BURROW-EVADE-AT-BARE-PAGE"
   verdict = "handle"
   adr = "§1"
   witness_before = "raw-utf16-hex"
@@ -1770,7 +1771,7 @@ pages = 1
 
   [[fixture.placement]]
   channel = "ordinary /Resources inherited from /Pages — near-miss twin"
-  canary = "BURROW-EVADE-INHERITED-RESOURCES"
+  canary = "BURROW-EVADE-INHERITED"
   verdict = "handle"
   adr = "§3, §5"
   witness_before = "raw-file"

@@ -39,6 +39,9 @@ WITNESS KINDS, and each is a different question
                          page whose glyphs are individually positioned extracts with separators
                          between them, and the strict match fails on text that IS there.
   structure-tree-present The document carries a /StructTreeRoot.
+  cid-codes              The page's 2-byte codes, read through the embedded font's own cmap,
+                         spell the canary. For a CID font with no usable /ToUnicode (06, 21);
+                         used as `witness_after` there.
 
 A witness that cannot be evaluated is an ERROR, never a silent pass.
 """
@@ -95,7 +98,9 @@ def spellings(needle: str) -> list[bytes]:
     utf16 = needle.encode("utf-16-be")
     bom = b"\xfe\xff" + utf16
     out = [ascii_, utf16, bom]
-    for raw in (utf16, bom):
+    # ASCII AS HEX, `<4B454550>`: the rewriter re-emits every KEPT code as a hex string, so a
+    # canary a redaction left standing is spelled this way in the output and in no other.
+    for raw in (ascii_, utf16, bom):
         out.append(raw.hex().upper().encode())
         out.append(raw.hex().lower().encode())
     return out
@@ -355,6 +360,93 @@ def witness_image_drawn(data: bytes, _canary: str) -> bool:
     return has_image and re.search(rb"/\w+\s+Do\b", data) is not None
 
 
+def _be(data: bytes, at: int, width: int) -> int | None:
+    return int.from_bytes(data[at:at + width], "big") if 0 <= at and at + width <= len(data) else None
+
+
+def _glyphs_to_characters(font: bytes) -> dict[int, str]:
+    """The INVERSE of an embedded TrueType program's format-4 cmap: glyph id to character.
+
+    Malformed tables yield an empty map rather than raising; the witness then finds nothing, and a
+    placement whose witness cannot find its canary BEFORE the run fails the before-check, so an
+    unreadable font cannot make this read as "gone".
+    """
+    inverse: dict[int, str] = {}
+    tables = _be(font, 4, 2) or 0
+    cmap = None
+    for i in range(tables):
+        record = 12 + i * 16
+        if font[record:record + 4] == b"cmap":
+            cmap = _be(font, record + 8, 4)
+    if cmap is None:
+        return inverse
+    for i in range((_be(font, cmap + 2, 2) or 0)):
+        offset = _be(font, cmap + 4 + i * 8 + 4, 4)
+        if offset is None:
+            continue
+        sub = cmap + offset
+        if _be(font, sub, 2) != 4:
+            continue
+        seg_x2 = _be(font, sub + 6, 2) or 0
+        ends = sub + 14
+        starts = ends + seg_x2 + 2
+        deltas = starts + seg_x2
+        ranges = deltas + seg_x2
+        for segment in range(seg_x2 // 2):
+            end = _be(font, ends + 2 * segment, 2)
+            start = _be(font, starts + 2 * segment, 2)
+            delta = _be(font, deltas + 2 * segment, 2)
+            range_offset = _be(font, ranges + 2 * segment, 2)
+            if None in (end, start, delta, range_offset) or start == 0xFFFF:
+                continue
+            for code in range(start, end + 1):
+                if range_offset == 0:
+                    glyph = (code + delta) & 0xFFFF
+                else:
+                    glyph = _be(font, ranges + 2 * segment + range_offset + 2 * (code - start), 2) or 0
+                    glyph = (glyph + delta) & 0xFFFF if glyph else 0
+                if glyph:
+                    inverse.setdefault(glyph, chr(code))
+        break
+    return inverse
+
+
+def witness_cid_codes(data: bytes, canary: str) -> bool:
+    """The page's own 2-byte codes, read through the embedded font's cmap, spell the canary.
+
+    For a CID font with `/CIDToGIDMap /Identity` and no usable /ToUnicode -- channels 06 and 21 --
+    a code IS a glyph id, and the font's format-4 cmap says which character each glyph draws.
+    PDFium extracts nothing (06) or a decoy (21) there, and `font-cmap` reads only the font's
+    alphabet, which a redaction leaves behind by design (§7). This reads the CONTENT STREAM: what
+    the page still draws. Written for #176, where both placements had been marked unwitnessable
+    after the run and a review showed they were not.
+    """
+    inverse: dict[int, str] = {}
+    for m in re.finditer(rb"/Length1\s+(\d+)", data):
+        start = data.find(b"stream", m.end())
+        if start < 0:
+            continue
+        start += 6
+        while start < len(data) and data[start] in (10, 13):
+            start += 1
+        inverse.update(_glyphs_to_characters(data[start:start + int(m.group(1))]))
+    if not inverse:
+        return False
+    strings = re.findall(rb"<([0-9A-Fa-f\s]+)>\s*Tj", data)
+    for array in re.findall(rb"\[(.*?)\]\s*TJ", data, re.S):
+        strings += re.findall(rb"<([0-9A-Fa-f\s]+)>", array)
+    text = ""
+    for hexed in strings:
+        digits = re.sub(rb"\s", b"", hexed).decode()
+        if len(digits) % 2:
+            digits += "0"
+        raw = bytes.fromhex(digits)
+        text += "".join(
+            inverse.get(int.from_bytes(raw[i:i + 2], "big"), "\0") for i in range(0, len(raw) - 1, 2)
+        )
+    return "".join(canary.split()) in text
+
+
 # ---------------------------------------------------------------------------------------
 # WHAT EACH WITNESS CAN ACTUALLY SEE.
 #
@@ -374,6 +466,7 @@ WITNESS_OBSERVES = {
     "raw-file": "canary",
     "font-mapping": "canary-or-alphabet",
     "font-cmap": "alphabet",
+    "cid-codes": "canary",
     "thumb-ink": "carrier",
     "vector-fills": "carrier",
     "image-drawn": "carrier",
@@ -392,6 +485,7 @@ OBSERVES_MEANING = {
 
 BYTE_WITNESSES = {
     "font-cmap": witness_font_cmap,
+    "cid-codes": witness_cid_codes,
     "thumb-ink": witness_thumb_ink,
     "vector-fills": witness_vector_fills,
     "image-drawn": witness_image_drawn,
@@ -603,14 +697,33 @@ def main() -> int:
                     f"{fixture['name']} / {placement['channel']}: `expect_after` must be gone, "
                     f"refused or present, not {placement.get('expect_after')!r}"
                 )
-            if "owed_by" in placement and not isinstance(placement["owed_by"], int):
+            if "owed_by" in placement and placement["owed_by"] not in OWED_EXPECTED:
                 failures.append(
-                    f"{fixture['name']} / {placement['channel']}: `owed_by` must be an issue number"
+                    f"{fixture['name']} / {placement['channel']}: `owed_by` must name one of the "
+                    f"issues in OWED_EXPECTED ({sorted(OWED_EXPECTED)}), not "
+                    f"{placement['owed_by']!r}"
                 )
-            if "after_unwitnessed" in placement and not str(placement["after_unwitnessed"]).strip():
+            if "after_unwitnessed" in placement:
+                # REMOVED IN #176's REVIEW. It exempted two placements from any judgement after the
+                # run, on the claim that nothing could see them; `cid-codes` can. An exemption
+                # nothing needs is one the next placement will be given without anyone checking.
                 failures.append(
-                    f"{fixture['name']} / {placement['channel']}: `after_unwitnessed` needs a reason"
+                    f"{fixture['name']} / {placement['channel']}: `after_unwitnessed` is not a "
+                    "field; give the placement a `witness_after` that can see it"
                 )
+            if "witness_after" in placement:
+                later = placement["witness_after"]
+                if later not in BYTE_WITNESSES or WITNESS_OBSERVES.get(later) != "canary":
+                    failures.append(
+                        f"{fixture['name']} / {placement['channel']}: `witness_after` must be a "
+                        f"byte witness that reads the canary, not {later!r}"
+                    )
+                elif not BYTE_WITNESSES[later](data, canary):
+                    failures.append(
+                        f"{fixture['name']} / {placement['channel']}: `witness_after` "
+                        f"`{later}` does not find `{canary}` BEFORE the run, so its silence "
+                        "after the run would mean nothing"
+                    )
             if kind == "raw-file":
                 # THE FILE AS IT ARRIVED, not the qpdf normalisation every other byte witness
                 # reads. `expanded()` runs `qpdf --qdf`, whose writer emits only objects
@@ -663,6 +776,20 @@ def main() -> int:
                 continue
             observed[declared] = observed.get(declared, 0) + 1
 
+    # THE OWED MARKERS ARE PINNED PER ISSUE, like PLACEMENT_FLOOR: a marker added to a placement
+    # that refuses today would excuse that refusal regressing, with no one choosing to. A count
+    # over the manifest alone, so it is gated here, on every run, rather than only under --after.
+    owed_seen: dict[int, int] = {}
+    for fixture in fixtures:
+        for placement in fixture.get("placement", []):
+            if placement.get("owed_by") in OWED_EXPECTED:
+                owed_seen[placement["owed_by"]] = owed_seen.get(placement["owed_by"], 0) + 1
+    if owed_seen != OWED_EXPECTED:
+        failures.append(
+            f"owed markers per issue are {owed_seen}, expected {OWED_EXPECTED} -- a marker added "
+            "or removed is a decision; change OWED_EXPECTED deliberately"
+        )
+
     print(
         f"check-redaction-corpus: {len(fixtures)} fixture(s), {checked} placement(s) — "
         + ", ".join(f"{n} {v}" for v, n in sorted(verdicts.items()))
@@ -705,9 +832,13 @@ def main() -> int:
 # It never excuses a canary still witnessed after a redaction. It is counted and printed, and it
 # FAILS once the owed work has arrived, so a marker cannot outlive what it waits for.
 #
-# `after_unwitnessed = "<reason>"` marks a placement no instrument can judge after the run --
-# ADR 0029 §6's channels that no permitted instrument can confirm. Printed with its reason on
-# every run, never judged by a witness that cannot see it.
+# `witness_after = "<witness>"` replaces the before-witness after the run where that one reads
+# only what a redaction leaves by design -- channels 06 and 21, whose `font-cmap` witness reads the
+# font's alphabet (§7). It must find the canary before the run as well, which the before-check
+# enforces, so a silent after-witness is a removal and not a blind spot.
+#
+# GONE MEANS NO PART OF IT, either. A witness asks for the whole canary, so removing one glyph of
+# it read as gone; every gone placement is also checked for surviving five-character fragments.
 # ------------------------------------------------------------------------------------------------
 
 
@@ -785,15 +916,14 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
                 outcomes[parts[1]] = (parts[0], parts[2] if len(parts) > 2 else "")
 
     text_cache: dict[Path, str] = {}
-    tally = {"refused": 0, "gone": 0, "present": 0, "owed": 0, "unwitnessed": 0}
-    notes: list[str] = []
-    examined = 0
+    tally = {"witness": 0, "refused": 0, "owed": 0}
+    leaking: list[str] = []
+    rules: dict[str, int] = {}
+    judged = 0
     # THE DENOMINATOR IS EVERY PLACEMENT THE MANIFEST DECLARES AN AFTER-STATE FOR, not the ones
     # that reached the run: a fixture refused while planning -- no region -- must still count
     # against the total, or "72 of 72" reads as a sweep that skipped nine.
-    expected = sum(
-        1 for f in fixtures for p in f.get("placement", []) if "expect_after" in p
-    )
+    expected = sum(1 for f in fixtures for p in f.get("placement", []) if "expect_after" in p)
     for key, (fixture, source, output) in planned.items():
         name = fixture["name"]
         status, message = outcomes.get(key, ("MISSING", ""))
@@ -801,15 +931,9 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
             failures.append(f"{name}: redact-batch reported no outcome")
             continue
         placements = fixture["placement"]
-        unwitnessed = [p for p in placements if "after_unwitnessed" in p]
-        judged = [p for p in placements if "after_unwitnessed" not in p]
-        owed = [p for p in judged if p["expect_after"] == "refused" and "owed_by" in p]
-        must_refuse = [p for p in judged if p["expect_after"] == "refused" and "owed_by" not in p]
-        promised = [p for p in judged if p["expect_after"] in ("gone", "present")]
-        examined += len(unwitnessed)
-        tally["unwitnessed"] += len(unwitnessed)
-        for placement in unwitnessed:
-            notes.append(f"{name} / {placement['channel']}: {placement['after_unwitnessed']}")
+        owed = [p for p in placements if p["expect_after"] == "refused" and "owed_by" in p]
+        must_refuse = [p for p in placements if p["expect_after"] == "refused" and "owed_by" not in p]
+        promised = [p for p in placements if p["expect_after"] in ("gone", "present")]
         if status == "REFUSED":
             rule = message.split("[", 1)[1].split("]", 1)[0] if "[" in message and "]" in message else None
             if rule is None:
@@ -829,7 +953,7 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
                         f"{name}: refused by `{rule}` where the manifest expects it redacted"
                     )
                     continue
-                examined += len(promised)
+                judged += len(promised)
                 tally["owed"] += len(promised)
                 continue
             if promised:
@@ -839,8 +963,9 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
                     "contradicts itself"
                 )
                 continue
-            examined += len(must_refuse)
+            judged += len(must_refuse)
             tally["refused"] += len(must_refuse)
+            rules[rule] = rules.get(rule, 0) + 1
             continue
         if must_refuse:
             failures.append(
@@ -848,26 +973,35 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
                 f"({', '.join(p['channel'][:50] for p in must_refuse)})"
             )
             continue
-        examined += len(owed)
-        tally["owed"] += len(owed)
         data = expanded(qpdf, output, scratch)
+        source_data = expanded(qpdf, source, scratch)
+        # AN OWED REFUSAL THAT REDACTED IS STILL WITNESSED. The first version counted these
+        # and ran nothing, while this file and the manifest said a marker "never excuses a
+        # canary still witnessed after a redaction" -- both reviews measured four with the
+        # literal secret in the output of a redaction that returned Ok. They are the known #125
+        # leaks, and they are reported by name on every run rather than passed in silence.
+        for placement in owed:
+            judged += 1
+            tally["owed"] += 1
+            if see(placement, output, data, text_cache):
+                leaking.append(f"{name} / {placement['channel'][:60]}")
         for placement in promised:
-            kind, canary = placement["witness_before"], placement["canary"]
-            if kind == "raw-file":
-                # THE OUTPUT AS WRITTEN AND AS EXPANDED: qpdf compresses what it writes, so a raw
-                # scan alone would find nothing and read as "gone" for the wrong reason.
-                seen = witness_raw(output.read_bytes(), canary) or witness_raw(data, canary)
-            elif kind == "pdfium-text":
-                seen = witness_pdfium_text(output, canary, text_cache)
-            elif kind == "pdfium-text-loose":
-                seen = witness_pdfium_text_loose(output, canary, text_cache)
-            elif kind in BYTE_WITNESSES:
-                seen = BYTE_WITNESSES[kind](data, canary)
-            else:
-                failures.append(f"{name} / {placement['channel']}: unknown witness `{kind}`")
-                continue
-            examined += 1
+            judged += 1
             want = placement["expect_after"]
+            seen = see(placement, output, data, text_cache)
+            # PARTIAL REMOVAL IS NOT GONE. Every witness asks for the whole canary, so removing
+            # one glyph made it "gone" -- both reviews measured regions that took half a canary
+            # passing, and eight fixtures whose tails survived. A fragment of the canary that the
+            # input held only inside the canary, surviving in the output, says the canary did.
+            if want == "gone" and not seen:
+                pieces = fragments_survive(canary_of(placement), source, output,
+                                           source_data, data, text_cache)
+                if pieces:
+                    failures.append(
+                        f"{name} / {placement['channel'][:60]}: part of the canary survives "
+                        f"({', '.join(pieces[:4])}), where the manifest says gone"
+                    )
+                    continue
             if "owed_by" in placement:
                 # OWED HANDLING, AND IT WAS HANDLED: the marker is stale. Still seen: a leak, which
                 # an owed marker never excuses -- it excuses a refusal, nothing else.
@@ -879,27 +1013,40 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
                     continue
             if want == "gone" and seen:
                 failures.append(
-                    f"{name} / {placement['channel']}: `{kind}` still finds the canary after "
-                    "redaction, where the manifest says gone"
+                    f"{name} / {placement['channel']}: `{placement['witness_before']}` still finds "
+                    "the canary after redaction, where the manifest says gone"
                 )
             elif want == "present" and not seen:
                 failures.append(
-                    f"{name} / {placement['channel']}: `{kind}` no longer finds a canary the "
-                    "manifest says is disclosed, not removed"
+                    f"{name} / {placement['channel']}: `{placement['witness_before']}` no longer "
+                    "finds a canary the manifest says is disclosed, not removed"
                 )
             else:
-                tally[want] += 1
+                tally["witness"] += 1
 
+    # AND THE LEAKS ARE PINNED TOO. They are known and owed, so they do not fail the run -- but a
+    # new one is a regression an owed marker was never meant to absorb, and one fewer is owed
+    # work that arrived. Either way the count moves only when someone decides it should.
+    if not only and len(leaking) != OWED_LEAKS_EXPECTED:
+        failures.append(
+            f"{len(leaking)} owed placement(s) still disclose after a redaction, expected "
+            f"{OWED_LEAKS_EXPECTED} -- change OWED_LEAKS_EXPECTED deliberately, with the list below"
+        )
     print(
-        f"check-redaction-corpus --after: {len(planned)} fixture(s) run; {examined} of {expected} "
-        f"placement(s) judged -- {tally['gone']} gone, {tally['present']} present, "
-        f"{tally['refused']} refused, {tally['owed']} owed to their issue, "
-        f"{tally['unwitnessed']} no instrument can judge after"
+        f"check-redaction-corpus --after: {len(planned)} fixture(s) run; {judged} of {expected} "
+        f"placement(s) accounted for -- {tally['witness']} judged by their witness, "
+        f"{tally['refused']} by a named refusal, {tally['owed']} owed to an open issue "
+        f"({len(leaking)} of them still disclose their canary or carrier, listed)"
     )
-    for note in notes:
-        print(f"  unwitnessed after: {note}")
-    if examined != expected and not failures:
-        failures.append(f"judged {examined} of {expected} placements")
+    # WHICH RULES THE REFUSALS CAME FROM, by name: a refusal counts whatever its rule, so one for
+    # a reason unrelated to the fixture (a page out of range, a region the request got wrong)
+    # would score as a pass. Not gated -- which rule each fixture owes is pinned per group in
+    # `redaction_defences.rs` -- but named, so the report says what it accepted.
+    print("  refused by: " + ", ".join(f"{r} ({n})" for r, n in sorted(rules.items())))
+    for leak in leaking:
+        print(f"  owed, and still disclosed after a redaction that returned Ok: {leak}")
+    if judged != expected and not failures:
+        failures.append(f"accounted for {judged} of {expected} placements")
     if failures:
         sys.stderr.write("\nFAILED — %d problem(s):\n" % len(failures))
         for f in failures:
@@ -907,6 +1054,73 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
         return 1
     print("OK — every placement's expect_after holds against a real run.")
     return 0
+
+
+# The owed markers per issue, committed. Changing a marker changes this, on purpose.
+OWED_EXPECTED = {125: 14, 131: 1}
+# How many of those still disclose their canary or carrier after a redaction that returned Ok:
+# ADR 0029 §5's four signals, not yet built (#125). Printed by name on every run.
+OWED_LEAKS_EXPECTED = 13
+
+
+def canary_of(placement: dict) -> str:
+    return placement["canary"]
+
+
+def see(placement: dict, output: Path, data: bytes, cache: dict[Path, str]) -> bool:
+    """Whether the placement's own witness still finds its canary in `output`."""
+    # `witness_after` replaces the before-witness only where that one reads what a redaction
+    # leaves by design (§7's font alphabet); the before-check requires it to find the canary in
+    # the input too, so it is never an instrument that could not have seen it.
+    kind, canary = placement.get("witness_after", placement["witness_before"]), placement["canary"]
+    if kind == "raw-file":
+        # THE OUTPUT AS WRITTEN AND AS EXPANDED: qpdf compresses what it writes, so a raw scan
+        # alone would find nothing and read as "gone" for the wrong reason.
+        return witness_raw(output.read_bytes(), canary) or witness_raw(data, canary)
+    if kind == "pdfium-text":
+        return witness_pdfium_text(output, canary, cache)
+    if kind == "pdfium-text-loose":
+        return witness_pdfium_text_loose(output, canary, cache)
+    if kind in BYTE_WITNESSES:
+        return BYTE_WITNESSES[kind](data, canary)
+    sys.exit(f"check-redaction-corpus: unknown witness `{kind}`")
+
+
+FRAGMENT = 5
+
+
+def fragments_survive(canary: str, source: Path, output: Path, source_data: bytes,
+                      data: bytes, cache: dict[Path, str]) -> list[str]:
+    """Pieces of `canary` in the output that the input held only as part of the canary.
+
+    Read two ways: PDFium's page text, whitespace squashed, and the expanded bytes in every
+    spelling `spellings()` knows. The baseline is the input with every occurrence of the canary
+    removed, so a fragment the page legitimately says elsewhere is not evidence.
+    """
+    squash = "".join(canary.split())
+    pieces = {squash[i:i + FRAGMENT] for i in range(len(squash) - FRAGMENT + 1)}
+    found: list[str] = []
+    if source not in cache:
+        witness_pdfium_text(source, "", cache)
+    if output not in cache:
+        witness_pdfium_text(output, "", cache)
+    # WHOLE OCCURRENCES ARE REMOVED FROM BOTH SIDES. In the input, so a fragment the page says
+    # elsewhere is not evidence; in the output, because a whole canary surviving is a different
+    # finding -- the witness's, or another placement's on the same string (producer-writer's
+    # structure tree, owed to #125) -- and counting its pieces here would report it twice.
+    before_text = "".join(cache[source].split()).replace(squash, "\0")
+    after_text = "".join(cache[output].split()).replace(squash, "\0")
+    before_bytes = source_data
+    for spelling in spellings(canary):
+        before_bytes = before_bytes.replace(spelling, b"\0")
+        data = data.replace(spelling, b"\0")
+    for piece in sorted(pieces):
+        if piece in after_text and piece not in before_text:
+            found.append(piece)
+            continue
+        if any(s in data and s not in before_bytes for s in spellings(piece)):
+            found.append(piece)
+    return found
 
 
 if __name__ == "__main__":

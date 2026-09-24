@@ -179,13 +179,24 @@ fn stream_body(pdf: &[u8], number: usize) -> String {
 /// Assert `needle` is absent from the normalised output, naming what it is.
 fn assert_absent(pdf: &[u8], needle: &[u8], what: &str) {
     let normalised = decompressed(pdf);
-    assert!(
-        !normalised
-            .windows(needle.len())
-            .any(|window| window == needle),
-        "{what}: {} survived the redaction",
-        String::from_utf8_lossy(needle)
-    );
+    // AND AS ASCII HEX, in either case: the rewriter re-emits every KEPT code as a hex string
+    // (`<4B454550>`), so a canary a redaction left standing is spelled that way in its output and
+    // a literal-only scan reads it as gone. Found by #176's review.
+    let hex: String = needle.iter().map(|byte| format!("{byte:02X}")).collect();
+    for spelling in [
+        needle.to_vec(),
+        hex.clone().into_bytes(),
+        hex.to_ascii_lowercase().into_bytes(),
+    ] {
+        assert!(
+            !normalised
+                .windows(spelling.len())
+                .any(|window| window == spelling.as_slice()),
+            "{what}: {} survived the redaction, spelled {}",
+            String::from_utf8_lossy(needle),
+            String::from_utf8_lossy(&spelling)
+        );
+    }
 }
 
 /// Assert `needle` is present, which is the non-vacuity control for [`assert_absent`].
@@ -1979,21 +1990,16 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
     let mut examined = 0usize;
     let declared = declared();
     for name in CARRIER_EVASIONS {
-        let canary = declared
-            .iter()
-            .find(|(file, _, _)| file == name)
-            .and_then(|(_, _, canary)| canary.clone())
-            .unwrap_or_else(|| {
-                panic!("{name}: a carrier fixture the manifest does not declare, or declares no canary for")
-            });
-        let canary = canary.as_str();
+        let canaries = canaries_of(&declared, name);
         let path = directory.join(name);
         let pdf = std::fs::read(&path).unwrap_or_else(|error| {
             panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
         });
         // NON-VACUITY FIRST. A fixture whose canary is not in it measures nothing, and these
         // are generated, so a generator change could quietly empty one.
-        assert_present(&pdf, canary.as_bytes(), name);
+        for canary in &canaries {
+            assert_present(&pdf, canary.as_bytes(), name);
+        }
         examined += 1;
         match redact(&pdf) {
             Err(error) => {
@@ -2027,7 +2033,11 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
                      stopped measuring what it was written for: {text}"
                 );
             }
-            Ok((out, _)) => assert_absent(&out, canary.as_bytes(), name),
+            Ok((out, _)) => {
+                for canary in &canaries {
+                    assert_absent(&out, canary.as_bytes(), name);
+                }
+            }
         }
     }
     assert_eq!(
@@ -2148,8 +2158,9 @@ fn manifest() -> serde_json::Value {
     serde_json::from_str(&text).expect("the manifest export is JSON")
 }
 
-/// Each declared fixture's file name, `probes_refusal` group, and first placement's canary.
-fn declared() -> Vec<(String, Option<String>, Option<String>)> {
+/// Each declared fixture's file name, `probes_refusal` group, and EVERY placement's canary --
+/// the first placement's alone let a second canary in the same fixture go unasked (#176's review).
+fn declared() -> Vec<(String, Option<String>, Vec<String>)> {
     let manifest = manifest();
     manifest["fixture"]
         .as_array()
@@ -2161,12 +2172,32 @@ fn declared() -> Vec<(String, Option<String>, Option<String>)> {
                 .expect("every fixture names a file");
             let name = file.rsplit('/').next().unwrap_or(file).to_owned();
             let group = fixture["probes_refusal"].as_str().map(str::to_owned);
-            let canary = fixture["placement"][0]["canary"]
-                .as_str()
-                .map(str::to_owned);
-            (name, group, canary)
+            let canaries = fixture["placement"]
+                .as_array()
+                .map(|placements| {
+                    placements
+                        .iter()
+                        .filter_map(|placement| placement["canary"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (name, group, canaries)
         })
         .collect()
+}
+
+/// The canaries `name` declares, refusing a fixture the manifest does not list or gives none.
+fn canaries_of(declared: &[(String, Option<String>, Vec<String>)], name: &str) -> Vec<String> {
+    let canaries = declared
+        .iter()
+        .find(|(file, _, _)| file == name)
+        .map(|(_, _, canaries)| canaries.clone())
+        .unwrap_or_default();
+    assert!(
+        !canaries.is_empty(),
+        "{name}: a fixture the manifest does not declare, or declares no canary for"
+    );
+    canaries
 }
 
 #[test]
@@ -2226,13 +2257,10 @@ fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
             ),
             // AND THE CANARY IS GONE. Redacting is not the claim; the secret leaving is.
             (Ok((out, _)), None) => {
-                let canary = declared
-                    .iter()
-                    .find(|(declared, _, _)| declared == name)
-                    .and_then(|(_, _, canary)| canary.clone())
-                    .unwrap_or_else(|| panic!("{name}: the manifest declares no canary"));
-                assert_present(&pdf, canary.as_bytes(), name);
-                assert_absent(&out, canary.as_bytes(), name);
+                for canary in canaries_of(&declared, name) {
+                    assert_present(&pdf, canary.as_bytes(), name);
+                    assert_absent(&out, canary.as_bytes(), name);
+                }
                 redacted += 1;
             }
         }

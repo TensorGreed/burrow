@@ -2932,30 +2932,67 @@ could see.
 
 ### What the first run found
 
-Sixteen disagreements, and none was a leak:
+Sixteen disagreements. **Thirteen of them are leaks**: the first version of this amendment said
+none was, and both reviews measured that as false.
 
 - **Thirteen are #125.** Image, vector-path, `/AcroForm` and `/StructTreeRoot` shapes redact
-  today where the manifest says *refused*: §5's owed signals, exactly as §5 describes them. They
-  now carry `owed_by = 125`, which is printed on every run and **fails once the document
-  refuses**, so a marker cannot outlive the work it waits for.
+  today where the manifest says *refused*. These are §5's owed signals, exactly as §5 describes
+  them, and they carry `owed_by = 125`. **A redaction that returns Ok over each of them leaves its
+  canary or its carrier in the output.** Four still hold the literal secret: `acroform-field`,
+  `evade-widget-on-another-page`, `evade-field-with-no-widget` and
+  `evade-struct-without-structparents`. That is what #125 is: a ship blocker. The first version
+  counted these placements and ran no witness on them, while the manifest header said an owed
+  marker "never excuses a canary still witnessed". Now every owed placement that redacts is
+  witnessed:
+  - the leaks are printed by name on every run;
+  - their number is pinned (`OWED_LEAKS_EXPECTED`), so a new one fails, and so does one fewer;
+  - a marker fails once its document refuses, so it cannot outlive the work it waits for;
+  - the markers per issue are pinned as well (`{125: 14, 131: 1}`), so adding one is a decision
+    and not an edit.
 - **`08-type3-glyph` refuses where §3 says *handle*.** The walk does not descend a glyph
   procedure, so the fail-closed refusal stands in until #131. It carries `owed_by = 131` in the
   other direction: a refusal is allowed, and **a canary still witnessed after a redaction never
   is**.
 - **Channels 6 and 21 contradicted themselves in the manifest.** Each had two placements with the
-  same canary and the same `font-cmap` witness: the page text expected *gone*, and the cmap
-  residue expected *present*. One instrument cannot show both. The cmap is §7's disclosed
-  residue, and the page text of a CID font with no usable `/ToUnicode` is one of §6's channels
-  that no permitted instrument can read. So the page-text placements carry `after_unwitnessed`
-  with that reason, printed on every run rather than judged by a witness that cannot see them.
-  The glyphs' removal is asserted by the operation's own geometry read-back, and **#111's
-  circularity applies to it unchanged**.
+  same canary and the same `font-cmap` witness. The page text expected *gone*, and the cmap
+  residue expected *present*, and one instrument cannot show both. The first version exempted
+  the page-text placements as unjudgeable (`after_unwitnessed`). **A review showed they are
+  not**:
+  - With `/CIDToGIDMap /Identity`, a content-stream code *is* a glyph id, and the font's own
+    format-4 cmap, inverted, says which character that glyph draws.
+  - The `cid-codes` witness reads the page's codes that way. The placements declare it as
+    `witness_after`, and the before-check requires it to find the canary in the input too, so its
+    silence afterwards is a removal and not a blind spot.
+  - The exemption is gone, and the field is now refused.
+
+### Gone means none of it
+
+Every witness asks for the whole canary, so **removing one glyph of it scored "gone"**. Both
+reviews measured this. Six hand-built fixtures drew canaries longer than `pdfbuild.REGION` is
+wide: the redaction took the front of each and left the tail on the page (`ARMISS`, `DFORM`,
+`RE-PAGE`), and each was judged gone.
+
+A gone placement is now also checked for five-character fragments of its canary that survive:
+- in the output's PDFium text, whitespace squashed;
+- in its expanded bytes, in every spelling, **ASCII hex included**. The rewriter re-emits every
+  kept code as hex, so a kept canary is spelled `<4255...>` in the output and in no other way.
+  `redaction_defences.rs::assert_absent` was blind to it for the same reason and now checks that
+  spelling too.
+
+A fragment counts only if the input held it nowhere but inside the canary. Whole occurrences are
+removed from both sides first, so a whole canary surviving through another channel is reported
+once, by its own placement. The six canaries were shortened to fit the region. The self-test
+plants a region that clears only part of a canary and requires the refusal.
 
 ### The count
 
-**90 of 90 placements judged: 42 gone, 5 present, 26 refused, 15 owed to their issue, 2 that no
-instrument can judge after.** The denominator is every placement that declares an after-state,
-including any fixture refused before the run, so a narrowed sweep cannot read as a full one.
+**90 of 90 placements accounted for:**
+- 49 judged by their own witness (44 gone, 5 present);
+- 26 by a named refusal;
+- 15 owed to their issue, of which 13 still disclose and are listed.
+
+The denominator is every placement that declares an after-state, including any fixture refused
+before the run, so a narrowed sweep cannot read as a full one.
 
 ### And the carrier canaries stop being a copy
 
