@@ -115,7 +115,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | text in a **Form XObject** | **handle** — follow the resource graph |
 | text in a **Type 3 `/CharProcs`** | **handle** — same walk |
 | text straddling **two `/Contents` streams** | **handle** — see §4 |
-| `/ActualText` and `/Alt` on marked content in the region | **handle** — it is in the page's own stream |
+| `/ActualText` and `/Alt` on marked content in the region | **handle** — it is in the page's own stream. Implemented #165; the entry is **dropped**, not narrowed, and §7 says what that costs |
 | **annotations** whose `/Rect` intersects the region | **handle** — `/Annots` is on the page. Remove the annotation entirely; pruning its `/Contents` and keeping its appearance is two chances to miss one |
 | the page's **`/Thumb`** | **handle** — strip unconditionally on any redacted page |
 | page **`/Metadata`**, **`/PieceInfo`**, and every unlisted page key | **handle** — §2's allowlist |
@@ -303,6 +303,16 @@ redacted page cannot see metadata**, so a disclosure they cannot act on is a cav
 > saved, it is still in this file. **Check File → Properties, and check the attachments panel.**
 > If either holds what you were removing, the fix is in the program you made the document with,
 > not here.
+>
+> **If the passage you redacted from had alternative text, all of it is gone — not just the part
+> you removed.** A tagged document can carry a written-out version of what a passage says, which
+> a screen reader reads *instead of* the letters on the page. That version covers the whole
+> passage as one piece of writing, with nothing in it to say which words belong to the part you
+> removed — so Not Only PDF removes the whole thing rather than guessing at a shorter one. A
+> screen reader now reads the passage's own letters, which are right for everything that stayed.
+> What is lost is the author's wording for the rest of that passage. **Nothing on the page shows
+> this**, and the person it affects is not the person doing the redacting, which is why it is
+> written here rather than left to be discovered.
 >
 > **A font that was used only for the text you removed still says which letters that text used.**
 > Not the words, and not the order — the set of characters. Rebuilding a font is a thing Not Only
@@ -2295,3 +2305,93 @@ Two other things went wrong that are worth writing down rather than quietly fixi
   worktree with a `timeout` per run, and a hang is reported as `caught (HUNG)` — which is the
   honest verdict, since a suite that cannot finish without the bound is a suite the bound is
   load-bearing in.
+
+## Amendment, 2026-09-24 — #165: the marked-content rewriter, and why the entry is dropped
+
+§1 assigned `/ActualText` and `/Alt` on marked content to **handle** and nothing implemented it;
+the previous amendment closed the resulting leak by refusing. This implements the decision.
+
+### The measurement the choice turns on
+
+The obvious alternative to dropping is narrowing — shorten the replacement to match the glyphs
+that remain. One page, one sixteen-character `/ActualText`, varying how many of the span's glyphs
+are drawn:
+
+| glyphs drawn | what PDFium extracts |
+|---|---|
+| 16 of 16 | the whole string |
+| 12 | the whole string |
+| 8 | the whole string |
+| 4 | the whole string |
+| 0 | nothing |
+
+**Removing part of a span reduces what a reader shows by nothing.** The replacement survives
+whole until the last glyph is gone.
+
+That changes what narrowing *is*. It is not a tidier drop; it is the only operation that would
+reduce exposure at all — and `/ActualText` is a **replacement** for the span, with no
+character-to-glyph correspondence to narrow along. There is nothing to compute a shorter version
+from, and inventing one puts words into a document that a screen reader then speaks as the
+author's.
+
+I had previously recorded, in conversation rather than here, that PDFium truncates the string to
+the glyph count. That was wrong, and it was the premise the narrowing option rested on.
+
+### The third option, and why it is not the answer either
+
+Refusing when a span is only *partly* removed is safe and was considered. It refuses the ordinary
+case: a paragraph containing one redacted name **is** a partly-removed span. §5's rule about
+near-misses is the same argument — a signal that fires on the ordinary shape is an outage, not a
+signal.
+
+### So: drop the entry
+
+Both keys, for both reasons. `/ActualText` is a replacement and cannot be shortened honestly.
+`/Alt` is a *description* rather than a replacement — but a description of content that has been
+partly removed is false, and false alternative text is worse than absent alternative text.
+
+Dropping is required even when the span goes wholly: a reader then shows nothing, and the string
+is still in the file, recoverable with `qpdf --qdf` by anyone holding it.
+
+**§7 now carries what this costs**, in ADR 0019 §4's voice and for a reason that is not the usual
+one. Every other disclosure there is a limit on what the redaction achieved, addressed to the
+person who asked for it. This one is a cost imposed on a **different person** — a screen-reader
+user, reading content that was never redacted — and nothing on the page reveals it. That is
+exactly the kind of limit that is never discovered until someone complains, which is the argument
+for writing it down rather than for treating it as an implementation detail.
+
+### How it is implemented
+
+`carried_text_edits` returns the property-list spans to rewrite; `without_carried_keys` rebuilds
+each dictionary **from the parse** rather than splicing the bytes, because a string value may
+contain `>>` and cutting on that pattern would truncate the dictionary and take every later key
+with it — including `/MCID`, which is how a tagged document is stitched to its structure tree.
+
+`remove_glyphs_and_carried_text` applies the glyph cuts and the property rewrites **in one pass**.
+Both are spans into the same original bytes: stripping first moves every glyph span, and stripping
+afterwards means looking for glyphs that are no longer there to decide which spans covered them.
+
+The scope walk is shared with the checker rather than written twice. Two walks answering "which
+spans cover a removal" is two walks that can disagree, and every leak on this seam has been an
+answer smaller than the truth — a stripper finding fewer spans than the checker would leak
+exactly the difference, silently, where the checker had already said `Ok`.
+
+### What changed as a consequence
+
+- **`Refusal::MarkedContentCarriesText` is gone.** Nothing raises it; the case is handled. A
+  first draft kept the variant with a comment about a future non-rewriting caller, and this
+  module's own gate calls an unraised variant a rule that cannot fire.
+- **The corpus reflow check does not apply to these documents.** Dropping the replacement makes
+  PDFium stop reporting it and start reporting what the glyphs say — characters that were drawn
+  all along and that the span was hiding. "Appears and was not drawn before" is false about the
+  document and true about the oracle, the same shape as the line-final hyphen `canonical_unicode`
+  exists for. Skipped by name; `redaction_defences.rs::CARRIER_EVASIONS` asserts the canary is
+  absent from the output **bytes**, which is the claim that matters and the one the text layer
+  cannot make.
+
+### The census
+
+**49 of 56 redact, 7 refuse, 0 quiet** — up from 42. All seven `/ActualText` fixtures flipped from
+refusing to redacting with their canaries gone from the bytes. What still refuses is Type 3
+procedures that draw, a pattern, and two documents whose marked-content properties are named
+through `/Properties` — which is #166, and the only marked-content refusal left.

@@ -34,8 +34,8 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, ScopedFont, check_form_sharing, check_marked_content,
-    check_type_three_procedure, glyphs_in, remove_glyphs, remove_glyphs_across,
+    FormsReached, Glyph, ScopedFont, carried_text_edits, check_form_sharing, check_marked_content,
+    check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -75,6 +75,14 @@ pub(crate) struct QpdfRedaction {
     clock: Arc<dyn Clock>,
     /// The glyphs the region reaches, resolved once by `affected_streams`.
     cut: Vec<Glyph>,
+    /// The `Do` names in the page's own stream that lead to a removed glyph.
+    ///
+    /// Resolved once in `affected_streams` and used again in `rewrite`, because recomputing it
+    /// there would be a second answer to "which spans cover a removal" — and this seam's whole
+    /// history is two answers that differed by exactly the leak.
+    page_draws: BTreeSet<Vec<u8>>,
+    /// The same, per form on a path to a removed glyph.
+    form_draws: BTreeMap<u64, BTreeSet<Vec<u8>>>,
 }
 
 impl QpdfRedaction {
@@ -117,6 +125,8 @@ impl QpdfRedaction {
             deadline,
             clock,
             cut: Vec::new(),
+            page_draws: BTreeSet::new(),
+            form_draws: BTreeMap::new(),
         })
     }
 
@@ -354,6 +364,9 @@ impl Steps for QpdfRedaction {
         let reached_forms: BTreeSet<u64> =
             cut.iter().filter_map(|glyph| glyph.source.form).collect();
         let (page_names, form_scope) = marked_content_scope(&resources, &reached_forms)?;
+        // REFUSES ONLY WHAT THE REWRITER CANNOT HANDLE. `/ActualText` and `/Alt` written out
+        // are dropped by `carried_text_edits` in `rewrite`; a property list named through
+        // `/Properties` is still unreadable here and still refuses. That is #166.
         check_marked_content(
             contents.bytes(),
             &cut,
@@ -385,11 +398,44 @@ impl Steps for QpdfRedaction {
             .iter()
             .map(|glyph| glyph.source.form.map_or(StreamId::Page, StreamId::Object))
             .collect();
+        // AND EVERY STREAM CARRYING A SPAN OVER A REMOVAL, which is not the same set. A page
+        // whose only involvement is `/Span << /ActualText … >> BDC /X1 Do EMC` has no removed
+        // glyph of its own, so it was not in this list -- and the stream holding the text to
+        // drop would never have been rewritten. The same cross-stream shape as the refusal this
+        // replaces, one step further on.
+        if !carried_text_edits(
+            contents.bytes(),
+            &cut,
+            None,
+            &FormsReached::Named(&page_names),
+        )?
+        .is_empty()
+        {
+            streams.push(StreamId::Page);
+        }
+        for (form, names) in &form_scope {
+            self.deadline.checkpoint(self.clock.as_ref())?;
+            if !carried_text_edits(
+                &find_form(&resources, *form)?,
+                &cut,
+                Some(*form),
+                &FormsReached::Named(names),
+            )?
+            .is_empty()
+            {
+                streams.push(StreamId::Object(*form));
+            }
+        }
         streams.sort_unstable();
         streams.dedup();
+        let draws = (page_names, form_scope);
         drop(resources);
         drop(elements);
         drop(page);
+        // ASSIGNED AFTER THE HANDLES ARE DROPPED. `page` borrows `self`, so recording the scope
+        // before that point borrows it twice.
+        self.page_draws = draws.0;
+        self.form_draws = draws.1.into_iter().collect();
         self.cut = cut;
         Ok(streams)
     }
@@ -421,7 +467,15 @@ impl Steps for QpdfRedaction {
                     .filter(|glyph| glyph.source.form.is_none())
                     .cloned()
                     .collect();
-                let parts = remove_glyphs_across(&contents, None, &mine)?;
+                // THE COMBINED PASS: the glyph cuts and the carried text in one application,
+                // because both are spans into these same bytes. See
+                // `remove_glyphs_and_carried_text`.
+                let parts = remove_glyphs_and_carried_text(
+                    &contents,
+                    None,
+                    &mine,
+                    &FormsReached::Named(&self.page_draws),
+                )?;
                 if parts.len() != elements.len() {
                     // probe-allowed: a burrow invariant, not a judgement about the file
                     return Err(Error::Internal(
@@ -450,7 +504,23 @@ impl Steps for QpdfRedaction {
                     .filter(|glyph| glyph.source.form == Some(id))
                     .cloned()
                     .collect();
-                let edited = remove_glyphs(&form, Some(id), &mine)?;
+                // THE SAME COMBINED PASS FOR A FORM. A form can both hold removed glyphs and
+                // carry the span covering them -- `evade-actualtext-inside-a-form` is exactly
+                // that -- so doing only the glyphs here would leave the text it replaces.
+                let empty = BTreeSet::new();
+                let draws = self.form_draws.get(&id).unwrap_or(&empty);
+                let parts = remove_glyphs_and_carried_text(
+                    &crate::pdfsyntax::contents::Contents::concatenate(&[&form])?,
+                    Some(id),
+                    &mine,
+                    &FormsReached::Named(draws),
+                )?;
+                let edited = parts.into_iter().next().ok_or_else(|| {
+                    // probe-allowed: a burrow invariant, not a judgement about the file
+                    Error::Internal(
+                        "pdf redaction: the splice returned no stream for a form".to_owned(),
+                    )
+                })?;
                 // NO TYPE CHECK HERE, and its absence is deliberate. `form_handle` returns
                 // only entries whose `type_code()` is `STREAM` and otherwise refuses with
                 // `form-vanished`, so a check here could not fire -- a review planted a

@@ -296,7 +296,7 @@ fn burrows_placement_agrees_with_pdfium_on_every_document_that_draws_a_form() {
         // substitution, not the placement.
         //
         // Skipped and named rather than tolerated: these documents are refused by
-        // `marked-content-carries-text` before any redaction reads their geometry, so nothing
+        // the marked-content rewriter before any redaction reads their geometry, so nothing
         // downstream depends on the comparison this cannot make.
         if bytes
             .windows(b"/ActualText".len())
