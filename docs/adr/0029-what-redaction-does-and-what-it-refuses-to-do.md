@@ -2793,7 +2793,11 @@ beside the corpus, and each near-miss is checked for its canary in the output by
   and now checkpoints per resource dictionary, not only per page. The second review measured one
   page's worth of forms sharing one `/Properties` at **44.3 s against a 1 s deadline**, because the
   walk re-listed the shared dictionary for every form and checked the deadline only per page.
-  `/Properties` is now memoised by identity, and a time-bounded test pins it.
+  `/Properties` is now memoised by identity. It is pinned by a **count**, not a clock: the first
+  test bounded wall-time and could not fail, because at a thousand forms the memo saves 2 s
+  inside a 4.8 s run that is mostly opening the document. The guarded sweep said so, since that
+  mutation survived. `sharing_tests` now asserts that forty forms sharing one `/Properties` list
+  it once.
 - **Two more the second review found in this change's own optional-content walk, both fixed.** One
   memo served "queued as a font" and "read as resources". A dictionary that was the page's font and
   an appearance's `/Resources` was skipped as the second, and the layer in it went unread. That was
@@ -2825,7 +2829,11 @@ column, never as a catch. Run that way over the fix commit, it planted 31 mutati
 - the property-list identity memo, pinned by time on 4,000 names sharing one 100 kB list;
 - the stream check on a `/Properties` *entry*, as opposed to the category.
 
-Two survive and are stated rather than tested:
+A second guarded sweep over the round-two defences planted 10 mutations. It caught 8, then 9 once
+the `/Properties` memo was pinned by a count. The survivor is the sharing walk's per-dictionary
+checkpoint, which the per-page one precedes.
+
+From the first sweep, two survive and are stated rather than tested:
 - **the optional-content walk's per-object deadline checkpoint**, which the sharing walk's page
   checkpoints always precede;
 - **its resource-dictionary memo**, which only affects speed. The sharing walk's 4,096-dictionary

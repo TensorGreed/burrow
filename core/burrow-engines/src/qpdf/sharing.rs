@@ -175,9 +175,22 @@ pub(crate) struct FormUseCounts {
     content_refs: BTreeMap<ObjectId, usize>,
     /// Which pages reference each content stream object.
     content_pages: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
+    /// How many `/Properties` dictionaries the walk listed, for the test that pins the memo.
+    #[cfg(test)]
+    properties_listed: usize,
 }
 
 impl FormUseCounts {
+    /// How many `/Properties` dictionaries the walk listed.
+    ///
+    /// A count rather than a clock, because the cost the memo removes is small beside the cost
+    /// of opening a document large enough to show it: 2.8 s against 4.8 s at a thousand forms,
+    /// which no wall-clock bound separates reliably on a slower machine.
+    #[cfg(test)]
+    pub(crate) const fn properties_listed(&self) -> usize {
+        self.properties_listed
+    }
+
     /// How many places draw the form with this identity.
     ///
     /// Zero for an object this walk never reached, which a caller should treat as "not a form
@@ -333,6 +346,8 @@ pub(crate) fn count_form_uses(
         container: None,
         fonts_read: BTreeSet::new(),
         properties_read: BTreeSet::new(),
+        #[cfg(test)]
+        properties_listed: 0,
         deadline,
         clock,
         dictionaries_read: 0,
@@ -369,6 +384,8 @@ pub(crate) fn count_form_uses(
         font_part_names: walk.font_parts.clone(),
         content_refs: walk.content_refs.clone(),
         content_pages: walk.content_pages.clone(),
+        #[cfg(test)]
+        properties_listed: walk.properties_listed,
         fonts,
     })
 }
@@ -494,6 +511,8 @@ struct Walk<'a> {
     /// from every form's resources was re-listed once per form: a security review measured 4,000
     /// forms over one 4,000-entry dictionary at **44.3 s against a 1 s deadline**.
     properties_read: BTreeSet<ObjectId>,
+    #[cfg(test)]
+    properties_listed: usize,
     /// The operation's deadline, consulted per resource dictionary as well as per page. One page
     /// can hold every form in the document, so a per-page checkpoint alone let that 44 s run
     /// inside a single step.
@@ -714,6 +733,10 @@ impl Walk<'_> {
         let identity = properties.object()?;
         if identity != (0, 0) && !self.properties_read.insert(identity) {
             return Ok(());
+        }
+        #[cfg(test)]
+        {
+            self.properties_listed += 1;
         }
         for name in self.keys_of(&properties)? {
             let entry = properties.key(&name);

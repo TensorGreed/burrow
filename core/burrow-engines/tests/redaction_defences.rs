@@ -2718,43 +2718,6 @@ fn an_optional_content_mark_inside_an_appearance_stream_is_refused() {
 }
 
 #[test]
-fn one_shared_properties_dictionary_is_checked_once_however_many_forms_reach_it() {
-    // KILLS: the `/Properties` identity memo in the sharing walk. A security review measured the
-    // shape without it at 44.3 s against a 1 s deadline, release build, from 1.75 MB.
-    let page = page_shaped(|pdf, f| {
-        let entries: String = (0..2000)
-            .map(|at| format!("/M{at} << /MCID {at} >> "))
-            .collect();
-        let shared = pdf.add(&format!("<< {entries}>>"));
-        let forms: String = (0..1000)
-            .map(|at| {
-                let form = pdf.stream(
-                    &format!(
-                        " /Type /XObject /Subtype /Form /BBox [0 0 10 10] \
-                         /Resources << /Properties {shared} 0 R >>"
-                    ),
-                    "",
-                );
-                format!("/X{at} {form} 0 R ")
-            })
-            .collect();
-        (
-            format!("<< /Font << /F1 {f} 0 R >> /XObject << {forms}>> >>"),
-            String::new(),
-            String::new(),
-        )
-    });
-    let started = std::time::Instant::now();
-    let (out, _) = redact(&page).expect("forms sharing an ordinary /Properties redact");
-    let took = started.elapsed();
-    assert_absent(&out, b"SECRET", "a page whose forms share one /Properties");
-    assert!(
-        took < std::time::Duration::from_secs(10),
-        "1,000 forms over one 2,000-entry /Properties took {took:?}; it is re-read per form"
-    );
-}
-
-#[test]
 fn many_names_on_one_large_property_list_classify_it_once() {
     // KILLS: disabling `PropertyScopes`' identity memo. A security review measured the shape
     // before the memo existed: thousands of names pointing at one large list, each unparsed and

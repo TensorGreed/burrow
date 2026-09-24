@@ -926,3 +926,36 @@ fn a_contents_array_at_the_element_ceiling_is_walked() {
         "every reference is counted, including the repeats"
     );
 }
+
+#[test]
+fn one_shared_properties_dictionary_is_listed_once_however_many_forms_reach_it() {
+    // KILLS: the `/Properties` identity memo. A security review of #166 measured the shape
+    // without it at 44.3 s against a 1 s deadline: every form's resources re-listed the one
+    // shared dictionary. Pinned by a count, not a clock -- see `properties_listed`.
+    let forms = 40;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+    ];
+    let names: String = (0..forms)
+        .map(|at| format!("/X{at} {} 0 R ", at + 6))
+        .collect();
+    objects.push(format!(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R \
+         /Resources << /XObject << {names}>> >> >>"
+    ));
+    objects.push(stream("", ""));
+    objects.push("<< /M0 << /MCID 0 >> /M1 << /MCID 1 >> >>".to_owned());
+    for _ in 0..forms {
+        objects.push(stream(
+            "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /Properties 5 0 R >>",
+            "",
+        ));
+    }
+    let counts = count(&open(document(&objects))).expect("the walk accepts it");
+    assert_eq!(
+        counts.properties_listed(),
+        1,
+        "{forms} forms share one /Properties; it must be listed once"
+    );
+}
