@@ -232,6 +232,145 @@ def evade_text_in_type3_via_form() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_type3_font_named_only_inside_a_form() -> bytes:
+    """The Type 3 font is named by a FORM's `/Resources`, and the page has a decoy of that name.
+
+    `check_type_three` collected `glyph.source.font` -- a name in whatever scope drew the glyph --
+    and resolved every one against the PAGE's `/Font`. The page's `/T3` here is an ordinary Type 1,
+    so the check `continue`s, the procedure is never read, and the `Do` rule added for
+    `evade-text-in-type3-via-form` never runs. Measured by a security review: `Ok`, and the
+    secret's drawing operators still in the output.
+
+    Name versus identity, one dictionary down -- the crossing `core/CLAUDE.md` forbids and the
+    same root cause as every other round on this branch.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, y0, x1, y1 = REGION
+    held = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv 20 Tf 0 0 Td " + literal(secret("TYPE3-IN-FORM")) + b" Tj ET\n",
+    )
+    proc = pdf.stream(b"", f"{x1 - x0} 0 0 0 {x1 - x0} {y1 - y0} d1\n".encode() + b"/Held Do\n")
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3res = pdf.add(b"<< /XObject << /Held " + str(held).encode() + b" 0 R >> >>")
+    real_t3 = pdf.add(
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 " + f"{x1 - x0} {y1 - y0}".encode() + b"]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [" + str(x1 - x0).encode() + b"]"
+        b" /Resources " + str(t3res).encode() + b" 0 R >>"
+    )
+    # THE FORM NAMES THE REAL ONE; the page names a decoy under the same name.
+    wrapper = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /T3 " + str(real_t3).encode() + b" 0 R >> >>",
+        b"BT /T3 1 Tf " + f"{x0} {y0} Td ".encode() + literal("a") + b" Tj ET\n",
+    )
+    decoy = pdf.add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /T3 >>")
+    content = b"/Wrap Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /T3 " + str(decoy).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Wrap " + str(wrapper).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_tounicode_in_a_form_local_font() -> bytes:
+    """The font whose `/ToUnicode` maps the removed codes is named only by a FORM.
+
+    `cut_fonts` enumerated the page's `/Font` keys, so a font named only inside a form was never
+    narrowed. Measured: both glyphs came out of the content stream, the report said `cut: true`
+    for the page's Helvetica, and the form font's `/ToUnicode` still mapped `<0058>` and `<0059>`
+    in the output.
+
+    `/ToUnicode` IS the removed character, in plain text, beside the page it was cut from -- the
+    channel `narrow_to_unicode` exists to close, reached by naming the font one dictionary down.
+    ADR 0029 §6's read-back missed it too, because `mapped_codes` enumerated the page as well.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    cmap = (
+        b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n"
+        b"1 begincodespacerange\n<20> <7e>\nendcodespacerange\n"
+        b"2 beginbfchar\n<58> <0058>\n<59> <0059>\nendbfchar\nendcmap\n"
+        b"CMapName currentdict /CMap defineresource pop\nend\nend\n"
+    )
+    tou = pdf.stream(b"", cmap)
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /FF"
+        b" /ToUnicode " + str(tou).encode() + b" 0 R >>"
+    )
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /FF " + str(font).encode() + b" 0 R >> >>",
+        b"BT /FF " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode() + b"(XY) Tj ET\n",
+    )
+    content = b"/Fm Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Fm " + str(form).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_tounicode_on_a_page_font() -> bytes:
+    """The same document with the font named by the PAGE. Always worked; proves the shape is fine.
+
+    The twin for `evade-tounicode-in-a-form-local-font`: if narrowing broke for both, the evasion
+    fixture would be measuring the narrowing rather than the scope it is named for.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    cmap = (
+        b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n"
+        b"1 begincodespacerange\n<20> <7e>\nendcodespacerange\n"
+        b"2 beginbfchar\n<58> <0058>\n<59> <0059>\nendbfchar\nendcmap\n"
+        b"CMapName currentdict /CMap defineresource pop\nend\nend\n"
+    )
+    tou = pdf.stream(b"", cmap)
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /FF"
+        b" /ToUnicode " + str(tou).encode() + b" 0 R >>"
+    )
+    content = (
+        b"BT /FF " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode() + b"(XY) Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /Helv " + str(helv).encode() + b" 0 R /FF " + str(font).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_form_carrying_its_own_font() -> bytes:
+    """A form with its own `/Resources /Font`, plain text, no Type 3. MUST NOT be refused.
+
+    The availability half of the same defect, and the reason it matters beyond the leak: resolving
+    a form's font name against the page alone failed this ORDINARY document with
+    `font-missing: the content stream selects a font the page's resources do not name` -- blaming
+    the file for a lookup that searched one scope. Producers emit this shape routinely.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    own = pdf.add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /F9 >>")
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /F9 " + str(own).encode() + b" 0 R >> >>",
+        b"BT /F9 " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("FORM-OWN-FONT")) + b" Tj ET\n",
+    )
+    content = b"/Fm Do\n" + keep_line_ops()
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Fm " + str(form).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_type3_procedure_that_only_shows_its_own_glyph() -> bytes:
     """A Type 3 glyph procedure that draws a PATH and nothing else. MUST NOT be refused.
 
@@ -907,6 +1046,10 @@ CASES: list[tuple[str, str, str]] = [
     ("evade-image-in-type3-glyph", "image", "refuse"),
     ("evade-text-in-type3-via-form", "Type 3 procedure", "refuse"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure", "handle"),
+    ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure", "refuse"),
+    ("nearmiss-form-carrying-its-own-font", "Type 3 procedure", "handle"),
+    ("evade-tounicode-in-a-form-local-font", "font surgery", "refuse"),
+    ("nearmiss-tounicode-on-a-page-font", "font surgery", "handle"),
     ("nearmiss-image-outside-region", "image", "handle"),
     ("evade-paths-in-form", "vector paths", "refuse"),
     ("evade-paths-in-type3-glyph", "vector paths", "refuse"),
@@ -934,6 +1077,10 @@ BUILDERS = {
     "evade-image-in-type3-glyph": evade_image_in_type3_glyph,
     "evade-text-in-type3-via-form": evade_text_in_type3_via_form,
     "nearmiss-type3-procedure-that-only-shows-its-own-glyph": nearmiss_type3_procedure_that_only_shows_its_own_glyph,
+    "evade-type3-font-named-only-inside-a-form": evade_type3_font_named_only_inside_a_form,
+    "nearmiss-form-carrying-its-own-font": nearmiss_form_carrying_its_own_font,
+    "evade-tounicode-in-a-form-local-font": evade_tounicode_in_a_form_local_font,
+    "nearmiss-tounicode-on-a-page-font": nearmiss_tounicode_on_a_page_font,
     "nearmiss-image-outside-region": nearmiss_image_outside_region,
     "evade-paths-in-form": evade_paths_in_form,
     "evade-paths-in-type3-glyph": evade_paths_in_type3_glyph,

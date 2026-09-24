@@ -1174,3 +1174,85 @@ MUST NOT be refused. A procedure that fills its own outline is what a Type 3 fon
 refusing every Type 3 font would pass the evasion and refuse a legitimate font type.
 """
 
+[[fixture]]
+name = "evade-type3-font-named-only-inside-a-form"
+file = "generated/evade-type3-font-named-only-inside-a-form.pdf"
+kind = "hand-built"
+probes_refusal = "Type 3 procedure"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Type 3 font named by a form, shadowed by a decoy of the same name on the page"
+  canary = "BURROW-EVADE-TYPE3-IN-FORM"
+  verdict = "refuse"
+  adr = "§8"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+`check_type_three` resolved every drawn font name against the PAGE, and a glyph drawn inside a
+form carries the form's name. The page's decoy is a Type 1, so the check skipped it and the
+procedure was never read. Name versus identity, one dictionary down.
+"""
+
+[[fixture]]
+name = "nearmiss-form-carrying-its-own-font"
+file = "generated/nearmiss-form-carrying-its-own-font.pdf"
+kind = "hand-built"
+probes_refusal = "Type 3 procedure"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "Type 3 procedure — near-miss twin, an ordinary form with its own /Font"
+  canary = "BURROW-EVADE-FORM-OWN-FONT"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The availability half of the same defect: resolving a form's font name
+against the page alone failed this ordinary document with `font-missing`, blaming the file for a
+lookup that searched one scope. Producers emit this shape routinely.
+"""
+
+[[fixture]]
+name = "evade-tounicode-in-a-form-local-font"
+file = "generated/evade-tounicode-in-a-form-local-font.pdf"
+kind = "hand-built"
+probes_refusal = "font surgery"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /ToUnicode on a font named only inside a Form XObject"
+  canary = "<0058>"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+`cut_fonts` enumerated the page's `/Font` keys, so this font was never narrowed and its
+`/ToUnicode` kept mapping both removed codes. The canary is the CMap entry itself, because that
+is where the removed character survives.
+"""
+
+[[fixture]]
+name = "nearmiss-tounicode-on-a-page-font"
+file = "generated/nearmiss-tounicode-on-a-page-font.pdf"
+kind = "hand-built"
+probes_refusal = "font surgery"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "font surgery — near-miss twin, the same shape with the font on the page"
+  canary = "<0058>"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+Always worked. Without it the evasion fixture could be measuring the narrowing rather than the
+scope it is named for.
+"""

@@ -129,7 +129,10 @@ impl ClearedWitness for QpdfWitness {
         let resources = PageResources::of(&handle)?;
         let mut drawn: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
         for glyph in &glyphs_in(&content, &resources)? {
-            let font = resources.font_object(&glyph.source.font)?;
+            // IN THE SCOPE THAT DREW IT. The read-back resolved against the page too, so
+            // it refused documents the redaction had handled correctly.
+            let font =
+                super::redact_steps::pack(resources.font_in_scope(&glyph.source.font)?.object()?);
             drawn.entry(font).or_default().insert(glyph.source.code);
         }
         Ok(drawn)

@@ -609,6 +609,75 @@ pub struct Glyph {
     pub source: GlyphSource,
 }
 
+/// A font resource name together with the stream that named it.
+///
+/// # A name with no scope was the bug, five times
+///
+/// `Tf /F1` means whatever `/F1` means **in the resources in force where it was read**, and a
+/// glyph drawn inside a Form XObject was named in that form's. This was a bare `Vec<u8>`, and
+/// five separate consumers took one and resolved it against the **page's** `/Font`:
+///
+/// | | consequence |
+/// |---|---|
+/// | `check_type_three` | a decoy `/T3` on the page shadowed a form's real Type 3 font; the procedure was never read and the secret stayed in the output |
+/// | `codes_still_drawn` | `font-missing` on an ordinary document whose form carries its own `/Font` |
+/// | the §6 read-back's `drawn_codes` | the same, refusing a document the redaction had handled |
+/// | `cut_fonts` | a form-local font was never narrowed, so its `/ToUnicode` kept mapping the removed characters |
+/// | `mapped_codes` | the read-back could not see that, for the same reason |
+///
+/// Four rounds of review found four of them one at a time. The fifth was found by looking for
+/// the shape rather than the symptom, which is the argument for making it a type: a name that
+/// does not carry its scope is the same shape as a `/Name` without its slash and a handle
+/// without its document, and this repository has a rule for each of those because each was
+/// found the same way.
+///
+/// So resolving against the wrong scope now has to be **written down**: the only ways to get one
+/// of these are from a glyph, which knows where it was read, and [`Self::on_page`], which says
+/// what it is doing.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScopedFont {
+    /// The Form XObject whose stream named it, or `None` for the page's own content.
+    ///
+    /// **Not the resolving scope by itself.** A form declaring no `/Resources` inherits the
+    /// enclosing ones, so resolution is own-then-enclosing — the rule `Resources::within`
+    /// applies, and the caller doing anything else is the bypass this type exists to prevent.
+    drawn_in: Option<u64>,
+    /// The name as the content stream spells it, without the slash.
+    name: Vec<u8>,
+}
+
+impl ScopedFont {
+    /// A name read in `drawn_in`'s stream.
+    #[must_use]
+    pub fn new(drawn_in: Option<u64>, name: Vec<u8>) -> Self {
+        Self { drawn_in, name }
+    }
+
+    /// A name read in the page's own content stream, or otherwise known to be a page resource.
+    ///
+    /// Spelled out rather than defaulted, so a caller reaching for the page's scope when it
+    /// holds a glyph's has to say so where a reader can see it.
+    #[must_use]
+    pub fn on_page(name: Vec<u8>) -> Self {
+        Self {
+            drawn_in: None,
+            name,
+        }
+    }
+
+    /// The form whose stream named it, or `None` for the page's own content.
+    #[must_use]
+    pub const fn drawn_in(&self) -> Option<u64> {
+        self.drawn_in
+    }
+
+    /// The name as the content stream spells it.
+    #[must_use]
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+}
+
 /// Where a glyph's code sits in the stream that drew it.
 ///
 /// Enough to rewrite the operation that drew it, and no more. The span is the **operation's**,
@@ -626,8 +695,9 @@ pub struct GlyphSource {
     /// two readings of one document that are supposed to agree.
     ///
     /// A resource **name** rather than an object identity, because this module resolves
-    /// nothing: the name is what the content stream says, and the engine side maps it.
-    pub font: Vec<u8>,
+    /// nothing: the name is what the content stream says, and the engine side maps it. It
+    /// carries the stream that named it — see [`ScopedFont`] for the five times that mattered.
+    pub font: ScopedFont,
     /// The character code this glyph was drawn from.
     pub code: u32,
     /// The form this glyph was drawn from, by object identity, or `None` for the caller's own
@@ -2323,7 +2393,7 @@ fn show(
             scaled_font_size: state.text.font_size * scale,
             displacement,
             source: GlyphSource {
-                font: font.clone(),
+                font: ScopedFont::new(shown.form, font.clone()),
                 code,
                 form: shown.form,
                 operation: at.0,

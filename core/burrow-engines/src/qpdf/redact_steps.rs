@@ -34,8 +34,8 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, check_form_sharing, check_marked_content, check_type_three_procedure,
-    glyphs_in, remove_glyphs, remove_glyphs_across,
+    FormsReached, Glyph, ScopedFont, check_form_sharing, check_marked_content,
+    check_type_three_procedure, glyphs_in, remove_glyphs, remove_glyphs_across,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -331,7 +331,10 @@ impl Steps for QpdfRedaction {
         // procedure that shows any text; this is the part that finds the procedures to hand it.
         // EVERY FONT THE PAGE DRAWS WITH, not the fonts the region reached. See the
         // function's header for what the narrower scope missed.
-        let drawn_fonts: BTreeSet<Vec<u8>> = glyphs
+        // THE SCOPE TRAVELS WITH THE NAME, because `ScopedFont` will not let it not. This
+        // collected bare names and `check_type_three` resolved them against the page, which
+        // shadowed a form's Type 3 font behind a page decoy and left the secret in the output.
+        let drawn_fonts: BTreeSet<ScopedFont> = glyphs
             .iter()
             .map(|glyph| glyph.source.font.clone())
             .collect();
@@ -495,7 +498,10 @@ impl Steps for QpdfRedaction {
                 // object and one name can mean different objects on different pages, and font
                 // surgery edits objects. `core/CLAUDE.md`'s identity rule, one level up.
                 //
-                let font = resources.font_object(&glyph.source.font)?;
+                // IN THE SCOPE THAT DREW IT. `font_object` searches the page's `/Font`
+                // only, so an ordinary document whose form carries its own failed with
+                // `font-missing` -- blaming the file for a one-scope lookup.
+                let font = pack(resources.font_in_scope(&glyph.source.font)?.object()?);
                 drawn.entry(font).or_default().insert(glyph.source.code);
             }
         }
@@ -516,13 +522,42 @@ impl Steps for QpdfRedaction {
 
         let mut outcomes = Vec::new();
 
+        // EVERY FONT THE OPERATION DREW WITH, in whatever scope named it. This iterated the
+        // page's `/Font` keys, so a font named only by a form's own `/Resources` was never
+        // narrowed: measured, a form-local font's `/ToUnicode` still mapped both removed
+        // characters in the output, and §6 missed it because `mapped_codes` enumerated the page
+        // too. `/ToUnicode` IS the removed character in plain text.
+        //
+        // Deduplicated by **identity**, because two scopes may name one object and one name may
+        // mean different objects in different scopes -- which is what name-based enumeration was
+        // quietly assuming away.
+        let mut seen: BTreeSet<u64> = BTreeSet::new();
+        let mut scoped: Vec<ScopedFont> = self
+            .cut
+            .iter()
+            .map(|glyph| glyph.source.font.clone())
+            .collect();
         for name in font_names(&resources)? {
-            let font = resources.dictionary().key(&FONT).key(&name);
+            scoped.push(ScopedFont::on_page(name.plain().to_vec()));
+        }
+        scoped.sort();
+        scoped.dedup();
+
+        for scoped_font in &scoped {
+            let Ok(font) = resources.font_in_scope(scoped_font) else {
+                // A name that resolves nowhere is not a font to cut. `font_names` yields the
+                // page's own keys, which always resolve, and a glyph's name resolved once for
+                // the walk to place it; this arm is for neither.
+                continue;
+            };
             if font.type_code() != object_type::DICTIONARY {
                 continue;
             }
             let identity = font.object()?;
             let packed = pack(identity);
+            if !seen.insert(packed) {
+                continue;
+            }
             // ONE EXPRESSION FOR BOTH THE DECISION AND THE DISCLOSURE. `pages_outside` counts
             // the pages an edit to this font would reach -- including through the `/ToUnicode`,
             // `/Encoding` and `/Widths` it names, which can be indirect and shared. Asking
@@ -674,7 +709,7 @@ fn remove_annotations_in(
 }
 
 /// An object identity packed into the `u64` `Form::id` and `FontOutcome::font` use.
-const fn pack(identity: (core::ffi::c_int, core::ffi::c_int)) -> u64 {
+pub(super) const fn pack(identity: (core::ffi::c_int, core::ffi::c_int)) -> u64 {
     // `unsigned_abs`, not `as`: this crate denies sign-losing casts, and an object number is
     // never negative in a document qpdf opened. The same expression as
     // `PageResources::font_object`, because the two pack the same thing and a packing that
@@ -792,13 +827,13 @@ fn check_contents_sharing(
 /// Type 3 font the page draws with is scanned. That over-refuses, which is the direction that
 /// does not leak, and it costs nothing measurable: the redaction corpus's Type 3 documents
 /// still redact, because a bitmap glyph's procedure draws an inline image and shows no text.
-fn check_type_three(resources: &PageResources<'_>, drawn: &BTreeSet<Vec<u8>>) -> Result<()> {
+fn check_type_three(resources: &PageResources<'_>, drawn: &BTreeSet<ScopedFont>) -> Result<()> {
     const SUBTYPE: Name = Name::literal(b"/Subtype\0");
     const TYPE_THREE: Name = Name::literal(b"/Type3\0");
     const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
 
     for font_name in drawn {
-        let font = resources.font_handle(font_name)?;
+        let font = resources.font_in_scope(font_name)?;
         let subtype = font.key(&SUBTYPE);
         if subtype.type_code() != object_type::NAME || subtype.name()? != TYPE_THREE {
             continue;

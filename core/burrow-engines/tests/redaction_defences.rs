@@ -1725,7 +1725,7 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
 /// Read from the generated corpus rather than rebuilt here: these three exist to probe the
 /// cross-stream shapes, and a copy written in this file would be a copy that can drift from the
 /// generator that writes them.
-const CARRIER_EVASIONS: [(&str, &str); 7] = [
+const CARRIER_EVASIONS: [(&str, &str); 10] = [
     (
         "evade-actualtext-around-a-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-FORM",
@@ -1762,6 +1762,15 @@ const CARRIER_EVASIONS: [(&str, &str); 7] = [
         "evade-actualtext-under-a-form-with-two-parents.pdf",
         "BURROW-EVADE-ACTUALTEXT-TWOPARENT",
     ),
+    (
+        "evade-type3-font-named-only-inside-a-form.pdf",
+        "BURROW-EVADE-TYPE3-IN-FORM",
+    ),
+    // THE CANARY IS A CMap ENTRY, not a drawn string: `/ToUnicode` is where the removed
+    // character survives when the font is never narrowed. Its twin is here for the same reason
+    // it exists at all -- if narrowing broke outright, only the twin would tell them apart.
+    ("evade-tounicode-in-a-form-local-font.pdf", "<0058>"),
+    ("nearmiss-tounicode-on-a-page-font.pdf", "<0058>"),
 ];
 
 #[test]
