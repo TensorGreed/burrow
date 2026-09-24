@@ -998,7 +998,6 @@ fn check_type_three(
             if !scanned.insert(pack(entry.object()?)) {
                 continue;
             }
-            watch.now()?;
             let Some(procedure) = entry.stream_data()? else {
                 // Undecodable, so what it draws is unknown, and unknown is not "no text".
                 return Err(Error::Malformed(
