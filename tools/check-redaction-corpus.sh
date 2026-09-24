@@ -22,7 +22,7 @@
 # IT TAKES TWO GENERATORS, AND ONLY ONE WAS DOCUMENTED
 #
 # `make-redaction-fixtures.py` writes the 24 survival channels. `make-evasion-fixtures.py`
-# writes the 15 evasion and near-miss documents. Nothing said so: the security review ran the
+# writes the evasion and near-miss documents (15 then; the manifest has the count now). Nothing said so: the security review ran the
 # first, got 28 files against the sweep's floor of 40, and had to find the second by reading
 # the tools directory. Both are named here so the count is reproducible from one command.
 set -euo pipefail
@@ -88,5 +88,12 @@ tests/redaction/manifest.toml. Neither is something to pass over." >&2
 fi
 
 python3 "$root/tools/check-redaction-corpus.py"
+
+# THE MANIFEST, AS JSON, BESIDE THE DOCUMENTS IT DESCRIBES. The Rust suites need to derive their
+# expectations from it -- which fixtures a check covers, which canary each carries -- and they
+# have `serde_json` and no TOML parser. Converting here, from the one file, keeps the manifest the
+# single source: a hand-written copy in a test beside it is the list that has rotted three times.
+python3 -c 'import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], "rb")), open(sys.argv[2], "w"))' \
+    "$root/tests/redaction/manifest.toml" "$out/manifest.json"
 
 echo "redaction corpus: $generated generated + $committed committed = $((generated + committed)) documents"

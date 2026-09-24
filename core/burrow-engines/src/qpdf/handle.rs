@@ -677,7 +677,7 @@ mod tests {
     fn the_handle_api_is_reachable_only_from_here() {
         // Every sibling that could reach `ffi`, by name. `include_str!` needs a literal, so
         // the contents are listed; what is NOT listed is how many there should be.
-        let siblings: [(&str, &str); 14] = [
+        let siblings: [(&str, &str); 15] = [
             ("assemble.rs", include_str!("assemble.rs")),
             ("compress.rs", include_str!("compress.rs")),
             ("extract.rs", include_str!("extract.rs")),
@@ -686,6 +686,10 @@ mod tests {
             ("name.rs", include_str!("name.rs")),
             ("prune.rs", include_str!("prune.rs")),
             ("redact_frame.rs", include_str!("redact_frame.rs")),
+            (
+                "redact_optional_content.rs",
+                include_str!("redact_optional_content.rs"),
+            ),
             ("redact_steps.rs", include_str!("redact_steps.rs")),
             ("redact_witness.rs", include_str!("redact_witness.rs")),
             ("reorder.rs", include_str!("reorder.rs")),

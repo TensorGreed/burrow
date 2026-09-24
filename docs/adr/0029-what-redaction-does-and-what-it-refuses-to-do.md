@@ -2576,3 +2576,327 @@ detector/rewriter gap fixture below, which refuses by design. What still refuses
 documents whose marked-content properties are named through `/Properties` — which is #166, and the
 only marked-content refusal left that is about a document rather than a shape — and the
 detector/rewriter gap fixture above.
+
+## Amendment, 2026-09-24 — #166: a named property list is resolved, and optional content is refused for its own reason
+
+### What the rule was hiding
+
+`marked-content-properties-unresolved` fired on **every** `BDC` whose property list is a name,
+because nothing resolved `/Properties`. Two corpus documents refused under it, and both are
+optional content — `/OC /MC0 BDC` is named by construction. The outcome was right and the rule
+was not: ADR §1 refuses optional content, and the census said "burrow could not read this span"
+about a document whose actual shape is "this page has layers".
+
+A rule broader than its reason hides how often the narrow reason fires, and here it hid more
+than a count. **Redaction had no optional-content refusal at all.** §3 assigns optional content
+referenced by a kept page to *refuse*, §5 names its signal as the resource-graph walk `prune`
+performs for `split`, and nothing in the redaction steps called it. `13-optional-content.pdf`
+refused because its span happened to be named. Resolving the name removes the accident, and a
+layered page whose layer the region does not cover would then have redacted with nothing saying
+no. §3's decision was being honoured by a coincidence, and the census could not show it.
+
+So #166 is two changes, and the second is the one that mattered.
+
+### 1. A name is resolved against the scope that drew the stream
+
+`/MC0` resolves in the `/Properties` of whatever drew the stream: the page, a form's own
+`/Resources`, or, for a form declaring none, its enclosure. That is the same rule fonts needed,
+and five consumers got it wrong for fonts before `ScopedFont` put the scope in the type. The
+walk that already finds every stream on a path to a removed glyph (`scope_of`) records the
+scope each form resolves through on each path. `pdfsyntax::geometry::NamedProperties` carries
+the result as data, because the geometry module holds no document.
+
+- **Several candidates per name, and the most cautious wins.** A form declaring no `/Resources`
+  reached from two enclosures has two answers. That is the union-over-paths rule the `Do` scope
+  learnt from a leak (#164). First-wins would let the order of the walk decide whether the text
+  is seen.
+- **Empty is the cautious answer.** A name the scope does not define, an entry that is not a
+  dictionary, and a dictionary holding an indirect reference all refuse as
+  `marked-content-properties-unresolved`, which now means exactly that. A reference is a door
+  that was not opened: `/K 5 0 R` could point at `<< /ActualText … >>`.
+- **The same detectors an inline list uses**, on the same parse. A second classifier would be a
+  second answer to "does this carry text", and this seam's history is two answers disagreeing by
+  exactly the leak.
+
+Ceiling: `MAX_PROPERTY_LISTS` (4,096) resolved entries **across all scopes**, refused as
+`properties-too-many`. `pdfsyntax::dict::MAX_KEYS` already caps one dictionary, so this bounds
+forms × keys. Its test has to use two scopes: a one-dictionary fixture measured `MAX_KEYS` and
+would have reported this ceiling as tested.
+
+### 2. A named list carrying text is refused, not rewritten
+
+**`marked-content-named-properties-carry-text`.** §3 assigns `/ActualText` on marked content to
+*handle*, and the inline form is handled by dropping the entry (#165). The named form is
+refused, a narrowing of §3 decided with the project owner on 2026-09-24:
+
+- An inline list lives in the content stream. Dropping its key touches exactly the span it
+  describes.
+- A named list lives in a **resource dictionary**, which is shared by construction. Other spans
+  can name the same entry, and a page's `/Resources` is very often the one every page
+  inherits. Dropping the key there removes alternative text from content nobody asked to
+  redact. That is the damage-elsewhere hazard this record answers with a refusal for shared
+  forms and a disclosure for shared fonts.
+- Rewriting only the `BDC` operand to an inline dictionary leaves the string in the resource,
+  where a raw byte scan finds it.
+
+The session brief for #166 said to handle a named span like an inline one. That was an error
+in the brief, not in the issue: it overlooked that the dictionary is shared while the span is
+not. The issue's original "refuse" was right.
+
+**Scoped to spans the removal is inside**, as the form rule is scoped to glyphs being removed.
+A named carrying span elsewhere on the page does not refuse it:
+`nearmiss-named-actualtext-outside-the-region` redacts. Its first draft put the span round the
+keep line, which `redaction_defences.rs`' band covers, so the span *was* covered and the refusal
+was right. A near-miss has to be outside every region a harness asks about.
+
+**Condition for revisiting: the same as shared forms and fonts.** All three want a count of who
+else uses the object, and then copy-on-write for the shared case, which is blocked on
+`qpdf_oh_new_dictionary`, as the fonts section records.
+
+### 3. The decision is made on what is emitted
+
+`#165`'s lesson was that the post-rewrite check, not the detector, carries the guarantee. For a
+named list the property list is never rewritten, and **no step adds a text-carrying key to any
+dictionary**: every later edit removes keys (font surgery, the page strip, annotation removal)
+or replaces stream data. So a list read before the first edit as carrying nothing cannot carry
+text in the emitted document. An earlier draft said "no step writes a `/Properties` entry",
+which a code review pointed out is not quite true — font surgery removes `/ToUnicode`, and
+nothing stops a font dictionary also being a property list — and "if the two answers ever
+differed the rewrite would refuse", which compares two classifications of one stored snapshot
+and so cannot differ. Both are replaced by the sentence that is true. The scope is carried as
+data rather than re-derived, for the reason `page_draws` is.
+
+### 4. Optional content, refused by the page
+
+`qpdf/redact_optional_content.rs` walks the redacted page's graph before anything else in
+`affected_streams`, and before a blank page's early return. It has the reach of `prune`'s check,
+extended to the three places a resources-only walk misses, each with an evasion fixture:
+
+| reach | fixture |
+|---|---|
+| a `/Properties` OCG or OCMD, in any resource dictionary the page reaches | `13-optional-content`, `evade-oc-outside-the-region`, `evade-oc-two-levels-down` |
+| an image XObject's own `/OC` | `evade-oc-on-an-image` |
+| an annotation's `/OC` | `evade-oc-on-an-annotation` |
+| an appearance stream's `/OC` | `evade-oc-on-an-appearance-stream` |
+| a tiling pattern's `/Resources`, unused so the pattern rule does not answer first | `evade-oc-inside-an-unused-pattern` |
+| a Type 3 font's `/Resources`, unused so the Type 3 rule does not answer first | `evade-oc-inside-an-unused-type3-font` |
+
+The near-miss twin is `nearmiss-oc-on-another-page`: the rule is about the page being redacted,
+and a layer on page 2 is not a layer on page 1.
+
+**Page-scoped, not region-scoped, and that is §3 rather than a choice made here.** The
+marked-content refusals are scoped to the region because their hazard is a copy of the removed
+text. §3's hazard is the page's content depending on a setting burrow does not control.
+`evade-oc-outside-the-region` is the fixture that pins the difference.
+
+**What it does not reach:** a soft mask's group form, reached through `/ExtGState`. Neither
+`prune` nor the sharing walk follows `/ExtGState`, and a luminosity mask draws no text a reader
+extracts. That is stated here so the list above reads as a list rather than as "everything".
+
+**No ceiling of its own, deliberately.** It is a work list with an identity memo over streams,
+fonts and resource dictionaries, so each is read once and neither a cycle nor a deep chain can
+hold it. The first version memoised streams only, and a security review measured a shared
+`/Resources` re-read per stream: +2.3 s at 2,000 forms. It checkpoints the deadline at
+every object. The sharing walk runs first, over every page, with a dictionary budget and a depth
+cap. A second ceiling here would always fire second, which makes it a defence no test can reach:
+the masking `page_contents` records.
+
+### What the two reviews found, before anything was pushed
+
+Both ran in throwaway worktrees at the commit. **The security review found three leaks, each
+returning `Ok`, two of them new in this change**, and they share one root cause worth stating in
+its own words:
+
+> **PDFium's `GetDictFor` answers a stream with the stream's own dictionary. burrow answered
+> "absent".**
+
+Every `/Resources` lookup then did what absent means: `PageResources::of` climbed to `/Pages`,
+`within` inherited, the scope and optional-content walks read nothing. So a file could put one
+dictionary in front of PDFium and another in front of every check:
+
+- a named `/ActualText` behind a stream-valued page or form `/Resources`, with a plain `/MC0` on
+  `/Pages`: PDFium read the carrier off the output. **New here.** Before the resolver, every
+  named list refused as unresolved, so the shape could not pass.
+- the real font behind a stream-valued `/Resources` and a decoy on `/Pages` with enormous widths:
+  the walk placed the secret off-region, removed nothing, and cut the font. PDFium extracted the
+  secret. **Older than #166**, and the read-back could not see it, because it walks the same way.
+- a layer behind a stream-valued `/Properties`: walked past.
+
+**Refused in the sharing walk and nowhere else.** The first fix refused a *stream* there, as
+`stream-where-a-dictionary-belongs`. A second security review measured that as too narrow: a page
+`/Resources` written as an **array** or an **integer** still climbed to the decoy on `/Pages`, and
+PDFium, whose inheritable-attribute lookup stops at the first value present, drew the secret with
+the real font. The root cause is the type, not streams. So the rule is now
+**`not-a-dictionary-where-one-belongs`**: any present value other than a dictionary, where one
+belongs, is refused. `null` is still absent, as it is in every reader.
+
+It is refused rather than read one reader's way because readers disagree about the shape, so
+following one reader would be wrong for the others. It lives in the sharing walk because that walk
+runs before every other step, so no lookup the walk covers can meet a wrong type later. A
+downstream copy could never fire first, and a defence that cannot fire is one no test can hold.
+It is **document-wide**: a wrong type on any page refuses the redaction. That is the conservative
+direction for a shape no producer writes.
+
+**What the gate covers, stated because the first version of this paragraph overclaimed.** It said
+"every graph those steps read", and the second review found three places it does not read:
+- **Covered:** every page's resource dictionaries, each form's, pattern's and Type 3 font's; the
+  `/XObject`, `/Pattern`, `/Font`, `/Properties`, `/CharProcs` and `/AP` categories; each
+  `/Properties` entry; and each `/Annots` entry. That last is new: the removal step skipped an
+  annotation that was a stream, and MuPDF rendered it in burrow's output.
+  `redaction_defences.rs` has one case per route, 12 of 12, plus a well-typed control.
+- **Not covered:** font sub-objects, array items, and `/LastChar`. The second review measured a
+  leak through each, all older than #166: a `/DescendantFonts` item that is a stream
+  ([#180](https://github.com/TensorGreed/burrow/issues/180)); indirect items in `/Widths` or
+  `/CropBox` read as two numbers ([#181](https://github.com/TensorGreed/burrow/issues/181)); and
+  `/LastChar` ignored ([#182](https://github.com/TensorGreed/burrow/issues/182)). They are filed
+  rather than bundled here. Redaction has no binding, so none reaches a visitor, and each is its
+  own reader divergence with its own fix.
+
+**qpdf repairs one shape before the gate sees it.** A page with no `/Resources` under a `/Pages`
+node whose `/Resources` is invalid is given an empty dictionary ("Resources is missing or invalid;
+repairing"). A font drawn through it then fails closed as `font-missing`. A `Do` did not: burrow's
+`PageResources::form` read a name the resources do not hold as "draws nothing", so the walk
+stepped over a form PDFium drew. The second review found the same thing from the other side: a
+form whose own `/Resources` lacks `/XObject` draws `/X2 Do`, PDFium falls back to the page's
+`/XObject`, and burrow skipped it. **A `Do` naming nothing is now refused, as `xobject-missing`.**
+It fired on no corpus document.
+
+**Untyped layers.** Both reviews separately found that the resource walk keys on `/Type /OCG` or
+`/OCMD`, and PDFium does not require either. It reads an untyped entry under an `/OC` mark as a
+group, and a code review measured that by rendering: 0 of 800 pixels, hidden. The mark is what
+readers key on, so it is now a signal in its own right: `optional-content-marked`, raised by the
+geometry walk on `/OC … BDC` in every stream the page draws. It is its own rule so each signal
+has a fixture only it catches. **The same gap exists in `prune`'s split-side check** and predates
+this change; it is [#179](https://github.com/TensorGreed/burrow/issues/179), filed rather than fixed here.
+
+**Two blow-ups in the resolver as first written.** It held every candidate list as bytes and
+re-classified at every `BDC`:
+- 4,000 names on one 200 kB list, inherited by five forms, peaked at **5.4 GB** from a 252 kB file;
+- 40,000 `BDC`s on a 200 kB list took **113 s**.
+
+A list is now classified once, when it is read, and memoised by object identity. A name keeps only
+its most cautious verdict, and the read checkpoints the deadline per entry.
+
+**Test gaps, closed.** Four reaches that the code handled survived mutation: the OCMD arm, a named
+`/AP` appearance state, the optional-content walk running before a blank page's early return, and
+`/Resources` inherited from `/Pages`. Each now has a fixture. The #166 outcome test derived its
+"examined" count from its own list, so the count held by construction. The fixture set now comes
+from the manifest's `probes_refusal` groups, via a JSON export `check-redaction-corpus.sh` writes
+beside the corpus, and each near-miss is checked for its canary in the output bytes.
+
+**Stated rather than fixed:**
+- **The union over enclosures is masked.** A form reached from two enclosures is referenced twice,
+  so `shared-form-would-change-elsewhere` refuses it before the resolver's union matters. Both
+  reviews measured a first-path-wins mutation surviving for this reason. The union stays, for the
+  day copy-on-write lifts that refusal.
+- **The optional-content walk's per-object checkpoint is untested.** The sharing walk runs first
+  and now checkpoints per resource dictionary, not only per page. The second review measured one
+  page's worth of forms sharing one `/Properties` at **44.3 s against a 1 s deadline**, because the
+  walk re-listed the shared dictionary for every form and checked the deadline only per page.
+  `/Properties` is now memoised by identity. It is pinned by a **count**, not a clock: the first
+  test bounded wall-time and could not fail, because at a thousand forms the memo saves 2 s
+  inside a 4.8 s run that is mostly opening the document. The guarded sweep said so, since that
+  mutation survived. `sharing_tests` now asserts that forty forms sharing one `/Properties` list
+  it once.
+- **Two more the second review found in this change's own optional-content walk, both fixed.** One
+  memo served "queued as a font" and "read as resources". A dictionary that was the page's font and
+  an appearance's `/Resources` was skipped as the second, and the layer in it went unread. That was
+  a regression in the first fix. The memos are now separate. The other: an `/OC` mark written
+  inline in an **appearance stream** was read by neither walk, because the geometry walk never
+  draws an appearance. The optional-content walk now reads each appearance's operators.
+- **The geometry probe now passes the same gate.** `glyphs_on_first_page` walked a page without
+  the sharing walk, so it resolved a stream-valued `/XObject` as absent. The PDFium calibration
+  measured it: burrow placed 14 glyphs, PDFium read 41. It runs the sharing walk first now, and
+  it refuses what the operation refuses.
+- **PDFium resolves more broadly than burrow.** A form whose own `/Resources` has no `/Properties`
+  falls back, in PDFium, to the page's `/Properties`. burrow refuses that as unresolved. This is
+  over-refusal, not a leak, and it comes from a reading of PDFium's source that was not run.
+
+### A third review, and the leak this change cannot close
+
+The third pass reviewed only round two. Every earlier repro refused, and it found:
+
+- **A null is not absent to every reader.** The type gate reads `null` as absent, and the first
+  version of its rustdoc said *"`null` is absent in every reader"*. That is false.
+  - PDFium's page-attribute lookup stops at a present `null`, so a page with
+    `/Resources null` gets no resources and draws `/F1` in stock Helvetica. poppler, MuPDF and
+    burrow climb to a decoy on `/Pages`. Measured returning `Ok` with the secret read off the
+    output, and the same through `/Rotate null`.
+  - **qpdf drops a null-valued key when it parses**, so no check through qpdf sees it, and the
+    read-back cannot either: by then qpdf has erased the null from the output too.
+  - Pre-existing, and not closable within this record's decisions. The reviewer's remedy is to
+    compare against PDFium on the input, and §6 and *Alternatives considered* reject PDFium in
+    the operation. Filed as [#183](https://github.com/TensorGreed/burrow/issues/183) with the
+    options, as a decision for the project owner. The rustdoc now says what is true.
+- **A `BDC`'s tag is its second-last operand.** Both mark checks read the first, so
+  `/Pad /OC /OC1 BDC` hid a layer that PDFium and poppler both hide. `BDC`, `BMC`, `DP` and `MP`
+  now have operand counts in the geometry walk, so a padded run is refused as
+  `operand-count-mismatch`. The optional-content walk reads the tag where a reader does.
+- **A mark one form below an appearance was read by nobody.** The optional-content walk now scans
+  every form, pattern and appearance stream it queues, not only appearances. It lexes only
+  streams whose decoded bytes contain `BDC`, which also removes an over-refusal the review
+  measured: an appearance elsewhere on the page, holding an inline image burrow's lexer rejects,
+  used to take the page offline.
+- **Over-refusals, stated rather than fixed.**
+  - `xobject-missing` fires on a `Do` of a dangling reference, and on an image present only in
+    `/Pages` when the page has resources of its own. Every reader draws nothing for either.
+  - The type gate is document-wide, so a wrong type on an unredacted page refuses the redaction.
+  - Both fail closed on shapes no ordinary producer writes. Across the repository's 106
+    documents, the review found no change beyond rule renames. How often real producers hit them
+    is **unmeasured**.
+- **Cost, stated.** Every non-image stream the walk reaches is now decoded. The review measured a
+  100 MB appearance from a 103 kB file at 206 MB peak, and qpdf's decode stopping near 270 MB with
+  a message that blames the file. `max_memory_bytes` detects rather than bounds, as it does
+  everywhere.
+- **Tests for its surviving mutations:** a second direct `/Properties`, whose `(0, 0)` identity a
+  memo merged; an integer `/Annots` entry; a marked appearance that does not lex, which refuses
+  rather than passing; and a state-dictionary appearance.
+
+### The mutation sweeps, and one that measured a stale binary
+
+My first sweep, run while the reviews were in progress, reported 22 of 23 caught. **One of those
+catches was false.** Cargo decides whether to rebuild by comparing modification times. The sweep
+restored a file and wrote the next mutation into it within the same second, and the test run then
+used the previous mutation's binary. "Deadline checkpoint removed" reported the failures of the
+mutation before it. Run in isolation, it survived. So every catch in a run of consecutive
+mutations to one file was untrustworthy as recorded.
+
+The sweep now steps the modification time before each write. It requires the build output to say
+`Compiling burrow-engines`, and anything that does not is reported in its own `NOT REBUILT`
+column, never as a catch. Run that way over the fix commit, it planted 31 mutations and **caught
+26**. Three of the survivors now have tests, each re-planted and caught:
+- the ranking of named text over an unreadable candidate;
+- the property-list identity memo, pinned by time on 4,000 names sharing one 100 kB list;
+- the stream check on a `/Properties` *entry*, as opposed to the category.
+
+A second guarded sweep over the round-two defences planted 10 mutations. It caught 8, then 9 once
+the `/Properties` memo was pinned by a count. The survivor is the sharing walk's per-dictionary
+checkpoint, which the per-page one precedes.
+
+From the first sweep, two survive and are stated rather than tested:
+- **the optional-content walk's per-object deadline checkpoint**, which the sharing walk's page
+  checkpoints always precede;
+- **its resource-dictionary memo**, which only affects speed. The sharing walk's 4,096-dictionary
+  budget bounds the work without it.
+
+### The census
+
+**83 of 83 documents examined: 56 redacted, 27 refused, 0 quiet**, up from 59 documents (51/8).
+None of the original 59 changed column. Two changed **rule**: `13-optional-content` and
+`evade-oc-two-levels-down` now refuse as `optional-content` rather than
+`marked-content-properties-unresolved`. The new fixtures are 5 near-misses that redact and 19
+evasions that refuse, each by the rule it was written for. `redaction_defences.rs` pins all 27 of
+the #166 group, because `CARRIER_REFUSALS` accepts any of seven rules: a named carrier refused as
+*unresolved* would pass it, and that is the pre-#166 outcome.
+
+`marked-content-properties-unresolved` now fires on **one** document, the reference fixture. Before
+this change it fired on two, and neither was about properties.
+
+**What the resolver buys outside this corpus is still unmeasured.** No committed or generated
+document other than two of the new twins has an ordinary named list, so the corpus cannot show
+how many real tagged documents #166 un-refuses. The issue said so of the old rule, and it
+remains true of the new one.
+
+The redaction floor in `redaction_corpus.rs` moves from 39 to 56. It had not moved since #164,
+although 51 were redacting after #165, so a regression could have fallen twelve documents
+towards it without a word.

@@ -1880,7 +1880,7 @@ fn the_number_of_stripped_property_lists_is_reported_not_just_its_sign() {
 /// duplication of a file CI already validates, and deriving it is filed rather than done here,
 /// because the *membership* predicate — which fixtures are carrier shapes — stays hand-written
 /// either way and is the half that rots.
-const CARRIER_EVASIONS: [(&str, &str); 15] = [
+const CARRIER_EVASIONS: [(&str, &str); 22] = [
     (
         "evade-actualtext-around-a-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-FORM",
@@ -1956,6 +1956,37 @@ const CARRIER_EVASIONS: [(&str, &str); 15] = [
         "nearmiss-actualtext-around-an-untouched-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-NEARMISS",
     ),
+    // #166: A PROPERTY LIST NAMED THROUGH `/Properties`. The four evasions put the text where a
+    // page-level or own-resources-only resolver misses it; the three twins are the shapes a
+    // resolver that refused too much would take offline.
+    (
+        "evade-actualtext-named-through-properties.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED",
+    ),
+    (
+        "evade-actualtext-named-in-a-form-scope.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED-FORM",
+    ),
+    (
+        "evade-actualtext-named-in-a-form-that-inherits.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED-INHERITED",
+    ),
+    (
+        "evade-actualtext-behind-a-reference-in-named-properties.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NAMED-REF",
+    ),
+    (
+        "nearmiss-named-properties-without-text.pdf",
+        "BURROW-EVADE-NAMED-NEARMISS",
+    ),
+    (
+        "nearmiss-named-actualtext-outside-the-region.pdf",
+        "BURROW-EVADE-NAMED-OUTSIDE",
+    ),
+    (
+        "nearmiss-named-properties-decoy-on-the-page.pdf",
+        "BURROW-EVADE-NAMED-DECOY",
+    ),
 ];
 
 /// The rules this suite will accept a refusal *by*.
@@ -1968,8 +1999,9 @@ const CARRIER_EVASIONS: [(&str, &str); 15] = [
 ///
 /// These are the rules that mean burrow looked at the carrier and declined. Adding one is a
 /// deliberate act; a refusal outside the list fails and names itself in the message.
-const CARRIER_REFUSALS: [&str; 6] = [
+const CARRIER_REFUSALS: [&str; 7] = [
     "marked-content-properties-unresolved",
+    "marked-content-named-properties-carry-text",
     "marked-content-split-across-elements",
     "marked-content-carries-opaque-string",
     "form-vanished",
@@ -2045,7 +2077,838 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
     );
 }
 
-/// A page declaring a form the region reaches, plus an **undrawn** chain of `levels` forms each
+/// #166's fixtures, each with the **one** rule its design says it must refuse by, or `None` for a
+/// twin that must redact.
+///
+/// `CARRIER_REFUSALS` accepts any of seven rules, which is right for its question -- did burrow
+/// look at the carrier and decline -- and too loose for this one. A named list carrying text
+/// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
+/// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 27] = [
+    (
+        "evade-actualtext-named-through-properties.pdf",
+        Some("marked-content-named-properties-carry-text"),
+    ),
+    (
+        "evade-actualtext-named-in-a-form-scope.pdf",
+        Some("marked-content-named-properties-carry-text"),
+    ),
+    (
+        "evade-actualtext-named-in-a-form-that-inherits.pdf",
+        Some("marked-content-named-properties-carry-text"),
+    ),
+    (
+        "evade-actualtext-behind-a-reference-in-named-properties.pdf",
+        Some("marked-content-properties-unresolved"),
+    ),
+    ("nearmiss-named-properties-without-text.pdf", None),
+    ("nearmiss-named-actualtext-outside-the-region.pdf", None),
+    ("nearmiss-named-properties-decoy-on-the-page.pdf", None),
+    // OPTIONAL CONTENT, WHICH REDACTION NEVER REFUSED. The first two refused before #166 as
+    // `marked-content-properties-unresolved` -- by the accident of being named, not by the rule
+    // ADR 0029 §3 wrote for them.
+    ("13-optional-content.pdf", Some("optional-content")),
+    ("evade-oc-two-levels-down.pdf", Some("optional-content")),
+    ("evade-oc-outside-the-region.pdf", Some("optional-content")),
+    ("evade-oc-on-an-annotation.pdf", Some("optional-content")),
+    ("evade-oc-on-an-image.pdf", Some("optional-content")),
+    // THE REACHES A RESOURCES-ONLY WALK MISSES. Each is unused on the page, so the pattern and
+    // Type 3 rules do not answer first and leave the reach unmeasured.
+    (
+        "evade-oc-inside-an-unused-pattern.pdf",
+        Some("optional-content"),
+    ),
+    (
+        "evade-oc-inside-an-unused-type3-font.pdf",
+        Some("optional-content"),
+    ),
+    (
+        "evade-oc-on-an-appearance-stream.pdf",
+        Some("optional-content"),
+    ),
+    // FOUND BY THE #166 SECURITY REVIEW. An untyped membership dictionary is caught by the mark,
+    // not by the type; a named appearance state is the branch no fixture reached.
+    (
+        "evade-oc-untyped-membership-dictionary.pdf",
+        Some("optional-content-marked"),
+    ),
+    (
+        "evade-oc-untyped-group.pdf",
+        Some("optional-content-marked"),
+    ),
+    (
+        "evade-oc-on-an-appearance-state.pdf",
+        Some("optional-content"),
+    ),
+    // The twin `evade-oc-two-levels-down` has had since #164: nested forms with no layer at all.
+    ("nearmiss-nested-forms-no-oc.pdf", None),
+    ("nearmiss-oc-on-another-page.pdf", None),
+    // A STREAM WHERE A DICTIONARY BELONGS. PDFium reads the stream's dictionary; burrow read it
+    // as absent. Three of these were measured leaks returning `Ok`.
+    (
+        "evade-resources-stream-on-the-page.pdf",
+        Some("not-a-dictionary-where-one-belongs"),
+    ),
+    (
+        "evade-resources-stream-on-a-form.pdf",
+        Some("not-a-dictionary-where-one-belongs"),
+    ),
+    (
+        "evade-font-decoy-behind-a-resources-stream.pdf",
+        Some("not-a-dictionary-where-one-belongs"),
+    ),
+    (
+        "evade-xobject-category-as-a-stream.pdf",
+        Some("not-a-dictionary-where-one-belongs"),
+    ),
+    (
+        "evade-properties-as-a-stream-holding-a-layer.pdf",
+        Some("not-a-dictionary-where-one-belongs"),
+    ),
+    (
+        "evade-property-list-as-a-stream.pdf",
+        Some("not-a-dictionary-where-one-belongs"),
+    ),
+    ("nearmiss-resources-inherited-from-pages.pdf", None),
+];
+
+/// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
+const RESOLVED_GROUPS: [&str; 3] = ["named /Properties", "optional content", "not a dictionary"];
+
+/// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.
+fn manifest() -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/redaction/generated/manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "{}: {error} -- run tools/check-redaction-corpus.sh to write it",
+            path.display()
+        )
+    });
+    serde_json::from_str(&text).expect("the manifest export is JSON")
+}
+
+/// Each declared fixture's file name, `probes_refusal` group, and first placement's canary.
+fn declared() -> Vec<(String, Option<String>, Option<String>)> {
+    let manifest = manifest();
+    manifest["fixture"]
+        .as_array()
+        .expect("the manifest declares fixtures")
+        .iter()
+        .map(|fixture| {
+            let file = fixture["file"]
+                .as_str()
+                .expect("every fixture names a file");
+            let name = file.rsplit('/').next().unwrap_or(file).to_owned();
+            let group = fixture["probes_refusal"].as_str().map(str::to_owned);
+            let canary = fixture["placement"][0]["canary"]
+                .as_str()
+                .map(str::to_owned);
+            (name, group, canary)
+        })
+        .collect()
+}
+
+#[test]
+fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
+    // THE SET IS THE MANIFEST'S, not this file's. `examined == RESOLVED_OUTCOMES.len()` held by
+    // construction -- a code review pointed out it could not fail -- while a fixture added to a
+    // group with no entry here would go unpinned in silence. So the expectation comes from the
+    // groups the fixtures declare, and `13-optional-content`, which predates the groups and
+    // declares none, is the one name added by hand.
+    let declared = declared();
+    let mut expected: BTreeSet<String> = declared
+        .iter()
+        .filter(|(_, group, _)| {
+            group
+                .as_deref()
+                .is_some_and(|group| RESOLVED_GROUPS.contains(&group))
+        })
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    expected.insert("13-optional-content.pdf".to_owned());
+    let listed: BTreeSet<String> = RESOLVED_OUTCOMES
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    assert_eq!(
+        listed,
+        expected,
+        "RESOLVED_OUTCOMES pins {} fixtures; the manifest's groups declare {}",
+        listed.len(),
+        expected.len()
+    );
+
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
+    let mut redacted = 0usize;
+    for (name, wanted) in RESOLVED_OUTCOMES {
+        let pdf = std::fs::read(directory.join(name)).unwrap_or_else(|error| {
+            panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
+        });
+        match (redact(&pdf), wanted) {
+            (Err(error), Some(rule)) => {
+                // THE RULE, BRACKETED, not a substring of the message: `optional-content`
+                // appears in prose elsewhere and a bare `contains` would be satisfied by it.
+                let text = format!("{error:?}");
+                assert!(
+                    text.contains(&format!("[{rule}]")),
+                    "{name}: refused, but not by `{rule}`: {text}"
+                );
+            }
+            (Err(error), None) => panic!(
+                "{name}: a near-miss must be redacted, not refused -- the rule fired on the \
+                 ordinary shape it exists to stay off: {error:?}"
+            ),
+            (Ok((out, report)), Some(rule)) => panic!(
+                "{name}: redacted {} bytes where `{rule}` should have refused, report {report:?}",
+                out.len()
+            ),
+            // AND THE CANARY IS GONE. Redacting is not the claim; the secret leaving is.
+            (Ok((out, _)), None) => {
+                let canary = declared
+                    .iter()
+                    .find(|(declared, _, _)| declared == name)
+                    .and_then(|(_, _, canary)| canary.clone())
+                    .unwrap_or_else(|| panic!("{name}: the manifest declares no canary"));
+                assert_present(&pdf, canary.as_bytes(), name);
+                assert_absent(&out, canary.as_bytes(), name);
+                redacted += 1;
+            }
+        }
+    }
+    let twins = RESOLVED_OUTCOMES
+        .iter()
+        .filter(|(_, rule)| rule.is_none())
+        .count();
+    eprintln!(
+        "  #166 outcomes: {} of {} declared fixtures pinned, {redacted} of {twins} near-misses \
+         redacted with their canary gone",
+        listed.len(),
+        expected.len()
+    );
+    assert_eq!(
+        redacted, twins,
+        "every near-miss must be checked for its canary"
+    );
+}
+
+#[test]
+fn an_annotation_layer_on_a_page_that_draws_nothing_is_refused() {
+    // KILLS: moving the optional-content walk after the blank-page return. The comment at the
+    // call site says it runs first because an annotation can carry `/OC` on a page with no
+    // `/Contents`; a code review moved it and nothing failed. A document test cannot live in the
+    // corpus, whose sweep requires every page to draw its keep line.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let ocg = pdf.add("<< /Type /OCG /Name (a layered note) >>");
+    let annot = pdf.add(&format!(
+        "<< /Type /Annot /Subtype /Text /Rect [72 700 92 720] /Contents (note) /OC {ocg} 0 R >>"
+    ));
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] /Resources << >> \
+             /Annots [{annot} 0 R] >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(
+        catalog,
+        &format!(
+            "<< /Type /Catalog /Pages {pages} 0 R /OCProperties << /OCGs [{ocg} 0 R] \
+             /D << /OFF [{ocg} 0 R] >> >> >>"
+        ),
+    );
+    let refused = refusal(
+        &pdf.build(catalog),
+        "a blank page with a layered annotation",
+    );
+    assert!(
+        refused.contains("[optional-content]"),
+        "a blank page's layered annotation must refuse by name: {refused}"
+    );
+}
+
+/// A page whose `/Properties` holds `on_page` ordinary lists, drawing the secret inside a form
+/// whose own `/Properties` holds `in_form` more, one of them covering the secret.
+///
+/// **Two scopes, because one cannot reach the ceiling.** `pdfsyntax::dict::MAX_KEYS` refuses a
+/// single dictionary past 4,096 keys before this ceiling sees it, so what `MAX_PROPERTY_LISTS`
+/// actually bounds is the total across scopes -- a form per scope, each at the per-dictionary
+/// cap. A one-scope fixture measured the other ceiling and reported this one as tested.
+fn page_with_property_lists(on_page: usize, in_form: usize) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let lists = |count: usize| -> String {
+        (0..count)
+            .map(|at| format!("/M{at} << /MCID {at} >> "))
+            .collect()
+    };
+    let form = pdf.stream(
+        &format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /Properties << {}>> >>",
+            lists(in_form)
+        ),
+        "/P /M0 BDC BT /F1 24 Tf 72 700 Td (SECRET) Tj ET EMC\n",
+    );
+    let content = pdf.stream("", "/X1 Do\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /XObject << /X1 {form} 0 R >> \
+             /Properties << {}>> >> /Contents {content} 0 R >>",
+            lists(on_page)
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+/// One page drawing `(SECRET)` in the band with `/F1`, whose resources `shape` writes.
+///
+/// `shape` gets the builder and the font's object number and returns what follows `/Resources`
+/// on the page (empty for none), what the `/Pages` node carries, and any other page keys.
+fn page_shaped(shape: impl FnOnce(&mut Builder, usize) -> (String, String, String)) -> Vec<u8> {
+    page_shaped_drawing("BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n", shape)
+}
+
+/// As [`page_shaped`], with the page's content stream written by the caller.
+fn page_shaped_drawing(
+    drawing: &str,
+    shape: impl FnOnce(&mut Builder, usize) -> (String, String, String),
+) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let (resources, on_pages, page_extra) = shape(&mut pdf, font);
+    let content = pdf.stream("", drawing);
+    let resources = if resources.is_empty() {
+        String::new()
+    } else {
+        format!(" /Resources {resources}")
+    };
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792]{resources}{page_extra} \
+             /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R]{on_pages} >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+/// A Type 3 font dictionary, written out, with `extra` keys.
+fn type_three(extra: &str) -> String {
+    format!(
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+         /FontMatrix [0.001 0 0 0.001 0 0] /FirstChar 97 /LastChar 97 /Widths [1000] \
+         /Encoding << /Differences [97 /a] >> {extra} >>"
+    )
+}
+
+#[test]
+fn anything_but_a_dictionary_where_one_belongs_is_refused_on_every_route() {
+    // KILLS: the type check skipped for any one key, and the first fix's version of it, which
+    // refused a STREAM and read an array or an integer as absent -- a security review measured a
+    // page `/Resources [ ]` inheriting a decoy font from `/Pages` and leaving the secret drawn.
+    // One case per route the gate reads, because a mutation dropping the check for one key
+    // survived while every other key had a fixture.
+    type Shape = Box<dyn FnOnce(&mut Builder, usize) -> (String, String, String)>;
+    let font = |f: usize| format!("/Font << /F1 {f} 0 R >>");
+    let cases: Vec<(&str, Shape)> = vec![
+        (
+            "page /Resources an array, a font on /Pages",
+            Box::new(move |_, f| {
+                (
+                    "[ ]".into(),
+                    format!(" /Resources << {} >>", font(f)),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "page /Resources an integer",
+            Box::new(move |_, f| {
+                (
+                    "0".into(),
+                    format!(" /Resources << {} >>", font(f)),
+                    String::new(),
+                )
+            }),
+        ),
+        // NOT HERE: a stream `/Resources` on `/Pages` with none on the page. qpdf repairs that
+        // before this walk runs -- "Resources is missing or invalid; repairing" -- by giving the
+        // page an empty dictionary, so the gate never sees it. What follows from the repair is
+        // in `a_do_naming_nothing_the_resources_hold_is_refused`.
+        (
+            "/Font a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream(&format!(" /F1 {f} 0 R"), "");
+                (format!("<< /Font {s} 0 R >>"), String::new(), String::new())
+            }),
+        ),
+        (
+            "/XObject an array",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} /XObject [ ] >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "/Pattern a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                (
+                    format!("<< {} /Pattern {s} 0 R >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "/Properties an integer",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} /Properties 7 >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "a /Properties entry an array",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} /Properties << /M0 [ ] >> >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "a Type 3 font's /CharProcs a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                let t3 = pdf.add(&type_three(&format!("/CharProcs {s} 0 R")));
+                (
+                    format!("<< /Font << /F1 {f} 0 R /T3 {t3} 0 R >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "a Type 3 font's /Resources an array",
+            Box::new(move |pdf, f| {
+                let t3 = pdf.add(&type_three("/CharProcs << >> /Resources [ ]"));
+                (
+                    format!("<< /Font << /F1 {f} 0 R /T3 {t3} 0 R >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            // TWO DIRECT FONTS SHARE THE IDENTITY `(0, 0)`, and a memo keyed on it read only
+            // the first one's resources. The second one's is the wrong type.
+            "the second of two direct Type 3 fonts, /Resources a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                let first = type_three("/CharProcs << >> /Resources << >>");
+                let second = type_three(&format!("/CharProcs << >> /Resources {s} 0 R"));
+                (
+                    format!("<< /Font << /F1 {f} 0 R /A {first} /B {second} >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "an annotation's /AP a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                (
+                    format!("<< {} >>", font(f)),
+                    String::new(),
+                    format!(
+                        " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] /AP {s} 0 R >> ]"
+                    ),
+                )
+            }),
+        ),
+        (
+            // NOT ONLY A STREAM: a mutation refusing only streams here survived until this case.
+            "an /Annots entry an integer",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} >>", font(f)),
+                    String::new(),
+                    " /Annots [ 0 ]".into(),
+                )
+            }),
+        ),
+        (
+            // TWO DIRECT `/Properties` SHARE THE IDENTITY `(0, 0)`, and a memo keyed on it
+            // checked only the first form's. The second one's entry is the wrong type.
+            "the second of two forms' direct /Properties, an entry an array",
+            Box::new(move |pdf, f| {
+                let first = pdf.stream(
+                    " /Type /XObject /Subtype /Form /BBox [0 0 1 1] \
+                     /Resources << /Properties << /M0 << /MCID 0 >> >> >>",
+                    "",
+                );
+                let second = pdf.stream(
+                    " /Type /XObject /Subtype /Form /BBox [0 0 1 1] \
+                     /Resources << /Properties << /M0 [ ] >> >>",
+                    "",
+                );
+                (
+                    format!(
+                        "<< {} /XObject << /A {first} 0 R /B {second} 0 R >> >>",
+                        font(f)
+                    ),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            // THE REMOVAL STEP SKIPPED THIS ENTRY, so an annotation over the region survived.
+            "an /Annots entry a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream(" /Type /Annot /Subtype /Square /Rect [72 690 300 730]", "");
+                (
+                    format!("<< {} >>", font(f)),
+                    String::new(),
+                    format!(" /Annots [ {s} 0 R ]"),
+                )
+            }),
+        ),
+    ];
+    let total = cases.len();
+    let mut refused = 0usize;
+    for (what, shape) in cases {
+        let text = refusal(&page_shaped(shape), what);
+        assert!(
+            text.contains("[not-a-dictionary-where-one-belongs]"),
+            "{what}: refused, but not for the type: {text}"
+        );
+        refused += 1;
+    }
+    // THE NEAR-MISS: the same page, every key the type it should be, including an inherited
+    // `/Resources` and a `null` where a dictionary is optional.
+    let control = page_shaped(move |_, f| {
+        (
+            String::new(),
+            format!(" /Resources << /Font << /F1 {f} 0 R >> /XObject null >>"),
+            String::new(),
+        )
+    });
+    let (out, _) = redact(&control).expect("every key its proper type must redact");
+    assert_absent(&out, b"SECRET", "the well-typed control");
+    eprintln!(
+        "  wrong-type routes: {refused} of {total} refused by name, and the control redacted"
+    );
+}
+
+#[test]
+fn a_do_naming_nothing_the_resources_hold_is_refused() {
+    // KILLS: `PageResources::form` reading an absent name as "draws nothing". Two routes to one
+    // `Do` that PDFium draws and burrow's walk stepped over, each measured `Ok` with the secret
+    // still drawn.
+    let form = |pdf: &mut Builder, f: usize| {
+        pdf.stream(
+            &format!(
+                " /Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {f} 0 R >> >>"
+            ),
+            "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n",
+        )
+    };
+    // 1. The form is named only by a stream-valued `/Resources` on `/Pages`. qpdf repairs that
+    //    by giving the page an empty dictionary, so `/X1` names nothing by the time burrow
+    //    reads it; PDFium resolves it through the original.
+    let repaired = page_shaped_drawing("/X1 Do\n", |pdf, f| {
+        let x1 = form(pdf, f);
+        let s = pdf.stream(&format!(" /XObject << /X1 {x1} 0 R >>"), "");
+        (String::new(), format!(" /Resources {s} 0 R"), String::new())
+    });
+    // 2. A form whose own `/Resources` has no `/XObject` draws `/X2 Do`. PDFium falls back to
+    //    the page's `/XObject`, where `/X2` draws the secret. Found by the #166 security review.
+    let fallback = page_shaped_drawing("/X1 Do\n", |pdf, f| {
+        let x2 = form(pdf, f);
+        let x1 = pdf.stream(
+            &format!(
+                " /Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {f} 0 R >> >>"
+            ),
+            "/X2 Do\n",
+        );
+        (
+            format!("<< /Font << /F1 {f} 0 R >> /XObject << /X1 {x1} 0 R /X2 {x2} 0 R >> >>"),
+            String::new(),
+            String::new(),
+        )
+    });
+    for (what, pdf) in [
+        ("a Do the qpdf repair left naming nothing", repaired),
+        ("a Do PDFium resolves by falling back to the page", fallback),
+    ] {
+        let refused = refusal(&pdf, what);
+        assert!(
+            refused.contains("[xobject-missing]"),
+            "{what}: refused, but not because the name resolves to nothing: {refused}"
+        );
+    }
+}
+
+#[test]
+fn a_font_object_reused_as_an_appearance_resources_is_read_as_resources_too() {
+    // KILLS: one memo for "queued as a font" and "read as resources". The dictionary below is the
+    // page's `/F9` and an appearance stream's `/Resources`; queued as the font first, it was
+    // skipped as resources, so the `/OCG` in its `/Properties` was never read. Measured by the
+    // #166 security review, `Ok`, with poppler and MuPDF hiding the layer in the output.
+    let refused = refusal(
+        &page_shaped(|pdf, f| {
+            let ocg = pdf.add("<< /Type /OCG /Name (a layer) >>");
+            let both = pdf.add(&format!("<< /Properties << /L0 {ocg} 0 R >> >>"));
+            let appearance = pdf.stream(
+                &format!(" /Type /XObject /Subtype /Form /BBox [0 0 20 20] /Resources {both} 0 R"),
+                "0 0 20 20 re f\n",
+            );
+            (
+                format!("<< /Font << /F1 {f} 0 R /F9 {both} 0 R >> >>"),
+                String::new(),
+                format!(
+                    " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] \
+                     /AP << /N {appearance} 0 R >> >> ]"
+                ),
+            )
+        }),
+        "a font dictionary that is also an appearance's resources",
+    );
+    assert!(refused.contains("[optional-content]"), "{refused}");
+}
+
+/// A page whose one annotation's appearance is `appearance`, built by the caller.
+fn page_with_appearance(appearance: impl FnOnce(&mut Builder) -> String) -> Vec<u8> {
+    page_shaped(move |pdf, f| {
+        let ap = appearance(pdf);
+        (
+            format!("<< /Font << /F1 {f} 0 R >> >>"),
+            String::new(),
+            format!(
+                " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] /AS /On \
+                 /AP << /N {ap} >> >> ]"
+            ),
+        )
+    })
+}
+
+/// An appearance form drawing `content`, with `extra` stream-dictionary keys.
+fn appearance_form(pdf: &mut Builder, extra: &str, content: &str) -> usize {
+    pdf.stream(
+        &format!(" /Type /XObject /Subtype /Form /BBox [0 0 20 20]{extra}"),
+        content,
+    )
+}
+
+#[test]
+fn an_optional_content_mark_anywhere_an_appearance_reaches_is_refused() {
+    // KILLS: the mark scan deleted, narrowed to appearances, reading the FIRST operand, or
+    // skipped for a state dictionary. The geometry walk refuses an `/OC` mark in every stream it
+    // draws and never draws an appearance or a form an appearance draws; the #166 security
+    // reviews measured a layer hidden in the output through each shape below.
+    const MARK: &str = "/OC << /Type /OCMD /OCGs [ ] >> BDC 0 0 20 20 re f EMC\n";
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "inline in the appearance",
+            page_with_appearance(|pdf| format!("{} 0 R", appearance_form(pdf, "", MARK))),
+        ),
+        (
+            "in a form the appearance draws",
+            page_with_appearance(|pdf| {
+                let inner = appearance_form(pdf, "", MARK);
+                let outer = appearance_form(
+                    pdf,
+                    &format!(" /Resources << /XObject << /Fm1 {inner} 0 R >> >>"),
+                    "/Fm1 Do\n",
+                );
+                format!("{outer} 0 R")
+            }),
+        ),
+        (
+            "in one state of a state dictionary",
+            page_with_appearance(|pdf| {
+                let on = appearance_form(pdf, "", MARK);
+                let off = appearance_form(pdf, "", "");
+                format!("<< /On {on} 0 R /Off {off} 0 R >>")
+            }),
+        ),
+        (
+            "behind a padding operand",
+            page_with_appearance(|pdf| {
+                format!(
+                    "{} 0 R",
+                    appearance_form(
+                        pdf,
+                        "",
+                        "/Pad /OC << /Type /OCMD /OCGs [ ] >> BDC 0 0 20 20 re f EMC\n"
+                    )
+                )
+            }),
+        ),
+    ];
+    for (what, pdf) in cases {
+        let refused = refusal(&pdf, what);
+        assert!(refused.contains("[optional-content]"), "{what}: {refused}");
+    }
+
+    // A MARK THAT CANNOT BE READ IS NOT A MARK THAT IS ABSENT: content holding `BDC` that does
+    // not lex refuses rather than passing.
+    let unreadable = page_with_appearance(|pdf| {
+        format!(
+            "{} 0 R",
+            appearance_form(pdf, "", "/OC << /Type /OCMD >> BDC (unterminated\n")
+        )
+    });
+    assert!(
+        redact(&unreadable).is_err(),
+        "an appearance whose marked content does not lex must refuse"
+    );
+
+    // THE NEAR-MISSES: an ordinary mark, and content that holds no `BDC` at all -- which is not
+    // lexed, so syntax burrow would refuse elsewhere does not take the page offline here.
+    for (what, content) in [
+        (
+            "an ordinary mark",
+            "/P << /MCID 0 >> BDC 0 0 20 20 re f EMC\n",
+        ),
+        (
+            "no mark, and content that does not lex",
+            "0 0 20 20 re f (unterminated\n",
+        ),
+    ] {
+        let page = page_with_appearance(|pdf| format!("{} 0 R", appearance_form(pdf, "", content)));
+        let (out, _) = redact(&page).unwrap_or_else(|error| panic!("{what}: {error:?}"));
+        assert_absent(&out, b"SECRET", what);
+    }
+}
+
+#[test]
+fn a_padded_optional_content_mark_on_the_page_is_refused() {
+    // The page's own content is the geometry walk's. `BDC` now has an operand count, so the
+    // padding that hid the tag from a first-operand read is refused before the tag is read.
+    let refused = refusal(
+        &page_shaped_drawing(
+            "/Pad /OC /OC1 BDC BT /F1 24 Tf 72 700 Td (SECRET) Tj ET EMC\n",
+            |_, f| {
+                (
+                    format!("<< /Font << /F1 {f} 0 R >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            },
+        ),
+        "a padded /OC mark on the page",
+    );
+    assert!(refused.contains("[operand-count-mismatch]"), "{refused}");
+}
+
+#[test]
+fn many_names_on_one_large_property_list_classify_it_once() {
+    // KILLS: disabling `PropertyScopes`' identity memo. A security review measured the shape
+    // before the memo existed: thousands of names pointing at one large list, each unparsed and
+    // lexed again. Correct output, slowly -- so no assertion about bytes could see it, and the
+    // bound is on time, as `nested_carriers_over_many_removals_do_not_go_quadratic` is.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let padding = "0 ".repeat(50_000);
+    let list = pdf.add(&format!("<< /MCID 0 /K [{padding}] >>"));
+    let names: String = (0..4000).map(|at| format!("/M{at} {list} 0 R ")).collect();
+    let content = pdf.stream("", "/P /M0 BDC BT /F1 24 Tf 72 700 Td (SECRET) Tj ET EMC\n");
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> /Properties << {names}>> >> \
+             /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let started = std::time::Instant::now();
+    let (out, _) = redact(&pdf.build(catalog)).expect("an ordinary named list redacts");
+    let took = started.elapsed();
+    // THE WORK WAS DONE, not skipped: a walk that resolved nothing would be fast too.
+    assert_absent(&out, b"SECRET", "a page naming one large list 4,000 times");
+    assert!(
+        took < std::time::Duration::from_secs(10),
+        "4,000 names on one 100 kB list took {took:?}; the list is being re-read per name"
+    );
+}
+
+#[test]
+fn property_lists_past_the_ceiling_are_refused_by_name_and_at_it_are_resolved() {
+    // KILLS: deleting `MAX_PROPERTY_LISTS`' check. Each entry is an `unparse` through the
+    // engine, and the scopes a redaction reads are as many as the forms on a path to a glyph.
+    //
+    // THE BOUNDARY, BOTH SIDES. At the ceiling the named span resolves to an ordinary list and
+    // the page redacts -- which is also the proof the ceiling is not refusing ordinary pages.
+    let (out, _) = redact(&page_with_property_lists(4095, 1))
+        .expect("4096 property lists across two scopes is the ceiling, not past it");
+    assert_absent(&out, b"SECRET", "a page at the property-list ceiling");
+    let refused = refusal(&page_with_property_lists(4096, 1), "one past the ceiling");
+    assert!(
+        refused.contains("[properties-too-many]"),
+        "one past the ceiling must refuse by name: {refused}"
+    );
+}
+
+/// A page declaring a form the region reaches, plus an **undrawn** chain of `levels` forms each/// A page declaring a form the region reaches, plus an **undrawn** chain of `levels` forms each
 /// naming the next `branch` times.
 ///
 /// Undrawn is the whole point: the geometry walk's own `MAX_FORM_DRAWS` counts forms it

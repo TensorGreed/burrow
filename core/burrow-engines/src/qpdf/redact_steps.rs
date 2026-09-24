@@ -34,8 +34,8 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, ScopedFont, carried_text_edits, check_form_sharing,
-    check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
+    FormsReached, Glyph, NamedProperties, PropertyList, ScopedFont, carried_text_edits,
+    check_form_sharing, check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -83,6 +83,15 @@ pub(crate) struct QpdfRedaction {
     page_draws: BTreeSet<Vec<u8>>,
     /// The same, per form on a path to a removed glyph.
     form_draws: BTreeMap<u64, BTreeSet<Vec<u8>>>,
+    /// What the page stream's `BDC` names resolve to, through the page's own `/Properties`.
+    ///
+    /// Resolved once, with the scope, for the reason `page_draws` is: `rewrite` must decide on
+    /// the same answer `affected_streams` did. **No step adds a text-carrying key to any
+    /// dictionary** -- every edit after this removes keys or rewrites stream data -- so a list
+    /// read here as carrying nothing cannot carry text in the emitted document.
+    page_properties: NamedProperties,
+    /// The same, per form, through the scope each form's names resolve against.
+    form_properties: BTreeMap<u64, NamedProperties>,
     /// How many property lists have had their carried text dropped, for §7's disclosure.
     dropped_carried_text: usize,
 }
@@ -129,6 +138,8 @@ impl QpdfRedaction {
             cut: Vec::new(),
             page_draws: BTreeSet::new(),
             form_draws: BTreeMap::new(),
+            page_properties: NamedProperties::default(),
+            form_properties: BTreeMap::new(),
             dropped_carried_text: 0,
         })
     }
@@ -303,6 +314,17 @@ impl Steps for QpdfRedaction {
     fn affected_streams(&mut self) -> Result<Vec<StreamId>> {
         self.deadline.checkpoint(self.clock.as_ref())?;
         let page = self.page_handle()?;
+        // OPTIONAL CONTENT FIRST, AND WHETHER OR NOT THE REGION REACHES IT. ADR 0029 §3 refuses
+        // optional content referenced by a kept page, and this operation keeps every page; the
+        // refusal is about the page, not about the glyphs being cut. Before a blank page's early
+        // return too, because an annotation can carry `/OC` on a page that draws nothing.
+        // Missing until #166 -- see the module for how a coincidence was standing in for it.
+        super::redact_optional_content::refuse_optional_content(
+            &page,
+            PageResources::of(&page)?.dictionary(),
+            &self.deadline,
+            &self.clock,
+        )?;
         // BURROW'S OWN CONCATENATION, not `qpdf_oh_get_page_content_data`'s.
         //
         // qpdf hands back the elements joined and nothing about where the joins were, so a
@@ -370,10 +392,12 @@ impl Steps for QpdfRedaction {
         // each form's own names now, so there is nothing left to be unresolved about.
         let reached_forms: BTreeSet<u64> =
             cut.iter().filter_map(|glyph| glyph.source.form).collect();
-        let (page_names, form_scope) = marked_content_scope(&resources, &reached_forms)?;
+        let scope = marked_content_scope(&resources, &reached_forms, &self.deadline, &self.clock)?;
         // REFUSES ONLY WHAT THE REWRITER CANNOT HANDLE. `/ActualText` and `/Alt` written out
-        // are dropped by `carried_text_edits` in `rewrite`; a property list named through
-        // `/Properties` is still unreadable here and still refuses. That is #166.
+        // are dropped by `carried_text_edits` in `rewrite`. A property list named through
+        // `/Properties` is resolved against the scope that drew the stream (#166): an ordinary
+        // one passes, one carrying text is refused by name, and one that cannot be read still
+        // refuses as unresolved.
         // ONE CALL PER STREAM, NOT TWO. `check_marked_content` is now
         // `carried_text_edits(..).map(|_| ())`
         // -- same walk, same early return, and its only remaining refusal (`Unknown`) is raised
@@ -383,11 +407,12 @@ impl Steps for QpdfRedaction {
             contents.bytes(),
             &cut,
             None,
-            &FormsReached::Named(&page_names),
+            &FormsReached::Named(&scope.page_names),
+            &scope.page_properties,
         )?
         .is_empty();
         let mut carrying_forms: Vec<u64> = Vec::new();
-        for (form, names) in &form_scope {
+        for (form, names, properties) in &scope.forms {
             // A CHECKPOINT PER FORM, because this loop is the attacker's number. `form_scope` is
             // bounded only by the visit budget (~4095), and each iteration calls `find_form`,
             // which re-walks the resource graph from the page with a **fresh** budget of its own.
@@ -406,6 +431,7 @@ impl Steps for QpdfRedaction {
                 &cut,
                 Some(*form),
                 &FormsReached::Named(names),
+                properties,
             )?
             .is_empty()
             {
@@ -428,14 +454,17 @@ impl Steps for QpdfRedaction {
         streams.extend(carrying_forms.iter().copied().map(StreamId::Object));
         streams.sort_unstable();
         streams.dedup();
-        let draws = (page_names, form_scope);
         drop(resources);
         drop(elements);
         drop(page);
         // ASSIGNED AFTER THE HANDLES ARE DROPPED. `page` borrows `self`, so recording the scope
         // before that point borrows it twice.
-        self.page_draws = draws.0;
-        self.form_draws = draws.1.into_iter().collect();
+        self.page_draws = scope.page_names;
+        self.page_properties = scope.page_properties;
+        for (form, names, properties) in scope.forms {
+            self.form_draws.insert(form, names);
+            self.form_properties.insert(form, properties);
+        }
         self.cut = cut;
         Ok(streams)
     }
@@ -481,6 +510,7 @@ impl Steps for QpdfRedaction {
                     None,
                     &mine,
                     &FormsReached::Named(&self.page_draws),
+                    &self.page_properties,
                 )?;
                 if parts.len() != elements.len() {
                     // probe-allowed: a burrow invariant, not a judgement about the file
@@ -516,11 +546,16 @@ impl Steps for QpdfRedaction {
                 // that -- so doing only the glyphs here would leave the text it replaces.
                 let empty = BTreeSet::new();
                 let draws = self.form_draws.get(&id).unwrap_or(&empty);
+                // A FORM WITH NO RECORDED SCOPE RESOLVES NOTHING, and nothing is the cautious
+                // answer: every named span in it then refuses as unresolved rather than passing.
+                let unresolved = NamedProperties::default();
+                let properties = self.form_properties.get(&id).unwrap_or(&unresolved);
                 let (parts, dropped) = remove_glyphs_and_carried_text(
                     &crate::pdfsyntax::contents::Contents::concatenate(&[&form])?,
                     Some(id),
                     &mine,
                     &FormsReached::Named(draws),
+                    properties,
                 )?;
                 let edited = parts.into_iter().next().ok_or_else(|| {
                     // probe-allowed: a burrow invariant, not a judgement about the file
@@ -964,12 +999,119 @@ fn find_form(resources: &PageResources<'_>, id: u64) -> Result<Vec<u8>> {
     })
 }
 
-/// The page's `Do` names that lead to a removed glyph, and each in-scope form with its own.
+/// The streams the marked-content rule reads, and what it needs to read each one.
+struct MarkedContentScope {
+    /// The page's `Do` names that lead to a removed glyph.
+    page_names: BTreeSet<Vec<u8>>,
+    /// What the page stream's `BDC` names resolve to.
+    page_properties: NamedProperties,
+    /// Each in-scope form: its identity, its own leading `Do` names, and what its `BDC` names
+    /// resolve to.
+    forms: Vec<(u64, BTreeSet<Vec<u8>>, NamedProperties)>,
+}
+
+/// Which scope a stream's names resolve against: the page's resources, or a form's own.
 ///
-/// A named type rather than the tuple written out, because the tuple is what it says: a set of
-/// names for the page plus, per form, its identity and its own set. Clippy asked, and it was
-/// right to.
-type MarkedContentScope = (BTreeSet<Vec<u8>>, Vec<(u64, BTreeSet<Vec<u8>>)>);
+/// `None` is the page. A form that declares no `/Resources` has no scope of its own and takes
+/// its enclosure's, which is why this is recorded per path rather than per form.
+type ScopeOwner = Option<u64>;
+
+/// The `/Properties` of every scope read so far, and which scopes each form resolves through.
+struct PropertyScopes<'d> {
+    /// Each scope's `/Properties`, read once however many forms resolve through it.
+    read: BTreeMap<ScopeOwner, NamedProperties>,
+    /// The scopes each in-scope form's names resolve against — more than one when a form
+    /// declaring no `/Resources` is reached from two enclosures.
+    owners: BTreeMap<u64, BTreeSet<ScopeOwner>>,
+    /// Property lists left to read, against [`MAX_PROPERTY_LISTS`].
+    budget: usize,
+    /// Each indirect property list already read, by identity. Four thousand names may point at
+    /// one object; it is unparsed and classified once.
+    classified: BTreeMap<(c_int, c_int), PropertyList>,
+    deadline: &'d Deadline,
+    clock: &'d Arc<dyn Clock>,
+}
+
+/// How many `/Properties` entries one redaction will resolve, across every scope it reads.
+///
+/// Each is an `unparse` through the engine. One dictionary is already capped, by
+/// `pdfsyntax::dict::MAX_KEYS`, so what this bounds is the **total across scopes**: every form on
+/// a path to a removed glyph brings its own `/Properties`, and without a total the work is forms
+/// times keys. A tagged or layered page carries a handful; four thousand is past any producer and
+/// small enough that the work is bounded well inside the deadline.
+const MAX_PROPERTY_LISTS: usize = 4096;
+
+impl PropertyScopes<'_> {
+    /// Read `dictionary`'s `/Properties` as the scope `owner`, unless it has been read already.
+    ///
+    /// Only **dictionary** entries are recorded. Anything else — a stream, a number, a missing
+    /// object — resolves to nothing, and nothing refuses as unresolved: the cautious reading of
+    /// an entry this cannot interpret.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unsupported`] naming `properties-too-many` past [`MAX_PROPERTY_LISTS`], and
+    /// whatever reading a key failed with.
+    fn read(&mut self, owner: ScopeOwner, dictionary: &ObjectHandle<'_>) -> Result<()> {
+        const PROPERTIES: Name = Name::literal(b"/Properties\0");
+        if self.read.contains_key(&owner) {
+            return Ok(());
+        }
+        let mut resolved = NamedProperties::default();
+        let properties = dictionary.key(&PROPERTIES);
+        if properties.type_code() == object_type::DICTIONARY {
+            for key in crate::pdfsyntax::dict::top_level_keys(&properties.unparse())? {
+                // A REFUSAL, NOT A TRUNCATION. Stopping early would leave the rest of the names
+                // unresolved, which refuses them anyway -- but under a rule that says the file
+                // could not be read, when what happened is that burrow stopped reading.
+                self.budget = self.budget.checked_sub(1).ok_or_else(|| {
+                    Error::Unsupported(
+                        "pdf redaction [properties-too-many]: a page whose marked-content \
+                         property lists are more than burrow will resolve"
+                            .to_owned(),
+                    )
+                })?;
+                // A CHECKPOINT PER ENTRY. Each is an engine call and a lex, and the entries are
+                // the file's number.
+                self.deadline.checkpoint(self.clock.as_ref())?;
+                let entry = properties.key(&Name::from_stripped(&key)?);
+                if entry.type_code() != object_type::DICTIONARY {
+                    continue;
+                }
+                // ONCE PER OBJECT. `unparse` resolves the entry itself and leaves any reference
+                // INSIDE it as `N G R`, which `PropertyList::read` treats as a door it did not
+                // open. A direct entry has no identity (`(0, 0)`) and exists in one place only.
+                let identity = entry.object()?;
+                let list = match self.classified.get(&identity) {
+                    Some(list) if identity != (0, 0) => *list,
+                    _ => {
+                        let list = PropertyList::read(&entry.unparse());
+                        if identity != (0, 0) {
+                            self.classified.insert(identity, list);
+                        }
+                        list
+                    }
+                };
+                // `top_level_keys` returns decoded names without the slash, which is how
+                // `Operand::Name` carries them too, so the two compare as they are.
+                resolved.insert(key, list);
+            }
+        }
+        self.read.insert(owner, resolved);
+        Ok(())
+    }
+
+    /// What a stream resolving through `owners` may name: the union of every scope's lists.
+    fn union(&self, owners: impl IntoIterator<Item = ScopeOwner>) -> NamedProperties {
+        let mut union = NamedProperties::default();
+        for owner in owners {
+            if let Some(read) = self.read.get(&owner) {
+                union.extend(read);
+            }
+        }
+        union
+    }
+}
 
 /// Every stream the marked-content rule must read, and the `Do` names in each that lead to a
 /// removed glyph.
@@ -1004,24 +1146,66 @@ type MarkedContentScope = (BTreeSet<Vec<u8>>, Vec<(u64, BTreeSet<Vec<u8>>)>);
 fn marked_content_scope(
     resources: &PageResources<'_>,
     wanted: &BTreeSet<u64>,
+    deadline: &Deadline,
+    clock: &Arc<dyn Clock>,
 ) -> Result<MarkedContentScope> {
     let mut found: BTreeMap<u64, BTreeSet<Vec<u8>>> = BTreeMap::new();
+    // THE PAGE'S OWN PROPERTIES WHETHER OR NOT ANY FORM IS WANTED. A glyph the page draws
+    // itself can sit inside `/P /MC0 BDC`, and a page with no forms at all is the commonest
+    // case there is.
+    let mut scopes = PropertyScopes {
+        read: BTreeMap::new(),
+        owners: BTreeMap::new(),
+        budget: MAX_PROPERTY_LISTS,
+        classified: BTreeMap::new(),
+        deadline,
+        clock,
+    };
+    scopes.read(None, resources.dictionary())?;
+    let page_properties = scopes.union([None]);
     if wanted.is_empty() {
-        return Ok((BTreeSet::new(), Vec::new()));
+        return Ok(MarkedContentScope {
+            page_names: BTreeSet::new(),
+            page_properties,
+            forms: Vec::new(),
+        });
     }
     // ONE BUDGET ACROSS THE WHOLE SCOPE, not one per entry: a per-entry budget would let each of
     // `n` top-level forms pay the full ceiling, which is `n` times the ceiling.
     let mut budget = MAX_FORM_RESOURCE_VISITS;
     let mut open = BTreeSet::new();
-    let page = scope_of(
+    let page_names = scope_of(
         resources.dictionary(),
+        None,
         0,
         wanted,
-        &mut budget,
-        &mut open,
-        &mut found,
+        &mut Visit {
+            budget: &mut budget,
+            open: &mut open,
+            found: &mut found,
+            scopes: &mut scopes,
+        },
     )?;
-    Ok((page, found.into_iter().collect()))
+    let forms = found
+        .into_iter()
+        .map(|(form, names)| {
+            let owners = scopes.owners.get(&form).cloned().unwrap_or_default();
+            (form, names, scopes.union(owners))
+        })
+        .collect();
+    Ok(MarkedContentScope {
+        page_names,
+        page_properties,
+        forms,
+    })
+}
+
+/// The state one scope walk threads through its recursion.
+struct Visit<'s, 'd> {
+    budget: &'s mut usize,
+    open: &'s mut BTreeSet<u64>,
+    found: &'s mut BTreeMap<u64, BTreeSet<Vec<u8>>>,
+    scopes: &'s mut PropertyScopes<'d>,
 }
 
 /// Spend one visit from the shared budget, refusing when it runs out.
@@ -1044,14 +1228,13 @@ fn spend(budget: &mut usize) -> Result<()> {
 }
 
 /// The names in `dict`'s `/XObject` that lead to a form in `wanted`, recording each form that
-/// does in `found`.
+/// does in `found` — and the scope its own names resolve against, `owner` being `dict`'s.
 fn scope_of(
     dict: &ObjectHandle<'_>,
+    owner: ScopeOwner,
     depth: usize,
     wanted: &BTreeSet<u64>,
-    budget: &mut usize,
-    open: &mut BTreeSet<u64>,
-    found: &mut BTreeMap<u64, BTreeSet<Vec<u8>>>,
+    visit: &mut Visit<'_, '_>,
 ) -> Result<BTreeSet<Vec<u8>>> {
     const XOBJECT: Name = Name::literal(b"/XObject\0");
     const RESOURCES: Name = Name::literal(b"/Resources\0");
@@ -1102,22 +1285,40 @@ fn scope_of(
         if entry.type_code() != object_type::STREAM {
             continue;
         }
-        spend(budget)?;
+        spend(visit.budget)?;
         let here = pack(entry.object()?);
-        if !open.insert(here) {
+        if !visit.open.insert(here) {
             continue;
         }
         let own = entry.stream_dict().key(&RESOURCES);
         // INHERITING WHEN IT DECLARES NONE, exactly as `Resources::within` does. Recursing with
         // the enclosing dictionary re-examines its entries, and `open` is what stops that being
         // endless: every form on the current path is already in it.
-        let inner = if own.type_code() == object_type::DICTIONARY {
-            scope_of(&own, depth.saturating_add(1), wanted, budget, open, found)?
+        //
+        // AND ITS `BDC` NAMES RESOLVE THE SAME WAY, which is the scope rule #166 exists for: a
+        // form with its own `/Resources` resolves `/MC0` there and nowhere else, and a form with
+        // none resolves it wherever its enclosure does. A page-level answer for a form's span is
+        // the font defect again -- a decoy on the page shadowing the list that is actually read.
+        let declares_own = own.type_code() == object_type::DICTIONARY;
+        let resolves_through: ScopeOwner = if declares_own { Some(here) } else { owner };
+        let inner = if declares_own {
+            scope_of(&own, Some(here), depth.saturating_add(1), wanted, visit)?
         } else {
-            scope_of(dict, depth.saturating_add(1), wanted, budget, open, found)?
+            scope_of(dict, owner, depth.saturating_add(1), wanted, visit)?
         };
-        open.remove(&here);
+        visit.open.remove(&here);
         if wanted.contains(&here) || !inner.is_empty() {
+            // THE SCOPE THIS FORM'S OWN NAMES RESOLVE THROUGH ON THIS PATH, read once per scope
+            // and recorded per path -- the union, for the reason `found` below is a union.
+            visit
+                .scopes
+                .read(resolves_through, if declares_own { &own } else { dict })?;
+            visit
+                .scopes
+                .owners
+                .entry(here)
+                .or_default()
+                .insert(resolves_through);
             // WITHOUT THE LEADING SLASH, which is how `Operand::Name` carries a decoded name.
             names.insert(key.strip_prefix(b"/".as_slice()).unwrap_or(&key).to_vec());
             // THE UNION OVER PATHS, not the first path's answer.
@@ -1139,7 +1340,7 @@ fn scope_of(
             // differently from the walk is a bypass by construction** — here the divergence is
             // in the memo rather than the resolver. Union is the conservative direction: more
             // names means more checking, never less.
-            found.entry(here).or_default().extend(inner);
+            visit.found.entry(here).or_default().extend(inner);
         }
     }
     Ok(names)
