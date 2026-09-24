@@ -3108,7 +3108,7 @@ succeeds, which is the budget working as documented rather than a gap in it. Not
 
 A tighter bound is a byte ceiling on decoded content below qpdf's. That would refuse real
 documents that burrow accepts today, so it is a decision about ADR 0007's limits and not a
-detail of this change; it is filed rather than made here.
+detail of this change; it is filed as #189 rather than made here.
 
 ### How it is held
 
