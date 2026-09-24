@@ -1115,7 +1115,7 @@ from the file turned a correct refusal into a leak.
 name = "evade-text-in-type3-via-form"
 file = "generated/evade-text-in-type3-via-form.pdf"
 kind = "hand-built"
-probes_refusal = "image"
+probes_refusal = "Type 3 procedure"
 pages = 1
 
   [[fixture.placement]]
@@ -1131,3 +1131,46 @@ The procedure shows no text of its own, so the `Tj`/`TJ` rule did not see it, an
 enters neither the procedure nor the form. Measured: the page rendered nothing afterwards and
 the drawing operators were still in the file -- covered, not gone.
 """
+
+[[fixture]]
+name = "evade-actualtext-under-a-form-with-two-parents"
+file = "generated/evade-actualtext-under-a-form-with-two-parents.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText in a form reachable by two routes that resolve its names differently"
+  canary = "BURROW-EVADE-ACTUALTEXT-TWOPARENT"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+The scope walk memoised each form's leading names with `or_insert`, and those names are not a
+property of the form: one declaring no `/Resources` resolves its children against whatever
+encloses it. First path won. The difference between leaking and refusing is one extra, undrawn
+reference in the page's `/XObject`.
+"""
+
+[[fixture]]
+name = "nearmiss-type3-procedure-that-only-shows-its-own-glyph"
+file = "generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf"
+kind = "hand-built"
+probes_refusal = "Type 3 procedure"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "Type 3 procedure — near-miss twin, fills a path and draws nothing else"
+  canary = "BURROW-EVADE-TYPE3-NEARMISS"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A procedure that fills its own outline is what a Type 3 font is for; a rule
+refusing every Type 3 font would pass the evasion and refuse a legitimate font type.
+"""
+

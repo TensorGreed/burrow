@@ -1725,7 +1725,7 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
 /// Read from the generated corpus rather than rebuilt here: these three exist to probe the
 /// cross-stream shapes, and a copy written in this file would be a copy that can drift from the
 /// generator that writes them.
-const CARRIER_EVASIONS: [(&str, &str); 6] = [
+const CARRIER_EVASIONS: [(&str, &str); 7] = [
     (
         "evade-actualtext-around-a-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-FORM",
@@ -1754,6 +1754,13 @@ const CARRIER_EVASIONS: [(&str, &str); 6] = [
     (
         "evade-text-in-type3-via-form.pdf",
         "BURROW-EVADE-TYPE3-VIA-FORM",
+    ),
+    // THE MEMO CASE. Six fixtures above and none of them reached it: a code review measured
+    // that emptying the memo entirely is caught by `evade-actualtext-in-the-middle-form`, while
+    // **path-dependent truncation** of it was caught by nothing.
+    (
+        "evade-actualtext-under-a-form-with-two-parents.pdf",
+        "BURROW-EVADE-ACTUALTEXT-TWOPARENT",
     ),
 ];
 
@@ -1825,7 +1832,11 @@ fn page_with_an_undrawn_form_graph(levels: usize, branch: usize) -> Vec<u8> {
             data.len()
         )
     };
-    let mut current = push(form("", ""));
+    // AN EMPTY `/Resources`, NOT NONE. A form declaring none makes `scope_of` continue with the
+    // enclosing dictionary — correct, and it means the descent's depth is no longer the chain's
+    // length, so the graph trips `form-graph-too-deep` before the visit budget it is here to
+    // test. Declaring an empty one keeps this fixture about the branching.
+    let mut current = push(form("/Resources << >>", ""));
     for _ in 0..levels {
         let refs: String = (0..branch)
             .map(|at| format!("/F{at} {current} 0 R "))
@@ -2015,11 +2026,12 @@ fn a_form_graph_that_branches_is_refused_rather_than_walked_exponentially() {
     let (out, _) = redact(&shallow).expect("a small form graph is ordinary and must be walked");
     assert!(out.starts_with(b"%PDF"));
 
-    // SIXTEEN LEVELS OF FOUR, not twelve of three. Twelve-by-three is 2.77 s unbudgeted, which
-    // sits under any threshold generous enough not to flake — so removing the scope walk's
-    // budget still passed while a second budget elsewhere produced the refusal. Sixteen-by-four
-    // does not return at all without a budget, so no threshold can be too generous.
-    let deep = page_with_an_undrawn_form_graph(16, 4);
+    // FOURTEEN LEVELS OF THREE. Twelve-by-three is 2.77 s unbudgeted, which sits under any
+    // threshold generous enough not to flake — so removing the scope walk's budget still passed
+    // while a second budget elsewhere produced the refusal. Fourteen-by-three is 4.8M visits and
+    // does not return, so no threshold can be too generous; and it stays one level inside
+    // `MAX_FORM_DEPTH`, so the refusal under test is the visit budget rather than the depth cap.
+    let deep = page_with_an_undrawn_form_graph(14, 3);
     let started = std::time::Instant::now();
     let error = refusal(&deep, "a branching form graph");
     let elapsed = started.elapsed();

@@ -196,6 +196,52 @@ else
 fi
 mv -f "$backup" "$manifest"
 
+# --- Rule 7: the placement COUNT half of the floor ------------------------------------------
+#
+# Case 5 above removes a fixture's only placement, which trips `len(silent_fixtures)` -- so the
+# count half was never reached. A code review deleted the count comparison outright and all
+# seven cases still printed ok, then dropped one of `producer-writer`'s FOUR placements (leaving
+# three, so the fixture is not silent) and the checker exited 0.
+cp "$manifest" "$backup"
+python3 - "$manifest" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+start = s.index('file = "fixtures/producer-writer.pdf"')
+block = s.index("  [[fixture.placement]]", start)
+nxt = s.index("  [[fixture.placement]]", block + 10)
+p.write_text(s[:block] + s[nxt:])
+PYEOF
+if cmp -s "$backup" "$manifest"; then
+  echo "  FAIL the placement-count mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  expect_refusal "one placement removed from a fixture that keeps others is refused" \
+    "placement(s)" \
+    python3 "$checker"
+fi
+mv -f "$backup" "$manifest"
+
+# --- Rule 8: completeness compares FULL PATHS, not basenames ---------------------------------
+#
+# Case 6 passes on the separate "resolves outside the corpus" rule, so the basename -> full-path
+# hardening had no case of its own. A declaration naming a real basename under the WRONG
+# directory satisfies a basename comparison and must not satisfy this one.
+cp "$manifest" "$backup"
+python3 - "$manifest" <<'PYEOF'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+p.write_text(s.replace('file = "generated/01-plain-tj.pdf"', 'file = "fixtures/01-plain-tj.pdf"', 1))
+PYEOF
+if cmp -s "$backup" "$manifest"; then
+  echo "  FAIL the wrong-directory mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  expect_refusal "a declaration naming the right basename under the wrong directory is refused" \
+    "generated/01-plain-tj.pdf" \
+    python3 "$checker"
+fi
+mv -f "$backup" "$manifest"
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

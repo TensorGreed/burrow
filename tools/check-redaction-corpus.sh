@@ -60,8 +60,14 @@ committed=$(find "$root/tests/redaction/fixtures" -maxdepth 1 -name '*.pdf' | wc
 # is not declared there is a document with no assigned verdict — a defect in its own right, and
 # one `check-redaction-corpus.py` now refuses. That refusal is what makes deriving sound; a
 # count derived from an incomplete declaration would quietly fall to match it.
-expected_generated=$(grep -c '^file = "generated/' "$root/tests/redaction/manifest.toml")
-expected_committed=$(grep -c '^file = "fixtures/' "$root/tests/redaction/manifest.toml")
+# `sort -u` BEFORE COUNTING, because `grep -c` counts LINES. A `file =` line duplicated in the
+# manifest would inflate the expectation, and the derived gate would then agree with itself over
+# a corpus missing a fixture. The `>= 20` floor below catches a collapsed derivation, not an
+# inflated one.
+expected_generated=$(grep '^file = "generated/' "$root/tests/redaction/manifest.toml" |
+    sort -u | wc -l | tr -d ' ')
+expected_committed=$(grep '^file = "fixtures/' "$root/tests/redaction/manifest.toml" |
+    sort -u | wc -l | tr -d ' ')
 
 # AND THE DERIVATION ITSELF IS GATED. `grep -c` returning zero is how a moved manifest, a
 # renamed key or a changed quoting style would present, and zero expected against zero found

@@ -131,10 +131,14 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     // page's `/Resources` early and detached `/Contents`. `qpdf --check` passed it, the
     // generator reported it written, and this sweep counted it quiet and stayed green -- a
     // fixture whose whole purpose is to probe a leak, asserting nothing, in a test that said OK.
+    // THE MESSAGE NAMES BOTH CAUSES, because `Outcome::NothingToRemove` has two: the oracle
+    // reading no text at all, and a region that reached no glyph after one. Blaming the oracle
+    // for the second would send the next reader to the wrong place.
     assert!(
         quiet.is_empty(),
-        "the oracle reads no text from {}: {:?}. Every fixture here draws at least the keep \
-         line, so a quiet one is malformed rather than uninteresting",
+        "{} document(s) asserted nothing -- either the oracle read no text, or the region \
+         reached no glyph: {:?}. Every fixture here draws at least the keep line and puts its \
+         canary under the region, so a quiet one is malformed rather than uninteresting",
         quiet.len(),
         quiet
     );
@@ -163,8 +167,8 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     // That is the `expect_after` half of ADR 0029 §8, which `check-redaction-corpus.py` says it
     // does not check.
     assert!(
-        redactions.len() >= 38,
-        "{} documents redacted, and 38 did when this floor was last measured: a refusal widened \
+        redactions.len() >= 39,
+        "{} documents redacted, and 39 did when this floor was last measured: a refusal widened \
          far enough to cover them would take every per-document assertion here to zero while \
          this test still printed a pass",
         redactions.len()

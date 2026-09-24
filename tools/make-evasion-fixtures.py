@@ -232,6 +232,39 @@ def evade_text_in_type3_via_form() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def nearmiss_type3_procedure_that_only_shows_its_own_glyph() -> bytes:
+    """A Type 3 glyph procedure that draws a PATH and nothing else. MUST NOT be refused.
+
+    The twin for `evade-text-in-type3-via-form`. `check_type_three_procedure` refuses a procedure
+    containing `Tj`/`TJ`/`'`/`"`/`Do`, and a procedure that fills its own outline contains none of
+    them — which is what a Type 3 font is normally *for*. A rule that refused every Type 3 font
+    would pass the evasion and refuse a whole legitimate font type.
+
+    The canary is drawn by Helvetica inside the region; the Type 3 glyph sits outside it.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    proc = pdf.stream(b"", b"20 0 0 0 20 20 d1\n0 0 18 18 re f\n")
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3 = pdf.add(
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 20 20]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [20]"
+        b" /Resources << >> >>"
+    )
+    content = (
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("TYPE3-NEARMISS")) + b" Tj ET\n"
+        b"BT /T3 1 Tf 20 20 Td " + literal("a") + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_image_outside_region() -> bytes:
     """An image on the page, nowhere near the region. MUST NOT be refused.
 
@@ -778,6 +811,61 @@ def evade_actualtext_over_a_form_without_resources() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_actualtext_under_a_form_with_two_parents() -> bytes:
+    """The covered form is reachable by TWO routes, and only one of them resolves its names.
+
+    `scope_of` memoised each form's leading names with `or_insert`, and those names are not a
+    property of the form: a form declaring no `/Resources` resolves its children against whatever
+    encloses it. Reached from the page it inherits the page's names; reached through the
+    intermediate form it resolves to the forms actually holding the glyphs. First path won, and
+    when that was the page route the span around it was never examined.
+
+    Measured by a code review: `Ok`, with the carrier in the output. The single-parent control is
+    `evade-actualtext-in-the-middle-form`, which refuses correctly — so the difference between
+    leaking and refusing is one extra, undrawn reference in the page's `/XObject`.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    held_a = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret("ACTUALTEXT-TWOPARENT-A")) + b" Tj ET\n",
+    )
+    held_b = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{SECRET_X} {SECRET_Y - SECRET_SIZE} Td ".encode()
+        + literal(secret("ACTUALTEXT-TWOPARENT")) + b" Tj ET\n",
+    )
+    # NO /Resources: what `/W1` and `/W2` mean here depends on which route reached this form.
+    middle = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]",
+        b"/W1 Do\n"
+        b"/Span << /ActualText " + literal(secret("ACTUALTEXT-TWOPARENT")) + b" >> BDC\n"
+        b"/W2 Do\n"
+        b"EMC\n",
+    )
+    outer = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /XObject << /X " + str(middle).encode() + b" 0 R"
+        b" /W1 " + str(held_a).encode() + b" 0 R"
+        b" /W2 " + str(held_b).encode() + b" 0 R >> >>",
+        b"/X Do\n",
+    )
+    content = b"/Y Do\n" + keep_line_ops()
+    # `/X` ALSO NAMED HERE, and undrawn. That second reference is the whole fixture: it gives
+    # the walk a route to `X` that resolves its names against the page instead.
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /Y " + str(outer).encode() + b" 0 R"
+        b" /X " + str(middle).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 def nearmiss_actualtext_around_an_untouched_form() -> bytes:
     """The same shape, with the `/ActualText` span around a form the region never reaches.
 
@@ -817,7 +905,8 @@ CASES: list[tuple[str, str, str]] = [
     ("evade-inline-image", "image", "refuse"),
     ("evade-image-as-pattern", "image", "refuse"),
     ("evade-image-in-type3-glyph", "image", "refuse"),
-    ("evade-text-in-type3-via-form", "image", "refuse"),
+    ("evade-text-in-type3-via-form", "Type 3 procedure", "refuse"),
+    ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure", "handle"),
     ("nearmiss-image-outside-region", "image", "handle"),
     ("evade-paths-in-form", "vector paths", "refuse"),
     ("evade-paths-in-type3-glyph", "vector paths", "refuse"),
@@ -834,6 +923,7 @@ CASES: list[tuple[str, str, str]] = [
     ("evade-actualtext-around-a-nested-form", "/ActualText", "refuse"),
     ("evade-actualtext-in-the-middle-form", "/ActualText", "refuse"),
     ("evade-actualtext-over-a-form-without-resources", "/ActualText", "refuse"),
+    ("evade-actualtext-under-a-form-with-two-parents", "/ActualText", "refuse"),
     ("nearmiss-actualtext-around-an-untouched-form", "/ActualText", "handle"),
 ]
 
@@ -843,6 +933,7 @@ BUILDERS = {
     "evade-image-as-pattern": evade_image_as_pattern,
     "evade-image-in-type3-glyph": evade_image_in_type3_glyph,
     "evade-text-in-type3-via-form": evade_text_in_type3_via_form,
+    "nearmiss-type3-procedure-that-only-shows-its-own-glyph": nearmiss_type3_procedure_that_only_shows_its_own_glyph,
     "nearmiss-image-outside-region": nearmiss_image_outside_region,
     "evade-paths-in-form": evade_paths_in_form,
     "evade-paths-in-type3-glyph": evade_paths_in_type3_glyph,
@@ -859,6 +950,7 @@ BUILDERS = {
     "evade-actualtext-around-a-nested-form": evade_actualtext_around_a_nested_form,
     "evade-actualtext-in-the-middle-form": evade_actualtext_in_the_middle_form,
     "evade-actualtext-over-a-form-without-resources": evade_actualtext_over_a_form_without_resources,
+    "evade-actualtext-under-a-form-with-two-parents": evade_actualtext_under_a_form_with_two_parents,
     "nearmiss-actualtext-around-an-untouched-form": nearmiss_actualtext_around_an_untouched_form,
 }
 

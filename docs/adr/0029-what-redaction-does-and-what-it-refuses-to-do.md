@@ -2066,11 +2066,16 @@ So the claim that matters is asserted on the bytes instead, in `redaction_defenc
 carrier is not in the output. It is written to be satisfied by a refusal **or** by a rewriter
 that narrows or drops the entry, so landing #165 will not turn an improvement into a failure.
 
-### The census
+### The census, as of this commit
 
 **39 of 47 redact.** `form-vanished` is gone; `evade-oc-two-levels-down.pdf` now refuses as
 `marked-content-properties-unresolved`, which is honest — it names its optional-content group
 through `/Properties`, and #166 is what narrows that to the reason.
+
+> **Superseded.** Two later rounds of review changed both the corpus and the refusals; the
+> current numbers are under *The census* at the end of this amendment. A reader hitting this
+> table first took it as current, which is why it now says so — a code review had to check
+> which of two censuses in one amendment was live.
 
 | document | rule |
 |---|---|
@@ -2148,8 +2153,13 @@ overshoot is unbounded rather than "up to one engine call". This is CLAUDE.md's 
 non-negotiable — *a missing limit is a denial-of-service bug, not a nicety* — and it was
 reachable from the public operation on a first-touch untrusted document.
 
-`MAX_FORM_RESOURCE_VISITS` is a total across the whole descent **and** across `form_names_for`'s
-top-level loop, because a per-entry budget would let each of `n` entries pay the full ceiling.
+`MAX_FORM_RESOURCE_VISITS` is a total across one **lookup** — the whole descent, including the
+scope walk's own top-level loop, because a per-entry budget would let each of `n` entries pay the
+full ceiling. It is **not** a total across the operation: `form_handle` takes a fresh budget per
+call and is called once per form in scope, so the worst case is `|scope| x 4096`. A code review
+measured the shape that already had: 100 drawn forms in 23 ms, 800 in 1.02 s — clean quadratic,
+and the same asymptotics `main` has, so this is a sentence to narrow rather than a regression to
+fix here.
 With it: 3.7 ms and a named refusal. `redaction_defences.rs` carries the regression test, which
 asserts the **time** as well as the rule — a refusal is only a fix if it arrives before the work
 does — and a near-miss three levels deep that must still redact.

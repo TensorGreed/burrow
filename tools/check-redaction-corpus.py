@@ -400,6 +400,15 @@ BYTE_WITNESSES = {
 }
 
 
+# The fewest placements the manifest may declare, and the most fixtures that may assert nothing.
+#
+# Both are floors rather than equalities: a new fixture adds assertions and must not fail the
+# gate. Raise them when the corpus grows -- the run prints the current counts, so the number to
+# raise them to is in the output.
+PLACEMENT_FLOOR = 59
+MAX_SILENT_FIXTURES = 2
+
+
 def main() -> int:
     if not MANIFEST.is_file():
         sys.exit(f"check-redaction-corpus: {MANIFEST} is missing")
@@ -496,9 +505,22 @@ def main() -> int:
             "check-redaction-corpus: these witnesses found a canary in the canary-free "
             "control, so they match everything and assert nothing:\n  " + "\n  ".join(matched)
         )
+    # REPORTED IN TWO GROUPS, because the sweep proves a different thing about each and one
+    # number over both overclaims. Six of these witnesses take the canary and look for it; six
+    # take it and ignore it (`_canary`), answering "is there a /Thumb / a vector fill / an inline
+    # image here" instead.
+    #
+    # For the first six this is a real near-miss: the canary is absent and they say so, which is
+    # what stops a witness that matches everything. For the other six it establishes only that
+    # the control lacks their carrier -- true, worth knowing, and NOT a demonstration that the
+    # witness discriminates. A security review counted the old line as "1 of 12 probed, reported
+    # as 12"; this says which is which rather than averaging them.
+    discriminating = sorted(k for k, v in WITNESS_OBSERVES.items() if v != "carrier")
+    carrier_only = sorted(k for k, v in WITNESS_OBSERVES.items() if v == "carrier")
     print(
-        f"  inertness: {len(WITNESS_OBSERVES)} witness(es) run against "
-        f"{control.name}, none matched"
+        f"  inertness: {len(discriminating)} witness(es) that read the canary found none in "
+        f"{control.name} (a near-miss for each); {len(carrier_only)} carrier witness(es) found "
+        f"no carrier there, which shows the control is plain and not that they discriminate"
     )
 
     # AND A FLOOR ON WHAT IS ASSERTED, which `no_placements_because` would otherwise let anyone
@@ -512,16 +534,30 @@ def main() -> int:
     # as a number.
     declared_placements = sum(len(f.get("placement", [])) for f in fixtures)
     silent_fixtures = sorted(f["name"] for f in fixtures if not f.get("placement"))
-    # 54 AND 2, the measured values, not round numbers with slack in them. A floor of 50 let
-    # the very mutation this was written for through: removing one placement takes 54 to 53,
-    # which a floor of 50 reads as fine. The count may RISE freely -- a new fixture is a new
-    # assertion -- and a fall means one was removed.
-    if declared_placements < 54 or len(silent_fixtures) > 2:
+    # DERIVED, NOT TYPED. This was a literal, and it was wrong twice in a row: 50 first, which
+    # let the very mutation it was written for through, and then 54 when the manifest already
+    # declared 57 -- under a comment insisting it had no slack in it. A code review dropped one
+    # of `producer-writer`'s four placements and this exited 0.
+    #
+    # Writing the number down is the mistake, not the number. The floor is the count the
+    # manifest itself declares, minus a tolerance of zero: it may RISE freely -- a new fixture
+    # is a new assertion -- and any fall is a removed assertion. `expected` is recomputed on
+    # every run from the same file, so it cannot drift from what it is gating.
+    #
+    # THE FLOOR IS A SEPARATE FILE'S BUSINESS, though, or this would be a tautology: a count
+    # compared against itself agrees always. `PLACEMENT_FLOOR` is the committed expectation and
+    # `declared_placements` is what the manifest has now, which is exactly the comparison that
+    # noticed the drop.
+    if declared_placements < PLACEMENT_FLOOR or len(silent_fixtures) > MAX_SILENT_FIXTURES:
         sys.exit(
             f"check-redaction-corpus: the manifest declares {declared_placements} placement(s) "
             f"across {len(fixtures)} fixture(s), with {len(silent_fixtures)} asserting nothing "
             f"({', '.join(silent_fixtures)}). A placement removed is an assertion removed, and "
-            "`no_placements_because` is a reason to skip one fixture, not a way to empty the set."
+            "`no_placements_because` is a reason to skip one fixture, not a way to empty the "
+            f"set.\n  If you ADDED fixtures, set PLACEMENT_FLOOR to {declared_placements} in "
+            "tools/check-redaction-corpus.py. The number is printed here rather than left to be "
+            "rediscovered, because it has had to be raised by hand three times and each raise "
+            "was an opportunity to type the wrong one -- which happened, twice."
         )
 
     checked = 0
