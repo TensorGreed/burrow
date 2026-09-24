@@ -435,6 +435,10 @@ jobs:
       # `build.rs` fails rather than skipping without it. The script reports crates and gated
       # items against counts derived from `cargo metadata` and `lib.rs`; its self-test plants
       # the featureless tree and requires a refusal naming what is missing.
+      #
+      # NOT YET CHECKED: rustdoc on PRIVATE items, which needs `--document-private-items`. A
+      # review measured at least 14 broken links there, 10 inside engine-gated private modules,
+      # so adding the flag now would be red on arrival. Tracked as #187.
       - name: rustdoc with the engines, and every crate and gated item documented
         run: |
           tools/check-rustdoc.sh

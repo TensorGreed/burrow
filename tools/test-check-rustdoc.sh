@@ -84,6 +84,46 @@ plant_complete
 rm -rf "$tree/burrow_ops"
 expect "a missing crate page is refused by name" "$original" "crate(s) with no doc page: burrow_ops" no
 
+# THE DERIVATION'S OWN RULES, each on a synthetic `lib.rs`. A code review found that the only
+# derivation gate -- attributes equal public plus private -- held by construction, and that a
+# swapped predicate order, an unjoined wrapped attribute and a public `struct` all under-counted
+# silently. Each case appends one gated item to the real `lib.rs`, with no page for it, so a
+# refusal naming the item is the proof it was derived.
+lib_case() {
+  local name="$1" item="$2" text="$3" must_pass="$4" synthetic="$tree.lib.rs"
+  cp core/burrow-engines/src/lib.rs "$synthetic"
+  printf '\n%s\n' "$item" >>"$synthetic"
+  plant_complete
+  local out status
+  out=$(BURROW_DOC_DIR="$tree" BURROW_LIB_RS="$synthetic" "$original" 2>&1)
+  status=$?
+  rm -f "$synthetic"
+  if [ "$must_pass" = yes ] && [ $status -eq 0 ]; then
+    echo "  ok   $name"; pass=$((pass + 1))
+  elif [ "$must_pass" = no ] && [ $status -ne 0 ] && grep -qF "$text" <<<"$out"; then
+    echo "  ok   $name"; pass=$((pass + 1))
+  else
+    echo "  FAIL $name (exit $status, wanted \"$text\")"
+    sed 's/^/        /' <<<"$out" | tail -3
+    fail=$((fail + 1))
+  fi
+}
+lib_case "a rustfmt-wrapped gate attribute is joined and its item derived" \
+  $'#[cfg(all(\n    feature = "native-engines",\n    burrow_native_engines\n))]\npub mod wrapped;' \
+  "mod wrapped" no
+lib_case "the gate is matched whatever order it names its parts in" \
+  $'#[cfg(all(burrow_native_engines, feature = "native-engines"))]\npub fn swapped() {}' \
+  "fn swapped" no
+lib_case "a public gated struct is checked, not counted as private" \
+  $'#[cfg(all(feature = "native-engines", burrow_native_engines))]\npub struct Gated;' \
+  "struct Gated" no
+lib_case "a public gated item of a kind with no page mapping is refused, not passed" \
+  $'#[cfg(all(feature = "native-engines", burrow_native_engines))]\npub use qpdf::Qpdf as Aliased;' \
+  "cannot map to a doc page" no
+lib_case "near-miss: a gated pub(crate) item is private and needs no page" \
+  $'#[cfg(all(feature = "native-engines", burrow_native_engines))]\npub(crate) mod hidden;' \
+  "" yes
+
 # THE DERIVATION, BROKEN IN A COPY: a gate pattern that matches nothing derives no items, and a
 # check with nothing to check must not read as a pass.
 python3 - "$original" "$copy" <<'PY'
@@ -102,6 +142,49 @@ else
   plant_complete
   expect "a gate pattern that matches nothing is refused, not passed" "$copy" \
     "no public engine-gated item was derived" no
+fi
+
+# THE BUILD LINE ITSELF. Every case above sets `BURROW_DOC_DIR` and skips the build, so a review
+# deleted `-D warnings` from it and this whole self-test stayed green -- while an unresolved
+# intra-doc link, the thing #174 exists for, is a warning without it: `cargo doc` exits 0. The
+# rule: the one line that runs `cargo doc` carries `-D warnings`, `--all-features` and
+# `--workspace`. Checked on the real checker, and refused on a copy with the flag removed.
+build_line_ok() {
+  python3 - "$1" <<'PY'
+import sys
+lines = [l for l in open(sys.argv[1]).read().splitlines()
+         if "cargo doc" in l and not l.lstrip().startswith("#")]
+wanted = ("-D warnings", "--all-features", "--workspace")
+ok = len(lines) == 1 and all(flag in lines[0] for flag in wanted)
+print(f"{len(lines)} build line(s): {lines}")
+sys.exit(0 if ok else 1)
+PY
+}
+if build_line_ok "$original" >/dev/null; then
+  echo "  ok   the real build line runs rustdoc with -D warnings, --all-features and --workspace"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the real build line is missing a flag the gate depends on"
+  build_line_ok "$original"
+  fail=$((fail + 1))
+fi
+python3 - "$original" "$copy" <<'PY'
+import sys
+src, dst = sys.argv[1:3]
+text = open(src).read()
+old = 'RUSTDOCFLAGS="-D warnings" cargo doc'
+assert old in text, "the build line is not spelled as this test expects"
+open(dst, "w").write(text.replace(old, "cargo doc", 1))
+PY
+if [ $? -ne 0 ]; then
+  echo "  FAIL the -D warnings mutation did not apply, so its case would prove nothing"
+  fail=$((fail + 1))
+elif build_line_ok "$copy" >/dev/null; then
+  echo "  FAIL a build line without -D warnings was accepted"
+  fail=$((fail + 1))
+else
+  echo "  ok   a build line without -D warnings is refused"
+  pass=$((pass + 1))
 fi
 
 echo

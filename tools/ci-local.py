@@ -1612,12 +1612,26 @@ def job_paths(job: dict) -> tuple[set[str] | None, str]:
     # a documentation build. `paths_as` names the command it wraps, and its paths are derived from
     # that -- provided the script still contains it. A script that stopped running it would
     # otherwise keep a narrowing it no longer earned.
+    #
+    # ON A LINE THAT RUNS, not in a comment: a review showed that commenting the build out kept
+    # the narrowing, because a substring match reads `# used to run: cargo doc ...` as a call.
+    # And the scripts themselves are among the job's paths, so an edit to the checker always
+    # runs it -- as a rule, rather than because no other job happens to claim `tools/`.
     wrapped = job.get("paths_as")
+    wrapper_scripts: set[str] = set()
     if wrapped is not None:
         scripts = re.findall(r"tools/[A-Za-z0-9_.-]+\.sh", command)
         wrapper = scripts[0] if scripts else None
-        if wrapper is None or wrapped not in (REPO / wrapper).read_text():
-            return None, f"declares it wraps `{wrapped}`, and {wrapper or 'no script'} does not contain it"
+        # A SHELL COMMENT BEGINS AT A `#` THAT STARTS A WORD, not only at the start of a line:
+        # `: # used to run: cargo doc ...` runs nothing, and a first version of this check,
+        # which dropped only lines beginning with `#`, read it as the build.
+        runs_it = wrapper is not None and any(
+            wrapped in re.split(r"(?:^|\s)#", line, maxsplit=1)[0]
+            for line in (REPO / wrapper).read_text().splitlines()
+        )
+        if not runs_it:
+            return None, f"declares it wraps `{wrapped}`, and {wrapper or 'no script'} does not run it"
+        wrapper_scripts.update(scripts)
         command = wrapped
 
     # A checker reads whatever it reads, and that is not derivable from its invocation. They
@@ -1649,7 +1663,7 @@ def job_paths(job: dict) -> tuple[set[str] | None, str]:
 
     if not paths:
         return None, "no path could be derived from its command"
-    return paths, ""
+    return paths | wrapper_scripts, ""
 
 
 def changed_paths(base: str | None) -> tuple[list[str], str] | None:

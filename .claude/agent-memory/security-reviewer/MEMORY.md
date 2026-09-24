@@ -43,3 +43,4 @@
 - [/ActualText rewriter (#165)](m2_actualtext_rewriter.md) — 2 rounds: the leak closed, but the quadratic moved (12 kB to 109 s) and the post-rewrite check is the only load-bearing half.
 - [Named /Properties resolver (#166)](m2_named_properties_resolver.md) — R1 stream /Resources; R2 other types; R3 `null` present-to-PDFium, erased by qpdf; padded BDC.
 - [Refusal reachability gate (#177)](m2_refusal_reachability_gate.md) — proves a raise via a witness-chosen fn, not an entry; remove_glyphs is prod-dead; MIR diff method.
+- [CI rustdoc gate (#174)](ci_rustdoc_gate.md) — stale pages cannot fool it; `-D warnings` and the build line are untested; paths_as is a comment-satisfiable substring.
