@@ -271,8 +271,9 @@ JOBS: list[dict] = [
     },
     {
         "name": "doc",
-        "run": 'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps',
-        "covers": ["cargo:doc"],
+        "run": "tools/check-rustdoc.sh && tools/test-check-rustdoc.sh",
+        "covers": ["tools/check-rustdoc.sh", "tools/test-check-rustdoc.sh"],
+        "why": "rustdoc with the engines linked, and every crate and gated item documented (#174)",
     },
     {
         "name": "deny",
