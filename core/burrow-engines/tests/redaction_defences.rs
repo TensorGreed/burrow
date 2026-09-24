@@ -2084,7 +2084,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 16] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 26] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2126,19 +2126,126 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 16] = [
         "evade-oc-on-an-appearance-stream.pdf",
         Some("optional-content"),
     ),
+    // FOUND BY THE #166 SECURITY REVIEW. An untyped membership dictionary is caught by the mark,
+    // not by the type; a named appearance state is the branch no fixture reached.
+    (
+        "evade-oc-untyped-membership-dictionary.pdf",
+        Some("optional-content-marked"),
+    ),
+    (
+        "evade-oc-untyped-group.pdf",
+        Some("optional-content-marked"),
+    ),
+    (
+        "evade-oc-on-an-appearance-state.pdf",
+        Some("optional-content"),
+    ),
+    // The twin `evade-oc-two-levels-down` has had since #164: nested forms with no layer at all.
+    ("nearmiss-nested-forms-no-oc.pdf", None),
     ("nearmiss-oc-on-another-page.pdf", None),
+    // A STREAM WHERE A DICTIONARY BELONGS. PDFium reads the stream's dictionary; burrow read it
+    // as absent. Three of these were measured leaks returning `Ok`.
+    (
+        "evade-resources-stream-on-the-page.pdf",
+        Some("stream-where-a-dictionary-belongs"),
+    ),
+    (
+        "evade-resources-stream-on-a-form.pdf",
+        Some("stream-where-a-dictionary-belongs"),
+    ),
+    (
+        "evade-font-decoy-behind-a-resources-stream.pdf",
+        Some("stream-where-a-dictionary-belongs"),
+    ),
+    (
+        "evade-xobject-category-as-a-stream.pdf",
+        Some("stream-where-a-dictionary-belongs"),
+    ),
+    (
+        "evade-properties-as-a-stream-holding-a-layer.pdf",
+        Some("stream-where-a-dictionary-belongs"),
+    ),
+    ("nearmiss-resources-inherited-from-pages.pdf", None),
 ];
+
+/// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
+const RESOLVED_GROUPS: [&str; 3] = [
+    "named /Properties",
+    "optional content",
+    "stream as dictionary",
+];
+
+/// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.
+fn manifest() -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/redaction/generated/manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "{}: {error} -- run tools/check-redaction-corpus.sh to write it",
+            path.display()
+        )
+    });
+    serde_json::from_str(&text).expect("the manifest export is JSON")
+}
+
+/// Each declared fixture's file name, `probes_refusal` group, and first placement's canary.
+fn declared() -> Vec<(String, Option<String>, Option<String>)> {
+    let manifest = manifest();
+    manifest["fixture"]
+        .as_array()
+        .expect("the manifest declares fixtures")
+        .iter()
+        .map(|fixture| {
+            let file = fixture["file"]
+                .as_str()
+                .expect("every fixture names a file");
+            let name = file.rsplit('/').next().unwrap_or(file).to_owned();
+            let group = fixture["probes_refusal"].as_str().map(str::to_owned);
+            let canary = fixture["placement"][0]["canary"]
+                .as_str()
+                .map(str::to_owned);
+            (name, group, canary)
+        })
+        .collect()
+}
 
 #[test]
 fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
+    // THE SET IS THE MANIFEST'S, not this file's. `examined == RESOLVED_OUTCOMES.len()` held by
+    // construction -- a code review pointed out it could not fail -- while a fixture added to a
+    // group with no entry here would go unpinned in silence. So the expectation comes from the
+    // groups the fixtures declare, and `13-optional-content`, which predates the groups and
+    // declares none, is the one name added by hand.
+    let declared = declared();
+    let mut expected: BTreeSet<String> = declared
+        .iter()
+        .filter(|(_, group, _)| {
+            group
+                .as_deref()
+                .is_some_and(|group| RESOLVED_GROUPS.contains(&group))
+        })
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    expected.insert("13-optional-content.pdf".to_owned());
+    let listed: BTreeSet<String> = RESOLVED_OUTCOMES
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    assert_eq!(
+        listed,
+        expected,
+        "RESOLVED_OUTCOMES pins {} fixtures; the manifest's groups declare {}",
+        listed.len(),
+        expected.len()
+    );
+
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
-    let mut examined = 0usize;
+    let mut redacted = 0usize;
     for (name, wanted) in RESOLVED_OUTCOMES {
         let pdf = std::fs::read(directory.join(name)).unwrap_or_else(|error| {
             panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
         });
-        examined += 1;
         match (redact(&pdf), wanted) {
             (Err(error), Some(rule)) => {
                 // THE RULE, BRACKETED, not a substring of the message: `optional-content`
@@ -2157,13 +2264,74 @@ fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
                 "{name}: redacted {} bytes where `{rule}` should have refused, report {report:?}",
                 out.len()
             ),
-            (Ok(_), None) => {}
+            // AND THE CANARY IS GONE. Redacting is not the claim; the secret leaving is.
+            (Ok((out, _)), None) => {
+                let canary = declared
+                    .iter()
+                    .find(|(declared, _, _)| declared == name)
+                    .and_then(|(_, _, canary)| canary.clone())
+                    .unwrap_or_else(|| panic!("{name}: the manifest declares no canary"));
+                assert_present(&pdf, canary.as_bytes(), name);
+                assert_absent(&out, canary.as_bytes(), name);
+                redacted += 1;
+            }
         }
     }
+    let twins = RESOLVED_OUTCOMES
+        .iter()
+        .filter(|(_, rule)| rule.is_none())
+        .count();
+    eprintln!(
+        "  #166 outcomes: {} of {} declared fixtures pinned, {redacted} of {twins} near-misses \
+         redacted with their canary gone",
+        listed.len(),
+        expected.len()
+    );
     assert_eq!(
-        examined,
-        RESOLVED_OUTCOMES.len(),
-        "every #166 fixture must be examined"
+        redacted, twins,
+        "every near-miss must be checked for its canary"
+    );
+}
+
+#[test]
+fn an_annotation_layer_on_a_page_that_draws_nothing_is_refused() {
+    // KILLS: moving the optional-content walk after the blank-page return. The comment at the
+    // call site says it runs first because an annotation can carry `/OC` on a page with no
+    // `/Contents`; a code review moved it and nothing failed. A document test cannot live in the
+    // corpus, whose sweep requires every page to draw its keep line.
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let ocg = pdf.add("<< /Type /OCG /Name (a layered note) >>");
+    let annot = pdf.add(&format!(
+        "<< /Type /Annot /Subtype /Text /Rect [72 700 92 720] /Contents (note) /OC {ocg} 0 R >>"
+    ));
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] /Resources << >> \
+             /Annots [{annot} 0 R] >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(
+        catalog,
+        &format!(
+            "<< /Type /Catalog /Pages {pages} 0 R /OCProperties << /OCGs [{ocg} 0 R] \
+             /D << /OFF [{ocg} 0 R] >> >> >>"
+        ),
+    );
+    let refused = refusal(
+        &pdf.build(catalog),
+        "a blank page with a layered annotation",
+    );
+    assert!(
+        refused.contains("[optional-content]"),
+        "a blank page's layered annotation must refuse by name: {refused}"
     );
 }
 

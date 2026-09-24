@@ -235,6 +235,18 @@ pub enum Refusal {
     /// silently producing worse output than it was given is the thing this operation may least
     /// afford. An odd property list is refused instead.
     MarkedContentPropertyListMalformed,
+    /// A content stream the page draws marks a span as optional content: `/OC … BDC`.
+    ///
+    /// The redaction steps refuse a page whose **resources** reference an optional-content group
+    /// (ADR 0029 §3). That signal reads object types, and a security review measured it walking
+    /// past a membership dictionary written without `/Type` — `/OC1 << /OCGs [n 0 R] >>` — which
+    /// PDFium honours as one under an `/OC` mark, hiding the content. The mark itself is the part
+    /// a reader keys on, so it is the signal here: every stream this walk draws, whatever the
+    /// named list turns out to be.
+    ///
+    /// Its own rule rather than the steps' `optional-content`, so that each signal has a fixture
+    /// only it catches: two defences that raise the same name mask each other's deletion.
+    OptionalContentMarked,
 }
 
 impl Refusal {
@@ -277,6 +289,7 @@ impl Refusal {
         Self::MarkedContentSplitAcrossElements,
         Self::MarkedContentCarriesOpaqueString,
         Self::MarkedContentPropertyListMalformed,
+        Self::OptionalContentMarked,
     ];
 
     /// The rule's name, as it appears in the error message.
@@ -322,6 +335,7 @@ impl Refusal {
             Self::MarkedContentSplitAcrossElements => "marked-content-split-across-elements",
             Self::MarkedContentCarriesOpaqueString => "marked-content-carries-opaque-string",
             Self::MarkedContentPropertyListMalformed => "marked-content-property-list-malformed",
+            Self::OptionalContentMarked => "optional-content-marked",
         }
     }
 
@@ -340,6 +354,7 @@ impl Refusal {
                 | Self::MarkedContentSplitAcrossElements
                 | Self::MarkedContentCarriesOpaqueString
                 | Self::MarkedContentPropertyListMalformed
+                | Self::OptionalContentMarked
                 | Self::UnreadableCMap
                 | Self::SharedFormWouldChangeElsewhere
                 | Self::TypeThreeProcedureShowsText
@@ -1650,59 +1665,70 @@ impl FormsReached<'_> {
 /// [`Refusal::MarkedContentPropertiesUnresolved`]. So the `Default` value refuses every named
 /// span rather than passing it: a caller that forgot to resolve fails closed, which is the
 /// answer the `within` precedent wanted when it gave [`Resources`] no default method.
+///
+/// # A verdict per name, not the bytes
+///
+/// This held every candidate list as bytes and classified them at every `BDC`. A security review
+/// measured both halves of that: 4,000 names pointing at one 200 kB list, inherited by five
+/// resource-less forms, peaked at **5.4 GB** from a 252 kB file, since each form's scope cloned
+/// the bytes; and 40,000 `BDC`s naming a 200 kB list took **113 s**, re-lexing it every time. So a
+/// list is read once, into a [`PropertyList`], and a name keeps only the most cautious verdict
+/// among its candidates.
 #[derive(Debug, Clone, Default)]
 pub struct NamedProperties {
-    /// Name, without the `/`, to each property list it may resolve to, as PDF syntax.
-    lists: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+    /// Name, without the `/`, to what the most cautious of its candidates carries.
+    lists: BTreeMap<Vec<u8>, Carried>,
+}
+
+/// One property list, read once.
+///
+/// Opaque on purpose: what it carries is this module's judgement, and a caller that could build
+/// one from a conclusion would be a second classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyList(Carried);
+
+impl PropertyList {
+    /// Classify `list`, a dictionary written as PDF syntax.
+    #[must_use]
+    pub fn read(list: &[u8]) -> Self {
+        Self(named_list_carries(list))
+    }
 }
 
 impl NamedProperties {
-    /// Record that `name` (without the `/`) may resolve to `list`, a dictionary written as PDF.
-    pub fn insert(&mut self, name: Vec<u8>, list: Vec<u8>) {
-        let candidates = self.lists.entry(name).or_default();
-        if !candidates.contains(&list) {
-            candidates.push(list);
+    /// Record that `name` (without the `/`) may resolve to `list`.
+    ///
+    /// **The most cautious candidate wins**: a list that carries text over one that could not be
+    /// read, over one that carries nothing. A list that was read and found to carry text is the
+    /// more specific true statement, and either refuses.
+    pub fn insert(&mut self, name: Vec<u8>, list: PropertyList) {
+        let verdict = self.lists.entry(name).or_insert(list.0);
+        if caution(list.0) > caution(*verdict) {
+            *verdict = list.0;
         }
     }
 
     /// Every candidate from `other`, for a stream that resolves through more than one scope.
     pub fn extend(&mut self, other: &Self) {
-        for (name, lists) in &other.lists {
-            for list in lists {
-                self.insert(name.clone(), list.clone());
-            }
+        for (name, verdict) in &other.lists {
+            self.insert(name.clone(), PropertyList(*verdict));
         }
     }
 
-    /// How many names this resolves.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.lists.len()
-    }
-
-    /// Whether this resolves no name at all.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.lists.is_empty()
-    }
-
-    /// What a `BDC` naming `name` carries, by the most cautious of its candidates.
-    ///
-    /// `NamedText` over `Unknown` over `Nothing`: a list that was read and found to carry text
-    /// is the more specific true statement, and either refuses.
+    /// What a `BDC` naming `name` carries.
     fn carried(&self, name: &[u8]) -> Carried {
-        let Some(candidates) = self.lists.get(name).filter(|lists| !lists.is_empty()) else {
-            return Carried::Unknown;
-        };
-        let mut outcome = Carried::Nothing;
-        for list in candidates {
-            match named_list_carries(list) {
-                Carried::NamedText => return Carried::NamedText,
-                Carried::Nothing => {}
-                _ => outcome = Carried::Unknown,
-            }
-        }
-        outcome
+        self.lists.get(name).copied().unwrap_or(Carried::Unknown)
+    }
+}
+
+/// How cautious a verdict is, for choosing among a name's candidates.
+const fn caution(carried: Carried) -> u8 {
+    match carried {
+        Carried::Nothing => 0,
+        Carried::Unknown => 1,
+        // `Text` and `OpaqueString` never come from a named list; ranked with `NamedText` so a
+        // stray one fails closed rather than passing.
+        Carried::Text | Carried::OpaqueString | Carried::NamedText => 2,
     }
 }
 
@@ -2577,6 +2603,17 @@ fn walk(
                 return Refusal::PatternMayDrawText
                     .refuse("a pattern fill, whose own content stream burrow does not yet walk");
             }
+            // AN OPTIONAL-CONTENT MARK, whatever it names. See the variant for the untyped
+            // membership dictionary a type-keyed signal walked past.
+            b"BDC"
+                if matches!(operation.operands.first(),
+                    Some(Operand::Name { value, .. }) if value.as_slice() == b"OC") =>
+            {
+                return Refusal::OptionalContentMarked.refuse(
+                    "this page marks some of its content as belonging to a layer (optional \
+                     content), which can hide it from view",
+                );
+            }
             b"q" => stack.push(state.clone()),
             b"Q" => {
                 // A `Q` WITH NOTHING SAVED IS A REFUSAL. Tolerating it means guessing what the
@@ -3144,7 +3181,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 37,
+            total, 38,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -4381,6 +4418,29 @@ mod tests {
     }
 
     #[test]
+    fn an_optional_content_mark_is_refused_whatever_it_names() {
+        refusing(
+            "/OC /OC1 BDC BT /F1 12 Tf (AB) Tj ET EMC",
+            Refusal::OptionalContentMarked,
+        );
+    }
+
+    #[test]
+    fn an_ordinary_marked_content_tag_is_not_an_optional_content_mark() {
+        // The near-miss: `/P /MC0 BDC` and a tag merely spelled like one (`/OCX`) are ordinary.
+        for content in [
+            "/P /MC0 BDC BT /F1 12 Tf (AB) Tj ET EMC",
+            "/OCX /MC0 BDC BT /F1 12 Tf (AB) Tj ET EMC",
+            "/Span << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC",
+        ] {
+            assert!(
+                glyphs_in(content.as_bytes(), &Fake::new()).is_ok(),
+                "{content} must walk"
+            );
+        }
+    }
+
+    #[test]
     fn a_vertical_writing_mode_is_refused() {
         let mut resources = Fake::new();
         // STATED AS THE FILE WOULD STATE IT -- an embedded CMap whose program declares
@@ -4736,7 +4796,7 @@ mod tests {
             // it as `carries-text` would be an assertion about the user's document that no
             // measurement supports.
             assert_refused_by(
-                b"/OC /MC0 BDC BT /F1 12 Tf (AB) Tj ET EMC",
+                b"/Span /MC0 BDC BT /F1 12 Tf (AB) Tj ET EMC",
                 super::Refusal::MarkedContentPropertiesUnresolved,
             );
         }
@@ -4745,7 +4805,10 @@ mod tests {
         fn resolving(names: &[(&str, &str)]) -> super::super::NamedProperties {
             let mut properties = super::super::NamedProperties::default();
             for (name, list) in names {
-                properties.insert(name.as_bytes().to_vec(), list.as_bytes().to_vec());
+                properties.insert(
+                    name.as_bytes().to_vec(),
+                    super::super::PropertyList::read(list.as_bytes()),
+                );
             }
             properties
         }
@@ -4834,6 +4897,21 @@ mod tests {
             // name it did not hold would pass exactly the span it never looked at.
             assert_named_refusal(
                 edits_with(NAMED, &resolving(&[("MC1", "<< /MCID 0 >>")])),
+                super::Refusal::MarkedContentPropertiesUnresolved,
+            );
+        }
+
+        #[test]
+        fn a_named_list_carrying_an_operator_is_unresolved_rather_than_read_by_its_first_half() {
+            // `PropertyList::read` lexes `<list> BDC` and reads the first operation's operand.
+            // Bytes holding an operator split into two operations, and the first half alone reads
+            // as ordinary. qpdf's `unparse` never produces this; `PropertyList` is public, and the
+            // filter that refuses it survived a mutation sweep until this probe.
+            assert_named_refusal(
+                edits_with(
+                    NAMED,
+                    &resolving(&[("MC0", "<< /MCID 0 >> BDC /S << /ActualText (x) >>")]),
+                ),
                 super::Refusal::MarkedContentPropertiesUnresolved,
             );
         }
@@ -4991,7 +5069,7 @@ mod tests {
         fn an_inner_span_left_open_does_not_mask_an_unresolved_outer_one() {
             // The same, for the other rule, so neither can regress to `last()`.
             assert_refused_by(
-                b"/OC /MC0 BDC /P << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC EMC",
+                b"/Span /MC0 BDC /P << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC EMC",
                 super::Refusal::MarkedContentPropertiesUnresolved,
             );
         }

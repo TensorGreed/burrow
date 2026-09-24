@@ -89,4 +89,11 @@ fi
 
 python3 "$root/tools/check-redaction-corpus.py"
 
+# THE MANIFEST, AS JSON, BESIDE THE DOCUMENTS IT DESCRIBES. The Rust suites need to derive their
+# expectations from it -- which fixtures a check covers, which canary each carries -- and they
+# have `serde_json` and no TOML parser. Converting here, from the one file, keeps the manifest the
+# single source: a hand-written copy in a test beside it is the list that has rotted three times.
+python3 -c 'import json, sys, tomllib; json.dump(tomllib.load(open(sys.argv[1], "rb")), open(sys.argv[2], "w"))' \
+    "$root/tests/redaction/manifest.toml" "$out/manifest.json"
+
 echo "redaction corpus: $generated generated + $committed committed = $((generated + committed)) documents"

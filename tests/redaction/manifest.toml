@@ -1595,3 +1595,176 @@ pages = 1
   notes = """
 The annotation carries no /OC; its /AP /N form does. Reached through /Annots, not /Resources.
 """
+
+[[fixture]]
+name = "evade-oc-untyped-membership-dictionary"
+file = "generated/evade-oc-untyped-membership-dictionary.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an optional-content mark naming an untyped membership dictionary — evasion"
+  canary = "BURROW-EVADE-OC-UNTYPED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The resource walk keys on /Type; the /OC mark in the content is the signal (`optional-content-marked`). Found by the #166 security review.
+"""
+
+[[fixture]]
+name = "evade-oc-on-an-appearance-state"
+file = "generated/evade-oc-on-an-appearance-state.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "optional content on a named appearance state — evasion"
+  canary = "BURROW-EVADE-OC-APPEARANCE-STATE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+/AP /N as a dictionary of states. Found by the #166 security review's surviving mutation.
+"""
+
+[[fixture]]
+name = "evade-resources-stream-on-the-page"
+file = "generated/evade-resources-stream-on-the-page.pdf"
+kind = "hand-built"
+probes_refusal = "stream as dictionary"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a stream-valued page /Resources carrying a named /ActualText — evasion"
+  canary = "BURROW-EVADE-RESOURCES-STREAM-PAGE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads the stream's dictionary; burrow inherited /Pages' plain list. A leak new in #166, found by its security review.
+"""
+
+[[fixture]]
+name = "evade-resources-stream-on-a-form"
+file = "generated/evade-resources-stream-on-a-form.pdf"
+kind = "hand-built"
+probes_refusal = "stream as dictionary"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a stream-valued form /Resources carrying a named /ActualText — evasion"
+  canary = "BURROW-EVADE-RESOURCES-STREAM-FORM"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The form-level version of the same leak.
+"""
+
+[[fixture]]
+name = "evade-font-decoy-behind-a-resources-stream"
+file = "generated/evade-font-decoy-behind-a-resources-stream.pdf"
+kind = "hand-built"
+probes_refusal = "stream as dictionary"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the real font behind a stream-valued /Resources, a decoy on /Pages — evasion"
+  canary = "BURROW-EVADE-FONT-DECOY"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The glyphs themselves survived: placed by the decoy, drawn by PDFium with the real font. Older than #166.
+"""
+
+[[fixture]]
+name = "evade-xobject-category-as-a-stream"
+file = "generated/evade-xobject-category-as-a-stream.pdf"
+kind = "hand-built"
+probes_refusal = "stream as dictionary"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a stream-valued /XObject naming the form that draws the secret — evasion"
+  canary = "BURROW-EVADE-XOBJECT-STREAM"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Read as absent, the Do drew nothing burrow could reach.
+"""
+
+[[fixture]]
+name = "evade-properties-as-a-stream-holding-a-layer"
+file = "generated/evade-properties-as-a-stream-holding-a-layer.pdf"
+kind = "hand-built"
+probes_refusal = "stream as dictionary"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a stream-valued /Properties naming an OFF layer — evasion"
+  canary = "BURROW-EVADE-PROPERTIES-STREAM"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The optional-content walk read it as absent.
+"""
+
+[[fixture]]
+name = "nearmiss-resources-inherited-from-pages"
+file = "generated/nearmiss-resources-inherited-from-pages.pdf"
+kind = "hand-built"
+probes_refusal = "stream as dictionary"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "ordinary /Resources inherited from /Pages — near-miss twin"
+  canary = "BURROW-EVADE-INHERITED-RESOURCES"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The refusal is about a stream in a dictionary's place, not about inheriting.
+"""
+
+[[fixture]]
+name = "evade-oc-untyped-group"
+file = "generated/evade-oc-untyped-group.pdf"
+kind = "hand-built"
+probes_refusal = "optional content"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an optional-content mark naming a group written without /Type — evasion"
+  canary = "BURROW-EVADE-OC-UNTYPED-GROUP"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium defaults an untyped entry under an /OC mark to an OCG, so the layer hides content while
+the type-keyed resource walk passes it. Caught by the mark (`optional-content-marked`). Found by the
+#166 code review, measured by rendering.
+"""

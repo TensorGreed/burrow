@@ -112,6 +112,7 @@ const XOBJECT: Name = Name::literal(b"/XObject\0");
 const PATTERN: Name = Name::literal(b"/Pattern\0");
 /// `/Font`.
 const FONT: Name = Name::literal(b"/Font\0");
+const PROPERTIES: Name = Name::literal(b"/Properties\0");
 /// `/CharProcs`.
 const CHARPROCS: Name = Name::literal(b"/CharProcs\0");
 /// `/Annots`.
@@ -683,6 +684,32 @@ impl Walk<'_> {
             }
         }
         self.type_three_fonts(resources, depth)?;
+        self.properties(resources)?;
+        Ok(())
+    }
+
+    /// `/Properties`, and each entry in it, for a stream where a dictionary belongs.
+    ///
+    /// Read for the refusal only: a property list is where `BDC /Name` resolves, both for the
+    /// marked-content rules and for optional content, and PDFium reads a stream entry's own
+    /// dictionary as the list. See [`Self::dictionary_key`].
+    fn properties(&self, resources: &ObjectHandle<'_>) -> Result<()> {
+        let Some(properties) = self.dictionary_key(resources, &PROPERTIES)? else {
+            return Ok(());
+        };
+        for name in self.keys_of(&properties)? {
+            let entry = properties.key(&name);
+            if let Some(error) = self.document.take_error() {
+                return Err(error);
+            }
+            let code = entry.type_code();
+            if let Some(error) = self.document.take_error() {
+                return Err(error);
+            }
+            if code == object_type::STREAM {
+                return Err(stream_where_a_dictionary_belongs());
+            }
+        }
         Ok(())
     }
 
@@ -879,6 +906,29 @@ impl Walk<'_> {
     }
 
     /// A dictionary-valued key, or `None` when it is absent or is not a dictionary.
+    ///
+    /// # A stream where a dictionary belongs is refused, not read as absent
+    ///
+    /// Every key this is asked for — `/Resources`, `/XObject`, `/Pattern`, `/Font`,
+    /// `/Properties`, `/CharProcs`, `/AP` — must hold a dictionary. PDFium's `GetDictFor` answers a
+    /// **stream** there with the stream's own dictionary; burrow answered "absent", and every
+    /// consumer then did what absent means — `PageResources::of` climbed to `/Pages`,
+    /// `Resources::within` inherited, the scope walk and the optional-content walk read nothing.
+    /// So a file could put one dictionary in front of PDFium and another in front of every check.
+    ///
+    /// Measured by a security review of #166, end to end, each returning `Ok`: a named
+    /// `/ActualText` behind a stream-valued page or form `/Resources` read off the output by
+    /// PDFium (**new in #166** — it refused as unresolved before); the secret's own glyphs kept,
+    /// placed by a decoy `/Pages` font while PDFium drew them with the real one (**older** than
+    /// #166, and invisible to the read-back, which walks the same way); and a layer behind a
+    /// stream-valued `/Properties` walked past.
+    ///
+    /// **Refused rather than read as PDFium reads it**, because readers disagree about the shape:
+    /// following PDFium would make burrow correct for one reader and wrong for any that does not.
+    /// And **refused here, once**: this walk runs before every other redaction step, over every
+    /// page and every graph those steps read, so no later lookup can meet a stream in a
+    /// dictionary's place. A second copy of the check downstream could never fire first, and a
+    /// defence that cannot fire is one no test can hold — the masking `page_contents` records.
     fn dictionary_key<'h>(
         &self,
         object: &ObjectHandle<'h>,
@@ -907,6 +957,9 @@ impl Walk<'_> {
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
+        if code == object_type::STREAM {
+            return Err(stream_where_a_dictionary_belongs());
+        }
         Ok((code == object_type::DICTIONARY).then_some(value))
     }
 
@@ -928,6 +981,15 @@ impl Walk<'_> {
             .map(|key| Name::from_stripped(key))
             .collect()
     }
+}
+
+/// The one refusal for a stream in a dictionary's place, so every site says the same thing.
+fn stream_where_a_dictionary_belongs() -> Error {
+    Error::Unsupported(
+        "pdf redaction [stream-where-a-dictionary-belongs]: a page whose resources put a stream \
+         where a dictionary belongs, which PDF readers do not agree how to read"
+            .to_owned(),
+    )
 }
 
 /// The counts, as the geometry layer's sharing rule asks for them.

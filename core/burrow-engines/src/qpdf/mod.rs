@@ -553,12 +553,18 @@ pub(crate) fn walk_first_page_for_probe(
     // deadline checkpoint inside the walk was inert, which is verbatim the defect the #134 diff
     // removed from the redaction probe in the same change. A security review found it still
     // here, in the function that change promoted to public API.
-    let (document, pages, _, _) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
+    let (document, pages, _, deadline) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
     if pages == 0 {
         return Err(Error::Malformed(
             "pdf redaction: a document with no pages".to_owned(),
         ));
     }
+    // THE GRAPH GATE THE OPERATION PASSES FIRST, passed here too. `sharing`'s walk is where a
+    // stream in a dictionary's place is refused, once, before any later lookup can read it as
+    // absent (#166). A probe that skipped it resolved `/Resources` the other way: the calibration
+    // measured burrow placing 14 glyphs where PDFium read 41, on a page whose `/XObject` is a
+    // stream -- the operation refuses that page, and the probe must say what the operation says.
+    sharing::count_form_uses(&document, &deadline, &options.clock)?;
     // SAFETY: page 0 is below the page count just read from this document.
     let page = unsafe { handle::ObjectHandle::page(&document, 0) };
     if let Some(error) = document.take_error() {

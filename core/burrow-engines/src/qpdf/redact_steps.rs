@@ -34,8 +34,8 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, NamedProperties, ScopedFont, carried_text_edits, check_form_sharing,
-    check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
+    FormsReached, Glyph, NamedProperties, PropertyList, ScopedFont, carried_text_edits,
+    check_form_sharing, check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -86,8 +86,9 @@ pub(crate) struct QpdfRedaction {
     /// What the page stream's `BDC` names resolve to, through the page's own `/Properties`.
     ///
     /// Resolved once, with the scope, for the reason `page_draws` is: `rewrite` must decide on
-    /// the same answer `affected_streams` did. No step writes a `/Properties` entry, so the
-    /// lists resolved here are the lists the emitted document holds.
+    /// the same answer `affected_streams` did. **No step adds a text-carrying key to any
+    /// dictionary** -- every edit after this removes keys or rewrites stream data -- so a list
+    /// read here as carrying nothing cannot carry text in the emitted document.
     page_properties: NamedProperties,
     /// The same, per form, through the scope each form's names resolve against.
     form_properties: BTreeMap<u64, NamedProperties>,
@@ -391,7 +392,7 @@ impl Steps for QpdfRedaction {
         // each form's own names now, so there is nothing left to be unresolved about.
         let reached_forms: BTreeSet<u64> =
             cut.iter().filter_map(|glyph| glyph.source.form).collect();
-        let scope = marked_content_scope(&resources, &reached_forms)?;
+        let scope = marked_content_scope(&resources, &reached_forms, &self.deadline, &self.clock)?;
         // REFUSES ONLY WHAT THE REWRITER CANNOT HANDLE. `/ActualText` and `/Alt` written out
         // are dropped by `carried_text_edits` in `rewrite`. A property list named through
         // `/Properties` is resolved against the scope that drew the stream (#166): an ordinary
@@ -1016,7 +1017,7 @@ struct MarkedContentScope {
 type ScopeOwner = Option<u64>;
 
 /// The `/Properties` of every scope read so far, and which scopes each form resolves through.
-struct PropertyScopes {
+struct PropertyScopes<'d> {
     /// Each scope's `/Properties`, read once however many forms resolve through it.
     read: BTreeMap<ScopeOwner, NamedProperties>,
     /// The scopes each in-scope form's names resolve against — more than one when a form
@@ -1024,6 +1025,11 @@ struct PropertyScopes {
     owners: BTreeMap<u64, BTreeSet<ScopeOwner>>,
     /// Property lists left to read, against [`MAX_PROPERTY_LISTS`].
     budget: usize,
+    /// Each indirect property list already read, by identity. Four thousand names may point at
+    /// one object; it is unparsed and classified once.
+    classified: BTreeMap<(c_int, c_int), PropertyList>,
+    deadline: &'d Deadline,
+    clock: &'d Arc<dyn Clock>,
 }
 
 /// How many `/Properties` entries one redaction will resolve, across every scope it reads.
@@ -1035,7 +1041,7 @@ struct PropertyScopes {
 /// small enough that the work is bounded well inside the deadline.
 const MAX_PROPERTY_LISTS: usize = 4096;
 
-impl PropertyScopes {
+impl PropertyScopes<'_> {
     /// Read `dictionary`'s `/Properties` as the scope `owner`, unless it has been read already.
     ///
     /// Only **dictionary** entries are recorded. Anything else — a stream, a number, a missing
@@ -1065,17 +1071,30 @@ impl PropertyScopes {
                             .to_owned(),
                     )
                 })?;
+                // A CHECKPOINT PER ENTRY. Each is an engine call and a lex, and the entries are
+                // the file's number.
+                self.deadline.checkpoint(self.clock.as_ref())?;
                 let entry = properties.key(&Name::from_stripped(&key)?);
                 if entry.type_code() != object_type::DICTIONARY {
                     continue;
                 }
-                // WITHOUT THE LEADING SLASH, which is how `Operand::Name` carries a decoded
-                // name. `unparse` resolves the entry itself and leaves any reference INSIDE it
-                // as `N G R`, which `NamedProperties` reads as a door it did not open.
-                resolved.insert(
-                    key.strip_prefix(b"/".as_slice()).unwrap_or(&key).to_vec(),
-                    entry.unparse(),
-                );
+                // ONCE PER OBJECT. `unparse` resolves the entry itself and leaves any reference
+                // INSIDE it as `N G R`, which `PropertyList::read` treats as a door it did not
+                // open. A direct entry has no identity (`(0, 0)`) and exists in one place only.
+                let identity = entry.object()?;
+                let list = match self.classified.get(&identity) {
+                    Some(list) if identity != (0, 0) => *list,
+                    _ => {
+                        let list = PropertyList::read(&entry.unparse());
+                        if identity != (0, 0) {
+                            self.classified.insert(identity, list);
+                        }
+                        list
+                    }
+                };
+                // `top_level_keys` returns decoded names without the slash, which is how
+                // `Operand::Name` carries them too, so the two compare as they are.
+                resolved.insert(key, list);
             }
         }
         self.read.insert(owner, resolved);
@@ -1127,6 +1146,8 @@ impl PropertyScopes {
 fn marked_content_scope(
     resources: &PageResources<'_>,
     wanted: &BTreeSet<u64>,
+    deadline: &Deadline,
+    clock: &Arc<dyn Clock>,
 ) -> Result<MarkedContentScope> {
     let mut found: BTreeMap<u64, BTreeSet<Vec<u8>>> = BTreeMap::new();
     // THE PAGE'S OWN PROPERTIES WHETHER OR NOT ANY FORM IS WANTED. A glyph the page draws
@@ -1136,6 +1157,9 @@ fn marked_content_scope(
         read: BTreeMap::new(),
         owners: BTreeMap::new(),
         budget: MAX_PROPERTY_LISTS,
+        classified: BTreeMap::new(),
+        deadline,
+        clock,
     };
     scopes.read(None, resources.dictionary())?;
     let page_properties = scopes.union([None]);
@@ -1177,11 +1201,11 @@ fn marked_content_scope(
 }
 
 /// The state one scope walk threads through its recursion.
-struct Visit<'s> {
+struct Visit<'s, 'd> {
     budget: &'s mut usize,
     open: &'s mut BTreeSet<u64>,
     found: &'s mut BTreeMap<u64, BTreeSet<Vec<u8>>>,
-    scopes: &'s mut PropertyScopes,
+    scopes: &'s mut PropertyScopes<'d>,
 }
 
 /// Spend one visit from the shared budget, refusing when it runs out.
@@ -1210,7 +1234,7 @@ fn scope_of(
     owner: ScopeOwner,
     depth: usize,
     wanted: &BTreeSet<u64>,
-    visit: &mut Visit<'_>,
+    visit: &mut Visit<'_, '_>,
 ) -> Result<BTreeSet<Vec<u8>>> {
     const XOBJECT: Name = Name::literal(b"/XObject\0");
     const RESOURCES: Name = Name::literal(b"/Resources\0");

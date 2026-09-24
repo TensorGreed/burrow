@@ -33,9 +33,12 @@
 //!
 //! # Bounded by the graph, not by a ceiling
 //!
-//! Every object is visited once, by identity, and the walk is a work list rather than a
-//! recursion, so neither a cycle nor a deep chain can hold it. The work is linear in the objects
-//! the page reaches and the deadline is consulted at every one. It carries **no ceiling of its
+//! Every stream, font and indirect resource dictionary is visited once, by identity, and the
+//! walk is a work list rather than a recursion, so neither a cycle nor a deep chain can hold it.
+//! The work is linear in the objects the page reaches, and the deadline is consulted at every
+//! queued object. That per-object checkpoint is **not pinned by a test**: the sharing walk's page
+//! checkpoints run first, and no test yet arranges a clock that trips inside this walk and
+//! not before it. Stated rather than implied. It carries **no ceiling of its
 //! own on purpose**: the sharing walk runs first, over every page, with a dictionary budget and a
 //! depth cap, and a second ceiling here that the first always fires before would be a defence no
 //! test can reach — the masking this crate measured once already, in `page_contents`.
@@ -158,7 +161,14 @@ impl<'a> Walk<'a, '_> {
 
     /// One resource dictionary: its optional-content groups, and everything it can draw queued.
     fn resources(&mut self, resources: &ObjectHandle<'a>) -> Result<()> {
+        // A STREAM HERE NEVER ARRIVES: the sharing walk refuses a stream in a dictionary's place
+        // before this runs. See `sharing::Walk::dictionary_key`.
         if resources.type_code() != object_type::DICTIONARY {
+            return Ok(());
+        }
+        // ONCE PER DICTIONARY, like once per stream. A security review measured two layers of N
+        // forms sharing one `/Resources`: every form re-read it, adding 2.3 s at N = 2,000.
+        if !self.first_time(resources)? {
             return Ok(());
         }
         // `/Properties` is where `BDC /OC /Name` resolves. It also holds ordinary marked-content

@@ -1377,9 +1377,12 @@ def evade_oc_inside_an_unused_pattern() -> bytes:
     pdf = Pdf()
     helv = helvetica(pdf)
     ocg = _ocg(pdf, "a layer inside a pattern")
+    # A MEMBERSHIP DICTIONARY, not the group itself: the one fixture where `/Type /OCMD` is what
+    # the walk has to recognise. A security review's mutation dropping that arm survived.
+    ocmd = pdf.add(b"<< /Type /OCMD /OCGs [" + str(ocg).encode() + b" 0 R] >>")
     pattern = pdf.stream(
         b"/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10]"
-        b" /XStep 10 /YStep 10 /Resources << /Properties << /L0 " + str(ocg).encode()
+        b" /XStep 10 /YStep 10 /Resources << /Properties << /L0 " + str(ocmd).encode()
         + b" 0 R >> >>",
         b"/OC /L0 BDC 0 0 5 5 re f EMC\n",
     )
@@ -1437,6 +1440,78 @@ def evade_oc_on_an_appearance_stream() -> bytes:
     )
 
 
+def evade_oc_untyped_membership_dictionary() -> bytes:
+    """`/OC /OC1 BDC`, `/OC1` a membership dictionary written WITHOUT `/Type`.
+
+    Found by a security review: the resource walk keys on `/Type /OCG` or `/OCMD`, and PDFium
+    treats any dictionary under an `/OC` mark as a membership dictionary, so this layer hides its
+    content while every type check passes. The mark is the signal (`optional-content-marked`).
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer named by an untyped membership dictionary")
+    content = (
+        _secret_run("OC-UNTYPED")
+        + b"/OC /OC1 BDC BT /Helv 10 Tf 40 175 Td " + literal("HIDDEN-UNTYPED")
+        + b" Tj ET EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /OC1 << /OCGs [" + str(ocg).encode() + b" 0 R] >> >>"
+    )
+    return simple_page(pdf, content, res, catalog_extra=_layer_off(ocg))
+
+
+def evade_oc_untyped_group() -> bytes:
+    """`/OC /L0 BDC`, `/L0` an optional-content GROUP written without `/Type`.
+
+    Found by the #166 code review, measured by rendering: PDFium reads an untyped entry under an
+    `/OC` mark as an OCG (`GetNameFor("Type", "OCG")` defaults it), so the OFF layer hides its
+    content. The mark is the signal, as for the untyped membership dictionary.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    group = pdf.add(b"<< /Name " + literal("an untyped layer") + b" >>")
+    content = (
+        _secret_run("OC-UNTYPED-GROUP")
+        + b"/OC /L0 BDC BT /Helv 10 Tf 40 175 Td " + literal("HIDDEN-UNTYPED-GROUP")
+        + b" Tj ET EMC\n" + keep_line_ops()
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /L0 " + str(group).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res, catalog_extra=_layer_off(group))
+
+
+def evade_oc_on_an_appearance_state() -> bytes:
+    """`/AP /N` is a dictionary of NAMED STATES, and one state's stream carries `/OC`.
+
+    The checkbox shape. A security review's mutation dropping the named-state branch survived:
+    every other appearance fixture wrote `/N` as a stream.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layered appearance state")
+    on = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 20 20] /OC " + str(ocg).encode() + b" 0 R",
+        b"0 0 20 20 re f\n",
+    )
+    off = pdf.stream(b"/Type /XObject /Subtype /Form /BBox [0 0 20 20]", b"")
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype /Square /Rect [300 170 320 190] /F 4 /AS /On"
+        b" /AP << /N << /On " + str(on).encode() + b" 0 R /Off " + str(off).encode()
+        + b" 0 R >> >> >>"
+    )
+    return simple_page(
+        pdf,
+        _secret_run("OC-APPEARANCE-STATE") + keep_line_ops(),
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(annot).encode() + b" 0 R]",
+        catalog_extra=_layer_off(ocg),
+    )
+
+
 def nearmiss_oc_on_another_page() -> bytes:
     """Page 2 has a hidden layer; page 1, the one redacted, references none. MUST be redacted.
 
@@ -1477,6 +1552,151 @@ def nearmiss_oc_on_another_page() -> bytes:
         b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R" + _layer_off(ocg) + b" >>"
     )
     return pdf.build(root)
+
+
+# ===========================================================================================
+# A STREAM WHERE A DICTIONARY BELONGS. PDFium's `GetDictFor` answers a stream with the stream's
+# own dictionary; burrow read it as absent and inherited or skipped. Found by a security review of
+# #166, three leaks, each returning `Ok`. Refused as `stream-where-a-dictionary-belongs`.
+# ===========================================================================================
+
+
+def _page_with_resources(pdf: Pdf, content: bytes, page_resources: bytes, pages_resources: bytes) -> bytes:
+    """A one-page document whose page and `/Pages` node carry the given `/Resources` values."""
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", content)
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R"
+        b" /MediaBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        + page_resources + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R]"
+        + pages_resources + b" >>",
+    )
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    return pdf.build(root)
+
+
+def evade_resources_stream_on_the_page() -> bytes:
+    """The page's `/Resources` is a STREAM holding the carrying `/MC0`; `/Pages` holds a plain one."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    real = pdf.stream(
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /ActualText " + literal(secret("RESOURCES-STREAM-PAGE"))
+        + b" >> >>",
+        b"",
+    )
+    content = b"/Span /MC0 BDC\n" + _secret_run("RESOURCES-STREAM-PAGE") + b"EMC\n" + keep_line_ops()
+    return _page_with_resources(
+        pdf,
+        content,
+        b" /Resources " + str(real).encode() + b" 0 R",
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 >> >> >>",
+    )
+
+
+def evade_resources_stream_on_a_form() -> bytes:
+    """A form's own `/Resources` is a STREAM holding the carrying `/MC0`; the page's is plain."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    real = pdf.stream(
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /ActualText " + literal(secret("RESOURCES-STREAM-FORM"))
+        + b" >> >>",
+        b"",
+    )
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources " + str(real).encode() + b" 0 R",
+        b"/Span /MC0 BDC\n" + _secret_run("RESOURCES-STREAM-FORM") + b"EMC\n",
+    )
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject << /X1 " + str(form).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 >> >>"
+    )
+    return simple_page(pdf, b"/X1 Do\n" + keep_line_ops(), res)
+
+
+def evade_font_decoy_behind_a_resources_stream() -> bytes:
+    """The real Helvetica is in a stream-valued page `/Resources`; `/Pages` holds a decoy `/Helv`.
+
+    The decoy's widths are enormous, so a walk resolving `/Helv` through `/Pages` places every
+    glyph far outside the region and removes nothing, while PDFium draws the secret in place with
+    the real font. Older than #166, and invisible to the read-back, which walks the same way.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    decoy = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 126"
+        b" /Widths [" + b" ".join([b"20000"] * 95) + b"] >>"
+    )
+    real = pdf.stream(b"/Font << /Helv " + str(helv).encode() + b" 0 R >>", b"")
+    return _page_with_resources(
+        pdf,
+        _secret_run("FONT-DECOY") + keep_line_ops(),
+        b" /Resources " + str(real).encode() + b" 0 R",
+        b" /Resources << /Font << /Helv " + str(decoy).encode() + b" 0 R >> >>",
+    )
+
+
+def evade_xobject_category_as_a_stream() -> bytes:
+    """`/XObject` is a STREAM whose dictionary names the form drawing the secret.
+
+    Read as absent, `/X1 Do` resolves to nothing and draws no glyph the region can reach; PDFium
+    draws the form.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    form = pdf.stream(
+        b"/Type /XObject /Subtype /Form /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        _secret_run("XOBJECT-STREAM"),
+    )
+    category = pdf.stream(b"/X1 " + str(form).encode() + b" 0 R", b"")
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /XObject " + str(category).encode() + b" 0 R"
+    )
+    return simple_page(pdf, b"/X1 Do\n" + keep_line_ops(), res)
+
+
+def evade_properties_as_a_stream_holding_a_layer() -> bytes:
+    """`/Properties` is a STREAM whose dictionary names an OFF layer, and no span is marked `/OC`."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ocg = _ocg(pdf, "a layer behind a stream-valued /Properties")
+    category = pdf.stream(b"/L0 " + str(ocg).encode() + b" 0 R", b"")
+    res = (
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties " + str(category).encode() + b" 0 R"
+    )
+    return simple_page(
+        pdf, _secret_run("PROPERTIES-STREAM") + keep_line_ops(), res, catalog_extra=_layer_off(ocg)
+    )
+
+
+def nearmiss_resources_inherited_from_pages() -> bytes:
+    """The page declares no `/Resources` and `/Pages` holds an ordinary dictionary. MUST redact.
+
+    Inheritance is how a word processor writes a shared letterhead. The refusal is about a stream
+    in a dictionary's place, not about inheriting.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_with_resources(
+        pdf,
+        b"/P /MC0 BDC\n" + _secret_run("INHERITED-RESOURCES") + b"EMC\n" + keep_line_ops(),
+        b"",
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 >> >> >>",
+    )
 
 
 CASES: list[tuple[str, str]] = [
@@ -1533,7 +1753,16 @@ CASES: list[tuple[str, str]] = [
     ("evade-oc-inside-an-unused-pattern", "optional content"),
     ("evade-oc-inside-an-unused-type3-font", "optional content"),
     ("evade-oc-on-an-appearance-stream", "optional content"),
+    ("evade-oc-untyped-membership-dictionary", "optional content"),
+    ("evade-oc-untyped-group", "optional content"),
+    ("evade-oc-on-an-appearance-state", "optional content"),
     ("nearmiss-oc-on-another-page", "optional content"),
+    ("evade-resources-stream-on-the-page", "stream as dictionary"),
+    ("evade-resources-stream-on-a-form", "stream as dictionary"),
+    ("evade-font-decoy-behind-a-resources-stream", "stream as dictionary"),
+    ("evade-xobject-category-as-a-stream", "stream as dictionary"),
+    ("evade-properties-as-a-stream-holding-a-layer", "stream as dictionary"),
+    ("nearmiss-resources-inherited-from-pages", "stream as dictionary"),
 ]
 
 BUILDERS = {
@@ -1581,7 +1810,16 @@ BUILDERS = {
     "evade-oc-inside-an-unused-pattern": evade_oc_inside_an_unused_pattern,
     "evade-oc-inside-an-unused-type3-font": evade_oc_inside_an_unused_type3_font,
     "evade-oc-on-an-appearance-stream": evade_oc_on_an_appearance_stream,
+    "evade-oc-untyped-membership-dictionary": evade_oc_untyped_membership_dictionary,
+    "evade-oc-untyped-group": evade_oc_untyped_group,
+    "evade-oc-on-an-appearance-state": evade_oc_on_an_appearance_state,
     "nearmiss-oc-on-another-page": nearmiss_oc_on_another_page,
+    "evade-resources-stream-on-the-page": evade_resources_stream_on_the_page,
+    "evade-resources-stream-on-a-form": evade_resources_stream_on_a_form,
+    "evade-font-decoy-behind-a-resources-stream": evade_font_decoy_behind_a_resources_stream,
+    "evade-xobject-category-as-a-stream": evade_xobject_category_as_a_stream,
+    "evade-properties-as-a-stream-holding-a-layer": evade_properties_as_a_stream_holding_a_layer,
+    "nearmiss-resources-inherited-from-pages": nearmiss_resources_inherited_from_pages,
 }
 
 
