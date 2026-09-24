@@ -3183,10 +3183,24 @@ unblocks.
 `redact` cargo feature, the third bundle, its budget line and the check that the base bundle holds
 no redaction code.
 
-That check **cannot yet be shown to fire on a real module.** LTO strips redaction from every
-module while no entry point calls it, so today the redact module contains no redaction code
-either. Until #191 lands, the check's positive probe is a planted artifact, and it says so in its
-own output. That is weaker than the PDFium check it copies, which has a real positive: the render
-bundle.
+That check has **no shipped positive yet**, where the PDFium check it copies has one: the render
+bundle, which must contain PDFium. No redaction module exists until #191. Of redaction's code,
+`pdfsyntax` and `redact.rs` compile for wasm and are stripped by LTO, since no entry point calls
+them; the `qpdf` policy and the verification are not compiled for wasm at all. So no shipped
+artifact contains redaction's literals, and a check that only looked for them there could never
+be seen to fire.
+
+Its positives are therefore **built, not shipped**:
+- The self-test compiles a real base module with a probe export behind
+  `--cfg burrow_redaction_probe`. The export reaches the geometry walk, the rewriter's splice and
+  string decoding, the `/ToUnicode` narrowing and the region, and the self-test requires the
+  check to refuse the result. That tests the premise the check rests on, that reachable code
+  keeps its literals through the real compiler and LTO, which planting bytes in a file could not.
+- The three needles whose code is native-only until #191 (`pdf redaction [`, `pdf resources [`,
+  the verification's `redact: the region is not cleared`) are planted into copies.
+- The first version of the check looked only for refusal prefixes. The code review built modules
+  reaching the splice, the font surgery and the string encoder, none of which formats a refusal,
+  and the check passed all three. The needles now name each component by a literal only it
+  spells.
 
 [#191]: https://github.com/TensorGreed/burrow/issues/191

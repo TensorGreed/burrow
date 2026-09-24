@@ -82,6 +82,54 @@ mod render;
 use burrow_core::{Clock, Error, Limits};
 use wasm_bindgen::prelude::wasm_bindgen;
 
+/// A REAL POSITIVE for `tools/check-redaction-not-in-base.sh`, and nothing else.
+///
+/// Compiled only under `RUSTFLAGS="--cfg burrow_redaction_probe"`, which no shipped build sets.
+/// That check looks for the literals redaction's errors are built from, and it rests on a premise
+/// about the compiler -- that code reachable from an export keeps its literals through LTO -- which
+/// planting bytes into a copy of a build cannot test. This can:
+/// `tools/test-check-redaction-not-in-base.sh` builds the base module with this export, which
+/// reaches four of redaction's components from one entry point, and requires the checker to refuse
+/// the result by name.
+///
+/// Every call's outcome feeds the return value, so none of them can be folded away.
+#[cfg(burrow_redaction_probe)]
+#[wasm_bindgen]
+pub fn __burrow_redaction_probe(input: Box<[u8]>) -> u32 {
+    use burrow_core::ops::engines::pdfsyntax::{contents, geometry, region, strings, tounicode};
+
+    let mut refused = 0u32;
+    refused += u32::from(geometry::check_type_three_procedure(&input).is_err());
+    refused += u32::from(strings::decode_string(&input).is_err());
+    refused += u32::from(tounicode::ToUnicode::parse(&input).is_err());
+    if let Ok(parts) = contents::Contents::concatenate(&[&input]) {
+        let edit = contents::Edit {
+            span: (input.len(), 0),
+            replacement: Vec::new(),
+        };
+        refused += u32::from(parts.apply(&[edit]).is_err());
+    }
+    let first = f64::from(input.first().copied().unwrap_or(0));
+    let frame = region::PageFrame {
+        display_box: geometry::Rect {
+            left: first,
+            bottom: 0.0,
+            right: first,
+            top: 0.0,
+        },
+        rotate: u16::from(input.last().copied().unwrap_or(0)),
+        user_unit: 1.0,
+    };
+    let area = region::Region {
+        left: first,
+        top: first,
+        width: first,
+        height: first,
+    };
+    refused += u32::from(area.to_content_space(&frame).is_err());
+    refused
+}
+
 #[wasm_bindgen]
 extern "C" {
     /// `performance.now()` truncated to whole milliseconds.
