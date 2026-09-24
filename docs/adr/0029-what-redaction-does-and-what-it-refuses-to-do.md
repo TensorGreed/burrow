@@ -2826,8 +2826,23 @@ The third pass reviewed only round two. Every earlier repro refused, and it foun
     read-back cannot either: by then qpdf has erased the null from the output too.
   - Pre-existing, and not closable within this record's decisions. The reviewer's remedy is to
     compare against PDFium on the input, and §6 and *Alternatives considered* reject PDFium in
-    the operation. Filed as [#183](https://github.com/TensorGreed/burrow/issues/183) with the
-    options, as a decision for the project owner. The rustdoc now says what is true.
+    the operation. Filed as [#183](https://github.com/TensorGreed/burrow/issues/183), and
+    **decided by the project owner on 2026-09-24: a pre-scan of the input bytes** for
+    null-valued `/Resources` and `/Rotate`, refused before the operation runs. The reason is
+    the structural one: qpdf erases the null, so no qpdf-based check can be made to see it,
+    and the remedy has to sit where the null is still present. It is a refusal, not a
+    comparison with another reader, so it keeps §6's rejection of PDFium in the operation.
+    **A raw byte grep is not that pre-scan**, and the decision
+    ([#183](https://github.com/TensorGreed/burrow/issues/183#issuecomment-5817661570)) says what
+    one must cover:
+    - a direct null, a reference to a `null` object, and a null on an intermediate `/Pages` node;
+    - keys inside **compressed object streams**, which a byte grep cannot see, so the scan must
+      decode them or refuse a page tree it cannot read;
+    - near-misses that must not refuse: a genuinely absent key, and `null` under an unrelated key;
+    - the other inheritable page attributes. `/MediaBox` and the rest are still to be measured,
+      and `/CropBox null` measured clean.
+    #180–#183 are ship blockers for the redaction page, not for the binding. The rustdoc now
+    says what is true.
 - **A `BDC`'s tag is its second-last operand.** Both mark checks read the first, so
   `/Pad /OC /OC1 BDC` hid a layer that PDFium and poppler both hide. `BDC`, `BMC`, `DP` and `MP`
   now have operand counts in the geometry walk, so a padded run is refused as
