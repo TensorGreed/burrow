@@ -425,10 +425,24 @@ jobs:
             exit 1
           }
 
-      - name: doc tests and rustdoc warnings
-        run: cargo doc --workspace --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
+      # RUSTDOC WITH THE ENGINES LINKED, AND WHAT IT DOCUMENTED (#174). This ran without
+      # `--all-features`, so every item behind the engine gate -- `pdfium`, `qpdf`,
+      # `redact_verify` and two functions -- was never documented here, and its intra-doc links
+      # were checked by nothing: two were stale for as long as `redact_verify` existed. Measured:
+      # the old command exits 0 over a tree holding 0 of those 5 items.
+      #
+      # Here, in the job that already has `engines/vendor`, because `--all-features` needs it and
+      # `build.rs` fails rather than skipping without it. The script reports crates and gated
+      # items against counts derived from `cargo metadata` and `lib.rs`; its self-test plants
+      # the featureless tree and requires a refusal naming what is missing.
+      #
+      # NOT YET CHECKED: rustdoc on PRIVATE items, which needs `--document-private-items`. A
+      # review measured at least 14 broken links there, 10 inside engine-gated private modules,
+      # so adding the flag now would be red on arrival. Tracked as #187.
+      - name: rustdoc with the engines, and every crate and gated item documented
+        run: |
+          tools/check-rustdoc.sh
+          tools/test-check-rustdoc.sh
 
   fuzz:
     name: fuzz smoke
