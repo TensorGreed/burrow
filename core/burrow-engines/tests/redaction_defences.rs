@@ -1725,7 +1725,7 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
 /// Read from the generated corpus rather than rebuilt here: these three exist to probe the
 /// cross-stream shapes, and a copy written in this file would be a copy that can drift from the
 /// generator that writes them.
-const CARRIER_EVASIONS: [(&str, &str); 10] = [
+const CARRIER_EVASIONS: [(&str, &str); 13] = [
     (
         "evade-actualtext-around-a-form.pdf",
         "BURROW-EVADE-ACTUALTEXT-FORM",
@@ -1771,6 +1771,44 @@ const CARRIER_EVASIONS: [(&str, &str); 10] = [
     // it exists at all -- if narrowing broke outright, only the twin would tell them apart.
     ("evade-tounicode-in-a-form-local-font.pdf", "<0058>"),
     ("nearmiss-tounicode-on-a-page-font.pdf", "<0058>"),
+    // THE PAGE-WIDENING CASE. Its keep line is below the band these tests redact, so the page
+    // contributes no removed glyph and is in the stream list only because it carries the span.
+    (
+        "evade-actualtext-on-a-page-that-draws-nothing-itself.pdf",
+        "BURROW-EVADE-ACTUALTEXT-BARE-PAGE",
+    ),
+    // THE DETECTOR/REWRITER GAP. `/ActualText` named as an array item is not a key, so the
+    // rewriter removes nothing; before the rule that refuses this, the string reached the output.
+    (
+        "evade-actualtext-named-outside-key-position.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NOT-A-KEY",
+    ),
+    // ITS NEAR-MISS, here rather than only in the corpus because the claim is the same one: an
+    // ordinary `/Lang (en-US)` beside the glyphs must be redacted, not refused, and either way
+    // the canary must not come out.
+    (
+        "nearmiss-ordinary-string-in-a-property-list.pdf",
+        "BURROW-EVADE-ACTUALTEXT-ORDINARY-STRING",
+    ),
+];
+
+/// The rules this suite will accept a refusal *by*.
+///
+/// The `Err` arm below asserted only that the refusal **named** a rule. That passes for any named
+/// refusal at all, including one about input size or page count — so a fixture that stopped
+/// reaching the carrier logic entirely, because a generator change made it malformed or oversized,
+/// would still have read as "the defence held". The canary would not be in the output, which is
+/// true and says nothing.
+///
+/// These are the rules that mean burrow looked at the carrier and declined. Adding one is a
+/// deliberate act; a refusal outside the list fails and names itself in the message.
+const CARRIER_REFUSALS: [&str; 6] = [
+    "marked-content-properties-unresolved",
+    "marked-content-split-across-elements",
+    "marked-content-carries-opaque-string",
+    "form-vanished",
+    "shared-form-would-change-elsewhere",
+    "type-three-procedure-shows-text",
 ];
 
 #[test]
@@ -1810,6 +1848,11 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
                 assert!(
                     text.contains('[') && text.contains(']'),
                     "{name}: refused without naming a rule: {text}"
+                );
+                assert!(
+                    CARRIER_REFUSALS.iter().any(|rule| text.contains(rule)),
+                    "{name}: refused by a rule that is not about the carrier, so this fixture \
+                     stopped measuring what it was written for: {text}"
                 );
             }
             Ok((out, _)) => assert_absent(&out, canary.as_bytes(), name),

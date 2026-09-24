@@ -1050,6 +1050,57 @@ re-opened the cross-stream hole one level down — one fix re-opening another.
 """
 
 [[fixture]]
+name = "evade-actualtext-named-outside-key-position"
+file = "generated/evade-actualtext-named-outside-key-position.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText named as an array item rather than a key"
+  canary = "BURROW-EVADE-ACTUALTEXT-NOT-A-KEY"
+  verdict = "refuse"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The gap the rewriter opened. The detector matched `/ActualText` as a name **anywhere**; the
+rewriter removes it only where it is a **key**. For `/Span << /MCID 0 /K [ /ActualText (…) ] >>`
+the two disagreed: the span was classified as carrying text, the rebuild removed nothing, and the
+replacement was byte-identical to its input. Measured as a working leak — the string reached the
+output and a raw byte scan found it.
+
+Narrowing the detector to keys made the two agree and turned the leak into a silent pass, so the
+gap itself is now `marked-content-carries-opaque-string`: a property list that *names* one of the
+three keys where nothing can be removed is refused rather than emitted. Its near-miss is
+`nearmiss-ordinary-string-in-a-property-list`, which is why the rule is not "holds a string".
+"""
+
+[[fixture]]
+name = "nearmiss-ordinary-string-in-a-property-list"
+file = "generated/nearmiss-ordinary-string-in-a-property-list.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an ordinary string in a covering span's property list"
+  canary = "BURROW-EVADE-ACTUALTEXT-ORDINARY-STRING"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+The twin that stops the rule above being “refuse any property list holding a string”. `/Lang
+(en-US)` is ordinary tagged output and repeats no glyphs. The first version of the rule refused
+exactly this, which would have refused most tagged documents; it was caught by the existing probe
+`the_rewritten_property_list_keeps_every_other_key` rather than by review, and this fixture is
+that probe's corpus-level twin.
+"""
+
+[[fixture]]
 name = "nearmiss-actualtext-around-an-untouched-form"
 file = "generated/nearmiss-actualtext-around-an-untouched-form.pdf"
 kind = "hand-built"
@@ -1255,4 +1306,26 @@ pages = 1
   notes = """
 Always worked. Without it the evasion fixture could be measuring the narrowing rather than the
 scope it is named for.
+"""
+
+[[fixture]]
+name = "evade-actualtext-on-a-page-that-draws-nothing-itself"
+file = "generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf"
+kind = "hand-built"
+probes_refusal = "/ActualText"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/ActualText on a page whose own text is outside the region"
+  canary = "BURROW-EVADE-ACTUALTEXT-BARE-PAGE"
+  verdict = "handle"
+  adr = "§1"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+The stream list is built from removed glyphs and then widened to the streams carrying a span.
+Every other fixture's keep line falls inside the band the defence tests redact, so the page was
+always already in the list and the widening was dead in every test. Here the keep line is at the
+bottom of the page and the page's only involvement is the span.
 """

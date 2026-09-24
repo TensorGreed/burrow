@@ -34,7 +34,7 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, ScopedFont, carried_text_edits, check_form_sharing, check_marked_content,
+    FormsReached, Glyph, ScopedFont, carried_text_edits, check_form_sharing,
     check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
@@ -83,6 +83,8 @@ pub(crate) struct QpdfRedaction {
     page_draws: BTreeSet<Vec<u8>>,
     /// The same, per form on a path to a removed glyph.
     form_draws: BTreeMap<u64, BTreeSet<Vec<u8>>>,
+    /// How many property lists have had their carried text dropped, for §7's disclosure.
+    dropped_carried_text: usize,
 }
 
 impl QpdfRedaction {
@@ -127,6 +129,7 @@ impl QpdfRedaction {
             cut: Vec::new(),
             page_draws: BTreeSet::new(),
             form_draws: BTreeMap::new(),
+            dropped_carried_text: 0,
         })
     }
 
@@ -293,6 +296,10 @@ impl QpdfRedaction {
 }
 
 impl Steps for QpdfRedaction {
+    fn dropped_carried_text(&self) -> usize {
+        self.dropped_carried_text
+    }
+
     fn affected_streams(&mut self) -> Result<Vec<StreamId>> {
         self.deadline.checkpoint(self.clock.as_ref())?;
         let page = self.page_handle()?;
@@ -367,31 +374,43 @@ impl Steps for QpdfRedaction {
         // REFUSES ONLY WHAT THE REWRITER CANNOT HANDLE. `/ActualText` and `/Alt` written out
         // are dropped by `carried_text_edits` in `rewrite`; a property list named through
         // `/Properties` is still unreadable here and still refuses. That is #166.
-        check_marked_content(
+        // ONE CALL PER STREAM, NOT TWO. `check_marked_content` is now
+        // `carried_text_edits(..).map(|_| ())`
+        // -- same walk, same early return, and its only remaining refusal (`Unknown`) is raised
+        // by the rewriter too. Asking twice cost a second `find_form` per form below, and that
+        // loop is the one whose own comment records 22.5 s against a 100 ms deadline.
+        let page_carries = !carried_text_edits(
             contents.bytes(),
             &cut,
             None,
             &FormsReached::Named(&page_names),
-        )?;
+        )?
+        .is_empty();
+        let mut carrying_forms: Vec<u64> = Vec::new();
         for (form, names) in &form_scope {
             // A CHECKPOINT PER FORM, because this loop is the attacker's number. `form_scope` is
             // bounded only by the visit budget (~4095), and each iteration calls `find_form`,
             // which re-walks the resource graph from the page with a **fresh** budget of its own.
             // A security review measured 22.5 s against a `max_duration_ms` of 100 -- 225x, where
-            // `CLAUDE.md` promises overshoot "of up to one engine call". The next checkpoint was
-            // at the top of `rewrite`, after all of it.
+            // `CLAUDE.md` promises overshoot "of up to one engine call".
             //
             // The quadratic is not fixed here and is not a regression -- `main`'s lookup had the
-            // same shape at 19.1 s. What changes is that the deadline is now consulted while the
-            // work happens rather than after it. `marked_content_scope` already holds each form's
-            // handle and could hand it over, which would remove the re-walk; filed, not done.
+            // same shape at 19.1 s. What changed is that the deadline is consulted while the work
+            // happens, and that this is **one** loop: a first draft of the rewriter asked
+            // `check_marked_content` here and `carried_text_edits` again below, doubling the
+            // `find_form` calls this comment is about. `marked_content_scope` already holds each
+            // form's handle and could hand it over, removing the re-walk entirely; filed.
             self.deadline.checkpoint(self.clock.as_ref())?;
-            check_marked_content(
+            if !carried_text_edits(
                 &find_form(&resources, *form)?,
                 &cut,
                 Some(*form),
                 &FormsReached::Named(names),
-            )?;
+            )?
+            .is_empty()
+            {
+                carrying_forms.push(*form);
+            }
         }
 
         let mut streams: Vec<StreamId> = cut
@@ -403,29 +422,10 @@ impl Steps for QpdfRedaction {
         // glyph of its own, so it was not in this list -- and the stream holding the text to
         // drop would never have been rewritten. The same cross-stream shape as the refusal this
         // replaces, one step further on.
-        if !carried_text_edits(
-            contents.bytes(),
-            &cut,
-            None,
-            &FormsReached::Named(&page_names),
-        )?
-        .is_empty()
-        {
+        if page_carries {
             streams.push(StreamId::Page);
         }
-        for (form, names) in &form_scope {
-            self.deadline.checkpoint(self.clock.as_ref())?;
-            if !carried_text_edits(
-                &find_form(&resources, *form)?,
-                &cut,
-                Some(*form),
-                &FormsReached::Named(names),
-            )?
-            .is_empty()
-            {
-                streams.push(StreamId::Object(*form));
-            }
-        }
+        streams.extend(carrying_forms.iter().copied().map(StreamId::Object));
         streams.sort_unstable();
         streams.dedup();
         let draws = (page_names, form_scope);
@@ -446,7 +446,9 @@ impl Steps for QpdfRedaction {
         let resources = PageResources::of(&page)?;
         let null = ObjectHandle::new_null(&self.document);
 
-        match stream {
+        // THE MATCH YIELDS THE COUNT rather than assigning into a local declared above it: every
+        // arm sets it, so an initial value would be dead and the compiler says so.
+        let dropped_here = match stream {
             // THE PAGE'S OWN CONTENT, WRITTEN BACK ELEMENT BY ELEMENT. An array `/Contents` is
             // one lexical stream to read and several objects to write, so the cut is planned on
             // the concatenation and the bytes are cut back along the element boundaries. A
@@ -470,6 +472,15 @@ impl Steps for QpdfRedaction {
                 // THE COMBINED PASS: the glyph cuts and the carried text in one application,
                 // because both are spans into these same bytes. See
                 // `remove_glyphs_and_carried_text`.
+                // COUNTED INTO A LOCAL, ADDED AFTER THE HANDLES GO. `page` borrows `self`,
+                // so `self.dropped_carried_text += …` here borrows it twice.
+                let dropped = carried_text_edits(
+                    contents.bytes(),
+                    &mine,
+                    None,
+                    &FormsReached::Named(&self.page_draws),
+                )?
+                .len();
                 let parts = remove_glyphs_and_carried_text(
                     &contents,
                     None,
@@ -495,6 +506,7 @@ impl Steps for QpdfRedaction {
                 // through qpdf rather than any record this step keeps -- which is the point of
                 // running it after the write. The field that used to hold these bytes claimed
                 // otherwise in its own doc comment and was read by nobody; it is gone.
+                dropped
             }
             StreamId::Object(id) => {
                 let form = find_form(&resources, id)?;
@@ -509,6 +521,8 @@ impl Steps for QpdfRedaction {
                 // that -- so doing only the glyphs here would leave the text it replaces.
                 let empty = BTreeSet::new();
                 let draws = self.form_draws.get(&id).unwrap_or(&empty);
+                let dropped =
+                    carried_text_edits(&form, &mine, Some(id), &FormsReached::Named(draws))?.len();
                 let parts = remove_glyphs_and_carried_text(
                     &crate::pdfsyntax::contents::Contents::concatenate(&[&form])?,
                     Some(id),
@@ -529,10 +543,13 @@ impl Steps for QpdfRedaction {
                 let target = form_handle(&resources, id)?;
                 target.replace_stream_data(&edited, &null, &null)?;
                 drop(target);
+                dropped
             }
-        }
+        };
         drop(resources);
         drop(page);
+        // ADDED AFTER THE HANDLES GO, because `page` borrows `self` for the whole match.
+        self.dropped_carried_text += dropped_here;
         Ok(())
     }
 

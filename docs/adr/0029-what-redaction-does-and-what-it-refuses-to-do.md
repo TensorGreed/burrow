@@ -309,10 +309,12 @@ redacted page cannot see metadata**, so a disclosure they cannot act on is a cav
 > a screen reader reads *instead of* the letters on the page. That version covers the whole
 > passage as one piece of writing, with nothing in it to say which words belong to the part you
 > removed — so Not Only PDF removes the whole thing rather than guessing at a shorter one. A
-> screen reader now reads the passage's own letters, which are right for everything that stayed.
-> What is lost is the author's wording for the rest of that passage. **Nothing on the page shows
-> this**, and the person it affects is not the person doing the redacting, which is why it is
-> written here rather than left to be discovered.
+> screen reader then falls back to the letters on the page. Usually those are fine. But the
+> reason an author supplies that text in the first place is often that the letters do **not**
+> read correctly on their own — a ligature that is one character in the file and two in the word,
+> or a word broken across two lines — and in those documents the fallback is worse than what was
+> there. **Nothing on the page shows this**, and the person it affects is not the person doing
+> the redacting, which is why it is written here rather than left to be discovered.
 >
 > **A font that was used only for the text you removed still says which letters that text used.**
 > Not the words, and not the order — the set of characters. Rebuilding a font is a thing Not Only
@@ -2354,7 +2356,16 @@ Dropping is required even when the span goes wholly: a reader then shows nothing
 is still in the file, recoverable with `qpdf --qdf` by anyone holding it.
 
 **§7 now carries what this costs**, in ADR 0019 §4's voice and for a reason that is not the usual
-one. Every other disclosure there is a limit on what the redaction achieved, addressed to the
+one.
+
+A first draft of that paragraph said a screen reader would read "the passage's own letters, which
+are right for everything that stayed". A code review pointed out that this is false of precisely
+the documents that carry `/ActualText`: §14.9.4's canonical uses are a ligature, a word hyphenated
+across a line break, a decorative dropped cap — cases where the glyph codes are *known* not to
+read correctly, which is why the author supplied a replacement. Dropping it there leaves a reader
+with `ﬁ` for `fi` and `redac- tion` for `redaction`. The paragraph now says that, because a
+disclosure that understates the cost is worse than none: it reassures exactly the person who
+should be checking. Every other disclosure there is a limit on what the redaction achieved, addressed to the
 person who asked for it. This one is a cost imposed on a **different person** — a screen-reader
 user, reading content that was never redacted — and nothing on the page reveals it. That is
 exactly the kind of limit that is never discovered until someone complains, which is the argument
@@ -2389,9 +2400,63 @@ exactly the difference, silently, where the checker had already said `Ok`.
   absent from the output **bytes**, which is the claim that matters and the one the text layer
   cannot make.
 
+### A key is a position, not a name — and the gap between those two leaked
+
+The detector and the rewriter did not mean the same thing by "carries text", and the review that
+found it stated the requirement exactly: *make removal as deep as detection, or make detection as
+shallow as removal; the two must not disagree.*
+
+`holds_text_key` matched `/ActualText` as an `Operand::Name` **anywhere** — value position,
+array element, any depth. `rebuilt_without_carried` removes a key and its value. For
+
+```
+/Span << /MCID 0 /K [ /ActualText (secret) ] >> BDC … EMC
+```
+
+the name is an array *item*. The detector said the span carried text; the rewriter found no key
+and removed nothing; the replacement was byte-identical to its input. Measured: **the string
+reached the output and a raw byte scan found it.** The self-check added in this branch caught it
+as an `Error::Internal` — failing closed, but blaming burrow for a document it should handle.
+
+The two were made to agree by narrowing the detector, because that is the reading that is true:
+`/ActualText`, `/Alt` and `/E` are read by assistive technology **because they are those keys**,
+and a string under some other key is not that channel and could not be — every operand in a
+content stream may be a string. `carried_by` now hands `holds_text_key` the whole dictionary
+rather than its items one at a time, since an item seen alone has lost the position that answers
+the question. Passing them individually is *how* a name in value position was read as a key.
+
+But narrowing a detector turns a caught leak into an uncaught one unless the difference is
+decided rather than dropped. So the gap is its own refusal,
+**`marked-content-carries-opaque-string`**: a covering span whose property list *names* one of
+the three keys somewhere nothing can be removed from is refused, not emitted. It is checked on
+the **rewritten** bytes, so it cannot be wrong about what actually survived, and it fires for a
+list that held a real key *and* named one elsewhere — a case the classification never sees,
+because `holds_text_key` answers first.
+
+The first version of this rule refused any property list holding **any** string, on the argument
+that burrow cannot relate an arbitrary string to the glyphs. True, and far too wide:
+`/Span << /MCID 0 /Lang (en-US) >>` is ordinary tagged output that repeats nothing. It was caught
+by an existing probe — `the_rewritten_property_list_keeps_every_other_key` — rather than by
+review, which is that probe earning its place. Refusing exactly the gap between the wide reading
+and the narrow one needs no allowlist and so cannot rot into one.
+
+Two fixtures, because a rule with probes and no corpus witness is a rule nothing runs:
+`evade-actualtext-named-outside-key-position` (refuses) and
+`nearmiss-ordinary-string-in-a-property-list` (redacts).
+
+### The `Err` arm that accepted any refusal
+
+`CARRIER_EVASIONS` asserted a refusal **named a rule**, and nothing about which. A fixture that
+stopped reaching the carrier logic at all — a generator change making it oversized or malformed —
+would refuse by some other rule, keep its canary out of the output, and read as the defence
+holding. `CARRIER_REFUSALS` now lists the six rules that mean burrow looked at the carrier and
+declined; anything else fails and names itself.
+
 ### The census
 
-**49 of 56 redact, 7 refuse, 0 quiet** — up from 42. All seven `/ActualText` fixtures flipped from
-refusing to redacting with their canaries gone from the bytes. What still refuses is Type 3
-procedures that draw, a pattern, and two documents whose marked-content properties are named
-through `/Properties` — which is #166, and the only marked-content refusal left.
+**59 of 59 documents examined: 51 redacted, 8 refused, 0 quiet** — up from 42 redacting before
+this work. All seven `/ActualText` fixtures flipped from refusing to redacting with their canaries
+gone from the bytes. What still refuses is four Type 3 procedures that draw, a pattern, two
+documents whose marked-content properties are named through `/Properties` — which is #166, and the
+only marked-content refusal left that is about a document rather than a shape — and the
+detector/rewriter gap fixture above.
