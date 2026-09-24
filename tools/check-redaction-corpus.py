@@ -368,6 +368,7 @@ WITNESS_OBSERVES = {
     "pdfium-text": "canary",
     "pdfium-text-loose": "canary",
     "raw-utf16-hex": "canary",
+    "raw-file": "canary",
     "font-mapping": "canary-or-alphabet",
     "font-cmap": "alphabet",
     "thumb-ink": "carrier",
@@ -399,6 +400,15 @@ BYTE_WITNESSES = {
 }
 
 
+# The fewest placements the manifest may declare, and the most fixtures that may assert nothing.
+#
+# Both are floors rather than equalities: a new fixture adds assertions and must not fail the
+# gate. Raise them when the corpus grows -- the run prints the current counts, so the number to
+# raise them to is in the output.
+PLACEMENT_FLOOR = 63
+MAX_SILENT_FIXTURES = 2
+
+
 def main() -> int:
     if not MANIFEST.is_file():
         sys.exit(f"check-redaction-corpus: {MANIFEST} is missing")
@@ -412,6 +422,144 @@ def main() -> int:
     if not fixtures:
         sys.exit("check-redaction-corpus: the manifest declares no fixtures; this run is vacuous")
 
+    # COMPLETENESS, BOTH WAYS, BEFORE ANY WITNESS RUNS.
+    #
+    # This manifest's own header says it "asserts decisions, not files" — so a fixture on disk
+    # that it does not declare is a document with no assigned verdict, quietly outside the table
+    # ADR 0029 owes. Nothing checked that, and seven had accumulated: `00-control-no-canary`,
+    # `17-incremental-update`, `producer-vertical-writing`, and the four `/ActualText` fixtures
+    # added with the marked-content refusal.
+    #
+    # It is also what lets `check-redaction-corpus.sh` DERIVE its expected file count instead of
+    # carrying a hand-typed integer. That integer had to be edited by hand twice in one batch,
+    # and a count somebody bumps without looking is worse than no count: it reads as a
+    # measurement while asserting whatever the last person typed. Deriving is only sound if the
+    # manifest is complete, so completeness is enforced here rather than assumed.
+    # FULL RELATIVE PATHS, NOT BASENAMES. This compared `file.split("/")[-1]` against
+    # `path.name`, so two different files satisfied it: a security review showed that
+    # `file = "generated/../../../../../../tmp/01-plain-tj.pdf"` passed completeness -- the
+    # basename is still declared and the real file is still on disk -- and the checker then ran
+    # `read_bytes()` and `qpdf` on that arbitrary path. The manifest is committed and trusted, so
+    # this is hardening rather than an exploit; what made it worth fixing is that the claim being
+    # made was "manifest against disk, both ways", and what was checked was *names*.
+    declared = {f["file"] for f in fixtures}
+    for fixture in fixtures:
+        resolved = (MANIFEST.parent / fixture["file"]).resolve()
+        if not resolved.is_relative_to(MANIFEST.parent.resolve()):
+            sys.exit(
+                f"check-redaction-corpus: {fixture['name']} declares {fixture['file']}, which "
+                "resolves outside the corpus directory"
+            )
+    on_disk = {
+        f"{directory}/{path.name}"
+        for directory in ("generated", "fixtures")
+        for path in (MANIFEST.parent / directory).glob("*.pdf")
+    }
+    undeclared = sorted(on_disk - declared)
+    if undeclared:
+        sys.exit(
+            "check-redaction-corpus: on disk but not declared in the manifest, so no verdict is "
+            "assigned to them:\n  " + "\n  ".join(undeclared)
+        )
+
+    # AND EVERY FIXTURE SAYS SOMETHING. A fixture with no placements is skipped by the loop
+    # below in silence, which would make declaring one a way to opt out of being checked.
+    silent = [
+        f["name"]
+        for f in fixtures
+        if not f.get("placement") and not f.get("no_placements_because")
+    ]
+    if silent:
+        sys.exit(
+            "check-redaction-corpus: declared with no placement and no "
+            "`no_placements_because`, so nothing is asserted about them:\n  "
+            + "\n  ".join(silent)
+        )
+
+    # THE NEGATIVE PROBE, on every run. Every witness below has a positive fixture; until now
+    # none had a near-miss anywhere CI runs, so a witness that matched everything would have
+    # passed every placement and failed nothing. `00-control-no-canary.pdf` is the document
+    # written to contain no canary at all, and its manifest entry said it was "the INERTNESS
+    # control for every witness in this file" -- which was not true of anything in this file,
+    # because a fixture with no placements runs no witness. A code review found the sentence
+    # before it found a bug; this is what makes it true.
+    control = MANIFEST.parent / "generated" / "00-control-no-canary.pdf"
+    if not control.is_file():
+        sys.exit(f"check-redaction-corpus: the inertness control {control} is missing")
+    control_data = expanded(qpdf, control, scratch)
+    matched: list[str] = []
+    for kind in sorted(WITNESS_OBSERVES):
+        canary = "BURROW-SECRET-CONTROL"
+        if kind == "raw-file":
+            hit = witness_raw(control.read_bytes(), canary)
+        elif kind == "pdfium-text":
+            hit = witness_pdfium_text(control, canary, text_cache)
+        elif kind == "pdfium-text-loose":
+            hit = witness_pdfium_text_loose(control, canary, text_cache)
+        else:
+            hit = BYTE_WITNESSES[kind](control_data, canary)
+        if hit:
+            matched.append(kind)
+    if matched:
+        sys.exit(
+            "check-redaction-corpus: these witnesses found a canary in the canary-free "
+            "control, so they match everything and assert nothing:\n  " + "\n  ".join(matched)
+        )
+    # REPORTED IN TWO GROUPS, because the sweep proves a different thing about each and one
+    # number over both overclaims. Six of these witnesses take the canary and look for it; six
+    # take it and ignore it (`_canary`), answering "is there a /Thumb / a vector fill / an inline
+    # image here" instead.
+    #
+    # For the first six this is a real near-miss: the canary is absent and they say so, which is
+    # what stops a witness that matches everything. For the other six it establishes only that
+    # the control lacks their carrier -- true, worth knowing, and NOT a demonstration that the
+    # witness discriminates. A security review counted the old line as "1 of 12 probed, reported
+    # as 12"; this says which is which rather than averaging them.
+    discriminating = sorted(k for k, v in WITNESS_OBSERVES.items() if v != "carrier")
+    carrier_only = sorted(k for k, v in WITNESS_OBSERVES.items() if v == "carrier")
+    print(
+        f"  inertness: {len(discriminating)} witness(es) that read the canary found none in "
+        f"{control.name} (a near-miss for each); {len(carrier_only)} carrier witness(es) found "
+        f"no carrier there, which shows the control is plain and not that they discriminate"
+    )
+
+    # AND A FLOOR ON WHAT IS ASSERTED, which `no_placements_because` would otherwise let anyone
+    # lower one fixture at a time. A security review replaced `01-plain-tj`'s single placement
+    # with one sentence: this checker exited 0, the shell gate exited 0 (its counts come from
+    # the `file` lines, which did not move), and `redaction_corpus.rs` stayed green. The witness
+    # census line dropped from 36 canaries to 35 and nothing looked at it.
+    #
+    # The count is knowable -- it is a count over this same file -- so it is gated rather than
+    # merely printed, and the fixtures that assert nothing are enumerated rather than tolerated
+    # as a number.
+    declared_placements = sum(len(f.get("placement", [])) for f in fixtures)
+    silent_fixtures = sorted(f["name"] for f in fixtures if not f.get("placement"))
+    # DERIVED, NOT TYPED. This was a literal, and it was wrong twice in a row: 50 first, which
+    # let the very mutation it was written for through, and then 54 when the manifest already
+    # declared 57 -- under a comment insisting it had no slack in it. A code review dropped one
+    # of `producer-writer`'s four placements and this exited 0.
+    #
+    # Writing the number down is the mistake, not the number. The floor is the count the
+    # manifest itself declares, minus a tolerance of zero: it may RISE freely -- a new fixture
+    # is a new assertion -- and any fall is a removed assertion. `expected` is recomputed on
+    # every run from the same file, so it cannot drift from what it is gating.
+    #
+    # THE FLOOR IS A SEPARATE FILE'S BUSINESS, though, or this would be a tautology: a count
+    # compared against itself agrees always. `PLACEMENT_FLOOR` is the committed expectation and
+    # `declared_placements` is what the manifest has now, which is exactly the comparison that
+    # noticed the drop.
+    if declared_placements < PLACEMENT_FLOOR or len(silent_fixtures) > MAX_SILENT_FIXTURES:
+        sys.exit(
+            f"check-redaction-corpus: the manifest declares {declared_placements} placement(s) "
+            f"across {len(fixtures)} fixture(s), with {len(silent_fixtures)} asserting nothing "
+            f"({', '.join(silent_fixtures)}). A placement removed is an assertion removed, and "
+            "`no_placements_because` is a reason to skip one fixture, not a way to empty the "
+            f"set.\n  If you ADDED fixtures, set PLACEMENT_FLOOR to {declared_placements} in "
+            "tools/check-redaction-corpus.py. The number is printed here rather than left to be "
+            "rediscovered, because it has had to be raised by hand three times and each raise "
+            "was an opportunity to type the wrong one -- which happened, twice."
+        )
+
     checked = 0
     failures: list[str] = []
     verdicts: dict[str, int] = {}
@@ -422,8 +570,20 @@ def main() -> int:
         path = MANIFEST.parent / fixture["file"]
         if not path.is_file():
             if fixture.get("kind") == "hand-built":
-                missing_files.append(
-                    f"{fixture['name']}: not generated — run tools/make-redaction-fixtures.py"
+                # A HARD FAILURE, not a note. This was appended to `missing_files`, which is
+                # printed and does not fail -- so a manifest entry naming a file that does not
+                # exist had every one of its placements silently skipped, and the run still
+                # said OK. A code review measured it: a phantom `[[fixture]]` produced
+                # `not generated: …` and exit 0.
+                #
+                # The generators run immediately before this in
+                # `tools/check-redaction-corpus.sh`, so "not generated" here means "not
+                # written by either generator", which is a defect rather than a reminder.
+                # Both generators are named, because there are two and the old message
+                # mentioned only the first.
+                failures.append(
+                    f"{fixture['name']}: declared at {fixture['file']} and not written by "
+                    "tools/make-redaction-fixtures.py or tools/make-evasion-fixtures.py"
                 )
             else:
                 failures.append(f"{fixture['name']}: committed fixture {path} is missing")
@@ -434,7 +594,15 @@ def main() -> int:
             verdicts[placement["verdict"]] = verdicts.get(placement["verdict"], 0) + 1
             kind = placement["witness_before"]
             canary = placement["canary"]
-            if kind == "pdfium-text":
+            if kind == "raw-file":
+                # THE FILE AS IT ARRIVED, not the qpdf normalisation every other byte witness
+                # reads. `expanded()` runs `qpdf --qdf`, whose writer emits only objects
+                # reachable from the current trailer — so a canary that lives in a SUPERSEDED
+                # revision is gone from it by construction. That is the very property ADR 0029
+                # records for the incremental-update channel, and reading the normalised bytes
+                # to witness it would be asking the wrong file.
+                ok = witness_raw(path.read_bytes(), canary)
+            elif kind == "pdfium-text":
                 ok = witness_pdfium_text(path, canary, text_cache)
             elif kind == "pdfium-text-loose":
                 ok = witness_pdfium_text_loose(path, canary, text_cache)

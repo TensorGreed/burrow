@@ -26,6 +26,7 @@ use burrow_types::{Error, Result};
 use super::handle::ObjectHandle;
 use super::name::Name;
 use crate::codes::qpdf::object_type;
+use crate::pdfsyntax::geometry::ScopedFont;
 use crate::pdfsyntax::geometry::{Encoding, Form, GlyphMetrics, Matrix, Rect, Resources};
 
 const RESOURCES: Name = Name::literal(b"/Resources\0");
@@ -157,48 +158,67 @@ impl<'a> PageResources<'a> {
         self.dictionary.key(category)
     }
 
-    /// The object identity of the font a content stream selects by `name`, packed.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Malformed`] when the resources do not name that font.
-    pub(crate) fn font_object(&self, name: &[u8]) -> Result<u64> {
-        let key = Name::from_stripped(name)?;
-        let font = self.category(&FONT).key(&key);
-        if font.type_code() != object_type::DICTIONARY {
-            return Err(Error::Malformed(
-                "pdf resources [font-missing]: the content stream selects a font the page's \
-                 resources do not name"
-                    .to_owned(),
-            ));
-        }
-        let (number, generation) = font.object()?;
-        Ok(
-            (u64::from(number.unsigned_abs()) << 16)
-                | u64::from(generation.unsigned_abs() & 0xffff),
-        )
-    }
+    // `font_object` AND `font_handle` ARE GONE, deliberately.
+    //
+    // Both took a bare `&[u8]` and searched the page's `/Font`. Five consumers used them on a
+    // name read inside a Form XObject, which is a different scope, and each was a defect: two
+    // leaks and three refusals of documents burrow handles. Four review rounds found four of
+    // them, one at a time.
+    //
+    // Deleting them is what makes [`Self::font_in_scope`] the only answer. A `pub(crate)`
+    // page-scoped resolver left beside it is a resolver somebody reaches for, and the whole
+    // argument of `ScopedFont` is that the wrong scope should stop compiling rather than be
+    // found a sixth time.
 
-    /// The font dictionary a content stream selects by `name`.
+    /// The font dictionary a glyph's [`ScopedFont`] selects, **in the stream that named it**.
     ///
-    /// Separate from [`Self::font_object`], which answers the identity question. This hands
-    /// back the handle, for the two callers that must read further into the font: the Type 3
-    /// `/CharProcs` check and font surgery.
+    /// Its own form's `/Resources` first, then the page's — the inheritance `Resources::within`
+    /// applies, so this resolves a name the way the walk that read it did. Anything that does
+    /// not is a bypass by construction; [`ScopedFont`] carries the five times that mattered.
     ///
     /// # Errors
     ///
-    /// [`Error::Malformed`] when the resources do not name that font.
-    pub(crate) fn font_handle(&self, name: &[u8]) -> Result<ObjectHandle<'a>> {
-        let key = Name::from_stripped(name)?;
-        let font = self.category(&FONT).key(&key);
-        if font.type_code() != object_type::DICTIONARY {
-            return Err(Error::Malformed(
-                "pdf resources [font-missing]: the content stream selects a font the page's \
-                 resources do not name"
-                    .to_owned(),
-            ));
+    /// [`Error::Internal`] when the name resolves in neither. The walk already placed a glyph
+    /// through it, so this is burrow disagreeing with itself rather than the document being
+    /// wrong — and a silent `None` would be the narrowing every leak here has been.
+    pub(crate) fn font_in_scope(&self, font: &ScopedFont) -> Result<ObjectHandle<'a>> {
+        const RESOURCES: Name = Name::literal(b"/Resources\0");
+        const XOBJECT: Name = Name::literal(b"/XObject\0");
+        let key = Name::from_stripped(font.name())?;
+        if let Some(id) = font.drawn_in() {
+            // BY IDENTITY, not by name: the form is known by the object it is, and its entry in
+            // the page's `/XObject` is where its own `/Resources` hang.
+            let xobjects = self.category(&XOBJECT);
+            for entry_key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
+                let entry = xobjects.key(&Name::from_stripped(&entry_key)?);
+                if entry.type_code() != object_type::STREAM {
+                    continue;
+                }
+                let (number, generation) = entry.object()?;
+                let packed = (u64::from(number.unsigned_abs()) << 16)
+                    | u64::from(generation.unsigned_abs() & 0xffff);
+                if packed != id {
+                    continue;
+                }
+                let own = entry.stream_dict().key(&RESOURCES);
+                if own.type_code() == object_type::DICTIONARY {
+                    let found = own.key(&FONT).key(&key);
+                    if found.type_code() == object_type::DICTIONARY {
+                        return Ok(found);
+                    }
+                }
+                break;
+            }
         }
-        Ok(font)
+        let found = self.category(&FONT).key(&key);
+        if found.type_code() == object_type::DICTIONARY {
+            return Ok(found);
+        }
+        Err(Error::Internal(
+            "pdf resources: a font the walk drew a glyph with resolves in neither the form's \
+             own resources nor the page's"
+                .to_owned(),
+        ))
     }
 
     fn font_facts(&self, name: &[u8]) -> Result<FontFacts> {

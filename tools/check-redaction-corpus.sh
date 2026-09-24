@@ -30,25 +30,60 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$root/tests/redaction/generated"
 
+# CLEANED FIRST, and that is not tidiness. `tests/redaction/generated/` is gitignored and
+# regenerated, so a stale file is invisible to git and indistinguishable from a live one — and
+# the count below is taken from the directory. Without this, a fixture REMOVED from a generator
+# leaves its last output sitting there, the count still matches, and the gate passes over a
+# document nothing writes any more.
+#
+# Measured: deleting an entry from `make-evasion-fixtures.py`'s `CASES` left this script green.
+# It is the mutation the derived count exists to catch, and cleaning is what makes it catchable.
+rm -f "$out"/*.pdf
+
 python3 "$root/tools/make-redaction-fixtures.py" "$out" >/dev/null
 python3 "$root/tools/make-evasion-fixtures.py" "$out" >/dev/null
 
 generated=$(find "$out" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')
 committed=$(find "$root/tests/redaction/fixtures" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')
 
-# THE EXPECTED COUNT, not a non-zero gate. A generator that wrote four files prints `OK` just
-# as loudly as one that wrote forty-two, and "4 of 42" reads exactly like success.
+# THE EXPECTED COUNT, DERIVED FROM THE MANIFEST rather than typed here.
 #
-# 39 -> 42 when the /ActualText channel gained its three: the span and the glyphs both on the
-# page, the span on the page with the glyphs in a form, and both inside a form. This gate is
-# what noticed they had been added, which is the job.
-expected_generated=42
-expected_committed=4
+# It was two integers in this file. They had to be edited by hand twice in one batch — 39 -> 42
+# when the `/ActualText` channel gained fixtures, and again for the nested one — and a count
+# somebody bumps without looking is worse than no count: it reads as a measurement while
+# asserting whatever the last person typed. That is the rotting-list shape CLAUDE.md names, and
+# the same batch saw it three more times (`DISPUTED` against the calibration's font list, and
+# the integration-suite list twice).
+#
+# `tests/redaction/manifest.toml` is the right source because it is not a restatement of the
+# file listing: it assigns every fixture the verdict ADR 0029 owes it, so a file that exists and
+# is not declared there is a document with no assigned verdict — a defect in its own right, and
+# one `check-redaction-corpus.py` now refuses. That refusal is what makes deriving sound; a
+# count derived from an incomplete declaration would quietly fall to match it.
+# `sort -u` BEFORE COUNTING, because `grep -c` counts LINES. A `file =` line duplicated in the
+# manifest would inflate the expectation, and the derived gate would then agree with itself over
+# a corpus missing a fixture. The `>= 20` floor below catches a collapsed derivation, not an
+# inflated one.
+expected_generated=$(grep '^file = "generated/' "$root/tests/redaction/manifest.toml" |
+    sort -u | wc -l | tr -d ' ')
+expected_committed=$(grep '^file = "fixtures/' "$root/tests/redaction/manifest.toml" |
+    sort -u | wc -l | tr -d ' ')
+
+# AND THE DERIVATION ITSELF IS GATED. `grep -c` returning zero is how a moved manifest, a
+# renamed key or a changed quoting style would present, and zero expected against zero found
+# would agree with itself and print OK over an empty corpus.
+if [ "$expected_generated" -lt 20 ] || [ "$expected_committed" -lt 2 ]; then
+    echo "redaction corpus: the manifest yielded $expected_generated generated and \
+$expected_committed committed declarations, which is not that manifest -- the derivation is \
+broken, not the corpus" >&2
+    exit 1
+fi
+
 if [ "$generated" -ne "$expected_generated" ] || [ "$committed" -ne "$expected_committed" ]; then
-    echo "redaction corpus: $generated generated (expected $expected_generated), \
-$committed committed (expected $expected_committed)" >&2
-    echo "  a count that has moved is either a fixture added without updating this gate, or a \
-generator that stopped writing one. Neither is something to pass over." >&2
+    echo "redaction corpus: $generated generated (manifest declares $expected_generated), \
+$committed committed (manifest declares $expected_committed)" >&2
+    echo "  a generator that stopped writing one, or a fixture written without a verdict in \
+tests/redaction/manifest.toml. Neither is something to pass over." >&2
     exit 1
 fi
 

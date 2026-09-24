@@ -162,6 +162,10 @@ __pycache__/
 # main. In the ROOT ignore file, never a directory-local one: checking out another branch
 # deletes a tracked local rule from the working tree, which is exactly when it is needed.
 tools/.*-fixture.py
+# The manifest copy `tools/test-check-redaction-corpus.sh` restores from. Its EXIT trap fires,
+# but a SIGKILL would leave it beside a tracked file that has been edited in place -- the
+# `git add -A` shape this repository has been bitten by twice.
+tests/redaction/.manifest-self-test-backup.toml
 tools/.*-fixture.sh
 
 # The same argument, for a fixture that cannot live in `tools/`: the integration-suite gate's

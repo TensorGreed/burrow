@@ -142,8 +142,13 @@ jobs:
       # below. It lives in THIS job because the job has `engines/vendor` -- the generators need
       # the vendored `cjpeg` and `qpdf`, and a job that fetches nothing would silently produce
       # fewer fixtures. See CLAUDE.md on where a check lives being load-bearing.
+      # The self-test runs BESIDE it, in this job, because it regenerates the corpus itself and
+      # so needs the same vendored `cjpeg` and `qpdf` the generators need. A copy of it in a
+      # job that fetches nothing would fail on the fixtures rather than on the rules it probes.
       - name: Build and check the redaction corpus
-        run: tools/check-redaction-corpus.sh
+        run: |
+          tools/check-redaction-corpus.sh
+          tools/test-check-redaction-corpus.sh
 
       - run: cargo test --workspace --all-features
 

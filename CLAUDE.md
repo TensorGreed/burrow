@@ -456,9 +456,26 @@ those at full candour is working and is not what "summarise" is asking you to sh
   - If a poll loop is genuinely needed, match on something that cannot describe the waiter —
     a marker line in the output file (`until grep -q DONE out; do sleep 5; done`), a pid, or a
     lock file. Never `pgrep -f` a string that appears in the loop itself.
-  - **Every summary states how many background shells are live.** Zero is the expected answer,
-    and saying "zero" is what makes a non-zero answer visible. Enumerate them with their
-    parent command, not just a count, when the answer is not zero.
+  - **An `until` loop carries its own timeout.** The rule above says to match on a marker line,
+    and that is not sufficient: a marker only arrives if the writer writes it. Two shells sat
+    for **103 minutes** on `until grep -q '<marker>' log` and `until [ $(wc -l < log) -ge 14 ]`,
+    over a log whose producer had exited at six lines with different labels. A self-matching
+    loop cannot terminate because its condition is always true; these could not because it was
+    always false, and the second kind is the one the marker-line advice produces. Bound it —
+    `timeout 600 bash -c 'until …'`, or a deadline inside the loop — so a condition that never
+    arrives ends the waiter rather than the session.
+  - **Every summary states how many background shells are live, and the number comes from
+    `ps`.** Not from what this turn launched: those are different numbers, and reporting the
+    second while calling it the first is how a non-zero answer stays invisible. Through the
+    103 minutes above the reported figure was "0" or "1" depending on what that turn had
+    started — each time a true statement about the wrong set — and the two real shells surfaced
+    only when someone asked directly.
+  - **A subagent's children are yours to account for.** Those two belonged to a reviewer that
+    had already handed back its report; the agent was recorded as finished and its shells were
+    still running, so nothing in the task list showed them. A handback is not a reaping. Check
+    `ps` after one, not just after your own work.
+  - Zero is the expected answer, and saying "zero" is what makes a non-zero answer visible.
+    Enumerate them with their parent command, not just a count, when the answer is not zero.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
 - **Run `security-reviewer` and `code-reviewer` before the first push.** See *Conventions*;

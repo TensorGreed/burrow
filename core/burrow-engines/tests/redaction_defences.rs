@@ -1719,3 +1719,341 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
         "{left_inside} character(s) are still rendered inside the region the user selected"
     );
 }
+
+/// The evasion fixtures whose canary must never reach the output, and the canary each carries.
+///
+/// Read from the generated corpus rather than rebuilt here: these three exist to probe the
+/// cross-stream shapes, and a copy written in this file would be a copy that can drift from the
+/// generator that writes them.
+const CARRIER_EVASIONS: [(&str, &str); 10] = [
+    (
+        "evade-actualtext-around-a-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-FORM",
+    ),
+    (
+        "evade-actualtext-inside-a-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-IN-FORM",
+    ),
+    (
+        "evade-actualtext-around-a-nested-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NESTED",
+    ),
+    (
+        "evade-actualtext-in-the-middle-form.pdf",
+        "BURROW-EVADE-ACTUALTEXT-MIDFORM",
+    ),
+    (
+        "evade-actualtext-over-a-form-without-resources.pdf",
+        "BURROW-EVADE-ACTUALTEXT-NORES",
+    ),
+    // NOT AN `/ActualText` SHAPE, and here for exactly that reason. A Type 3 glyph procedure
+    // that draws a form keeps the secret's drawing operators in the output while rendering
+    // nothing -- covered, not gone. The corpus reports it refusing; without this, restoring the
+    // defect only moved it from the refused column to the redacted one, and the floor is a
+    // floor, so the sweep stayed green. Measured: that mutation SURVIVED until this line.
+    (
+        "evade-text-in-type3-via-form.pdf",
+        "BURROW-EVADE-TYPE3-VIA-FORM",
+    ),
+    // THE MEMO CASE. Six fixtures above and none of them reached it: a code review measured
+    // that emptying the memo entirely is caught by `evade-actualtext-in-the-middle-form`, while
+    // **path-dependent truncation** of it was caught by nothing.
+    (
+        "evade-actualtext-under-a-form-with-two-parents.pdf",
+        "BURROW-EVADE-ACTUALTEXT-TWOPARENT",
+    ),
+    (
+        "evade-type3-font-named-only-inside-a-form.pdf",
+        "BURROW-EVADE-TYPE3-IN-FORM",
+    ),
+    // THE CANARY IS A CMap ENTRY, not a drawn string: `/ToUnicode` is where the removed
+    // character survives when the font is never narrowed. Its twin is here for the same reason
+    // it exists at all -- if narrowing broke outright, only the twin would tell them apart.
+    ("evade-tounicode-in-a-form-local-font.pdf", "<0058>"),
+    ("nearmiss-tounicode-on-a-page-font.pdf", "<0058>"),
+];
+
+#[test]
+fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
+    // WHY THIS IS NOT LEFT TO `redaction_corpus.rs`, which already runs these documents.
+    //
+    // That harness asks whether a glyph the region reached is still drawn, by comparing
+    // PDFium's unicode **and origin**. For a span carrying `/ActualText` the origin does not
+    // discriminate: PDFium reports every character of the replacement string at the span's
+    // starting point, so all of them share one origin and the comparison turns on the unicode
+    // alone. Measured (#164): with the nested descent in `form_names_for` disabled, this
+    // document redacted, the carrier survived verbatim in the output, and the corpus sweep
+    // stayed green and reported `reached 1, removed 2 more`.
+    //
+    // So the assertion that matters is made here, on the bytes: the carrier is not in the
+    // output. That is the claim a user cares about, and it is the one the corpus cannot make.
+    //
+    // WRITTEN TO SURVIVE #165. A refusal satisfies it and so does a rewriter that narrows or
+    // drops the entry — the test pins "the secret does not come out", not "burrow refuses". If
+    // it pinned the refusal, landing the rewriter would turn an improvement into a failure,
+    // which is what `redaction_corpus.rs`'s header warns against.
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
+    let mut examined = 0usize;
+    for (name, canary) in CARRIER_EVASIONS {
+        let path = directory.join(name);
+        let pdf = std::fs::read(&path).unwrap_or_else(|error| {
+            panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
+        });
+        // NON-VACUITY FIRST. A fixture whose canary is not in it measures nothing, and these
+        // are generated, so a generator change could quietly empty one.
+        assert_present(&pdf, canary.as_bytes(), name);
+        examined += 1;
+        match redact(&pdf) {
+            Err(error) => {
+                let text = format!("{error:?}");
+                assert!(
+                    text.contains('[') && text.contains(']'),
+                    "{name}: refused without naming a rule: {text}"
+                );
+            }
+            Ok((out, _)) => assert_absent(&out, canary.as_bytes(), name),
+        }
+    }
+    assert_eq!(
+        examined,
+        CARRIER_EVASIONS.len(),
+        "every carrier evasion fixture must be examined"
+    );
+}
+
+/// A page declaring a form the region reaches, plus an **undrawn** chain of `levels` forms each
+/// naming the next `branch` times.
+///
+/// Undrawn is the whole point: the geometry walk's own `MAX_FORM_DRAWS` counts forms it
+/// *draws*, so a graph nothing draws is invisible to it. Only the resource-graph lookup walks
+/// this, which is why the ceiling had to be its own.
+fn page_with_an_undrawn_form_graph(levels: usize, branch: usize) -> Vec<u8> {
+    let mut objects: Vec<String> = Vec::new();
+    let mut push = |body: String| -> usize {
+        objects.push(body);
+        objects.len() + 20
+    };
+    let form = |extra: &str, data: &str| {
+        format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 400 200] {extra} /Length {} >>\n\
+             stream\n{data}endstream",
+            data.len()
+        )
+    };
+    // AN EMPTY `/Resources`, NOT NONE. A form declaring none makes `scope_of` continue with the
+    // enclosing dictionary — correct, and it means the descent's depth is no longer the chain's
+    // length, so the graph trips `form-graph-too-deep` before the visit budget it is here to
+    // test. Declaring an empty one keeps this fixture about the branching.
+    let mut current = push(form("/Resources << >>", ""));
+    for _ in 0..levels {
+        let refs: String = (0..branch)
+            .map(|at| format!("/F{at} {current} 0 R "))
+            .collect();
+        current = push(form(&format!("/Resources << /XObject << {refs}>> >>"), ""));
+    }
+    let bomb = current;
+    let drawn = push(form(
+        "/Resources << /Font << /Helv 6 0 R >> >>",
+        "BT /Helv 20 Tf 40 100 Td (SECRET) Tj ET\n",
+    ));
+
+    let content = "/Drawn Do\n";
+    let mut all = vec![
+        format!(
+            "<< /Type /Page /Parent 9 0 R /MediaBox [0 0 400 200] /Contents 5 0 R \
+             /Resources << /Font << /Helv 6 0 R >> \
+             /XObject << /Drawn {drawn} 0 R /Bomb {bomb} 0 R >> >> >>"
+        ),
+        // THREE FREE SLOTS, so the content stream lands on object 5 and the font on 6, which is
+        // what the page dictionary above names. An off-by-one here produces `qpdf: the document
+        // is damaged` from a test whose subject is not the xref table.
+        String::new(),
+        String::new(),
+        String::new(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}endstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv >>".to_owned(),
+        String::new(),
+        String::new(),
+        "<< /Type /Pages /Kids [1 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Catalog /Pages 9 0 R >>".to_owned(),
+    ];
+    all.resize(20, String::new());
+    all.extend(objects);
+
+    let mut out = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (index, body) in all.iter().enumerate() {
+        if body.is_empty() {
+            offsets.push(None);
+            continue;
+        }
+        offsets.push(Some(out.len()));
+        out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+    }
+    let xref_at = out.len();
+    out.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", all.len() + 1));
+    for offset in &offsets {
+        match offset {
+            Some(at) => out.push_str(&format!("{at:010} 00000 n \n")),
+            None => out.push_str("0000000000 65535 f \n"),
+        }
+    }
+    out.push_str(&format!(
+        "trailer\n<< /Size {} /Root 10 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+        all.len() + 1
+    ));
+    out.into_bytes()
+}
+
+/// A page whose form graph is a **cycle**: `/Outer` draws `/Inner`, `/Inner` draws `/Outer`.
+fn page_with_a_form_cycle() -> Vec<u8> {
+    let outer = 22usize;
+    let inner = 23usize;
+    let content = "/Drawn Do\n";
+    let body = |extra: &str, data: &str| {
+        format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 400 200] {extra} /Length {} >>\n\
+             stream\n{data}endstream",
+            data.len()
+        )
+    };
+    let mut all = vec![
+        format!(
+            "<< /Type /Page /Parent 9 0 R /MediaBox [0 0 400 200] /Contents 5 0 R \
+             /Resources << /Font << /Helv 6 0 R >> \
+             /XObject << /Drawn 21 0 R /Outer {outer} 0 R >> >> >>"
+        ),
+        String::new(),
+        String::new(),
+        String::new(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}endstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv >>".to_owned(),
+        String::new(),
+        String::new(),
+        "<< /Type /Pages /Kids [1 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Catalog /Pages 9 0 R >>".to_owned(),
+    ];
+    all.resize(20, String::new());
+    all.push(body(
+        "/Resources << /Font << /Helv 6 0 R >> >>",
+        "BT /Helv 20 Tf 40 100 Td (SECRET) Tj ET\n",
+    ));
+    all.push(body(
+        &format!("/Resources << /XObject << /Inner {inner} 0 R >> >>"),
+        "",
+    ));
+    all.push(body(
+        &format!("/Resources << /XObject << /Outer {outer} 0 R >> >>"),
+        "",
+    ));
+
+    let mut out = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (index, item) in all.iter().enumerate() {
+        if item.is_empty() {
+            offsets.push(None);
+            continue;
+        }
+        offsets.push(Some(out.len()));
+        out.push_str(&format!("{} 0 obj\n{item}\nendobj\n", index + 1));
+    }
+    let xref_at = out.len();
+    out.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", all.len() + 1));
+    for offset in &offsets {
+        match offset {
+            Some(at) => out.push_str(&format!("{at:010} 00000 n \n")),
+            None => out.push_str("0000000000 65535 f \n"),
+        }
+    }
+    out.push_str(&format!(
+        "trailer\n<< /Size {} /Root 10 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+        all.len() + 1
+    ));
+    out.into_bytes()
+}
+
+#[test]
+fn a_form_that_draws_the_form_that_draws_it_terminates() {
+    // THE CYCLE GUARD, which nothing exercised. A security review deleted `open.insert`'s
+    // refusal, `open.remove`, and the depth cap from both recursions -- eight mutations -- and
+    // every one survived the suite. The ceilings the module's rustdoc argues for were a defence
+    // nothing failed for.
+    //
+    // A form that draws the form that draws it is a document that exists; without the guard
+    // this does not return. The assertion is therefore that it returns AT ALL, and quickly --
+    // there is no output to check, because the cycle is never drawn.
+    let pdf = page_with_a_form_cycle();
+    let started = std::time::Instant::now();
+    let outcome = redact(&pdf);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "a form cycle took {elapsed:?}, so the guard is not stopping it"
+    );
+    // EITHER OUTCOME IS FINE AND THE POINT IS NEITHER. A cycle nothing draws may be walked
+    // past or refused; what must not happen is that it runs forever. Asserting a particular
+    // verdict here would pin a decision this test was not written to make.
+    match outcome {
+        Ok((out, _)) => assert!(out.starts_with(b"%PDF")),
+        Err(error) => {
+            let text = format!("{error:?}");
+            assert!(text.contains('['), "refused without naming a rule: {text}");
+        }
+    }
+}
+
+#[test]
+fn a_form_graph_that_branches_is_refused_rather_than_walked_exponentially() {
+    // THE DEFECT THIS KILLS, measured by a code review on the commit that introduced it.
+    //
+    // The resource-graph lookup bounded depth (`MAX_FORM_DEPTH`) and guarded cycles with a set
+    // of forms currently open. That pair *looks* like a bound and is not: the open set is a
+    // PATH set, so a DAG is re-explored once per path and the work is `branch ^ depth`. It is
+    // the same mistake `MAX_FORM_DRAWS`' own rustdoc was written to warn about, made in a
+    // different function two commits later.
+    //
+    // Measured on this tree, release, through the public operation:
+    //
+    //   levels 4,  branch 3 — 1,965 bytes —     3 ms
+    //   levels 8,  branch 3 — 2,697 bytes —    45 ms
+    //   levels 12, branch 3 — 3,429 bytes — 2,770 ms
+    //   levels 16, branch 4 — 4,337 bytes — did not return in 300 s
+    //
+    // Nine times per two levels, which is 3². With the budget: 3.7 ms and a named refusal.
+    //
+    // ONE LEVEL SHORT OF THE CEILING IS THE NEAR-MISS, and it must still redact — a rule that
+    // refused any nested graph would pass this test and refuse ordinary documents, since every
+    // drawing program emits nested forms.
+    let shallow = page_with_an_undrawn_form_graph(3, 2);
+    let (out, _) = redact(&shallow).expect("a small form graph is ordinary and must be walked");
+    assert!(out.starts_with(b"%PDF"));
+
+    // FOURTEEN LEVELS OF THREE. Twelve-by-three is 2.77 s unbudgeted, which sits under any
+    // threshold generous enough not to flake — so removing the scope walk's budget still passed
+    // while a second budget elsewhere produced the refusal. Fourteen-by-three is 4.8M visits and
+    // does not return, so no threshold can be too generous; and it stays one level inside
+    // `MAX_FORM_DEPTH`, so the refusal under test is the visit budget rather than the depth cap.
+    let deep = page_with_an_undrawn_form_graph(14, 3);
+    let started = std::time::Instant::now();
+    let error = refusal(&deep, "a branching form graph");
+    let elapsed = started.elapsed();
+    assert!(
+        error.contains("form-graph-too-large"),
+        "refused by the wrong rule: {error}"
+    );
+    // THE TIME IS THE ASSERTION, not decoration: the refusal is only a fix if it arrives
+    // before the work does. Generous by three orders of magnitude against the 2.77 s measured
+    // without the budget, so a slow machine cannot fail it while a restored exponent cannot
+    // pass it.
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "refused, but took {elapsed:?} to do it -- the budget is not bounding the descent"
+    );
+}
