@@ -411,15 +411,12 @@ def _glyphs_to_characters(font: bytes) -> dict[int, str]:
     return inverse
 
 
-def witness_cid_codes(data: bytes, canary: str) -> bool:
-    """The page's own 2-byte codes, read through the embedded font's cmap, spell the canary.
+def cid_text(data: bytes) -> str:
+    """The page's hex-string codes, each read through the embedded fonts' inverted cmaps.
 
-    For a CID font with `/CIDToGIDMap /Identity` and no usable /ToUnicode -- channels 06 and 21 --
-    a code IS a glyph id, and the font's format-4 cmap says which character each glyph draws.
-    PDFium extracts nothing (06) or a decoy (21) there, and `font-cmap` reads only the font's
-    alphabet, which a redaction leaves behind by design (§7). This reads the CONTENT STREAM: what
-    the page still draws. Written for #176, where both placements had been marked unwitnessable
-    after the run and a review showed they were not.
+    What `witness_cid_codes` matches against, and what the fragment rule reads on the channels
+    whose PDFium text is glyph ids. A code no cmap names reads as NUL. Strings are joined
+    with nothing between them, because a `TJ` array splits one run across several.
     """
     inverse: dict[int, str] = {}
     for m in re.finditer(rb"/Length1\s+(\d+)", data):
@@ -431,7 +428,7 @@ def witness_cid_codes(data: bytes, canary: str) -> bool:
             start += 1
         inverse.update(_glyphs_to_characters(data[start:start + int(m.group(1))]))
     if not inverse:
-        return False
+        return ""
     strings = re.findall(rb"<([0-9A-Fa-f\s]+)>\s*Tj", data)
     for array in re.findall(rb"\[(.*?)\]\s*TJ", data, re.S):
         strings += re.findall(rb"<([0-9A-Fa-f\s]+)>", array)
@@ -444,7 +441,20 @@ def witness_cid_codes(data: bytes, canary: str) -> bool:
         text += "".join(
             inverse.get(int.from_bytes(raw[i:i + 2], "big"), "\0") for i in range(0, len(raw) - 1, 2)
         )
-    return "".join(canary.split()) in text
+    return text
+
+
+def witness_cid_codes(data: bytes, canary: str) -> bool:
+    """The page's own 2-byte codes, read through the embedded font's cmap, spell the canary.
+
+    For a CID font with `/CIDToGIDMap /Identity` and no usable /ToUnicode -- channels 06 and 21 --
+    a code IS a glyph id, and the font's format-4 cmap says which character each glyph draws.
+    PDFium extracts nothing (06) or a decoy (21) there, and `font-cmap` reads only the font's
+    alphabet, which a redaction leaves behind by design (§7). This reads the CONTENT STREAM: what
+    the page still draws. Written for #176, where both placements had been marked unwitnessable
+    after the run and a review showed they were not.
+    """
+    return "".join(canary.split()) in cid_text(data)
 
 
 # ---------------------------------------------------------------------------------------
@@ -991,10 +1001,10 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
             seen = see(placement, output, data, text_cache)
             # PARTIAL REMOVAL IS NOT GONE. Every witness asks for the whole canary, so removing
             # one glyph made it "gone" -- both reviews measured regions that took half a canary
-            # passing, and eight fixtures whose tails survived. A fragment of the canary that the
+            # passing, and six fixtures whose tails survived. A fragment of the canary that the
             # input held only inside the canary, surviving in the output, says the canary did.
             if want == "gone" and not seen:
-                pieces = fragments_survive(canary_of(placement), source, output,
+                pieces = fragments_survive(placement, source, output,
                                            source_data, data, text_cache)
                 if pieces:
                     failures.append(
@@ -1027,10 +1037,16 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
     # AND THE LEAKS ARE PINNED TOO. They are known and owed, so they do not fail the run -- but a
     # new one is a regression an owed marker was never meant to absorb, and one fewer is owed
     # work that arrived. Either way the count moves only when someone decides it should.
-    if not only and len(leaking) != OWED_LEAKS_EXPECTED:
+    # BY NAME, NOT BY COUNT: one leak fixed and another begun in the same change kept the count
+    # at 13 and read as nothing having happened (both reviews of #176's second round).
+    leaking_names = {leak.split(" / ", 1)[0] for leak in leaking}
+    if not only and leaking_names != OWED_LEAKS_EXPECTED:
+        new = sorted(leaking_names - OWED_LEAKS_EXPECTED)
+        gone = sorted(OWED_LEAKS_EXPECTED - leaking_names)
         failures.append(
-            f"{len(leaking)} owed placement(s) still disclose after a redaction, expected "
-            f"{OWED_LEAKS_EXPECTED} -- change OWED_LEAKS_EXPECTED deliberately, with the list below"
+            f"the owed placements that still disclose are not the pinned set: newly disclosing "
+            f"{new or 'none'}, no longer disclosing {gone or 'none'} -- change "
+            "OWED_LEAKS_EXPECTED deliberately"
         )
     print(
         f"check-redaction-corpus --after: {len(planned)} fixture(s) run; {judged} of {expected} "
@@ -1058,13 +1074,23 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
 
 # The owed markers per issue, committed. Changing a marker changes this, on purpose.
 OWED_EXPECTED = {125: 14, 131: 1}
-# How many of those still disclose their canary or carrier after a redaction that returned Ok:
-# ADR 0029 §5's four signals, not yet built (#125). Printed by name on every run.
-OWED_LEAKS_EXPECTED = 13
-
-
-def canary_of(placement: dict) -> str:
-    return placement["canary"]
+# The fixtures whose owed placements still disclose their canary or carrier after a redaction
+# that returned Ok: ADR 0029 §5's four signals, not yet built (#125). A set, not a count.
+OWED_LEAKS_EXPECTED = {
+    "acroform-field",
+    "evade-field-with-no-widget",
+    "evade-image-in-form",
+    "evade-inline-image",
+    "evade-paths-in-form",
+    "evade-paths-in-type3-glyph",
+    "evade-struct-without-structparents",
+    "evade-widget-on-another-page",
+    "image-pixels",
+    "producer-ocr-scan",
+    "producer-writer",
+    "structure-tree",
+    "vector-outlines",
+}
 
 
 def see(placement: dict, output: Path, data: bytes, cache: dict[Path, str]) -> bool:
@@ -1089,14 +1115,21 @@ def see(placement: dict, output: Path, data: bytes, cache: dict[Path, str]) -> b
 FRAGMENT = 5
 
 
-def fragments_survive(canary: str, source: Path, output: Path, source_data: bytes,
+def fragments_survive(placement: dict, source: Path, output: Path, source_data: bytes,
                       data: bytes, cache: dict[Path, str]) -> list[str]:
-    """Pieces of `canary` in the output that the input held only as part of the canary.
+    """Pieces of the canary in the output that the input held only as part of the canary.
 
-    Read two ways: PDFium's page text, whitespace squashed, and the expanded bytes in every
-    spelling `spellings()` knows. The baseline is the input with every occurrence of the canary
-    removed, so a fragment the page legitimately says elsewhere is not evidence.
+    Read two ways, and a third where the placement needs it: PDFium's page text, whitespace
+    squashed; the expanded bytes in every spelling `spellings()` knows; and, for a placement
+    judged by `cid-codes`, the page's codes read through the font's own cmap. The baseline is the
+    input with every occurrence of the canary removed, so a fragment the page legitimately says
+    elsewhere is not evidence.
+
+    THE THIRD IS NOT OPTIONAL THERE. On channels 06 and 21 PDFium's text is glyph ids and so are
+    the bytes, so the first two can see no fragment at both ends -- both reviews planted a region
+    that left `ECRET-06` drawn and this said gone.
     """
+    canary = placement["canary"]
     squash = "".join(canary.split())
     pieces = {squash[i:i + FRAGMENT] for i in range(len(squash) - FRAGMENT + 1)}
     found: list[str] = []
@@ -1114,8 +1147,15 @@ def fragments_survive(canary: str, source: Path, output: Path, source_data: byte
     for spelling in spellings(canary):
         before_bytes = before_bytes.replace(spelling, b"\0")
         data = data.replace(spelling, b"\0")
+    decoded_before = decoded_after = ""
+    if placement.get("witness_after") == "cid-codes":
+        decoded_before = cid_text(source_data).replace(squash, "\0")
+        decoded_after = cid_text(data).replace(squash, "\0")
     for piece in sorted(pieces):
         if piece in after_text and piece not in before_text:
+            found.append(piece)
+            continue
+        if piece in decoded_after and piece not in decoded_before:
             found.append(piece)
             continue
         if any(s in data and s not in before_bytes for s in spellings(piece)):

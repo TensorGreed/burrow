@@ -2948,7 +2948,9 @@ none was, and both reviews measured that as false.
   marker "never excuses a canary still witnessed". Now every owed placement that redacts is
   witnessed:
   - the leaks are printed by name on every run;
-  - their number is pinned (`OWED_LEAKS_EXPECTED`), so a new one fails, and so does one fewer;
+  - the set of fixtures that leak is pinned by name (`OWED_LEAKS_EXPECTED`). A new one fails,
+    and so does one fewer. The first version pinned a count, which a fix and a new leak in the
+    same change would have left unchanged;
   - a marker fails once its document refuses, so it cannot outlive the work it waits for;
   - the markers per issue are pinned as well (`{125: 14, 131: 1}`), so adding one is a decision
     and not an edit.
@@ -2981,6 +2983,11 @@ A gone placement is now also checked for five-character fragments of its canary 
   kept code as hex, so a kept canary is spelled `<4255...>` in the output and in no other way.
   `redaction_defences.rs::assert_absent` was blind to it for the same reason and now checks that
   spelling too.
+
+- on channels 06 and 21, in the page's codes read through the font's cmap (`cid_text`). PDFium's
+  text there is glyph ids and so are the bytes, so the first two readings see no fragment at
+  either end. Both reviews of the second round planted a region that left `ECRET-06` drawn, and
+  the first version of this rule scored it gone.
 
 A fragment counts only if the input held it nowhere but inside the canary. Whole occurrences are
 removed from both sides first, so a whole canary surviving through another channel is reported
@@ -3040,10 +3047,10 @@ about 180 s at the measured rate, from a file that compresses to almost nothing.
 
 `geometry::Watch` carries the operation's deadline and clock into the walk. That is the same
 `Deadline` and the same clock, never a second one, since a second clock is how `max_duration_ms`
-once stopped existing (M1 PR 2). Each of the three walks reads it at two points:
+once stopped existing (M1 PR 2). Each of the four walks reads it at two points:
 
-- `glyphs_in` (with every form it recurses into), the covering-span walk and `glyph_edits`
-  each read the clock **once their stream is lexed**;
+- `glyphs_in` (with every form it recurses into), the covering-span walk, `glyph_edits` and the
+  Type 3 procedure scan each read the clock **once their stream is lexed**;
 - they read it again **every `WATCH_EVERY` (256) operations** after that.
 
 A form is re-walked at every `Do`, so every draw is read at least once. Expiry is the ordinary
@@ -3053,37 +3060,75 @@ property of the document, so it is not a `Refusal`.
 `remove_glyphs` and `remove_glyphs_across` have no production caller and take the watch too. A
 public walk without a deadline is the next caller's denial of service.
 
+### Three steps outside the walk, found by review and measured
+
+The security review of this change named three loops in the redaction steps that read no
+deadline. They predate #175. Each was measured here before it was fixed, release build, through
+the public operation, at `max_duration_ms = 100`:
+
+| shape | file | before | after |
+|---|--:|--:|--:|
+| 4,000 `/CharProcs` names over one 100,000-operation procedure | 52 KB | 9.9 s | 0.02 s, redacted |
+| 4,000 fonts sharing one full-range `/ToUnicode` | 500 KB | 36 s | 0.11 s, `max_duration_ms` |
+| a `/W` repeating `0 65535 500` 100,000 times | 1.2 MB | **175 s** | 0.06 s, `widths-too-many` |
+
+- **Type 3 procedures are scanned once per object**, not once per name, and the scan itself is
+  now a watched walk (`check_type_three_procedure` takes the `Watch`).
+- **`cut_fonts` reads the deadline per font.** The 4,000-font document still costs about 40 s
+  under the default 60 s budget, because every font really is narrowed. It is bounded by the
+  budget now, and not by nothing.
+- **`/W` is capped at 131,072 assignments** (`MAX_W_ASSIGNMENTS`, twice the CID space) and
+  refused by name past it. `parse_w` runs inside the glyph walk, between the watch's reads, so no
+  deadline could have stopped it; only a ceiling does.
+
 ### The residual, with its number
 
-**Lexing one content stream is still one uncooperative step.** `ops::operations` runs to the
-end of a stream before any read, and it is bounded by `MAX_OPERATIONS` and `MAX_TOTAL_OPERANDS`
-(both 1M) and `MAX_OPERAND_BYTES` (255). Measured on the same machine:
+**Decoding and lexing one stream is still one uncooperative step**, and its cost is linear in
+the stream's **decoded** size. The first version of this amendment said "one lex, about 255 ms
+at the operand ceiling". That was wrong, and both reviews showed it: the lexer's ceilings count
+operations and operands, not bytes. Whitespace, comments and long strings cost lex time without
+counting against either, at about 330 ms per GiB.
 
-| stream | bytes | lex |
+What does bound the decoded size is qpdf's per-filter memory ceiling, which burrow sets to
+**256 MiB** for Flate, DCT, PNG predictors, RunLength and TIFF (`codes::qpdf::FILTER_MAX_MEMORY`).
+A 1 GiB Flate stream never reaches the walk: qpdf refuses it at the ceiling, measured in 0.68 s.
+Just under the ceiling, measured through the operation at `max_duration_ms = 100`:
+
+| stream | file | refused at |
 |---|--:|--:|
-| 1,000,000 × `q` | 2 MB | 50 ms |
-| the 60,000 × 60,000 span shape | 3.96 MB | 68 ms |
-| 500,000 × a 253-byte string | 130 MB | 123 ms |
-| **1,000,000 × a 253-byte string, the ceiling** | **259 MB** | **255 ms** |
+| a form of 64 MiB of whitespace | 66 KB | 0.28 s |
+| **a form of 250 MiB of whitespace** | **256 KB** | **1.03 s** |
+| the same form drawn eight times | 256 KB | 0.92 s |
 
-So **the worst remaining overshoot inside the geometry walk is one lex, about 255 ms natively on a
-259 MB stream at the operand ceiling**, and 50–70 ms on streams of a few megabytes. The web engine
-is slower per operation, and this was not measured there. The first row of the table above (201 ms
-against 100) is mostly this residual: its stream takes 68 ms to lex. The rest is spread across the
-steps around the walk, which have their own checkpoints and were not attributed further.
+So **the worst remaining overshoot measured is about 0.9 s**: one decode plus one lex of a
+250 MiB stream, natively. Under the default 60 s budget the eight-draw file takes 31 s and
+succeeds, which is the budget working as documented rather than a gap in it. Not measured:
+- the web engine, which is slower per operation;
+- `/LZWDecode`, which is not among the filter families qpdf's ceiling covers.
 
-The fix, if it is wanted, is a watch inside the lexer. It is not done here: `ops::operations` has
-its own fuzz target and callers outside redaction, and a stream that large already needs
-`max_input_bytes` to admit a quarter-gigabyte input.
+A tighter bound is a byte ceiling on decoded content below qpdf's. That would refuse real
+documents that burrow accepts today, so it is a decision about ADR 0007's limits and not a
+detail of this change; it is filed rather than made here.
 
 ### How it is held
 
 - `every_walk_reads_the_clock_once_its_stream_is_lexed` and
-  `every_walk_reads_the_clock_while_it_works`. They use a clock that moves one millisecond per
-  read, and each is built so exactly one of the two reads expires the budget. **Deleting any of
-  the six reads fails one of them by name**, and the sweep that showed this is in the PR.
+  `every_walk_reads_the_clock_while_it_works`, over four walks: the glyph walk, the covering-span
+  walk, `glyph_edits` and the Type 3 procedure scan. They use a clock that moves one millisecond
+  per read, and each is built so exactly one of a walk's two reads expires the budget. **Deleting
+  any of the eight reads fails one of them by name**, and the sweep that showed this is in the
+  PR.
 - `a_form_drawn_many_times_is_read_at_every_draw` covers the product shape, deterministically.
 - `a_form_drawn_thousands_of_times_is_stopped_by_its_deadline_inside_the_walk`. This one runs the
-  public operation on the 17.9 s shape, at half the form size, under a 2 s ceiling, and asserts
-  the rule.
+  public operation on the full 17.9 s shape under a 2 s ceiling, and asserts the rule.
+- One test per step above, each through the public operation under a 2 s ceiling. The `/W` test
+  also has a near-miss: one full range is not refused.
+- The production call sites no longer build their own watch. `QpdfRedaction::watch` and
+  `QpdfWitness::watch` are the only constructors. Replacing the deadline in either fails a test:
+  the document test for the first, and `the_read_backs_glyph_walks_spend_the_operations_deadline`
+  for the second. That one uses a clock parked at the budget, so only the walk's own read can
+  expire it.
+- **What the tests do not pin is position.** A clock that moves per read cannot tell a read
+  just before the lex from one just after it. The code puts it after, and a move would cost at
+  most one stream's lex.
 

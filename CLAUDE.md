@@ -110,7 +110,8 @@ is a denial-of-service bug, not a nicety.
 **They are not equally strong, and the difference is documented rather than smoothed over.**
 `max_input_bytes`, `max_pages` and `max_pixels` are exact. `max_duration_ms` is cooperative:
 overshoot of up to one engine call is possible, or, inside redaction's own geometry walk, one
-content-stream lex (about 255 ms natively at the operand ceiling; ADR 0029, #175). **`max_memory_bytes` bounds nothing on any
+content-stream decode plus lex (about 0.9 s natively at qpdf's 256 MiB decode ceiling; ADR 0029,
+#175). **`max_memory_bytes` bounds nothing on any
 platform** — a structural pre-scan and a length-based estimate before the engine, a measured
 check after it, so an overrun is *detected*, not prevented. Say "detect" where we detect and
 "bound" only where something is actually bounded; `burrow_types::Limits`' rustdoc and

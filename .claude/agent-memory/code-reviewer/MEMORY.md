@@ -23,3 +23,4 @@
 - [Witness gate is per rule, not per site](feedback_witness_gate_per_rule_not_per_site.md) — #177 gate passes a rule raised only by an uncalled pub fn; 26 of 64 raise sites unwitnessed.
 - [Whole-string witness, partial removal](feedback_whole_string_witness_partial_removal.md) — shrink the region; a substring "gone" stays green. Run the witness an escape hatch skips.
 - [Rustdoc gate misses private items](feedback_rustdoc_gate_private_items.md) — no --document-private-items means private links unchecked; stale target/doc only bites crates not re-documented.
+- [Residual bound by an uncounted dimension](feedback_residual_bound_by_uncounted_dimension.md) — "N ms at the X ceiling": time the input the caps do not count (1 GiB whitespace lexes 330 ms); mutate a read's position.

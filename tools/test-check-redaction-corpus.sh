@@ -330,6 +330,11 @@ after_case "a region that removes only part of the canary is refused" \
   "part of the canary survives"
 # AND THE WITNESS THAT MAKES 06 JUDGEABLE: without it, the font's alphabet -- kept by design --
 # reads as the canary still there.
+# AND ON 06, where the first fragment rule could see nothing: PDFium's text and the bytes are glyph
+# ids there, so a region that left `ECRET-06` drawn scored gone (both reviews of round two).
+after_case "a region that removes only part of channel 06's canary is refused" \
+  cid-without-tounicode $'kind = "hand-built"' $'kind = "hand-built"\nregion = [30, 68, 100, 44]' \
+  "part of the canary survives"
 after_case "channel 06 without its cid-codes witness cannot be judged gone" \
   cid-without-tounicode $'  witness_after = "cid-codes"\n' '' \
   "still finds the canary after redaction"
@@ -362,23 +367,21 @@ after_case_before "a witness_after that cannot see the canary before the run is 
   "BEFORE the run"
 
 # AND THE LEAK PIN, which only a full run can reach: a copy of the checker, beside the original,
-# expecting one leak fewer than there are.
+# whose pinned set has lost one name -- so a real leak reads as a new one.
 copy="$here/.redaction-corpus-leaks.py"
 python3 - "$checker" "$copy" <<'PYEOF'
-import re, sys
+import sys
 text = open(sys.argv[1]).read()
-match = re.search(r"^OWED_LEAKS_EXPECTED = (\d+)$", text, re.M)
-assert match, "OWED_LEAKS_EXPECTED is not where this expects it"
-open(sys.argv[2], "w").write(
-    text[:match.start()] + f"OWED_LEAKS_EXPECTED = {int(match.group(1)) - 1}" + text[match.end():]
-)
+line = '    "acroform-field",\n'
+assert text.count(line) == 1, "the pinned leak set is not where this expects it"
+open(sys.argv[2], "w").write(text.replace(line, "", 1))
 PYEOF
 if cmp -s "$checker" "$copy"; then
   echo "  FAIL the leak-count mutation did not apply, so this case measured nothing"
   fail=$((fail + 1))
 else
   expect_refusal "a change in how many owed placements leak is refused" \
-    "owed placement(s) still disclose after a redaction, expected" \
+    "newly disclosing \['acroform-field'\]" \
     env -u BURROW_AFTER_ONLY python3 "$copy" --after
 fi
 rm -f "$copy"

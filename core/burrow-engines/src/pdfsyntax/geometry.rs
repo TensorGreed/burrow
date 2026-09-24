@@ -1189,9 +1189,14 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 ///
 /// [`Refusal::TypeThreeProcedureShowsText`] if the procedure shows text. Whatever
 /// [`super::ops::operations`] refuses, since a procedure burrow cannot tokenise is one whose
-/// contents it cannot rule on.
-pub fn check_type_three_procedure(procedure: &[u8]) -> Result<()> {
-    for operation in super::ops::operations(procedure)? {
+/// contents it cannot rule on. [`Error::LimitExceeded`] once `watch`'s deadline has passed: a
+/// Type 3 font's `/CharProcs` may hold thousands of procedures, and the caller scans them all.
+pub fn check_type_three_procedure(procedure: &[u8], watch: &Watch<'_>) -> Result<()> {
+    let operations = super::ops::operations(procedure)?;
+    // READ ONCE THE PROCEDURE IS LEXED, and per operation after, as every walk here is (#175).
+    watch.now()?;
+    for operation in operations {
+        watch.tick()?;
         // `Do` COUNTS, and it did not. A procedure that shows no text of its own but draws a
         // Form XObject shows the form's text, and this walk enters neither.
         //
@@ -2404,8 +2409,9 @@ const fn arity(operator: &[u8]) -> Option<usize> {
 /// How many operations a walk goes between readings of the clock.
 ///
 /// Reading it per operation would cost a clock call per `q`; reading it per stream is what
-/// #175 measured failing. At the slowest operation this module has, a glyph-showing `Tj` inside
-/// a carrying span, 256 of them run in well under a millisecond.
+/// #175 measured failing. The stride bounds how many operations pass unread, **not** what one
+/// operation costs: a single `Tj` of 199,000 glyphs took 39 ms to place, measured by #175's code
+/// review. What bounds that is [`MAX_GLYPHS`] per walk and the lexer's operand ceilings, not this.
 pub const WATCH_EVERY: u32 = 256;
 
 /// The operation's deadline, carried INTO the walk so it is consulted while the work happens.
@@ -2420,8 +2426,8 @@ pub const WATCH_EVERY: u32 = 256;
 ///
 /// Now every walk reads the clock once its stream is lexed, and every [`WATCH_EVERY`] operations
 /// after that. A form is walked at every `Do`, so each draw is read at least once. What remains
-/// uncooperative is lexing ONE stream, which [`super::ops::MAX_OPERATIONS`] and
-/// [`super::ops::MAX_TOTAL_OPERANDS`] bound; ADR 0029's performance section has the number.
+/// uncooperative is decoding and lexing ONE stream, linear in its decoded size, which qpdf's
+/// per-filter memory ceiling (256 MiB) bounds; ADR 0029's #175 amendment has the number.
 ///
 /// Expiry is [`Error::LimitExceeded`] naming `max_duration_ms`, the same error every other
 /// checkpoint raises: it is the caller's ceiling, not a property of the document, so it is not a
@@ -3915,7 +3921,10 @@ mod tests {
             }
             Refusal::TypeThreeProcedureShowsText => {
                 vec![(Entry("check_type_three_procedure"), || {
-                    check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n")
+                    check_type_three_procedure(
+                        b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n",
+                        &unwatched(),
+                    )
                 })]
             }
             Refusal::StringNotWholeCodes => vec![
@@ -5255,7 +5264,7 @@ mod tests {
         // redaction that removed this page's Type 3 glyphs would leave the procedure's own
         // text in the font. An `Ok` over text nothing observed is what §8 forbids.
         assert_refused_unit(
-            check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n"),
+            check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n", &unwatched()),
             Refusal::TypeThreeProcedureShowsText,
         );
         for shape in [
@@ -5264,7 +5273,7 @@ mod tests {
             b"500 0 d0 BT 1 1 (A) \" ET".as_slice(),
         ] {
             assert_refused_unit(
-                check_type_three_procedure(shape),
+                check_type_three_procedure(shape, &unwatched()),
                 Refusal::TypeThreeProcedureShowsText,
             );
         }
@@ -5275,10 +5284,11 @@ mod tests {
         // THE NEAR-MISS, and it is the majority case. Almost every Type 3 procedure draws
         // shapes and no text; refusing those would refuse essentially every document with a
         // Type 3 font in it.
-        check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n").expect("draws no text");
+        check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n", &unwatched())
+            .expect("draws no text");
         // A SCAN, NOT A BYTE SEARCH: `Tj` inside a string is not an operator, and a byte
         // search would refuse this procedure for drawing nothing at all.
-        check_type_three_procedure(b"500 0 d0\n% Tj in a comment\n0 0 1 1 re f\n")
+        check_type_three_procedure(b"500 0 d0\n% Tj in a comment\n0 0 1 1 re f\n", &unwatched())
             .expect("a comment is not an operator");
     }
 
@@ -6087,9 +6097,14 @@ mod tests {
         }
     }
 
-    /// The three walks that take a watch, each over `content`'s own glyphs.
+    /// The four walks that take a watch, each over `content`'s own glyphs.
     type WalkUnderWatch = fn(&[u8], &Watch<'_>) -> Result<()>;
-    const WATCHED_WALKS: [(&str, WalkUnderWatch); 3] = [
+    const WATCHED_WALKS: [(&str, WalkUnderWatch); 4] = [
+        // A PROCEDURE, WITH ITS OWN STREAMS: `SHORT` shows text, which a Type 3 procedure
+        // refuses at the first operation, before any per-operation read could come due.
+        ("check_type_three_procedure", |content, watch| {
+            check_type_three_procedure(procedure_of(content), watch)
+        }),
         ("glyphs_in", |content, watch| {
             glyphs_in(content, &Fake::new(), watch).map(drop)
         }),
@@ -6112,6 +6127,18 @@ mod tests {
     ];
 
     const SHORT: &str = "/F1 10 Tf BT 0 0 Td (A) Tj ET";
+
+    /// A Type 3 procedure standing in for `content`: as many operations, and no text.
+    fn procedure_of(content: &[u8]) -> &'static [u8] {
+        static LONG: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        if content.len() > SHORT.len() {
+            LONG.get_or_init(|| {
+                format!("500 0 d0{}", " q Q".repeat(WATCH_EVERY as usize * 4)).into_bytes()
+            })
+        } else {
+            b"500 0 d0 q Q"
+        }
+    }
 
     /// `SHORT`, then enough `q Q` for the per-operation read to come due four times.
     fn long() -> String {

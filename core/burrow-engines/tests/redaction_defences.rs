@@ -1878,6 +1878,219 @@ fn a_form_drawn_thousands_of_times_is_stopped_by_its_deadline_inside_the_walk() 
     );
 }
 
+/// A one-page document: `objects` are appended after the catalog, pages and page, the page's
+/// `/Resources` and content are given, and every `{N}` in them is object `N` of `objects`.
+fn page_with(resources: &str, content: &str, objects: &[String]) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let ids: Vec<usize> = objects.iter().map(|_| pdf.reserve()).collect();
+    // ONE PASS over `{N}` tokens; a replace per object was quadratic in the object count.
+    let resolve = |text: &str| {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('}').and_then(|close| {
+                after[..close]
+                    .parse::<usize>()
+                    .ok()
+                    .map(|index| (index, close))
+            }) {
+                Some((index, close)) => {
+                    out.push_str(&ids[index].to_string());
+                    rest = &after[close + 1..];
+                }
+                None => {
+                    out.push('{');
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    };
+    for (id, body) in ids.iter().zip(objects) {
+        pdf.put(*id, &resolve(body));
+    }
+    let content = pdf.stream("", content);
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] /Resources {} \
+             /Contents {content} 0 R >>",
+            resolve(resources)
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+/// A stream object for [`page_with`].
+fn stream_object(dictionary: &str, data: &str) -> String {
+    format!(
+        "<< {dictionary} /Length {} >>\nstream\n{data}\nendstream",
+        data.len()
+    )
+}
+
+/// Redacts `pdf` under `max_duration_ms = ms`, returning the outcome and how long it took.
+fn timed(pdf: &[u8], ms: u64) -> (burrow_types::Result<()>, std::time::Duration) {
+    let limits = burrow_types::Limits::with(|limits| limits.max_duration_ms = ms);
+    let started = std::time::Instant::now();
+    let outcome = support::redact_page_with(pdf, 0, [0].into_iter().collect(), band(), limits);
+    (outcome.map(drop), started.elapsed())
+}
+
+/// Three steps outside the geometry walk that ran without reading the deadline (#175's security
+/// review). Each was measured before its fix, release build, against a budget of 100 ms:
+///
+/// | shape | file | before |
+/// |---|--:|--:|
+/// | 4,000 `/CharProcs` names over one 100,000-operation procedure | 52 KB | 9.9 s |
+/// | 4,000 fonts sharing one full-range `/ToUnicode` | 500 KB | 36 s |
+/// | `/W` repeating `0 65535 500` 100,000 times | 1.2 MB | 175 s |
+///
+/// The ceilings below are 2 s: wide enough for a slow debug build, far under every "before".
+const STEP_CEILING: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[test]
+fn a_type_three_procedure_named_four_thousand_times_is_scanned_once() {
+    // KILLS: scanning `/CharProcs` per name rather than per object. Under the DEFAULT budget, so
+    // the deadline cannot be what makes it fast: only scanning the one procedure once does. The
+    // Type 3 glyph is drawn OUTSIDE the band, so the document redacts -- the scan runs for every
+    // font the page draws, wherever the region is.
+    let procs: String = (0..4_000).map(|i| format!("/a{i} {{2}} 0 R ")).collect();
+    let pdf = page_with(
+        "<< /Font << /F1 {0} 0 R /T3 {1} 0 R >> >>",
+        "BT /F1 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\nBT /T3 1 Tf 1 0 0 1 72 100 Tm (A) Tj ET\n",
+        &[
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+                 /Widths {} >>",
+                support::pdf_builder::HELVETICA_WIDTHS
+            ),
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix \
+                 [0.001 0 0 0.001 0 0] /CharProcs << {procs}>> /Encoding << /Type /Encoding \
+                 /Differences [65 /a0] >> /FirstChar 65 /LastChar 65 /Widths [1000] >>"
+            ),
+            stream_object("", &format!("1000 0 d0\n{}", "q Q\n".repeat(50_000))),
+        ],
+    );
+    let (outcome, took) = timed(&pdf, burrow_types::Limits::DEFAULT.max_duration_ms);
+    outcome.unwrap_or_else(|error| panic!("a procedure that draws no text redacts: {error:?}"));
+    assert!(
+        took < STEP_CEILING,
+        "4,000 names over one procedure took {took:?}: it is being scanned per name"
+    );
+}
+
+#[test]
+fn four_thousand_fonts_are_narrowed_under_the_deadline() {
+    // KILLS: the per-font checkpoint in `cut_fonts`. Every font is narrowed -- the page names
+    // them all -- and each narrowing parses a 65,536-entry `/ToUnicode`.
+    let font_objects: Vec<String> = std::iter::once(stream_object(
+        "",
+        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapType 2 def \
+         1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfrange <0000> <FFFF> \
+         <0000> endbfrange endcmap end end",
+    ))
+    .collect();
+    let mut objects = font_objects;
+    // ONE FONT OBJECT PER NAME, all sharing the `/ToUnicode`: `cut_fonts` deduplicates by font
+    // identity, so four thousand names over one font would be one narrowing.
+    let fonts: String = (0..4_000)
+        .map(|i| {
+            objects.push(format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 \
+                 /LastChar 94 /Widths {} /ToUnicode {{0}} 0 R >>",
+                support::pdf_builder::HELVETICA_WIDTHS
+            ));
+            format!("/F{i} {{{}}} 0 R ", i + 1)
+        })
+        .collect();
+    let pdf = page_with(
+        &format!("<< /Font << {fonts}>> >>"),
+        "BT /F0 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\n",
+        &objects,
+    );
+    let (outcome, took) = timed(&pdf, 100);
+    match outcome {
+        Err(burrow_types::Error::LimitExceeded { limit, .. }) => {
+            assert_eq!(limit, "max_duration_ms");
+        }
+        other => panic!("4,000 fonts must outrun 100 ms and be stopped: {other:?}"),
+    }
+    assert!(
+        took < STEP_CEILING,
+        "4,000 fonts took {took:?} to refuse: font narrowing is not reading the deadline"
+    );
+}
+
+#[test]
+fn a_cid_widths_array_that_assigns_too_much_is_refused_by_name() {
+    // KILLS: the `/W` assignment ceiling. Each triple assigns 65,536 codes from about a dozen
+    // bytes; this runs inside the glyph walk, between the deadline's reads, so only a ceiling
+    // stops it.
+    let pdf = page_with(
+        "<< /Font << /C0 {0} 0 R >> >>",
+        "BT /C0 24 Tf 1 0 0 1 72 700 Tm <0001> Tj ET\n",
+        &[
+            "<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H \
+             /DescendantFonts [{1} 0 R] >>"
+                .to_owned(),
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /CIDSystemInfo << /Registry \
+             (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {2} 0 R /W {3} 0 R \
+             /CIDToGIDMap /Identity >>"
+                .to_owned(),
+            "<< /Type /FontDescriptor /FontName /X /Flags 4 /FontBBox [0 0 1000 1000] \
+             /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                .to_owned(),
+            format!("[{}]", "0 65535 500 ".repeat(100_000)),
+        ],
+    );
+    let (outcome, took) = timed(&pdf, burrow_types::Limits::DEFAULT.max_duration_ms);
+    match outcome {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[widths-too-many]"),
+            "refused, but not by the /W ceiling: {error:?}"
+        ),
+        Ok(()) => panic!("a /W assigning 6.5 billion widths must be refused"),
+    }
+    assert!(took < STEP_CEILING, "the /W refusal took {took:?}");
+
+    // THE NEAR-MISS: one full range is a legitimate, if lazy, `/W`, and must not be refused.
+    let lazy = page_with(
+        "<< /Font << /C0 {0} 0 R >> >>",
+        "BT /C0 24 Tf 1 0 0 1 72 700 Tm <0001> Tj ET\n",
+        &[
+            "<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H \
+             /DescendantFonts [{1} 0 R] >>"
+                .to_owned(),
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /CIDSystemInfo << /Registry \
+             (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {2} 0 R \
+             /W [0 65535 500] /CIDToGIDMap /Identity >>"
+                .to_owned(),
+            "<< /Type /FontDescriptor /FontName /X /Flags 4 /FontBBox [0 0 1000 1000] \
+             /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                .to_owned(),
+        ],
+    );
+    if let Err(error) = timed(&lazy, burrow_types::Limits::DEFAULT.max_duration_ms).0 {
+        assert!(
+            !format!("{error:?}").contains("[widths-too-many]"),
+            "one full range was refused by the /W ceiling: {error:?}"
+        );
+    }
+}
+
 /// The disclosure's **count** is the number of property lists stripped, not merely non-zero.
 ///
 /// Only `discloses_dropped_alternative_text()` — a bool — drove §7, and the corpus's only
