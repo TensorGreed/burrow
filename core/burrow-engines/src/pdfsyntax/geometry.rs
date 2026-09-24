@@ -3013,10 +3013,11 @@ fn show(
         let text_to_page = Matrix::translate(0.0, state.text.rise)
             .then(&place.text)
             .then(&state.ctm);
-        if !text_to_page.is_finite() {
-            return Refusal::NonFiniteGeometry
-                .refuse("a text transform that composes to a value that is not finite");
-        }
+        // NO FINITENESS CHECK OF ITS OWN, and its absence is measured. `to_page` is
+        // `(font matrix x scale) x text_to_page`, so any non-finite entry here reaches `to_page`
+        // through an added translation or `0 x inf = NaN`, and the check above refuses first. The
+        // guard that stood here could not fire; the #177 reachability gate, which requires a
+        // witness for every raise site, is what showed it.
         let origin = place.text.then(&state.ctm).apply(0.0, state.text.rise);
 
         let width = metrics.width * metrics.font_matrix.a;
@@ -3079,12 +3080,12 @@ fn show(
 mod tests {
     use burrow_types::{Error, Result};
 
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
         CMap, Encoding, Form, FormUses, FormsReached, Glyph, GlyphMetrics, MAX_FORM_DEPTH,
-        MAX_GLYPHS, Matrix, NamedProperties, PropertyList, RAISED, Rect, Refusal, Resources,
-        TextPosition, TextState, WritingMode, carried_text_edits, check_form_sharing,
+        MAX_GLYPHS, Matrix, NamedProperties, Operand, PropertyList, RAISED, Rect, Refusal,
+        Resources, TextPosition, TextState, WritingMode, carried_text_edits, check_form_sharing,
         check_type_three_procedure, check_writing_mode, glyphs_in, remove_glyphs,
         remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
     };
@@ -3334,9 +3335,9 @@ mod tests {
         );
     }
 
-    /// Drive `rule`'s witness and require that **production code** raised it.
+    /// Drive one witness for `rule` and return the production line that raised it.
     ///
-    /// # What replaced a text search, and why it had to
+    /// # What replaced a text search, and what this measures
     ///
     /// The gate this replaces checked that `Refusal::X.refuse(` appeared in the production half
     /// and `Refusal::X)` in the test half. A code review planted `Refusal::NeverReachable`:
@@ -3344,22 +3345,25 @@ mod tests {
     /// naming it in an array. **557 passed, 0 failed** (#177). The gate's name claimed
     /// reachability and the check was a grep.
     ///
-    /// Now each rule has a witness, which is real input driven through real code, and the rule
-    /// counts as reachable only if `refuse` recorded it being raised **from a line above
-    /// `mod tests`**. The `witness` match is exhaustive, so a new variant does not compile
-    /// without one. A variant nothing can raise leaves its witness nothing to return, and a
-    /// witness that raised the rule itself is caught by the line.
+    /// Now each raise **site** has a witness: real input driven through this module's code. A
+    /// site counts only if the **last** refusal `refuse` recorded during the witness is this
+    /// rule, raised from that site, above `mod tests`. It has to be the last one, because an
+    /// earlier production raise, discarded, would otherwise vouch for an error the test built.
+    ///
+    /// **What it does not measure, stated because the first version of this comment claimed
+    /// it did:** that the site is reachable **from the operation**. Some witnesses call a
+    /// checker directly (`check_type_three_procedure`, `check_form_sharing`, the marked-content
+    /// entry points, `writing_mode_of`) or forge a `Glyph`'s source. For those, this proves the
+    /// site can be raised by this module's code on some input; **the wiring from the operation
+    /// is the integration suite's** (`tests/redaction_defences.rs`, named for the mutations it
+    /// kills). A code review planted a rule raised only by a `pub fn` production never calls,
+    /// and this gate passed it -- correctly, by what it measures.
     ///
     /// # Errors
     ///
     /// A sentence naming the rule and what was wrong, for the gate and its own probes to assert on.
-    fn prove(rule: Refusal, witness: Witness) -> core::result::Result<(), String> {
-        let source = include_str!("geometry.rs");
-        let tests_start = source
-            .lines()
-            .position(|line| line.trim() == "mod tests {")
-            .and_then(|at| u32::try_from(at + 1).ok())
-            .ok_or("the test module marker is missing")?;
+    fn prove(rule: Refusal, witness: Witness) -> core::result::Result<u32, String> {
+        let tests_start = tests_start()?;
         RAISED.with(|raised| raised.borrow_mut().clear());
         let outcome = witness();
         let raised = RAISED.with(|raised| raised.borrow().clone());
@@ -3373,17 +3377,76 @@ mod tests {
                 rule.rule()
             ));
         }
-        if !raised
-            .iter()
-            .any(|(what, line)| *what == rule && *line < tests_start)
-        {
-            return Err(format!(
-                "`{}` was not raised by production code: recorded {raised:?}, and the tests \
-                 begin at line {tests_start}",
+        match raised.last() {
+            Some((what, line)) if *what == rule && *line < tests_start => Ok(*line),
+            _ => Err(format!(
+                "`{}` was not raised by production code as the last refusal: recorded \
+                 {raised:?}, and the tests begin at line {tests_start}",
                 rule.rule()
-            ));
+            )),
         }
-        Ok(())
+    }
+
+    /// The line `mod tests {` is on, which divides production from tests.
+    fn tests_start() -> core::result::Result<u32, String> {
+        include_str!("geometry.rs")
+            .lines()
+            .position(|line| line.trim() == "mod tests {")
+            .and_then(|at| u32::try_from(at + 1).ok())
+            .ok_or_else(|| "the test module marker is missing".to_owned())
+    }
+
+    /// Every raise site in `source`'s production half: the line of each `.refuse(`, and the
+    /// rule it raises.
+    ///
+    /// # Errors
+    ///
+    /// A site whose receiver is not a literal `Refusal::Name`. A helper taking the rule as a
+    /// parameter would record the helper's line for every rule it raised, so every witness
+    /// through it would pass the gate on the helper's behalf. Refused rather than allowed, so the
+    /// per-site measurement cannot be diluted by a refactor.
+    fn raise_sites(source: &str) -> core::result::Result<BTreeMap<u32, String>, String> {
+        let lines: Vec<&str> = source.lines().collect();
+        let end = lines
+            .iter()
+            .position(|line| line.trim() == "mod tests {")
+            .ok_or("the test module marker is missing")?;
+        let receiver = |text: &str| -> Option<String> {
+            let name = text
+                .trim_end()
+                .rsplit_once("Refusal::")
+                .map(|(_, name)| name)?;
+            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()))
+                .then(|| name.to_owned())
+        };
+        let mut sites = BTreeMap::new();
+        for (at, line) in lines.iter().enumerate().take(end) {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.contains("fn refuse<") {
+                continue;
+            }
+            let Some((before, _)) = line.split_once(".refuse(") else {
+                continue;
+            };
+            let named = if before.trim().is_empty() {
+                // RUSTFMT WRAPPED IT: the receiver ends the previous line.
+                at.checked_sub(1)
+                    .and_then(|prior| lines.get(prior))
+                    .and_then(|prior| receiver(prior))
+            } else {
+                receiver(before)
+            };
+            let name = named.ok_or_else(|| {
+                format!(
+                    "line {}: a raise whose receiver is not a named rule -- {}",
+                    at + 1,
+                    line.trim()
+                )
+            })?;
+            let number = u32::try_from(at + 1).map_err(|_| "a line past u32".to_owned())?;
+            sites.insert(number, name);
+        }
+        Ok(sites)
     }
 
     /// Real input, driven through real code, that must refuse.
@@ -3399,14 +3462,20 @@ mod tests {
         glyphs_in(content.as_bytes(), resources).map(drop)
     }
 
-    /// The witness for every rule. **Exhaustive by construction**: a variant added without one
-    /// does not compile, which is what a hand-kept list of witnesses could not promise.
+    /// The first witness for `rule`, for the probes that need one.
+    fn witness(rule: Refusal) -> Witness {
+        witnesses(rule).first().copied().unwrap_or(|| Ok(()))
+    }
+
+    /// Every witness for `rule`, one per raise site. **Exhaustive by construction**: a variant
+    /// added without an arm does not compile, and a site added without a witness fails the gate,
+    /// which is what a hand-kept list could not promise.
     #[allow(
         clippy::too_many_lines,
         reason = "one arm per rule, and the length is the enum's"
     )]
-    fn witness(rule: Refusal) -> Witness {
-        match rule {
+    fn witnesses(rule: Refusal) -> Vec<Witness> {
+        let one: Witness = match rule {
             Refusal::UnmatchedRestore => || walk("Q /F1 10 Tf BT 0 0 Td (A) Tj ET"),
             Refusal::UnbalancedSave => || walk("q /F1 10 Tf BT 0 0 Td (A) Tj ET"),
             Refusal::NestedTextObject => || walk("/F1 10 Tf BT BT 0 0 Td (A) Tj ET ET"),
@@ -3624,29 +3693,227 @@ mod tests {
                 .map(drop)
             },
             Refusal::OptionalContentMarked => || walk("/OC /OC1 BDC BT /F1 12 Tf (AB) Tj ET EMC"),
+        };
+        let mut all = vec![one];
+        all.extend(more_witnesses(rule));
+        all
+    }
+
+    /// A CMap program's writing mode, as a witness's outcome.
+    fn mode_of(dictionary_wmode: Option<i64>, program: &[u8]) -> Result<()> {
+        writing_mode_of(&CMap::Embedded {
+            dictionary_wmode,
+            program,
+        })
+        .map(drop)
+    }
+
+    /// The glyph `walk_content` places first, altered by `forge`, removed from `edit_content`.
+    ///
+    /// The removal path's own checks are reached only by a glyph that disagrees with the bytes
+    /// it is cut from, which no walk of those bytes produces -- so the glyph is walked from one
+    /// content and cut from another of the same length, differing at the operator or operand the
+    /// check is about.
+    fn cut_forged(walk_content: &str, edit_content: &str, forge: fn(&mut Glyph)) -> Result<()> {
+        let (mut glyphs, _) = walked(walk_content);
+        let mut glyph = glyphs.remove(0);
+        forge(&mut glyph);
+        remove_glyphs(edit_content.as_bytes(), None, &[glyph]).map(drop)
+    }
+
+    /// The witnesses for each rule's second and later raise sites.
+    fn more_witnesses(rule: Refusal) -> Vec<Witness> {
+        match rule {
+            Refusal::UndeterminedWritingMode => vec![
+                // `WMode 2`, from the stream dictionary.
+                || mode_of(Some(2), b""),
+                // The dictionary and the program disagree.
+                || mode_of(Some(0), b"/WMode 1 def"),
+                // A `WMode` that is a number and not an integer.
+                || mode_of(None, b"/WMode 1.5 def"),
+                // Declared twice, differently.
+                || mode_of(None, b"/WMode 0 def /WMode 1 def"),
+                // A `WMode` followed by something that is not a number.
+                || mode_of(None, b"/WMode /X def"),
+                // A `usecmap` with nothing named before it.
+                || mode_of(None, b"usecmap"),
+                // Two `usecmap`s that disagree.
+                || mode_of(None, b"/Identity-H usecmap /Identity-V usecmap"),
+                // A trailing `WMode` with no value: the site a review found no test reached.
+                || mode_of(None, b"/WMode"),
+                // Its own `WMode` contradicting what it inherits.
+                || mode_of(None, b"/Identity-V usecmap /WMode 0 def"),
+            ],
+            Refusal::MarkedContentCarriesOpaqueString => vec![|| {
+                // A list holding a handled key AND naming one elsewhere, decided after the
+                // rewrite.
+                let content =
+                    b"/Span << /ActualText (x) /K [ /Alt (y) ] >> BDC BT /F1 12 Tf (x) Tj ET EMC";
+                let glyphs = glyphs_in(content, &Fake::new())?;
+                carried_text_edits(
+                    content,
+                    &glyphs,
+                    None,
+                    &FormsReached::Named(&BTreeSet::new()),
+                    &NamedProperties::default(),
+                )
+                .map(drop)
+            }],
+            Refusal::GlyphFromAnotherStream => vec![|| {
+                // The combined pass's own check, which `remove_glyphs` does not share.
+                let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
+                let contents =
+                    super::super::contents::Contents::concatenate(&[b"/Fm0 Do".as_slice()])?;
+                remove_glyphs_and_carried_text(
+                    &contents,
+                    None,
+                    &glyphs[1..2],
+                    &FormsReached::Named(&BTreeSet::new()),
+                    &NamedProperties::default(),
+                )
+                .map(drop)
+            }],
+            Refusal::ShowArrayOperandNotAnArray => {
+                vec![|| cut_forged("/F1 10 Tf BT (A) Tj ET", "/F1 10 Tf BT (A) TJ ET", |_| {})]
+            }
+            Refusal::ShowArrayItemNotShowable => vec![|| {
+                cut_forged(
+                    "/F1 10 Tf BT [(A) 00] TJ ET",
+                    "/F1 10 Tf BT [(A) /N] TJ ET",
+                    |_| {},
+                )
+            }],
+            Refusal::ShowOperandNotAString => {
+                vec![|| cut_forged("/F1 10 Tf BT (A) Tj ET", "/F1 10 Tf BT /NN Tj ET", |_| {})]
+            }
+            Refusal::ZeroBytesPerCode => vec![|| {
+                cut_forged(
+                    "/F1 10 Tf BT (A) Tj ET",
+                    "/F1 10 Tf BT (A) Tj ET",
+                    |glyph| glyph.source.bytes_per_code = 0,
+                )
+            }],
+            Refusal::StringNotWholeCodes => vec![|| {
+                cut_forged(
+                    "/F1 10 Tf BT (ABC) Tj ET",
+                    "/F1 10 Tf BT (ABC) Tj ET",
+                    |glyph| glyph.source.bytes_per_code = 2,
+                )
+            }],
+            Refusal::GlyphWithoutItsOperation => vec![|| {
+                cut_forged(
+                    "/F1 10 Tf BT (A) Tj ET",
+                    "/F1 10 Tf BT (A) Tj ET",
+                    |glyph| glyph.source.code_index = 99,
+                )
+            }],
+            Refusal::AdjustmentNotExpressible => vec![|| {
+                cut_forged(
+                    "/F1 10 Tf BT (A) Tj ET",
+                    "/F1 10 Tf BT (A) Tj ET",
+                    |glyph| glyph.displacement = f64::MAX,
+                )
+            }],
+            Refusal::NonFiniteGeometry => vec![
+                // AN INFINITE OPERAND, handed over directly. Content cannot produce one -- the
+                // lexer refuses a number too large to represent -- so this check is defence in
+                // depth against the lexer changing, and its witness says so rather than
+                // pretending a document reaches it.
+                || {
+                    super::number_operand(
+                        &[Operand::Number {
+                            span: (0, 0),
+                            value: f64::INFINITY,
+                        }],
+                        0,
+                    )
+                    .map(drop)
+                },
+                // Two finite transforms whose product is not.
+                || {
+                    let big = format!("1{}", "0".repeat(200));
+                    walk(&format!(
+                        "{big} 0 0 {big} 0 0 cm {big} 0 0 {big} 0 0 cm /F1 10 Tf BT (A) Tj ET"
+                    ))
+                },
+                // A font whose width is not finite.
+                || {
+                    let mut resources = Fake::new();
+                    resources.width = f64::INFINITY;
+                    walk_with("/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources)
+                },
+                // A glyph transform that composes past finite.
+                || {
+                    let mut resources = Fake::new();
+                    resources.font_matrix_scale = 1e200;
+                    walk_with(
+                        &format!("/F1 1{} Tf BT 0 0 Td (A) Tj ET", "0".repeat(200)),
+                        &resources,
+                    )
+                },
+            ],
+            _ => Vec::new(),
         }
     }
 
     #[test]
-    fn every_refusal_is_raised_by_production_code_when_its_witness_runs() {
-        // REACHABILITY, MEASURED. See `prove` for the text search this replaced and the plant it
-        // passed. Every variant in `ALL` -- whose completeness against the enum is checked above
-        // -- is driven through its witness, and each must be raised from below `mod tests`.
-        let mut proven = Vec::new();
+    fn every_raise_site_is_raised_by_production_code_when_its_witness_runs() {
+        // PER SITE, NOT PER RULE. The first version proved one site per rule -- 38 of 61 -- and
+        // printed "38 of 38 rules", which reads as complete. A code review disabled three second
+        // sites, one of them a hostile-input rule no test covered at all, and the gate stayed
+        // green. The expectation now comes from the source: every `.refuse(` above `mod tests`
+        // is a site, and each must be the last raise of some witness.
+        let sites = raise_sites(include_str!("geometry.rs")).expect("the sites read");
+        let mut covered: BTreeMap<u32, String> = BTreeMap::new();
         let mut failures = Vec::new();
+        let mut run = 0usize;
         for rule in Refusal::ALL {
-            match prove(*rule, witness(*rule)) {
-                Ok(()) => proven.push(rule.rule()),
-                Err(why) => failures.push(why),
+            for witness in witnesses(*rule) {
+                run += 1;
+                match prove(*rule, witness) {
+                    Ok(line) => {
+                        covered.insert(line, format!("{rule:?}"));
+                    }
+                    Err(why) => failures.push(why),
+                }
             }
         }
+        let uncovered: Vec<String> = sites
+            .iter()
+            .filter(|(line, _)| !covered.contains_key(line))
+            .map(|(line, rule)| format!("line {line} ({rule})"))
+            .collect();
+        let misnamed: Vec<String> = covered
+            .iter()
+            .filter(|(line, rule)| sites.get(line) != Some(rule))
+            .map(|(line, rule)| {
+                format!(
+                    "line {line}: proven as {rule}, the source says {:?}",
+                    sites.get(line)
+                )
+            })
+            .collect();
         eprintln!(
-            "  refusal reachability: {} of {} rules raised by production code on a witness",
-            proven.len(),
+            "  refusal reachability: {} of {} raise sites raised by production code, from {run} \
+             witness(es) over {} rules",
+            covered.len(),
+            sites.len(),
             Refusal::ALL.len()
         );
         assert!(failures.is_empty(), "{}", failures.join("\n"));
-        assert_eq!(proven.len(), Refusal::ALL.len());
+        assert!(misnamed.is_empty(), "{}", misnamed.join("\n"));
+        assert!(
+            uncovered.is_empty(),
+            "{} raise site(s) no witness reaches:\n  {}",
+            uncovered.len(),
+            uncovered.join("\n  ")
+        );
+        // A SITE SCAN THAT FOUND ALMOST NOTHING AGREES WITH EVERYTHING.
+        assert!(
+            sites.len() >= Refusal::ALL.len(),
+            "only {} raise sites found",
+            sites.len()
+        );
     }
 
     #[test]
@@ -3677,10 +3944,37 @@ mod tests {
                 .is_err_and(|why| why.contains("refused by another rule")),
             "a witness refusing by the wrong rule passed the gate: {other:?}"
         );
+        // A PRODUCTION RAISE, DISCARDED, MUST NOT VOUCH FOR ONE THE TEST BUILT. The gate reads
+        // the LAST refusal; a review planted exactly this against a gate that read any.
+        let laundered = prove(Refusal::FormCycle, || {
+            let _discarded = witness(Refusal::FormCycle)();
+            Refusal::FormCycle.refuse::<()>("built in the test module")
+        });
+        assert!(
+            laundered
+                .as_ref()
+                .is_err_and(|why| why.contains("as the last refusal")),
+            "a discarded production raise vouched for a test-built one: {laundered:?}"
+        );
         // THE NEAR-MISS: a real witness, driven through real code, passes.
+        assert!(prove(Refusal::FormCycle, witness(Refusal::FormCycle)).is_ok());
+    }
+
+    #[test]
+    fn the_site_scan_refuses_a_raise_through_a_helper() {
+        // `fn refuse_as(rule: Refusal) { rule.refuse(..) }` would record the helper's line for
+        // every rule it raised, and every witness through it would pass on the helper's behalf.
+        let helper = "fn f() {\n    rule.refuse(\"x\")\n}\nmod tests {\n}\n";
+        assert!(
+            raise_sites(helper).is_err_and(|why| why.contains("not a named rule")),
+            "a raise through a helper was accepted as a site"
+        );
+        // THE NEAR-MISSES: a named receiver on one line, and one rustfmt wrapped.
+        let named = "fn f() {\n    Refusal::FormCycle.refuse(\"x\")\n    Refusal::FormDepth\n        .refuse(\"y\")\n}\nmod tests {\n}\n";
+        let sites = raise_sites(named).expect("named receivers are sites");
         assert_eq!(
-            prove(Refusal::FormCycle, witness(Refusal::FormCycle)),
-            Ok(())
+            sites.into_iter().collect::<Vec<_>>(),
+            vec![(2, "FormCycle".to_owned()), (4, "FormDepth".to_owned())]
         );
     }
 

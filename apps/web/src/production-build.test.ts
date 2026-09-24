@@ -77,7 +77,8 @@ describe("the production build", () => {
     // thing this assertion can say anything about -- absent code is absent -- so `held` is
     // empty and the SHIPPED list is what carries the weight now. A route that must not ship
     // goes back on `held`, and the loop below is waiting for it.
-    // `/redact-pdf` IS HELD FOR A REASON, AND THE REASON IS #125 -- not "not built yet".
+    // `/redact-pdf` IS HELD FOR A REASON, AND THE REASONS ARE #125 AND #180–#183 -- not "not
+    // built yet".
     //
     // That distinction is the whole of the paragraph above. #125 is a hold: ADR 0029 §5 decided
     // five refusals, and four of them have no page-side signal that fires. A refusal keyed on
@@ -88,7 +89,8 @@ describe("the production build", () => {
     // AND #180–#183, since #166's security reviews: four redactions measured returning `Ok` over
     // a secret PDFium still reads off the output. The same blockers table carries them.
     //
-    // It comes off this list when #125 and #180–#183 close, deliberately, not when the page appears.
+    // It comes off this list when #125 and #180–#183 close, deliberately, not when the page
+    // appears.
     const held: { slug: string; why: string }[] = [
       {
         slug: "redact-pdf",
@@ -149,7 +151,8 @@ describe("the production build", () => {
     // pass over an empty set -- which is why the `allowed` loop exists and is the half that
     // carries the measurement: each of the eight names must be found in a shipped script, so
     // a scan that stopped finding anything fails rather than reporting no offenders.
-    // `redact` IS HELD FOR A REASON, AND THE REASON IS #125 AND #180–#183. See the route list above: the
+    // `redact` IS HELD FOR A REASON, AND THE REASONS ARE #125 AND #180–#183. See the route list
+    // above: the
     // slug is a name, the operation is the thing held, and a page called anything at all that
     // posts `op: "redact"` ships a redaction tool.
     const held: string[] = ["redact"];
@@ -199,7 +202,8 @@ describe("the production build", () => {
     // wrong day to find out they do not.
     //
     // So: plant a fake build, run THE SAME HELPERS the assertions run, and require offenders.
-    // The day the real page appears, that assertion trips unless #125 and #180–#183 are closed and the entry
+    // The day the real page appears, that assertion trips unless #125 and #180–#183 are closed
+    // and the entry
     // removed deliberately — and this probe says the tripwire is live in the meantime.
     const planted = [
       "redact-pdf/index.html",

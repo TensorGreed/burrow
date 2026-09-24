@@ -2832,6 +2832,15 @@ The third pass reviewed only round two. Every earlier repro refused, and it foun
     the structural one: qpdf erases the null, so no qpdf-based check can be made to see it,
     and the remedy has to sit where the null is still present. It is a refusal, not a
     comparison with another reader, so it keeps §6's rejection of PDFium in the operation.
+    **A raw byte grep is not that pre-scan**, and the decision
+    ([#183](https://github.com/TensorGreed/burrow/issues/183#issuecomment-5817661570)) says what
+    one must cover:
+    - a direct null, a reference to a `null` object, and a null on an intermediate `/Pages` node;
+    - keys inside **compressed object streams**, which a byte grep cannot see, so the scan must
+      decode them or refuse a page tree it cannot read;
+    - near-misses that must not refuse: a genuinely absent key, and `null` under an unrelated key;
+    - the other inheritable page attributes. `/MediaBox` and the rest are still to be measured,
+      and `/CropBox null` measured clean.
     #180–#183 are ship blockers for the redaction page, not for the binding. The rustdoc now
     says what is true.
 - **A `BDC`'s tag is its second-last operand.** Both mark checks read the first, so
