@@ -1,6 +1,6 @@
 ---
 name: m2-named-properties-resolver
-description: Two rounds on #166. R1 (92f11ea) stream-valued /Resources leaks, untyped OCMD, 5.4 GB / 113 s. R2 (b10326b) the stream-only gate misses non-stream non-dicts and non-gated lookups: 6 measured leaks, an OC memo regression, 44 s past a 1 s deadline.
+description: Three rounds on #166. R1 stream-valued /Resources leaks; R2 the stream-only gate misses other types; R3 (4e2e52a) `null` is NOT absent in PDFium's inherited lookup and qpdf erases it, plus padded-BDC and nested-appearance OC bypasses.
 metadata:
   type: project
 ---
@@ -73,5 +73,24 @@ per-entry checkpoint, Unknown~Nothing rank). poppler hides neither untyped nor i
 
 **How to apply:** a gate keyed on one wrong TYPE invites the next; ask what every lookup does on
 every non-dictionary type, and on array items that are references.
+
+## Round 3, 4e2e52a (2026-09-24): "null stays absent in every reader" is false for PDFium
+
+Probe kept at scratchpad `sec3-probe.rs.keep` (that session only). Measured, `Ok`, PDFium reads
+`SECRETWORD` off the output: page `/Resources null`, `/Resources N 0 R` -> `null` object, and a
+`/Pages` node's `/Resources null` (PDFium GetPageAttr stops at CPDF_Null, draws stock Helvetica;
+poppler/MuPDF/burrow inherit the decoy). Same for `/Rotate null` under `/Pages /Rotate 90`
+(redact_frame). **qpdf 12.4.1 drops null-valued keys at parse** (`--show-object` shows no key),
+so no qpdf-side check can see it -- the fix has to compare against PDFium on the INPUT.
+OC: `/Pad /OC /OC1 BDC` + untyped OCG `<< /Name (x) >>` (PDFium defaults /Type to OCG) passes
+geometry `first()` and the typed check; PDFium+poppler hide it. A form drawn FROM an appearance
+is never mark-scanned; MuPDF hides it. Over-refusals: xobject-missing on dangling image Do;
+appearance lexing refuses filtered inline images anywhere on the page. Mutations 17/17 applied
++rebuilt, 6 survived (direct /Properties memo, both cost fixes, annot non-stream, lex fail-open,
+state-dict appearances). A system-wide PDF sweep for real-world over-refusal was DENIED by the
+permission classifier; do not retry it -- ask the user for a corpus instead.
+
+**How to apply:** for any "absent" rule, test `null` direct, indirect-to-null, and dangling
+separately against PDFium; they are three different answers.
 
 Related: [[m2_nested_form_lookup]], [[m2_redact_verify]], [[m2_actualtext_rewriter]], [[m2_standard14_and_marked_content]].

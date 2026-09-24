@@ -987,7 +987,11 @@ impl Walk<'_> {
     ///
     /// **Refused rather than read as some reader reads it**, because readers disagree about the
     /// shape: following one would make burrow right for one reader and wrong for any that does
-    /// not. `null` is absent in every reader, and stays absent.
+    /// not. `null` is read as absent here, and **that is not what every reader does**: PDFium's
+    /// page-attribute lookup stops at a present `null` where poppler, MuPDF and burrow climb to
+    /// `/Pages`. It is not refused here because it cannot be: qpdf drops a null-valued key when
+    /// it parses, so no check through qpdf sees it. A measured leak, filed rather than claimed
+    /// closed -- see ADR 0029's #166 amendment.
     ///
     /// **Refused here, once**, for the graph this walk visits: every page's resource dictionaries,
     /// each form's, pattern's and Type 3 font's, and each annotation's appearances. This walk runs

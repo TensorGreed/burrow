@@ -2812,6 +2812,46 @@ beside the corpus, and each near-miss is checked for its canary in the output by
   falls back, in PDFium, to the page's `/Properties`. burrow refuses that as unresolved. This is
   over-refusal, not a leak, and it comes from a reading of PDFium's source that was not run.
 
+### A third review, and the leak this change cannot close
+
+The third pass reviewed only round two. Every earlier repro refused, and it found:
+
+- **A null is not absent to every reader.** The type gate reads `null` as absent, and the first
+  version of its rustdoc said *"`null` is absent in every reader"*. That is false.
+  - PDFium's page-attribute lookup stops at a present `null`, so a page with
+    `/Resources null` gets no resources and draws `/F1` in stock Helvetica. poppler, MuPDF and
+    burrow climb to a decoy on `/Pages`. Measured returning `Ok` with the secret read off the
+    output, and the same through `/Rotate null`.
+  - **qpdf drops a null-valued key when it parses**, so no check through qpdf sees it, and the
+    read-back cannot either: by then qpdf has erased the null from the output too.
+  - Pre-existing, and not closable within this record's decisions. The reviewer's remedy is to
+    compare against PDFium on the input, and §6 and *Alternatives considered* reject PDFium in
+    the operation. Filed as [#183](https://github.com/TensorGreed/burrow/issues/183) with the
+    options, as a decision for the project owner. The rustdoc now says what is true.
+- **A `BDC`'s tag is its second-last operand.** Both mark checks read the first, so
+  `/Pad /OC /OC1 BDC` hid a layer that PDFium and poppler both hide. `BDC`, `BMC`, `DP` and `MP`
+  now have operand counts in the geometry walk, so a padded run is refused as
+  `operand-count-mismatch`. The optional-content walk reads the tag where a reader does.
+- **A mark one form below an appearance was read by nobody.** The optional-content walk now scans
+  every form, pattern and appearance stream it queues, not only appearances. It lexes only
+  streams whose decoded bytes contain `BDC`, which also removes an over-refusal the review
+  measured: an appearance elsewhere on the page, holding an inline image burrow's lexer rejects,
+  used to take the page offline.
+- **Over-refusals, stated rather than fixed.**
+  - `xobject-missing` fires on a `Do` of a dangling reference, and on an image present only in
+    `/Pages` when the page has resources of its own. Every reader draws nothing for either.
+  - The type gate is document-wide, so a wrong type on an unredacted page refuses the redaction.
+  - Both fail closed on shapes no ordinary producer writes. Across the repository's 106
+    documents, the review found no change beyond rule renames. How often real producers hit them
+    is **unmeasured**.
+- **Cost, stated.** Every non-image stream the walk reaches is now decoded. The review measured a
+  100 MB appearance from a 103 kB file at 206 MB peak, and qpdf's decode stopping near 270 MB with
+  a message that blames the file. `max_memory_bytes` detects rather than bounds, as it does
+  everywhere.
+- **Tests for its surviving mutations:** a second direct `/Properties`, whose `(0, 0)` identity a
+  memo merged; an integer `/Annots` entry; a marked appearance that does not lex, which refuses
+  rather than passing; and a state-dictionary appearance.
+
 ### The mutation sweeps, and one that measured a stale binary
 
 My first sweep, run while the reviews were in progress, reported 22 of 23 caught. **One of those

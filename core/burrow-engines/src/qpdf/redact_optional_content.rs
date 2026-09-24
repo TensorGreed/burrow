@@ -68,6 +68,8 @@ const PATTERN: Name = Name::literal(b"/Pattern\0");
 const FONT: Name = Name::literal(b"/Font\0");
 const OCG: Name = Name::literal(b"/OCG\0");
 const OCMD: Name = Name::literal(b"/OCMD\0");
+const SUBTYPE: Name = Name::literal(b"/Subtype\0");
+const IMAGE: Name = Name::literal(b"/Image\0");
 
 /// Refuse if `page`, drawing against `resources`, references optional content anywhere it reaches.
 ///
@@ -94,10 +96,6 @@ pub(super) fn refuse_optional_content(
         walk.deadline.checkpoint(walk.clock.as_ref())?;
         match item {
             Pending::Stream(stream) => walk.stream(&stream)?,
-            Pending::Appearance(stream) => {
-                walk.marks(&stream)?;
-                walk.stream(&stream)?;
-            }
             Pending::Font(font) => walk.font(&font)?,
         }
     }
@@ -106,15 +104,9 @@ pub(super) fn refuse_optional_content(
 
 /// Something reached and not yet read.
 enum Pending<'a> {
-    /// A form, image or tiling pattern: its `/OC`, then its `/Resources`.
+    /// A form, image, tiling pattern or appearance stream: its `/OC`, its own content's `/OC`
+    /// marks unless it is an image, then its `/Resources`.
     Stream(ObjectHandle<'a>),
-    /// An annotation's appearance stream: as a stream, and its own content read for `/OC` marks.
-    ///
-    /// Separate because the geometry walk, which refuses an `/OC` mark in every stream it
-    /// draws, never draws an appearance -- burrow's render leaves annotations off the page -- so
-    /// a mark written inline in one was read by neither walk. Measured by the #166 security
-    /// review: an inline typed OCMD returned `Ok` and MuPDF hid it in the output.
-    Appearance(ObjectHandle<'a>),
     /// A font: its `/Resources`, which a Type 3 font's glyph procedures draw against.
     Font(ObjectHandle<'a>),
 }
@@ -162,13 +154,13 @@ impl<'a> Walk<'a, '_> {
             for state in &APPEARANCE_STATES {
                 let appearance = appearances.key(state);
                 match appearance.type_code() {
-                    object_type::STREAM => self.queue_appearance(appearance)?,
+                    object_type::STREAM => self.queue_stream(appearance)?,
                     // A dictionary of named states, each an appearance stream.
                     object_type::DICTIONARY => {
                         for key in keys_of(&appearance)? {
                             let one = appearance.key(&key);
                             if one.type_code() == object_type::STREAM {
-                                self.queue_appearance(one)?;
+                                self.queue_stream(one)?;
                             }
                         }
                     }
@@ -235,6 +227,10 @@ impl<'a> Walk<'a, '_> {
         if has_oc(&stream.stream_dict()) {
             return refused();
         }
+        // AN IMAGE'S DATA IS PIXELS, not operators, and is never read as content.
+        if !is_image(&stream.stream_dict())? {
+            self.marks(stream)?;
+        }
         self.resources(&stream.stream_dict().key(&RESOURCES))
     }
 
@@ -243,25 +239,44 @@ impl<'a> Walk<'a, '_> {
         self.resources(&font.key(&RESOURCES))
     }
 
-    /// Queue an appearance stream unless it has been queued before.
-    fn queue_appearance(&mut self, stream: ObjectHandle<'a>) -> Result<()> {
-        if self.first_time(&stream)? {
-            self.pending.push(Pending::Appearance(stream));
-        }
-        Ok(())
-    }
-
-    /// Refuse an `/OC` mark in an appearance stream's own content.
+    /// Refuse an `/OC` mark in a stream's own content.
     ///
-    /// An appearance whose data does not decode is skipped rather than refused: no reader can draw
-    /// it either, so nothing in it is shown or hidden.
+    /// # Every stream this walk reaches, not only the ones the geometry walk draws
+    ///
+    /// The geometry walk refuses an `/OC` mark in every stream it draws, and it never draws an
+    /// annotation's appearance -- burrow's render leaves annotations off the page -- nor a form
+    /// an appearance draws. The #166 security reviews measured both returning `Ok` with a layer
+    /// hidden in the output: an inline mark in an appearance, then the same mark one form further
+    /// down. So every form, pattern and appearance stream this walk queues is read, not a list of
+    /// the ones that happened to be measured.
+    ///
+    /// # The tag is the second-last operand
+    ///
+    /// A reader takes a `BDC`'s tag and property list from its last two operands. Reading the
+    /// first let `/Pad /OC /OC1 BDC` pass here while PDFium hid the content.
+    ///
+    /// # Cost, and what is not lexed
+    ///
+    /// Decoding is the cost, and a stream whose decoded bytes hold no `BDC` at all is not lexed:
+    /// it cannot carry a mark, and lexing it could only refuse the page over syntax in content
+    /// nobody asked about -- which the third review measured with an inline image in an
+    /// appearance elsewhere on the page. A stream that does not decode is skipped: no reader can
+    /// draw it either, so nothing in it is shown or hidden.
     fn marks(&mut self, stream: &ObjectHandle<'a>) -> Result<()> {
         let Some(content) = stream.stream_data()? else {
             return Ok(());
         };
+        if !content.windows(3).any(|window| window == b"BDC") {
+            return Ok(());
+        }
         for operation in crate::pdfsyntax::ops::operations(&content)? {
+            let tag = operation
+                .operands
+                .len()
+                .checked_sub(2)
+                .and_then(|at| operation.operands.get(at));
             if operation.operator.as_slice() == b"BDC"
-                && matches!(operation.operands.first(),
+                && matches!(tag,
                     Some(crate::pdfsyntax::ops::Operand::Name { value, .. })
                         if value.as_slice() == b"OC")
             {
@@ -304,6 +319,15 @@ fn refused() -> Result<()> {
 fn has_oc(dictionary: &ObjectHandle<'_>) -> bool {
     dictionary.type_code() == object_type::DICTIONARY
         && dictionary.key(&OC).type_code() != object_type::NULL
+}
+
+/// Whether a stream dictionary is an image XObject's.
+fn is_image(dictionary: &ObjectHandle<'_>) -> Result<bool> {
+    let subtype = dictionary.key(&SUBTYPE);
+    if subtype.type_code() != object_type::NAME {
+        return Ok(false);
+    }
+    Ok(subtype.name()? == IMAGE)
 }
 
 /// Whether `entry` is an optional-content group or membership dictionary.

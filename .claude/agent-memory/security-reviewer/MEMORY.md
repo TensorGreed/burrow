@@ -41,4 +41,4 @@
 - [Nested form lookup (#164)](m2_nested_form_lookup.md) — rounds 1-3: four /ActualText-class leaks, the or_insert first-path-wins, Type 3 font one level down, 6 of 20 mutations surviving.
 - [Standard-14 + marked content (16e4c56)](m2_standard14_and_marked_content.md) — the /ActualText refusal evaded through a Form XObject, alias fonts bypassing DISPUTED, 161 B → 2.5 GB.
 - [/ActualText rewriter (#165)](m2_actualtext_rewriter.md) — 2 rounds: the leak closed, but the quadratic moved (12 kB to 109 s) and the post-rewrite check is the only load-bearing half.
-- [Named /Properties resolver (#166)](m2_named_properties_resolver.md) — R1 stream-valued /Resources leaks; R2 the stream-only fix misses other types, `N G R` array items, 6 leaks.
+- [Named /Properties resolver (#166)](m2_named_properties_resolver.md) — R1 stream /Resources; R2 other types; R3 `null` present-to-PDFium, erased by qpdf; padded BDC.

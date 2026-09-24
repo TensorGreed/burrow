@@ -2570,6 +2570,42 @@ fn anything_but_a_dictionary_where_one_belongs_is_refused_on_every_route() {
             }),
         ),
         (
+            // NOT ONLY A STREAM: a mutation refusing only streams here survived until this case.
+            "an /Annots entry an integer",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} >>", font(f)),
+                    String::new(),
+                    " /Annots [ 0 ]".into(),
+                )
+            }),
+        ),
+        (
+            // TWO DIRECT `/Properties` SHARE THE IDENTITY `(0, 0)`, and a memo keyed on it
+            // checked only the first form's. The second one's entry is the wrong type.
+            "the second of two forms' direct /Properties, an entry an array",
+            Box::new(move |pdf, f| {
+                let first = pdf.stream(
+                    " /Type /XObject /Subtype /Form /BBox [0 0 1 1] \
+                     /Resources << /Properties << /M0 << /MCID 0 >> >> >>",
+                    "",
+                );
+                let second = pdf.stream(
+                    " /Type /XObject /Subtype /Form /BBox [0 0 1 1] \
+                     /Resources << /Properties << /M0 [ ] >> >>",
+                    "",
+                );
+                (
+                    format!(
+                        "<< {} /XObject << /A {first} 0 R /B {second} 0 R >> >>",
+                        font(f)
+                    ),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
             // THE REMOVAL STEP SKIPPED THIS ENTRY, so an annotation over the region survived.
             "an /Annots entry a stream",
             Box::new(move |pdf, f| {
@@ -2687,34 +2723,129 @@ fn a_font_object_reused_as_an_appearance_resources_is_read_as_resources_too() {
     assert!(refused.contains("[optional-content]"), "{refused}");
 }
 
+/// A page whose one annotation's appearance is `appearance`, built by the caller.
+fn page_with_appearance(appearance: impl FnOnce(&mut Builder) -> String) -> Vec<u8> {
+    page_shaped(move |pdf, f| {
+        let ap = appearance(pdf);
+        (
+            format!("<< /Font << /F1 {f} 0 R >> >>"),
+            String::new(),
+            format!(
+                " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] /AS /On \
+                 /AP << /N {ap} >> >> ]"
+            ),
+        )
+    })
+}
+
+/// An appearance form drawing `content`, with `extra` stream-dictionary keys.
+fn appearance_form(pdf: &mut Builder, extra: &str, content: &str) -> usize {
+    pdf.stream(
+        &format!(" /Type /XObject /Subtype /Form /BBox [0 0 20 20]{extra}"),
+        content,
+    )
+}
+
 #[test]
-fn an_optional_content_mark_inside_an_appearance_stream_is_refused() {
-    // KILLS: `marks` deleted. The geometry walk refuses an `/OC` mark in every stream it draws,
-    // and it never draws an appearance, so an inline mark there was read by nobody.
-    let with_mark = |mark: &'static str| {
-        page_shaped(move |pdf, f| {
-            let appearance = pdf.stream(
-                " /Type /XObject /Subtype /Form /BBox [0 0 20 20]",
-                &format!("{mark} BDC 0 0 20 20 re f EMC\n"),
-            );
-            (
-                format!("<< /Font << /F1 {f} 0 R >> >>"),
-                String::new(),
+fn an_optional_content_mark_anywhere_an_appearance_reaches_is_refused() {
+    // KILLS: the mark scan deleted, narrowed to appearances, reading the FIRST operand, or
+    // skipped for a state dictionary. The geometry walk refuses an `/OC` mark in every stream it
+    // draws and never draws an appearance or a form an appearance draws; the #166 security
+    // reviews measured a layer hidden in the output through each shape below.
+    const MARK: &str = "/OC << /Type /OCMD /OCGs [ ] >> BDC 0 0 20 20 re f EMC\n";
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "inline in the appearance",
+            page_with_appearance(|pdf| format!("{} 0 R", appearance_form(pdf, "", MARK))),
+        ),
+        (
+            "in a form the appearance draws",
+            page_with_appearance(|pdf| {
+                let inner = appearance_form(pdf, "", MARK);
+                let outer = appearance_form(
+                    pdf,
+                    &format!(" /Resources << /XObject << /Fm1 {inner} 0 R >> >>"),
+                    "/Fm1 Do\n",
+                );
+                format!("{outer} 0 R")
+            }),
+        ),
+        (
+            "in one state of a state dictionary",
+            page_with_appearance(|pdf| {
+                let on = appearance_form(pdf, "", MARK);
+                let off = appearance_form(pdf, "", "");
+                format!("<< /On {on} 0 R /Off {off} 0 R >>")
+            }),
+        ),
+        (
+            "behind a padding operand",
+            page_with_appearance(|pdf| {
                 format!(
-                    " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] \
-                     /AP << /N {appearance} 0 R >> >> ]"
-                ),
-            )
-        })
-    };
-    let refused = refusal(
-        &with_mark("/OC << /Type /OCMD /OCGs [ ] >>"),
-        "an inline /OC mark in an appearance",
+                    "{} 0 R",
+                    appearance_form(
+                        pdf,
+                        "",
+                        "/Pad /OC << /Type /OCMD /OCGs [ ] >> BDC 0 0 20 20 re f EMC\n"
+                    )
+                )
+            }),
+        ),
+    ];
+    for (what, pdf) in cases {
+        let refused = refusal(&pdf, what);
+        assert!(refused.contains("[optional-content]"), "{what}: {refused}");
+    }
+
+    // A MARK THAT CANNOT BE READ IS NOT A MARK THAT IS ABSENT: content holding `BDC` that does
+    // not lex refuses rather than passing.
+    let unreadable = page_with_appearance(|pdf| {
+        format!(
+            "{} 0 R",
+            appearance_form(pdf, "", "/OC << /Type /OCMD >> BDC (unterminated\n")
+        )
+    });
+    assert!(
+        redact(&unreadable).is_err(),
+        "an appearance whose marked content does not lex must refuse"
     );
-    assert!(refused.contains("[optional-content]"), "{refused}");
-    // THE NEAR-MISS: an ordinary tagged appearance is not a layer.
-    let (out, _) = redact(&with_mark("/P << /MCID 0 >>")).expect("an ordinary mark redacts");
-    assert_absent(&out, b"SECRET", "an appearance with an ordinary mark");
+
+    // THE NEAR-MISSES: an ordinary mark, and content that holds no `BDC` at all -- which is not
+    // lexed, so syntax burrow would refuse elsewhere does not take the page offline here.
+    for (what, content) in [
+        (
+            "an ordinary mark",
+            "/P << /MCID 0 >> BDC 0 0 20 20 re f EMC\n",
+        ),
+        (
+            "no mark, and content that does not lex",
+            "0 0 20 20 re f (unterminated\n",
+        ),
+    ] {
+        let page = page_with_appearance(|pdf| format!("{} 0 R", appearance_form(pdf, "", content)));
+        let (out, _) = redact(&page).unwrap_or_else(|error| panic!("{what}: {error:?}"));
+        assert_absent(&out, b"SECRET", what);
+    }
+}
+
+#[test]
+fn a_padded_optional_content_mark_on_the_page_is_refused() {
+    // The page's own content is the geometry walk's. `BDC` now has an operand count, so the
+    // padding that hid the tag from a first-operand read is refused before the tag is read.
+    let refused = refusal(
+        &page_shaped_drawing(
+            "/Pad /OC /OC1 BDC BT /F1 24 Tf 72 700 Td (SECRET) Tj ET EMC\n",
+            |_, f| {
+                (
+                    format!("<< /Font << /F1 {f} 0 R >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            },
+        ),
+        "a padded /OC mark on the page",
+    );
+    assert!(refused.contains("[operand-count-mismatch]"), "{refused}");
 }
 
 #[test]

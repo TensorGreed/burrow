@@ -2336,8 +2336,12 @@ pub const MAX_GLYPHS: usize = 200_000;
 const fn arity(operator: &[u8]) -> Option<usize> {
     Some(match operator {
         b"q" | b"Q" | b"BT" | b"ET" | b"T*" => 0,
-        b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" | b"Do" | b"Tj" | b"TJ" | b"'" => 1,
-        b"Tf" | b"Td" | b"TD" => 2,
+        b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" | b"Do" | b"Tj" | b"TJ" | b"'" | b"BMC" | b"MP" => 1,
+        // THE MARKED-CONTENT OPERATORS, which had no count. A reader takes a `BDC`'s tag and
+        // property list from its LAST TWO operands; this walk read the tag from the FIRST, so
+        // `/Pad /OC /OC1 BDC` hid a layer from the `/OC` mark refusal -- measured by the #166
+        // security review, `Ok` over content PDFium and poppler hide. A padded run is refused.
+        b"Tf" | b"Td" | b"TD" | b"BDC" | b"DP" => 2,
         b"\"" => 3,
         b"cm" | b"Tm" => 6,
         _ => return None,
@@ -4727,7 +4731,9 @@ mod tests {
             // emitted the canary verbatim -- the inner `EMC` popped the carrying span.
             assert_eq!(
                 strips(
-                    b"/Span << /ActualText (secret) >> BDC BMC EMC \
+                    // `/Tx BMC`, not a bare `BMC`: the marked-content operators have an operand
+                    // count now, and a tagless `BMC` is refused before the stack is reached.
+                    b"/Span << /ActualText (secret) >> BDC /Tx BMC EMC \
                       BT /F1 12 Tf (AB) Tj ET EMC"
                 ),
                 1
