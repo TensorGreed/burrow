@@ -332,6 +332,9 @@ pub(crate) fn count_form_uses(
         open: Vec::new(),
         container: None,
         fonts_read: BTreeSet::new(),
+        properties_read: BTreeSet::new(),
+        deadline,
+        clock,
         dictionaries_read: 0,
         page_fonts: BTreeMap::new(),
         container_fonts: BTreeMap::new(),
@@ -487,6 +490,15 @@ struct Walk<'a> {
     /// Font objects whose `/Resources` have already been read, so a branching ladder of Type 3
     /// fonts costs each rung once rather than once per path to it.
     fonts_read: BTreeSet<ObjectId>,
+    /// `/Properties` dictionaries already checked, by identity. One shared `/Properties` reached
+    /// from every form's resources was re-listed once per form: a security review measured 4,000
+    /// forms over one 4,000-entry dictionary at **44.3 s against a 1 s deadline**.
+    properties_read: BTreeSet<ObjectId>,
+    /// The operation's deadline, consulted per resource dictionary as well as per page. One page
+    /// can hold every form in the document, so a per-page checkpoint alone let that 44 s run
+    /// inside a single step.
+    deadline: &'a Deadline,
+    clock: &'a Arc<dyn Clock>,
     /// How many resource dictionaries have been read, against [`MAX_RESOURCE_DICTIONARIES`].
     dictionaries_read: usize,
     /// Fonts each page names directly, and fonts each container names.
@@ -656,6 +668,7 @@ impl Walk<'_> {
 
     /// One resource dictionary: its forms, patterns and Type 3 fonts.
     fn resources(&mut self, resources: &ObjectHandle<'_>, depth: u32) -> Result<()> {
+        self.deadline.checkpoint(self.clock.as_ref())?;
         self.dictionaries_read += 1;
         if self.dictionaries_read > MAX_RESOURCE_DICTIONARIES {
             return Err(Error::Unsupported(
@@ -688,15 +701,20 @@ impl Walk<'_> {
         Ok(())
     }
 
-    /// `/Properties`, and each entry in it, for a stream where a dictionary belongs.
+    /// `/Properties`, and each entry in it, for anything but a dictionary where one belongs.
     ///
-    /// Read for the refusal only: a property list is where `BDC /Name` resolves, both for the
+    /// Read for the type check only. A property list is where `BDC /Name` resolves, both for the
     /// marked-content rules and for optional content, and PDFium reads a stream entry's own
-    /// dictionary as the list. See [`Self::dictionary_key`].
-    fn properties(&self, resources: &ObjectHandle<'_>) -> Result<()> {
+    /// dictionary as the list. See [`Self::dictionary_key`]. **Once per dictionary**, by
+    /// identity: see `properties_read`.
+    fn properties(&mut self, resources: &ObjectHandle<'_>) -> Result<()> {
         let Some(properties) = self.dictionary_key(resources, &PROPERTIES)? else {
             return Ok(());
         };
+        let identity = properties.object()?;
+        if identity != (0, 0) && !self.properties_read.insert(identity) {
+            return Ok(());
+        }
         for name in self.keys_of(&properties)? {
             let entry = properties.key(&name);
             if let Some(error) = self.document.take_error() {
@@ -706,8 +724,8 @@ impl Walk<'_> {
             if let Some(error) = self.document.take_error() {
                 return Err(error);
             }
-            if code == object_type::STREAM {
-                return Err(stream_where_a_dictionary_belongs());
+            if code != object_type::DICTIONARY && code != object_type::NULL {
+                return Err(not_a_dictionary_where_one_belongs());
             }
         }
         Ok(())
@@ -836,7 +854,11 @@ impl Walk<'_> {
             // exponential in depth: `MAX_RESOURCE_DEPTH` caps the path and nothing capped the
             // number of paths. See `MAX_RESOURCE_DICTIONARIES`.
             let identity = font.object()?;
-            if self.fonts_read.insert(identity) {
+            // A DIRECT FONT HAS NO IDENTITY -- qpdf reports `(0, 0)` for every one -- so a memo
+            // keyed on it read the first direct Type 3 font's `/Resources` and skipped every
+            // other's. The second one's resources then never passed this walk's type check. A
+            // direct object exists in one place only, so it is always read.
+            if identity == (0, 0) || self.fonts_read.insert(identity) {
                 // The font's own `/Resources` is what its procedures draw against.
                 if let Some(inner) = self.dictionary_key(&font, &RESOURCES)? {
                     self.resources(&inner, depth + 1)?;
@@ -876,6 +898,19 @@ impl Walk<'_> {
             if let Some(error) = self.document.take_error() {
                 return Err(error);
             }
+            // AN ANNOTATION IS A DICTIONARY, and anything else is refused, not skipped. The
+            // removal step skipped a stream entry, so an annotation over the region survived
+            // with its appearance -- found by the #166 security review, rendered by MuPDF in
+            // burrow's output. PDFium's array lookup reads a stream entry's dictionary.
+            let kind = annotation.type_code();
+            if let Some(error) = self.document.take_error() {
+                return Err(error);
+            }
+            match kind {
+                object_type::DICTIONARY => {}
+                object_type::NULL => continue,
+                _ => return Err(not_a_dictionary_where_one_belongs()),
+            }
             let Some(appearances) = self.dictionary_key(&annotation, &AP)? else {
                 continue;
             };
@@ -907,28 +942,37 @@ impl Walk<'_> {
 
     /// A dictionary-valued key, or `None` when it is absent or is not a dictionary.
     ///
-    /// # A stream where a dictionary belongs is refused, not read as absent
+    /// # Anything but a dictionary where a dictionary belongs is refused, not read as absent
     ///
     /// Every key this is asked for — `/Resources`, `/XObject`, `/Pattern`, `/Font`,
-    /// `/Properties`, `/CharProcs`, `/AP` — must hold a dictionary. PDFium's `GetDictFor` answers a
-    /// **stream** there with the stream's own dictionary; burrow answered "absent", and every
-    /// consumer then did what absent means — `PageResources::of` climbed to `/Pages`,
-    /// `Resources::within` inherited, the scope walk and the optional-content walk read nothing.
-    /// So a file could put one dictionary in front of PDFium and another in front of every check.
+    /// `/Properties`, `/CharProcs`, `/AP` — must hold a dictionary. burrow read any other value as
+    /// "absent", and every consumer then did what absent means: `PageResources::of` climbed to
+    /// `/Pages`, `Resources::within` inherited, and the scope and optional-content walks read
+    /// nothing. PDFium does not agree. Its `GetDictFor` answers a **stream** with the stream's own
+    /// dictionary, and its inheritable-attribute lookup stops at the first value **present**,
+    /// whatever its type. So a file could put one dictionary in front of PDFium and another in
+    /// front of every check.
     ///
-    /// Measured by a security review of #166, end to end, each returning `Ok`: a named
-    /// `/ActualText` behind a stream-valued page or form `/Resources` read off the output by
-    /// PDFium (**new in #166** — it refused as unresolved before); the secret's own glyphs kept,
-    /// placed by a decoy `/Pages` font while PDFium drew them with the real one (**older** than
-    /// #166, and invisible to the read-back, which walks the same way); and a layer behind a
-    /// stream-valued `/Properties` walked past.
+    /// Measured by two security reviews of #166, end to end, each returning `Ok`:
+    /// - a named `/ActualText` behind a stream-valued page or form `/Resources` was read off the
+    ///   output by PDFium. **New in #166**; it refused as unresolved before;
+    /// - the secret's own glyphs were kept, placed by a decoy `/Pages` font while PDFium drew them
+    ///   with the real one. **Older than #166**, and invisible to the read-back, which walks the
+    ///   same way;
+    /// - the same decoy behind a page `/Resources` written as an **array** or an **integer**,
+    ///   found after the first fix refused only streams. The root cause is the type, not streams.
     ///
-    /// **Refused rather than read as PDFium reads it**, because readers disagree about the shape:
-    /// following PDFium would make burrow correct for one reader and wrong for any that does not.
-    /// And **refused here, once**: this walk runs before every other redaction step, over every
-    /// page and every graph those steps read, so no later lookup can meet a stream in a
-    /// dictionary's place. A second copy of the check downstream could never fire first, and a
-    /// defence that cannot fire is one no test can hold — the masking `page_contents` records.
+    /// **Refused rather than read as some reader reads it**, because readers disagree about the
+    /// shape: following one would make burrow right for one reader and wrong for any that does
+    /// not. `null` is absent in every reader, and stays absent.
+    ///
+    /// **Refused here, once**, for the graph this walk visits: every page's resource dictionaries,
+    /// each form's, pattern's and Type 3 font's, and each annotation's appearances. This walk runs
+    /// before every other redaction step, so none of those lookups can meet a wrong type later. A
+    /// downstream copy could never fire first, and a defence that cannot fire is one no test can
+    /// hold. **It is not every lookup redaction makes**: font sub-objects, array items and
+    /// `/LastChar` are read elsewhere. The measured divergences there are filed separately. See
+    /// ADR 0029's #166 amendment.
     fn dictionary_key<'h>(
         &self,
         object: &ObjectHandle<'h>,
@@ -946,7 +990,10 @@ impl Walk<'_> {
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
-        if container != object_type::DICTIONARY && container != object_type::STREAM {
+        // A STREAM CONTAINER IS NOT ACCEPTED. qpdf's `getKey` on a stream returns null rather
+        // than reading the stream's dictionary, so accepting one answered `None` for every key --
+        // silently -- and retained a warning each time. Callers pass `stream_dict()` instead.
+        if container != object_type::DICTIONARY {
             return Ok(None);
         }
         let value = object.key(key);
@@ -957,10 +1004,11 @@ impl Walk<'_> {
         if let Some(error) = self.document.take_error() {
             return Err(error);
         }
-        if code == object_type::STREAM {
-            return Err(stream_where_a_dictionary_belongs());
+        match code {
+            object_type::DICTIONARY => Ok(Some(value)),
+            object_type::NULL => Ok(None),
+            _ => Err(not_a_dictionary_where_one_belongs()),
         }
-        Ok((code == object_type::DICTIONARY).then_some(value))
     }
 
     /// A dictionary's keys, as [`Name`]s qpdf will accept.
@@ -983,11 +1031,12 @@ impl Walk<'_> {
     }
 }
 
-/// The one refusal for a stream in a dictionary's place, so every site says the same thing.
-fn stream_where_a_dictionary_belongs() -> Error {
+/// The one refusal for a wrong type in a dictionary's place, so every site says the same thing.
+fn not_a_dictionary_where_one_belongs() -> Error {
     Error::Unsupported(
-        "pdf redaction [stream-where-a-dictionary-belongs]: a page whose resources put a stream \
-         where a dictionary belongs, which PDF readers do not agree how to read"
+        "pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put \
+         something other than a dictionary where one belongs, which PDF readers do not agree \
+         how to read"
             .to_owned(),
     )
 }

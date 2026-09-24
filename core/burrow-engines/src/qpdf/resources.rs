@@ -263,9 +263,25 @@ impl<'a> Resources for PageResources<'a> {
     fn form(&self, name: &[u8]) -> Result<Option<Form>> {
         let key = Name::from_stripped(name)?;
         let entry = self.category(&XOBJECT).key(&key);
-        if entry.type_code() != object_type::STREAM {
-            // An image, or a name the resources do not have. Neither draws glyphs.
-            return Ok(None);
+        match entry.type_code() {
+            object_type::STREAM => {}
+            // A NAME THE RESOURCES DO NOT HOLD IS REFUSED, not read as "draws nothing". Readers
+            // disagree about what it draws, and one of them draws text: PDFium falls back to
+            // the page's `/XObject` when a form's own resources lack it, which a security review
+            // of #166 measured drawing `SECRETWORD` that burrow's walk skipped. And qpdf repairs
+            // an invalid inherited `/Resources` by giving the page an empty one, so a `Do` that
+            // PDFium resolves through the original arrives here naming nothing. A walk that
+            // steps over it places no glyph where the reader draws some, and the redaction
+            // removes nothing and returns `Ok`.
+            object_type::NULL => {
+                return Err(Error::Malformed(
+                    "pdf resources [xobject-missing]: the content draws an XObject its \
+                     resources do not name, which readers resolve differently"
+                        .to_owned(),
+                ));
+            }
+            // Present and not a stream: not an XObject any reader draws.
+            _ => return Ok(None),
         }
         let dictionary = entry.stream_dict();
         if !names(&dictionary.key(&SUBTYPE), &SUBTYPE_FORM) {

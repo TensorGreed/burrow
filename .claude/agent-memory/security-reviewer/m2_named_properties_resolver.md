@@ -1,6 +1,6 @@
 ---
 name: m2-named-properties-resolver
-description: Review of 92f11ea (#166): a stream-valued /Resources makes PDFium and burrow read different dictionaries (named /ActualText leak, OC bypass, and a pre-existing visible-glyph leak); untyped OCMD evades the OC walk; 252 kB -> 5.4 GB; 113 s past a 60 s deadline.
+description: Two rounds on #166. R1 (92f11ea) stream-valued /Resources leaks, untyped OCMD, 5.4 GB / 113 s. R2 (b10326b) the stream-only gate misses non-stream non-dicts and non-gated lookups: 6 measured leaks, an OC memo regression, 44 s past a 1 s deadline.
 metadata:
   type: project
 ---
@@ -50,5 +50,28 @@ both shapes. The first M6 plant (`NULL =>` arm) failed for the wrong reason and 
 
 **Scratchpad hazard:** the scratchpad was shared with two other reviewers' worktrees, and a
 `base.log` I wrote was overwritten by one of them. Use unique file names.
+
+## Round 2, b10326b (2026-09-24): the fix narrowed the class to STREAMS, the class is TYPES
+
+Probe file kept at scratchpad `sec2-probe.rs.keep` (that session only). Old repros all refuse now;
+5.4 GB -> 39 MB, 113 s -> 0.35 s. Measured leaks, each `Ok`, PDFium reads the secret afterwards:
+- page `/Resources []` or `0` (not a stream): burrow still climbs to `/Pages`, PDFium's
+  GetPageAttr stops and uses stock Helvetica. Same lookup the fix is about.
+- Type 0 `/DescendantFonts [stream]`: qpdf `getKey` on a STREAM returns null (+warning), so
+  `/DW` reads 1000; PDFium's GetDictAt reads 500. Not a key the sharing gate visits.
+- `unparse` prints indirect ARRAY ITEMS as `N G R`, `numbers_in` reads two numbers: `/Widths`
+  of indirect ints shifts every width; `/CropBox [0 0 612 7 0 R]` drops to MediaBox (region
+  mapped 392 pt off). `/LastChar` ignored by burrow (PDFium zeroes codes past it).
+- form whose own `/Resources` lacks `/XObject`: PDFium falls back to the page's, burrow skips `Do`.
+- `/Annots` entry that is a stream: kept by `remove_annotations_in`; MuPDF renders it (witness).
+- OC walk's single `seen` set: an object first queued as a FONT is later skipped as a resources
+  dict -> typed OCG in an appearance stream's `/Resources` passes. Regression (memo-less refuses).
+- `sharing::properties()` unparses a shared `/Properties` per resource dict, page-only checkpoint:
+  1.75 MB -> 44 s vs 1 s deadline (release); stub it -> 1.03 s.
+Mutations 15/15 applied+rebuilt, 6 survived (entry-stream check, /AP+/CharProcs, /Font, OC memo,
+per-entry checkpoint, Unknown~Nothing rank). poppler hides neither untyped nor inline OC marks.
+
+**How to apply:** a gate keyed on one wrong TYPE invites the next; ask what every lookup does on
+every non-dictionary type, and on array items that are references.
 
 Related: [[m2_nested_form_lookup]], [[m2_redact_verify]], [[m2_actualtext_rewriter]], [[m2_standard14_and_marked_content]].

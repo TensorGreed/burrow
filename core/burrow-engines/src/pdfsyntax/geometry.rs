@@ -4944,6 +4944,18 @@ mod tests {
         }
 
         #[test]
+        fn an_unreadable_candidate_outranks_one_that_carries_nothing() {
+            // A name one scope defines plainly and another defines unreadably could carry text
+            // through the second. `Unknown` ranked equal to `Nothing` survived a mutation sweep.
+            let mut properties = resolving(&[("MC0", "<< /MCID 0 >>")]);
+            properties.extend(&resolving(&[("MC0", "<< /K 5 0 R >>")]));
+            assert_named_refusal(
+                edits_with(NAMED, &properties),
+                super::Refusal::MarkedContentPropertiesUnresolved,
+            );
+        }
+
+        #[test]
         fn named_text_outranks_an_unreadable_candidate() {
             // Both refuse; the rule is what a user reads. A list that was read and found to carry
             // text is the more specific true statement, so it names the refusal. The ranking

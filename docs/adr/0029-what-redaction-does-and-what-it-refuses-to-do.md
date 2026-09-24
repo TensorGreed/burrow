@@ -2722,14 +2722,44 @@ dictionary in front of PDFium and another in front of every check:
   secret. **Older than #166**, and the read-back could not see it, because it walks the same way.
 - a layer behind a stream-valued `/Properties`: walked past.
 
-**Refused, as `stream-where-a-dictionary-belongs`, in the sharing walk and nowhere else.** It is
-refused rather than read PDFium's way because readers disagree about the shape, so following one
-reader would be wrong for the others. It lives in the sharing walk because that walk runs before
-every other step, over every page and every graph those steps read. A downstream copy could never
-fire first, and a defence that cannot fire is one no test can hold. It is **document-wide**: a
-stream in a dictionary's place on any page refuses the redaction. That is the conservative
-direction for a shape no producer writes. Five fixtures, one per route, and a near-miss that
-inherits `/Resources` from `/Pages` the ordinary way.
+**Refused in the sharing walk and nowhere else.** The first fix refused a *stream* there, as
+`stream-where-a-dictionary-belongs`. A second security review measured that as too narrow: a page
+`/Resources` written as an **array** or an **integer** still climbed to the decoy on `/Pages`, and
+PDFium, whose inheritable-attribute lookup stops at the first value present, drew the secret with
+the real font. The root cause is the type, not streams. So the rule is now
+**`not-a-dictionary-where-one-belongs`**: any present value other than a dictionary, where one
+belongs, is refused. `null` is still absent, as it is in every reader.
+
+It is refused rather than read one reader's way because readers disagree about the shape, so
+following one reader would be wrong for the others. It lives in the sharing walk because that walk
+runs before every other step, so no lookup the walk covers can meet a wrong type later. A
+downstream copy could never fire first, and a defence that cannot fire is one no test can hold.
+It is **document-wide**: a wrong type on any page refuses the redaction. That is the conservative
+direction for a shape no producer writes.
+
+**What the gate covers, stated because the first version of this paragraph overclaimed.** It said
+"every graph those steps read", and the second review found three places it does not read:
+- **Covered:** every page's resource dictionaries, each form's, pattern's and Type 3 font's; the
+  `/XObject`, `/Pattern`, `/Font`, `/Properties`, `/CharProcs` and `/AP` categories; each
+  `/Properties` entry; and each `/Annots` entry. That last is new: the removal step skipped an
+  annotation that was a stream, and MuPDF rendered it in burrow's output.
+  `redaction_defences.rs` has one case per route, 12 of 12, plus a well-typed control.
+- **Not covered:** font sub-objects, array items, and `/LastChar`. The second review measured a
+  leak through each, all older than #166: a `/DescendantFonts` item that is a stream
+  ([#180](https://github.com/TensorGreed/burrow/issues/180)); indirect items in `/Widths` or
+  `/CropBox` read as two numbers ([#181](https://github.com/TensorGreed/burrow/issues/181)); and
+  `/LastChar` ignored ([#182](https://github.com/TensorGreed/burrow/issues/182)). They are filed
+  rather than bundled here. Redaction has no binding, so none reaches a visitor, and each is its
+  own reader divergence with its own fix.
+
+**qpdf repairs one shape before the gate sees it.** A page with no `/Resources` under a `/Pages`
+node whose `/Resources` is invalid is given an empty dictionary ("Resources is missing or invalid;
+repairing"). A font drawn through it then fails closed as `font-missing`. A `Do` did not: burrow's
+`PageResources::form` read a name the resources do not hold as "draws nothing", so the walk
+stepped over a form PDFium drew. The second review found the same thing from the other side: a
+form whose own `/Resources` lacks `/XObject` draws `/X2 Do`, PDFium falls back to the page's
+`/XObject`, and burrow skipped it. **A `Do` naming nothing is now refused, as `xobject-missing`.**
+It fired on no corpus document.
 
 **Untyped layers.** Both reviews separately found that the resource walk keys on `/Type /OCG` or
 `/OCMD`, and PDFium does not require either. It reads an untyped entry under an `/OC` mark as a
@@ -2759,8 +2789,17 @@ beside the corpus, and each near-miss is checked for its canary in the output by
   so `shared-form-would-change-elsewhere` refuses it before the resolver's union matters. Both
   reviews measured a first-path-wins mutation surviving for this reason. The union stays, for the
   day copy-on-write lifts that refusal.
-- **The optional-content walk's per-object checkpoint is untested.** The sharing walk's page
-  checkpoints run first.
+- **The optional-content walk's per-object checkpoint is untested.** The sharing walk runs first
+  and now checkpoints per resource dictionary, not only per page. The second review measured one
+  page's worth of forms sharing one `/Properties` at **44.3 s against a 1 s deadline**, because the
+  walk re-listed the shared dictionary for every form and checked the deadline only per page.
+  `/Properties` is now memoised by identity, and a time-bounded test pins it.
+- **Two more the second review found in this change's own optional-content walk, both fixed.** One
+  memo served "queued as a font" and "read as resources". A dictionary that was the page's font and
+  an appearance's `/Resources` was skipped as the second, and the layer in it went unread. That was
+  a regression in the first fix. The memos are now separate. The other: an `/OC` mark written
+  inline in an **appearance stream** was read by neither walk, because the geometry walk never
+  draws an appearance. The optional-content walk now reads each appearance's operators.
 - **The geometry probe now passes the same gate.** `glyphs_on_first_page` walked a page without
   the sharing walk, so it resolved a stream-valued `/XObject` as absent. The PDFium calibration
   measured it: burrow placed 14 glyphs, PDFium read 41. It runs the sharing walk first now, and

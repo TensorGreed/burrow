@@ -83,6 +83,7 @@ pub(super) fn refuse_optional_content(
 ) -> Result<()> {
     let mut walk = Walk {
         seen: BTreeSet::new(),
+        dictionaries: BTreeSet::new(),
         pending: Vec::new(),
         deadline,
         clock,
@@ -93,6 +94,10 @@ pub(super) fn refuse_optional_content(
         walk.deadline.checkpoint(walk.clock.as_ref())?;
         match item {
             Pending::Stream(stream) => walk.stream(&stream)?,
+            Pending::Appearance(stream) => {
+                walk.marks(&stream)?;
+                walk.stream(&stream)?;
+            }
             Pending::Font(font) => walk.font(&font)?,
         }
     }
@@ -101,8 +106,15 @@ pub(super) fn refuse_optional_content(
 
 /// Something reached and not yet read.
 enum Pending<'a> {
-    /// A form, image, tiling pattern or appearance stream: its `/OC`, then its `/Resources`.
+    /// A form, image or tiling pattern: its `/OC`, then its `/Resources`.
     Stream(ObjectHandle<'a>),
+    /// An annotation's appearance stream: as a stream, and its own content read for `/OC` marks.
+    ///
+    /// Separate because the geometry walk, which refuses an `/OC` mark in every stream it
+    /// draws, never draws an appearance -- burrow's render leaves annotations off the page -- so
+    /// a mark written inline in one was read by neither walk. Measured by the #166 security
+    /// review: an inline typed OCMD returned `Ok` and MuPDF hid it in the output.
+    Appearance(ObjectHandle<'a>),
     /// A font: its `/Resources`, which a Type 3 font's glyph procedures draw against.
     Font(ObjectHandle<'a>),
 }
@@ -111,6 +123,14 @@ struct Walk<'a, 'd> {
     /// Objects already queued, by identity. A graph that reaches one object by many routes
     /// reads it once, which is what makes the walk linear rather than exponential in a DAG.
     seen: BTreeSet<(core::ffi::c_int, core::ffi::c_int)>,
+    /// Resource dictionaries already read, by identity -- **a memo of its own**.
+    ///
+    /// One set served both, and an object is legitimately both: a dictionary queued as the page's
+    /// *font* was later skipped as an appearance stream's *`/Resources`*, so a typed `/OCG` in its
+    /// `/Properties` was never read. Measured by the #166 security review, returning `Ok` with
+    /// poppler and MuPDF hiding the layer. A memo answers "have I done *this* to it", and doing
+    /// one thing to an object is not doing the other.
+    dictionaries: BTreeSet<(core::ffi::c_int, core::ffi::c_int)>,
     pending: Vec<Pending<'a>>,
     deadline: &'d Deadline,
     clock: &'d Arc<dyn Clock>,
@@ -142,13 +162,13 @@ impl<'a> Walk<'a, '_> {
             for state in &APPEARANCE_STATES {
                 let appearance = appearances.key(state);
                 match appearance.type_code() {
-                    object_type::STREAM => self.queue_stream(appearance)?,
+                    object_type::STREAM => self.queue_appearance(appearance)?,
                     // A dictionary of named states, each an appearance stream.
                     object_type::DICTIONARY => {
                         for key in keys_of(&appearance)? {
                             let one = appearance.key(&key);
                             if one.type_code() == object_type::STREAM {
-                                self.queue_stream(one)?;
+                                self.queue_appearance(one)?;
                             }
                         }
                     }
@@ -168,7 +188,8 @@ impl<'a> Walk<'a, '_> {
         }
         // ONCE PER DICTIONARY, like once per stream. A security review measured two layers of N
         // forms sharing one `/Resources`: every form re-read it, adding 2.3 s at N = 2,000.
-        if !self.first_time(resources)? {
+        let identity = resources.object()?;
+        if identity != (0, 0) && !self.dictionaries.insert(identity) {
             return Ok(());
         }
         // `/Properties` is where `BDC /OC /Name` resolves. It also holds ordinary marked-content
@@ -220,6 +241,34 @@ impl<'a> Walk<'a, '_> {
     /// A font's `/Resources`, which only a Type 3 font has and which its procedures draw against.
     fn font(&mut self, font: &ObjectHandle<'a>) -> Result<()> {
         self.resources(&font.key(&RESOURCES))
+    }
+
+    /// Queue an appearance stream unless it has been queued before.
+    fn queue_appearance(&mut self, stream: ObjectHandle<'a>) -> Result<()> {
+        if self.first_time(&stream)? {
+            self.pending.push(Pending::Appearance(stream));
+        }
+        Ok(())
+    }
+
+    /// Refuse an `/OC` mark in an appearance stream's own content.
+    ///
+    /// An appearance whose data does not decode is skipped rather than refused: no reader can draw
+    /// it either, so nothing in it is shown or hidden.
+    fn marks(&mut self, stream: &ObjectHandle<'a>) -> Result<()> {
+        let Some(content) = stream.stream_data()? else {
+            return Ok(());
+        };
+        for operation in crate::pdfsyntax::ops::operations(&content)? {
+            if operation.operator.as_slice() == b"BDC"
+                && matches!(operation.operands.first(),
+                    Some(crate::pdfsyntax::ops::Operand::Name { value, .. })
+                        if value.as_slice() == b"OC")
+            {
+                return refused();
+            }
+        }
+        Ok(())
     }
 
     /// Queue a stream unless it has been queued before.

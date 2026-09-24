@@ -1557,7 +1557,7 @@ def nearmiss_oc_on_another_page() -> bytes:
 # ===========================================================================================
 # A STREAM WHERE A DICTIONARY BELONGS. PDFium's `GetDictFor` answers a stream with the stream's
 # own dictionary; burrow read it as absent and inherited or skipped. Found by a security review of
-# #166, three leaks, each returning `Ok`. Refused as `stream-where-a-dictionary-belongs`.
+# #166, three leaks, each returning `Ok`. Refused as `not-a-dictionary-where-one-belongs`.
 # ===========================================================================================
 
 
@@ -1778,13 +1778,13 @@ CASES: list[tuple[str, str]] = [
     ("evade-oc-untyped-group", "optional content"),
     ("evade-oc-on-an-appearance-state", "optional content"),
     ("nearmiss-oc-on-another-page", "optional content"),
-    ("evade-resources-stream-on-the-page", "stream as dictionary"),
-    ("evade-resources-stream-on-a-form", "stream as dictionary"),
-    ("evade-font-decoy-behind-a-resources-stream", "stream as dictionary"),
-    ("evade-xobject-category-as-a-stream", "stream as dictionary"),
-    ("evade-properties-as-a-stream-holding-a-layer", "stream as dictionary"),
-    ("evade-property-list-as-a-stream", "stream as dictionary"),
-    ("nearmiss-resources-inherited-from-pages", "stream as dictionary"),
+    ("evade-resources-stream-on-the-page", "not a dictionary"),
+    ("evade-resources-stream-on-a-form", "not a dictionary"),
+    ("evade-font-decoy-behind-a-resources-stream", "not a dictionary"),
+    ("evade-xobject-category-as-a-stream", "not a dictionary"),
+    ("evade-properties-as-a-stream-holding-a-layer", "not a dictionary"),
+    ("evade-property-list-as-a-stream", "not a dictionary"),
+    ("nearmiss-resources-inherited-from-pages", "not a dictionary"),
 ]
 
 BUILDERS = {

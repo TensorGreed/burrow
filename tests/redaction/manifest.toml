@@ -1638,7 +1638,7 @@ pages = 1
 name = "evade-resources-stream-on-the-page"
 file = "generated/evade-resources-stream-on-the-page.pdf"
 kind = "hand-built"
-probes_refusal = "stream as dictionary"
+probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
@@ -1657,7 +1657,7 @@ PDFium reads the stream's dictionary; burrow inherited /Pages' plain list. A lea
 name = "evade-resources-stream-on-a-form"
 file = "generated/evade-resources-stream-on-a-form.pdf"
 kind = "hand-built"
-probes_refusal = "stream as dictionary"
+probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
@@ -1676,7 +1676,7 @@ The form-level version of the same leak.
 name = "evade-font-decoy-behind-a-resources-stream"
 file = "generated/evade-font-decoy-behind-a-resources-stream.pdf"
 kind = "hand-built"
-probes_refusal = "stream as dictionary"
+probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
@@ -1695,7 +1695,7 @@ The glyphs themselves survived: placed by the decoy, drawn by PDFium with the re
 name = "evade-xobject-category-as-a-stream"
 file = "generated/evade-xobject-category-as-a-stream.pdf"
 kind = "hand-built"
-probes_refusal = "stream as dictionary"
+probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
@@ -1714,7 +1714,7 @@ Read as absent, the Do drew nothing burrow could reach.
 name = "evade-properties-as-a-stream-holding-a-layer"
 file = "generated/evade-properties-as-a-stream-holding-a-layer.pdf"
 kind = "hand-built"
-probes_refusal = "stream as dictionary"
+probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
@@ -1733,7 +1733,7 @@ The optional-content walk read it as absent.
 name = "nearmiss-resources-inherited-from-pages"
 file = "generated/nearmiss-resources-inherited-from-pages.pdf"
 kind = "hand-built"
-probes_refusal = "stream as dictionary"
+probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
@@ -1773,7 +1773,7 @@ the type-keyed resource walk passes it. Caught by the mark (`optional-content-ma
 name = "evade-property-list-as-a-stream"
 file = "generated/evade-property-list-as-a-stream.pdf"
 kind = "hand-built"
-probes_refusal = "stream as dictionary"
+probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]

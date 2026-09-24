@@ -2147,37 +2147,33 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 27] = [
     // as absent. Three of these were measured leaks returning `Ok`.
     (
         "evade-resources-stream-on-the-page.pdf",
-        Some("stream-where-a-dictionary-belongs"),
+        Some("not-a-dictionary-where-one-belongs"),
     ),
     (
         "evade-resources-stream-on-a-form.pdf",
-        Some("stream-where-a-dictionary-belongs"),
+        Some("not-a-dictionary-where-one-belongs"),
     ),
     (
         "evade-font-decoy-behind-a-resources-stream.pdf",
-        Some("stream-where-a-dictionary-belongs"),
+        Some("not-a-dictionary-where-one-belongs"),
     ),
     (
         "evade-xobject-category-as-a-stream.pdf",
-        Some("stream-where-a-dictionary-belongs"),
+        Some("not-a-dictionary-where-one-belongs"),
     ),
     (
         "evade-properties-as-a-stream-holding-a-layer.pdf",
-        Some("stream-where-a-dictionary-belongs"),
+        Some("not-a-dictionary-where-one-belongs"),
     ),
     (
         "evade-property-list-as-a-stream.pdf",
-        Some("stream-where-a-dictionary-belongs"),
+        Some("not-a-dictionary-where-one-belongs"),
     ),
     ("nearmiss-resources-inherited-from-pages.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 3] = [
-    "named /Properties",
-    "optional content",
-    "stream as dictionary",
-];
+const RESOLVED_GROUPS: [&str; 3] = ["named /Properties", "optional content", "not a dictionary"];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.
 fn manifest() -> serde_json::Value {
@@ -2385,6 +2381,377 @@ fn page_with_property_lists(on_page: usize, in_form: usize) -> Vec<u8> {
     );
     pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
     pdf.build(catalog)
+}
+
+/// One page drawing `(SECRET)` in the band with `/F1`, whose resources `shape` writes.
+///
+/// `shape` gets the builder and the font's object number and returns what follows `/Resources`
+/// on the page (empty for none), what the `/Pages` node carries, and any other page keys.
+fn page_shaped(shape: impl FnOnce(&mut Builder, usize) -> (String, String, String)) -> Vec<u8> {
+    page_shaped_drawing("BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n", shape)
+}
+
+/// As [`page_shaped`], with the page's content stream written by the caller.
+fn page_shaped_drawing(
+    drawing: &str,
+    shape: impl FnOnce(&mut Builder, usize) -> (String, String, String),
+) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let (resources, on_pages, page_extra) = shape(&mut pdf, font);
+    let content = pdf.stream("", drawing);
+    let resources = if resources.is_empty() {
+        String::new()
+    } else {
+        format!(" /Resources {resources}")
+    };
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792]{resources}{page_extra} \
+             /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R]{on_pages} >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+/// A Type 3 font dictionary, written out, with `extra` keys.
+fn type_three(extra: &str) -> String {
+    format!(
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+         /FontMatrix [0.001 0 0 0.001 0 0] /FirstChar 97 /LastChar 97 /Widths [1000] \
+         /Encoding << /Differences [97 /a] >> {extra} >>"
+    )
+}
+
+#[test]
+fn anything_but_a_dictionary_where_one_belongs_is_refused_on_every_route() {
+    // KILLS: the type check skipped for any one key, and the first fix's version of it, which
+    // refused a STREAM and read an array or an integer as absent -- a security review measured a
+    // page `/Resources [ ]` inheriting a decoy font from `/Pages` and leaving the secret drawn.
+    // One case per route the gate reads, because a mutation dropping the check for one key
+    // survived while every other key had a fixture.
+    type Shape = Box<dyn FnOnce(&mut Builder, usize) -> (String, String, String)>;
+    let font = |f: usize| format!("/Font << /F1 {f} 0 R >>");
+    let cases: Vec<(&str, Shape)> = vec![
+        (
+            "page /Resources an array, a font on /Pages",
+            Box::new(move |_, f| {
+                (
+                    "[ ]".into(),
+                    format!(" /Resources << {} >>", font(f)),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "page /Resources an integer",
+            Box::new(move |_, f| {
+                (
+                    "0".into(),
+                    format!(" /Resources << {} >>", font(f)),
+                    String::new(),
+                )
+            }),
+        ),
+        // NOT HERE: a stream `/Resources` on `/Pages` with none on the page. qpdf repairs that
+        // before this walk runs -- "Resources is missing or invalid; repairing" -- by giving the
+        // page an empty dictionary, so the gate never sees it. What follows from the repair is
+        // in `a_do_naming_nothing_the_resources_hold_is_refused`.
+        (
+            "/Font a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream(&format!(" /F1 {f} 0 R"), "");
+                (format!("<< /Font {s} 0 R >>"), String::new(), String::new())
+            }),
+        ),
+        (
+            "/XObject an array",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} /XObject [ ] >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "/Pattern a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                (
+                    format!("<< {} /Pattern {s} 0 R >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "/Properties an integer",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} /Properties 7 >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "a /Properties entry an array",
+            Box::new(move |_, f| {
+                (
+                    format!("<< {} /Properties << /M0 [ ] >> >>", font(f)),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "a Type 3 font's /CharProcs a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                let t3 = pdf.add(&type_three(&format!("/CharProcs {s} 0 R")));
+                (
+                    format!("<< /Font << /F1 {f} 0 R /T3 {t3} 0 R >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "a Type 3 font's /Resources an array",
+            Box::new(move |pdf, f| {
+                let t3 = pdf.add(&type_three("/CharProcs << >> /Resources [ ]"));
+                (
+                    format!("<< /Font << /F1 {f} 0 R /T3 {t3} 0 R >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            // TWO DIRECT FONTS SHARE THE IDENTITY `(0, 0)`, and a memo keyed on it read only
+            // the first one's resources. The second one's is the wrong type.
+            "the second of two direct Type 3 fonts, /Resources a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                let first = type_three("/CharProcs << >> /Resources << >>");
+                let second = type_three(&format!("/CharProcs << >> /Resources {s} 0 R"));
+                (
+                    format!("<< /Font << /F1 {f} 0 R /A {first} /B {second} >> >>"),
+                    String::new(),
+                    String::new(),
+                )
+            }),
+        ),
+        (
+            "an annotation's /AP a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream("", "");
+                (
+                    format!("<< {} >>", font(f)),
+                    String::new(),
+                    format!(
+                        " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] /AP {s} 0 R >> ]"
+                    ),
+                )
+            }),
+        ),
+        (
+            // THE REMOVAL STEP SKIPPED THIS ENTRY, so an annotation over the region survived.
+            "an /Annots entry a stream",
+            Box::new(move |pdf, f| {
+                let s = pdf.stream(" /Type /Annot /Subtype /Square /Rect [72 690 300 730]", "");
+                (
+                    format!("<< {} >>", font(f)),
+                    String::new(),
+                    format!(" /Annots [ {s} 0 R ]"),
+                )
+            }),
+        ),
+    ];
+    let total = cases.len();
+    let mut refused = 0usize;
+    for (what, shape) in cases {
+        let text = refusal(&page_shaped(shape), what);
+        assert!(
+            text.contains("[not-a-dictionary-where-one-belongs]"),
+            "{what}: refused, but not for the type: {text}"
+        );
+        refused += 1;
+    }
+    // THE NEAR-MISS: the same page, every key the type it should be, including an inherited
+    // `/Resources` and a `null` where a dictionary is optional.
+    let control = page_shaped(move |_, f| {
+        (
+            String::new(),
+            format!(" /Resources << /Font << /F1 {f} 0 R >> /XObject null >>"),
+            String::new(),
+        )
+    });
+    let (out, _) = redact(&control).expect("every key its proper type must redact");
+    assert_absent(&out, b"SECRET", "the well-typed control");
+    eprintln!(
+        "  wrong-type routes: {refused} of {total} refused by name, and the control redacted"
+    );
+}
+
+#[test]
+fn a_do_naming_nothing_the_resources_hold_is_refused() {
+    // KILLS: `PageResources::form` reading an absent name as "draws nothing". Two routes to one
+    // `Do` that PDFium draws and burrow's walk stepped over, each measured `Ok` with the secret
+    // still drawn.
+    let form = |pdf: &mut Builder, f: usize| {
+        pdf.stream(
+            &format!(
+                " /Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {f} 0 R >> >>"
+            ),
+            "BT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n",
+        )
+    };
+    // 1. The form is named only by a stream-valued `/Resources` on `/Pages`. qpdf repairs that
+    //    by giving the page an empty dictionary, so `/X1` names nothing by the time burrow
+    //    reads it; PDFium resolves it through the original.
+    let repaired = page_shaped_drawing("/X1 Do\n", |pdf, f| {
+        let x1 = form(pdf, f);
+        let s = pdf.stream(&format!(" /XObject << /X1 {x1} 0 R >>"), "");
+        (String::new(), format!(" /Resources {s} 0 R"), String::new())
+    });
+    // 2. A form whose own `/Resources` has no `/XObject` draws `/X2 Do`. PDFium falls back to
+    //    the page's `/XObject`, where `/X2` draws the secret. Found by the #166 security review.
+    let fallback = page_shaped_drawing("/X1 Do\n", |pdf, f| {
+        let x2 = form(pdf, f);
+        let x1 = pdf.stream(
+            &format!(
+                " /Type /XObject /Subtype /Form /BBox [0 0 612 792] \
+                 /Resources << /Font << /F1 {f} 0 R >> >>"
+            ),
+            "/X2 Do\n",
+        );
+        (
+            format!("<< /Font << /F1 {f} 0 R >> /XObject << /X1 {x1} 0 R /X2 {x2} 0 R >> >>"),
+            String::new(),
+            String::new(),
+        )
+    });
+    for (what, pdf) in [
+        ("a Do the qpdf repair left naming nothing", repaired),
+        ("a Do PDFium resolves by falling back to the page", fallback),
+    ] {
+        let refused = refusal(&pdf, what);
+        assert!(
+            refused.contains("[xobject-missing]"),
+            "{what}: refused, but not because the name resolves to nothing: {refused}"
+        );
+    }
+}
+
+#[test]
+fn a_font_object_reused_as_an_appearance_resources_is_read_as_resources_too() {
+    // KILLS: one memo for "queued as a font" and "read as resources". The dictionary below is the
+    // page's `/F9` and an appearance stream's `/Resources`; queued as the font first, it was
+    // skipped as resources, so the `/OCG` in its `/Properties` was never read. Measured by the
+    // #166 security review, `Ok`, with poppler and MuPDF hiding the layer in the output.
+    let refused = refusal(
+        &page_shaped(|pdf, f| {
+            let ocg = pdf.add("<< /Type /OCG /Name (a layer) >>");
+            let both = pdf.add(&format!("<< /Properties << /L0 {ocg} 0 R >> >>"));
+            let appearance = pdf.stream(
+                &format!(" /Type /XObject /Subtype /Form /BBox [0 0 20 20] /Resources {both} 0 R"),
+                "0 0 20 20 re f\n",
+            );
+            (
+                format!("<< /Font << /F1 {f} 0 R /F9 {both} 0 R >> >>"),
+                String::new(),
+                format!(
+                    " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] \
+                     /AP << /N {appearance} 0 R >> >> ]"
+                ),
+            )
+        }),
+        "a font dictionary that is also an appearance's resources",
+    );
+    assert!(refused.contains("[optional-content]"), "{refused}");
+}
+
+#[test]
+fn an_optional_content_mark_inside_an_appearance_stream_is_refused() {
+    // KILLS: `marks` deleted. The geometry walk refuses an `/OC` mark in every stream it draws,
+    // and it never draws an appearance, so an inline mark there was read by nobody.
+    let with_mark = |mark: &'static str| {
+        page_shaped(move |pdf, f| {
+            let appearance = pdf.stream(
+                " /Type /XObject /Subtype /Form /BBox [0 0 20 20]",
+                &format!("{mark} BDC 0 0 20 20 re f EMC\n"),
+            );
+            (
+                format!("<< /Font << /F1 {f} 0 R >> >>"),
+                String::new(),
+                format!(
+                    " /Annots [ << /Type /Annot /Subtype /Square /Rect [300 10 320 30] \
+                     /AP << /N {appearance} 0 R >> >> ]"
+                ),
+            )
+        })
+    };
+    let refused = refusal(
+        &with_mark("/OC << /Type /OCMD /OCGs [ ] >>"),
+        "an inline /OC mark in an appearance",
+    );
+    assert!(refused.contains("[optional-content]"), "{refused}");
+    // THE NEAR-MISS: an ordinary tagged appearance is not a layer.
+    let (out, _) = redact(&with_mark("/P << /MCID 0 >>")).expect("an ordinary mark redacts");
+    assert_absent(&out, b"SECRET", "an appearance with an ordinary mark");
+}
+
+#[test]
+fn one_shared_properties_dictionary_is_checked_once_however_many_forms_reach_it() {
+    // KILLS: the `/Properties` identity memo in the sharing walk. A security review measured the
+    // shape without it at 44.3 s against a 1 s deadline, release build, from 1.75 MB.
+    let page = page_shaped(|pdf, f| {
+        let entries: String = (0..2000)
+            .map(|at| format!("/M{at} << /MCID {at} >> "))
+            .collect();
+        let shared = pdf.add(&format!("<< {entries}>>"));
+        let forms: String = (0..1000)
+            .map(|at| {
+                let form = pdf.stream(
+                    &format!(
+                        " /Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                         /Resources << /Properties {shared} 0 R >>"
+                    ),
+                    "",
+                );
+                format!("/X{at} {form} 0 R ")
+            })
+            .collect();
+        (
+            format!("<< /Font << /F1 {f} 0 R >> /XObject << {forms}>> >>"),
+            String::new(),
+            String::new(),
+        )
+    });
+    let started = std::time::Instant::now();
+    let (out, _) = redact(&page).expect("forms sharing an ordinary /Properties redact");
+    let took = started.elapsed();
+    assert_absent(&out, b"SECRET", "a page whose forms share one /Properties");
+    assert!(
+        took < std::time::Duration::from_secs(10),
+        "1,000 forms over one 2,000-entry /Properties took {took:?}; it is re-read per form"
+    );
 }
 
 #[test]
