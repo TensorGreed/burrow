@@ -204,3 +204,48 @@ fn filtered_page() -> Vec<u8> {
     );
     out
 }
+
+#[test]
+fn an_array_item_from_another_document_is_refused_rather_than_written() {
+    // THE SAME SHAPE AS THE FILTER TEST ABOVE, for the other write that takes a second handle.
+    // `ObjectHandle::set_array_item` left the pairing to its caller, and since #191 the caller is
+    // redaction's policy, written once over `redact::graph` for both engines, so the check is the
+    // trait implementation's. Driven through the trait for that reason.
+    //
+    // WHAT IT PREVENTS, MEASURED. With the check deleted this test does not fail an assertion: it
+    // aborts on a stack overflow. Both documents issue handles in the same order, so the foreign
+    // integer's id names a live object in THIS document -- here one that the array reaches -- and
+    // qpdf writes it into the `/MediaBox`, which the `unparse` below then recurses through. A
+    // wrong value written silently is the ordinary outcome; this fixture happens to make it loud.
+    use crate::redact::graph::PdfObject;
+
+    let first = minimal_pdf::pdf_with_ink();
+    let second = minimal_pdf::pdf_with_ink();
+    let (a, _, _, _) = open_document(first.into(), &options()).expect("opens");
+    let (b, _, _, _) = open_document(second.into(), &options()).expect("opens");
+    // SAFETY: both documents opened and page 0 is below each page count.
+    let (page_a, page_b) = unsafe { (ObjectHandle::page(&a, 0), ObjectHandle::page(&b, 0)) };
+    let media_box = PdfObject::key(&page_a, &Name::literal(b"/MediaBox\0"));
+    assert_eq!(
+        PdfObject::array_len(&media_box),
+        4,
+        "the fixture's page must carry a four-number /MediaBox for this to test anything"
+    );
+    let before = PdfObject::unparse(&media_box);
+
+    let foreign = PdfObject::integer_beside(&page_b, 7);
+    let refused = PdfObject::set_array_item(&media_box, 0, &foreign);
+    assert!(
+        matches!(refused, Err(burrow_types::Error::Internal(_))),
+        "an integer from another document was accepted: {refused:?}"
+    );
+    // AND NOTHING WAS WRITTEN: a refusal after the engine call would be one reported over a
+    // document already modified.
+    assert_eq!(PdfObject::unparse(&media_box), before);
+
+    // THE NEAR-MISS. Without it this passes for a check that refuses every write.
+    let local = PdfObject::integer_beside(&page_a, 7);
+    PdfObject::set_array_item(&media_box, 0, &local).expect("a value from the same document");
+    PdfObject::drained(&media_box).expect("and the engine latched nothing");
+    assert_ne!(PdfObject::unparse(&media_box), before, "the write landed");
+}

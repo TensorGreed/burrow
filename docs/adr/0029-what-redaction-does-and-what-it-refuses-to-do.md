@@ -3203,4 +3203,99 @@ Its positives are therefore **built, not shipped**:
   and the check passed all three. The needles now name each component by a literal only it
   spells.
 
+## Amendment, 2026-09-25 — #191's first half: the policy moved, and the drain did not move with it
+
+The move the amendment above orders first has landed, alone. This records what it is, the one
+place it departs from that amendment and why, and how "no behaviour change" was established.
+
+### What moved
+
+The steps, the read-back witness, form sharing, resources, optional content and the region's frame
+left `qpdf/` for `redact/`, beside the state machine they feed, with the generic body of
+`PageRedactor::redact_page` as `redact::redact_page`. They are written over `redact::graph`: a
+`PdfDocument` issues handles, a `PdfObject` is one, and `OpensForRedaction` opens a document for
+the edit and a fresh one for the read-back. The native `Document` and `ObjectHandle` implement
+them by forwarding one accessor to one accessor, in `qpdf/redact_graph.rs`.
+
+The policy compiles on every target and is `forbid(unsafe_code)`: the three page lookups that were
+`unsafe` are bounds-checked behind `PdfDocument::page`. Until the web implements the traits it is
+dead without the native engines, and an `expect(dead_code)` on `redact` says so and has to be
+removed by the web half. **The base web module is byte-identical** to the one built from the
+commit before the move (release `burrow_wasm.wasm`, 353,600 bytes, `cmp` clean): the policy is
+compiled for wasm and LTO strips all of it. So the last section above is no longer right that "the
+`qpdf` policy and the verification are not compiled for wasm at all". They are compiled, and
+nothing reaches them. `check-redaction-not-in-base.sh` still finds none of its eight needles in
+either shipped module.
+
+### The verbs are on the handle, which is where it departs from `ObjectGraph`
+
+`prune::graph::ObjectGraph` puts every verb on the graph, as `graph.key(&handle, key)`. That is a
+document **beside** a handle, which is the shape #130 removed from the native wrappers and #147
+removed from the web one. So redaction's trait puts the verbs on the handle, and holds both of
+those guarantees rather than flattening them:
+
+- **A handle cannot outlive its document.** `PdfDocument::Object<'a>` is generic over the borrow
+  of the document that issued it. That is #147's property, now required by the trait rather than
+  by one type.
+- **A handle and its document cannot come from different places.** The policy is given no
+  document to pair a handle with. The functions that took one only to drain it now drain through
+  the handle (`PdfObject::drained`, which reaches the document that issued it). A new value is
+  made *beside* a handle (`null_beside`, `integer_beside`), not by a document the caller names.
+- **The one pairing the types cannot rule out is checked.** Two handles of one type from two
+  documents unify, so the two writes that take a second handle (`set_array_item`,
+  `replace_stream_data`) compare documents and return `Error::Internal`. It is an error rather
+  than the web handle's debug assertion. Measured with the check deleted: the foreign integer's
+  handle id named a live object in the other document, because both issue handles in the same
+  order. qpdf wrote it into the `/MediaBox` and the test aborted on a stack overflow in `unparse`.
+
+Pruning keeps its shape, and its native graph drains through the graph's document rather than the
+handle's. Nothing is wrong there today, since every caller builds the graph over the document its
+handles came from. It is filed separately rather than changed here.
+
+### The drain did not move, and that corrects the amendment above
+
+The amendment above says every method "drains qpdf's latched error in the implementation, never in
+the policy". **This step does not, because doing so is a behaviour change**, and the step was
+required to have none. It was tried first:
+
+- `PageResources::form` asks an absent `/XObject` (a **null**) for a key.
+- qpdf's `getKey` on a null latches an error.
+- The native policy never drained there. Its type check refused `[xobject-missing]` first, and the
+  latched error was never observed.
+- With the drain inside `key`, the engine error wins, and
+  `redaction_defences::a_do_naming_nothing_the_resources_hold_is_refused` fails. It expects
+  `[xobject-missing]` and gets `qpdf: an object is malformed`.
+
+The corpus golden did not see this, because no corpus document has the shape. The defence suite
+did.
+
+So the accessors mirror the native ones as they are. Those that did not drain do not, the three
+that did still do, and the policy drains where it always drained, through the handle. The engine
+sees the same calls in the same order, with two exceptions:
+
+- the page lookup reads the page count to bounds-check. That read is cached, and a latched error
+  it does not clear still surfaces at the drain that follows, as before;
+- one null handle is released a few lines earlier. A release is a map erase on the document.
+
+Moving the drain into the accessors is filed as its own change, after the web half. The web's
+accessors are raw bridge calls that do not drain either, so the web implementation can mirror the
+native call sequence one for one. The drain can then move on both platforms at once, under a
+differential harness that measures it on both.
+
+### How "no behaviour change" was established
+
+- **`tests/redaction/outcomes.tsv`**: 463 cases over 107 documents. That is every PDF in the
+  redaction corpus, the conformance fixtures and `tests/damaged/`, at four regions, first, last
+  and one-past-last pages, and single and whole covered sets. It holds the sha256 of every emitted
+  document and its report, or the full error. It was **blessed from the parent commit before any
+  of the move** and is unchanged by it. It records each input's digest too, so a regenerated
+  fixture that differs fails by name rather than being skipped. A planted mutation (a zeroed
+  `/Widths` entry written as 1) changed 20 of its lines.
+- **The native suites, unchanged**: 1,106 tests. Beyond imports, the only test edits are a type
+  path in one witness test and the directory scan in `handle.rs`.
+- **A guarded mutation sweep over the moved policy**, in a separate worktree: 11 mutations, at least
+  one in each moved module and in `redact_page`. Each was asserted to apply and to recompile
+  `burrow-engines`, and **all 11 were killed**. One of them, a `/Differences` re-anchor off by one,
+  was killed by the golden alone and by no other test.
+
 [#191]: https://github.com/TensorGreed/burrow/issues/191
