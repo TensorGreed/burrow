@@ -409,7 +409,7 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
 /// Redaction on the web engine: the policy written once in [`crate::redact`], over this file's
 /// half of its seam.
 ///
-/// The same body as the native implementation, [`crate::redact::redact_page`], so the steps, the
+/// The same body as the native implementation, `crate::redact::redact_page`, so the steps, the
 /// sharing rules and the read-back through a fresh document are the same code on both platforms.
 /// What differs is only what this file marshals. `burrow_ops::redact::page` adds the half every
 /// operation shares, through [`crate::OutputReader`], which the web engine already implements.
