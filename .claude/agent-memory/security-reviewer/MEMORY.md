@@ -47,3 +47,4 @@
 - [expect_after harness (#176)](m2_expect_after_harness.md) — owed refused placements unwitnessed after (12/13 still leak), whole-string gone, a ch 6/21 witness exists.
 - [#176 r2 + #175 Watch](m2_expect_after_round2_and_175.md) — ch06/21 partial removal passes --after (measured); deadline loops outside the Watch (unmeasured).
 - [Fuzz report steps (d5e11d9)](fuzz_report_steps.md) — the summary is an unredacted channel (unanchored verdict), describe SIGPIPE at ~1000 offsets, grep -xF newline bypass.
+- [Redaction handle trait (#191 s1)](m2_redact_handle_trait.md) — golden catches edits not drains; GAT binds generic code, not impls; base wasm identical.
