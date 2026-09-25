@@ -17,14 +17,23 @@
 
 //! The order the steps of a redaction run in, and what happens when one fails.
 //!
-//! # Not a public entry point, and deliberately so
+//! # The only way out is the verified one
 //!
 //! ADR 0022: an operation verifies its own output before returning it, and redaction's
-//! verification is [#134](https://github.com/TensorGreed/burrow/issues/134). Until that exists
-//! this module assembles the steps and hands back bytes **to the crate**, with no exported
-//! function that emits a redacted document. Shipping an unverified redaction "temporarily" is
-//! the shortcut ADR 0029 will not take: an operation that removes a secret and cannot say
-//! whether it did is, from outside, indistinguishable from one that did not.
+//! verification is [#134](https://github.com/TensorGreed/burrow/issues/134). Before #134 this
+//! module assembled the steps and handed bytes back **to the crate** only, with no exported
+//! function that emitted a redacted document, because shipping an unverified redaction
+//! "temporarily" is the shortcut ADR 0029 will not take: an operation that removes a secret and
+//! cannot say whether it did is, from outside, indistinguishable from one that did not. #134 made
+//! the read-back a parameter of the only route to bytes (`Finished::emit_verified`), and
+//! [`redact_page`] is the one caller of that route.
+//!
+//! # The policy under this module is written once (#191)
+//!
+//! `steps`, `witness`, `sharing`, `resources`, `optional_content` and `frame` decide what a
+//! redaction removes, keeps or refuses. They are written over [`graph`]'s traits and name no
+//! engine; `qpdf` implements the traits natively, and the web implements them in #191's second
+//! half. See `graph`'s header for what those traits hold and what they cannot.
 //!
 //! # The order is load-bearing, not incidental
 //!
@@ -492,7 +501,10 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     let clock = Arc::clone(&options.clock);
     let limits = options.limits;
     let (document, deadline) = engine.open_for_redaction(bytes, options)?;
-    // THE PAGE BOUND IS THE CONSTRUCTOR'S, and it is checked there and only there.
+    // THE PAGE BOUND IS THE CONSTRUCTOR'S, with the error that names the rule, and it is not
+    // checked again here. `PdfDocument::page` checks it too since #191, with a different error,
+    // and that one is what makes the lookup safe; it cannot mask this one, because the golden
+    // outcomes and `redaction_defences` pin `[page-out-of-range]`.
     //
     // It used to be checked here as well. That is one check too many rather than one too few:
     // `PageRedaction::page_handle` once called the unsafe `ObjectHandle::page`, and its SAFETY
@@ -504,9 +516,9 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
         steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
 
     // #134. The bytes reach a caller only through this closure, because `emit_verified` takes
-    // it and there is no other way to a `Vec<u8>` from the finished state. A fresh qpdf opens
-    // the emitted bytes: the handle that wrote them holds a page tree it built and then edited,
-    // and an engine in a bad state agrees with itself.
+    // it and there is no other way to a `Vec<u8>` from the finished state. A fresh document of
+    // the same engine opens the emitted bytes: the one that wrote them holds a page tree it built
+    // and then edited, and an engine in a bad state agrees with itself.
     // THE CUT SET COMES FROM THE REPORT, and `Cleared::cut_fonts` states what that leaves
     // undetectable. It is filled after the steps run, so the closure reads it through a cell
     // rather than closing over a value that does not exist yet.

@@ -1051,7 +1051,7 @@ fn a_font_whose_encoding_is_shared_with_another_page_is_retained_rather_than_cut
 
 #[test]
 fn a_parent_chain_that_never_terminates_refuses_by_name() {
-    // KILLS: dropping `redact_frame`'s `/Parent` depth ceiling. Without it the climb for an
+    // KILLS: dropping `redact::frame`'s `/Parent` depth ceiling. Without it the climb for an
     // inherited `/MediaBox` or `/Rotate` runs forever on a cyclic page tree -- which is a
     // hang rather than a wrong answer, and a hang has no error message to read.
     //
@@ -1085,7 +1085,7 @@ fn a_parent_chain_that_never_terminates_refuses_by_name() {
     // THE RULE THAT FIRES MOVED WHEN #134 LANDED, and the new one is earlier. The operation now
     // reads the input's `/Rotate` vector before anything is edited -- that is the promise
     // `Expected::RegionCleared` carries -- and the sweep walks the page tree, so a cycle is
-    // refused there rather than in `redact_frame`'s climb. Both are bounded walks of the same
+    // refused there rather than in `redact::frame`'s climb. Both are bounded walks of the same
     // tree naming the same shape; the earlier one is the better place to refuse from, because
     // nothing has been touched yet.
     assert!(

@@ -3,7 +3,7 @@
 //! The engine half of [`crate::redact_verify`]; the policy is there and this is the reading. It
 //! shares no state with the redaction that produced the bytes: a new document, a new page tree,
 //! opened from the emitted bytes and nothing else. Written once over
-//! [`crate::redact::graph`] (#191), so the web reads back through the same code as native. Its
+//! [`crate::redact::graph`] (#191), so the web half will read back through the same code. Its
 //! tests against the real engine are native, and live in `qpdf::redact_witness_tests`.
 
 use std::collections::{BTreeMap, BTreeSet};

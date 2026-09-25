@@ -893,7 +893,7 @@ fn a_page_with_no_contents_contributes_nothing_rather_than_refusing() {
 #[test]
 fn a_contents_array_past_the_element_ceiling_is_refused_by_the_walk() {
     // ASKED OF THE WALK DIRECTLY, and that is the point. The operation refuses this too, but
-    // only because the walk runs first inside `QpdfRedaction::new` -- so a test going in
+    // only because the walk runs first inside `PageRedaction::new` -- so a test going in
     // through `redact_page` cannot tell which ceiling fired, and for a while there were two
     // ceilings with one rule name, each masking the other from a mutation sweep.
     //

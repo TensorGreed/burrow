@@ -1,18 +1,3 @@
-// AWAITING ITS CONSUMER, and said so rather than silenced. Nothing calls this yet: #131's
-// removal operation is the caller, and it is not assembled. `expect` rather than `allow`
-// because it becomes an error the moment the walk is wired in, so this note cannot rot into a
-// blanket exemption for genuinely dead code.
-// Conditional because the tests DO use it: an unconditional `expect` is unfulfilled under
-// `--all-targets`, which CI treats as an error. The shape says exactly what is true -- covered
-// by tests, not yet called by production.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the sharing walk is complete and tested; #131's operation is its first caller"
-    )
-)]
-
 //! How many places in a document draw each Form XObject.
 //!
 //! [ADR 0029](../../../../docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md)'s
@@ -221,6 +206,23 @@ impl FormUseCounts {
     ///
     /// So: cut when the operation already covers every page that would be affected, and
     /// otherwise leave the font intact and disclose it (§7).
+    // UNCALLED BY PRODUCTION, and said so. `cut_fonts` asks `pages_outside` per font instead,
+    // because one expression then decides both the cut and the disclosure; this set is what the
+    // tests assert against. It was covered by a module-wide expectation whose note said the whole
+    // walk was awaiting its first caller, which stopped being true when #134 wired it in (code
+    // review of #191).
+    #[cfg_attr(
+        all(
+            not(test),
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ),
+        expect(
+            dead_code,
+            reason = "asserted by the tests; the operation asks `pages_outside` per font"
+        )
+    )]
     pub(crate) fn fonts_wholly_within(
         &self,
         redacted: &std::collections::BTreeSet<usize>,

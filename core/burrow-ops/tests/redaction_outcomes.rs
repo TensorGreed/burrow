@@ -177,14 +177,23 @@ fn manifest_regions() -> BTreeMap<String, Region> {
     let mut out = BTreeMap::new();
     let mut region: Option<Region> = None;
     let mut declared = 0usize;
+    // A KEY IS WHATEVER PRECEDES ITS `=`, however it is spaced. The first version matched the
+    // exact prefix `region = [`, so a `region=[...]` line would have been neither parsed nor
+    // counted, and both count assertions below would have passed over it (code review of #191).
+    let value_of = |line: &str, key: &str| -> Option<String> {
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == key).then(|| value.trim().to_owned())
+    };
     for line in text.lines() {
         let line = line.trim();
         if line == "[[fixture]]" {
             region = None;
-        } else if let Some(value) = line.strip_prefix("region = [") {
+        } else if let Some(value) = value_of(line, "region") {
             declared += 1;
-            let numbers: Vec<f64> = value
-                .trim_end_matches(']')
+            let Some(inner) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) else {
+                panic!("a manifest region that is not a one-line array: {line}");
+            };
+            let numbers: Vec<f64> = inner
                 .split(',')
                 .map(|n| n.trim().parse().unwrap())
                 .collect();
@@ -197,13 +206,10 @@ fn manifest_regions() -> BTreeMap<String, Region> {
                 width,
                 height,
             });
-        } else if let Some(file) = line.strip_prefix("file = \"")
+        } else if let Some(file) = value_of(line, "file")
             && let Some(found) = region.take()
         {
-            out.insert(
-                format!("tests/redaction/{}", file.trim_end_matches('"')),
-                found,
-            );
+            out.insert(format!("tests/redaction/{}", file.trim_matches('"')), found);
         }
     }
     // Every `region` line precedes its `file` in the manifest; one that did not would be dropped
@@ -363,7 +369,15 @@ fn every_redaction_outcome_in_the_corpus_is_the_recorded_one() {
     let (computed, documents) = measure();
     let path = root().join(GOLDEN);
 
-    if std::env::var_os("BURROW_BLESS_REDACTION_OUTCOMES").is_some() {
+    // BLESSING IS ASKED FOR BY NAME, AND NEVER IN CI. `var_os(..).is_some()` blessed on `=0` or an
+    // empty value too, and a bless returns before any assertion runs, so a CI job that happened to
+    // set it would have rewritten the golden and passed (code review of #191).
+    let bless = std::env::var("BURROW_BLESS_REDACTION_OUTCOMES").is_ok_and(|value| value == "1");
+    if bless {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "refusing to bless the redaction outcomes in CI: the golden is the thing CI checks"
+        );
         let mut text = String::from(
             "# Every redaction outcome in the corpus, byte for byte. Written by\n\
              # core/burrow-ops/tests/redaction_outcomes.rs under BURROW_BLESS_REDACTION_OUTCOMES=1;\n\

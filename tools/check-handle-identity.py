@@ -32,8 +32,8 @@ paragraph: ADR 0013 and `core/CLAUDE.md` state it, and this refuses the code sha
 
 WHAT IT SCANS
 
-Rust that actually deals in qpdf object handles -- a file under a `qpdf/` directory, or one
-mentioning `ObjectHandle` or `qpdf_oh`. Scoped that way rather than over all of `core/`
+Rust that actually deals in qpdf object handles -- a file under a `qpdf/` or `redact/`
+directory, or one mentioning `ObjectHandle` or `qpdf_oh`. Scoped that way rather than over all of `core/`
 because `.handle` is also a PDFium document pointer in `web/pdfium.rs`, where comparing two
 is meaningful. The selected files are listed by name, so a run that examined the wrong set is
 visible rather than inferred from a healthy-looking total.
@@ -213,8 +213,13 @@ def files_to_scan(argv: list[str]) -> list[pathlib.Path]:
         # `qpdf_get_page_n` through the web bridge and compares the results need never write
         # either word -- and `web/qpdf.rs` is exactly the file that grows a `PageReorderer`
         # next. Found by security review.
+        # `/redact/` BY PATH, since #191 moved redaction's policy there and wrote it over a trait:
+        # a file in it deals in qpdf object handles whether or not it spells `ObjectHandle`. Three
+        # of the six moved files mentioned it only in a comment, and the other three not at all,
+        # so they dropped out of the scan without anything saying so (code review of #191).
         if (
             "/qpdf/" in rel
+            or "/redact/" in rel
             or "ObjectHandle" in text
             or "qpdf_oh" in text
             or any(name in text for name in ISSUING.split("|"))

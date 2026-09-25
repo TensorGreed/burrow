@@ -144,8 +144,9 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     );
 
     // AND THE OUTCOME DISTRIBUTION, not just the count examined. A mutation that made
-    // `QpdfRedaction::new` refuse unconditionally left this test green — 43 of 43 examined, 0
-    // redacted, 43 refused — because every per-document assertion is inside the `Ok` arm.
+    // `PageRedaction::new` (then `QpdfRedaction::new`) refuse unconditionally left this test
+    // green — 43 of 43 examined, 0 redacted, 43 refused — because every per-document assertion
+    // is inside the `Ok` arm.
     // `CLAUDE.md`: gate on the expected count where that count is knowable.
     //
     // It was 4, with a comment saying the other 39 were held back by the standard-14 refusal.

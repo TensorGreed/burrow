@@ -3259,7 +3259,9 @@ the policy". **This step does not, because doing so is a behaviour change**, and
 required to have none. It was tried first:
 
 - `PageResources::form` asks an absent `/XObject` (a **null**) for a key.
-- qpdf's `getKey` on a null latches an error.
+- qpdf's `getKey` on an object with no owning document raises rather than warns, and the error
+  latches. That null is such an object on this fixture. Not every null is: one from an ordinary
+  absent key carries its owner and only warns (measured).
 - The native policy never drained there. Its type check refused `[xobject-missing]` first, and the
   latched error was never observed.
 - With the drain inside `key`, the engine error wins, and
@@ -3269,8 +3271,10 @@ required to have none. It was tried first:
 The corpus golden did not see this, because no corpus document has the shape. The defence suite
 did.
 
-So the accessors mirror the native ones as they are. Those that did not drain do not, the three
-that did still do, and the policy drains where it always drained, through the handle. The engine
+So the accessors mirror the native ones as they are. Those that did not drain do not. The four
+that did (`object`, `page_content`, `stream_data`, `replace_stream_data`) still do, and so does
+`PdfDocument::page`, because every page lookup in the policy was followed by a drain. The policy
+drains everywhere else where it always drained, through the handle. The engine
 sees the same calls in the same order, with two exceptions:
 
 - the page lookup reads the page count to bounds-check. That read is cached, and a latched error
@@ -3291,11 +3295,43 @@ differential harness that measures it on both.
   of the move** and is unchanged by it. It records each input's digest too, so a regenerated
   fixture that differs fails by name rather than being skipped. A planted mutation (a zeroed
   `/Widths` entry written as 1) changed 20 of its lines.
-- **The native suites, unchanged**: 1,106 tests. Beyond imports, the only test edits are a type
-  path in one witness test and the directory scan in `handle.rs`.
+- **The native suites, unchanged**: all 1,106 tests that existed when the move was committed pass.
+  Beyond imports and comments naming moved items, the only test edits are a type path in one
+  witness test and the directory scan in `handle.rs`.
 - **A guarded mutation sweep over the moved policy**, in a separate worktree: 11 mutations, at least
   one in each moved module and in `redact_page`. Each was asserted to apply and to recompile
   `burrow-engines`, and **all 11 were killed**. One of them, a `/Differences` re-anchor off by one,
   was killed by the golden alone and by no other test.
+
+### What the two reviews found
+
+Both ran before the push, in their own worktrees, and found no leak, no weakened refusal and no
+lost ceiling or checkpoint. What they found was defences that nothing could see go:
+
+- **Every drain now funnels through two lines, and deleting either one left every test green.**
+  About sixty `document.take_error()` sites became `PdfObject::drained`. The four drains that
+  followed a page lookup became one line inside the native `PdfDocument::page`. Both reviews made
+  those inert, and nothing failed, golden included, because no fixture latches an error at any of
+  those points.
+  - Now each has a test that latches a real error: a key of a free-standing null, which qpdf
+    raises for because the null has no owning document.
+  - Each test has a near-miss, and each fails when its line is removed.
+- **The bounds check behind `PdfDocument::page` was never run.** Every caller checks first, with
+  the error that names its rule. `forbid(unsafe_code)` rests on that check, so it has its own test
+  now, with a near-miss.
+- **The trait holds #147's lifetime for the policy, not for an implementation.** Generic code
+  cannot outlive a document; the security review measured E0505. But an implementation whose
+  `Object<'a>` holds no lifetime compiles, and its handle outlives the document. `graph.rs` said
+  the compiler tied the two together. It now says which half the trait holds and which half each
+  implementation's own type must hold. For the web half that type is `WebHandle<'a>`, which
+  borrows its session.
+- **Nothing scanned the trait for a method taking a document.** The native and web handle scans
+  each read their own file. `graph.rs` now has the same scan over `PdfObject`, with its own
+  probes and an exact method count, and it names a planted offender.
+- **`tools/check-handle-identity.py` quietly examined three fewer files.** It selected by
+  directory, `qpdf/`, or by the word `ObjectHandle`, and three of the moved files had neither. It
+  selects `redact/` by directory now. Nothing it checks was reachable from those files: the trait
+  offers no `raw()` and no comparison. But a check that examines less without saying so is the
+  shape this repository keeps finding, so it is fixed rather than argued.
 
 [#191]: https://github.com/TensorGreed/burrow/issues/191

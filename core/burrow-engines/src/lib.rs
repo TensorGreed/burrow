@@ -107,8 +107,9 @@ pub mod pdfsyntax;
 )]
 pub(crate) mod name;
 pub mod redact;
-/// #134's read-back. Ungated since #191: it reads through `redact::graph`'s traits and names no
-/// engine, and the web implementation verifies through it exactly as native does.
+/// #134's read-back. Ungated since #191: it names no engine. It reads through its own
+/// `ClearedWitness` trait, which `redact::witness` implements over `redact::graph`, so the web half
+/// of #191 will verify through it as native does.
 pub mod redact_verify;
 
 /// Every glyph the walk places on a document's first page.

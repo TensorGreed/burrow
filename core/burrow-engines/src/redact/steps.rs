@@ -9,8 +9,9 @@
 //!
 //! `Steps`' rustdoc requires it: every step consumes the redaction, so the poisoned-document
 //! rule holds only if dropping the `Steps` value drops the document. An implementation holding
-//! `&mut Document` would leave the caller able to write out a half-edited one. This takes the
-//! `Document` by value and the only path to bytes is [`redact::Finished::emit`].
+//! `&mut Document` would leave the caller able to write out a half-edited one. This takes its
+//! `PdfDocument` by value (#191: either engine's), and the only path to bytes is
+//! `redact::Finished::emit_verified`, which takes the read-back.
 //!
 //! # Crate-internal, and reached only through a verified path
 //!
@@ -119,11 +120,14 @@ impl<D: PdfDocument> PageRedaction<D> {
         deadline: Deadline,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
-        // THE INVARIANT `page_handle`'s SAFETY COMMENT RELIES ON, established here rather
-        // than in one caller. It said "`self.page` was checked against the page count when the
-        // redaction was built" and nothing in this constructor checked it -- the check lived in
-        // `redact_page_for_probe`, and `new` is `pub(crate)`, so a second crate-internal caller
-        // got undefined behaviour under a comment saying it could not happen.
+        // THE BOUND, established here rather than in one caller, and with the error that names
+        // the rule. `page_handle` once relied on it in a SAFETY comment -- "`self.page` was
+        // checked against the page count when the redaction was built" -- while nothing in this
+        // constructor checked it: the check lived in `redact_page_for_probe`, and `new` is
+        // `pub(crate)`, so a second crate-internal caller got undefined behaviour under a comment
+        // saying it could not happen. Since #191 the lookup is bounds-checked behind
+        // `PdfDocument::page` as well, so this is the check that names the rule, not the one
+        // that makes the call safe.
         let count = usize::try_from(document.page_count()?)
             .map_err(|_| Error::Internal("a page count that does not fit in usize".to_owned()))?;
         if page >= count {

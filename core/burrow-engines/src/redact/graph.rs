@@ -27,11 +27,19 @@
 //!
 //! # And a handle cannot outlive its document
 //!
-//! [`PdfDocument::Object`] is generic over the borrow of the document that issued it, so a handle
-//! is tied to `&self` by the compiler. Both implementations need that for the same reason: the
-//! handle's `Drop` releases it into the document, and releasing into a document that has been
-//! cleaned up is a use-after-free natively and a wild write in the wasm heap on the web — which is
-//! what #147's reviews compiled before the web handle borrowed its session.
+//! [`PdfDocument::Object`] is generic over the borrow of the document that issued it, so **the
+//! policy** cannot hold a handle past that borrow: generic code that drops a document while holding
+//! one of its handles does not compile (E0505, measured by the security review of this change).
+//!
+//! **What the trait cannot do is make an implementation's handle carry that borrow.** An
+//! `Object<'a>` that names a type holding no lifetime compiles, and its handle then outlives the
+//! document — measured the same way. So the half of the guarantee that stops a handle outliving
+//! its document **per implementation** is each implementation's own type: the native
+//! `ObjectHandle<'a>` carries `PhantomData<&'a Document>`, and the web one must borrow its session
+//! as `WebHandle<'a>` does since #147. Both need it for the same reason: the handle's `Drop`
+//! releases it into the document, and releasing into a document that has been cleaned up is a
+//! use-after-free natively and a wild write in the wasm heap on the web — which is what #147's
+//! reviews compiled before the web handle borrowed its session.
 //!
 //! # What the types cannot hold, and what the implementations do instead
 //!
@@ -48,16 +56,21 @@
 //! qpdf reports failure by latching an error on the document, which a caller drains. ADR 0029's
 //! #191 amendment asks for the drain to move into each method, as `ObjectGraph`'s does. **This
 //! step does not do that, and the reason is measured.** The move is required to change no
-//! behaviour, and draining inside every accessor does change it: `getKey` on a null latches an
-//! error, the native policy asks exactly that of an absent `/XObject` and then refuses by its own
-//! rule before any drain, and a drain inside `key` reports the engine's error instead. The
+//! behaviour, and draining inside every accessor does change it. `getKey` on an object with no
+//! owning document raises and latches an error; on one fixture the native policy asks exactly that
+//! of an absent `/XObject` and then refuses by its own rule before any drain, and a drain inside
+//! `key` reports the engine's error instead. The
 //! `redaction_defences` suite caught it (`a_do_naming_nothing_the_resources_hold_is_refused`),
 //! where the corpus golden could not.
 //!
 //! So these accessors mirror `qpdf::handle::ObjectHandle`'s as they are — the ones that did not
-//! drain do not, the three that did ([`PdfObject::object`], [`PdfObject::page_content`],
-//! [`PdfObject::stream_data`]) still do — and the policy drains where it always drained, through
-//! [`PdfObject::drained`]. The engine calls are then the same calls in the same order, which is
+//! drain do not, the four that did ([`PdfObject::object`], [`PdfObject::page_content`],
+//! [`PdfObject::stream_data`], [`PdfObject::replace_stream_data`]) still do, and so does
+//! [`PdfDocument::page`], because every page lookup in the policy was followed by one — and the
+//! policy drains where it always drained, through [`PdfObject::drained`]. The engine calls are
+//! then the same calls in the same order, **with two exceptions**: `PdfDocument::page` reads the
+//! page count to bounds-check, which is a cached read that neither clears nor sets the error slot,
+//! and one null handle is released a few lines earlier than it was, which is a map erase. That is
 //! the argument for "no behaviour change" that does not rest on a corpus. Moving the drain into
 //! the methods is its own change, with its own measurement, after this one.
 //!
@@ -245,4 +258,101 @@ pub(crate) trait OpensForRedaction {
         bytes: &[u8],
         options: &crate::OpenOptions<'_>,
     ) -> Result<(Self::Document, Deadline)>;
+}
+
+#[cfg(test)]
+mod tests {
+    /// `PdfObject`'s method signatures, each joined onto one line.
+    ///
+    /// The trait's block only: from its `pub(crate) trait PdfObject` line to the `}` that closes
+    /// it at column zero. Joined because rustfmt wraps a long signature, and a scan reading lines
+    /// would see neither half of a wrapped offender — the hole `web/handle.rs`'s scan had.
+    fn object_signatures(source: &str) -> Vec<String> {
+        let Some(start) = source.find("pub(crate) trait PdfObject") else {
+            return Vec::new();
+        };
+        let block = &source[start..];
+        let block = &block[..block.find("\n}\n").unwrap_or(block.len())];
+        let mut out = Vec::new();
+        let mut building: Option<String> = None;
+        for line in block.lines().map(str::trim) {
+            if line.starts_with("//") {
+                continue;
+            }
+            let current = match building.take() {
+                Some(mut carried) => {
+                    carried.push(' ');
+                    carried.push_str(line);
+                    carried
+                }
+                None if line.starts_with("fn ") => line.to_owned(),
+                None => continue,
+            };
+            // `;` ends a required method and `{` a provided one, whether or not its body shares
+            // the line.
+            if current.ends_with(';') || current.contains('{') {
+                out.push(current.split_whitespace().collect::<Vec<_>>().join(" "));
+            } else {
+                building = Some(current);
+            }
+        }
+        out
+    }
+
+    /// Whether a signature takes a document, or anything that names one, beside the handle.
+    fn offends(signature: &str) -> bool {
+        let parameters = signature.split("->").next().unwrap_or(signature);
+        ["Document", "Session", "QpdfPtr", "QpdfData", ": &D"]
+            .iter()
+            .any(|shape| parameters.contains(shape))
+    }
+
+    /// No `PdfObject` method takes a document beside the handle.
+    ///
+    /// The module header's claim that the policy is never given a document to pair a handle with
+    /// holds only while this trait never asks for one. `qpdf::handle`'s scan holds the native
+    /// accessors to it and `web::handle`'s the web ones; this is the trait both implement, which
+    /// neither of those reads (security review of #191).
+    #[test]
+    fn no_object_method_takes_a_document_beside_the_handle() {
+        let found = object_signatures(include_str!("graph.rs"));
+        let offenders: Vec<&String> = found.iter().filter(|s| offends(s)).collect();
+        assert!(
+            offenders.is_empty(),
+            "a PdfObject method takes a document beside the handle, so the two can disagree: \
+             {offenders:?}"
+        );
+
+        // THE PROBES CALL THE RULE ITSELF.
+        assert!(offends(
+            "fn key(&self, document: &Document, key: &Name) -> Self;"
+        ));
+        assert!(offends("fn key(&self, into: &D, key: &Name) -> Self;"));
+        assert!(offends(
+            "fn drained(&self, session: &'a Session) -> Result<()>;"
+        ));
+        assert!(!offends("fn key(&self, key: &Name) -> Self;"));
+        assert!(!offends("fn object(&self) -> Result<(c_int, c_int)>;"));
+        assert!(!offends(
+            "fn replace_stream_data(&self, bytes: &[u8], filter: &Self, decode_parms: &Self) -> Result<()>;"
+        ));
+
+        // AND THE JOINER REJOINS what rustfmt wraps, which the trait's own `replace_stream_data`
+        // already is.
+        let wrapped = object_signatures(
+            "pub(crate) trait PdfObject: Sized {\n    fn wide(&self, at: c_int)\n    -> Result<()>;\n}\n",
+        );
+        assert_eq!(wrapped, ["fn wide(&self, at: c_int) -> Result<()>;"]);
+
+        // GATED ON THE EXACT COUNT: a method leaving the scanned set must be a deliberate edit.
+        assert_eq!(
+            found.len(),
+            EXPECTED_METHODS,
+            "PdfObject has {} methods and the scan expects {EXPECTED_METHODS}: {found:#?}",
+            found.len()
+        );
+    }
+
+    /// Every method of `PdfObject`. Hard-coded so that adding one is an edit here too.
+    const EXPECTED_METHODS: usize = 18;
 }

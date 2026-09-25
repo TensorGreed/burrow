@@ -220,9 +220,9 @@ fn a_report_is_send_and_sync() {
     assert_send_sync::<StructureReport>();
 }
 
-// // What the last redaction told its region check, for the tests that assert on the wiring.
-//
-// `LAST_EXPECTATION` and `last_expectation` moved to `crate::redact::hooks` with the policy (#191).
+// What the last redaction told its region check, for the tests that assert on the wiring:
+// `LAST_EXPECTATION` and `last_expectation`, which moved to `crate::redact::hooks` with the policy
+// (#191).
 
 #[cfg(all(test, feature = "native-engines", burrow_native_engines))]
 mod wiring {

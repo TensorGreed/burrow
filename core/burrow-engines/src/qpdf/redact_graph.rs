@@ -2,7 +2,8 @@
 //!
 //! **The policy lives in [`crate::redact`] and is written once.** This file is the marshalling —
 //! each method calls the one `ObjectHandle` accessor it names, and drains exactly when that
-//! accessor did before #191, so the engine sees the same calls in the same order. The policy
+//! accessor did before #191, so the engine sees the same calls in the same order, with the two
+//! exceptions `crate::redact::graph`'s header states. The policy
 //! drains through [`PdfObject::drained`], which reaches **the handle's own document**; it never
 //! names a document to drain. See [`crate::redact::graph`] for why the verbs are on the handle
 //! rather than on a graph beside it, and why the drain is not inside them yet.
@@ -149,5 +150,122 @@ impl OpensForRedaction for Qpdf {
         let (document, _, _, deadline) =
             super::open_document(bytes.to_vec().into_boxed_slice(), options)?;
         Ok((document, deadline))
+    }
+}
+
+#[cfg(all(test, feature = "native-engines", burrow_native_engines))]
+mod tests {
+    use std::sync::Arc;
+
+    use burrow_types::{Clock, Limits, ManualClock};
+
+    use crate::codes::qpdf::object_type;
+    use crate::minimal_pdf;
+    use crate::name::Name;
+    use crate::redact::graph::{PdfDocument, PdfObject};
+
+    /// The drain inside `PdfDocument::page` reports what the document latched before it.
+    ///
+    /// # Why this needs its own test
+    ///
+    /// That one line replaced four drains that each followed a page lookup: in `page_handle`,
+    /// the strip loop, `count_form_uses` and the read-back's `page`. The security review of #191
+    /// deleted it and the whole native suite stayed green, golden included, because no fixture
+    /// latches an error at any of those points.
+    ///
+    /// # The latch is a real one
+    ///
+    /// qpdf's `getKey` on an object with **no owning document** raises instead of warning, and
+    /// the error latches: `QPDFObjectHandle::warn` throws when it has no `QPDF` to warn through.
+    /// A free-standing null is such an object, so no hook is needed to make the document hold an
+    /// error. It is the same class as the `/XObject` lookup that kept #191's drain out of the
+    /// accessors (ADR 0029's 2026-09-25 amendment). **Not every null does it**, measured: one from
+    /// an absent key, or from keying an array, carries its owner, and only warns.
+    #[test]
+    fn a_page_lookup_drains_what_the_document_latched_before_it() {
+        let options = crate::OpenOptions::new(
+            Limits::default(),
+            Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+        );
+        let (document, _, _, _) =
+            super::super::open_document(minimal_pdf::pdf_with_ink().into(), &options)
+                .expect("opens");
+        {
+            let page = PdfDocument::page(&document, 0).expect("page 0");
+            // A NULL WITH NO OWNING DOCUMENT, which is what `qpdf_oh_new_null` makes. qpdf's
+            // `typeWarning` raises for such an object rather than warning, and the error latches.
+            let null = PdfObject::null_beside(&page);
+            assert_eq!(PdfObject::type_code(&null), object_type::NULL);
+            let _ = PdfObject::key(&null, &Name::literal(b"/Anything\0"));
+        }
+
+        let latched = PdfDocument::page(&document, 0);
+        assert!(
+            latched.is_err(),
+            "the page lookup returned a handle over an error the document was holding"
+        );
+
+        // THE NEAR-MISS: the drain consumed the error, so the next lookup is clean. Without it
+        // this passes for a lookup that refuses everything.
+        PdfDocument::page(&document, 0).expect("nothing is latched any more");
+    }
+
+    /// `PdfObject::drained` reports what the handle's document latched, and consumes it.
+    ///
+    /// The policy's drains all funnel through this one method since #191: about sixty sites that
+    /// were each `document.take_error()`. The code review of that change made it inert --
+    /// `let _ = Self::drained(self); Ok(())` -- and every test stayed green, because no fixture
+    /// latches an error at any of those sites. One site means one test can hold all of them.
+    #[test]
+    fn a_handle_drains_what_its_document_latched() {
+        let options = crate::OpenOptions::new(
+            Limits::default(),
+            Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+        );
+        let (document, _, _, _) =
+            super::super::open_document(minimal_pdf::pdf_with_ink().into(), &options)
+                .expect("opens");
+        let page = PdfDocument::page(&document, 0).expect("page 0");
+        PdfObject::drained(&page).expect("nothing is latched before the planted error");
+
+        // Latched as in the page test above: a key of a null with no owning document.
+        let null = PdfObject::null_beside(&page);
+        let _ = PdfObject::key(&null, &Name::literal(b"/Anything\0"));
+
+        assert!(
+            PdfObject::drained(&page).is_err(),
+            "a handle's drain returned Ok over an error its document was holding"
+        );
+        // Consumed, so a second drain is clean -- otherwise one latched error would fail every
+        // later step against something unrelated.
+        PdfObject::drained(&page).expect("the first drain consumed it");
+    }
+
+    /// `PdfDocument::page` refuses an index past the end rather than handing it to qpdf.
+    ///
+    /// The native lookup underneath is `unsafe` on such an index, and `redact`'s
+    /// `forbid(unsafe_code)` rests on this check. Every caller checks first with an error that
+    /// names its rule, so no redaction test reaches it: the code review planted `&& false` on it
+    /// and the suite stayed green.
+    #[test]
+    fn a_page_past_the_end_is_refused_by_the_lookup_itself() {
+        let options = crate::OpenOptions::new(
+            Limits::default(),
+            Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+        );
+        let (document, pages, _, _) =
+            super::super::open_document(minimal_pdf::pdf_with_pages(3).into(), &options)
+                .expect("opens");
+        assert_eq!(pages, 3);
+        for past in [3, 4, usize::MAX] {
+            let refused = PdfDocument::page(&document, past);
+            assert!(
+                matches!(refused, Err(burrow_types::Error::InvalidArgument(_))),
+                "page {past} of 3 was not refused by the lookup: {:?}",
+                refused.map(|_| ())
+            );
+        }
+        // THE NEAR-MISS: the last page is a page.
+        PdfDocument::page(&document, 2).expect("page 2 of 3 exists");
     }
 }
