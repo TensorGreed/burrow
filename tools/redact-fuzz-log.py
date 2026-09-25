@@ -54,6 +54,17 @@ ALLOWED: list[tuple[str, str]] = [
     (r"^\s*(Compiling|Finished|Running|warning:|error(\[E\d+\])?:)", "cargo's own output"),
     (r"^artifact_prefix=", "where an artifact was written -- a path, not its contents"),
     (r"^Test unit written to ", "the artifact path"),
+    # WHERE RUST PANICKED -- the location line only, and only in the shape Rust >= 1.73 prints it
+    # (current nightly adds the thread id in parentheses), with the message on the NEXT line. Decided 2026-09-25 (#193): a fuzz target that aborted on
+    # a panic published its frames and nothing saying where, so a crash in burrow's own code could
+    # not be located from the log. The location is a source path in this public repository or a
+    # public crate, a line and a column; it carries no input. The MESSAGE that follows can -- the
+    # CMap target's own assertion formats the whole input into it -- so it matches nothing here
+    # and is dropped, as is the older one-line shape that put the message inside quotes.
+    (
+        r"^thread '[A-Za-z0-9<>_-]*'(?: \(\d+\))? panicked at [A-Za-z0-9_./-]+\.rs:\d+:\d+:$",
+        "where a Rust panic happened: a public source path, line and column -- never its message",
+    ),
     (r"^(Shadow bytes|Shadow byte legend|  Addressable|  Partially|  Heap|  Freed|  Stack|"
      r"  Global|  Container|  Array|  Intra|  Right|  Left|  ASan|=>|0x[0-9a-f]+:)",
      "ASan's shadow-memory legend: allocator state, not input"),
@@ -68,6 +79,36 @@ MUST_DROP: list[tuple[str, str]] = [
     ("MS: 1 CrossOver-; base unit: e9b8e4b5", "libFuzzer's mutation trace"),
     ("0x25,0x50,0x44,0x46,", "libFuzzer's hex dump of the unit"),
     ("%PDF-1.7 1 0 obj << /Type /Catalog", "libFuzzer's ASCII rendering of the unit"),
+    (
+        "a program declaring 'WMode 1' was read as horizontal: \"/WMode 1 def\"",
+        "a panic MESSAGE, on the line after the location: the CMap target formats its input here",
+    ),
+    (
+        "thread 'main' panicked at 'index out of bounds: the len is 3', src/x.rs:1:2",
+        "the pre-1.73 one-line panic, whose quoted message can carry input",
+    ),
+    (
+        "thread '<unnamed>' panicked at src/x.rs:1:2: attempt to add with overflow",
+        "a location with a message on the same line",
+    ),
+    # ONE NEAR-MISS PER WAY THE PANIC RULE COULD BE LOOSENED, so each loosening fails the probe.
+    # A review widened each part of the rule in turn and the probe stayed green for all four.
+    (
+        "SECRETINPUT thread '<unnamed>' (1) panicked at src/x.rs:1:2:",
+        "text before the location: the rule's `^` anchor",
+    ),
+    (
+        "thread '<unnamed>' (1) panicked at src/\"SECRETINPUT\".rs:1:2:",
+        "a path carrying quotes: the rule's path character class",
+    ),
+    (
+        "thread 'SECRET INPUT' (1) panicked at src/x.rs:1:2:",
+        "a thread name with a space: the rule's thread-name character class",
+    ),
+    (
+        "thread '<unnamed>' (SECRETINPUT) panicked at src/x.rs:1:2:",
+        "a thread id that is not a number: the rule's id group",
+    ),
 ]
 
 #: Lines that ARE allowed but must come out shortened, with what must survive and what must not.
@@ -122,6 +163,10 @@ def probe() -> list[str]:
         r"^\s*(Compiling|Finished|Running|warning:|error(\[E\d+\])?:)": "Running `target/release/x`",
         r"^artifact_prefix=": "artifact_prefix='/home/runner/fuzz/artifacts/rotate/'",
         r"^Test unit written to ": "Test unit written to /home/runner/artifacts/crash-46610c95",
+        r"^thread '[A-Za-z0-9<>_-]*'(?: \(\d+\))? panicked at [A-Za-z0-9_./-]+\.rs:\d+:\d+:$":
+            # THE SHAPE THE PINNED NIGHTLY ACTUALLY PRINTS, thread id included -- measured, because
+            # the first version of this rule was written without the `(<id>)` and matched nothing.
+            "thread '<unnamed>' (8123) panicked at fuzz_targets/pdfsyntax_cmap_wmode.rs:71:13:",
         r"^(Shadow bytes|Shadow byte legend|  Addressable|  Partially|  Heap|  Freed|  Stack|"
         r"  Global|  Container|  Array|  Intra|  Right|  Left|  ASan|=>|0x[0-9a-f]+:)":
             "Shadow bytes around the buggy address:",

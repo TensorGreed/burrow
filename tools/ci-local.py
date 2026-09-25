@@ -355,6 +355,7 @@ JOBS: list[dict] = [
                 "tools/test-redact-fuzz-log.sh",
                 "python3 tools/check-known-crashes.py --check",
                 "tools/test-check-known-crashes.sh",
+                "tools/test-fuzz-report-steps.sh",
                 "python3 tools/check-release-notes.py --probe",
                 "tools/test-check-release-notes.sh",
                 # #128. It was an inline `run:` block in ci.yml, which this file has no
@@ -393,6 +394,7 @@ JOBS: list[dict] = [
             "tools/test-redact-fuzz-log.sh",
             "tools/check-known-crashes.py",
             "tools/test-check-known-crashes.sh",
+            "tools/test-fuzz-report-steps.sh",
             "tools/check-release-notes.py",
             "tools/test-check-release-notes.sh",
             "tools/check-fuzz-target-registration.sh",

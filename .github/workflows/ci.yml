@@ -822,6 +822,9 @@ jobs:
         run: |
           python3 tools/check-known-crashes.py --check
           tools/test-check-known-crashes.sh
+          # The fuzz workflows' verdict and description steps, as the scripts both call. The
+          # description step died silently on every unsymbolised report for six nights.
+          tools/test-fuzz-report-steps.sh
 
       - name: The release notes carry the verification command
         run: |

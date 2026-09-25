@@ -1,0 +1,163 @@
+name: fuzz (reproduce on x86_64)
+
+# ONE TARGET, ON x86_64, ON DEMAND -- to reproduce a nightly finding where it happened.
+#
+# Written for #193: `pdfsyntax_cmap_wmode` aborted once on the 2026-09-25 nightly (x86_64) and
+# never in 391 million runs on an aarch64 workstation. The nightly's runner dies with its input, so
+# the only way to find it again is to search again where it failed, for longer and with more
+# workers than the nightly's ten minutes.
+#
+# It publishes exactly what the nightly publishes and nothing more: the redacted log, the
+# classifier's verdict and the crash's frame and input hash, through the same two scripts
+# (`tools/fuzz-classify.sh`, `tools/fuzz-describe.sh`). The crashing input stays on the runner and
+# dies with it; see the nightly's header for why. A reproducer that is needed goes private, never
+# through an artifact.
+#
+# `workflow_dispatch` only. It is a search a person asks for, not a gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "fuzz target (a name from `cargo fuzz list`)"
+        required: true
+        default: pdfsyntax_cmap_wmode
+      minutes:
+        description: "how long to search, 1-300"
+        required: true
+        default: "60"
+      workers:
+        description: "libFuzzer -fork workers, 1-8"
+        required: true
+        default: "4"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  reproduce:
+    name: reproduce ${{ inputs.target }} on x86_64
+    runs-on: ubuntu-latest
+    # GitHub's ceiling is 360: 300 of search, up to ~5 of fork wrap-up, and a cold engine build.
+    timeout-minutes: 355
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      # THE WHOLE POINT, ASSERTED. `ubuntu-latest` is x86_64 today; if that ever changes, this job
+      # would quietly reproduce on the wrong architecture and report "not found".
+      - name: This runner is x86_64
+        run: |
+          arch="$(uname -m)"
+          [ "$arch" = x86_64 ] || { echo "::error::this job exists to run on x86_64; the runner is $arch"; exit 1; }
+          echo "runner architecture: $arch"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+
+      - name: Cache vendored engines
+        id: engines-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: engines/vendor
+          key: engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-native.sh') }}
+
+      - name: Fetch and build engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          engines/fetch.sh
+          engines/build-native.sh
+
+      - name: Re-verify engine checksums
+        run: engines/fetch.sh
+
+      - name: Cache cargo-fuzz
+        id: cargo-fuzz-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ runner.arch }}-0.13.2
+
+      - if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 0.13.2 cargo-fuzz
+
+      # THE NIGHTLY'S EXPIRY RULE, here too: a ledger entry whose issue has closed would otherwise
+      # turn a reproduced crash KNOWN on this job's verdict.
+      - name: Check the known-crashes ledger against its issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/check-known-crashes.py --check-issues
+
+      - name: Seed every corpus from the committed fixtures
+        run: python3 tools/seed-fuzz-corpus.py
+
+      # INPUTS THROUGH `env`, NEVER INTERPOLATED INTO THE SCRIPT, and validated -- shape first -- before use: a
+      # dispatch input is text a person typed, and `${{ inputs.x }}` inside `run:` is shell
+      # injection by construction.
+      - name: search ${{ inputs.target }}
+        id: fuzz
+        working-directory: fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          TARGET: ${{ inputs.target }}
+          MINUTES: ${{ inputs.minutes }}
+          WORKERS: ${{ inputs.workers }}
+        run: |
+          # THE SHAPE FIRST, then membership. `grep -x` treats a newline in its pattern as a second
+          # pattern, so a target of `rotate<newline>…` passed membership and wrote a second line
+          # into $GITHUB_OUTPUT (security review, 2026-09-25). And base 10 explicitly: `08` is an
+          # invalid octal literal to $(( )), and `010` is eight.
+          [[ "$TARGET" =~ ^[a-z0-9_]+$ ]] ||
+            { echo "::error::a target name is lowercase letters, digits and underscores"; exit 1; }
+          cargo +nightly fuzz list > "$RUNNER_TEMP/targets.txt"
+          grep -qxF -- "$TARGET" "$RUNNER_TEMP/targets.txt" ||
+            { echo "::error::'$TARGET' is not a fuzz target; see cargo fuzz list"; exit 1; }
+          [[ "$MINUTES" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$MINUTES))" -ge 1 ] && [ "$((10#$MINUTES))" -le 300 ] ||
+            { echo "::error::minutes must be 1-300"; exit 1; }
+          [[ "$WORKERS" =~ ^[0-9]$ ]] && [ "$((10#$WORKERS))" -ge 1 ] && [ "$((10#$WORKERS))" -le 8 ] ||
+            { echo "::error::workers must be 1-8"; exit 1; }
+          MINUTES=$((10#$MINUTES))
+          WORKERS=$((10#$WORKERS))
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
+          # THE NIGHTLY'S RULE: a target that drives qpdf gets the instrumented archive.
+          if grep -q 'burrow_engines::qpdf' "fuzz_targets/$TARGET.rs"; then
+            export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
+          fi
+          # RECORDED, NOT RAISED, and REDACTED, exactly as the nightly does -- see its fuzz step.
+          # `-fork` stops at the first crash with `-ignore_crashes=0`, and at the first timeout or
+          # OOM with the other two: fork mode ignores those by default and then exits with the last
+          # job's code, which read as an infrastructure failure on a search that found nothing.
+          status=0
+          cargo +nightly fuzz run "$TARGET" -- \
+            -fork="$WORKERS" -ignore_crashes=0 -ignore_timeouts=0 -ignore_ooms=0 \
+            -max_total_time=$((MINUTES * 60)) -timeout=10 -rss_limit_mb=2048 \
+            > "$RUNNER_TEMP/fuzz.log" 2>&1 || status=$?
+          python3 ../tools/redact-fuzz-log.py < "$RUNNER_TEMP/fuzz.log"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      # STEP OUTPUTS THROUGH `env` TOO, never `${{ }}` inside `run:` -- the target came from a person.
+      - name: Classify the crash against the issues we already own
+        if: always() && steps.fuzz.outputs.status != ''
+        env:
+          TARGET: ${{ steps.fuzz.outputs.target }}
+          STATUS: ${{ steps.fuzz.outputs.status }}
+        run: tools/fuzz-classify.sh "$TARGET" "$STATUS" "$RUNNER_TEMP/fuzz.log"
+
+      - name: Describe the crash without publishing it
+        if: >-
+          always() && (steps.fuzz.outputs.status != '0' && steps.fuzz.outputs.status != ''
+          || steps.fuzz.outcome == 'failure')
+        env:
+          TARGET: ${{ steps.fuzz.outputs.target }}
+        run: tools/fuzz-describe.sh "$TARGET" "$RUNNER_TEMP/fuzz.log"

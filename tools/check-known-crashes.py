@@ -49,10 +49,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 LEDGER = Path(__file__).resolve().parent.parent / "fuzz" / "known-crashes.toml"
 
+#: THE REPORT'S OWN BANNER, AT THE START OF A LINE: `==1==ERROR: AddressSanitizer: …` or libFuzzer's
+#: `==42== ERROR: libFuzzer: …`. Unanchored, `ERROR: libFuzzer: ` anywhere matched -- including in a
+#: Rust panic MESSAGE printed before the banner, which the CMap target fills with its whole input
+#: (`{:?}`). Found by security review (2026-09-25): an input containing that text became "the
+#: verdict" and reached the public step summary, and `report_of` started its slice there. The
+#: residual: a panic message that prints input with a RAW newline (Display, not Debug) could still
+#: forge a line-start banner; no target does that today.
 #: The sanitiser's verdict, normalised to the class token: `heap-use-after-free`,
 #: `stack-overflow`, `SEGV`. Uppercase is included deliberately -- `[a-z-]` silently dropped
 #: `SEGV`, which is exactly how #119's class surfaces when ASan's own detector does not engage.
-VERDICT = re.compile(r"ERROR: (?:AddressSanitizer|libFuzzer):\s+(.+)")
+VERDICT = re.compile(r"^==\d+== ?ERROR: (?:AddressSanitizer|libFuzzer):\s+(.+)", re.M)
 
 #: Where the verdict stops and the incident's details begin. libFuzzer's verdicts are PHRASES --
 #: `deadly signal`, `timeout after 10 seconds`, `out-of-memory (malloc(…))` -- and capturing a
@@ -70,9 +77,49 @@ SYMBOL = re.compile(r"^\s*#\d+\s+0x[0-9a-f]+\s+in\s+([A-Za-z_][A-Za-z0-9_:~]*)",
 #: resolve is a refusal rather than silence.
 VERDICT_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
 
-#: A raw offset into the target binary, for a report that was not symbolised.
+#: A raw offset into the target binary, for a report that was not symbolised -- ON A STACK-FRAME
+#: LINE ONLY (`    #3 0x… (…/target+0x…)`). libFuzzer also prints `NEW_FUNC[1/2]: 0x… (…/target+0x…)`
+#: every time it covers a new function, and those carry the same `target+0x` shape.
 def offsets_for(target: str) -> re.Pattern[str]:
-    return re.compile(re.escape(target) + r"\+0x([0-9a-f]+)")
+    return re.compile(r"^\s*#\d+\s+0x[0-9a-f]+\s+\(\S*?" + re.escape(target) + r"\+0x([0-9a-f]+)\)", re.M)
+
+
+#: How many frames are read from a report. A use-after-free prints THREE stacks -- the use, the
+#: free, and the allocation -- and a known defect is often visible only in the second or third.
+#: 40 cut the report short even before the reading started in the wrong place.
+MAX_FRAMES = 200
+
+
+def report_of(log: str) -> str:
+    """The sanitiser's report and what follows it -- never the fuzzing progress before it.
+
+    THE DEFECT THIS EXISTS FOR, measured on 2026-09-25. The offsets were read from the WHOLE log,
+    and libFuzzer's `NEW_FUNC` coverage lines -- hundreds of them on a seeded run against the
+    instrumented qpdf archive -- come first and carry the target's `+0x` offsets too. The first 40
+    unique offsets were all coverage lines, so the classifier symbolised whatever functions the
+    fuzzer had happened to discover (`std::to_string`, `QPDF::Doc::Common::damagedPDF`,
+    `qpdf::Name::Name`) and called #62's two use-after-frees, whose report frames name
+    `pushInheritedAttributesToPageInternal` and `Foreign::Copier::reserve_objects`, a NEW finding,
+    every night for six nights.
+    """
+    start = VERDICT.search(log)
+    return log[start.start():] if start else log
+
+
+#: EXIT CODES, AND WHY THERE ARE THREE. Until 2026-09-25 every outcome but KNOWN exited 1: a new
+#: defect, a crash whose frames could not be resolved, a broken ledger, a log that was no crash
+#: report, and this script dying of an uncaught exception all read as the same red. The nightly
+#: was red for six nights running on a real new finding and nothing distinguished it from the
+#: tool being broken -- the permanently-red-gate problem this file exists to end, arriving
+#: through its own exit status. So a finding and a tooling failure are different numbers, and the
+#: workflow reports them under different headings.
+EXIT_KNOWN = 0
+#: A crash no filed issue owns. A NEW finding -- what the nightly is for.
+EXIT_NEW_FINDING = 1
+#: This tool could not do its job: the ledger is broken, the probe gate refused, the frames did
+#: not resolve, the log is not a crash report, or the script itself raised. NOT a verdict about
+#: any crash.
+EXIT_TOOLING = 3
 
 
 class Problem(Exception):
@@ -120,7 +167,8 @@ def frames_in(log: str, binary: Path | None, target: str | None) -> tuple[list[s
     The second value matters: zero frames means "could not classify", not "nothing matched", and
     conflating them made the tool announce a five-nights-old defect as a new finding.
     """
-    found = list(dict.fromkeys(SYMBOL.findall(log)))
+    log = report_of(log)
+    found = list(dict.fromkeys(SYMBOL.findall(log)))[:MAX_FRAMES]
     if found:
         return found, "symbolised report"
     if not (binary and target):
@@ -131,7 +179,7 @@ def frames_in(log: str, binary: Path | None, target: str | None) -> tuple[list[s
     # NOT SYMBOLISED. CI's libFuzzer prints `target+0x…` and nothing else, so without this the
     # classifier sees no frames at all and calls every known crash new -- a gate that fails
     # closed, but uselessly.
-    addresses = list(dict.fromkeys(offsets_for(target).findall(log)))[:40]
+    addresses = list(dict.fromkeys(offsets_for(target).findall(log)))[:MAX_FRAMES]
     if not addresses:
         return [], "no symbols and no resolvable offsets in the report"
     try:
@@ -197,7 +245,7 @@ def check_issues(entries: list[dict]) -> int:
     if problems:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
-        return 1
+        return EXIT_TOOLING
     print("OK -- every entry names an issue that is still open.")
     return 0
 
@@ -218,22 +266,22 @@ PROBE_LEDGER = [
 #: Each rule against a report it must classify and one it must not.
 PROBES = [
     ("a distinct frame matches its own entry",
-     "ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
+     "==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
      "    #0 0x1 in Other::Frame(Thing)\n", 3),
     ("a shared frame under one verdict",
-     "ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
+     "==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
      "    #3 0x1 in Shared::Frame(Thing)\n", 1),
     ("THE SAME FRAME under a different verdict is a DIFFERENT defect",
-     "ERROR: AddressSanitizer: stack-overflow on address 0x1\n"
+     "==1==ERROR: AddressSanitizer: stack-overflow on address 0x1\n"
      "    #7 0x1 in Shared::Frame(Thing)\n", 2),
     ("an UPPERCASE verdict is not dropped",
-     "ERROR: AddressSanitizer: SEGV on unknown address 0x0\n"
+     "==1==ERROR: AddressSanitizer: SEGV on unknown address 0x0\n"
      "    #0 0x1 in Other::Frame(Thing)\n", None),
 ]
 
 #: A report that must match NOTHING: a real defect we do not own yet.
 UNKNOWN = (
-    "ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1\n"
+    "==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1\n"
     "    #0 0x1 in Something::New(Thing)\n"
 )
 
@@ -274,7 +322,7 @@ def main() -> int:
 
     try:
         if probe() != 0:
-            return 1
+            return EXIT_TOOLING
         entries = load(Path(args.ledger) if args.ledger else None)
         if args.check:
             print(f"OK -- {len(entries)} ledger entry(ies), each naming an issue and a reason.")
@@ -288,8 +336,8 @@ def main() -> int:
         binary = Path(args.binary) if args.binary else None
         verdict, frames, matches, how = classify(log, entries, binary, args.target)
     except Problem as exc:
-        print(f"::error::{exc}", file=sys.stderr)
-        return 1
+        print(f"::error::TOOLING -- {exc}", file=sys.stderr)
+        return EXIT_TOOLING
 
     print(f"verdict: {verdict}")
     print(f"frames considered: {len(frames)} ({how})")
@@ -317,7 +365,7 @@ def main() -> int:
             f"this tool unable to do its job. Fix the symbols, then re-read.",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_TOOLING
 
     print(
         f"UNMATCHED -- {verdict} in a place no filed issue owns. This is a NEW finding; that is "
@@ -325,8 +373,27 @@ def main() -> int:
         f"  frames: {', '.join(frames[:6])}",
         file=sys.stderr,
     )
-    return 1
+    return EXIT_NEW_FINDING
+
+
+def guarded() -> int:
+    """`main`, with an uncaught exception reported as what it is: this tool failing.
+
+    Python exits 1 on an uncaught exception, which is EXIT_NEW_FINDING -- so a traceback here
+    used to announce a new defect.
+    """
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- every failure of the tool is the tool's
+        print(
+            f"::error::TOOLING -- the classifier itself raised {type(exc).__name__}: {exc}. "
+            "This says nothing about the crash.",
+            file=sys.stderr,
+        )
+        return EXIT_TOOLING
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(guarded())
