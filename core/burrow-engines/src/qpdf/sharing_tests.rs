@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Deadline, Error, Limits, ManualClock, Result};
 
-use super::sharing::{FormUseCounts, MAX_RESOURCE_DEPTH, count_form_uses};
 use super::{Document, handle, open_document};
 use crate::OpenOptions;
+use crate::redact::sharing::{FormUseCounts, MAX_RESOURCE_DEPTH, count_form_uses};
 
 fn options() -> OpenOptions<'static> {
     OpenOptions::new(

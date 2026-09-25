@@ -10,10 +10,10 @@ use std::sync::Arc;
 use burrow_types::{Clock, Deadline, Limits, ManualClock};
 
 use super::handle::ObjectHandle;
-use super::resources::PageResources;
 use super::{Document, open_document};
 use crate::OpenOptions;
 use crate::pdfsyntax::geometry::{Watch, glyphs_in};
+use crate::redact::resources::PageResources;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -210,7 +210,8 @@ fn how_much_of_the_corpus_can_cut_its_fonts() {
                 continue;
             };
             let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(0));
-            let Ok(counts) = super::sharing::count_form_uses(&document, &deadline, &clock) else {
+            let Ok(counts) = crate::redact::sharing::count_form_uses(&document, &deadline, &clock)
+            else {
                 continue;
             };
             examined += 1;

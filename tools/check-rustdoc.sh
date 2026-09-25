@@ -19,8 +19,8 @@
 #
 # **Rustdoc on PRIVATE items.** Without `--document-private-items`, rustdoc does not resolve an
 # intra-doc link on a private item, so a broken one there passes. A code review measured at least
-# 14 such links today, 10 inside engine-gated private modules (`pdfium/thread.rs`,
-# `qpdf/redact_steps.rs`, `qpdf/handle.rs`, the two `ffi.rs`). Turning the flag on here would
+# 14 such links today, 10 inside private modules (`pdfium/thread.rs`,
+# `redact/steps.rs`, `qpdf/handle.rs`, the two `ffi.rs`). Turning the flag on here would
 # make this gate red on arrival, so it is a follow-up (#187): fix the links, then add the flag. Until
 # then the gate covers the PUBLIC engine-gated surface and says so.
 #

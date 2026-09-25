@@ -10,6 +10,10 @@
         reason = "the native engine is the policy's only implementation until #191's web half"
     )
 )]
+// NO `unsafe` IN THE POLICY. It reaches the engines only through `graph`'s traits, whose native
+// implementation lives in `qpdf` with its `// SAFETY:` comments; a page lookup that was `unsafe`
+// in three of these files before #191 is bounds-checked behind `PdfDocument::page` now.
+#![forbid(unsafe_code)]
 
 //! The order the steps of a redaction run in, and what happens when one fails.
 //!
@@ -71,9 +75,18 @@ use std::collections::BTreeSet;
 
 use burrow_types::{Error, Result};
 
+// THE POLICY, written once over `graph`'s traits and implemented by each engine (#191, ADR 0029's
+// #191 amendment). Everything below decides what a redaction removes, keeps or refuses; nothing
+// below names an engine.
+pub(crate) mod frame;
 pub(crate) mod graph;
 #[cfg(test)]
 pub(crate) mod hooks;
+pub(crate) mod optional_content;
+pub(crate) mod resources;
+pub(crate) mod sharing;
+pub(crate) mod steps;
+pub(crate) mod witness;
 
 /// What happened to one font, and why.
 ///
@@ -451,6 +464,80 @@ pub(crate) fn run_reporting<S: Steps>(
 )]
 pub(crate) fn poisoned(detail: &str) -> Error {
     Error::Malformed(format!("pdf redaction [document-poisoned]: {detail}"))
+}
+
+/// Clear a region on one page, verify the emitted bytes, and return them.
+///
+/// The body of [`crate::PageRedactor::redact_page`], for any engine that opens a document for
+/// redaction. Written once (#191): the read-back is the same engine's, through a fresh document,
+/// and the check it runs is the same on both platforms.
+///
+/// # Errors
+///
+/// As [`crate::PageRedactor::redact_page`].
+pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
+    engine: &E,
+    bytes: &[u8],
+    page: usize,
+    redacted: &std::collections::BTreeSet<usize>,
+    region: crate::pdfsyntax::region::Region,
+    options: &crate::OpenOptions<'_>,
+) -> Result<(Vec<u8>, crate::redact::Report)> {
+    use std::sync::Arc;
+
+    // THE CALLER'S CLOCK AND THE CALLER'S CEILINGS. The probe built its own `SystemClock` and
+    // `Limits::default()`, which was right for a probe and wrong for an operation: an operation
+    // spends the budget it was given, and `verify::output` says so in capitals about the
+    // deadline.
+    let clock = Arc::clone(&options.clock);
+    let limits = options.limits;
+    let (document, deadline) = engine.open_for_redaction(bytes, options)?;
+    // THE PAGE BOUND IS THE CONSTRUCTOR'S, and it is checked there and only there.
+    //
+    // It used to be checked here as well. That is one check too many rather than one too few:
+    // `PageRedaction::page_handle` once called the unsafe `ObjectHandle::page`, and its SAFETY
+    // comment named the constructor as where the invariant is established. With the check
+    // duplicated in this caller, deleting the constructor's changed nothing any test could
+    // see — a mutation sweep planted exactly that and the suite stayed green, which is a
+    // defence with no test standing behind an `unsafe` block.
+    let steps =
+        steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
+
+    // #134. The bytes reach a caller only through this closure, because `emit_verified` takes
+    // it and there is no other way to a `Vec<u8>` from the finished state. A fresh qpdf opens
+    // the emitted bytes: the handle that wrote them holds a page tree it built and then edited,
+    // and an engine in a bad state agrees with itself.
+    // THE CUT SET COMES FROM THE REPORT, and `Cleared::cut_fonts` states what that leaves
+    // undetectable. It is filled after the steps run, so the closure reads it through a cell
+    // rather than closing over a value that does not exist yet.
+    let cut_fonts: std::cell::RefCell<std::collections::BTreeSet<u64>> =
+        std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let witness = witness::Witness::over(engine.clone(), limits, clock, deadline);
+    let verify = |emitted: &[u8]| {
+        let expected = crate::redact_verify::Cleared {
+            page,
+            region,
+            cut_fonts: cut_fonts.borrow().clone(),
+        };
+        // WHAT THE CHECK WAS TOLD, recorded so a test can read it back.
+        //
+        // This wiring is the seam a fake cannot reach: `redact_verify`'s `Liar` tests build a
+        // `Cleared` by hand, and `burrow-ops`' fake engine never verifies at all -- so a
+        // mutation forcing `cut_fonts` empty disabled the whole mapping check and the entire
+        // suite stayed green. A security review planted exactly that. The argument the check
+        // receives is now observable, which is the only way a test can say it was right.
+        #[cfg(test)]
+        hooks::record_expectation(&expected);
+        crate::redact_verify::region_is_cleared(&witness, emitted, &expected)
+    };
+    run_reporting(steps, redacted.clone(), &verify, &|report| {
+        *cut_fonts.borrow_mut() = report
+            .fonts
+            .iter()
+            .filter(|font| font.cut)
+            .map(|font| font.font)
+            .collect();
+    })
 }
 
 #[cfg(test)]

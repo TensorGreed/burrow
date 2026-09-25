@@ -185,7 +185,7 @@ impl<D: PdfDocument> PageRedaction<D> {
 
     /// The page's frame, for converting the region into content space.
     fn frame<O: PdfObject>(page: &O) -> Result<PageFrame> {
-        super::redact_frame::of(page)
+        super::frame::of(page)
     }
 
     /// The page's content as one lexical stream, with the element handles behind it.
@@ -319,7 +319,7 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         // refusal is about the page, not about the glyphs being cut. Before a blank page's early
         // return too, because an annotation can carry `/OC` on a page that draws nothing.
         // Missing until #166 -- see the module for how a coincidence was standing in for it.
-        super::redact_optional_content::refuse_optional_content(
+        super::optional_content::refuse_optional_content(
             &page,
             PageResources::of(&page)?.dictionary(),
             &self.deadline,
