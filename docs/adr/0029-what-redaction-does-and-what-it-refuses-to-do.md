@@ -3334,4 +3334,82 @@ lost ceiling or checkpoint. What they found was defences that nothing could see 
   offers no `raw()` and no comparison. But a check that examines less without saying so is the
   shape this repository keeps finding, so it is fixed rather than argued.
 
+## Amendment, 2026-09-25 — #191's second half: the web implements the seam, and a differential holds it to native
+
+### What it is
+
+`web/redact.rs` implements `redact::graph` over the JS bridge, and `WebQpdf` implements
+`PageRedactor` with the same body as the native engine, `redact::redact_page`: the same steps, the
+same sharing rules, and the same read-back through a fresh document. What differs is only what each
+half marshals. **Every method makes the call its native twin makes, and drains exactly when it
+does**, so the engine sees the same calls in the same order on both platforms. That is what lets
+the check below hold the web to the native outcome byte for byte, rather than argue it.
+
+Two things are the web's alone:
+
+- **A key is copied into the engine heap**, memoised per distinct name as pruning's web graph does.
+  The copy can fail, where a native `Name` cannot, and `PdfObject::key` returns no `Result` because
+  natively it cannot fail. So a refused copy is **latched** on the document, the way qpdf reports its
+  own failures, and the next drain reports it before anything qpdf latched.
+  - Measured: the handle-to-nothing it returns reads as `ot_uninitialized`, not as null.
+  - Asking it for its type makes qpdf latch an error of its own, which the drain after reports.
+  - The policy stops at the first error, so the refused key is what names the refusal.
+- **The web handle's two writes that take a second handle** refuse one from another session. The
+  check returns an error; it is not a debug assertion, unlike the handle's `replace_key`. Measured
+  with the check removed: the foreign id collided with a live object and the test overflowed its
+  stack, which is the collision the native test measured, reproduced on the web path.
+
+It needed one new `qpdf.wasm` export, `qpdf_oh_set_array_item`, which font surgery writes with. It
+leaves `engines/qpdf-not-exported.toml` empty again. Measured as an A/B of the `em++` link, with a
+control that is byte-identical to the shipped artifact: **+2,496 raw, +642 brotli** on `qpdf.wasm`.
+The bridge method it needs is imported by the base binding, because `JsQpdf` implements the whole
+bridge trait. So the base Rust module grows by **1,902 bytes** raw (353,600 to 355,502): the import
+and its glue, and **none of redaction's literals**. `check-redaction-not-in-base.sh` still finds
+none of its eight needles in either shipped module.
+
+The dead-code expectations the first half put on the policy are gone. They said a build without
+the native engines compiles the policy and calls none of it, and the web now calls it in every
+build. What remains is item by item, each with its own reason:
+
+- a report field only the tests read;
+- one accessor only the tests read;
+- the slashed name spelling, which only the native prune graph asks for;
+- the sharing walk's test-only accessors, gated to the native tests that are their only readers.
+
+### How it is held to native
+
+`qpdf::web_differential_tests` implements the bridge over the native C API, one call for one call.
+It reproduces what `bridge-qpdf.js` does with each answer, and drives `WebQpdf` over it. That
+exercises the web's own Rust: its session, handles, key cache, latch, drains and write. It runs
+over the same qpdf the native engine links. The test takes its cases from
+`tests/redaction/outcomes.tsv`, so it covers exactly the golden's cases.
+
+- **463 of 463 redaction outcomes, and 107 of 107 rotation vectors, are identical on the two
+  engines.** That is the sha256 of the bytes and of the report, or the error in full.
+- **All 212 web redactions are the bytes the golden pinned.**
+- **Five mutations planted in the web half were each caught**, measured at between 20 and 209 of
+  570 outcomes diverging:
+  - object streams packed on write;
+  - an integer written off by one;
+  - `remove_key` made inert;
+  - the key cache keyed on a prefix;
+  - the identity's halves swapped.
+- A probe requires two regions over one fixture to give two outputs. So a harness that asked the
+  native engine twice could not pass.
+
+**What it cannot see**: the JavaScript glue, and `qpdf.wasm` itself. A marshalling defect in
+`bridge-qpdf.js`, or a difference in how the wasm build of qpdf behaves, is outside it. The
+browser-level comparison needs a redaction entry point in a wasm binding and a worker op, and #137
+owns both. It is owed there, and #137 carries it now.
+
+### What it changes in the gates
+
+- `check-redaction-not-in-base.sh`'s self-test has had compiled positives for five of its eight
+  needles. The other three were spelled in code no wasm export could reach. Its probe export now
+  runs the public operation over the web engine, and **the real compiler keeps all eight**.
+- `check-wasm-exports.sh` passes in all three directions:
+  - the new artifact passes against the new list;
+  - the old artifact is refused, naming the function;
+  - the new artifact against the old exemption is refused as stale.
+
 [#191]: https://github.com/TensorGreed/burrow/issues/191
