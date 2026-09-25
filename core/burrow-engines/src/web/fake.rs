@@ -46,6 +46,11 @@ pub(super) enum Call {
         oh: u32,
         at: i32,
     },
+    OhSetArrayItem {
+        oh: u32,
+        at: i32,
+        item: u32,
+    },
     OhEraseItem {
         oh: u32,
         at: i32,
@@ -1490,6 +1495,10 @@ impl QpdfBridge for FakeQpdf {
 
     fn oh_erase_item(&self, _data: QpdfPtr, oh: u32, at: i32) {
         self.state.record(Call::OhEraseItem { oh, at });
+    }
+
+    fn oh_set_array_item(&self, _data: QpdfPtr, oh: u32, at: i32, item: u32) {
+        self.state.record(Call::OhSetArrayItem { oh, at, item });
     }
 
     fn oh_get_dict(&self, _data: QpdfPtr, oh: u32) -> u32 {

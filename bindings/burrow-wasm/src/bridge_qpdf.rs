@@ -148,6 +148,8 @@ extern "C" {
     fn qpdf_oh_get_array_item(data: u32, oh: u32, at: i32) -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_erase_item)]
     fn qpdf_oh_erase_item(data: u32, oh: u32, at: i32);
+    #[wasm_bindgen(js_name = __burrow_qpdf_oh_set_array_item)]
+    fn qpdf_oh_set_array_item(data: u32, oh: u32, at: i32, item: u32);
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_get_dict)]
     fn qpdf_oh_get_dict(data: u32, oh: u32) -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdf_oh_page_content)]
@@ -344,6 +346,10 @@ impl QpdfBridge for JsQpdf {
 
     fn oh_erase_item(&self, data: QpdfPtr, oh: u32, at: i32) {
         qpdf_oh_erase_item(data.0, oh, at);
+    }
+
+    fn oh_set_array_item(&self, data: QpdfPtr, oh: u32, at: i32, item: u32) {
+        qpdf_oh_set_array_item(data.0, oh, at, item);
     }
 
     fn oh_get_dict(&self, data: QpdfPtr, oh: u32) -> u32 {

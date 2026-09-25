@@ -51,14 +51,14 @@
 # files and the cached `qpdf.wasm` -- both present either way.
 
 # =================================================================================
-# THE LIST IS NOT EMPTY: SPLIT'S PRUNING IS DECLARED NATIVELY AND NOT YET ON THE WEB
+# WHEN THE LIST WAS NOT EMPTY: SPLIT'S PRUNING, DECLARED NATIVELY AND NOT YET ON THE WEB
 # =================================================================================
 #
-# The ten entries at the end of this file are the object-surgery functions `split`'s pruning
-# needs (ADR 0019 §2b, issue #54). They are declared natively in the PR that closes the leak on
-# the native path, and they are exported by the PR that gives `WebQpdf` an `impl PageExtractor`
+# Ten entries once stood at the end of this file: the object-surgery functions `split`'s
+# pruning needs (ADR 0019 §2b, issue #54). They were declared natively in the PR that closed the
+# leak on the native path, and exported by the PR that gave `WebQpdf` an `impl PageExtractor`
 # -- which is the lifecycle described above, running forwards for the first time since the four
-# entries below ran it backwards.
+# entries below ran it backwards. The sections after `[meta]` record each time the list emptied.
 #
 # They are listed one per function rather than as a group, because the check compares sets and
 # a group entry cannot be removed one function at a time.
@@ -183,19 +183,19 @@ trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
 # The gate caught it on the pre-push sweep of the change that declared it, which is the moment
 # `qpdf_remove_page`'s four-month absence is the argument for.
 
-[[function]]
-name = "qpdf_oh_set_array_item"
-operation = "redact"
-reason = """\
-Font surgery's only write verb: `/Widths` is positional, so a removed code's entry is zeroed \
-rather than erased, and `/Differences` narrows by replacing a name with the integer for the \
-next code. Both need to replace an array item in place. \
-\
-Not exported because `bindings/burrow-wasm` has no redaction at all -- there is no web \
-implementation of `redact::Steps`, and ADR 0026 puts redaction in a separate wasm module that \
-does not exist yet. Exporting it today would make an array-mutation primitive callable from \
-JavaScript for an operation that path cannot run, which is the opposite of what the export \
-allowlist is for. \
-\
-Removed by the change that gives the web its `Steps` implementation, in the same change that \
-adds the export."""
+# =================================================================================
+# AND EMPTY AGAIN: THE ARRAY WRITE VERB IS EXPORTED (#191)
+# =================================================================================
+#
+# `qpdf_oh_set_array_item` left this file in the change that gave `WebQpdf` its redaction:
+# redaction's policy is written once over `redact::graph` (#191's first half), and the web
+# implementation of that trait is the caller the entry above was waiting for.
+#
+# MEASURED THE SAME WAY AS THE WRITE VERB: an A/B of the `em++` link over the same prebuilt
+# `libqpdf.a`, in one session, differing only in this entry in EXPORTED_FUNCTIONS. The control
+# came out byte-identical to the shipped artifact (sha256 73f051bb5e0251d0...), so the delta is
+# the export's: **+2,496 raw, +642 brotli** on `qpdf.wasm` (327,688 -> 328,330).
+#
+# That is 3.3x the write verb's +195 for one function against two, and it is the paragraph above
+# again: `setArrayItem`'s code was not already inside the members `qpdf_write` dragged in, so it
+# links something new. The range on record is now +195 to +53,456. Measure.

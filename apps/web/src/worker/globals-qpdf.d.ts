@@ -84,6 +84,7 @@ interface EmscriptenModule {
   _qpdf_oh_get_array_n_items(data: number, oh: number): number;
   _qpdf_oh_get_array_item(data: number, oh: number, at: number): number;
   _qpdf_oh_erase_item(data: number, oh: number, at: number): void;
+  _qpdf_oh_set_array_item(data: number, oh: number, at: number, item: number): void;
   _qpdf_oh_get_dict(data: number, oh: number): number;
   _qpdf_oh_new_null(data: number): number;
   _qpdf_oh_replace_stream_data(
@@ -171,6 +172,7 @@ interface WorkerGlobalScope {
   __burrow_qpdf_oh_get_array_n_items(data: number, oh: number): number;
   __burrow_qpdf_oh_get_array_item(data: number, oh: number, at: number): number;
   __burrow_qpdf_oh_erase_item(data: number, oh: number, at: number): void;
+  __burrow_qpdf_oh_set_array_item(data: number, oh: number, at: number, item: number): void;
   __burrow_qpdf_oh_get_dict(data: number, oh: number): number;
   __burrow_qpdf_oh_new_null(data: number): number;
   __burrow_qpdf_oh_replace_stream_data(
