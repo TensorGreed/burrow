@@ -205,16 +205,7 @@ const CHARPROCS_KEY: &[u8] = b"/CharProcs";
 /// allowlist itself is not gated, because `split`'s prune reads it everywhere.
 ///
 /// **Ungated since #191**, because its caller is: the strip is written once over
-/// `redact::graph` and compiled on every target. Until the web implements that trait the caller
-/// is dead in a build without the native engines, and so is this; `expect` rather than `allow`,
-/// so the web half has to remove it.
-#[cfg_attr(
-    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
-    expect(
-        dead_code,
-        reason = "the native engine is the strip's only implementation until #191's web half"
-    )
-)]
+/// `redact::graph`, and the web implements that trait too.
 pub(crate) fn page_keys_outside_the_allowlist(unparsed: &[u8]) -> Result<Vec<Vec<u8>>> {
     Ok(page_keys_outside_the_allowlist_of(
         &crate::pdfsyntax::dict::top_level_keys(unparsed)?,

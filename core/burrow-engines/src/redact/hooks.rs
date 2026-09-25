@@ -22,6 +22,10 @@ pub(crate) fn record_expectation(expected: &crate::redact_verify::Cleared) {
 }
 
 /// What the last redaction on this thread told its check.
+///
+/// Read only by `qpdf::tests`, which drive the real engine; the web engine's tests, in
+/// `qpdf::web_differential_tests`, assert on the outcome instead.
+#[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
 pub(crate) fn last_expectation() -> Option<crate::redact_verify::Cleared> {
     LAST_EXPECTATION.with(|slot| slot.borrow().clone())
 }

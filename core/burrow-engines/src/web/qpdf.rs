@@ -231,18 +231,10 @@ impl Session {
     ///
     /// - [`Error::Internal`] if the engine heap could not accept the bytes.
     /// - Whatever qpdf latched, mapped at the boundary as everywhere else.
-    // NOT `expect`: the lint fires in the non-test build of the lib and not in the test one,
-    // so an expectation is unfulfilled in whichever configuration is not the one it was written
-    // for. This allowance is removed by #131, which gives the method its caller.
-    //
-    // The method exists BEFORE that caller on purpose. Folding the error drain in here is what
-    // stops it being something a caller can forget, and a wrapper introduced alongside its
-    // first caller is a wrapper that caller could just as easily have skipped.
-    #[allow(
-        dead_code,
-        reason = "the caller arrives with #131; the wrapper exists first so the error drain \
-                  cannot be forgotten when it does"
-    )]
+    // IT EXISTED BEFORE ITS CALLER, on purpose, under an allowance that said so. Folding the
+    // error drain in here is what stops it being something a caller can forget, and a wrapper
+    // introduced alongside its first caller is one that caller could as easily have skipped. The
+    // caller is redaction's web half (#191), through `WebHandle::replace_stream_data`.
     pub(super) fn replace_stream_data(
         &self,
         stream: u32,

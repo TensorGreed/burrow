@@ -1,15 +1,3 @@
-// UNINSTANTIATED WITHOUT AN ENGINE, and said so rather than silenced. The policy under this
-// module is written once over `graph`'s traits (#191), and until the web implements them the only
-// implementation is the native one: a build without the native engines compiles all of it and
-// calls none of it. `expect` rather than `allow`, so the day the web instantiates it this becomes
-// an error and has to go.
-#![cfg_attr(
-    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
-    expect(
-        dead_code,
-        reason = "the native engine is the policy's only implementation until #191's web half"
-    )
-)]
 // NO `unsafe` IN THE POLICY. It reaches the engines only through `graph`'s traits, whose native
 // implementation lives in `qpdf` with its `// SAFETY:` comments; a page lookup that was `unsafe`
 // in three of these files before #191 is bounds-checked behind `PdfDocument::page` now.
@@ -32,8 +20,8 @@
 //!
 //! `steps`, `witness`, `sharing`, `resources`, `optional_content` and `frame` decide what a
 //! redaction removes, keeps or refuses. They are written over `graph`'s traits and name no
-//! engine; `qpdf` implements the traits natively, and the web implements them in #191's second
-//! half. See `graph`'s header for what those traits hold and what they cannot.
+//! engine; `qpdf::redact_graph` implements the traits natively and `web::redact` over the JS
+//! bridge. See `graph`'s header for what those traits hold and what they cannot.
 //!
 //! # The order is load-bearing, not incidental
 //!
@@ -265,12 +253,7 @@ pub(crate) struct ContentEdited<S: Steps> {
     steps: S,
     /// How many streams were rewritten, so a caller can assert the work happened.
     #[cfg_attr(
-        all(
-            not(test),
-            feature = "native-engines",
-            burrow_native_engines,
-            target_os = "linux"
-        ),
+        not(test),
         expect(
             dead_code,
             reason = "asserted by the tests; the operation reads the report"
@@ -326,12 +309,7 @@ impl<S: Steps> Redaction<S> {
 impl<S: Steps> ContentEdited<S> {
     /// How many streams were rewritten.
     #[cfg_attr(
-        all(
-            not(test),
-            feature = "native-engines",
-            burrow_native_engines,
-            target_os = "linux"
-        ),
+        not(test),
         expect(
             dead_code,
             reason = "asserted by the tests; the operation reads the report"

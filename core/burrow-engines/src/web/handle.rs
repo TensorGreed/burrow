@@ -227,6 +227,72 @@ impl<'a> WebHandle<'a> {
             .oh_erase_item(self.data(), self.handle, at);
     }
 
+    /// `qpdf_oh_new_null`, in **this handle's** session.
+    ///
+    /// Redaction's policy (#191) is given no document, so a new value is made beside a handle it
+    /// already holds; the native `ObjectHandle::null_beside` is the same shape. No drain: the C
+    /// function is untrapped and parses nothing (`engines/qpdf-untrapped-accepted.toml`).
+    pub(super) fn null_beside(&self) -> Self {
+        self.sibling(self.engine.bridge().oh_new_null(self.data()))
+    }
+
+    /// `qpdf_oh_new_integer`, in **this handle's** session. See [`Self::null_beside`].
+    pub(super) fn integer_beside(&self, value: i64) -> Self {
+        self.sibling(self.engine.bridge().oh_new_integer(self.data(), value))
+    }
+
+    /// Whether `other` was issued by the same session as this handle.
+    ///
+    /// Compares the sessions' `qpdf_data`, never the handles: two handles are never equal
+    /// (`core/CLAUDE.md`), and this is not asking whether they are.
+    pub(super) fn same_session(&self, other: &Self) -> bool {
+        self.data() == other.data()
+    }
+
+    /// `qpdf_oh_set_array_item`: replace the item at `at` with `item`, in place.
+    ///
+    /// **The pairing is checked, not asserted.** `replace_key` guards the same shape with a debug
+    /// assertion; this one is redaction's font surgery, and a value from another session is a
+    /// handle id that names a live, unrelated object in this one, so it refuses in every build.
+    /// Measured natively: the foreign id named an object the array reached, and the next
+    /// `unparse` overflowed the stack. No drain, as the native accessor has none.
+    ///
+    /// # Errors
+    ///
+    /// [`burrow_types::Error::Internal`] if `item` belongs to another session.
+    pub(super) fn set_array_item(&self, at: i32, item: &Self) -> Result<()> {
+        if !self.same_session(item) {
+            return Err(burrow_types::Error::Internal(
+                "qpdf: a value from another document would be written into this one".to_owned(),
+            ));
+        }
+        self.engine
+            .bridge()
+            .oh_set_array_item(self.data(), self.handle, at, item.handle);
+        Ok(())
+    }
+
+    /// `qpdf_oh_replace_stream_data`, through [`Session::replace_stream_data`], which drains.
+    ///
+    /// # Errors
+    ///
+    /// [`burrow_types::Error::Internal`] if either handle belongs to another session, or the
+    /// engine heap could not take the bytes; whatever qpdf latched.
+    pub(super) fn replace_stream_data(
+        &self,
+        bytes: &[u8],
+        filter: &Self,
+        decode_parms: &Self,
+    ) -> Result<()> {
+        if !self.same_session(filter) || !self.same_session(decode_parms) {
+            return Err(burrow_types::Error::Internal(
+                "qpdf: a stream's filter came from another document".to_owned(),
+            ));
+        }
+        self.session
+            .replace_stream_data(self.handle, bytes, filter.handle, decode_parms.handle)
+    }
+
     /// `qpdf_oh_get_page_content_data`, copied out and freed on the JS side.
     pub(super) fn page_content(&self) -> Option<Vec<u8>> {
         self.engine
@@ -399,5 +465,5 @@ mod tests {
     ///
     /// Hard-coded so that adding a method is a deliberate edit here rather than a silent change
     /// in what the scan covers. `CLAUDE.md`: gate on the expected count where it is knowable.
-    const EXPECTED_SIGNATURES: usize = 20;
+    const EXPECTED_SIGNATURES: usize = 25;
 }

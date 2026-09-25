@@ -35,8 +35,8 @@
 //! `Object<'a>` that names a type holding no lifetime compiles, and its handle then outlives the
 //! document — measured the same way. So the half of the guarantee that stops a handle outliving
 //! its document **per implementation** is each implementation's own type: the native
-//! `ObjectHandle<'a>` carries `PhantomData<&'a Document>`, and the web one must borrow its session
-//! as `WebHandle<'a>` does since #147. Both need it for the same reason: the handle's `Drop`
+//! `ObjectHandle<'a>` carries `PhantomData<&'a Document>`, and the web `WebObject<'a>` borrows its
+//! document and wraps a `WebHandle<'a>`, which borrows its session since #147. Both need it for the same reason: the handle's `Drop`
 //! releases it into the document, and releasing into a document that has been cleaned up is a
 //! use-after-free natively and a wild write in the wasm heap on the web — which is what #147's
 //! reviews compiled before the web handle borrowed its session.
