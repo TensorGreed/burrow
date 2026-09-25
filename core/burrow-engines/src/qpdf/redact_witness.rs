@@ -12,7 +12,7 @@ use burrow_types::{Clock, Deadline, Limits, Result};
 use super::name::Name;
 use super::resources::PageResources;
 use crate::codes::qpdf::object_type;
-use crate::pdfsyntax::geometry::{Glyph, glyphs_in};
+use crate::pdfsyntax::geometry::{Glyph, Watch, glyphs_in};
 use crate::pdfsyntax::region::PageFrame;
 use crate::redact_verify::ClearedWitness;
 
@@ -34,6 +34,13 @@ pub(crate) struct QpdfWitness {
 }
 
 impl QpdfWitness {
+    /// The operation's deadline, as the geometry walk reads it during the read-back.
+    ///
+    /// The only place the read-back builds one; see `QpdfRedaction::watch` for why that matters.
+    fn watch<'a>(&'a self, read: &ReadBack) -> Watch<'a> {
+        Watch::new(read.deadline, self.clock.as_ref())
+    }
+
     /// A witness spending the operation's ceilings and the operation's remaining time.
     pub(crate) const fn new(limits: Limits, clock: Arc<dyn Clock>, deadline: Deadline) -> Self {
         Self {
@@ -119,7 +126,7 @@ impl ClearedWitness for QpdfWitness {
         let handle = read.page(page)?;
         let content = read.content(page)?;
         let resources = PageResources::of(&handle)?;
-        glyphs_in(&content, &resources)
+        glyphs_in(&content, &resources, &self.watch(read))
     }
 
     fn drawn_codes(&self, read: &Self::Read, page: usize) -> Result<BTreeMap<u64, BTreeSet<u32>>> {
@@ -128,7 +135,7 @@ impl ClearedWitness for QpdfWitness {
         let content = read.content(page)?;
         let resources = PageResources::of(&handle)?;
         let mut drawn: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
-        for glyph in &glyphs_in(&content, &resources)? {
+        for glyph in &glyphs_in(&content, &resources, &self.watch(read))? {
             // IN THE SCOPE THAT DREW IT. The read-back resolved against the page too, so
             // it refused documents the redaction had handled correctly.
             let font =
@@ -483,5 +490,68 @@ mod ceiling_tests {
             matches!(error, burrow_types::Error::LimitExceeded { .. }),
             "the read-back must spend the operation's remaining time: {error:?}"
         );
+    }
+
+    /// A clock that holds still until told to move, then moves one millisecond per read.
+    ///
+    /// So the read-back's own entry checkpoint can be made to pass exactly, and only a read
+    /// made INSIDE the walk can expire the budget.
+    #[derive(Debug, Default)]
+    struct HoldThenTick {
+        now: std::sync::atomic::AtomicU64,
+        step: std::sync::atomic::AtomicU64,
+    }
+
+    impl burrow_types::Clock for HoldThenTick {
+        fn now_ms(&self) -> u64 {
+            let step = self.step.load(std::sync::atomic::Ordering::SeqCst);
+            self.now
+                .fetch_add(step, std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn the_read_backs_glyph_walks_spend_the_operations_deadline() {
+        // KILLS: a fresh or default deadline in `QpdfWitness::watch` (#175's code review swapped
+        // it and nothing failed). The clock is parked AT the budget -- elapsed equals allowed,
+        // which passes -- and then moves one tick per read, so the entry checkpoint in
+        // `glyphs_on` passes and the walk's own post-lex read is the one that expires.
+        for (name, ask) in [
+            (
+                "glyphs_on",
+                (|witness: &QpdfWitness, read| witness.glyphs_on(read, 0).map(drop))
+                    as fn(&QpdfWitness, &super::ReadBack) -> burrow_types::Result<()>,
+            ),
+            ("drawn_codes", |witness, read| {
+                witness.drawn_codes(read, 0).map(drop)
+            }),
+        ] {
+            let clock = Arc::new(HoldThenTick::default());
+            let mut limits = Limits::default();
+            limits.max_duration_ms = 10;
+            let deadline = Deadline::start(clock.as_ref(), &limits);
+            let witness = QpdfWitness::new(
+                limits,
+                Arc::clone(&clock) as Arc<dyn burrow_types::Clock>,
+                deadline,
+            );
+            let bytes = super::tests::document();
+            let read = witness.open_output(&bytes).expect("opens");
+
+            // THE NEAR-MISS FIRST: parked at the budget and not moving, the walk completes.
+            clock.now.store(10, std::sync::atomic::Ordering::SeqCst);
+            assert!(
+                ask(&witness, &read).is_ok(),
+                "{name}: at the budget, not past it"
+            );
+
+            clock.step.store(1, std::sync::atomic::Ordering::SeqCst);
+            match ask(&witness, &read) {
+                Err(burrow_types::Error::LimitExceeded { limit, .. }) => {
+                    assert_eq!(limit, "max_duration_ms", "{name}");
+                }
+                other => panic!("{name}: the walk must read the operation's deadline: {other:?}"),
+            }
+        }
     }
 }

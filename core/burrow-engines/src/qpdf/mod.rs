@@ -572,7 +572,11 @@ pub(crate) fn walk_first_page_for_probe(
     }
     let content = page.page_content()?;
     let resources = resources::PageResources::of(&page)?;
-    crate::pdfsyntax::geometry::glyphs_in(&content, &resources)
+    crate::pdfsyntax::geometry::glyphs_in(
+        &content,
+        &resources,
+        &crate::pdfsyntax::geometry::Watch::new(deadline, options.clock.as_ref()),
+    )
 }
 
 #[cfg(all(feature = "native-engines", burrow_native_engines))]

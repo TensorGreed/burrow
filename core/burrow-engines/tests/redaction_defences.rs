@@ -179,13 +179,24 @@ fn stream_body(pdf: &[u8], number: usize) -> String {
 /// Assert `needle` is absent from the normalised output, naming what it is.
 fn assert_absent(pdf: &[u8], needle: &[u8], what: &str) {
     let normalised = decompressed(pdf);
-    assert!(
-        !normalised
-            .windows(needle.len())
-            .any(|window| window == needle),
-        "{what}: {} survived the redaction",
-        String::from_utf8_lossy(needle)
-    );
+    // AND AS ASCII HEX, in either case: the rewriter re-emits every KEPT code as a hex string
+    // (`<4B454550>`), so a canary a redaction left standing is spelled that way in its output and
+    // a literal-only scan reads it as gone. Found by #176's review.
+    let hex: String = needle.iter().map(|byte| format!("{byte:02X}")).collect();
+    for spelling in [
+        needle.to_vec(),
+        hex.clone().into_bytes(),
+        hex.to_ascii_lowercase().into_bytes(),
+    ] {
+        assert!(
+            !normalised
+                .windows(spelling.len())
+                .any(|window| window == spelling.as_slice()),
+            "{what}: {} survived the redaction, spelled {}",
+            String::from_utf8_lossy(needle),
+            String::from_utf8_lossy(&spelling)
+        );
+    }
 }
 
 /// Assert `needle` is present, which is the non-vacuity control for [`assert_absent`].
@@ -1804,6 +1815,282 @@ fn nested_carriers_over_many_removals_do_not_go_quadratic() {
     }
 }
 
+/// One form drawn 4,000 times is refused by its deadline while the walk runs, not after (#175).
+///
+/// # Why a wall clock, again
+///
+/// Before the geometry walk took a deadline, this document was refused by `max_duration_ms` too
+/// -- at the next checkpoint between engine calls, **17.9 s** into a 100 ms budget. The rule was
+/// right and the time was not, so asserting the rule alone would pass the defect. Each `Do`
+/// re-walks the form's 100,000 operations; the cost is draws x form size, from a 233 KB file.
+///
+/// Measured after: 104 ms. The ceiling is 2 s, ~9x under the defect and ~19x over the fix,
+/// so a slow machine does not fail it and a regression cannot pass it. Which checkpoint fires is
+/// pinned deterministically by `geometry`'s unit tests; this pins that the operation reaches them.
+#[test]
+fn a_form_drawn_thousands_of_times_is_stopped_by_its_deadline_inside_the_walk() {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let form = pdf.stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 612 792]",
+        &"q Q\n".repeat(50_000),
+    );
+    let mut body = String::from("BT /F1 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\n");
+    body.push_str(&"/Fm0 Do\n".repeat(4_000));
+    let content = pdf.stream("", &body);
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] /Resources << /Font \
+             << /F1 {font} 0 R >> /XObject << /Fm0 {form} 0 R >> >> /Contents {content} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    let pdf = pdf.build(catalog);
+
+    const CEILING: std::time::Duration = std::time::Duration::from_secs(2);
+    let limits = burrow_types::Limits::with(|limits| limits.max_duration_ms = 100);
+    let started = std::time::Instant::now();
+    let outcome = support::redact_page_with(&pdf, 0, [0].into_iter().collect(), band(), limits);
+    let took = started.elapsed();
+    match outcome {
+        Err(burrow_types::Error::LimitExceeded { limit, .. }) => {
+            assert_eq!(limit, "max_duration_ms", "refused by the wrong limit");
+        }
+        Err(error) => panic!("refused, but not by its deadline: {error:?}"),
+        Ok((out, _)) => panic!("redacted {} bytes past a 100 ms deadline", out.len()),
+    }
+    assert!(
+        took < CEILING,
+        "4,000 draws of a 100,000-operation form took {took:?} to refuse, over the {CEILING:?} \
+         ceiling -- the geometry walk is no longer reading the deadline while it works"
+    );
+}
+
+/// A one-page document: `objects` are appended after the catalog, pages and page, the page's
+/// `/Resources` and content are given, and every `{N}` in them is object `N` of `objects`.
+fn page_with(resources: &str, content: &str, objects: &[String]) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let ids: Vec<usize> = objects.iter().map(|_| pdf.reserve()).collect();
+    // ONE PASS over `{N}` tokens; a replace per object was quadratic in the object count.
+    let resolve = |text: &str| {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('}').and_then(|close| {
+                after[..close]
+                    .parse::<usize>()
+                    .ok()
+                    .map(|index| (index, close))
+            }) {
+                Some((index, close)) => {
+                    out.push_str(&ids[index].to_string());
+                    rest = &after[close + 1..];
+                }
+                None => {
+                    out.push('{');
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    };
+    for (id, body) in ids.iter().zip(objects) {
+        pdf.put(*id, &resolve(body));
+    }
+    let content = pdf.stream("", content);
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] /Resources {} \
+             /Contents {content} 0 R >>",
+            resolve(resources)
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+/// A stream object for [`page_with`].
+fn stream_object(dictionary: &str, data: &str) -> String {
+    format!(
+        "<< {dictionary} /Length {} >>\nstream\n{data}\nendstream",
+        data.len()
+    )
+}
+
+/// Redacts `pdf` under `max_duration_ms = ms`, returning the outcome and how long it took.
+fn timed(pdf: &[u8], ms: u64) -> (burrow_types::Result<()>, std::time::Duration) {
+    let limits = burrow_types::Limits::with(|limits| limits.max_duration_ms = ms);
+    let started = std::time::Instant::now();
+    let outcome = support::redact_page_with(pdf, 0, [0].into_iter().collect(), band(), limits);
+    (outcome.map(drop), started.elapsed())
+}
+
+/// Three steps outside the geometry walk that ran without reading the deadline (#175's security
+/// review). Each was measured before its fix, release build, against a budget of 100 ms:
+///
+/// | shape | file | before |
+/// |---|--:|--:|
+/// | 4,000 `/CharProcs` names over one 100,000-operation procedure | 52 KB | 9.9 s |
+/// | 4,000 fonts sharing one full-range `/ToUnicode` | 500 KB | 36 s |
+/// | `/W` repeating `0 65535 500` 100,000 times | 1.2 MB | 175 s |
+///
+/// The ceilings below are 2 s: wide enough for a slow debug build, far under every "before".
+const STEP_CEILING: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[test]
+fn a_type_three_procedure_named_four_thousand_times_is_scanned_once() {
+    // KILLS: scanning `/CharProcs` per name rather than per object. Under the DEFAULT budget, so
+    // the deadline cannot be what makes it fast: only scanning the one procedure once does. The
+    // Type 3 glyph is drawn OUTSIDE the band, so the document redacts -- the scan runs for every
+    // font the page draws, wherever the region is.
+    let procs: String = (0..4_000).map(|i| format!("/a{i} {{2}} 0 R ")).collect();
+    let pdf = page_with(
+        "<< /Font << /F1 {0} 0 R /T3 {1} 0 R >> >>",
+        "BT /F1 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\nBT /T3 1 Tf 1 0 0 1 72 100 Tm (A) Tj ET\n",
+        &[
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+                 /Widths {} >>",
+                support::pdf_builder::HELVETICA_WIDTHS
+            ),
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix \
+                 [0.001 0 0 0.001 0 0] /CharProcs << {procs}>> /Encoding << /Type /Encoding \
+                 /Differences [65 /a0] >> /FirstChar 65 /LastChar 65 /Widths [1000] >>"
+            ),
+            stream_object("", &format!("1000 0 d0\n{}", "q Q\n".repeat(50_000))),
+        ],
+    );
+    let (outcome, took) = timed(&pdf, burrow_types::Limits::DEFAULT.max_duration_ms);
+    outcome.unwrap_or_else(|error| panic!("a procedure that draws no text redacts: {error:?}"));
+    assert!(
+        took < STEP_CEILING,
+        "4,000 names over one procedure took {took:?}: it is being scanned per name"
+    );
+}
+
+#[test]
+fn four_thousand_fonts_are_narrowed_under_the_deadline() {
+    // KILLS: the per-font checkpoint in `cut_fonts`. Every font is narrowed -- the page names
+    // them all -- and each narrowing parses a 65,536-entry `/ToUnicode`.
+    let font_objects: Vec<String> = std::iter::once(stream_object(
+        "",
+        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapType 2 def \
+         1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfrange <0000> <FFFF> \
+         <0000> endbfrange endcmap end end",
+    ))
+    .collect();
+    let mut objects = font_objects;
+    // ONE FONT OBJECT PER NAME, all sharing the `/ToUnicode`: `cut_fonts` deduplicates by font
+    // identity, so four thousand names over one font would be one narrowing.
+    let fonts: String = (0..4_000)
+        .map(|i| {
+            objects.push(format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 \
+                 /LastChar 94 /Widths {} /ToUnicode {{0}} 0 R >>",
+                support::pdf_builder::HELVETICA_WIDTHS
+            ));
+            format!("/F{i} {{{}}} 0 R ", i + 1)
+        })
+        .collect();
+    let pdf = page_with(
+        &format!("<< /Font << {fonts}>> >>"),
+        "BT /F0 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\n",
+        &objects,
+    );
+    let (outcome, took) = timed(&pdf, 100);
+    match outcome {
+        Err(burrow_types::Error::LimitExceeded { limit, .. }) => {
+            assert_eq!(limit, "max_duration_ms");
+        }
+        other => panic!("4,000 fonts must outrun 100 ms and be stopped: {other:?}"),
+    }
+    assert!(
+        took < STEP_CEILING,
+        "4,000 fonts took {took:?} to refuse: font narrowing is not reading the deadline"
+    );
+}
+
+#[test]
+fn a_cid_widths_array_that_assigns_too_much_is_refused_by_name() {
+    // KILLS: the `/W` assignment ceiling. Each triple assigns 65,536 codes from about a dozen
+    // bytes; this runs inside the glyph walk, between the deadline's reads, so only a ceiling
+    // stops it.
+    let pdf = page_with(
+        "<< /Font << /C0 {0} 0 R >> >>",
+        "BT /C0 24 Tf 1 0 0 1 72 700 Tm <0001> Tj ET\n",
+        &[
+            "<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H \
+             /DescendantFonts [{1} 0 R] >>"
+                .to_owned(),
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /CIDSystemInfo << /Registry \
+             (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {2} 0 R /W {3} 0 R \
+             /CIDToGIDMap /Identity >>"
+                .to_owned(),
+            "<< /Type /FontDescriptor /FontName /X /Flags 4 /FontBBox [0 0 1000 1000] \
+             /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                .to_owned(),
+            format!("[{}]", "0 65535 500 ".repeat(100_000)),
+        ],
+    );
+    let (outcome, took) = timed(&pdf, burrow_types::Limits::DEFAULT.max_duration_ms);
+    match outcome {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[widths-too-many]"),
+            "refused, but not by the /W ceiling: {error:?}"
+        ),
+        Ok(()) => panic!("a /W assigning 6.5 billion widths must be refused"),
+    }
+    assert!(took < STEP_CEILING, "the /W refusal took {took:?}");
+
+    // THE NEAR-MISS: one full range is a legitimate, if lazy, `/W`, and must not be refused.
+    let lazy = page_with(
+        "<< /Font << /C0 {0} 0 R >> >>",
+        "BT /C0 24 Tf 1 0 0 1 72 700 Tm <0001> Tj ET\n",
+        &[
+            "<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H \
+             /DescendantFonts [{1} 0 R] >>"
+                .to_owned(),
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /CIDSystemInfo << /Registry \
+             (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {2} 0 R \
+             /W [0 65535 500] /CIDToGIDMap /Identity >>"
+                .to_owned(),
+            "<< /Type /FontDescriptor /FontName /X /Flags 4 /FontBBox [0 0 1000 1000] \
+             /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                .to_owned(),
+        ],
+    );
+    if let Err(error) = timed(&lazy, burrow_types::Limits::DEFAULT.max_duration_ms).0 {
+        assert!(
+            !format!("{error:?}").contains("[widths-too-many]"),
+            "one full range was refused by the /W ceiling: {error:?}"
+        );
+    }
+}
+
 /// The disclosure's **count** is the number of property lists stripped, not merely non-zero.
 ///
 /// Only `discloses_dropped_alternative_text()` — a bool — drove §7, and the corpus's only
@@ -1868,125 +2155,71 @@ fn the_number_of_stripped_property_lists_is_reported_not_just_its_sign() {
     assert_present(&out, b"KEPT", "the span the region never reached");
 }
 
-/// The carrier fixtures whose canary must never reach the output, and the canary each carries.
+/// The carrier fixtures whose canary must never reach the output.
 ///
-/// The **documents** are read from the generated corpus rather than rebuilt here; this list is a
-/// hand-written selection over them. A previous version of this comment claimed the list itself
-/// was read from the corpus and called it "these three" over ten entries — it was neither, and
-/// the claim is removed rather than restated.
+/// # The membership is hand-written; the canaries are not
 ///
-/// Every canary here was cross-checked against `tests/redaction/manifest.toml`: 15 of 15 resolve
-/// to a fixture and match its `placement.canary` exactly. That makes the second column pure
-/// duplication of a file CI already validates, and deriving it is filed rather than done here,
-/// because the *membership* predicate — which fixtures are carrier shapes — stays hand-written
-/// either way and is the half that rots.
-const CARRIER_EVASIONS: [(&str, &str); 22] = [
-    (
-        "evade-actualtext-around-a-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-FORM",
-    ),
-    (
-        "evade-actualtext-inside-a-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-IN-FORM",
-    ),
-    (
-        "evade-actualtext-around-a-nested-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NESTED",
-    ),
-    (
-        "evade-actualtext-in-the-middle-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-MIDFORM",
-    ),
-    (
-        "evade-actualtext-over-a-form-without-resources.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NORES",
-    ),
+/// **Which fixtures are carrier shapes** is a judgement, and nothing in the manifest states it:
+/// the list mixes `/ActualText` evasions, a Type 3 procedure that draws, and a `/ToUnicode` in a
+/// form-local font, and their `probes_refusal` groups do not line up with "burrow looked at the
+/// carrier". So the names stay here.
+///
+/// **Each canary is the manifest's** (#176). It was a second column copying
+/// `tests/redaction/manifest.toml`'s `placement.canary` -- 15 of 15 matching when a review
+/// cross-checked them, and `09-actualtext.pdf`, the headline fixture, missing until someone
+/// noticed. A copy beside the thing it mirrors is the shape that rotted three times on this
+/// milestone. Now a fixture removed from the manifest fails by name, and a canary changed there
+/// fails the presence check on the generated file.
+const CARRIER_EVASIONS: [&str; 22] = [
+    "evade-actualtext-around-a-form.pdf",
+    "evade-actualtext-inside-a-form.pdf",
+    "evade-actualtext-around-a-nested-form.pdf",
+    "evade-actualtext-in-the-middle-form.pdf",
+    "evade-actualtext-over-a-form-without-resources.pdf",
     // NOT AN `/ActualText` SHAPE, and here for exactly that reason. A Type 3 glyph procedure
     // that draws a form keeps the secret's drawing operators in the output while rendering
     // nothing -- covered, not gone. The corpus reports it refusing; without this, restoring the
     // defect only moved it from the refused column to the redacted one, and the floor is a
     // floor, so the sweep stayed green. Measured: that mutation SURVIVED until this line.
-    (
-        "evade-text-in-type3-via-form.pdf",
-        "BURROW-EVADE-TYPE3-VIA-FORM",
-    ),
+    "evade-text-in-type3-via-form.pdf",
     // THE MEMO CASE. Six fixtures above and none of them reached it: a code review measured
     // that emptying the memo entirely is caught by `evade-actualtext-in-the-middle-form`, while
     // **path-dependent truncation** of it was caught by nothing.
-    (
-        "evade-actualtext-under-a-form-with-two-parents.pdf",
-        "BURROW-EVADE-ACTUALTEXT-TWOPARENT",
-    ),
-    (
-        "evade-type3-font-named-only-inside-a-form.pdf",
-        "BURROW-EVADE-TYPE3-IN-FORM",
-    ),
+    "evade-actualtext-under-a-form-with-two-parents.pdf",
+    "evade-type3-font-named-only-inside-a-form.pdf",
     // THE CANARY IS A CMap ENTRY, not a drawn string: `/ToUnicode` is where the removed
     // character survives when the font is never narrowed. Its twin is here for the same reason
     // it exists at all -- if narrowing broke outright, only the twin would tell them apart.
-    ("evade-tounicode-in-a-form-local-font.pdf", "<0058>"),
-    ("nearmiss-tounicode-on-a-page-font.pdf", "<0058>"),
+    "evade-tounicode-in-a-form-local-font.pdf",
+    "nearmiss-tounicode-on-a-page-font.pdf",
     // THE PAGE-WIDENING CASE. Its keep line is below the band these tests redact, so the page
     // contributes no removed glyph and is in the stream list only because it carries the span.
-    (
-        "evade-actualtext-on-a-page-that-draws-nothing-itself.pdf",
-        "BURROW-EVADE-ACTUALTEXT-BARE-PAGE",
-    ),
+    "evade-actualtext-on-a-page-that-draws-nothing-itself.pdf",
     // THE DETECTOR/REWRITER GAP. `/ActualText` named as an array item is not a key, so the
     // rewriter removes nothing; before the rule that refuses this, the string reached the output.
-    (
-        "evade-actualtext-named-outside-key-position.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NOT-A-KEY",
-    ),
+    "evade-actualtext-named-outside-key-position.pdf",
     // ITS NEAR-MISS, here rather than only in the corpus because the claim is the same one: an
     // ordinary `/Lang (en-US)` beside the glyphs must be redacted, not refused, and either way
     // the canary must not come out.
-    (
-        "nearmiss-ordinary-string-in-a-property-list.pdf",
-        "BURROW-EVADE-ACTUALTEXT-ORDINARY-STRING",
-    ),
+    "nearmiss-ordinary-string-in-a-property-list.pdf",
     // THE HEADLINE FIXTURE FOR THIS FEATURE, which was not in this list. Spike 0006's channel 9
     // is `/ActualText` on a marked-content span — the plain shape the whole rewriter is about —
     // and the byte-level absence assertion ran on every evasion of it and not on it.
-    ("09-actualtext.pdf", "BURROW-CARRIER-09"),
+    "09-actualtext.pdf",
     // Its near-miss: the span is around a form the region never reaches, and the canary is drawn
     // by the page outside the span. It must be redacted rather than refused, and either way the
     // canary must not come out.
-    (
-        "nearmiss-actualtext-around-an-untouched-form.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NEARMISS",
-    ),
+    "nearmiss-actualtext-around-an-untouched-form.pdf",
     // #166: A PROPERTY LIST NAMED THROUGH `/Properties`. The four evasions put the text where a
     // page-level or own-resources-only resolver misses it; the three twins are the shapes a
     // resolver that refused too much would take offline.
-    (
-        "evade-actualtext-named-through-properties.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED",
-    ),
-    (
-        "evade-actualtext-named-in-a-form-scope.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED-FORM",
-    ),
-    (
-        "evade-actualtext-named-in-a-form-that-inherits.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED-INHERITED",
-    ),
-    (
-        "evade-actualtext-behind-a-reference-in-named-properties.pdf",
-        "BURROW-EVADE-ACTUALTEXT-NAMED-REF",
-    ),
-    (
-        "nearmiss-named-properties-without-text.pdf",
-        "BURROW-EVADE-NAMED-NEARMISS",
-    ),
-    (
-        "nearmiss-named-actualtext-outside-the-region.pdf",
-        "BURROW-EVADE-NAMED-OUTSIDE",
-    ),
-    (
-        "nearmiss-named-properties-decoy-on-the-page.pdf",
-        "BURROW-EVADE-NAMED-DECOY",
-    ),
+    "evade-actualtext-named-through-properties.pdf",
+    "evade-actualtext-named-in-a-form-scope.pdf",
+    "evade-actualtext-named-in-a-form-that-inherits.pdf",
+    "evade-actualtext-behind-a-reference-in-named-properties.pdf",
+    "nearmiss-named-properties-without-text.pdf",
+    "nearmiss-named-actualtext-outside-the-region.pdf",
+    "nearmiss-named-properties-decoy-on-the-page.pdf",
 ];
 
 /// The rules this suite will accept a refusal *by*.
@@ -2031,14 +2264,18 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/redaction/generated");
     let mut examined = 0usize;
-    for (name, canary) in CARRIER_EVASIONS {
+    let declared = declared();
+    for name in CARRIER_EVASIONS {
+        let canaries = canaries_of(&declared, name);
         let path = directory.join(name);
         let pdf = std::fs::read(&path).unwrap_or_else(|error| {
             panic!("{name}: {error} -- run tools/check-redaction-corpus.sh to generate it")
         });
         // NON-VACUITY FIRST. A fixture whose canary is not in it measures nothing, and these
         // are generated, so a generator change could quietly empty one.
-        assert_present(&pdf, canary.as_bytes(), name);
+        for canary in &canaries {
+            assert_present(&pdf, canary.as_bytes(), name);
+        }
         examined += 1;
         match redact(&pdf) {
             Err(error) => {
@@ -2052,6 +2289,11 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
                 // the other half -- a fixture refusing for an unrelated reason -- and could not
                 // close this one, because the rule it refuses by is the right rule fired on the
                 // wrong document.
+                // NOT THE AUTHORITY ANY MORE, and kept as a fast local guard. What a fixture must do
+                // is its manifest `expect_after`, which `tools/check-redaction-corpus.py --after`
+                // judges against a real run (#176); every `nearmiss-` fixture there says `gone`.
+                // This prefix check predates that and catches the same mistake sooner, in the
+                // suite that runs the carriers.
                 assert!(
                     !name.starts_with("nearmiss-"),
                     "{name}: a near-miss must be redacted, not refused -- the rule fired on the \
@@ -2067,7 +2309,11 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
                      stopped measuring what it was written for: {text}"
                 );
             }
-            Ok((out, _)) => assert_absent(&out, canary.as_bytes(), name),
+            Ok((out, _)) => {
+                for canary in &canaries {
+                    assert_absent(&out, canary.as_bytes(), name);
+                }
+            }
         }
     }
     assert_eq!(
@@ -2188,8 +2434,9 @@ fn manifest() -> serde_json::Value {
     serde_json::from_str(&text).expect("the manifest export is JSON")
 }
 
-/// Each declared fixture's file name, `probes_refusal` group, and first placement's canary.
-fn declared() -> Vec<(String, Option<String>, Option<String>)> {
+/// Each declared fixture's file name, `probes_refusal` group, and EVERY placement's canary --
+/// the first placement's alone let a second canary in the same fixture go unasked (#176's review).
+fn declared() -> Vec<(String, Option<String>, Vec<String>)> {
     let manifest = manifest();
     manifest["fixture"]
         .as_array()
@@ -2201,12 +2448,32 @@ fn declared() -> Vec<(String, Option<String>, Option<String>)> {
                 .expect("every fixture names a file");
             let name = file.rsplit('/').next().unwrap_or(file).to_owned();
             let group = fixture["probes_refusal"].as_str().map(str::to_owned);
-            let canary = fixture["placement"][0]["canary"]
-                .as_str()
-                .map(str::to_owned);
-            (name, group, canary)
+            let canaries = fixture["placement"]
+                .as_array()
+                .map(|placements| {
+                    placements
+                        .iter()
+                        .filter_map(|placement| placement["canary"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (name, group, canaries)
         })
         .collect()
+}
+
+/// The canaries `name` declares, refusing a fixture the manifest does not list or gives none.
+fn canaries_of(declared: &[(String, Option<String>, Vec<String>)], name: &str) -> Vec<String> {
+    let canaries = declared
+        .iter()
+        .find(|(file, _, _)| file == name)
+        .map(|(_, _, canaries)| canaries.clone())
+        .unwrap_or_default();
+    assert!(
+        !canaries.is_empty(),
+        "{name}: a fixture the manifest does not declare, or declares no canary for"
+    );
+    canaries
 }
 
 #[test]
@@ -2266,13 +2533,10 @@ fn a_named_property_list_and_a_layer_refuse_for_their_own_reason() {
             ),
             // AND THE CANARY IS GONE. Redacting is not the claim; the secret leaving is.
             (Ok((out, _)), None) => {
-                let canary = declared
-                    .iter()
-                    .find(|(declared, _, _)| declared == name)
-                    .and_then(|(_, _, canary)| canary.clone())
-                    .unwrap_or_else(|| panic!("{name}: the manifest declares no canary"));
-                assert_present(&pdf, canary.as_bytes(), name);
-                assert_absent(&out, canary.as_bytes(), name);
+                for canary in canaries_of(&declared, name) {
+                    assert_present(&pdf, canary.as_bytes(), name);
+                    assert_absent(&out, canary.as_bytes(), name);
+                }
                 redacted += 1;
             }
         }

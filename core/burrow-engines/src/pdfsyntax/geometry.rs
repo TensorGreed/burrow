@@ -74,9 +74,10 @@
 //! `tests/glyph_geometry.rs` pins that shape. The `WMode` refusal covers the other case, and
 //! saying so here is the difference between a bound and a hope.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use burrow_types::{Error, Result};
+use burrow_types::{Clock, Deadline, Error, Result};
 
 use super::ops::{Operand, Operation, Span};
 
@@ -1188,9 +1189,14 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 ///
 /// [`Refusal::TypeThreeProcedureShowsText`] if the procedure shows text. Whatever
 /// [`super::ops::operations`] refuses, since a procedure burrow cannot tokenise is one whose
-/// contents it cannot rule on.
-pub fn check_type_three_procedure(procedure: &[u8]) -> Result<()> {
-    for operation in super::ops::operations(procedure)? {
+/// contents it cannot rule on. [`Error::LimitExceeded`] once `watch`'s deadline has passed: a
+/// Type 3 font's `/CharProcs` may hold thousands of procedures, and the caller scans them all.
+pub fn check_type_three_procedure(procedure: &[u8], watch: &Watch<'_>) -> Result<()> {
+    let operations = super::ops::operations(procedure)?;
+    // READ ONCE THE PROCEDURE IS LEXED, and per operation after, as every walk here is (#175).
+    watch.now()?;
+    for operation in operations {
+        watch.tick()?;
         // `Do` COUNTS, and it did not. A procedure that shows no text of its own but draws a
         // Form XObject shows the form's text, and this walk enters neither.
         //
@@ -1344,6 +1350,7 @@ pub fn carried_text_edits(
     stream: Option<u64>,
     draws: &FormsReached<'_>,
     properties: &NamedProperties,
+    watch: &Watch<'_>,
 ) -> Result<Vec<(Span, Vec<u8>)>> {
     let mine: BTreeSet<Span> = remove
         .iter()
@@ -1354,7 +1361,7 @@ pub fn carried_text_edits(
         return Ok(Vec::new());
     }
     let mut edits = Vec::new();
-    for covering in carrying_spans_over_removals(content, &mine, draws, properties)? {
+    for covering in carrying_spans_over_removals(content, &mine, draws, properties, watch)? {
         match covering.carried {
             Carried::Text => {
                 let (from, to) = covering.properties;
@@ -1546,6 +1553,7 @@ fn carrying_spans_over_removals(
     mine: &BTreeSet<Span>,
     draws: &FormsReached<'_>,
     properties: &NamedProperties,
+    watch: &Watch<'_>,
 ) -> Result<Vec<CoveringSpan>> {
     use super::ops::operations;
 
@@ -1583,7 +1591,14 @@ fn carrying_spans_over_removals(
     // `Contents::apply` -- failing closed, but anonymously, blaming the file. With a cursor a
     // duplicate cannot be constructed, so there is no inert defence left to test.
     let mut recorded: usize = 0;
-    for operation in operations(content)? {
+    let operations = operations(content)?;
+    // AND ONCE AFTER THE LEX, which is the one step here the watch cannot interrupt: without
+    // this, a lex that ran past the deadline was followed by up to 255 more operations unread.
+    watch.now()?;
+    for operation in operations {
+        // THE DEADLINE, per operation (#175): 60,000 spans over 60,000 removals was a single
+        // uncooperative step here.
+        watch.tick()?;
         match operation.operator.as_slice() {
             b"BDC" => open.push(CoveringSpan {
                 properties: operation
@@ -1976,7 +1991,12 @@ fn holds_text_key(operand: &Operand) -> bool {
 /// which is `Tz 0` or a zero font size making the conversion a division by zero.
 ///
 /// Whatever [`super::ops::operations`] and [`super::strings::decode_string`] refuse.
-pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> Result<Vec<u8>> {
+pub fn remove_glyphs(
+    content: &[u8],
+    stream: Option<u64>,
+    remove: &[Glyph],
+    watch: &Watch<'_>,
+) -> Result<Vec<u8>> {
     // EVERY GLYPH MUST BELONG TO THE STREAM BEING EDITED. A span from another stream indexes
     // different bytes, so applying it here cuts whatever happens to sit at those offsets --
     // a cut in the wrong place, reported as success. Editing a form is done by calling this
@@ -1996,6 +2016,7 @@ pub fn remove_glyphs(content: &[u8], stream: Option<u64>, remove: &[Glyph]) -> R
         &super::contents::Contents::concatenate(&[content])?,
         stream,
         remove,
+        watch,
     )?;
     applied.pop().filter(|_| applied.is_empty()).map_or_else(
         || {
@@ -2028,8 +2049,9 @@ pub fn remove_glyphs_across(
     contents: &super::contents::Contents,
     stream: Option<u64>,
     remove: &[Glyph],
+    watch: &Watch<'_>,
 ) -> Result<Vec<Vec<u8>>> {
-    contents.apply(&glyph_edits(contents.bytes(), stream, remove)?)
+    contents.apply(&glyph_edits(contents.bytes(), stream, remove, watch)?)
 }
 
 /// As [`remove_glyphs_across`], and also drop the text any covering span carries.
@@ -2056,10 +2078,11 @@ pub fn remove_glyphs_and_carried_text(
     remove: &[Glyph],
     draws: &FormsReached<'_>,
     properties: &NamedProperties,
+    watch: &Watch<'_>,
 ) -> Result<(Vec<Vec<u8>>, usize)> {
     let content = contents.bytes();
-    let mut edits = glyph_edits(content, stream, remove)?;
-    let carried = carried_text_edits(content, remove, stream, draws, properties)?;
+    let mut edits = glyph_edits(content, stream, remove, watch)?;
+    let carried = carried_text_edits(content, remove, stream, draws, properties, watch)?;
     let dropped = carried.len();
     for (span, replacement) in carried {
         // A PROPERTY LIST SPLIT ACROSS TWO `/Contents` ELEMENTS IS REFUSED BY NAME.
@@ -2095,12 +2118,16 @@ fn glyph_edits(
     content: &[u8],
     stream: Option<u64>,
     remove: &[Glyph],
+    watch: &Watch<'_>,
 ) -> Result<Vec<super::contents::Edit>> {
     if remove.iter().any(|glyph| glyph.source.form != stream) {
         return Refusal::GlyphFromAnotherStream
             .refuse("a glyph drawn in a different stream, whose span does not index this one");
     }
     let operations = super::ops::operations(content)?;
+    // AND ONCE AFTER THE LEX, which is the one step here the watch cannot interrupt: without
+    // this, a lex that ran past the deadline was followed by up to 255 more operations unread.
+    watch.now()?;
     // GROUPED ONCE, NOT RESCANNED PER OPERATION. This filtered the whole `remove` slice inside
     // the loop, so the cost was operations x removals. A security review found the covering-span
     // walk quadratic in the same two factors and a cursor fixed that one; measuring the result
@@ -2119,6 +2146,8 @@ fn glyph_edits(
     }
     let mut edits: Vec<super::contents::Edit> = Vec::new();
     for operation in &operations {
+        // THE DEADLINE, per operation (#175).
+        watch.tick()?;
         let cuts: &[&Glyph] = by_operation
             .get(&operation.span)
             .map_or(&[], std::vec::Vec::as_slice);
@@ -2377,9 +2406,88 @@ const fn arity(operator: &[u8]) -> Option<usize> {
     })
 }
 
+/// How many operations a walk goes between readings of the clock.
+///
+/// Reading it per operation would cost a clock call per `q`; reading it per stream is what
+/// #175 measured failing. The stride bounds how many operations pass unread, **not** what one
+/// operation costs: a single `Tj` of 199,000 glyphs took 39 ms to place, measured by #175's code
+/// review. What bounds that is [`MAX_GLYPHS`] per walk and the lexer's operand ceilings, not this.
+pub const WATCH_EVERY: u32 = 256;
+
+/// The operation's deadline, carried INTO the walk so it is consulted while the work happens.
+///
+/// # Why this exists (#175)
+///
+/// Every `max_duration_ms` checkpoint used to sit between engine calls in `redact_steps.rs`, and
+/// none inside this module, so one call here was a single uncooperative step of any length.
+/// Measured before this type existed, against a budget of 100 ms: a page drawing one form 4,000
+/// times, each form holding 100,000 operations, **17.9 s** from a 233 KB file. The form is
+/// re-walked at every `Do`, so the cost is draws x form size and nothing noticed it growing.
+///
+/// Now every walk reads the clock once its stream is lexed, and every [`WATCH_EVERY`] operations
+/// after that. A form is walked at every `Do`, so each draw is read at least once. What remains
+/// uncooperative is decoding and lexing ONE stream, linear in its decoded size, which qpdf's
+/// per-filter memory ceiling (256 MiB) bounds; ADR 0029's #175 amendment has the number.
+///
+/// Expiry is [`Error::LimitExceeded`] naming `max_duration_ms`, the same error every other
+/// checkpoint raises: it is the caller's ceiling, not a property of the document, so it is not a
+/// [`Refusal`].
+pub struct Watch<'a> {
+    deadline: Deadline,
+    clock: &'a dyn Clock,
+    ticks: Cell<u32>,
+}
+
+impl<'a> Watch<'a> {
+    /// A watch on `deadline`, read against `clock` -- the operation's own, never a second one.
+    #[must_use]
+    pub const fn new(deadline: Deadline, clock: &'a dyn Clock) -> Self {
+        Self {
+            deadline,
+            clock,
+            ticks: Cell::new(0),
+        }
+    }
+
+    /// Counts one unit of work, reading the clock every [`WATCH_EVERY`] of them.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LimitExceeded`] once the deadline has passed.
+    pub fn tick(&self) -> Result<()> {
+        let ticks = self.ticks.get().wrapping_add(1);
+        self.ticks.set(ticks);
+        if ticks.is_multiple_of(WATCH_EVERY) {
+            self.now()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Reads the clock now, whatever the count.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LimitExceeded`] once the deadline has passed.
+    pub fn now(&self) -> Result<()> {
+        self.deadline.checkpoint(self.clock)
+    }
+}
+
+impl std::fmt::Debug for Watch<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watch")
+            .field("deadline", &self.deadline)
+            .field("ticks", &self.ticks.get())
+            .finish_non_exhaustive()
+    }
+}
+
 /// What one walk has spent, so a page cannot buy unbounded work with a few hundred bytes.
-#[derive(Debug, Default)]
-struct Budget {
+#[derive(Debug)]
+struct Budget<'w> {
+    /// The operation's deadline, ticked per operation. See [`Watch`].
+    watch: &'w Watch<'w>,
     /// The forms currently open, by object identity -- the cycle check.
     open_forms: Vec<u64>,
     /// Every `Do` on a form followed so far, cycles and siblings alike.
@@ -2552,9 +2660,18 @@ struct GraphicsState {
 /// - [`Error::Malformed`] — the stream will not tokenise, brackets or text objects do not
 ///   balance, or a text operator appears outside `BT`…`ET`.
 /// - [`Error::Unsupported`] — a form cycle, a form nested too deep, or a vertical writing mode.
-pub fn glyphs_in(content: &[u8], resources: &dyn Resources) -> Result<Vec<Glyph>> {
+pub fn glyphs_in(
+    content: &[u8],
+    resources: &dyn Resources,
+    watch: &Watch<'_>,
+) -> Result<Vec<Glyph>> {
     let mut out = Vec::new();
-    let mut budget = Budget::default();
+    let mut budget = Budget {
+        watch,
+        open_forms: Vec::new(),
+        forms_drawn: 0,
+        in_form: None,
+    };
     walk(
         content,
         resources,
@@ -2601,10 +2718,13 @@ fn walk(
     // the size but not the font refused every string it drew. Found by the form-inheritance
     // test, which is the only place the two are set in different streams.
     initial: GraphicsState,
-    budget: &mut Budget,
+    budget: &mut Budget<'_>,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
     let operations = super::ops::operations(content)?;
+    // AND ONCE AFTER THE LEX, which is the one step here the watch cannot interrupt: without
+    // this, a lex that ran past the deadline was followed by up to 255 more operations unread.
+    budget.watch.now()?;
 
     let mut state = initial;
     let mut stack: Vec<GraphicsState> = Vec::new();
@@ -2613,6 +2733,9 @@ fn walk(
     let mut position: Option<TextPosition> = None;
 
     for operation in &operations {
+        // THE DEADLINE, INSIDE THE WALK (#175). Before it, a form drawn 4,000 times walked for
+        // 17.9 s against a 100 ms budget, because nothing here could see the clock.
+        budget.watch.tick()?;
         // FALLIBLE, and the reason is `Tz`. An operand that is missing or is not a number used
         // to become `0.0`, so `/Bogus Tz` set the horizontal scale to zero and collapsed every
         // glyph box on the page to a point -- a box that intersects almost nothing, so a
@@ -2747,7 +2870,7 @@ fn draw_form(
     name: &[u8],
     resources: &dyn Resources,
     state: &GraphicsState,
-    budget: &mut Budget,
+    budget: &mut Budget<'_>,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
     let Some(form) = resources.form(name)? else {
@@ -2805,7 +2928,7 @@ fn text_operator(
     state: &mut GraphicsState,
     place: &mut TextPosition,
     resources: &dyn Resources,
-    budget: &Budget,
+    budget: &Budget<'_>,
     out: &mut Vec<Glyph>,
 ) -> Result<()> {
     // Fallible for the same reason as the one in `walk`: see the comment there.
@@ -3083,17 +3206,27 @@ fn show(
 
 #[cfg(test)]
 mod tests {
-    use burrow_types::{Error, Result};
+    use burrow_types::{Deadline, Error, Limits, ManualClock, Result};
 
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
         CMap, Encoding, Form, FormUses, FormsReached, Glyph, GlyphMetrics, MAX_FORM_DEPTH,
         MAX_GLYPHS, Matrix, NamedProperties, Operand, PropertyList, RAISED, Rect, Refusal,
-        Resources, TextPosition, TextState, WritingMode, carried_text_edits, check_form_sharing,
-        check_type_three_procedure, check_writing_mode, glyphs_in, remove_glyphs,
-        remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
+        Resources, TextPosition, TextState, WATCH_EVERY, Watch, WritingMode, carried_text_edits,
+        check_form_sharing, check_type_three_procedure, check_writing_mode, glyphs_in,
+        remove_glyphs, remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
     };
+
+    /// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
+    ///
+    /// For tests of what the walk computes. The deadline itself is tested with a clock that moves;
+    /// a stopped one here is deliberate and named so, because a stopped clock in a production path is
+    /// exactly how `max_duration_ms` stopped existing once before.
+    fn unwatched() -> Watch<'static> {
+        static STOPPED: ManualClock = ManualClock::new(0);
+        Watch::new(Deadline::start(&STOPPED, &Limits::DEFAULT), &STOPPED)
+    }
 
     /// A resources table with one font of known width and whatever forms a test names.
     ///
@@ -3167,7 +3300,7 @@ mod tests {
     }
 
     fn placed(content: &str) -> Vec<Glyph> {
-        glyphs_in(content.as_bytes(), &Fake::new()).expect("the fixture should walk")
+        glyphs_in(content.as_bytes(), &Fake::new(), &unwatched()).expect("the fixture should walk")
     }
 
     // ---- the refusal names themselves are checked ------------------------------------------
@@ -3491,12 +3624,12 @@ mod tests {
 
     /// A walk of `content` against the default resources, as a witness's outcome.
     fn walk(content: &str) -> Result<()> {
-        glyphs_in(content.as_bytes(), &Fake::new()).map(drop)
+        glyphs_in(content.as_bytes(), &Fake::new(), &unwatched()).map(drop)
     }
 
     /// A walk against `resources`, as a witness's outcome.
     fn walk_with(content: &str, resources: &Fake) -> Result<()> {
-        glyphs_in(content.as_bytes(), resources).map(drop)
+        glyphs_in(content.as_bytes(), resources, &unwatched()).map(drop)
     }
 
     /// A two-byte font encoded by `encoding`, walked.
@@ -3529,6 +3662,7 @@ mod tests {
             remove,
             &FormsReached::Named(&BTreeSet::new()),
             &NamedProperties::default(),
+            &unwatched(),
         )
         .map(drop)
     }
@@ -3546,13 +3680,14 @@ mod tests {
 
     /// A marked-content check over `content`'s own glyphs, as production's rewrite asks it.
     fn marked(content: &[u8], properties: &NamedProperties) -> Result<()> {
-        let glyphs = glyphs_in(content, &Fake::new())?;
+        let glyphs = glyphs_in(content, &Fake::new(), &unwatched())?;
         carried_text_edits(
             content,
             &glyphs,
             None,
             &FormsReached::Named(&BTreeSet::new()),
             properties,
+            &unwatched(),
         )
         .map(drop)
     }
@@ -3719,8 +3854,14 @@ mod tests {
                         Matrix::IDENTITY,
                         "/F1 10 Tf BT 0 0 Td (ABC) Tj ET",
                     );
-                    let glyphs = glyphs_in(b"/Fm0 Do", &resources)?;
-                    remove_glyphs(b"/Fm0 Do", None, glyphs.get(1..2).unwrap_or_default()).map(drop)
+                    let glyphs = glyphs_in(b"/Fm0 Do", &resources, &unwatched())?;
+                    remove_glyphs(
+                        b"/Fm0 Do",
+                        None,
+                        glyphs.get(1..2).unwrap_or_default(),
+                        &unwatched(),
+                    )
+                    .map(drop)
                 }),
                 (Invariant, || {
                     let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
@@ -3746,7 +3887,7 @@ mod tests {
             ],
             Refusal::GlyphOnANonShowingOperation => vec![(Invariant, || {
                 let content = b"/F1 10 Tf 1 0 0 1 0 0 cm BT 0 0 Td (ABC) Tj ET";
-                let glyphs = glyphs_in(content, &Fake::new())?;
+                let glyphs = glyphs_in(content, &Fake::new(), &unwatched())?;
                 let operations = super::super::ops::operations(content)?;
                 let mut stray = glyphs[1].clone();
                 stray.source.operation = operations
@@ -3780,7 +3921,10 @@ mod tests {
             }
             Refusal::TypeThreeProcedureShowsText => {
                 vec![(Entry("check_type_three_procedure"), || {
-                    check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n")
+                    check_type_three_procedure(
+                        b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n",
+                        &unwatched(),
+                    )
                 })]
             }
             Refusal::StringNotWholeCodes => vec![
@@ -3807,7 +3951,7 @@ mod tests {
                 wide.bytes_per_code = 2;
                 wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
                 let content = b"/F1 10 Tf BT 0 0 Td (ABCD) Tj ET";
-                let mut glyphs = glyphs_in(content, &wide)?;
+                let mut glyphs = glyphs_in(content, &wide, &unwatched())?;
                 glyphs[1].source.bytes_per_code = 1;
                 cut(content, &glyphs)
             })],
@@ -3883,13 +4027,14 @@ mod tests {
                         b"/Span << /ActualText (secret)".as_slice(),
                         b" >> BDC BT /F1 12 Tf (AB) Tj ET EMC".as_slice(),
                     ])?;
-                    let glyphs = glyphs_in(contents.bytes(), &Fake::new())?;
+                    let glyphs = glyphs_in(contents.bytes(), &Fake::new(), &unwatched())?;
                     remove_glyphs_and_carried_text(
                         &contents,
                         None,
                         &glyphs,
                         &FormsReached::Named(&BTreeSet::new()),
                         &NamedProperties::default(),
+                        &unwatched(),
                     )
                     .map(drop)
                 })]
@@ -4124,7 +4269,10 @@ mod tests {
     /// Walk a fixture against the default resources, for a walk that must be refused.
     #[track_caller]
     fn refusing(content: &str, rule: Refusal) {
-        assert_refused(glyphs_in(content.as_bytes(), &Fake::new()), rule);
+        assert_refused(
+            glyphs_in(content.as_bytes(), &Fake::new(), &unwatched()),
+            rule,
+        );
     }
 
     #[test]
@@ -4291,7 +4439,10 @@ mod tests {
         // ASSERTED ON THE RULE, not on "some Unsupported". The depth cap refuses a
         // self-drawing form too -- it recurses to MAX_FORM_DEPTH and stops -- so a test that
         // accepted either would pass with cycle detection deleted. Measured: it did.
-        assert_refused(glyphs_in(b"/Fm0 Do", &resources), Refusal::FormCycle);
+        assert_refused(
+            glyphs_in(b"/Fm0 Do", &resources, &unwatched()),
+            Refusal::FormCycle,
+        );
     }
 
     #[test]
@@ -4302,7 +4453,10 @@ mod tests {
         let resources = Fake::new()
             .with_form(b"FmA", 11, Matrix::IDENTITY, "/FmB Do")
             .with_form(b"FmB", 12, Matrix::IDENTITY, "/FmA Do");
-        assert_refused(glyphs_in(b"/FmA Do", &resources), Refusal::FormCycle);
+        assert_refused(
+            glyphs_in(b"/FmA Do", &resources, &unwatched()),
+            Refusal::FormCycle,
+        );
     }
 
     #[test]
@@ -4315,7 +4469,10 @@ mod tests {
             resources =
                 resources.with_form(name.as_bytes(), 100 + level as u64, Matrix::IDENTITY, &next);
         }
-        assert_refused(glyphs_in(b"/Fm0 Do", &resources), Refusal::FormDepth);
+        assert_refused(
+            glyphs_in(b"/Fm0 Do", &resources, &unwatched()),
+            Refusal::FormDepth,
+        );
     }
 
     #[test]
@@ -4328,7 +4485,8 @@ mod tests {
             Matrix::translate(10.0, 0.0),
             "/F1 10 Tf BT 0 0 Td (A) Tj ET",
         );
-        let glyphs = glyphs_in(b"q 1 0 0 1 100 0 cm /Fm0 Do Q", &resources).expect("walks");
+        let glyphs =
+            glyphs_in(b"q 1 0 0 1 100 0 cm /Fm0 Do Q", &resources, &unwatched()).expect("walks");
         assert_eq!(glyphs.len(), 1);
         assert!(
             (glyphs[0].origin.0 - 110.0).abs() < 1e-9,
@@ -4341,7 +4499,7 @@ mod tests {
     fn a_form_inherits_the_text_state_in_force_at_the_do() {
         let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "BT 0 0 Td (A) Tj ET");
         // The font and size are set OUTSIDE the form and never inside it.
-        let glyphs = glyphs_in(b"/F1 10 Tf /Fm0 Do", &resources).expect("walks");
+        let glyphs = glyphs_in(b"/F1 10 Tf /Fm0 Do", &resources, &unwatched()).expect("walks");
         assert_eq!(glyphs.len(), 1);
         assert!((glyphs[0].font_size - 10.0).abs() < 1e-9);
     }
@@ -4469,14 +4627,14 @@ mod tests {
         wild.width = f64::MAX;
         wild.font_matrix_scale = 1e297;
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &wild),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &wild, &unwatched()),
             Refusal::NonFiniteGeometry,
         );
         // THE NEAR-MISS: large but finite metrics still walk.
         let mut large = Fake::new();
         large.width = 1e6;
         assert_eq!(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &large)
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &large, &unwatched())
                 .expect("finite metrics walk")
                 .len(),
             1
@@ -4514,7 +4672,10 @@ mod tests {
             Matrix::IDENTITY,
             "/F1 10 Tf BT 0 0 Td (A) Tj ET",
         );
-        assert_refused(glyphs_in(b"/Fm0 Do", &resources), Refusal::TooManyFormDraws);
+        assert_refused(
+            glyphs_in(b"/Fm0 Do", &resources, &unwatched()),
+            Refusal::TooManyFormDraws,
+        );
     }
 
     #[test]
@@ -4525,7 +4686,7 @@ mod tests {
         // One `Tj` of many bytes is far cheaper to build than many operations.
         body.push_str(&format!("({}) Tj ET", "A".repeat(MAX_GLYPHS + 1)));
         assert_refused(
-            glyphs_in(body.as_bytes(), &Fake::new()),
+            glyphs_in(body.as_bytes(), &Fake::new(), &unwatched()),
             Refusal::TooManyGlyphs,
         );
     }
@@ -4556,7 +4717,7 @@ mod tests {
         let mut resources = Fake::new();
         resources.bytes_per_code = 0;
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (A) Tj ET", &resources, &unwatched()),
             Refusal::ZeroBytesPerCode,
         );
     }
@@ -4755,7 +4916,7 @@ mod tests {
         resources.encoding = Encoding::UnreadableCMap;
         resources.bytes_per_code = 2;
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources, &unwatched()),
             Refusal::UnreadableCMap,
         );
     }
@@ -4769,7 +4930,7 @@ mod tests {
         let mut resources = Fake::new();
         resources.bytes_per_code = 2;
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources, &unwatched()),
             Refusal::SimpleFontWithMultiByteCodes,
         );
     }
@@ -4786,7 +4947,7 @@ mod tests {
             program: b"/CMapName /Identity-H def /WMode 1 def".to_vec(),
         };
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &vertical),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &vertical, &unwatched()),
             Refusal::VerticalWriting,
         );
 
@@ -4797,7 +4958,7 @@ mod tests {
             program: b"/CMapName /Identity-H def /WMode 0 def".to_vec(),
         };
         assert_eq!(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &horizontal)
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &horizontal, &unwatched())
                 .expect("the twin must walk")
                 .len(),
             1
@@ -4810,7 +4971,7 @@ mod tests {
     fn walked(content: &str) -> (Vec<Glyph>, Vec<u8>) {
         let bytes = content.as_bytes().to_vec();
         (
-            glyphs_in(&bytes, &Fake::new()).expect("the fixture should walk"),
+            glyphs_in(&bytes, &Fake::new(), &unwatched()).expect("the fixture should walk"),
             bytes,
         )
     }
@@ -4829,7 +4990,7 @@ mod tests {
         wide.bytes_per_code = 2;
         wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET", &wide),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (ABCDE) Tj ET", &wide, &unwatched()),
             Refusal::StringNotWholeCodes,
         );
     }
@@ -4842,13 +5003,13 @@ mod tests {
         wide.bytes_per_code = 2;
         wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
         let content = b"/F1 10 Tf BT 0 0 Td (ABCDEF) Tj ET";
-        let glyphs = glyphs_in(content, &wide).expect("walks");
+        let glyphs = glyphs_in(content, &wide, &unwatched()).expect("walks");
         assert_eq!(glyphs.len(), 3, "three two-byte codes");
         assert!(
             glyphs.iter().all(|g| g.source.bytes_per_code == 2),
             "every glyph carries the FONT's width, not its own chunk's"
         );
-        let out = remove_glyphs(content, None, &glyphs[2..3]).expect("removes");
+        let out = remove_glyphs(content, None, &glyphs[2..3], &unwatched()).expect("removes");
         let text = String::from_utf8_lossy(&out).into_owned();
         assert!(
             text.contains("<41424344>") && !text.contains("4546"),
@@ -4865,10 +5026,10 @@ mod tests {
         wide.bytes_per_code = 2;
         wide.encoding = Encoding::Predefined(b"Identity-H".to_vec());
         let content = b"/F1 10 Tf BT 0 0 Td (ABCD) Tj ET";
-        let mut glyphs = glyphs_in(content, &wide).expect("walks");
+        let mut glyphs = glyphs_in(content, &wide, &unwatched()).expect("walks");
         glyphs[1].source.bytes_per_code = 1;
         assert_refused_bytes(
-            remove_glyphs(content, None, &glyphs),
+            remove_glyphs(content, None, &glyphs, &unwatched()),
             Refusal::MixedCodeWidths,
         );
     }
@@ -4880,7 +5041,7 @@ mod tests {
         // what makes the failure message useful rather than a pair of decimals.
         let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
         assert_eq!(glyphs.len(), 3);
-        let out = remove_glyphs(&content, None, &glyphs[1..2]).expect("removes");
+        let out = remove_glyphs(&content, None, &glyphs[1..2], &unwatched()).expect("removes");
         let text = String::from_utf8_lossy(&out).into_owned();
         assert!(text.contains("-500"), "no adjustment in the output: {text}");
         // `A` and `C` stay, as hex, and `B` does not.
@@ -4904,7 +5065,7 @@ mod tests {
             "a space at width 5 with `4 Tw` displaces 9, not {}",
             space.displacement
         );
-        let out = remove_glyphs(&content, None, &glyphs[1..2]).expect("removes");
+        let out = remove_glyphs(&content, None, &glyphs[1..2], &unwatched()).expect("removes");
         assert!(
             String::from_utf8_lossy(&out).contains("-900"),
             "the adjustment dropped the word spacing: {}",
@@ -4918,7 +5079,7 @@ mod tests {
         // shifts everything after by a point or two.
         let (glyphs, content) = walked("/F1 10 Tf BT 0 0 Td [(AB) -25 (CD)] TJ ET");
         assert_eq!(glyphs.len(), 4);
-        let out = remove_glyphs(&content, None, &glyphs[3..4]).expect("removes");
+        let out = remove_glyphs(&content, None, &glyphs[3..4], &unwatched()).expect("removes");
         let text = String::from_utf8_lossy(&out).into_owned();
         assert!(text.contains("-25"), "the kern was dropped: {text}");
         assert!(
@@ -4933,7 +5094,7 @@ mod tests {
         // to touch would fail the byte-identity half of every test above for the wrong reason.
         let (_, content) = walked("/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
         assert_eq!(
-            remove_glyphs(&content, None, &[]).expect("removes"),
+            remove_glyphs(&content, None, &[], &unwatched()).expect("removes"),
             content
         );
     }
@@ -4948,7 +5109,7 @@ mod tests {
         let mut stray = glyphs[1].clone();
         stray.source.operation = (9_999, 10_000);
         assert_refused_bytes(
-            remove_glyphs(&content, None, &[stray]),
+            remove_glyphs(&content, None, &[stray], &unwatched()),
             Refusal::GlyphWithoutItsOperation,
         );
     }
@@ -4956,7 +5117,7 @@ mod tests {
     #[test]
     fn a_glyph_attributed_to_an_operation_that_shows_no_text_is_refused_by_its_own_name() {
         let content = b"/F1 10 Tf 1 0 0 1 0 0 cm BT 0 0 Td (ABC) Tj ET";
-        let glyphs = glyphs_in(content, &Fake::new()).expect("walks");
+        let glyphs = glyphs_in(content, &Fake::new(), &unwatched()).expect("walks");
         let operations = super::super::ops::operations(content).expect("tokenises");
         let cm = operations
             .iter()
@@ -4965,7 +5126,7 @@ mod tests {
         let mut stray = glyphs[1].clone();
         stray.source.operation = cm.span;
         assert_refused_bytes(
-            remove_glyphs(content, None, &[stray]),
+            remove_glyphs(content, None, &[stray], &unwatched()),
             Refusal::GlyphOnANonShowingOperation,
         );
     }
@@ -4981,11 +5142,11 @@ mod tests {
             "/F1 10 Tf BT 0 0 Td (ABC) Tj ET",
         );
         let page = b"/Fm0 Do";
-        let glyphs = glyphs_in(page, &resources).expect("walks");
+        let glyphs = glyphs_in(page, &resources, &unwatched()).expect("walks");
         assert_eq!(glyphs.len(), 3);
         assert_eq!(glyphs[0].source.form, Some(7));
         assert_refused_bytes(
-            remove_glyphs(page, None, &glyphs[1..2]),
+            remove_glyphs(page, None, &glyphs[1..2], &unwatched()),
             Refusal::GlyphFromAnotherStream,
         );
     }
@@ -4997,7 +5158,7 @@ mod tests {
         // that no renderer can act on.
         let (glyphs, content) = walked("/F1 10 Tf 0 Tz BT 0 0 Td (ABC) Tj ET");
         assert_refused_bytes(
-            remove_glyphs(&content, None, &glyphs[1..2]),
+            remove_glyphs(&content, None, &glyphs[1..2], &unwatched()),
             Refusal::AdjustmentNotExpressible,
         );
     }
@@ -5019,7 +5180,7 @@ mod tests {
     fn form_glyphs(page: &[u8], body: &str) -> (Vec<Glyph>, Vec<u8>) {
         let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, body);
         (
-            glyphs_in(page, &resources).expect("walks"),
+            glyphs_in(page, &resources, &unwatched()).expect("walks"),
             body.as_bytes().to_vec(),
         )
     }
@@ -5052,7 +5213,7 @@ mod tests {
             "/F1 10 Tf BT 0 0 Td (LETTERHEAD) Tj ET",
         );
         let page = b"/Fm0 Do /F1 10 Tf BT 0 0 Td (BODY) Tj ET";
-        let glyphs = glyphs_in(page, &resources).expect("walks");
+        let glyphs = glyphs_in(page, &resources, &unwatched()).expect("walks");
 
         // The region reaches the page's own text, not the letterhead's.
         let body: Vec<Glyph> = glyphs
@@ -5072,7 +5233,7 @@ mod tests {
         let shared = Uses(vec![(7, 12)]);
         check_form_sharing(&body, &shared).expect("a letterhead the region avoids is not a bar");
         // And the redaction itself goes through, on the page's own stream.
-        let out = remove_glyphs(page, None, &body[1..2]).expect("removes");
+        let out = remove_glyphs(page, None, &body[1..2], &unwatched()).expect("removes");
         assert!(String::from_utf8_lossy(&out).contains("TJ"));
     }
 
@@ -5082,7 +5243,7 @@ mod tests {
         let (glyphs, content) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
         check_form_sharing(&glyphs[1..2], &Uses(vec![(7, 1)])).expect("drawn once");
         // Editing it means passing THAT form's content and identity, not the page's.
-        let out = remove_glyphs(&content, Some(7), &glyphs[1..2]).expect("removes");
+        let out = remove_glyphs(&content, Some(7), &glyphs[1..2], &unwatched()).expect("removes");
         assert!(String::from_utf8_lossy(&out).contains("-500"));
     }
 
@@ -5092,7 +5253,7 @@ mod tests {
         // the one being edited. A form's span against the page's bytes cuts in the wrong place.
         let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
         assert_refused_bytes(
-            remove_glyphs(b"/Fm0 Do", None, &glyphs[1..2]),
+            remove_glyphs(b"/Fm0 Do", None, &glyphs[1..2], &unwatched()),
             Refusal::GlyphFromAnotherStream,
         );
     }
@@ -5103,7 +5264,7 @@ mod tests {
         // redaction that removed this page's Type 3 glyphs would leave the procedure's own
         // text in the font. An `Ok` over text nothing observed is what §8 forbids.
         assert_refused_unit(
-            check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n"),
+            check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n", &unwatched()),
             Refusal::TypeThreeProcedureShowsText,
         );
         for shape in [
@@ -5112,7 +5273,7 @@ mod tests {
             b"500 0 d0 BT 1 1 (A) \" ET".as_slice(),
         ] {
             assert_refused_unit(
-                check_type_three_procedure(shape),
+                check_type_three_procedure(shape, &unwatched()),
                 Refusal::TypeThreeProcedureShowsText,
             );
         }
@@ -5123,10 +5284,11 @@ mod tests {
         // THE NEAR-MISS, and it is the majority case. Almost every Type 3 procedure draws
         // shapes and no text; refusing those would refuse essentially every document with a
         // Type 3 font in it.
-        check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n").expect("draws no text");
+        check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n", &unwatched())
+            .expect("draws no text");
         // A SCAN, NOT A BYTE SEARCH: `Tj` inside a string is not an operator, and a byte
         // search would refuse this procedure for drawing nothing at all.
-        check_type_three_procedure(b"500 0 d0\n% Tj in a comment\n0 0 1 1 re f\n")
+        check_type_three_procedure(b"500 0 d0\n% Tj in a comment\n0 0 1 1 re f\n", &unwatched())
             .expect("a comment is not an operator");
     }
 
@@ -5177,7 +5339,7 @@ mod tests {
             "/Span << /MCID 0 >> BDC BT /F1 12 Tf (AB) Tj ET EMC",
         ] {
             assert!(
-                glyphs_in(content.as_bytes(), &Fake::new()).is_ok(),
+                glyphs_in(content.as_bytes(), &Fake::new(), &unwatched()).is_ok(),
                 "{content} must walk"
             );
         }
@@ -5198,7 +5360,7 @@ mod tests {
         // not dividing into whole codes, which would make this a test of that rule instead.
         // The rule-naming assertion is what said so.
         assert_refused(
-            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources),
+            glyphs_in(b"/F1 10 Tf BT 0 0 Td (AB) Tj ET", &resources, &unwatched()),
             Refusal::VerticalWriting,
         );
     }
@@ -5210,7 +5372,7 @@ mod tests {
     /// refusing every tagged document in existence, and one that refuses none would pass
     /// nothing. Both of those printed a clean corpus sweep before this existed.
     mod marked_content_probes {
-        use super::{Fake, glyphs_in};
+        use super::{Fake, glyphs_in, unwatched};
 
         /// A stream that draws no form the removal reaches — the ordinary case for these
         /// probes, whose fixtures draw their glyphs inline.
@@ -5220,7 +5382,7 @@ mod tests {
 
         /// The glyphs `content` draws, all of them, from the caller's own stream.
         fn all_glyphs(content: &[u8]) -> Vec<super::super::Glyph> {
-            glyphs_in(content, &Fake::new()).expect("the fixture walks")
+            glyphs_in(content, &Fake::new(), &unwatched()).expect("the fixture walks")
         }
 
         /// How many property lists the rewriter would strip from `content`.
@@ -5238,6 +5400,7 @@ mod tests {
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
                 &super::super::NamedProperties::default(),
+                &unwatched(),
             )
             .expect("the fixture is readable");
             for (_, replacement) in &edits {
@@ -5270,6 +5433,7 @@ mod tests {
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
                 &super::super::NamedProperties::default(),
+                &unwatched(),
             ) {
                 Err(error) => assert!(
                     rule.caught(&error),
@@ -5365,6 +5529,7 @@ mod tests {
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
                 &super::super::NamedProperties::default(),
+                &unwatched(),
             ) {
                 Err(error) => panic!("expected no refusal, got {error:?}"),
                 // AND NOTHING STRIPPED. "Allowed" used to mean "did not refuse"; with the
@@ -5447,13 +5612,14 @@ mod tests {
             let second = b" >> BDC BT /F1 12 Tf (AB) Tj ET EMC".as_slice();
             let contents = super::super::super::contents::Contents::concatenate(&[first, second])
                 .expect("two elements");
-            let glyphs = glyphs_in(contents.bytes(), &Fake::new()).expect("walks");
+            let glyphs = glyphs_in(contents.bytes(), &Fake::new(), &unwatched()).expect("walks");
             let outcome = super::super::remove_glyphs_and_carried_text(
                 &contents,
                 None,
                 &glyphs,
                 &super::super::FormsReached::Named(&nothing_drawn()),
                 &super::super::NamedProperties::default(),
+                &unwatched(),
             );
             // THE RULE PASSED AS AN ARGUMENT. That mattered to the text-search gate #177 replaced,
             // which scanned for `Refusal::X)`; reachability is now measured by the witness gate,
@@ -5568,6 +5734,7 @@ mod tests {
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
                 properties,
+                &unwatched(),
             )
         }
 
@@ -5738,6 +5905,7 @@ mod tests {
                 None,
                 &super::super::FormsReached::Named(&nothing_drawn()),
                 &resolving(&[("MC0", "<< /ActualText (secret) >>")]),
+                &unwatched(),
             );
             assert!(
                 outcome.as_ref().is_ok_and(Vec::is_empty),
@@ -5803,6 +5971,7 @@ mod tests {
                     None,
                     &super::super::FormsReached::Named(&nothing_drawn()),
                     &super::super::NamedProperties::default(),
+                    &unwatched(),
                 )
                 .expect("readable")
                 .is_empty()
@@ -5863,6 +6032,7 @@ mod tests {
                 None,
                 &super::super::FormsReached::Named(&names),
                 &super::super::NamedProperties::default(),
+                &unwatched(),
             )
             .expect("readable");
             assert_eq!(
@@ -5891,6 +6061,7 @@ mod tests {
                     None,
                     &super::super::FormsReached::Named(&names),
                     &super::super::NamedProperties::default(),
+                    &unwatched(),
                 )
                 .expect("readable")
                 .is_empty()
@@ -5907,5 +6078,139 @@ mod tests {
                 0
             );
         }
+    }
+
+    // ---- #175: the deadline is read INSIDE the walk --------------------------------------------
+    //
+    // Each of the three walks reads the clock at two places: once its stream is lexed, and every
+    // `WATCH_EVERY` operations after. Each test below is built so that exactly ONE of those reads
+    // expires the deadline, so deleting either one, in any of the three, fails a test by name.
+
+    /// A clock that moves one millisecond per READ, so a deadline expires after a known number of
+    /// reads -- which is the question: whether the walk reads it at all.
+    #[derive(Debug, Default)]
+    struct Ticking(std::sync::atomic::AtomicU64);
+
+    impl burrow_types::Clock for Ticking {
+        fn now_ms(&self) -> u64 {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// The four walks that take a watch, each over `content`'s own glyphs.
+    type WalkUnderWatch = fn(&[u8], &Watch<'_>) -> Result<()>;
+    const WATCHED_WALKS: [(&str, WalkUnderWatch); 4] = [
+        // A PROCEDURE, WITH ITS OWN STREAMS: `SHORT` shows text, which a Type 3 procedure
+        // refuses at the first operation, before any per-operation read could come due.
+        ("check_type_three_procedure", |content, watch| {
+            check_type_three_procedure(procedure_of(content), watch)
+        }),
+        ("glyphs_in", |content, watch| {
+            glyphs_in(content, &Fake::new(), watch).map(drop)
+        }),
+        ("carried_text_edits", |content, watch| {
+            let glyphs = glyphs_in(content, &Fake::new(), &unwatched())?;
+            carried_text_edits(
+                content,
+                &glyphs,
+                None,
+                &FormsReached::Named(&BTreeSet::new()),
+                &NamedProperties::default(),
+                watch,
+            )
+            .map(drop)
+        }),
+        ("remove_glyphs", |content, watch| {
+            let glyphs = glyphs_in(content, &Fake::new(), &unwatched())?;
+            remove_glyphs(content, None, &glyphs, watch).map(drop)
+        }),
+    ];
+
+    const SHORT: &str = "/F1 10 Tf BT 0 0 Td (A) Tj ET";
+
+    /// A Type 3 procedure standing in for `content`: as many operations, and no text.
+    fn procedure_of(content: &[u8]) -> &'static [u8] {
+        static LONG: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        if content.len() > SHORT.len() {
+            LONG.get_or_init(|| {
+                format!("500 0 d0{}", " q Q".repeat(WATCH_EVERY as usize * 4)).into_bytes()
+            })
+        } else {
+            b"500 0 d0 q Q"
+        }
+    }
+
+    /// `SHORT`, then enough `q Q` for the per-operation read to come due four times.
+    fn long() -> String {
+        format!("{SHORT}{}", " q Q".repeat(WATCH_EVERY as usize * 4))
+    }
+
+    /// Runs `walk` over `content` under a budget of `ms` on a `Ticking` clock.
+    fn under(walk: WalkUnderWatch, content: &str, ms: u64) -> Result<()> {
+        let clock = Ticking::default();
+        let deadline = Deadline::start(&clock, &Limits::with(|limits| limits.max_duration_ms = ms));
+        walk(content.as_bytes(), &Watch::new(deadline, &clock))
+    }
+
+    fn assert_expired(outcome: Result<()>, what: &str) {
+        match outcome {
+            Err(Error::LimitExceeded { limit, .. }) => {
+                assert_eq!(limit, "max_duration_ms", "{what}: the wrong limit");
+            }
+            other => {
+                panic!("{what}: expected max_duration_ms to expire inside the walk, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn every_walk_reads_the_clock_once_its_stream_is_lexed() {
+        // KILLS: deleting the read after the lex, in any of the three. A budget of 0 and a stream
+        // too short for a per-operation read: the post-lex read is the only one there is.
+        for (name, walk) in WATCHED_WALKS {
+            assert!(
+                under(walk, SHORT, 1_000).is_ok(),
+                "{name}: the control must walk"
+            );
+            assert_expired(under(walk, SHORT, 0), name);
+        }
+    }
+
+    #[test]
+    fn every_walk_reads_the_clock_while_it_works() {
+        // KILLS: deleting the per-operation tick, in any of the three. A budget of 1 survives the
+        // post-lex read (elapsed 1) -- shown by the short stream passing -- so only a read made
+        // while the operations run can expire it.
+        for (name, walk) in WATCHED_WALKS {
+            assert!(
+                under(walk, SHORT, 1).is_ok(),
+                "{name}: the post-lex read alone must not expire"
+            );
+            assert!(
+                under(walk, &long(), 1_000).is_ok(),
+                "{name}: the control must walk"
+            );
+            assert_expired(under(walk, &long(), 1), name);
+        }
+    }
+
+    #[test]
+    fn a_form_drawn_many_times_is_read_at_every_draw() {
+        // THE SHAPE #175 MEASURED at 17.9 s: one form, drawn again and again, each draw a fresh
+        // walk. Twenty draws of a two-operation form is 60 operations, never a per-operation read,
+        // so it is each form walk's own post-lex read that expires a budget of 10.
+        let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "q Q");
+        let content = "/Fm0 Do ".repeat(20);
+        let clock = Ticking::default();
+        let deadline = Deadline::start(&clock, &Limits::with(|limits| limits.max_duration_ms = 10));
+        assert_expired(
+            glyphs_in(
+                content.as_bytes(),
+                &resources,
+                &Watch::new(deadline, &clock),
+            )
+            .map(drop),
+            "twenty form draws",
+        );
     }
 }

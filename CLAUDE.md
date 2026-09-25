@@ -109,7 +109,9 @@ is a denial-of-service bug, not a nicety.
 
 **They are not equally strong, and the difference is documented rather than smoothed over.**
 `max_input_bytes`, `max_pages` and `max_pixels` are exact. `max_duration_ms` is cooperative:
-overshoot of up to one engine call is possible. **`max_memory_bytes` bounds nothing on any
+overshoot of up to one engine call is possible, or, inside redaction's own geometry walk, one
+content-stream decode plus lex (about 0.9 s natively at qpdf's 256 MiB decode ceiling; ADR 0029,
+#175). **`max_memory_bytes` bounds nothing on any
 platform** — a structural pre-scan and a length-based estimate before the engine, a measured
 check after it, so an overrun is *detected*, not prevented. Say "detect" where we detect and
 "bound" only where something is actually bounded; `burrow_types::Limits`' rustdoc and
@@ -133,8 +135,18 @@ Breaking changes get a `!` and a `BREAKING CHANGE:` footer.
 **Dependencies.** Adding one is a decision, not a detail. Follow the `add-dependency`
 skill and get a `license-auditor` pass before merging.
 
-**Reviews run before the first push, not after.** `security-reviewer` and `code-reviewer` go
-over the change while it is still local. In M1 PR 4a-ii they ran after the branch was pushed
+**Reviews run before the first push, not after.** The reviewer goes over the change while it
+is still local. **Which reviewer depends on what the change decides** (2026-09-24):
+
+- **Code that decides what redaction removes or keeps** gets both `security-reviewer` and
+  `code-reviewer`. That covers the geometry walk, the rewriter, the refusal rules, verification,
+  and anything else whose bug leaks a secret.
+- **Tooling and gate changes** get one reviewer, whichever fits the change better. That covers
+  checkers, their self-tests, CI wiring, fixture generators and docs.
+
+When a change is both, it gets both.
+
+Why before the push: In M1 PR 4a-ii they ran after the branch was pushed
 and found two things that had already reached a commit: a reachable bug that took a page
 offline after three long operations, and a regression that silently disabled two CSP tests by
 turning an assertion into a tautology. Both would have been caught before anyone else could
@@ -194,11 +206,11 @@ A change is done when all of these hold:
 - [ ] Public API changes are reflected in bindings (uniffi + wasm) or explicitly deferred.
 - [ ] Docs updated: rustdoc on public items, plus `docs/ROADMAP.md` or an ADR if scope
       or a decision changed.
-- [ ] `tools/ci-local.py --changed` passes **before every push**, and the full
-      `tools/ci-local.py` passes **once per PR before merge**. It is the replication of CI, and
-      it refuses to run if CI has a gate nothing local covers. The split, and why the old
-      "everything before every push" rule was replaced rather than restated, is under *Working
-      agreements*. The fuzz jobs are not on the pre-push path.
+- [ ] `tools/ci-local.py --changed` passes **before every push**, and **GitHub CI is green on
+      the PR's exact head commit before merge**. That green is the merge gate. No full local
+      sweep runs before merge; that rule was dropped on 2026-09-24, and *Working agreements*
+      says why. `ci-local` is the replication of CI, and it refuses to run if CI has a gate
+      nothing local covers. The fuzz jobs are not on the pre-push path.
 - [ ] Commit messages follow Conventional Commits; CI is green.
 
 ## Working agreements
@@ -290,18 +302,31 @@ those at full candour is working and is not what "summarise" is asking you to sh
 
   ```bash
   tools/ci-local.py --changed  # BEFORE EVERY PUSH: the jobs the change can affect
-  tools/ci-local.py            # ONCE PER PR, BEFORE MERGE: every job
+  tools/ci-local.py            # every job, when you want it; no longer a merge gate
   tools/ci-local.py --check    # parity only
   tools/ci-local.py --list     # the coverage table
   tools/ci-local.py --only web # one job
   ```
 
-  **The pre-push gate is `--changed`; the full sweep runs once per PR before merge.** That is a
-  change from "run everything before every push", and the reason is that the old rule stopped
-  being followed. A full sweep is over twenty minutes, most of it fuzzing, and a rule that
-  expensive gets skipped, half-run, or run against a tree that moved underneath it — all three
-  happened in M2. **A cheaper rule honestly applied beats an expensive one applied sometimes**,
-  and the expensive one still runs where it decides something: before a merge.
+  **The pre-push gate is `--changed`. The merge gate is GitHub CI, green on the PR's exact head
+  commit.** Read the verdict per job with `gh run view <id> --json conclusion,jobs,headSha`, and
+  check that `headSha` is the PR's head. That is two changes from "run everything before every
+  push".
+
+  **The first, in M2: the pre-push gate became `--changed`.** The old rule had stopped being
+  followed. A full sweep is over twenty minutes, most of it fuzzing, and a rule that expensive
+  gets skipped, half-run, or run against a tree that moved underneath it. All three happened.
+  **A cheaper rule honestly applied beats an expensive one applied sometimes.**
+
+  **The second, on 2026-09-24: the full local sweep before merge was dropped.** It repeated
+  CI's own run on the same commit, and CI's run is the one that decides. What `--changed` cannot
+  catch, CI catches before the merge, not after, provided the green is read from a run on the
+  head being merged. A green from an earlier commit is not a green for this one.
+
+  **Don't wait on CI.** Once a PR is pushed, start the next independent issue on a new branch,
+  and come back when the run concludes. The CI-monitor rule above still holds: one watcher per
+  run ID, stopped on the next push. "Independent" means the next branch does not build on this
+  PR's unmerged changes. When it would, it waits, or it is stacked deliberately and said to be.
 
   `--changed` **narrows and never guesses**. It derives each job's paths from the command CI
   runs — the crate graph comes from the manifests, not from a map somebody maintains — and where
@@ -478,5 +503,6 @@ those at full candour is working and is not what "summarise" is asking you to sh
     Enumerate them with their parent command, not just a count, when the answer is not zero.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
-- **Run `security-reviewer` and `code-reviewer` before the first push.** See *Conventions*;
-  this is the working-agreement half of the same rule.
+- **Review before the first push**: both reviewers for code that decides what redaction removes
+  or keeps, and one for tooling and gate changes. See *Conventions*; this is the
+  working-agreement half of the same rule.

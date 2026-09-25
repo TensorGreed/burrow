@@ -162,7 +162,8 @@ fn every_document_in_the_redaction_corpus_either_redacts_or_refuses_by_name() {
     // shows text — closed that evasion and took the count with it. A floor that may only rise
     // would have read that as a regression.
     //
-    // It also names a gap: the manifest assigns every fixture a verdict and nothing compares an
+    // It also named a gap, since closed by #176's `check-redaction-corpus.py --after`: the manifest
+    // assigned every fixture a verdict and nothing compared an
     // outcome against it, so a fixture can disagree with its own declared decision in silence.
     // That is the `expect_after` half of ADR 0029 §8, which `check-redaction-corpus.py` says it
     // does not check.

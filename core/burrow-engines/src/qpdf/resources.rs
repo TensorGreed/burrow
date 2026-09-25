@@ -528,16 +528,45 @@ fn read_composite(font: &ObjectHandle<'_>, facts: &mut FontFacts) -> Result<()> 
         .first()
         .copied()
         .or(Some(1000.0));
-    facts.cid_widths = parse_w(&descendant.key(&W));
+    facts.cid_widths = parse_w(&descendant.key(&W))?;
     Ok(())
 }
 
+/// The most codes a `/W` array may assign, counting a code each time it is assigned.
+///
+/// A CID is at most 65,535 (PDF 32000-1 Annex C), so a real `/W` assigns at most 65,536 codes
+/// and overlaps are rare. Twice that is room for a careless producer and nowhere near the
+/// attack: each `cFirst cLast w` triple assigns up to 65,536 codes from about a dozen bytes,
+/// and nothing counted the triples. A 1.2 MB file repeating `0 65535 500` a hundred thousand
+/// times took **175 s** here, against any budget -- this runs inside the glyph walk, between the
+/// deadline's reads.
+pub(crate) const MAX_W_ASSIGNMENTS: usize = 131_072;
+
 /// `/W`, in either of its two shapes: `c [w …]` and `cFirst cLast w`.
-fn parse_w(array: &ObjectHandle<'_>) -> BTreeMap<u32, f64> {
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `widths-too-many` once the array assigns more than
+/// [`MAX_W_ASSIGNMENTS`] codes. Refused, not truncated: a width map that stopped growing places
+/// the rest of the font's glyphs with the default width, which is a box in the wrong place.
+fn parse_w(array: &ObjectHandle<'_>) -> Result<BTreeMap<u32, f64>> {
     let mut widths = BTreeMap::new();
     if array.type_code() != object_type::ARRAY {
-        return widths;
+        return Ok(widths);
     }
+    let mut assigned: usize = 0;
+    let mut assign = |widths: &mut BTreeMap<u32, f64>, code: u32, width: f64| -> Result<()> {
+        assigned += 1;
+        if assigned > MAX_W_ASSIGNMENTS {
+            return Err(Error::Unsupported(
+                "pdf resources [widths-too-many]: a CID font's /W assigns more widths than \
+                 there are CIDs to assign them to"
+                    .to_owned(),
+            ));
+        }
+        widths.insert(code, width);
+        Ok(())
+    };
     let length = array.array_len();
     let mut at = 0;
     while at < length {
@@ -551,7 +580,7 @@ fn parse_w(array: &ObjectHandle<'_>) -> BTreeMap<u32, f64> {
                     break;
                 };
                 if let Ok(code) = u32::try_from(base.saturating_add(offset)) {
-                    widths.insert(code, width);
+                    assign(&mut widths, code, width)?;
                 }
             }
             at += 2;
@@ -569,13 +598,13 @@ fn parse_w(array: &ObjectHandle<'_>) -> BTreeMap<u32, f64> {
             // materialise four billion entries in a map.
             for code in start..=end.min(start + 65_535) {
                 if let Ok(code) = u32::try_from(code) {
-                    widths.insert(code, width);
+                    assign(&mut widths, code, width)?;
                 }
             }
             at += 3;
         }
     }
-    widths
+    Ok(widths)
 }
 
 /// Whether a name-valued handle names `want`.

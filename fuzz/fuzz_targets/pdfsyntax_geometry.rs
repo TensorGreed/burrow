@@ -34,9 +34,9 @@
 #![no_main]
 
 use burrow_engines::pdfsyntax::geometry::{
-    Encoding, Form, Glyph, GlyphMetrics, MAX_GLYPHS, Matrix, Rect, Refusal, Resources, glyphs_in,
+    Encoding, Form, Glyph, GlyphMetrics, MAX_GLYPHS, Matrix, Rect, Refusal, Resources, Watch, glyphs_in,
 };
-use burrow_types::{Error, Result};
+use burrow_types::{Deadline, Error, Limits, ManualClock, Result};
 use libfuzzer_sys::fuzz_target;
 
 /// Resources the fuzzer controls, standing in for a font dictionary it would also control.
@@ -141,7 +141,7 @@ fuzz_target!(|data: &[u8]| {
             .collect(),
     };
 
-    match glyphs_in(body, &resources) {
+    match glyphs_in(body, &resources, &unwatched()) {
         Ok(glyphs) => {
             // (1) bounded.
             assert!(
@@ -192,4 +192,14 @@ fn check(glyph: &Glyph) {
         box_.left <= box_.right && box_.bottom <= box_.top,
         "an inverted box intersects nothing, so its glyph is one a redaction skips: {box_:?}"
     );
+}
+
+/// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
+///
+/// For tests of what the walk computes. The deadline itself is tested with a clock that moves;
+/// a stopped one here is deliberate and named so, because a stopped clock in a production path is
+/// exactly how `max_duration_ms` stopped existing once before.
+fn unwatched() -> Watch<'static> {
+    static STOPPED: ManualClock = ManualClock::new(0);
+    Watch::new(Deadline::start(&STOPPED, &Limits::DEFAULT), &STOPPED)
 }

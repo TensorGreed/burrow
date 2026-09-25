@@ -44,3 +44,5 @@
 - [Named /Properties resolver (#166)](m2_named_properties_resolver.md) — R1 stream /Resources; R2 other types; R3 `null` present-to-PDFium, erased by qpdf; padded BDC.
 - [Refusal reachability gate (#177)](m2_refusal_reachability_gate.md) — proves a raise via a witness-chosen fn, not an entry; remove_glyphs is prod-dead; MIR diff method.
 - [CI rustdoc gate (#174)](ci_rustdoc_gate.md) — stale pages cannot fool it; `-D warnings` and the build line are untested; paths_as is a comment-satisfiable substring.
+- [expect_after harness (#176)](m2_expect_after_harness.md) — owed refused placements unwitnessed after (12/13 still leak), whole-string gone, a ch 6/21 witness exists.
+- [#176 r2 + #175 Watch](m2_expect_after_round2_and_175.md) — ch06/21 partial removal passes --after (measured); deadline loops outside the Watch (unmeasured).

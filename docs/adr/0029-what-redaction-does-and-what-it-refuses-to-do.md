@@ -2522,6 +2522,9 @@ of 100, and this module takes no `Limits` at all — every deadline checkpoint i
 `redact_steps.rs`, none inside the walk. That is filed, not fixed here, because giving the
 geometry module a deadline is a change to its signature and its callers.
 
+*Superseded by the #175 amendment below: the walk now reads the deadline while it runs, and the
+residual is one lex of one stream.*
+
 `nested_carriers_over_many_removals_do_not_go_quadratic` now pins 8k, 16k and 60k under a
 wall-clock ceiling. A timing assertion is the thing this suite otherwise avoids, and it is what
 belongs here: both quadratics produced **correct output, slowly**, so no assertion about bytes
@@ -2915,3 +2918,217 @@ remains true of the new one.
 The redaction floor in `redaction_corpus.rs` moves from 39 to 56. It had not moved since #164,
 although 51 were redacting after #165, so a regression could have fallen twelve documents
 towards it without a word.
+
+## Amendment, 2026-09-24 — #176: `expect_after` is judged against a real run
+
+§8's rule has two halves, and until now only one was checked. `witness_before` has been verified
+on every run since #135. `expect_after` — what must be true once redaction runs — was a column
+in `tests/redaction/manifest.toml` that nothing compared against anything, because until #134
+there was no operation to compare it with. The #165 near-miss that refused where it should have
+redacted, and the #164 Type 3 evasion that redacted where it should have refused, both went
+unnoticed for exactly that reason.
+
+`tools/check-redaction-corpus.py --after` now redacts every fixture through the public operation
+and judges each placement **by the witness that proved its canary present before**. Using a
+different instrument after than before is how spike 0006 scored four channels "gone" that nothing
+could see.
+
+### What the first run found
+
+Sixteen disagreements. **Thirteen of them are leaks**: the first version of this amendment said
+none was, and both reviews measured that as false.
+
+- **Thirteen are #125.** Image, vector-path, `/AcroForm` and `/StructTreeRoot` shapes redact
+  today where the manifest says *refused*. These are §5's owed signals, exactly as §5 describes
+  them, and they carry `owed_by = 125`. **A redaction that returns Ok over each of them leaves its
+  canary or its carrier in the output.** Four still hold the literal secret: `acroform-field`,
+  `evade-widget-on-another-page`, `evade-field-with-no-widget` and
+  `evade-struct-without-structparents`. That is what #125 is: a ship blocker. The first version
+  counted these placements and ran no witness on them, while the manifest header said an owed
+  marker "never excuses a canary still witnessed". Now every owed placement that redacts is
+  witnessed:
+  - the leaks are printed by name on every run;
+  - the set of fixtures that leak is pinned by name (`OWED_LEAKS_EXPECTED`). A new one fails,
+    and so does one fewer. The first version pinned a count, which a fix and a new leak in the
+    same change would have left unchanged;
+  - a marker fails once its document refuses, so it cannot outlive the work it waits for;
+  - the markers per issue are pinned as well (`{125: 14, 131: 1}`), so adding one is a decision
+    and not an edit.
+- **`08-type3-glyph` refuses where §3 says *handle*.** The walk does not descend a glyph
+  procedure, so the fail-closed refusal stands in until #131. It carries `owed_by = 131` in the
+  other direction: a refusal is allowed, and **a canary still witnessed after a redaction never
+  is**.
+- **Channels 6 and 21 contradicted themselves in the manifest.** Each had two placements with the
+  same canary and the same `font-cmap` witness. The page text expected *gone*, and the cmap
+  residue expected *present*, and one instrument cannot show both. The first version exempted
+  the page-text placements as unjudgeable (`after_unwitnessed`). **A review showed they are
+  not**:
+  - With `/CIDToGIDMap /Identity`, a content-stream code *is* a glyph id, and the font's own
+    format-4 cmap, inverted, says which character that glyph draws.
+  - The `cid-codes` witness reads the page's codes that way. The placements declare it as
+    `witness_after`, and the before-check requires it to find the canary in the input too, so its
+    silence afterwards is a removal and not a blind spot.
+  - The exemption is gone, and the field is now refused.
+
+### Gone means none of it
+
+Every witness asks for the whole canary, so **removing one glyph of it scored "gone"**. Both
+reviews measured this. Six hand-built fixtures drew canaries longer than `pdfbuild.REGION` is
+wide: the redaction took the front of each and left the tail on the page (`ARMISS`, `DFORM`,
+`RE-PAGE`), and each was judged gone.
+
+A gone placement is now also checked for five-character fragments of its canary that survive:
+- in the output's PDFium text, whitespace squashed;
+- in its expanded bytes, in every spelling, **ASCII hex included**. The rewriter re-emits every
+  kept code as hex, so a kept canary is spelled `<4255...>` in the output and in no other way.
+  `redaction_defences.rs::assert_absent` was blind to it for the same reason and now checks that
+  spelling too.
+
+- on channels 06 and 21, in the page's codes read through the font's cmap (`cid_text`). PDFium's
+  text there is glyph ids and so are the bytes, so the first two readings see no fragment at
+  either end. Both reviews of the second round planted a region that left `ECRET-06` drawn, and
+  the first version of this rule scored it gone.
+
+A fragment counts only if the input held it nowhere but inside the canary. Whole occurrences are
+removed from both sides first, so a whole canary surviving through another channel is reported
+once, by its own placement. The six canaries were shortened to fit the region. The self-test
+plants a region that clears only part of a canary and requires the refusal.
+
+### The count
+
+**90 of 90 placements accounted for:**
+- 49 judged by their own witness (44 gone, 5 present);
+- 26 by a named refusal;
+- 15 owed to their issue, of which 13 still disclose and are listed.
+
+The denominator is every placement that declares an after-state, including any fixture refused
+before the run, so a narrowed sweep cannot read as a full one.
+
+### And the carrier canaries stop being a copy
+
+`redaction_defences.rs::CARRIER_EVASIONS` held a second column of canaries copied from the
+manifest. It now keeps only the membership, meaning which fixtures are carrier shapes, which is a
+judgement no manifest field states. It takes each canary from the manifest. Removing a carrier
+fixture from the manifest fails by name, and so does renaming its canary; both are measured.
+
+## Amendment, 2026-09-24 — #175: the geometry walk reads the deadline while it works
+
+Every `max_duration_ms` checkpoint for redaction sat **between** engine calls in
+`redact_steps.rs`, and the geometry module took no deadline at all. `CLAUDE.md` allows overshoot of
+"up to one engine call", and this was not an engine call. It was burrow's own loop, so the
+overshoot was whatever the loop cost.
+
+### What it cost, measured before the change
+
+Native release build, aarch64, `max_duration_ms = 100`, through the public operation. **Every
+factor was varied**: spans, removals, kept glyphs, glyphs per string, form draws and form size.
+
+| shape | file | before | after |
+|---|--:|--:|--:|
+| 60,000 carrying spans over 60,000 removals | 3.96 MB | 229 ms | 201 ms |
+| 1 span, 140,000 removals | 3.50 MB | 265 ms | 121 ms |
+| 140,000 kept glyphs | 3.50 MB | 218 ms | 117 ms |
+| one form of 1,000,000 operations, drawn once | 2.00 MB | 170 ms | 150 ms |
+| a 100,000-operation form drawn 256 times | 203 KB | 1.89 s | 104 ms |
+| a 10,000-operation form drawn 4,000 times | 53 KB | 1.74 s | 101 ms |
+| a 100,000-operation form drawn 1,024 times | 209 KB | 4.44 s | 104 ms |
+| **a 100,000-operation form drawn 4,000 times** | **233 KB** | **17.86 s** | **104 ms** |
+
+Every row was refused by `max_duration_ms` both before and after. **The rule was always right,
+and the time was not**, which is why the document-level test asserts both.
+
+The spans-and-removals shapes are capped by `MAX_TOTAL_OPERANDS` and `MAX_GLYPHS` before they can
+grow: 150,000 spans or 20,000 strings of 200 glyphs are refused by those ceilings within about
+110 ms. The shape those ceilings did not bound was the product: a form is walked again at every
+`Do`, so the cost is draws x form size. `MAX_FORM_DRAWS` (4,096) times `MAX_OPERATIONS` (1M) is
+about 180 s at the measured rate, from a file that compresses to almost nothing.
+
+### What changed
+
+`geometry::Watch` carries the operation's deadline and clock into the walk. That is the same
+`Deadline` and the same clock, never a second one, since a second clock is how `max_duration_ms`
+once stopped existing (M1 PR 2). Each of the four walks reads it at two points:
+
+- `glyphs_in` (with every form it recurses into), the covering-span walk, `glyph_edits` and the
+  Type 3 procedure scan each read the clock **once their stream is lexed**;
+- they read it again **every `WATCH_EVERY` (256) operations** after that.
+
+A form is re-walked at every `Do`, so every draw is read at least once. Expiry is the ordinary
+`Error::LimitExceeded` naming `max_duration_ms`. The deadline is the caller's ceiling and not a
+property of the document, so it is not a `Refusal`.
+
+`remove_glyphs` and `remove_glyphs_across` have no production caller and take the watch too. A
+public walk without a deadline is the next caller's denial of service.
+
+### Three steps outside the walk, found by review and measured
+
+The security review of this change named three loops in the redaction steps that read no
+deadline. They predate #175. Each was measured here before it was fixed, release build, through
+the public operation, at `max_duration_ms = 100`:
+
+| shape | file | before | after |
+|---|--:|--:|--:|
+| 4,000 `/CharProcs` names over one 100,000-operation procedure | 52 KB | 9.9 s | 0.02 s, redacted |
+| 4,000 fonts sharing one full-range `/ToUnicode` | 500 KB | 36 s | 0.11 s, `max_duration_ms` |
+| a `/W` repeating `0 65535 500` 100,000 times | 1.2 MB | **175 s** | 0.06 s, `widths-too-many` |
+
+- **Type 3 procedures are scanned once per object**, not once per name, and the scan itself is
+  now a watched walk (`check_type_three_procedure` takes the `Watch`).
+- **`cut_fonts` reads the deadline per font.** The 4,000-font document still costs about 40 s
+  under the default 60 s budget, because every font really is narrowed. It is bounded by the
+  budget now, and not by nothing.
+- **`/W` is capped at 131,072 assignments** (`MAX_W_ASSIGNMENTS`, twice the CID space) and
+  refused by name past it. `parse_w` runs inside the glyph walk, between the watch's reads, so no
+  deadline could have stopped it; only a ceiling does.
+
+### The residual, with its number
+
+**Decoding and lexing one stream is still one uncooperative step**, and its cost is linear in
+the stream's **decoded** size. The first version of this amendment said "one lex, about 255 ms
+at the operand ceiling". That was wrong, and both reviews showed it: the lexer's ceilings count
+operations and operands, not bytes. Whitespace, comments and long strings cost lex time without
+counting against either, at about 330 ms per GiB.
+
+What does bound the decoded size is qpdf's per-filter memory ceiling, which burrow sets to
+**256 MiB** for Flate, DCT, PNG predictors, RunLength and TIFF (`codes::qpdf::FILTER_MAX_MEMORY`).
+A 1 GiB Flate stream never reaches the walk: qpdf refuses it at the ceiling, measured in 0.68 s.
+Just under the ceiling, measured through the operation at `max_duration_ms = 100`:
+
+| stream | file | refused at |
+|---|--:|--:|
+| a form of 64 MiB of whitespace | 66 KB | 0.28 s |
+| **a form of 250 MiB of whitespace** | **256 KB** | **1.03 s** |
+| the same form drawn eight times | 256 KB | 0.92 s |
+
+So **the worst remaining overshoot measured is about 0.9 s**: one decode plus one lex of a
+250 MiB stream, natively. Under the default 60 s budget the eight-draw file takes 31 s and
+succeeds, which is the budget working as documented rather than a gap in it. Not measured:
+- the web engine, which is slower per operation;
+- `/LZWDecode`, which is not among the filter families qpdf's ceiling covers.
+
+A tighter bound is a byte ceiling on decoded content below qpdf's. That would refuse real
+documents that burrow accepts today, so it is a decision about ADR 0007's limits and not a
+detail of this change; it is filed as #189 rather than made here.
+
+### How it is held
+
+- `every_walk_reads_the_clock_once_its_stream_is_lexed` and
+  `every_walk_reads_the_clock_while_it_works`, over four walks: the glyph walk, the covering-span
+  walk, `glyph_edits` and the Type 3 procedure scan. They use a clock that moves one millisecond
+  per read, and each is built so exactly one of a walk's two reads expires the budget. **Deleting
+  any of the eight reads fails one of them by name**, and the sweep that showed this is in the
+  PR.
+- `a_form_drawn_many_times_is_read_at_every_draw` covers the product shape, deterministically.
+- `a_form_drawn_thousands_of_times_is_stopped_by_its_deadline_inside_the_walk`. This one runs the
+  public operation on the full 17.9 s shape under a 2 s ceiling, and asserts the rule.
+- One test per step above, each through the public operation under a 2 s ceiling. The `/W` test
+  also has a near-miss: one full range is not refused.
+- The production call sites no longer build their own watch. `QpdfRedaction::watch` and
+  `QpdfWitness::watch` are the only constructors. Replacing the deadline in either fails a test:
+  the document test for the first, and `the_read_backs_glyph_walks_spend_the_operations_deadline`
+  for the second. That one uses a clock parked at the budget, so only the walk's own read can
+  expire it.
+- **What the tests do not pin is position.** A clock that moves per read cannot tell a read
+  just before the lex from one just after it. The code puts it after, and a move would cost at
+  most one stream's lex.
+

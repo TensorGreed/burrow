@@ -34,7 +34,7 @@ use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, NamedProperties, PropertyList, ScopedFont, carried_text_edits,
+    FormsReached, Glyph, NamedProperties, PropertyList, ScopedFont, Watch, carried_text_edits,
     check_form_sharing, check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
@@ -97,6 +97,16 @@ pub(crate) struct QpdfRedaction {
 }
 
 impl QpdfRedaction {
+    /// The operation's deadline, as the geometry walk reads it.
+    ///
+    /// THE ONLY PLACE ONE IS BUILT, so every walk this type runs spends the same deadline on the
+    /// same clock. A code review replaced the deadline at each of the seven call sites in turn
+    /// with a fresh one, and six of the seven swaps failed no test; one constructor is one site
+    /// to get right and one site a test can reach.
+    fn watch(&self) -> Watch<'_> {
+        Watch::new(self.deadline, self.clock.as_ref())
+    }
+
     /// Begin a redaction of `page` over `region`.
     ///
     /// # Errors
@@ -344,7 +354,7 @@ impl Steps for QpdfRedaction {
 
         // EVERY GLYPH, then the ones the region reaches. The conservative box, not the advance
         // box: a glyph's ink can sit far from its origin, so uncertainty removes more.
-        let glyphs = glyphs_in(contents.bytes(), &resources)?;
+        let glyphs = glyphs_in(contents.bytes(), &resources, &self.watch())?;
         let cut: Vec<Glyph> = glyphs
             .iter()
             .filter(|glyph| glyph.conservative_box().intersects(&region))
@@ -377,7 +387,7 @@ impl Steps for QpdfRedaction {
             .iter()
             .map(|glyph| glyph.source.font.clone())
             .collect();
-        check_type_three(&resources, &drawn_fonts)?;
+        check_type_three(&resources, &drawn_fonts, &self.watch())?;
 
         // THE MARKED-CONTENT RULE, per stream, because a `Span` indexes the stream it was read
         // from. The page's own content first, then each form the removal reaches -- a form
@@ -409,6 +419,7 @@ impl Steps for QpdfRedaction {
             None,
             &FormsReached::Named(&scope.page_names),
             &scope.page_properties,
+            &self.watch(),
         )?
         .is_empty();
         let mut carrying_forms: Vec<u64> = Vec::new();
@@ -432,6 +443,7 @@ impl Steps for QpdfRedaction {
                 Some(*form),
                 &FormsReached::Named(names),
                 properties,
+                &self.watch(),
             )?
             .is_empty()
             {
@@ -511,6 +523,7 @@ impl Steps for QpdfRedaction {
                     &mine,
                     &FormsReached::Named(&self.page_draws),
                     &self.page_properties,
+                    &self.watch(),
                 )?;
                 if parts.len() != elements.len() {
                     // probe-allowed: a burrow invariant, not a judgement about the file
@@ -556,6 +569,7 @@ impl Steps for QpdfRedaction {
                     &mine,
                     &FormsReached::Named(draws),
                     properties,
+                    &self.watch(),
                 )?;
                 let edited = parts.into_iter().next().ok_or_else(|| {
                     // probe-allowed: a burrow invariant, not a judgement about the file
@@ -608,7 +622,7 @@ impl Steps for QpdfRedaction {
             }
             let content = page.page_content()?;
             let resources = PageResources::of(&page)?;
-            for glyph in &glyphs_in(&content, &resources)? {
+            for glyph in &glyphs_in(&content, &resources, &self.watch())? {
                 // KEYED BY THE FONT'S OBJECT, not its resource name: two names can mean one
                 // object and one name can mean different objects on different pages, and font
                 // surgery edits objects. `core/CLAUDE.md`'s identity rule, one level up.
@@ -659,6 +673,11 @@ impl Steps for QpdfRedaction {
         scoped.dedup();
 
         for scoped_font in &scoped {
+            // PER FONT: a page may name 4,096, and narrowing one parses its `/ToUnicode` (up to
+            // 65,536 entries) and rewrites its `/Widths`. Checked only on entry, 4,000 fonts
+            // sharing one full-range `/ToUnicode` ran **36 s** against a 100 ms budget, from a
+            // 500 KB file.
+            self.deadline.checkpoint(self.clock.as_ref())?;
             let Ok(font) = resources.font_in_scope(scoped_font) else {
                 // A name that resolves nowhere is not a font to cut. `font_names` yields the
                 // page's own keys, which always resolve, and a glyph's name resolved once for
@@ -942,11 +961,23 @@ fn check_contents_sharing(
 /// Type 3 font the page draws with is scanned. That over-refuses, which is the direction that
 /// does not leak, and it costs nothing measurable: the redaction corpus's Type 3 documents
 /// still redact, because a bitmap glyph's procedure draws an inline image and shows no text.
-fn check_type_three(resources: &PageResources<'_>, drawn: &BTreeSet<ScopedFont>) -> Result<()> {
+///
+/// # Each procedure once, and the deadline read per procedure
+///
+/// `/CharProcs` maps names to streams, and nothing stops four thousand names mapping to one
+/// stream. Scanned per name, a 52 KB file of 4,000 keys over one 100,000-operation procedure
+/// took **9.9 s** against a 100 ms budget -- a security review found it, and it was measured.
+/// So procedures are scanned once per object identity, and `watch` is read inside every scan.
+fn check_type_three(
+    resources: &PageResources<'_>,
+    drawn: &BTreeSet<ScopedFont>,
+    watch: &Watch<'_>,
+) -> Result<()> {
     const SUBTYPE: Name = Name::literal(b"/Subtype\0");
     const TYPE_THREE: Name = Name::literal(b"/Type3\0");
     const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
 
+    let mut scanned: BTreeSet<u64> = BTreeSet::new();
     for font_name in drawn {
         let font = resources.font_in_scope(font_name)?;
         let subtype = font.key(&SUBTYPE);
@@ -962,6 +993,11 @@ fn check_type_three(resources: &PageResources<'_>, drawn: &BTreeSet<ScopedFont>)
             if entry.type_code() != object_type::STREAM {
                 continue;
             }
+            // A STREAM IS ALWAYS INDIRECT, so its identity is never the direct-object `(0, 0)`
+            // that would make two different procedures look like one.
+            if !scanned.insert(pack(entry.object()?)) {
+                continue;
+            }
             let Some(procedure) = entry.stream_data()? else {
                 // Undecodable, so what it draws is unknown, and unknown is not "no text".
                 return Err(Error::Malformed(
@@ -970,7 +1006,7 @@ fn check_type_three(resources: &PageResources<'_>, drawn: &BTreeSet<ScopedFont>)
                         .to_owned(),
                 ));
             };
-            check_type_three_procedure(&procedure)?;
+            check_type_three_procedure(&procedure, watch)?;
         }
     }
     Ok(())

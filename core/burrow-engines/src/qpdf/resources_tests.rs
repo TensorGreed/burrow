@@ -7,13 +7,13 @@
 
 use std::sync::Arc;
 
-use burrow_types::{Clock, Limits, ManualClock};
+use burrow_types::{Clock, Deadline, Limits, ManualClock};
 
 use super::handle::ObjectHandle;
 use super::resources::PageResources;
 use super::{Document, open_document};
 use crate::OpenOptions;
-use crate::pdfsyntax::geometry::glyphs_in;
+use crate::pdfsyntax::geometry::{Watch, glyphs_in};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -41,7 +41,7 @@ fn walk(name: &str) -> Result<usize, String> {
     let page = unsafe { ObjectHandle::page(&document, 0) };
     let content = page.page_content().map_err(|error| format!("{error:?}"))?;
     let resources = PageResources::of(&page).map_err(|error| format!("{error:?}"))?;
-    glyphs_in(&content, &resources)
+    glyphs_in(&content, &resources, &unwatched())
         .map(|glyphs| glyphs.len())
         .map_err(|error| format!("{error:?}"))
 }
@@ -155,7 +155,7 @@ fn walk_bytes(bytes: &[u8]) -> Result<usize, String> {
     let page = unsafe { ObjectHandle::page(&document, 0) };
     let content = page.page_content().map_err(|e| format!("{e:?}"))?;
     let resources = PageResources::of(&page).map_err(|e| format!("{e:?}"))?;
-    glyphs_in(&content, &resources)
+    glyphs_in(&content, &resources, &unwatched())
         .map(|glyphs| glyphs.len())
         .map_err(|e| format!("{e:?}"))
 }
@@ -245,4 +245,14 @@ fn how_much_of_the_corpus_can_cut_its_fonts() {
         examined >= 15,
         "the survey examined {examined} fixture(s), too few to be both corpora"
     );
+}
+
+/// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
+///
+/// For tests of what the walk computes. The deadline itself is tested with a clock that moves;
+/// a stopped one here is deliberate and named so, because a stopped clock in a production path is
+/// exactly how `max_duration_ms` stopped existing once before.
+fn unwatched() -> Watch<'static> {
+    static STOPPED: ManualClock = ManualClock::new(0);
+    Watch::new(Deadline::start(&STOPPED, &Limits::DEFAULT), &STOPPED)
 }

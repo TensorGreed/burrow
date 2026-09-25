@@ -89,6 +89,15 @@ fi
 
 python3 "$root/tools/check-redaction-corpus.py"
 
+# AND THE "AFTER" HALF (#176): every placement's `expect_after`, judged by its own witness on a real
+# run of the operation. It was a promise in the manifest until #134 existed, and a near-miss that
+# refused where it should have redacted went unnoticed because nothing compared the two.
+# UNSET FIRST: the variable filters the run to named fixtures for the self-test, and one left in a
+# shell would make this gate a partial sweep. The checker prints FILTERED when it is set; this
+# makes sure the gate never is.
+unset BURROW_AFTER_ONLY
+python3 "$root/tools/check-redaction-corpus.py" --after
+
 # THE MANIFEST, AS JSON, BESIDE THE DOCUMENTS IT DESCRIBES. The Rust suites need to derive their
 # expectations from it -- which fixtures a check covers, which canary each carries -- and they
 # have `serde_json` and no TOML parser. Converting here, from the one file, keeps the manifest the

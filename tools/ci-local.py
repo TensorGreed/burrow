@@ -4,7 +4,7 @@
 MODES
 
     tools/ci-local.py --changed    the jobs the change can affect  -- BEFORE EVERY PUSH
-    tools/ci-local.py              every job                       -- ONCE PER PR, BEFORE MERGE
+    tools/ci-local.py              every job                       -- on demand; the merge gate is CI
     tools/ci-local.py --changed --since <ref>   ... measured against <ref> rather than upstream
     tools/ci-local.py --check      parity only, runs nothing
     tools/ci-local.py --list       the coverage table
@@ -1953,7 +1953,7 @@ def main(argv: list[str]) -> int:
                 print(f"  {name:<24} {why}")
         print(
             "\nA SELECTIVE SWEEP IS NOT THE FULL ONE. This is the pre-push gate;\n"
-            "`tools/ci-local.py` with no arguments is what runs before a merge."
+            "The merge gate is GitHub CI, green on the PR's exact head commit."
         )
 
     if failed:

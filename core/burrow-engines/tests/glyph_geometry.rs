@@ -28,10 +28,10 @@ mod support;
 
 use burrow_engines::pdfsyntax::geometry::{
     Encoding, Form, FormUses, Glyph, GlyphMetrics, Matrix, Rect as GeometryRect, Refusal,
-    Resources, check_form_sharing, glyphs_in, remove_glyphs,
+    Resources, Watch, check_form_sharing, glyphs_in, remove_glyphs,
 };
 use burrow_engines::pdfsyntax::region::Region;
-use burrow_types::Result;
+use burrow_types::{Deadline, Limits, ManualClock, Result};
 use support::char_box_oracle::{
     MIN_FIXTURE_DISPLACEMENT_PT, OracleChar, Rect, TOLERANCE_PT, assert_fixture_is_discriminating,
     chars_on_page, ink_overlaps, origins_close, page_size,
@@ -464,8 +464,12 @@ fn a_vertical_run_laid_out_by_positioning_is_not_a_vertical_writing_mode() {
     // THE HALF THE NAME PROMISES. The walk is not refused, and it puts every glyph where
     // PDFium puts it -- which is what "walked correctly by the ordinary horizontal machinery"
     // has to mean if the sentence is to carry the weight ADR 0029 puts on it.
-    let walked = glyphs_in(format!("BT\n{body}\nET\n").as_bytes(), &Helvetica)
-        .expect("a positioned vertical run is not refused");
+    let walked = glyphs_in(
+        format!("BT\n{body}\nET\n").as_bytes(),
+        &Helvetica,
+        &unwatched(),
+    )
+    .expect("a positioned vertical run is not refused");
     assert_eq!(
         walked.len(),
         chars.len(),
@@ -554,14 +558,23 @@ fn a_padded_operand_run_never_places_a_glyph_away_from_the_renderer() {
     );
 
     // burrow agrees with the renderer on the honest page...
-    let walked = glyphs_in(format!("BT\n{honest}\nET\n").as_bytes(), &Helvetica).expect("walks");
+    let walked = glyphs_in(
+        format!("BT\n{honest}\nET\n").as_bytes(),
+        &Helvetica,
+        &unwatched(),
+    )
+    .expect("walks");
     assert_eq!(walked.len(), 1);
     assert!((walked[0].origin.0 - honest_chars[0].origin.0).abs() < TOLERANCE_PT);
 
     // ...and REFUSES the padded one rather than placing it at the origin. The refusal is named:
     // accepting "some error" here would pass with the arity check deleted, because a walk that
     // read the first six operands and then hit `(A) Tj` with no font would refuse too.
-    let outcome = glyphs_in(format!("BT\n{padded}\nET\n").as_bytes(), &Helvetica);
+    let outcome = glyphs_in(
+        format!("BT\n{padded}\nET\n").as_bytes(),
+        &Helvetica,
+        &unwatched(),
+    );
     match outcome {
         Err(error) => assert!(
             Refusal::OperandCountMismatch.caught(&error),
@@ -763,7 +776,11 @@ fn an_embedded_cmap_declaring_wmode_one_is_refused_whatever_it_is_called() {
             program,
         },
     };
-    match glyphs_in(b"BT /F1 24 Tf 100 700 Td <0024> Tj ET", &resources) {
+    match glyphs_in(
+        b"BT /F1 24 Tf 100 700 Td <0024> Tj ET",
+        &resources,
+        &unwatched(),
+    ) {
         Err(error) => assert!(
             Refusal::VerticalWriting.caught(&error),
             "refused, but by a different rule: {error:?}"
@@ -791,8 +808,12 @@ fn the_horizontal_twin_of_that_document_is_not_refused() {
             program,
         },
     };
-    let glyphs = glyphs_in(b"BT /F1 24 Tf 100 700 Td <0024> Tj ET", &resources)
-        .expect("the horizontal twin must walk");
+    let glyphs = glyphs_in(
+        b"BT /F1 24 Tf 100 700 Td <0024> Tj ET",
+        &resources,
+        &unwatched(),
+    )
+    .expect("the horizontal twin must walk");
     assert_eq!(glyphs.len(), 1);
 }
 
@@ -808,7 +829,11 @@ fn a_resolver_that_cannot_read_the_cmap_stream_is_refused_rather_than_assumed_ho
     let resources = CidFont {
         encoding: Encoding::UnreadableCMap,
     };
-    match glyphs_in(b"BT /F1 24 Tf 100 700 Td <0024> Tj ET", &resources) {
+    match glyphs_in(
+        b"BT /F1 24 Tf 100 700 Td <0024> Tj ET",
+        &resources,
+        &unwatched(),
+    ) {
         Err(error) => assert!(
             Refusal::UnreadableCMap.caught(&error),
             "refused, but by a different rule: {error:?}"
@@ -1016,11 +1041,13 @@ fn origins_across_a_redaction(body: &str, cut: usize) -> (Vec<OracleChar>, Vec<O
     let content = format!("BT\n{body}\nET\n");
     let before = drawn_chars(&page_with_declared_widths(body));
 
-    let glyphs = glyphs_in(content.as_bytes(), &DeclaredWidths).expect("the fixture walks");
+    let glyphs =
+        glyphs_in(content.as_bytes(), &DeclaredWidths, &unwatched()).expect("the fixture walks");
     let removed = glyphs
         .get(cut..=cut)
         .expect("the fixture has a glyph at that index");
-    let edited = remove_glyphs(content.as_bytes(), None, removed).expect("the redaction applies");
+    let edited = remove_glyphs(content.as_bytes(), None, removed, &unwatched())
+        .expect("the redaction applies");
 
     // The edited stream goes back into a page the same way the original did.
     let text = String::from_utf8(edited).expect("the rewrite is text");
@@ -1289,7 +1316,7 @@ fn the_shared_form_is_refused_and_the_letterhead_case_is_not() {
     let form_body = "/F1 10 Tf BT 0 0 Td (SHARED) Tj ET";
     let resources = TestResources::with_form(6, form_body);
     let page = b"q 1 0 0 1 100 700 cm /Fm0 Do Q /F1 10 Tf BT 0 0 Td (BODY) Tj ET";
-    let glyphs = glyphs_in(page, &resources).expect("walks");
+    let glyphs = glyphs_in(page, &resources, &unwatched()).expect("walks");
 
     let inside: Vec<Glyph> = glyphs
         .iter()
@@ -1646,4 +1673,14 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         "all three real-producer documents must redact; a refusal that covered them would \
          leave every assertion above unexecuted and this test still green"
     );
+}
+
+/// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
+///
+/// For tests of what the walk computes. The deadline itself is tested with a clock that moves;
+/// a stopped one here is deliberate and named so, because a stopped clock in a production path is
+/// exactly how `max_duration_ms` stopped existing once before.
+fn unwatched() -> Watch<'static> {
+    static STOPPED: ManualClock = ManualClock::new(0);
+    Watch::new(Deadline::start(&STOPPED, &Limits::DEFAULT), &STOPPED)
 }
