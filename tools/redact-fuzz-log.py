@@ -91,6 +91,24 @@ MUST_DROP: list[tuple[str, str]] = [
         "thread '<unnamed>' panicked at src/x.rs:1:2: attempt to add with overflow",
         "a location with a message on the same line",
     ),
+    # ONE NEAR-MISS PER WAY THE PANIC RULE COULD BE LOOSENED, so each loosening fails the probe.
+    # A review widened each part of the rule in turn and the probe stayed green for all four.
+    (
+        "SECRETINPUT thread '<unnamed>' (1) panicked at src/x.rs:1:2:",
+        "text before the location: the rule's `^` anchor",
+    ),
+    (
+        "thread '<unnamed>' (1) panicked at src/\"SECRETINPUT\".rs:1:2:",
+        "a path carrying quotes: the rule's path character class",
+    ),
+    (
+        "thread 'SECRET INPUT' (1) panicked at src/x.rs:1:2:",
+        "a thread name with a space: the rule's thread-name character class",
+    ),
+    (
+        "thread '<unnamed>' (SECRETINPUT) panicked at src/x.rs:1:2:",
+        "a thread id that is not a number: the rule's id group",
+    ),
 ]
 
 #: Lines that ARE allowed but must come out shortened, with what must survive and what must not.

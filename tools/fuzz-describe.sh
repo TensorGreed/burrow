@@ -32,7 +32,17 @@ trap 'echo "::error title=DESCRIBE STEP FAILURE (tooling, not a crash)::died at 
 # in it, means the step died before fuzzing -- a compile error in the target, a linker
 # failure against the instrumented archive. That is not a crash and must not be
 # reported as one.
-if [ ! -s "$log" ] || ! grep -qE 'ERROR: (AddressSanitizer|libFuzzer)|SUMMARY:' "$log"; then
+# THE REPORT, SLICED FROM ITS OWN BANNER: `==N==ERROR:` (ASan) or `==N== ERROR:` (libFuzzer) at the
+# start of a line. Everything before it -- coverage lines, and a Rust panic message that the CMap
+# target fills with its whole input -- is not the report, and reading it was two defects found by
+# security review (2026-09-25): an input carrying `ERROR: libFuzzer: ` became the published
+# verdict, and a real-sized log's coverage lines killed this step (see `sed -n 1p` below).
+BANNER='^==[0-9]+== ?ERROR: (AddressSanitizer|libFuzzer):'
+report="$(mktemp)"
+trap 'rm -f "$report"' EXIT
+awk -v banner="$BANNER" 'found || $0 ~ banner { found = 1; print }' "$log" > "$report" 2>/dev/null || true
+
+if [ ! -s "$log" ] || [ ! -s "$report" ]; then
   {
     echo "The fuzz step failed **without producing a sanitiser report**: this is a"
     echo "build or infrastructure failure, not a crash. Read the step log."
@@ -55,8 +65,11 @@ fi
 # stack overflow surfaces when ASan's own detector does not engage. That is #119's
 # class, reported as a timeout. Take the rest of the line and trim it instead of
 # trying to spell the set of verdicts.
-verdict="$({ grep -hoE 'ERROR: (AddressSanitizer|libFuzzer): .*' "$log" || true; } \
-  | head -1 | cut -c1-120)"
+# `sed -n 1p`, NEVER `head -1`, IN EVERY PIPELINE HERE. `head` exits after one line, the stage
+# before it dies of SIGPIPE (141), `pipefail` makes that the pipeline's status and `-e` ends the
+# step -- measured by review at ~1,000 distinct offsets, which a real seeded log exceeds.
+verdict="$({ grep -hoE "$BANNER.*" "$report" || true; } | sed -n 1p \
+  | sed -E 's/^==[0-9]+== ?//' | cut -c1-120)"
 echo "- verdict: \`${verdict:-unknown (marker present but unparsed; read the log)}\`" \
   >> "$GITHUB_STEP_SUMMARY"
 
@@ -65,8 +78,9 @@ echo "- verdict: \`${verdict:-unknown (marker present but unparsed; read the log
 # resolve. Prefer the symbols when they are there. Either way this publishes a NAME,
 # never a byte of input.
 # `{ grep … || true; }`: THE LINE THAT KILLED THIS STEP. See the trap above.
-frame="$({ grep -hoE ' in [A-Za-z_][A-Za-z0-9_:]*' "$log" || true; } | sed 's/^ in //' \
-  | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
+# FRAME LINES OF THE REPORT ONLY (`    #3 0x… in Name`), as the classifier reads them.
+frame="$({ grep -hoE '^[[:space:]]*#[0-9]+ 0x[0-9a-f]+ in [A-Za-z_][A-Za-z0-9_:]*' "$report" || true; } \
+  | sed 's/.* in //' | sort | uniq -c | sort -rn | sed -n 1p | awk '{print $2}')"
 if [ -n "${frame:-}" ]; then
   echo "- hottest frame: \`$frame\` (from a symbolised report)" >> "$GITHUB_STEP_SUMMARY"
 else
@@ -75,8 +89,8 @@ else
   # directory. The first version looked in the wrong place, so `addr2line` never ran
   # and the step reported "no offset in the report" -- a claim about the log -- when
   # the offset was there and the binary was not.
-  offset="$({ grep -hoE "$target\\+0x[0-9a-f]+" "$log" || true; } \
-    | sed 's/.*+//' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
+  offset="$({ grep -hoE "^[[:space:]]*#[0-9]+ 0x[0-9a-f]+ +\\([^ ]*$target\\+0x[0-9a-f]+\\)" "$report" || true; } \
+    | sed -E 's/.*\+(0x[0-9a-f]+)\)$/\1/' | sort | uniq -c | sort -rn | sed -n 1p | awk '{print $2}')"
   if [ -z "${offset:-}" ]; then
     echo "- hottest frame: no offset in the report and no symbols either" \
       >> "$GITHUB_STEP_SUMMARY"
@@ -86,7 +100,7 @@ else
     echo "- hottest frame: offset \`$offset\`, but \`$binary\` is NOT on disk -- this" \
       "step could not symbolise and is not doing its job" >> "$GITHUB_STEP_SUMMARY"
   else
-    resolved="$(addr2line -f -C -e "$binary" "$offset" 2>/dev/null | head -1)"
+    resolved="$(addr2line -f -C -e "$binary" "$offset" 2>/dev/null | sed -n 1p)"
     echo "- hottest frame (\`$offset\`): \`${resolved:-unresolved}\`" \
       >> "$GITHUB_STEP_SUMMARY"
   fi

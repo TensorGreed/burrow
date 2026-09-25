@@ -49,10 +49,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 LEDGER = Path(__file__).resolve().parent.parent / "fuzz" / "known-crashes.toml"
 
+#: THE REPORT'S OWN BANNER, AT THE START OF A LINE: `==1==ERROR: AddressSanitizer: …` or libFuzzer's
+#: `==42== ERROR: libFuzzer: …`. Unanchored, `ERROR: libFuzzer: ` anywhere matched -- including in a
+#: Rust panic MESSAGE printed before the banner, which the CMap target fills with its whole input
+#: (`{:?}`). Found by security review (2026-09-25): an input containing that text became "the
+#: verdict" and reached the public step summary, and `report_of` started its slice there. The
+#: residual: a panic message that prints input with a RAW newline (Display, not Debug) could still
+#: forge a line-start banner; no target does that today.
 #: The sanitiser's verdict, normalised to the class token: `heap-use-after-free`,
 #: `stack-overflow`, `SEGV`. Uppercase is included deliberately -- `[a-z-]` silently dropped
 #: `SEGV`, which is exactly how #119's class surfaces when ASan's own detector does not engage.
-VERDICT = re.compile(r"ERROR: (?:AddressSanitizer|libFuzzer):\s+(.+)")
+VERDICT = re.compile(r"^==\d+== ?ERROR: (?:AddressSanitizer|libFuzzer):\s+(.+)", re.M)
 
 #: Where the verdict stops and the incident's details begin. libFuzzer's verdicts are PHRASES --
 #: `deadly signal`, `timeout after 10 seconds`, `out-of-memory (malloc(…))` -- and capturing a
@@ -259,22 +266,22 @@ PROBE_LEDGER = [
 #: Each rule against a report it must classify and one it must not.
 PROBES = [
     ("a distinct frame matches its own entry",
-     "ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
+     "==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
      "    #0 0x1 in Other::Frame(Thing)\n", 3),
     ("a shared frame under one verdict",
-     "ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
+     "==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n"
      "    #3 0x1 in Shared::Frame(Thing)\n", 1),
     ("THE SAME FRAME under a different verdict is a DIFFERENT defect",
-     "ERROR: AddressSanitizer: stack-overflow on address 0x1\n"
+     "==1==ERROR: AddressSanitizer: stack-overflow on address 0x1\n"
      "    #7 0x1 in Shared::Frame(Thing)\n", 2),
     ("an UPPERCASE verdict is not dropped",
-     "ERROR: AddressSanitizer: SEGV on unknown address 0x0\n"
+     "==1==ERROR: AddressSanitizer: SEGV on unknown address 0x0\n"
      "    #0 0x1 in Other::Frame(Thing)\n", None),
 ]
 
 #: A report that must match NOTHING: a real defect we do not own yet.
 UNKNOWN = (
-    "ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1\n"
+    "==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x1\n"
     "    #0 0x1 in Something::New(Thing)\n"
 )
 

@@ -31,7 +31,7 @@ trap cleanup EXIT
 
 pass=0
 fail=0
-EXPECTED_CASES=12
+EXPECTED_CASES=14
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL $1" >&2; fail=$((fail + 1)); }
 
@@ -105,9 +105,9 @@ python3 - "$describe" "$copy" <<'PY'
 import sys
 from pathlib import Path
 source = Path(sys.argv[1]).read_text()
-old = "{ grep -hoE ' in [A-Za-z_][A-Za-z0-9_:]*' \"$log\" || true; }"
+old = "{ grep -hoE '^[[:space:]]*#[0-9]+ 0x[0-9a-f]+ in [A-Za-z_][A-Za-z0-9_:]*' \"$report\" || true; }"
 assert source.count(old) == 1, "the guarded frame grep moved; update this meta-test"
-mutated = source.replace(old, "grep -hoE ' in [A-Za-z_][A-Za-z0-9_:]*' \"$log\"", 1)
+mutated = source.replace(old, "grep -hoE '^[[:space:]]*#[0-9]+ 0x[0-9a-f]+ in [A-Za-z_][A-Za-z0-9_:]*' \"$report\"", 1)
 assert mutated != source
 Path(sys.argv[2]).write_text(mutated)
 PY
@@ -122,6 +122,40 @@ fi
 rm -f "$copy"
 copy=""
 
+# 5b. A REAL-SIZED LOG. Thousands of coverage lines ahead of the report killed this step by SIGPIPE
+#     (`sort | head -1` under pipefail, exit 141, measured by review from ~1,000 offsets) -- and it
+#     read them as candidate frames. 3,000 here, with a report frame that must be the one named.
+big="$work/big.log"
+{
+  for n in $(seq 1 3000); do
+    printf '\tNEW_FUNC[1/1]: 0x%x  (/w/fuzz/target/x/release/t+0x%x) (BuildId: ab)\n' "$n" "$((65536 + n))"
+  done
+  printf '==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n'
+  printf '    #0 0x55  (/w/fuzz/target/x/release/t+0x44218f) (BuildId: ab)\n'
+  printf '    #1 0x56  (/w/fuzz/target/x/release/t+0x44218f) (BuildId: ab)\n'
+} > "$big"
+run "$describe" t "$big" "$work/no-such-binary" "$work/no-artifacts"
+expect "a log with 3,000 coverage lines completes and names the REPORT's offset" 0 "offset \`0x44218f\`"
+
+# 5c. A PANIC MESSAGE CARRYING THE BANNER TEXT. The CMap target's assertion formats its whole input
+#     into the message printed before libFuzzer's banner; unanchored, this step published it as the
+#     verdict (security review, 2026-09-25).
+forged="$work/forged.log"
+{
+  printf "thread '<unnamed>' (1) panicked at fuzz_targets/x.rs:1:2:\n"
+  printf '"prefix ERROR: libFuzzer: SECRETINPUTBYTES more input"\n'
+  printf '==42== ERROR: libFuzzer: deadly signal\n'
+  printf '    #0 0x1 in Some::Function(Thing)\n'
+} > "$forged"
+run "$describe" t "$forged" "$work/no-such-binary" "$work/no-artifacts"
+if [ "$status" -eq 0 ] && grep -qF "libFuzzer: deadly signal" <<<"$summary" \
+  && ! grep -qF "SECRETINPUTBYTES" <<<"$out$summary"; then
+  ok "a panic message carrying the banner text is neither the verdict nor published"
+else
+  bad "a panic message carrying the banner text is neither the verdict nor published (exit $status)"
+  printf '%s\n' "$summary" | sed 's/^/         /' >&2
+fi
+
 echo "fuzz-classify.sh:"
 
 # A stub classifier that prints a line and exits with the code it is given.
@@ -135,7 +169,7 @@ expect "a clean fuzz run passes" 0 "no crash"
 
 # 7. A failed fuzz step with no report is an INFRASTRUCTURE failure, under its own heading.
 run env BURROW_CLASSIFIER="$stub" "$classify" t 1 "$nocrash" "$work/no-such-binary"
-expect "a failure with no report is titled INFRASTRUCTURE FAILURE" 1 "INFRASTRUCTURE FAILURE"
+expect "a failure with no report is INFRASTRUCTURE FAILURE, exit 4, never the new-finding 1" 4 "INFRASTRUCTURE FAILURE"
 
 # 8-11. Each classifier exit code under its own heading.
 for pair in "0|KNOWN -- owned by a filed issue" "1|NEW FINDING" \

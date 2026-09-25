@@ -14,14 +14,14 @@ work="$(mktemp -d)"
 mutant="$here/check-known-crashes.MUTANT.py"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=14
+EXPECTED_CASES=16
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 bad() { echo "  FAIL $1" >&2; fail=$((fail + 1)); }
 
 report() {
-  printf 'ERROR: AddressSanitizer: %s on address 0x1\n    #0 0x1 in %s(QPDFObjectHandle)\n' \
+  printf '==1==ERROR: AddressSanitizer: %s on address 0x1\n    #0 0x1 in %s(QPDFObjectHandle)\n' \
     "$1" "$2" > "$work/report.log"
 }
 
@@ -105,7 +105,7 @@ expect "a build failure is refused as not-a-crash-report, as a TOOLING exit" 3 "
 
 # 8. AN UNRESOLVABLE REPORT IS NOT A FINDING. With no frames nothing can match, and calling that
 #    a new defect announces a known one as new. Measured as a real defect in the first version.
-printf 'ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n    #0 0x55 (/nope/x+0x12)\n' \
+printf '==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n    #0 0x55 (/nope/x+0x12)\n' \
   > "$work/report.log"
 expect "a report whose frames cannot be resolved says so, as a TOOLING exit, not a finding" \
   3 "UNCLASSIFIED"
@@ -125,12 +125,14 @@ else
   sed 's/^/         /' <<<"$out" >&2
 fi
 
-# 8c. THE OFFSETS ARE THE REPORT'S, NOT THE FUZZER'S. libFuzzer prints `NEW_FUNC[..]: 0x… (…/t+0x…)`
-#     every time it covers a new function, before any crash; the classifier read offsets from the
-#     whole log, took the first 40, and on 2026-09-20..25 symbolised six nights of coverage lines
-#     instead of #62's stacks -- calling a known defect new. Planted here with more than 40
-#     distinct coverage offsets ahead of a report whose one frame IS owned, and a stub addr2line
-#     that names each offset, so this needs no real binary.
+# 8c-8e. THE FRAMES ARE THE REPORT'S, NOT THE FUZZER'S. libFuzzer prints `NEW_FUNC[..]: 0x… (…/t+0x…)`
+#     every time it covers a new function; the classifier read offsets from the whole log, took the
+#     first 40, and on 2026-09-20..25 symbolised six nights of coverage lines instead of #62's
+#     stacks -- calling a known defect new. There are now TWO defences, each tested ALONE: every
+#     case plants 250 decoys (more than MAX_FRAMES = 200, so the cap cannot rescue a broken
+#     defence -- the first version of this case planted 45, and a review measured it passing with
+#     both defences reverted) in a place only ONE defence excludes. A stub addr2line names each
+#     offset, so no real binary is needed.
 stub="$work/stubbin"
 mkdir -p "$stub"
 cat > "$stub/addr2line" <<'STUB'
@@ -144,23 +146,61 @@ done
 STUB
 chmod +x "$stub/addr2line"
 : > "$work/fakebinary"
+
+owned_frame_found() {
+  local name="$1"
+  set +e
+  out="$(PATH="$stub:$PATH" python3 "$here/check-known-crashes.py" --ledger "$work/ledger.toml" \
+    --log "$work/report.log" --binary "$work/fakebinary" --target t 2>&1)"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ] && grep -qF "#3" <<<"$out"; then
+    ok "$name"
+  else
+    bad "$name (exit $status)"
+    sed 's/^/         /' <<<"$out" | head -4 >&2
+  fi
+}
+
+# 8c. FRAME-SHAPED LINES BEFORE THE REPORT: only the slice (`report_of`) excludes them.
 {
-  for n in $(seq 1 45); do
-    printf '\tNEW_FUNC[1/1]: 0x%x  (/w/fuzz/target/x/release/t+0x%x) (BuildId: ab)\n' "$n" "$((4096 + n))"
+  for n in $(seq 1 250); do
+    printf '    #%d 0x%x  (/w/fuzz/target/x/release/t+0x%x) (BuildId: ab)\n' "$n" "$n" "$((4096 + n))"
   done
   printf '==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n'
   printf '    #0 0x55  (/w/fuzz/target/x/release/t+0xbeef) (BuildId: ab)\n'
 } > "$work/report.log"
+owned_frame_found "frame-shaped lines before the report are not read: the slice starts at the banner"
+
+# 8d. COVERAGE LINES INSIDE THE REPORT'S SLICE: only the frame-line anchor excludes them.
+{
+  printf '==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n'
+  for n in $(seq 1 250); do
+    printf '\tNEW_FUNC[1/1]: 0x%x  (/w/fuzz/target/x/release/t+0x%x) (BuildId: ab)\n' "$n" "$((4096 + n))"
+  done
+  printf '    #0 0x55  (/w/fuzz/target/x/release/t+0xbeef) (BuildId: ab)\n'
+} > "$work/report.log"
+owned_frame_found "coverage lines are never frames: offsets come from stack-frame lines only"
+
+# 8e. THE VERDICT IS THE BANNER'S, NOT A PANIC MESSAGE'S. The CMap target's assertion formats its
+#     whole input into the message printed BEFORE libFuzzer's banner; an input containing
+#     `ERROR: libFuzzer: ` became the verdict and reached the public step summary (security
+#     review, 2026-09-25). The message must neither set the verdict nor appear in the output.
+{
+  printf "thread '<unnamed>' (1) panicked at fuzz_targets/x.rs:1:2:\n"
+  printf '"prefix ERROR: libFuzzer: SECRETINPUTBYTES more input"\n'
+  printf '==42== ERROR: libFuzzer: deadly signal\n'
+  printf '    #0 0x1 in Distinct::Frame(Thing)\n'
+} > "$work/report.log"
 set +e
-out="$(PATH="$stub:$PATH" python3 "$here/check-known-crashes.py" --ledger "$work/ledger.toml" \
-  --log "$work/report.log" --binary "$work/fakebinary" --target t 2>&1)"
+out="$(python3 "$here/check-known-crashes.py" --ledger "$work/ledger.toml" --log "$work/report.log" 2>&1)"
 status=$?
 set -e
-if [ "$status" -eq 0 ] && grep -qF "#3" <<<"$out"; then
-  ok "coverage lines before the report are not read as its frames; the owned frame is found"
+if grep -qF "verdict: deadly-signal" <<<"$out" && ! grep -qF "SECRETINPUTBYTES" <<<"$out"; then
+  ok "a panic message carrying the marker neither sets the verdict nor reaches the output"
 else
-  bad "coverage lines before the report are not read as its frames (exit $status)"
-  sed 's/^/         /' <<<"$out" >&2
+  bad "a panic message carrying the marker neither sets the verdict nor reaches the output (exit $status)"
+  sed 's/^/         /' <<<"$out" | head -4 >&2
 fi
 
 # 9. A MULTI-WORD VERDICT. `deadly signal` was captured as `deadly`, so an entry spelling it
@@ -172,7 +212,7 @@ verdict = "deadly-signal"
 frame = "Some::Frame"
 note = "a libFuzzer verdict that is two words"
 LEDGER
-printf 'ERROR: libFuzzer: deadly signal\n    #0 0x1 in Some::Frame(Thing)\n' > "$work/report.log"
+printf '==42== ERROR: libFuzzer: deadly signal\n    #0 0x1 in Some::Frame(Thing)\n' > "$work/report.log"
 if out="$(python3 "$here/check-known-crashes.py" --ledger "$work/phrase.toml" --log "$work/report.log" 2>&1)" \
    && grep -qF "#7" <<<"$out"; then
   ok "a two-word verdict is normalised and matches its entry"

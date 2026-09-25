@@ -5,7 +5,7 @@
 #
 # Called by `.github/workflows/fuzz-nightly.yml` and `fuzz-reproduce.yml`, which is why it is a
 # script: two workflows carrying one copy each of a verdict is two verdicts. Its exit status is
-# the job's: 0 no crash or KNOWN, 1 NEW FINDING, 1 INFRASTRUCTURE FAILURE, anything else a
+# the job's: 0 no crash or KNOWN, 1 NEW FINDING, 4 INFRASTRUCTURE FAILURE, anything else a
 # CLASSIFIER FAILURE -- each reported under its own heading and annotation title, so a broken
 # tool never reads as a crash verdict (2026-09-25; see tools/check-known-crashes.py EXIT_*).
 #
@@ -35,14 +35,17 @@ fi
 # A FAILURE WITH NO CRASH REPORT is a build or infrastructure problem, and it fails --
 # `check-known-crashes.py` refuses to classify it rather than guessing, and this must
 # not be mistaken for a clean run.
-if ! grep -qE 'ERROR: (AddressSanitizer|libFuzzer)' "$log"; then
+# THE BANNER, ANCHORED, as the classifier and the Describe step read it: `ERROR: libFuzzer: ` inside
+# a panic message is input, not a report.
+if ! grep -qE '^==[0-9]+== ?ERROR: (AddressSanitizer|libFuzzer)' "$log"; then
   echo "::error title=INFRASTRUCTURE FAILURE (not a crash)::the fuzz step failed without producing a crash report" >&2
   {
     echo "### $target -- INFRASTRUCTURE FAILURE, not a crash"
     echo ""
     echo "- the fuzz step failed and no sanitiser report exists; read the step log"
   } >> "$GITHUB_STEP_SUMMARY"
-  exit 1
+  # 4, NOT 1: the step's status must not say "new finding" for a run that produced no report.
+  exit 4
 fi
 
 # KNOWN -> exit 0, and the job is green with the owning issue named in the summary.

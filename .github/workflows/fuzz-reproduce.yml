@@ -42,7 +42,11 @@ jobs:
   reproduce:
     name: reproduce ${{ inputs.target }} on x86_64
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    # GitHub's ceiling is 360: 300 of search, up to ~5 of fork wrap-up, and a cold engine build.
+    timeout-minutes: 355
+    permissions:
+      contents: read
+      issues: read
     steps:
       # THE WHOLE POINT, ASSERTED. `ubuntu-latest` is x86_64 today; if that ever changes, this job
       # would quietly reproduce on the wrong architecture and report "not found".
@@ -86,10 +90,17 @@ jobs:
       - if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --version 0.13.2 cargo-fuzz
 
+      # THE NIGHTLY'S EXPIRY RULE, here too: a ledger entry whose issue has closed would otherwise
+      # turn a reproduced crash KNOWN on this job's verdict.
+      - name: Check the known-crashes ledger against its issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/check-known-crashes.py --check-issues
+
       - name: Seed every corpus from the committed fixtures
         run: python3 tools/seed-fuzz-corpus.py
 
-      # INPUTS THROUGH `env`, NEVER INTERPOLATED INTO THE SCRIPT, and validated before use: a
+      # INPUTS THROUGH `env`, NEVER INTERPOLATED INTO THE SCRIPT, and validated -- shape first -- before use: a
       # dispatch input is text a person typed, and `${{ inputs.x }}` inside `run:` is shell
       # injection by construction.
       - name: search ${{ inputs.target }}
@@ -101,13 +112,21 @@ jobs:
           MINUTES: ${{ inputs.minutes }}
           WORKERS: ${{ inputs.workers }}
         run: |
+          # THE SHAPE FIRST, then membership. `grep -x` treats a newline in its pattern as a second
+          # pattern, so a target of `rotate<newline>…` passed membership and wrote a second line
+          # into $GITHUB_OUTPUT (security review, 2026-09-25). And base 10 explicitly: `08` is an
+          # invalid octal literal to $(( )), and `010` is eight.
+          [[ "$TARGET" =~ ^[a-z0-9_]+$ ]] ||
+            { echo "::error::a target name is lowercase letters, digits and underscores"; exit 1; }
           cargo +nightly fuzz list > "$RUNNER_TEMP/targets.txt"
           grep -qxF -- "$TARGET" "$RUNNER_TEMP/targets.txt" ||
             { echo "::error::'$TARGET' is not a fuzz target; see cargo fuzz list"; exit 1; }
-          [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 1 ] && [ "$MINUTES" -le 300 ] ||
+          [[ "$MINUTES" =~ ^[0-9]{1,3}$ ]] && [ "$((10#$MINUTES))" -ge 1 ] && [ "$((10#$MINUTES))" -le 300 ] ||
             { echo "::error::minutes must be 1-300"; exit 1; }
-          [[ "$WORKERS" =~ ^[0-9]+$ ]] && [ "$WORKERS" -ge 1 ] && [ "$WORKERS" -le 8 ] ||
+          [[ "$WORKERS" =~ ^[0-9]$ ]] && [ "$((10#$WORKERS))" -ge 1 ] && [ "$((10#$WORKERS))" -le 8 ] ||
             { echo "::error::workers must be 1-8"; exit 1; }
+          MINUTES=$((10#$MINUTES))
+          WORKERS=$((10#$WORKERS))
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"
 
           export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib"
@@ -116,24 +135,29 @@ jobs:
             export RUSTFLAGS="-L native=$GITHUB_WORKSPACE/engines/vendor/native-$(uname -m)/lib/fuzz"
           fi
           # RECORDED, NOT RAISED, and REDACTED, exactly as the nightly does -- see its fuzz step.
-          # `-fork` with `-ignore_crashes=0` stops at the first crash, which is what a reproduction
-          # wants; the child's report is relayed into this log.
+          # `-fork` stops at the first crash with `-ignore_crashes=0`, and at the first timeout or
+          # OOM with the other two: fork mode ignores those by default and then exits with the last
+          # job's code, which read as an infrastructure failure on a search that found nothing.
           status=0
           cargo +nightly fuzz run "$TARGET" -- \
-            -fork="$WORKERS" -ignore_crashes=0 -max_total_time=$((MINUTES * 60)) \
-            -timeout=10 -rss_limit_mb=2048 \
+            -fork="$WORKERS" -ignore_crashes=0 -ignore_timeouts=0 -ignore_ooms=0 \
+            -max_total_time=$((MINUTES * 60)) -timeout=10 -rss_limit_mb=2048 \
             > "$RUNNER_TEMP/fuzz.log" 2>&1 || status=$?
           python3 ../tools/redact-fuzz-log.py < "$RUNNER_TEMP/fuzz.log"
           echo "status=$status" >> "$GITHUB_OUTPUT"
 
+      # STEP OUTPUTS THROUGH `env` TOO, never `${{ }}` inside `run:` -- the target came from a person.
       - name: Classify the crash against the issues we already own
         if: always() && steps.fuzz.outputs.status != ''
-        run: |
-          tools/fuzz-classify.sh "${{ steps.fuzz.outputs.target }}" \
-            "${{ steps.fuzz.outputs.status }}" "$RUNNER_TEMP/fuzz.log"
+        env:
+          TARGET: ${{ steps.fuzz.outputs.target }}
+          STATUS: ${{ steps.fuzz.outputs.status }}
+        run: tools/fuzz-classify.sh "$TARGET" "$STATUS" "$RUNNER_TEMP/fuzz.log"
 
       - name: Describe the crash without publishing it
         if: >-
           always() && (steps.fuzz.outputs.status != '0' && steps.fuzz.outputs.status != ''
           || steps.fuzz.outcome == 'failure')
-        run: tools/fuzz-describe.sh "${{ steps.fuzz.outputs.target }}" "$RUNNER_TEMP/fuzz.log"
+        env:
+          TARGET: ${{ steps.fuzz.outputs.target }}
+        run: tools/fuzz-describe.sh "$TARGET" "$RUNNER_TEMP/fuzz.log"
