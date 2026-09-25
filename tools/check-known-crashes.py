@@ -75,6 +75,22 @@ def offsets_for(target: str) -> re.Pattern[str]:
     return re.compile(re.escape(target) + r"\+0x([0-9a-f]+)")
 
 
+#: EXIT CODES, AND WHY THERE ARE THREE. Until 2026-09-25 every outcome but KNOWN exited 1: a new
+#: defect, a crash whose frames could not be resolved, a broken ledger, a log that was no crash
+#: report, and this script dying of an uncaught exception all read as the same red. The nightly
+#: was red for six nights running on a real new finding and nothing distinguished it from the
+#: tool being broken -- the permanently-red-gate problem this file exists to end, arriving
+#: through its own exit status. So a finding and a tooling failure are different numbers, and the
+#: workflow reports them under different headings.
+EXIT_KNOWN = 0
+#: A crash no filed issue owns. A NEW finding -- what the nightly is for.
+EXIT_NEW_FINDING = 1
+#: This tool could not do its job: the ledger is broken, the probe gate refused, the frames did
+#: not resolve, the log is not a crash report, or the script itself raised. NOT a verdict about
+#: any crash.
+EXIT_TOOLING = 3
+
+
 class Problem(Exception):
     """The ledger or the classification is wrong."""
 
@@ -197,7 +213,7 @@ def check_issues(entries: list[dict]) -> int:
     if problems:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
-        return 1
+        return EXIT_TOOLING
     print("OK -- every entry names an issue that is still open.")
     return 0
 
@@ -274,7 +290,7 @@ def main() -> int:
 
     try:
         if probe() != 0:
-            return 1
+            return EXIT_TOOLING
         entries = load(Path(args.ledger) if args.ledger else None)
         if args.check:
             print(f"OK -- {len(entries)} ledger entry(ies), each naming an issue and a reason.")
@@ -288,8 +304,8 @@ def main() -> int:
         binary = Path(args.binary) if args.binary else None
         verdict, frames, matches, how = classify(log, entries, binary, args.target)
     except Problem as exc:
-        print(f"::error::{exc}", file=sys.stderr)
-        return 1
+        print(f"::error::TOOLING -- {exc}", file=sys.stderr)
+        return EXIT_TOOLING
 
     print(f"verdict: {verdict}")
     print(f"frames considered: {len(frames)} ({how})")
@@ -317,7 +333,7 @@ def main() -> int:
             f"this tool unable to do its job. Fix the symbols, then re-read.",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_TOOLING
 
     print(
         f"UNMATCHED -- {verdict} in a place no filed issue owns. This is a NEW finding; that is "
@@ -325,8 +341,27 @@ def main() -> int:
         f"  frames: {', '.join(frames[:6])}",
         file=sys.stderr,
     )
-    return 1
+    return EXIT_NEW_FINDING
+
+
+def guarded() -> int:
+    """`main`, with an uncaught exception reported as what it is: this tool failing.
+
+    Python exits 1 on an uncaught exception, which is EXIT_NEW_FINDING -- so a traceback here
+    used to announce a new defect.
+    """
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- every failure of the tool is the tool's
+        print(
+            f"::error::TOOLING -- the classifier itself raised {type(exc).__name__}: {exc}. "
+            "This says nothing about the crash.",
+            file=sys.stderr,
+        )
+        return EXIT_TOOLING
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(guarded())

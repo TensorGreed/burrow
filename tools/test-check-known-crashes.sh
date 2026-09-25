@@ -14,7 +14,7 @@ work="$(mktemp -d)"
 mutant="$here/check-known-crashes.MUTANT.py"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=12
+EXPECTED_CASES=13
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -99,14 +99,31 @@ expect "a new verdict in an owned function still fails" 1 "UNMATCHED"
 
 # 7. A LOG THAT IS NOT A CRASH REPORT is the caller's problem, and says so rather than guessing.
 printf 'error[E0432]: unresolved import\nerror: could not compile\n' > "$work/report.log"
-expect "a build failure is refused as not-a-crash-report" 1 "not a crash report"
+# EXIT 3, NOT 1: a log that is no crash report is the tool unable to classify, and until
+# 2026-09-25 it shared exit 1 with a new finding, so the nightly could not tell them apart.
+expect "a build failure is refused as not-a-crash-report, as a TOOLING exit" 3 "not a crash report"
 
 # 8. AN UNRESOLVABLE REPORT IS NOT A FINDING. With no frames nothing can match, and calling that
 #    a new defect announces a known one as new. Measured as a real defect in the first version.
 printf 'ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n    #0 0x55 (/nope/x+0x12)\n' \
   > "$work/report.log"
-expect "a report whose frames cannot be resolved says so, rather than claiming a new defect" \
-  1 "UNCLASSIFIED"
+expect "a report whose frames cannot be resolved says so, as a TOOLING exit, not a finding" \
+  3 "UNCLASSIFIED"
+
+# 8b. THE TOOL ITSELF DYING IS NOT A FINDING. Python exits 1 on an uncaught exception, which was
+#     the new-finding code, so a traceback announced a new defect. A log path that does not exist
+#     raises inside the classifier; it must exit 3 and say the classifier raised.
+set +e
+out="$(python3 "$here/check-known-crashes.py" --ledger "$work/ledger.toml" \
+  --log "$work/no-such-log.log" 2>&1)"
+status=$?
+set -e
+if [ "$status" -eq 3 ] && grep -qF "the classifier itself raised" <<<"$out"; then
+  ok "an uncaught exception in the classifier is a TOOLING exit (3), never a finding (1)"
+else
+  bad "an uncaught exception in the classifier is a TOOLING exit (3), never a finding (1) (exit $status)"
+  sed 's/^/         /' <<<"$out" >&2
+fi
 
 # 9. A MULTI-WORD VERDICT. `deadly signal` was captured as `deadly`, so an entry spelling it
 #    correctly could never have matched.

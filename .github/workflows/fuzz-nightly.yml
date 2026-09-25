@@ -236,7 +236,12 @@ jobs:
           # `check-known-crashes.py` refuses to classify it rather than guessing, and this must
           # not be mistaken for a clean run.
           if ! grep -qE 'ERROR: (AddressSanitizer|libFuzzer)' "$log"; then
-            echo "::error::the fuzz step failed without producing a crash report" >&2
+            echo "::error title=INFRASTRUCTURE FAILURE (not a crash)::the fuzz step failed without producing a crash report" >&2
+            {
+              echo "### ${{ matrix.target }} -- INFRASTRUCTURE FAILURE, not a crash"
+              echo ""
+              echo "- the fuzz step failed and no sanitiser report exists; read the step log"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -258,8 +263,25 @@ jobs:
             > "$RUNNER_TEMP/classified.txt" 2>&1 || verdict=$?
           cat "$RUNNER_TEMP/classified.txt"
 
+          # THREE OUTCOMES, THREE HEADINGS. Until 2026-09-25 the classifier exited 1 for a new
+          # finding AND for its own failure, so this summary could not say which it was, and six
+          # nights of a real new finding sat beside every earlier red unread. Now a finding and a
+          # tooling failure carry different exit codes (tools/check-known-crashes.py EXIT_*), and
+          # each is reported under its own title, annotation and heading -- a broken classifier
+          # can never read as a crash verdict, nor a crash verdict as a broken classifier.
+          case "$verdict" in
+            0) heading="KNOWN -- owned by a filed issue" ;;
+            1)
+              heading="NEW FINDING -- no filed issue owns this crash"
+              echo "::error title=NEW FINDING::${{ matrix.target }}: a crash no filed issue owns" >&2
+              ;;
+            *)
+              heading="CLASSIFIER FAILURE (exit $verdict) -- the tool could not classify; this is NOT a crash verdict"
+              echo "::error title=CLASSIFIER FAILURE (tooling, not a crash)::${{ matrix.target }}: check-known-crashes exited $verdict" >&2
+              ;;
+          esac
           {
-            echo "### ${{ matrix.target }}"
+            echo "### ${{ matrix.target }} -- $heading"
             echo ""
             sed 's/^/- /' "$RUNNER_TEMP/classified.txt"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -277,6 +299,14 @@ jobs:
         run: |
           set -uo pipefail
           log="$RUNNER_TEMP/fuzz.log"
+
+          # THIS STEP DYING IS A TOOLING FAILURE, AND SAYS SO. For six nights (2026-09-20..25) it
+          # died silently at the frame lookup below: an unsymbolised report has no ` in <symbol>`
+          # line, grep exited 1, and `bash -e` with `pipefail` ended the step before it wrote
+          # anything -- so its failure read exactly like the crash it was describing. Every grep
+          # that may match nothing is now guarded, and anything else that kills the step names
+          # itself as the tool, with the line, rather than joining the crash's red.
+          trap 'echo "::error title=DESCRIBE STEP FAILURE (tooling, not a crash)::died at line $LINENO" >&2; echo "- **DESCRIBE STEP FAILURE** at line $LINENO: the tool, not the crash. The Classify verdict above stands." >> "$GITHUB_STEP_SUMMARY"' ERR
 
           # NO HEADING HERE. The Classify step above already wrote `### <target>`; two of them
           # per target is a summary that reads as two crashes.
@@ -307,7 +337,7 @@ jobs:
           # stack overflow surfaces when ASan's own detector does not engage. That is #119's
           # class, reported as a timeout. Take the rest of the line and trim it instead of
           # trying to spell the set of verdicts.
-          verdict="$(grep -hoE 'ERROR: (AddressSanitizer|libFuzzer): .*' "$log" \
+          verdict="$({ grep -hoE 'ERROR: (AddressSanitizer|libFuzzer): .*' "$log" || true; } \
             | head -1 | cut -c1-120)"
           echo "- verdict: \`${verdict:-unknown (marker present but unparsed; read the log)}\`" \
             >> "$GITHUB_STEP_SUMMARY"
@@ -316,7 +346,8 @@ jobs:
           # the target binary, which is what a reader would otherwise download the input to
           # resolve. Prefer the symbols when they are there. Either way this publishes a NAME,
           # never a byte of input.
-          frame="$(grep -hoE ' in [A-Za-z_][A-Za-z0-9_:]*' "$log" | sed 's/^ in //' \
+          # `{ grep … || true; }`: THE LINE THAT KILLED THIS STEP. See the trap above.
+          frame="$({ grep -hoE ' in [A-Za-z_][A-Za-z0-9_:]*' "$log" || true; } | sed 's/^ in //' \
             | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
           if [ -n "${frame:-}" ]; then
             echo "- hottest frame: \`$frame\` (from a symbolised report)" >> "$GITHUB_STEP_SUMMARY"
@@ -327,7 +358,7 @@ jobs:
             # and the step reported "no offset in the report" -- a claim about the log -- when
             # the offset was there and the binary was not.
             binary="fuzz/target/$(uname -m)-unknown-linux-gnu/release/${{ matrix.target }}"
-            offset="$(grep -hoE "${{ matrix.target }}\\+0x[0-9a-f]+" "$log" \
+            offset="$({ grep -hoE "${{ matrix.target }}\\+0x[0-9a-f]+" "$log" || true; } \
               | sed 's/.*+//' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')"
             if [ -z "${offset:-}" ]; then
               echo "- hottest frame: no offset in the report and no symbols either" \
