@@ -14,7 +14,7 @@ work="$(mktemp -d)"
 mutant="$here/check-known-crashes.MUTANT.py"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=13
+EXPECTED_CASES=14
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -122,6 +122,44 @@ if [ "$status" -eq 3 ] && grep -qF "the classifier itself raised" <<<"$out"; the
   ok "an uncaught exception in the classifier is a TOOLING exit (3), never a finding (1)"
 else
   bad "an uncaught exception in the classifier is a TOOLING exit (3), never a finding (1) (exit $status)"
+  sed 's/^/         /' <<<"$out" >&2
+fi
+
+# 8c. THE OFFSETS ARE THE REPORT'S, NOT THE FUZZER'S. libFuzzer prints `NEW_FUNC[..]: 0x… (…/t+0x…)`
+#     every time it covers a new function, before any crash; the classifier read offsets from the
+#     whole log, took the first 40, and on 2026-09-20..25 symbolised six nights of coverage lines
+#     instead of #62's stacks -- calling a known defect new. Planted here with more than 40
+#     distinct coverage offsets ahead of a report whose one frame IS owned, and a stub addr2line
+#     that names each offset, so this needs no real binary.
+stub="$work/stubbin"
+mkdir -p "$stub"
+cat > "$stub/addr2line" <<'STUB'
+#!/usr/bin/env bash
+# `-f -C -e <binary> <addresses…>`: two lines per address, name then location.
+shift 4
+for address in "$@"; do
+  if [ "$address" = "0xbeef" ]; then echo "Distinct::Frame"; else echo "Coverage::Noise$address"; fi
+  echo "??:0"
+done
+STUB
+chmod +x "$stub/addr2line"
+: > "$work/fakebinary"
+{
+  for n in $(seq 1 45); do
+    printf '\tNEW_FUNC[1/1]: 0x%x  (/w/fuzz/target/x/release/t+0x%x) (BuildId: ab)\n' "$n" "$((4096 + n))"
+  done
+  printf '==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n'
+  printf '    #0 0x55  (/w/fuzz/target/x/release/t+0xbeef) (BuildId: ab)\n'
+} > "$work/report.log"
+set +e
+out="$(PATH="$stub:$PATH" python3 "$here/check-known-crashes.py" --ledger "$work/ledger.toml" \
+  --log "$work/report.log" --binary "$work/fakebinary" --target t 2>&1)"
+status=$?
+set -e
+if [ "$status" -eq 0 ] && grep -qF "#3" <<<"$out"; then
+  ok "coverage lines before the report are not read as its frames; the owned frame is found"
+else
+  bad "coverage lines before the report are not read as its frames (exit $status)"
   sed 's/^/         /' <<<"$out" >&2
 fi
 

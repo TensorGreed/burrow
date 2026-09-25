@@ -70,9 +70,33 @@ SYMBOL = re.compile(r"^\s*#\d+\s+0x[0-9a-f]+\s+in\s+([A-Za-z_][A-Za-z0-9_:~]*)",
 #: resolve is a refusal rather than silence.
 VERDICT_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
 
-#: A raw offset into the target binary, for a report that was not symbolised.
+#: A raw offset into the target binary, for a report that was not symbolised -- ON A STACK-FRAME
+#: LINE ONLY (`    #3 0x… (…/target+0x…)`). libFuzzer also prints `NEW_FUNC[1/2]: 0x… (…/target+0x…)`
+#: every time it covers a new function, and those carry the same `target+0x` shape.
 def offsets_for(target: str) -> re.Pattern[str]:
-    return re.compile(re.escape(target) + r"\+0x([0-9a-f]+)")
+    return re.compile(r"^\s*#\d+\s+0x[0-9a-f]+\s+\(\S*?" + re.escape(target) + r"\+0x([0-9a-f]+)\)", re.M)
+
+
+#: How many frames are read from a report. A use-after-free prints THREE stacks -- the use, the
+#: free, and the allocation -- and a known defect is often visible only in the second or third.
+#: 40 cut the report short even before the reading started in the wrong place.
+MAX_FRAMES = 200
+
+
+def report_of(log: str) -> str:
+    """The sanitiser's report and what follows it -- never the fuzzing progress before it.
+
+    THE DEFECT THIS EXISTS FOR, measured on 2026-09-25. The offsets were read from the WHOLE log,
+    and libFuzzer's `NEW_FUNC` coverage lines -- hundreds of them on a seeded run against the
+    instrumented qpdf archive -- come first and carry the target's `+0x` offsets too. The first 40
+    unique offsets were all coverage lines, so the classifier symbolised whatever functions the
+    fuzzer had happened to discover (`std::to_string`, `QPDF::Doc::Common::damagedPDF`,
+    `qpdf::Name::Name`) and called #62's two use-after-frees, whose report frames name
+    `pushInheritedAttributesToPageInternal` and `Foreign::Copier::reserve_objects`, a NEW finding,
+    every night for six nights.
+    """
+    start = VERDICT.search(log)
+    return log[start.start():] if start else log
 
 
 #: EXIT CODES, AND WHY THERE ARE THREE. Until 2026-09-25 every outcome but KNOWN exited 1: a new
@@ -136,7 +160,8 @@ def frames_in(log: str, binary: Path | None, target: str | None) -> tuple[list[s
     The second value matters: zero frames means "could not classify", not "nothing matched", and
     conflating them made the tool announce a five-nights-old defect as a new finding.
     """
-    found = list(dict.fromkeys(SYMBOL.findall(log)))
+    log = report_of(log)
+    found = list(dict.fromkeys(SYMBOL.findall(log)))[:MAX_FRAMES]
     if found:
         return found, "symbolised report"
     if not (binary and target):
@@ -147,7 +172,7 @@ def frames_in(log: str, binary: Path | None, target: str | None) -> tuple[list[s
     # NOT SYMBOLISED. CI's libFuzzer prints `target+0x…` and nothing else, so without this the
     # classifier sees no frames at all and calls every known crash new -- a gate that fails
     # closed, but uselessly.
-    addresses = list(dict.fromkeys(offsets_for(target).findall(log)))[:40]
+    addresses = list(dict.fromkeys(offsets_for(target).findall(log)))[:MAX_FRAMES]
     if not addresses:
         return [], "no symbols and no resolvable offsets in the report"
     try:
