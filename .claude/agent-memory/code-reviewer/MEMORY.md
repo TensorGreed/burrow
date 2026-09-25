@@ -24,3 +24,4 @@
 - [Whole-string witness, partial removal](feedback_whole_string_witness_partial_removal.md) — shrink the region; a substring "gone" stays green. Run the witness an escape hatch skips.
 - [Rustdoc gate misses private items](feedback_rustdoc_gate_private_items.md) — no --document-private-items means private links unchecked; stale target/doc only bites crates not re-documented.
 - [Residual bound by an uncounted dimension](feedback_residual_bound_by_uncounted_dimension.md) — "N ms at the X ceiling": time the input the caps do not count (1 GiB whitespace lexes 330 ms); mutate a read's position.
+- [Build a real positive for absence gates](feedback_build_real_positive_for_absence_gates.md) — plant an export per component, build the real wasm, run the checker; refusal-only needles missed splice, font surgery, strings.

@@ -1003,6 +1003,15 @@ jobs:
           tools/check-pdfium-is-render-only.sh
           tools/test-check-pdfium-is-render-only.sh
 
+      # Its counterpart for redaction (ADR 0029, 2026-09-21 amendment): the base module and the
+      # base bundle carry none of redaction's error spellings. Here for the same reason -- it
+      # reads the production `dist/` this job built. Until #191 builds a redaction module it has
+      # no real positive, which it prints; the self-test beside it is what plants one.
+      - name: Redaction reaches no part of the base payload
+        run: |
+          tools/check-redaction-not-in-base.sh
+          tools/test-check-redaction-not-in-base.sh
+
       # THE DEPLOY GATE'S SELF-TEST, NOT THE GATE. `check-deployable-build.sh` asks whether a
       # build is for the origin you MEANT, and CI builds for the development default -- so
       # invoking it here would either be a gate that cannot fail (`|| true`, which this

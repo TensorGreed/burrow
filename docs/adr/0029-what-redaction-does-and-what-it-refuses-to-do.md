@@ -3132,3 +3132,75 @@ detail of this change; it is filed as #189 rather than made here.
   just before the lex from one just after it. The code puts it after, and a move would cost at
   most one stream's lex.
 
+## Amendment, 2026-09-24 — redaction runs on the web through one policy over a handle trait (#191)
+
+### What was missing
+
+#137 was written to wire a redaction into the worker, and it assumed one existed on the web.
+None does. `PageRedactor` has one implementation, the native `Qpdf`, and the policy under it is
+written against `qpdf::handle::ObjectHandle`: the steps, the read-back witness, form sharing,
+resources, optional content and the region's frame. That is about 4,400 lines with no web
+counterpart, and no issue owned one. Found on 2026-09-24, starting #137.
+
+### The decision
+
+**The redaction policy is written once, over one handle trait, and native and web implement the
+trait.** This is not a new design. It is [ADR 0019](0019-how-split-builds-its-outputs.md) §2b's
+pruning seam applied a second time:
+- `prune::graph::ObjectGraph` is one trait, implemented by `QpdfGraph` over a native `qpdf_data`
+  and by `WebGraph` over the web session across the JS bridge;
+- the policy in `prune/mod.rs` sits above it, once.
+
+Redaction takes the same shape:
+- the trait grows, or a trait extending it adds, the verbs redaction needs: replace a key, set an
+  array item, replace stream data, per-element page content, a stream's dictionary;
+- identity stays the only thing the policy may compare (ADR 0013's handle-identity amendment);
+- every method returns `Result` and drains qpdf's latched error in the implementation, never in
+  the policy.
+
+**There is no second copy of the policy.** ROADMAP item 12 requires identical typed outcomes on
+both platforms, and this record already treats a divergence between them as a redaction bug. Two
+copies of a rule are how two answers begin. Pruning's module header gives the reason that sharing
+is right there and not for `rotate`, `reorder` or `merge`: the rule is the hard part. That holds
+more strongly here.
+
+**A differential harness compares the two.** The redaction corpus and the conformance cases run
+through both implementations, and each case must produce the same typed outcome: the same
+refusal rule, or `Ok` with the same verification.
+
+### Order, and what it costs to get wrong
+
+The move onto the trait lands **first and alone**, with no behaviour change. It is proven by the
+native suites unchanged and a guarded mutation sweep over the moved policy. A refactor with
+nothing new to show is exactly where a behaviour change hides, and hiding one under a new web
+implementation would leave no way to say which change caused what. The web implementation
+follows. Then #137's binding entry point, worker dispatch and R8/R9 specs, which are what #191
+unblocks.
+
+### What proceeds meanwhile, and what it cannot yet prove
+
+#137's engine-independent parts proceed in parallel, from the 2026-09-21 amendment above: the
+`redact` cargo feature, the third bundle, its budget line and the check that the base bundle holds
+no redaction code.
+
+That check has **no shipped positive yet**, where the PDFium check it copies has one: the render
+bundle, which must contain PDFium. No redaction module exists until #191. Of redaction's code,
+`pdfsyntax` and `redact.rs` compile for wasm and are stripped by LTO, since no entry point calls
+them; the `qpdf` policy and the verification are not compiled for wasm at all. So no shipped
+artifact contains redaction's literals, and a check that only looked for them there could never
+be seen to fire.
+
+Its positives are therefore **built, not shipped**:
+- The self-test compiles a real base module with a probe export behind
+  `--cfg burrow_redaction_probe`. The export reaches the geometry walk, the rewriter's splice and
+  string decoding, the `/ToUnicode` narrowing and the region, and the self-test requires the
+  check to refuse the result. That tests the premise the check rests on, that reachable code
+  keeps its literals through the real compiler and LTO, which planting bytes in a file could not.
+- The three needles whose code is native-only until #191 (`pdf redaction [`, `pdf resources [`,
+  the verification's `redact: the region is not cleared`) are planted into copies.
+- The first version of the check looked only for refusal prefixes. The code review built modules
+  reaching the splice, the font surgery and the string encoder, none of which formats a refusal,
+  and the check passed all three. The needles now name each component by a literal only it
+  spells.
+
+[#191]: https://github.com/TensorGreed/burrow/issues/191

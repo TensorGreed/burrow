@@ -30,6 +30,9 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+# `burrow_redaction_probe` gates one export in `bindings/burrow-wasm` that exists only to be a
+# real positive for `tools/check-redaction-not-in-base.sh`; nothing that ships sets it.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(burrow_redaction_probe)"] }
 
 [workspace.lints.clippy]
 # All input is hostile: nothing in library code may panic.
