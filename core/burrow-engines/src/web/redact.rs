@@ -2,9 +2,10 @@
 //!
 //! **The policy lives in [`crate::redact`] and is written once.** This file is the marshalling,
 //! and it is meant to be read beside its native twin, `crate::qpdf::redact_graph`: every method
-//! makes the call the native one makes, and drains exactly when the native one drains. The engine
-//! then sees the same calls in the same order on both platforms, which is what lets the
-//! differential test hold the web to the native outcome byte for byte rather than argue it.
+//! makes the call the native one makes, and drains exactly when the native one drains, apart from
+//! three error paths stated below. The engine then sees the same calls in the same order on both
+//! platforms, which is what lets the differential test hold the web to the native outcome byte for
+//! byte rather than argue it.
 //!
 //! # What is marshalling here and not natively
 //!
@@ -20,6 +21,23 @@
 //! does the same. It records the error on the document and hands back a handle to nothing, and
 //! the next drain reports the failure before anything qpdf latched. The policy drains at the
 //! points it always has, so it meets this the way it meets any other latched error.
+//!
+//! # Where the mirror is not exact, stated rather than smoothed over
+//!
+//! The code review of #191 compared this file with its native twin line by line. Three places
+//! differ, all inherited from the bridge's shape rather than chosen here, and all on error paths:
+//!
+//! - **An error status with nothing latched.** Natively, `page_content` and `stream_data` read
+//!   qpdf's status and turn "failed but latched nothing" into `Malformed`. The JS bridge does not
+//!   return the status (`bridge-qpdf.js`), so here the same case goes on with whatever buffer came
+//!   back. qpdf latches when it fails, so this needs a failure qpdf did not report.
+//! - **The bridge out of scratch memory.** `stream_data` answers `None` when the JS side cannot
+//!   allocate its out-parameter words, which the policy reads as "could not decode" -- refusing, or
+//!   for a `/ToUnicode`, removing it -- where natively the allocation cannot fail. The safe
+//!   direction, for the wrong reason, as `web/prune.rs` has always had it.
+//! - **A negative generation.** The bridge packs each half of an identity as unsigned 32 bits, and
+//!   `object` refuses one that does not fit back as `Internal`, where natively it passes through.
+//!   qpdf never issues one; if it did, this refuses.
 //!
 //! # Both of #147's guarantees, in this implementation's own type
 //!
@@ -155,6 +173,13 @@ impl<'e> PdfDocument for WebRedactionDocument<'e> {
         // THE NATIVE `extract::write_out`, CALL FOR CALL AND MESSAGE FOR MESSAGE. The
         // differential test compares refusals by their text, so a different message here would be
         // a divergence it reports, and it should.
+        // THE WEB'S OWN LATCH FIRST, which no qpdf call reads: a key that never reached the engine
+        // and was not yet reported must not be dropped at the write. Every step ends in a drain
+        // today, so nothing reaches here with one pending; this makes that a property of the write
+        // rather than of its callers (both reviews of #191). No qpdf call is added.
+        if let Some(error) = self.latched.borrow_mut().take() {
+            return Err(error);
+        }
         let bridge = self.engine.bridge();
         let data = self.session.data();
         let init = bridge.init_write_memory(data);

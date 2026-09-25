@@ -67,6 +67,10 @@ enum Slot {
 /// `Send + Sync`; a test uses it from one thread.
 pub(super) struct NativeBridge {
     table: Mutex<(u32, BTreeMap<u32, Slot>)>,
+    /// How many documents the web side has opened through this bridge. The differential reads it
+    /// around every case, so an engine that did not go through the bridge cannot pass (code review
+    /// of #191: a `WebQpdf::redact_page` delegating to the native engine passed the first version).
+    opened: std::sync::atomic::AtomicU64,
 }
 
 impl NativeBridge {
@@ -76,7 +80,30 @@ impl NativeBridge {
         let _ = super::limits::install();
         Self {
             table: Mutex::new((0, BTreeMap::new())),
+            opened: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Documents opened through this bridge so far.
+    fn opened(&self) -> u64 {
+        self.opened.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Copied-in buffers and live documents the table still holds. Zero once every session and
+    /// every key cache the web side made has been dropped: their `Drop`s give them back.
+    fn outstanding(&self) -> (usize, usize) {
+        let table = self.table.lock().unwrap();
+        let bytes = table
+            .1
+            .values()
+            .filter(|s| matches!(s, Slot::Bytes(_)))
+            .count();
+        let data = table
+            .1
+            .values()
+            .filter(|s| matches!(s, Slot::Data(_)))
+            .count();
+        (bytes, data)
     }
 
     fn put(&self, slot: Slot) -> QpdfPtr {
@@ -165,6 +192,8 @@ impl QpdfBridge for NativeBridge {
         if data.is_null() {
             return QpdfPtr::NULL;
         }
+        self.opened
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.put(Slot::Data(data as usize))
     }
 
@@ -631,12 +660,15 @@ fn the_web_engine_produces_the_native_outcome_on_every_recorded_case() {
         Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
     );
     let native = super::Qpdf;
-    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    let bridge = Arc::new(NativeBridge::new());
+    let web = crate::web::WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>);
 
     let mut inputs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut native_out = Vec::new();
     let mut web_out = Vec::new();
     let mut pinned_mismatches = Vec::new();
+    let mut unbridged = Vec::new();
+    let mut pre_engine = 0usize;
     let (mut cases, mut agreed_ok) = (0usize, 0usize);
     for line in golden.lines().filter(|l| l.starts_with("CASE\t")) {
         let fields: Vec<&str> = line.split('\t').collect();
@@ -657,18 +689,36 @@ fn the_web_engine_produces_the_native_outcome_on_every_recorded_case() {
             other => panic!("a golden case with an unknown region label `{other}`"),
         };
         let key = format!("{name} page {page} covering {covered:?} over {label}");
+        // EACH ENGINE, AND ONLY IT, IS ASKED. The native engine must not touch the bridge, and
+        // the web engine must open at least one document through it -- the input, and then a
+        // fresh one for the read-back -- UNLESS a ceiling that applies before any engine refused
+        // it. The bomb fixtures are refused by the structural pre-scan on both engines without an
+        // engine being touched; this comment first said every case reached `init`, and the check
+        // below found twelve that do not. Without the check, a web engine delegating to the native
+        // one agreed on every case.
+        let before = bridge.opened();
         let left = outcome(&native.redact_page(bytes, page, &covered, region, &options));
+        let between = bridge.opened();
         let right = outcome(&web.redact_page(bytes, page, &covered, region, &options));
-        // AND THE PINNED BYTES: a web `Ok` must be the document the golden recorded, not merely
-        // the one native produced today.
-        if let (Some(web_ok), Some(pinned)) =
-            (right.strip_prefix("OK "), recorded.strip_prefix("OK "))
-        {
-            agreed_ok += 1;
-            if web_ok != pinned {
-                pinned_mismatches.push(format!("{key}\n    pinned {pinned}\n    web    {web_ok}"));
-            }
+        let after = bridge.opened();
+        let before_the_engine = ["stage: InputSize", "stage: SizeEstimate", "stage: Prescan"]
+            .iter()
+            .any(|stage| right.contains(stage));
+        pre_engine += usize::from(before_the_engine);
+        if between != before || (after == between && !before_the_engine) {
+            unbridged.push(format!(
+                "{key}: native opened {} through the bridge, web {}",
+                between - before,
+                after - between
+            ));
         }
+        // AND THE PINNED OUTCOME, IN FULL: the web must be what the golden recorded, not merely
+        // what native produced today. Engine-level outcomes equal the golden's operation-level ones
+        // on every case, errors included (measured when this was written), so no case is exempt.
+        if right != recorded {
+            pinned_mismatches.push(format!("{key}\n    pinned {recorded}\n    web    {right}"));
+        }
+        agreed_ok += usize::from(right.starts_with("OK "));
         native_out.push((key.clone(), left));
         web_out.push((key, right));
         cases += 1;
@@ -692,7 +742,8 @@ fn the_web_engine_produces_the_native_outcome_on_every_recorded_case() {
 
     println!(
         "web differential: {cases} cases and {} rotation vectors over {} documents; \
-         {agreed_ok} redactions compared with the pinned bytes",
+         {agreed_ok} redactions; every outcome compared with the pinned one; {pre_engine} refused \
+         before any engine was asked",
         inputs.len(),
         inputs.len()
     );
@@ -705,17 +756,40 @@ fn the_web_engine_produces_the_native_outcome_on_every_recorded_case() {
         found.join("\n")
     );
     assert!(
+        unbridged.is_empty(),
+        "{} cases were not asked of the engine they claim to compare:\n{}",
+        unbridged.len(),
+        unbridged.join("\n")
+    );
+    assert!(
         pinned_mismatches.is_empty(),
-        "{} web redactions are not the pinned bytes:\n{}",
+        "{} web outcomes are not the pinned ones:\n{}",
         pinned_mismatches.len(),
         pinned_mismatches.join("\n")
     );
     // THE COUNT THE GOLDEN SAYS, so a narrower run cannot read as the whole one.
     let recorded_cases = golden.lines().filter(|l| l.starts_with("CASE\t")).count();
     let recorded_inputs = golden.lines().filter(|l| l.starts_with("INPUT\t")).count();
+    let recorded_ok = golden
+        .lines()
+        .filter(|l| l.starts_with("CASE\t") && l.contains("\tOK "))
+        .count();
     assert_eq!(cases, recorded_cases);
     assert_eq!(inputs.len(), recorded_inputs);
-    assert!(agreed_ok > 0, "no case redacted, so no bytes were compared");
+    assert_eq!(
+        agreed_ok, recorded_ok,
+        "the web redacted a different number of cases than pinned"
+    );
+
+    // NOTHING LEFT IN THE ENGINE HEAP: every session was cleaned up and every copied-in buffer --
+    // inputs, passwords, keys -- freed. `WebRedactionDocument`'s and `Session`'s `Drop`s are what
+    // this holds to account; measured at zero of each when it was added (code review of #191).
+    drop(web);
+    assert_eq!(
+        bridge.outstanding(),
+        (0, 0),
+        "(copied-in buffers, live documents) left behind"
+    );
 }
 
 /// The comparison sees a divergence of each kind, so a clean run is a measurement.
@@ -741,8 +815,10 @@ fn the_differential_names_every_kind_of_divergence() {
 
 /// And it can see a real one: the same case over a different region is a different outcome.
 ///
-/// Without this the test above could pass for a web engine that is never really asked anything
-/// -- a harness wired to call the native engine twice would agree with itself on every case.
+/// A check on the instrument, not on the engine: two regions giving two outputs shows the
+/// comparison is not comparing constants. **It does not show which engine ran** -- native passes it
+/// too, which the code review of #191 measured. That is the bridge's `opened` count, read around
+/// every case in the test above.
 #[test]
 fn the_web_engine_is_really_asked() {
     let bytes =
@@ -765,14 +841,29 @@ fn the_web_engine_is_really_asked() {
     );
 }
 
-/// A [`NativeBridge`] whose engine heap refuses every allocation once armed.
+/// A [`NativeBridge`] with two knobs the native engine has no counterpart for.
 ///
-/// What a browser tab near its memory ceiling does to `copy_in`. Armed after the document is open,
-/// so what fails is a key the redaction copies in, which is the one marshalling step natively
-/// has no counterpart.
+/// - `refuse`: the engine heap refuses every `copy_in` once armed -- what a browser tab near its
+///   memory ceiling does. Armed after a document is open, what fails is a key the redaction copies
+///   in, which is the one marshalling step natively has no counterpart.
+/// - `heap_step`: each `heap_bytes` read reports that much more than the last, so the web open's
+///   measured-memory check can fire. [`NativeBridge`] reports zero, which makes it unobservable.
 struct RefusingHeap {
     inner: NativeBridge,
     armed: std::sync::atomic::AtomicBool,
+    heap: std::sync::atomic::AtomicU64,
+    heap_step: u64,
+}
+
+impl RefusingHeap {
+    fn new(heap_step: u64) -> Self {
+        Self {
+            inner: NativeBridge::new(),
+            armed: std::sync::atomic::AtomicBool::new(false),
+            heap: std::sync::atomic::AtomicU64::new(0),
+            heap_step,
+        }
+    }
 }
 
 impl QpdfBridge for RefusingHeap {
@@ -947,7 +1038,8 @@ impl QpdfBridge for RefusingHeap {
         self.inner.oh_release(data, oh)
     }
     fn heap_bytes(&self) -> u64 {
-        self.inner.heap_bytes()
+        self.heap
+            .fetch_add(self.heap_step, std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -967,10 +1059,7 @@ fn a_key_the_engine_heap_refuses_fails_the_redaction_by_name() {
         Limits::default(),
         Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
     );
-    let bridge = Arc::new(RefusingHeap {
-        inner: NativeBridge::new(),
-        armed: std::sync::atomic::AtomicBool::new(false),
-    });
+    let bridge = Arc::new(RefusingHeap::new(0));
     let web = crate::web::WebQpdf::new(Arc::clone(&bridge) as Arc<dyn QpdfBridge>);
     let redactor = crate::web::redact_testing::redactor(&web);
     let (document, _) = redactor
@@ -1065,4 +1154,148 @@ fn a_handle_from_another_web_document_is_refused_by_both_writes() {
         .expect("same document");
     media_box.drained().expect("nothing latched");
     assert_ne!(media_box.unparse(), before, "the write landed");
+}
+
+fn web_options(limits: Limits) -> OpenOptions<'static> {
+    OpenOptions::new(limits, Arc::new(ManualClock::new(0)) as Arc<dyn Clock>)
+}
+
+/// The web open applies the page ceiling, as the native open does.
+///
+/// Deletable with every other test green until the security review of #191 asked: the corpus has
+/// no document over the default ceiling, and no test lowered it.
+#[test]
+fn the_web_open_applies_the_page_ceiling() {
+    use crate::redact::graph::OpensForRedaction;
+
+    let bytes = crate::minimal_pdf::pdf_with_pages(3);
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    let redactor = crate::web::redact_testing::redactor(&web);
+    let mut tight = Limits::default();
+    tight.max_pages = 2;
+    match redactor.open_for_redaction(&bytes, &web_options(tight)) {
+        Err(burrow_types::Error::LimitExceeded { limit, stage, .. }) => {
+            assert_eq!(
+                (limit, stage),
+                ("max_pages", burrow_types::Stage::PageCount)
+            );
+        }
+        other => panic!(
+            "three pages under a ceiling of two must refuse: {:?}",
+            other.map(|_| ())
+        ),
+    }
+    // AND THE SAME REFUSAL AS NATIVE, which is the point of mirroring the open.
+    let native = super::open_document(bytes.clone().into_boxed_slice(), &web_options(tight))
+        .map(|_| ())
+        .unwrap_err();
+    let web_error = redactor
+        .open_for_redaction(&bytes, &web_options(tight))
+        .map(|_| ())
+        .unwrap_err();
+    assert_eq!(format!("{web_error:?}"), format!("{native:?}"));
+
+    // THE NEAR-MISS: at the ceiling, not past it.
+    tight.max_pages = 3;
+    assert!(
+        redactor
+            .open_for_redaction(&bytes, &web_options(tight))
+            .is_ok()
+    );
+}
+
+/// The web open measures the engine heap across the open, and refuses past the ceiling.
+///
+/// Unobservable over [`NativeBridge`], whose heap reads as zero; this bridge's grows on demand.
+/// Detected, not bounded -- `core/CLAUDE.md` -- which is exactly what is asserted: the open happened
+/// and the reading afterwards refused it.
+#[test]
+fn the_web_open_measures_the_engine_heap() {
+    use crate::redact::graph::OpensForRedaction;
+
+    let bytes =
+        std::fs::read(repository().join("tests/redaction/generated/01-plain-tj.pdf")).unwrap();
+    let limits = Limits::default();
+    // TWICE THE CEILING, not one byte over it: the check tolerates a noise margin above the ceiling
+    // (`estimate::MEASURED_NOISE_MARGIN_BYTES`), and a step of ceiling + 1 is inside it -- which is
+    // what this test first planted, and what the check correctly let through.
+    let over = RefusingHeap::new(limits.max_memory_bytes.saturating_mul(2));
+    let web = crate::web::WebQpdf::new(Arc::new(over));
+    match crate::web::redact_testing::redactor(&web)
+        .open_for_redaction(&bytes, &web_options(limits))
+    {
+        Err(burrow_types::Error::LimitExceeded { limit, stage, .. }) => {
+            assert_eq!(
+                (limit, stage),
+                ("max_memory_bytes", burrow_types::Stage::Measured)
+            );
+        }
+        other => panic!(
+            "a heap grown past the ceiling must refuse: {:?}",
+            other.map(|_| ())
+        ),
+    }
+    // THE NEAR-MISS: a heap that grows by nothing.
+    let web = crate::web::WebQpdf::new(Arc::new(RefusingHeap::new(0)));
+    assert!(
+        crate::web::redact_testing::redactor(&web)
+            .open_for_redaction(&bytes, &web_options(limits))
+            .is_ok()
+    );
+}
+
+/// The four web accessors that drain do drain: `page`, `page_content`, `stream_data`, `object`.
+///
+/// The native twins are `qpdf::redact_graph::tests`. The security review of #191 deleted each of
+/// these four drains in `web::redact` and the whole suite stayed green, because no corpus document
+/// latches an error at those points. The latch is a real one, made the way the native tests make
+/// it: a key of a free-standing null, which qpdf raises for because nothing owns it.
+#[test]
+fn the_web_accessors_that_drain_report_what_the_document_latched() {
+    use crate::name::Name;
+    use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
+
+    let bytes =
+        std::fs::read(repository().join("tests/redaction/generated/01-plain-tj.pdf")).unwrap();
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    let (document, _) = crate::web::redact_testing::redactor(&web)
+        .open_for_redaction(&bytes, &web_options(Limits::default()))
+        .expect("opens");
+    let page = document.page(0).expect("page 0");
+    let contents = page.key(&Name::literal(b"/Contents\0"));
+    assert_eq!(
+        contents.type_code(),
+        crate::codes::qpdf::object_type::STREAM,
+        "the fixture's /Contents must be one stream for `stream_data` to be asked of it"
+    );
+    let latch = || {
+        let _ = page.null_beside().key(&Name::literal(b"/Anything\0"));
+    };
+
+    latch();
+    assert!(
+        document.page(0).is_err(),
+        "`page` returned over a latched error"
+    );
+    latch();
+    assert!(
+        page.page_content().is_err(),
+        "`page_content` returned over a latched error"
+    );
+    latch();
+    assert!(
+        contents.stream_data().is_err(),
+        "`stream_data` returned over a latched error"
+    );
+    latch();
+    assert!(
+        page.object().is_err(),
+        "`object` returned over a latched error"
+    );
+
+    // THE NEAR-MISS: with nothing latched, all four answer.
+    assert!(document.page(0).is_ok());
+    assert!(page.page_content().is_ok());
+    assert!(matches!(contents.stream_data(), Ok(Some(_))));
+    assert!(page.object().is_ok());
 }

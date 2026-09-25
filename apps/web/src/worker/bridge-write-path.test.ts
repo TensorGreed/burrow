@@ -342,4 +342,30 @@ describe("the redaction write path", () => {
     // made a handle up, would pass an `expect(typeof handle).toBe("number")`.
     expect(handle).toBe(77);
   });
+
+  it("font surgery's array write reaches qpdf argument for argument", () => {
+    // `qpdf_oh_set_array_item(data, oh, at, item)`, #191's one new export. It replaces a
+    // `/Widths` entry or a `/Differences` name IN PLACE, so an `at` and an `item` that crossed
+    // would write a handle id where an index belongs -- a valid call on the wrong slot, which
+    // nothing downstream refuses. Four distinct values, so any swap is a different call.
+    const fake = fakeQpdf();
+    const calls: number[][] = [];
+    fake.module._qpdf_oh_set_array_item = (...args: number[]) => {
+      calls.push(args);
+    };
+    const { scope, attach } = loadBridge();
+    attach(fake.module);
+
+    const returned = scope.__burrow_qpdf_oh_set_array_item(
+      3 as never,
+      41 as never,
+      7 as never,
+      99 as never,
+    );
+
+    expect(calls).toEqual([[3, 41, 7, 99]]);
+    // `void` on the C side: the verdict is latched in qpdf's error slot, which Rust drains. A
+    // bridge that answered something here would be inventing a result.
+    expect(returned).toBeUndefined();
+  });
 });
