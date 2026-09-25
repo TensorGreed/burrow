@@ -14,7 +14,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-crate="core/burrow-engines/src/qpdf/name.rs"
+crate="core/burrow-engines/src/name.rs"
 [ -f "$crate" ] || { echo "::error::$crate is missing"; exit 1; }
 
 work="$(mktemp -d)"

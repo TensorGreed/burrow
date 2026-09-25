@@ -23,11 +23,11 @@ use std::collections::BTreeMap;
 
 use burrow_types::{Error, Result};
 
-use super::handle::ObjectHandle;
-use super::name::Name;
 use crate::codes::qpdf::object_type;
+use crate::name::Name;
 use crate::pdfsyntax::geometry::ScopedFont;
 use crate::pdfsyntax::geometry::{Encoding, Form, GlyphMetrics, Matrix, Rect, Resources};
+use crate::redact::graph::PdfObject;
 
 const RESOURCES: Name = Name::literal(b"/Resources\0");
 const PARENT: Name = Name::literal(b"/Parent\0");
@@ -59,9 +59,9 @@ const SUBTYPE_TYPE0: Name = Name::literal(b"/Type0\0");
 const SUBTYPE_TYPE3: Name = Name::literal(b"/Type3\0");
 
 /// The `/Resources` of one stream, resolved against a live document.
-pub(crate) struct PageResources<'a> {
+pub(crate) struct PageResources<O> {
     /// The resource dictionary itself.
-    dictionary: ObjectHandle<'a>,
+    dictionary: O,
     /// Cached per-font facts, so a page of a thousand glyphs does not re-resolve its font a
     /// thousand times. Keyed by resource name, which is what the content stream selects by.
     fonts: std::cell::RefCell<BTreeMap<Vec<u8>, FontFacts>>,
@@ -89,7 +89,7 @@ struct FontFacts {
     base_encoding: crate::pdfsyntax::standard14::BaseEncoding,
 }
 
-impl<'a> PageResources<'a> {
+impl<O: PdfObject> PageResources<O> {
     /// Resolve a page's `/Resources`, climbing `/Parent` when the page declares none.
     ///
     /// # `/Resources` is inheritable, like `/Rotate`
@@ -118,7 +118,7 @@ impl<'a> PageResources<'a> {
     /// # Errors
     ///
     /// Whatever qpdf latched while reading the page or an ancestor.
-    pub(crate) fn of(owner: &ObjectHandle<'a>) -> Result<Self> {
+    pub(crate) fn of(owner: &O) -> Result<Self> {
         let direct = owner.key(&RESOURCES);
         if direct.type_code() == object_type::DICTIONARY {
             return Ok(Self {
@@ -150,11 +150,11 @@ impl<'a> PageResources<'a> {
     }
 
     /// The resource dictionary, for a caller that walks it itself.
-    pub(crate) const fn dictionary(&self) -> &ObjectHandle<'a> {
+    pub(crate) const fn dictionary(&self) -> &O {
         &self.dictionary
     }
 
-    fn category(&self, category: &Name) -> ObjectHandle<'a> {
+    fn category(&self, category: &Name) -> O {
         self.dictionary.key(category)
     }
 
@@ -181,7 +181,7 @@ impl<'a> PageResources<'a> {
     /// [`Error::Internal`] when the name resolves in neither. The walk already placed a glyph
     /// through it, so this is burrow disagreeing with itself rather than the document being
     /// wrong — and a silent `None` would be the narrowing every leak here has been.
-    pub(crate) fn font_in_scope(&self, font: &ScopedFont) -> Result<ObjectHandle<'a>> {
+    pub(crate) fn font_in_scope(&self, font: &ScopedFont) -> Result<O> {
         const RESOURCES: Name = Name::literal(b"/Resources\0");
         const XOBJECT: Name = Name::literal(b"/XObject\0");
         let key = Name::from_stripped(font.name())?;
@@ -240,7 +240,7 @@ impl<'a> PageResources<'a> {
     }
 }
 
-impl<'a> Resources for PageResources<'a> {
+impl<O: PdfObject> Resources for PageResources<O> {
     fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         let key = Name::from_stripped(name)?;
         let entry = self.category(&XOBJECT).key(&key);
@@ -378,7 +378,7 @@ fn width_of(facts: &FontFacts, code: u32) -> Option<f64> {
 /// A name, or the `/BaseEncoding` inside an `/Encoding` dictionary. Anything else — including a
 /// dictionary with only `/Differences` — is `Standard`, which is what PDF 32000-1 §9.6.6.1 says
 /// a font with no stated base encoding uses for a non-symbolic font.
-fn base_encoding(font: &ObjectHandle<'_>) -> crate::pdfsyntax::standard14::BaseEncoding {
+fn base_encoding<O: PdfObject>(font: &O) -> crate::pdfsyntax::standard14::BaseEncoding {
     use crate::pdfsyntax::standard14::BaseEncoding;
     const BASE_ENCODING: Name = Name::literal(b"/BaseEncoding\0");
     const WIN_ANSI: Name = Name::literal(b"/WinAnsiEncoding\0");
@@ -404,7 +404,7 @@ fn base_encoding(font: &ObjectHandle<'_>) -> crate::pdfsyntax::standard14::BaseE
 }
 
 /// Read one font dictionary.
-fn read_font(font: &ObjectHandle<'_>) -> Result<FontFacts> {
+fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = font.key(&SUBTYPE);
     let mut facts = FontFacts {
         first_char: integer_or(&font.key(&FIRST_CHAR), 0),
@@ -481,7 +481,7 @@ fn read_font(font: &ObjectHandle<'_>) -> Result<FontFacts> {
 }
 
 /// A Type 0 font: the descendant's `/W` and `/DW`, and the `/Encoding` CMap.
-fn read_composite(font: &ObjectHandle<'_>, facts: &mut FontFacts) -> Result<()> {
+fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
     facts.bytes_per_code = 2;
 
     let encoding = font.key(&ENCODING);
@@ -549,7 +549,7 @@ pub(crate) const MAX_W_ASSIGNMENTS: usize = 131_072;
 /// [`Error::Unsupported`] naming `widths-too-many` once the array assigns more than
 /// [`MAX_W_ASSIGNMENTS`] codes. Refused, not truncated: a width map that stopped growing places
 /// the rest of the font's glyphs with the default width, which is a box in the wrong place.
-fn parse_w(array: &ObjectHandle<'_>) -> Result<BTreeMap<u32, f64>> {
+fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
     let mut widths = BTreeMap::new();
     if array.type_code() != object_type::ARRAY {
         return Ok(widths);
@@ -611,7 +611,7 @@ fn parse_w(array: &ObjectHandle<'_>) -> Result<BTreeMap<u32, f64>> {
 ///
 /// # The slash is on the read side too, and the type now says so
 ///
-/// `ObjectHandle::name` returns a [`Name`], which carries its leading `/` by construction, and
+/// `PdfObject::name` returns a [`Name`], which carries its leading `/` by construction, and
 /// `want` is a `Name::literal` whose missing slash would be a **compile error**. So the
 /// mismatch is no longer expressible.
 ///
@@ -622,7 +622,7 @@ fn parse_w(array: &ObjectHandle<'_>) -> Result<BTreeMap<u32, f64>> {
 ///
 /// A handle that is not a name is not the name asked about, which is `false` rather than an
 /// error: the callers are all "is this a Type 3 font" questions where absent means no.
-fn names(handle: &ObjectHandle<'_>, want: &Name) -> bool {
+fn names<O: PdfObject>(handle: &O, want: &Name) -> bool {
     handle.name().is_ok_and(|found| found == *want)
 }
 
@@ -630,7 +630,7 @@ fn names(handle: &ObjectHandle<'_>, want: &Name) -> bool {
 ///
 /// `as` truncates silently and this crate denies it: a `/FirstChar` of `65.7` is not a
 /// character code, and rounding it to 65 would place every glyph in the font by one code.
-pub(super) fn whole(value: f64) -> Option<i64> {
+pub(crate) fn whole(value: f64) -> Option<i64> {
     (value.is_finite() && value.fract() == 0.0 && value.abs() < 9e15).then(|| {
         // Exact: the guard above establishes the value is integral and inside i64.
         #[expect(
@@ -646,7 +646,7 @@ pub(super) fn whole(value: f64) -> Option<i64> {
 ///
 /// Through `unparse` and the content-stream lexer, because there is no trapped accessor for a
 /// real: `qpdf_oh_get_int_value` truncates and says nothing about it.
-fn numbers_of(handle: &ObjectHandle<'_>) -> Vec<f64> {
+fn numbers_of<O: PdfObject>(handle: &O) -> Vec<f64> {
     let code = handle.type_code();
     if code == object_type::NULL {
         return Vec::new();
@@ -655,14 +655,14 @@ fn numbers_of(handle: &ObjectHandle<'_>) -> Vec<f64> {
     crate::pdfsyntax::ops::numbers_in(&text)
 }
 
-fn integer_or(handle: &ObjectHandle<'_>, fallback: i64) -> i64 {
+fn integer_or<O: PdfObject>(handle: &O, fallback: i64) -> i64 {
     numbers_of(handle)
         .first()
         .and_then(|value| whole(*value))
         .unwrap_or(fallback)
 }
 
-fn rect_of(handle: &ObjectHandle<'_>) -> Option<Rect> {
+fn rect_of<O: PdfObject>(handle: &O) -> Option<Rect> {
     match numbers_of(handle).as_slice() {
         [left, bottom, right, top] => Some(Rect {
             left: left.min(*right),

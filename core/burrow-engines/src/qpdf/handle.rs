@@ -46,8 +46,8 @@ use core::marker::PhantomData;
 
 use burrow_types::{Error, Result};
 
-use super::name::Name;
 use super::{Document, ffi};
+use crate::name::Name;
 
 // How many [`ObjectHandle`]s are alive on this thread.
 //
@@ -87,7 +87,10 @@ pub(crate) fn live() -> u64 {
 /// it — and in one test the correctness of that depended on the order two `let` bindings
 /// happened to be written in. Code review pointed out that reordering those two lines would
 /// have released a handle into a cleaned-up document. Found by security review.
-pub(super) struct ObjectHandle<'a> {
+// `pub(crate)` rather than `pub(super)` only because it is the native `PdfDocument::Object` (#191),
+// and an associated type may not name a type less visible than the trait. The module is private,
+// so nothing outside `qpdf` can name this path, and every method stays `pub(super)`.
+pub(crate) struct ObjectHandle<'a> {
     data: ffi::QpdfData,
     handle: ffi::QpdfObjectHandle,
     /// Borrows the document, so the handle cannot outlive it.
@@ -288,6 +291,48 @@ impl<'a> ObjectHandle<'a> {
         let handle = unsafe { ffi::qpdf_oh_new_integer(document.data, value) };
         // SAFETY: `handle` was just issued by `document.data`.
         unsafe { Self::owned(document, handle) }
+    }
+
+    /// The null object, in **this handle's** document.
+    ///
+    /// The shape redaction's policy uses (#191): it is given no document, so a new value is made
+    /// beside a handle it already holds, and cannot be made in the wrong document. See
+    /// `crate::redact::graph`.
+    pub(super) fn null_beside(&self) -> Self {
+        // SAFETY: `self.data` is live for as long as this handle borrows its document.
+        // Untrapped and argued in `engines/qpdf-untrapped-accepted.toml`, as `new_null`.
+        let handle = unsafe { ffi::qpdf_oh_new_null(self.data) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { self.sibling(handle) }
+    }
+
+    /// A new integer object, in **this handle's** document. See [`Self::null_beside`].
+    pub(super) fn integer_beside(&self, value: i64) -> Self {
+        // SAFETY: as `null_beside`; argued in `engines/qpdf-untrapped-accepted.toml`, as
+        // `new_integer`.
+        let handle = unsafe { ffi::qpdf_oh_new_integer(self.data, value) };
+        // SAFETY: `handle` was just issued by `self.data`.
+        unsafe { self.sibling(handle) }
+    }
+
+    /// Whether `other` was issued by the same document as this handle.
+    ///
+    /// Compares the documents, never the handles: two handles are never equal (see
+    /// `core/CLAUDE.md`), and this is not asking whether they are.
+    pub(super) fn same_document(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+
+    /// Whatever this handle's document has latched, as an error.
+    ///
+    /// Through `self.data`, never through a document a caller passes: #130's lesson.
+    ///
+    /// # Errors
+    ///
+    /// The latched error, mapped at the boundary as everywhere else.
+    pub(super) fn drained(&self) -> Result<()> {
+        // SAFETY: `self.data` is live for as long as this handle borrows its document.
+        unsafe { Document::take_error_on(self.data) }.map_or(Ok(()), Err)
     }
 
     /// The handle for page `n`, as an owned handle.
@@ -683,9 +728,9 @@ mod tests {
             ("extract.rs", include_str!("extract.rs")),
             ("limits.rs", include_str!("limits.rs")),
             ("mod.rs", include_str!("mod.rs")),
-            ("name.rs", include_str!("name.rs")),
             ("prune.rs", include_str!("prune.rs")),
             ("redact_frame.rs", include_str!("redact_frame.rs")),
+            ("redact_graph.rs", include_str!("redact_graph.rs")),
             (
                 "redact_optional_content.rs",
                 include_str!("redact_optional_content.rs"),

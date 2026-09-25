@@ -1,23 +1,26 @@
-//! Reading a redacted document back, through a fresh qpdf.
+//! Reading a redacted document back, through a fresh document of the same engine.
 //!
-//! The engine half of [`crate::redact_verify`]; the policy is there and this is the marshalling.
-//! It shares no state with the redaction that produced the bytes: a new `qpdf_data`, a new page
-//! tree, opened from the emitted bytes and nothing else.
+//! The engine half of [`crate::redact_verify`]; the policy is there and this is the reading. It
+//! shares no state with the redaction that produced the bytes: a new document, a new page tree,
+//! opened from the emitted bytes and nothing else. Written once over
+//! [`crate::redact::graph`] (#191), so the web reads back through the same code as native.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use burrow_types::{Clock, Deadline, Limits, Result};
 
-use super::name::Name;
 use super::resources::PageResources;
 use crate::codes::qpdf::object_type;
+use crate::name::Name;
 use crate::pdfsyntax::geometry::{Glyph, Watch, glyphs_in};
 use crate::pdfsyntax::region::PageFrame;
+use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 use crate::redact_verify::ClearedWitness;
 
-/// A qpdf that opens emitted bytes and answers the three read-back questions.
-pub(crate) struct QpdfWitness {
+/// An engine that opens emitted bytes and answers the read-back questions.
+pub(crate) struct Witness<E> {
+    engine: E,
     limits: Limits,
     clock: Arc<dyn Clock>,
     /// **The operation's deadline, not a fresh one.**
@@ -33,17 +36,37 @@ pub(crate) struct QpdfWitness {
     deadline: Deadline,
 }
 
-impl QpdfWitness {
-    /// The operation's deadline, as the geometry walk reads it during the read-back.
-    ///
-    /// The only place the read-back builds one; see `QpdfRedaction::watch` for why that matters.
-    fn watch<'a>(&'a self, read: &ReadBack) -> Watch<'a> {
-        Watch::new(read.deadline, self.clock.as_ref())
-    }
+/// The native witness, by the name its tests have always used.
+#[cfg(test)]
+pub(crate) type QpdfWitness = Witness<super::Qpdf>;
 
+#[cfg(test)]
+impl QpdfWitness {
     /// A witness spending the operation's ceilings and the operation's remaining time.
     pub(crate) const fn new(limits: Limits, clock: Arc<dyn Clock>, deadline: Deadline) -> Self {
+        Witness::over(super::Qpdf, limits, clock, deadline)
+    }
+}
+
+impl<E: OpensForRedaction + Clone> Witness<E> {
+    /// The operation's deadline, as the geometry walk reads it during the read-back.
+    ///
+    /// The only place the read-back builds one; see `PageRedaction::watch` for why that matters.
+    fn watch<'a>(&'a self, read: &ReadBack<E::Document>) -> Watch<'a> {
+        Watch::new(read.deadline, self.clock.as_ref())
+    }
+}
+
+impl<E> Witness<E> {
+    /// A witness over `engine`, spending the operation's ceilings and remaining time.
+    pub(crate) const fn over(
+        engine: E,
+        limits: Limits,
+        clock: Arc<dyn Clock>,
+        deadline: Deadline,
+    ) -> Self {
         Self {
+            engine,
             limits,
             clock,
             deadline,
@@ -52,26 +75,21 @@ impl QpdfWitness {
 }
 
 /// A document opened for reading back, with the deadline its reads spend.
-pub(crate) struct ReadBack {
-    document: super::Document,
+pub(crate) struct ReadBack<D> {
+    document: D,
     deadline: Deadline,
 }
 
-impl ReadBack {
+impl<D: PdfDocument> ReadBack<D> {
     /// The page handle for `page`, bounds-checked.
-    fn page(&self, page: usize) -> Result<super::handle::ObjectHandle<'_>> {
+    fn page(&self, page: usize) -> Result<D::Object<'_>> {
         let count = usize::try_from(self.document.page_count()?).unwrap_or(0);
         if page >= count {
             return Err(burrow_types::Error::OutputRejected(format!(
                 "redact: the output has {count} page(s) and page {page} was verified"
             )));
         }
-        // SAFETY: `page` is below the page count, checked immediately above.
-        let handle = unsafe { super::handle::ObjectHandle::page(&self.document, page) };
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
-        Ok(handle)
+        self.document.page(page)
     }
 
     /// The page's content, as one lexical stream.
@@ -80,11 +98,12 @@ impl ReadBack {
     }
 }
 
-impl ClearedWitness for QpdfWitness {
-    type Read = ReadBack;
+impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
+    type Read = ReadBack<E::Document>;
 
     fn fresh(&self) -> Self {
         Self {
+            engine: self.engine.clone(),
             limits: self.limits,
             clock: Arc::clone(&self.clock),
             deadline: self.deadline,
@@ -102,14 +121,13 @@ impl ClearedWitness for QpdfWitness {
         // the WITNESS rather than in the closure on purpose: a hook in the closure would be
         // bypassed by exactly that mutation.
         #[cfg(test)]
-        if let Some(error) = super::tests::forced_read_back_failure() {
+        if let Some(error) = crate::redact::hooks::forced_read_back_failure() {
             return Err(error);
         }
         let options = crate::OpenOptions::new(self.limits, Arc::clone(&self.clock));
-        // `open_document`'s fourth return is a FRESHLY STARTED deadline and it is discarded;
-        // `input_rotations` does the same for the same reason. See `QpdfWitness::deadline`.
-        let (document, _, _, _fresh) =
-            super::open_document(bytes.to_vec().into_boxed_slice(), &options)?;
+        // THE OPEN'S OWN DEADLINE IS A FRESHLY STARTED ONE and it is discarded;
+        // `input_rotations` does the same for the same reason. See `Witness::deadline`.
+        let (document, _fresh) = self.engine.open_for_redaction(bytes, &options)?;
         Ok(ReadBack {
             document,
             deadline: self.deadline,
@@ -118,7 +136,7 @@ impl ClearedWitness for QpdfWitness {
 
     fn frame_of(&self, read: &Self::Read, page: usize) -> Result<PageFrame> {
         read.deadline.checkpoint(self.clock.as_ref())?;
-        super::redact_frame::of(&read.document, &read.page(page)?)
+        super::redact_frame::of(&read.page(page)?)
     }
 
     fn glyphs_on(&self, read: &Self::Read, page: usize) -> Result<Vec<Glyph>> {
@@ -224,9 +242,9 @@ impl ClearedWitness for QpdfWitness {
                     }
                 }
             }
-            if let Some(error) = read.document.take_error() {
-                return Err(error);
-            }
+            // THE FONT'S DOCUMENT, which is the read-back's: the drain goes through the handle
+            // that did the reading (#191).
+            font.drained()?;
         }
         Ok(mapped)
     }
@@ -520,7 +538,10 @@ mod ceiling_tests {
             (
                 "glyphs_on",
                 (|witness: &QpdfWitness, read| witness.glyphs_on(read, 0).map(drop))
-                    as fn(&QpdfWitness, &super::ReadBack) -> burrow_types::Result<()>,
+                    as fn(
+                        &QpdfWitness,
+                        &super::ReadBack<super::super::Document>,
+                    ) -> burrow_types::Result<()>,
             ),
             ("drawn_codes", |witness, read| {
                 witness.drawn_codes(read, 0).map(drop)

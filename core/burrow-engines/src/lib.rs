@@ -93,10 +93,22 @@ pub mod prescan;
 pub(crate) mod blank;
 
 pub mod pdfsyntax;
+// A PDF name in the one form qpdf's C API accepts, on either platform: slash first, NUL last.
+// Ungated since #191, which moved redaction's policy onto a trait both platforms implement and
+// whose every key-taking method takes one of these. Called only by the native engine until the web
+// half of #191 implements that trait, so a build without the engines compiles it and calls none of
+// it; `expect`, so the day the web does call it this has to go.
+#[cfg_attr(
+    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "the native engine is the only caller until #191's web half"
+    )
+)]
+pub(crate) mod name;
 pub mod redact;
-/// #134's read-back. Behind the engine gate because its only implementation is qpdf's and its
-/// allowlist helper is too; without the engines there is nothing to verify.
-#[cfg(all(feature = "native-engines", burrow_native_engines))]
+/// #134's read-back. Ungated since #191: it reads through `redact::graph`'s traits and names no
+/// engine, and the web implementation verifies through it exactly as native does.
 pub mod redact_verify;
 
 /// Every glyph the walk places on a document's first page.

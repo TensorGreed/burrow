@@ -1,15 +1,13 @@
-// AWAITING #134, and said so rather than silenced. Nothing calls this: ADR 0022 forbids a
-// public entry point that emits an unverified redaction, and #134 is the verification. The
-// assembly and its order are complete and tested; the caller is what is missing.
-//
-// `expect` rather than `allow` because it becomes an error the moment the operation is wired
-// in, so this note cannot rot into a blanket exemption. Conditional on `not(test)` because the
-// tests DO use it, and an unconditional expectation is unfulfilled under `--all-targets`.
+// UNINSTANTIATED WITHOUT AN ENGINE, and said so rather than silenced. The policy under this
+// module is written once over `graph`'s traits (#191), and until the web implements them the only
+// implementation is the native one: a build without the native engines compiles all of it and
+// calls none of it. `expect` rather than `allow`, so the day the web instantiates it this becomes
+// an error and has to go.
 #![cfg_attr(
-    not(test),
+    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
     expect(
         dead_code,
-        reason = "the assembly is complete and tested; #134's verified path is its first caller"
+        reason = "the native engine is the policy's only implementation until #191's web half"
     )
 )]
 
@@ -72,6 +70,10 @@
 use std::collections::BTreeSet;
 
 use burrow_types::{Error, Result};
+
+pub(crate) mod graph;
+#[cfg(test)]
+pub(crate) mod hooks;
 
 /// What happened to one font, and why.
 ///
@@ -240,6 +242,18 @@ pub(crate) struct Redaction<S: Steps> {
 pub(crate) struct ContentEdited<S: Steps> {
     steps: S,
     /// How many streams were rewritten, so a caller can assert the work happened.
+    #[cfg_attr(
+        all(
+            not(test),
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ),
+        expect(
+            dead_code,
+            reason = "asserted by the tests; the operation reads the report"
+        )
+    )]
     rewritten: usize,
     redacted: BTreeSet<usize>,
 }
@@ -289,6 +303,18 @@ impl<S: Steps> Redaction<S> {
 
 impl<S: Steps> ContentEdited<S> {
     /// How many streams were rewritten.
+    #[cfg_attr(
+        all(
+            not(test),
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ),
+        expect(
+            dead_code,
+            reason = "asserted by the tests; the operation reads the report"
+        )
+    )]
     pub(crate) const fn rewritten(&self) -> usize {
         self.rewritten
     }
@@ -372,6 +398,13 @@ impl<S: Steps> Finished<S> {
 /// # Errors
 ///
 /// The first failing step's error, with the document discarded. See the module header.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the operation always wants the report before verification; the tests do not"
+    )
+)]
 pub(crate) fn run<S: Steps>(
     steps: S,
     redacted: BTreeSet<usize>,
@@ -409,6 +442,13 @@ pub(crate) fn run_reporting<S: Steps>(
 }
 
 /// The refusal a poisoned document produces, so callers can name it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "named for the tests' planted failures; no production step raises it yet"
+    )
+)]
 pub(crate) fn poisoned(detail: &str) -> Error {
     Error::Malformed(format!("pdf redaction [document-poisoned]: {detail}"))
 }

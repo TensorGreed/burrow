@@ -14,7 +14,7 @@ use burrow_types::{Error, Result};
 
 use super::Document;
 use super::handle::ObjectHandle;
-use super::name::Name;
+use crate::name::Name;
 use crate::prune::graph::ObjectGraph;
 
 /// A qpdf document, seen as an object graph.

@@ -202,7 +202,8 @@ const CHARPROCS_KEY: &[u8] = b"/CharProcs";
 ///
 /// The gate is on the callers rather than on the platform: ADR 0026 puts redaction in its own
 /// wasm module, and when that module's page strip arrives this list is what it must use. The
-/// allowlist itself is not gated, because `split`'s prune reads it everywhere.
+/// allowlist itself is not gated, because `split`'s prune reads it everywhere. #191 wrote the
+/// strip once over `redact::graph`, and its web half is what lifts this gate.
 #[cfg(all(feature = "native-engines", burrow_native_engines))]
 pub(crate) fn page_keys_outside_the_allowlist(unparsed: &[u8]) -> Result<Vec<Vec<u8>>> {
     Ok(page_keys_outside_the_allowlist_of(
@@ -216,7 +217,8 @@ pub(crate) fn page_keys_outside_the_allowlist(unparsed: &[u8]) -> Result<Vec<Vec
 /// making it re-serialise one to ask would be a second route to the same answer. **One list,
 /// two callers**: the allowlist is the thing that must not be duplicated, and this is what lets
 /// both the strip and the read-back that checks the strip consult it.
-#[cfg(all(feature = "native-engines", burrow_native_engines))]
+///
+/// Ungated since #191, with the read-back that calls it: `redact_verify` names no engine.
 pub(crate) fn page_keys_outside_the_allowlist_of(keys: &[Vec<u8>]) -> Vec<Vec<u8>> {
     keys.iter()
         .filter(|key| !KEPT_PAGE_KEYS.contains(&key.as_slice()))

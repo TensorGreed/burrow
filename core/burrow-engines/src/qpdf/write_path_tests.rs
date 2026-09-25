@@ -14,10 +14,10 @@ use std::sync::Arc;
 use burrow_types::{Clock, Limits, SystemClock};
 
 use super::handle::ObjectHandle;
-use super::name::Name;
 use super::{Document, open_document};
 use crate::OpenOptions;
 use crate::minimal_pdf;
+use crate::name::Name;
 
 fn options() -> OpenOptions<'static> {
     OpenOptions::new(

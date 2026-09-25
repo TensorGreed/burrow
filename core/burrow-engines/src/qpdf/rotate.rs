@@ -33,9 +33,9 @@ use std::sync::Arc;
 use burrow_types::{Deadline, Error, Limits, Result, Rotation, Stage};
 
 use super::handle::ObjectHandle;
-use super::name::Name;
 use super::{Document, Qpdf};
 use crate::codes::qpdf::object_type;
+use crate::name::Name;
 use crate::{OpenOptions, PageRotator};
 
 /// `/Rotate`, as a NUL-terminated C string.
