@@ -3250,7 +3250,7 @@ those guarantees rather than flattening them:
 
 Pruning keeps its shape, and its native graph drains through the graph's document rather than the
 handle's. Nothing is wrong there today, since every caller builds the graph over the document its
-handles came from. It is filed separately rather than changed here.
+handles came from. It is filed as #196 rather than changed here.
 
 ### The drain did not move, and that corrects the amendment above
 
@@ -3281,7 +3281,7 @@ sees the same calls in the same order, with two exceptions:
   it does not clear still surfaces at the drain that follows, as before;
 - one null handle is released a few lines earlier. A release is a map erase on the document.
 
-Moving the drain into the accessors is filed as its own change, after the web half. The web's
+Moving the drain into the accessors is filed as its own change, #195, after the web half. The web's
 accessors are raw bridge calls that do not drain either, so the web implementation can mirror the
 native call sequence one for one. The drain can then move on both platforms at once, under a
 differential harness that measures it on both.

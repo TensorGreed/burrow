@@ -26,12 +26,12 @@
 //! "temporarily" is the shortcut ADR 0029 will not take: an operation that removes a secret and
 //! cannot say whether it did is, from outside, indistinguishable from one that did not. #134 made
 //! the read-back a parameter of the only route to bytes (`Finished::emit_verified`), and
-//! [`redact_page`] is the one caller of that route.
+//! `redact_page` is the one caller of that route.
 //!
 //! # The policy under this module is written once (#191)
 //!
 //! `steps`, `witness`, `sharing`, `resources`, `optional_content` and `frame` decide what a
-//! redaction removes, keeps or refuses. They are written over [`graph`]'s traits and name no
+//! redaction removes, keeps or refuses. They are written over `graph`'s traits and name no
 //! engine; `qpdf` implements the traits natively, and the web implements them in #191's second
 //! half. See `graph`'s header for what those traits hold and what they cannot.
 //!
