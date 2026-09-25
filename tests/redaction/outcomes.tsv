@@ -1,0 +1,573 @@
+# Every redaction outcome in the corpus, byte for byte. Written by
+# core/burrow-ops/tests/redaction_outcomes.rs under BURROW_BLESS_REDACTION_OUTCOMES=1;
+# see its header for what each line means and when to re-bless.
+INPUT	tests/redaction/fixtures/producer-latex.pdf	b08bdf191f96edc35e796a6ac477fd7fba220dd9d4013b7a86e9384cd5fd7ffa
+CASE	tests/redaction/fixtures/producer-latex.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	manifest	OK cf06781c818c55c03e977f92afea3f041e6670bfc951427cbdd150f6f8509319 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
+CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	pdfbuild	OK 73570d2d11a0e33d192c0427cdfb9e14454f76b263210b80a8c1d5b72be4a677 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
+CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	whole	OK b5937ded480deaebe2ef747f0622dbdf1853ffdddd174689ee984b07c401d335 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
+CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	band	OK 73570d2d11a0e33d192c0427cdfb9e14454f76b263210b80a8c1d5b72be4a677 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
+INPUT	tests/redaction/fixtures/producer-ocr-scan.pdf	27d43eb68ecfbcd929f0c5f0ca3dfd10ba252dcdaebd22ca7823956d6feef31b
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	manifest	OK fbf393b48308ff93170616013cb8f8c304a7fae2ce4614da308b68022186c4ee report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	pdfbuild	OK d695f43b25764ab6237e0ccd41bbeaa1c46b1d90330ee8cc29ea5ea4112d713d report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	whole	OK cf0d721e9b2e2b34097ba07ba089bc1c5c66d1b7501134ee25404411f5c7dab4 report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	band	OK 517c85fd0839bb079fd372dcaf9cdd505b9cad285a24e0988c4b55f2bde7a519 report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
+INPUT	tests/redaction/fixtures/producer-vertical-writing.pdf	b6738e36df1e2d04074a55abd3c32244b5dea2131a7f01d46cbe8fc94071c504
+CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	0	pdfbuild	OK 441b79d57c7f22c73a201888c90518acead85ce6f0e72efcde9b9570d85d9d6b report 8e0d8ce87e282fc6624b6025a42143717295222fa45d5c2f9cf9d8c16609401a
+CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	0	whole	OK f281b081256fe20db54c926986adaf6fb836eb411c3b470212ee850a0bbee80d report 8e0d8ce87e282fc6624b6025a42143717295222fa45d5c2f9cf9d8c16609401a
+CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	0	band	OK 441b79d57c7f22c73a201888c90518acead85ce6f0e72efcde9b9570d85d9d6b report 8e0d8ce87e282fc6624b6025a42143717295222fa45d5c2f9cf9d8c16609401a
+INPUT	tests/redaction/fixtures/producer-writer.pdf	2993655cf9eb9eff9dd55152c7be1b382bbbf9f2905e8fc414447701b64bb7f6
+CASE	tests/redaction/fixtures/producer-writer.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/fixtures/producer-writer.pdf	0	0	manifest	OK 8006c25abdcea6ec180919e2ac95ee406a8c34da8c70bbd7234a13d1f8f41102 report dfc3b6a0bf503dbc248c04477b61679e6f6980904e373f50c25515ab105b83e3
+CASE	tests/redaction/fixtures/producer-writer.pdf	0	0	pdfbuild	OK ce2739f11888219b6d190d89262a1a712b3e00367735f69a96144d2998abce9f report dfc3b6a0bf503dbc248c04477b61679e6f6980904e373f50c25515ab105b83e3
+CASE	tests/redaction/fixtures/producer-writer.pdf	0	0	whole	OK 43ef7d089a18c4a60e5554506058a9f1ca315d4cb3155e38817dd3818a1ff62c report dfc3b6a0bf503dbc248c04477b61679e6f6980904e373f50c25515ab105b83e3
+CASE	tests/redaction/fixtures/producer-writer.pdf	0	0	band	OK 41b6a6dc5e461f5801f89cd2bf585d5a7cb60381b7605ef209b89a798770ac91 report dfc3b6a0bf503dbc248c04477b61679e6f6980904e373f50c25515ab105b83e3
+INPUT	tests/redaction/generated/00-control-no-canary.pdf	e07721f03b1d506a5fac6914190e1a4a938a4243f7f47cd64bd6200d8adeddf6
+CASE	tests/redaction/generated/00-control-no-canary.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/00-control-no-canary.pdf	0	0	pdfbuild	OK 8ff007b65e1b18a4795c002b6259dec3ac1088d880f6b485b8535989a1e12bd7 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/00-control-no-canary.pdf	0	0	whole	OK 9c21b94e534b54529fd2bc6e4d3d046c3c3b0f96dd579cc631d52c6ec7ef363c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/00-control-no-canary.pdf	0	0	band	OK 6ee02b5710c16560d3791675e98d9cb8d5ee7b553e964ada6891a673c0d79308 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/01-plain-tj.pdf	aeac122cabd8056dc14bc4f967b067cc7242b2dc8b08cd2864152c08b922b24c
+CASE	tests/redaction/generated/01-plain-tj.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/01-plain-tj.pdf	0	0	pdfbuild	OK 20fa4d045643bd4bff612c503c6b47899fda4f25653390bcb87ca1395e4b163c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/01-plain-tj.pdf	0	0	whole	OK 2cdc720b073e9af15cf7aa065dd9544ad2b70d1ee646a290fb6f1f891706219a report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/01-plain-tj.pdf	0	0	band	OK dd5c3acbc757a32d0364c3df7c76b0c93f7c02bb34db27bfe6954828aa411dff report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/02-kerned-tj.pdf	dc9b457805ad92567c6d47c2002bb622772551c74a6564afac8c780a5cdc79cb
+CASE	tests/redaction/generated/02-kerned-tj.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/02-kerned-tj.pdf	0	0	pdfbuild	OK 780f9a90e9953aeab029c0cf3384acc646ac203fa8fd04ec7e491d5a99a37c20 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/02-kerned-tj.pdf	0	0	whole	OK 798c7c09b91d3c2a232f383276844df3e95563b65706da158f074acedceb5453 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/02-kerned-tj.pdf	0	0	band	OK fed7609e06ecc62eb6dc9684fcfa5851001255b5d6ab8c2fabe319568559f012 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/03-positioned-runs.pdf	f7b95fced501787d20cea78c27f8eae546cb47b4d4fb9b66954e99695f17d9c5
+CASE	tests/redaction/generated/03-positioned-runs.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/03-positioned-runs.pdf	0	0	pdfbuild	OK 79628baef73270690265129018dc8f2433a08cd9452676cfa3050d40b33f87c3 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/03-positioned-runs.pdf	0	0	whole	OK f284fd228f5accf5636194f79fe68742e526a54f6dec90448d86623cc5af06ec report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/03-positioned-runs.pdf	0	0	band	OK 5b36e65821814ef1e8c63ff9b8ffbc4e38993d05d7ef2c67f780f7f47244d157 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/04-differences-encoding.pdf	b8c6eb236fa64fbbb274333a79aed0185a72a27cf4493fef55e422d7edac4d33
+CASE	tests/redaction/generated/04-differences-encoding.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/04-differences-encoding.pdf	0	0	pdfbuild	OK 6b7dac69c2b7a69a0dfad36034aa12747662bd51470989c442fd10f726265339 report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/04-differences-encoding.pdf	0	0	whole	OK 85f14561af9a4d64d2b888c91fff8784ec12fc74a946adc410c7b4f648b57d39 report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/04-differences-encoding.pdf	0	0	band	OK 458ba6d0157fda4dcb38d7d9d9d2190785ce8cd7606981a500b024f6db6c2695 report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+INPUT	tests/redaction/generated/05-cid-with-tounicode.pdf	695a0528a072bea5e5ab06647335ca6ae7913682b68a005090b359eaa7cf0a3b
+CASE	tests/redaction/generated/05-cid-with-tounicode.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/05-cid-with-tounicode.pdf	0	0	pdfbuild	OK 281120b470752fcee96c581cf5a72bbfc577358b9db72ccbe5a2e367b03d2c43 report 4f70105943cb913b886bc7e2c1af3f449c02ef7a1ce6bf0541da95624837098f
+CASE	tests/redaction/generated/05-cid-with-tounicode.pdf	0	0	whole	OK 1c05c1f93cae775f2321880d53b5d26dcf2911e1c819c945610a4bc0e7905838 report 4f70105943cb913b886bc7e2c1af3f449c02ef7a1ce6bf0541da95624837098f
+CASE	tests/redaction/generated/05-cid-with-tounicode.pdf	0	0	band	OK 2160ce7e12ea6dbbef049b15195a4360215b441009bf300161ac0c93e46a8321 report 4f70105943cb913b886bc7e2c1af3f449c02ef7a1ce6bf0541da95624837098f
+INPUT	tests/redaction/generated/06-cid-without-tounicode.pdf	c5c6944e2bf6a2f49e804c18800b1a4a1034ac2aa394eae6eea461f02ed31146
+CASE	tests/redaction/generated/06-cid-without-tounicode.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/06-cid-without-tounicode.pdf	0	0	pdfbuild	OK ba33b58b0452e4106c9a10a50d0f628106643718956569795497e09a32e00783 report 68f15c45d30e9fbd14884fc3b2f56c000765235c2f0ca63f80ed4baf234cb974
+CASE	tests/redaction/generated/06-cid-without-tounicode.pdf	0	0	whole	OK 297688104dd2281ecd41ef6ce375735fe360887fb79462a2587dbbf2f98b45e4 report 68f15c45d30e9fbd14884fc3b2f56c000765235c2f0ca63f80ed4baf234cb974
+CASE	tests/redaction/generated/06-cid-without-tounicode.pdf	0	0	band	OK 2d3dacd19b28275c69c59eb8d20f3d7ac64877999c2d55502890825fc8c9b9fc report 68f15c45d30e9fbd14884fc3b2f56c000765235c2f0ca63f80ed4baf234cb974
+INPUT	tests/redaction/generated/07-form-xobject.pdf	602852aa389cc860eff1a31e1dd6d997f04a49bba553af700fd444d6d8f69add
+CASE	tests/redaction/generated/07-form-xobject.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/07-form-xobject.pdf	0	0	pdfbuild	OK 6b1435fbffc133978bbbd25118c1c7306b6861e8ad979eaf4f27092e2b226fc3 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/07-form-xobject.pdf	0	0	whole	OK 00fef82c92381429d2d74eacc025ff9e955dfc76a3394941e8eab8106b327f35 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/07-form-xobject.pdf	0	0	band	OK 7ca220b6047c8559b1b51b89d240ed20b5999bd24544e055db5d2e878c5701f2 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/08-type3-glyph.pdf	21c0620889b8ed17a400b7de1b71c4add61e464d4774315f363d1d9312ebc6ab
+CASE	tests/redaction/generated/08-type3-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/08-type3-glyph.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/08-type3-glyph.pdf	0	0	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/08-type3-glyph.pdf	0	0	band	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+INPUT	tests/redaction/generated/09-actualtext.pdf	d30a129d789a25cf92f328e9d1433a001d8241e4022ae6269f29a5fb73037ea0
+CASE	tests/redaction/generated/09-actualtext.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/09-actualtext.pdf	0	0	pdfbuild	OK 309df26160fe7c291d80dd70e61becf2398d8a37e5ef12e3428076d8a19fd028 report a09b3c2f63a82b56ab1ea83d3161d541fb84df9a9e953973f97893121a3f6c02
+CASE	tests/redaction/generated/09-actualtext.pdf	0	0	whole	OK bf74677c96dba3f39327ca4ac4fb99ccc9bb2a8ae6ed22098d478557311fd417 report a09b3c2f63a82b56ab1ea83d3161d541fb84df9a9e953973f97893121a3f6c02
+CASE	tests/redaction/generated/09-actualtext.pdf	0	0	band	OK 339c75ecaff1175fb1645216aec798828d4baa5d9c8d8d71f1d61f1ffe063d7c report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+INPUT	tests/redaction/generated/10-structure-tree.pdf	ee91f817721480c4e5b6cc75687c27a2bf575eea39798dfb1a712961b2199af8
+CASE	tests/redaction/generated/10-structure-tree.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/10-structure-tree.pdf	0	0	pdfbuild	OK bfd8b408fea72a68dcb7b8b3ff76721caaa8cdf6b90610bef78f157235fd177e report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/10-structure-tree.pdf	0	0	whole	OK f609719c63a94349cbded2b12e31961a903f2a3f16cb4ef364d93563a8a4e136 report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/10-structure-tree.pdf	0	0	band	OK af3855c69c30a9e1b01d1ab0033df8c7acb3d6bda8baf18a7ed2ab9d07eb16bb report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+INPUT	tests/redaction/generated/11-annotation.pdf	d895232164243655e52d8b54856f1556930a82fbf95b1829e3db57f43afcff86
+CASE	tests/redaction/generated/11-annotation.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/11-annotation.pdf	0	0	pdfbuild	OK 4f77691f11cd7657b480c04ee6023679768448e4e3b612aa6de867735d1185fe report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/11-annotation.pdf	0	0	whole	OK ccfd476df06d11294d43cb5efc50e2ef93d88d59e9b3d1d7567f33453fed0082 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/11-annotation.pdf	0	0	band	OK 9e68590280ffa12be4635ab922f04b7c13d5ca1851154397676e217e250c1731 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/12-acroform-field.pdf	448813bf6428592fc0f5c7a57df9cf668440b45e21f0070d7e17bc41b428a922
+CASE	tests/redaction/generated/12-acroform-field.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/12-acroform-field.pdf	0	0	pdfbuild	OK 886355c23bd695e4faabaa868f494b80f4c924f13cb121e93c8b2f2bca26f013 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/12-acroform-field.pdf	0	0	whole	OK 7bf1ae74a08a63d2939592fd6aeecd7ef35f244830062243dcaf93bed11cddd9 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/12-acroform-field.pdf	0	0	band	OK d4e907a40fc235ee67fe6ffec0d5412932cc5e9d51d107cff0cefe299efcdd54 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/13-optional-content.pdf	eb433c9cbf40ca1cdae761a5d999b1d6aa33bfb52d1885ff89ae644366103a2e
+CASE	tests/redaction/generated/13-optional-content.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/13-optional-content.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/13-optional-content.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/13-optional-content.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/14-thumbnail.pdf	f0c8666a0098059d2bf62db862a501ee03f6c63ad73b0ad52443442bbf23c7b6
+CASE	tests/redaction/generated/14-thumbnail.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/14-thumbnail.pdf	0	0	pdfbuild	OK 20fa4d045643bd4bff612c503c6b47899fda4f25653390bcb87ca1395e4b163c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/14-thumbnail.pdf	0	0	whole	OK 2cdc720b073e9af15cf7aa065dd9544ad2b70d1ee646a290fb6f1f891706219a report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/14-thumbnail.pdf	0	0	band	OK 111a84e96273ba3060f07c5a59d4575c20b934dcb48570f9b012c8d3d26f7beb report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/15-metadata.pdf	c9e8a49602820ea232d00ee7dd9a09ca92363958e85e37593323b78ea15339bc
+CASE	tests/redaction/generated/15-metadata.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/15-metadata.pdf	0	0	pdfbuild	OK 09b95ce2cbd8cc1ccf1518dd70a9068f29987c14dcbdaa63e5a9d30629605848 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/15-metadata.pdf	0	0	whole	OK b2899da0ea7fd3a69b8f1782f8ddf5f350c4f62c9d11b9177f72d34d3653011f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/15-metadata.pdf	0	0	band	OK e3830c919775e12da0bade0ef72805bced1fee63db30d1bef0a8b8f896662e56 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/16-attachment.pdf	2882ba7f7f50f412c2beeff205f15fedc51ba9988e79c1c52a332ec7e5fb0e30
+CASE	tests/redaction/generated/16-attachment.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/16-attachment.pdf	0	0	pdfbuild	OK eac8383cec709f7456f9493e79b5b77b7702517b2baffbfc96ef073d9f8ce037 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/16-attachment.pdf	0	0	whole	OK 214303e0b3584f4020584d84ab70355a5b8b9d1b4c4c9399968a4aebc56afab5 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/16-attachment.pdf	0	0	band	OK 15eb9771a230f47d9ea4cd8149934d5a40377daca5ffd0943a43e237c66cb072 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/17-incremental-update.pdf	56262e5f5cd49c3d5e8bb2ab65816f95e35a124c744d63997920e1a3fcc5f619
+CASE	tests/redaction/generated/17-incremental-update.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/17-incremental-update.pdf	0	0	pdfbuild	OK 14857756824808f1ac53a60c38332d10f88051ac9656d7376c1cfc743db415ce report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/17-incremental-update.pdf	0	0	whole	OK 1e9362ef3be889f96a1c7c7922bd291411f38038fa3e8ca00098bce980430e23 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/17-incremental-update.pdf	0	0	band	OK 14857756824808f1ac53a60c38332d10f88051ac9656d7376c1cfc743db415ce report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/18-vector-outlines.pdf	d674b764c72344d648f8a7b391eb9c3c8420ee5ea84a153647905f1ec67856aa
+CASE	tests/redaction/generated/18-vector-outlines.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	pdfbuild	OK a07f21dc9be966957cc80bda24543a0eb335a00e622129b00fe7b4f2aba6612f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	whole	OK f441516b3ae0e397bed5fe40424fface97aed0d320eb31e30173688243f668d3 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	band	OK a07f21dc9be966957cc80bda24543a0eb335a00e622129b00fe7b4f2aba6612f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/19-covered-by-a-rectangle.pdf	ad97f2c7fb8c4e66c9bbf338985d11fdd234766ad7ce5e2aac6adf02b85ab9c0
+CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	pdfbuild	OK 98c3d55eeff096821306a44495098d70ebf66a2e953fce3dd1ca51d7d1174a7e report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	whole	OK d392af28e395bf21cad2f22a5de4dd2ce28e4b1ecccc20810e0d26057feda110 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	band	OK 6a59030787c9b6240bd5513197ebdc615fd624a8aa7f124241079fb4d9eda672 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/20-image-pixels.pdf	e8dd92a61d28fc5ab25f55513501cd6f8cae97d2d7f290d8fa2a2da4b8a9cfee
+CASE	tests/redaction/generated/20-image-pixels.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	pdfbuild	OK 271d4753770b1e4f29a5f56e86b6b64ce79778cb88bde70562d724327b3eb670 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	whole	OK a024a5a31e957c91826b4b19cead0bd88cbb0c4a4fa4aafc909bde9bbadd4414 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	band	OK 271d4753770b1e4f29a5f56e86b6b64ce79778cb88bde70562d724327b3eb670 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/21-cid-lying-tounicode.pdf	c5b407e4fffa5883abe7f2bb34ff24d81b777900631a885c007d1508457c4b50
+CASE	tests/redaction/generated/21-cid-lying-tounicode.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/21-cid-lying-tounicode.pdf	0	0	pdfbuild	OK 193f913bf86027b13520837535b70da49321d0046e96296b39994216519091f9 report 4f70105943cb913b886bc7e2c1af3f449c02ef7a1ce6bf0541da95624837098f
+CASE	tests/redaction/generated/21-cid-lying-tounicode.pdf	0	0	whole	OK 9cc0e2dba0b1d1122f1a2950f7e41e9dfb75b7cfdaa8f35147f68aa552e9f9cd report 4f70105943cb913b886bc7e2c1af3f449c02ef7a1ce6bf0541da95624837098f
+CASE	tests/redaction/generated/21-cid-lying-tounicode.pdf	0	0	band	OK bcaa85f9e85ecafbd1d0b33eee770e3e10fb1bbe4c234e9bfad245a78d6b60da report 4f70105943cb913b886bc7e2c1af3f449c02ef7a1ce6bf0541da95624837098f
+INPUT	tests/redaction/generated/22-split-content-streams.pdf	b3022b4766686975322b02d01392825004a179c05308916db242c81ae332ed6b
+CASE	tests/redaction/generated/22-split-content-streams.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/22-split-content-streams.pdf	0	0	pdfbuild	OK 85bae69cd3196e69d0a8602883f00f43296b520c9872c746c17b90cbd804dcd7 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/22-split-content-streams.pdf	0	0	whole	OK bf0885d65424ab58b414e6f13cfc3de3fcfe80c1c3bbda271e28957987a097d8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/22-split-content-streams.pdf	0	0	band	OK 261e8bc2881167c462574765c7fa772b5c7bffc81be35f690111ba1b179b4567 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/24-page-level-metadata.pdf	cf16f7acf12c88be163a3a1dd3c6127a29bae5fd3a0dc20aec1c58474a5d9883
+CASE	tests/redaction/generated/24-page-level-metadata.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/24-page-level-metadata.pdf	0	0	pdfbuild	OK 20fa4d045643bd4bff612c503c6b47899fda4f25653390bcb87ca1395e4b163c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/24-page-level-metadata.pdf	0	0	whole	OK 2cdc720b073e9af15cf7aa065dd9544ad2b70d1ee646a290fb6f1f891706219a report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/24-page-level-metadata.pdf	0	0	band	OK bf75f46269418e19273224e42dd2d3ab0a14d416f6dc70d195c3fa064a42a510 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-around-a-form.pdf	21cb003fa3a5e8187cb916d56136dee31cbddf026f35dd4c007f3352aa26fe93
+CASE	tests/redaction/generated/evade-actualtext-around-a-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-around-a-form.pdf	0	0	pdfbuild	OK a9045d92eb9ea56e76e8dbce52d62a038ce44752c9de625d3b33690e8c42ca95 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-around-a-form.pdf	0	0	whole	OK e8d86b2462a25ee856746fce14e2d9154759199daa8ed95e24b3eb47902d0450 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-around-a-form.pdf	0	0	band	OK 1e0f264653f929dc9b14feae8e32b0e03b29592a8f3e6d7d5c19cd932998789f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-around-a-nested-form.pdf	407530969363f911c1cf82d15d5f6279051c9947bf424d5d07678fe1147edecc
+CASE	tests/redaction/generated/evade-actualtext-around-a-nested-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-around-a-nested-form.pdf	0	0	pdfbuild	OK 43409ced926754d50961f7f7a39c9083ac6d8fe2f17d71630f4591cd51de667b report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-around-a-nested-form.pdf	0	0	whole	OK 828ab44ee12447cb875e54e5d9b9921947102416fa667dd1a682ddf5b5307774 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-around-a-nested-form.pdf	0	0	band	OK bb18ca662e4b8532cfe63dc364963ad7acad2247f900c9e544a5f6a069e5399b report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-behind-a-reference-in-named-properties.pdf	a3a99453bdb131fbbf4979d24f6ad2a1fcbd1583bbbbb4b57f028a0815acefc4
+CASE	tests/redaction/generated/evade-actualtext-behind-a-reference-in-named-properties.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-behind-a-reference-in-named-properties.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [marked-content-properties-unresolved]: the selected text is inside a marked-content span whose properties burrow could not read, so it cannot tell whether they carry their own copy of the text")
+CASE	tests/redaction/generated/evade-actualtext-behind-a-reference-in-named-properties.pdf	0	0	whole	ERR Unsupported("pdf geometry [marked-content-properties-unresolved]: the selected text is inside a marked-content span whose properties burrow could not read, so it cannot tell whether they carry their own copy of the text")
+CASE	tests/redaction/generated/evade-actualtext-behind-a-reference-in-named-properties.pdf	0	0	band	OK 2912c147ae544d8d0358c50b71710f261f47ad6e44d1298d6ea981585b7a6aaa report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-in-the-middle-form.pdf	c0f002ec7b1a1c25d8820d30c3649572329f4af607bc0de344afe44790f3f217
+CASE	tests/redaction/generated/evade-actualtext-in-the-middle-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-in-the-middle-form.pdf	0	0	pdfbuild	OK 23432501b3fc8c0266b2f846bc899f204abe3d8d61bddd96e7d9f3c1d858647e report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-in-the-middle-form.pdf	0	0	whole	OK 79a687972ce339696a838c3a5fe9d8e9dc41c4fc95d33b0390e9c6849ded81d6 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-in-the-middle-form.pdf	0	0	band	OK 45b3a31b9123138bcf529af7d607050c4887d2161655b238ebb8c88a0bc2d0e0 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-inside-a-form.pdf	b54e211a2d0f58347adae7bdbf631d5cbdf73f2213628611ba48ae176c86519a
+CASE	tests/redaction/generated/evade-actualtext-inside-a-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-inside-a-form.pdf	0	0	pdfbuild	OK 959c15fd0df7f1800f8adb2d5717903b65e6535815fa380a921e5fca0103f578 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-inside-a-form.pdf	0	0	whole	OK d01a66c0d0a52e71e86b37153b897d7b79828dd32af49b3e4789f6d34bc90bd3 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-inside-a-form.pdf	0	0	band	OK 4388ffe56b4ea1f0992893a868d6f35285f86ca9eefc07cbf996566cacfd52a8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-named-in-a-form-scope.pdf	ba944104f73dbd28d86f8ae23a5b0a1e428b7de38ef3dbfc927744e80abf177c
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-scope.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-scope.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [marked-content-named-properties-carry-text]: the selected text is inside a marked-content span whose alternative text is kept in the page's shared resources rather than beside the text, and removing it there would remove it from other text too")
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-scope.pdf	0	0	whole	ERR Unsupported("pdf geometry [marked-content-named-properties-carry-text]: the selected text is inside a marked-content span whose alternative text is kept in the page's shared resources rather than beside the text, and removing it there would remove it from other text too")
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-scope.pdf	0	0	band	OK 97ffc19bd64ffbd36373148bc2b3cf370590a3950b3d56faa71779f418f28299 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-named-in-a-form-that-inherits.pdf	b63d4db307bd2aa25622e306b695e8be3c1ce0e1afba3624bfb93a5b763ae4bd
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-that-inherits.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-that-inherits.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [marked-content-named-properties-carry-text]: the selected text is inside a marked-content span whose alternative text is kept in the page's shared resources rather than beside the text, and removing it there would remove it from other text too")
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-that-inherits.pdf	0	0	whole	ERR Unsupported("pdf geometry [marked-content-named-properties-carry-text]: the selected text is inside a marked-content span whose alternative text is kept in the page's shared resources rather than beside the text, and removing it there would remove it from other text too")
+CASE	tests/redaction/generated/evade-actualtext-named-in-a-form-that-inherits.pdf	0	0	band	OK 052daac6ecc6c8a5b0df9f4f752ebf5136bdf77a7c0cb5a203ee4a928eaab5a6 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-named-outside-key-position.pdf	ac0d7412d485bf7ffa5cfe6aba74f95f7c0b64de2f5cc0621a5039834ef1f27e
+CASE	tests/redaction/generated/evade-actualtext-named-outside-key-position.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-named-outside-key-position.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [marked-content-carries-opaque-string]: the selected text is inside a marked-content span whose properties name one of the entries that carry a span's text, in a position burrow cannot remove it from, so it cannot tell whether that text repeats the glyphs")
+CASE	tests/redaction/generated/evade-actualtext-named-outside-key-position.pdf	0	0	whole	ERR Unsupported("pdf geometry [marked-content-carries-opaque-string]: the selected text is inside a marked-content span whose properties name one of the entries that carry a span's text, in a position burrow cannot remove it from, so it cannot tell whether that text repeats the glyphs")
+CASE	tests/redaction/generated/evade-actualtext-named-outside-key-position.pdf	0	0	band	OK be4d6531edfdb3c4fcafffb78de682d26c508925145e9f449e74de077b9b5b14 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-named-through-properties.pdf	32a0bcbcd6926d9bef06ab2740703afc67421e15c2e36c35aa5ca8d1ea0aaf78
+CASE	tests/redaction/generated/evade-actualtext-named-through-properties.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-named-through-properties.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [marked-content-named-properties-carry-text]: the selected text is inside a marked-content span whose alternative text is kept in the page's shared resources rather than beside the text, and removing it there would remove it from other text too")
+CASE	tests/redaction/generated/evade-actualtext-named-through-properties.pdf	0	0	whole	ERR Unsupported("pdf geometry [marked-content-named-properties-carry-text]: the selected text is inside a marked-content span whose alternative text is kept in the page's shared resources rather than beside the text, and removing it there would remove it from other text too")
+CASE	tests/redaction/generated/evade-actualtext-named-through-properties.pdf	0	0	band	OK 23401d6a88dcff26173b129c8bc10d53ab258e048ea203202d7ca17e5c693d0f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf	4da9b09c5a64a6155fcbe2edc23f513080b7f39c6d9178859592bf20c50a23e9
+CASE	tests/redaction/generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf	0	0	pdfbuild	OK 61505ce720ad4f7e023ac43df1f1909f2cf9440090438e5e2ac83e314f8c1298 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf	0	0	whole	OK 22e7b8222a2c75e5e69e443cd72d023931e42a7794891b48d27ad2891005ad4a report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-on-a-page-that-draws-nothing-itself.pdf	0	0	band	OK c146777c09c49c85bc375ed33e0806edd545891af1964dc92694db87fd2e52a3 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-over-a-form-without-resources.pdf	120b020e718b3744be08bf88f6768b0abb5a22d0121e227188e45c0da7ab79db
+CASE	tests/redaction/generated/evade-actualtext-over-a-form-without-resources.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-over-a-form-without-resources.pdf	0	0	pdfbuild	OK bd4a875986f8226facdb4be34e4b1dcd161c16796e86dd06f5c965972f9c9fe8 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-over-a-form-without-resources.pdf	0	0	whole	OK 44e975ec8b9eae6b8f9e010581b9cb3a14faf4d964ff7d461064b82c8a7bc314 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-over-a-form-without-resources.pdf	0	0	band	OK 695c51bf80b0690f93d6e3c7c77338010766f0b3328298f3cdc4c132356b61c0 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-actualtext-under-a-form-with-two-parents.pdf	c72284384ad4de01fd1367da4500f75aadaf4d3014da43c0bbd6a7f45554aee5
+CASE	tests/redaction/generated/evade-actualtext-under-a-form-with-two-parents.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-actualtext-under-a-form-with-two-parents.pdf	0	0	pdfbuild	OK b799953b2e5e2369fc8d4b3e775824759d33684256eb484baf99c93900ffd967 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-under-a-form-with-two-parents.pdf	0	0	whole	OK 189e95d4a36479c8fa0e897466fb2feb2f022463d517ad27db4cb47e36867a33 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/evade-actualtext-under-a-form-with-two-parents.pdf	0	0	band	OK 1a4d754b70334356416056fdd3ad9368106f1cb60e92d338a24870a8803eeabd report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-field-with-no-widget.pdf	05c3d2567d1550127233054c443470f8a9c631536ecc0fc7acdf7527fa6c04e5
+CASE	tests/redaction/generated/evade-field-with-no-widget.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-field-with-no-widget.pdf	0	0	pdfbuild	OK 5b63f34c7ca6900ebb853b70708723a4276e98c9f63c8c3dee10a35205eb3fa3 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-field-with-no-widget.pdf	0	0	whole	OK f94b8d2528cc4b47300d92571866c9c0841decf9c2b7b236e1732b85dff44b61 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-field-with-no-widget.pdf	0	0	band	OK 738992f91c98076840c5382bf292b58be66c298b407f1f9a337a686fdf128587 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-font-decoy-behind-a-resources-stream.pdf	d0d6b66dc03e953d9bd1a74ab7c3f71022c8fa2461d6019920bf45a10c916bb7
+CASE	tests/redaction/generated/evade-font-decoy-behind-a-resources-stream.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-font-decoy-behind-a-resources-stream.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-font-decoy-behind-a-resources-stream.pdf	0	0	whole	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-font-decoy-behind-a-resources-stream.pdf	0	0	band	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+INPUT	tests/redaction/generated/evade-image-as-pattern.pdf	38be1ca84c3e237683b84686afa00949b4f3fba65a985c82f411301cd6aec305
+CASE	tests/redaction/generated/evade-image-as-pattern.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [pattern-may-draw-text]: a pattern fill, whose own content stream burrow does not yet walk")
+CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	whole	ERR Unsupported("pdf geometry [pattern-may-draw-text]: a pattern fill, whose own content stream burrow does not yet walk")
+CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	band	ERR Unsupported("pdf geometry [pattern-may-draw-text]: a pattern fill, whose own content stream burrow does not yet walk")
+INPUT	tests/redaction/generated/evade-image-in-form.pdf	bff6fefd434078b753f8f8f44df8f482f5e0d86e17b21f3e557257df67c03b0e
+CASE	tests/redaction/generated/evade-image-in-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	pdfbuild	OK 53e85b63a86f543cc107a4dfc4e2590aeea1cb4a8b8460fb38046754664b1b66 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	whole	OK e7bdaf9309863d0dedaa328f0e5c2c4b2306a21f688ea431496cd53754dab50e report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	band	OK 53e85b63a86f543cc107a4dfc4e2590aeea1cb4a8b8460fb38046754664b1b66 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-image-in-type3-glyph.pdf	30ef3383f0cde7b3998f06330b7728ae511c84635aefc9b1aa33e41f5bbfbc20
+CASE	tests/redaction/generated/evade-image-in-type3-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-image-in-type3-glyph.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/evade-image-in-type3-glyph.pdf	0	0	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/evade-image-in-type3-glyph.pdf	0	0	band	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+INPUT	tests/redaction/generated/evade-inline-image.pdf	a775e4cd1dc81b7b48f8c30cc71177927e970c86e73736e10770cea59e9ce142
+CASE	tests/redaction/generated/evade-inline-image.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-inline-image.pdf	0	0	pdfbuild	OK 0d5e420c00a9f837a03b7b11af87c783f955cc2013198e887c47e0ed004dadd4 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-inline-image.pdf	0	0	whole	OK 7256a0337792051b0c6b43c8d647c8cd5fd858aeb08d211bcddd4a7cc50dafc8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-inline-image.pdf	0	0	band	OK 0d5e420c00a9f837a03b7b11af87c783f955cc2013198e887c47e0ed004dadd4 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	2d5d048401928973cbc6e7b69926dc20029e816d873cbec8411dd366eac2ceaf
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-pattern.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-inside-an-unused-type3-font.pdf	560418f51254ce6d7160d23030a260011e90e0fc60758f730a4b0940358bdad9
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-type3-font.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-type3-font.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-type3-font.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-inside-an-unused-type3-font.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-on-an-annotation.pdf	c9b1466a9ad0d27371bfc93ca1b1d0a5dbbdbfa2fd48906454e243bd332ca8ba
+CASE	tests/redaction/generated/evade-oc-on-an-annotation.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-on-an-annotation.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-annotation.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-annotation.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-on-an-appearance-state.pdf	c3d88b09d6d096c85fb8ed254927ff40e17863c15f5c473dc54b6cf4862fe692
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-state.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-state.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-state.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-state.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-on-an-appearance-stream.pdf	6ac3f73f66ec7b23f06b19102adbb0e7d3d24193eae7a1086cbe65322c7869c1
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-stream.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-stream.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-stream.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-appearance-stream.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-on-an-image.pdf	732d9cdb0e853f624120759a0c232df22c0d85cb14a4816c22ac5e79f3ec63bc
+CASE	tests/redaction/generated/evade-oc-on-an-image.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-on-an-image.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-image.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-on-an-image.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-outside-the-region.pdf	e0570e2d1f88ce8fc69dcd89fbb549709f494474b70d1f552fd59d10b4e6a630
+CASE	tests/redaction/generated/evade-oc-outside-the-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-outside-the-region.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-outside-the-region.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-outside-the-region.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-two-levels-down.pdf	ed13cd05216aae5c6daa8f38e6820325f07853f709c3c2cd333b09483c099722
+CASE	tests/redaction/generated/evade-oc-two-levels-down.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-two-levels-down.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-two-levels-down.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/evade-oc-two-levels-down.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/redaction/generated/evade-oc-untyped-group.pdf	f5e85aef475df6885cf68c9c65fda20f0c580af67ca1b80216c3d6f7520790af
+CASE	tests/redaction/generated/evade-oc-untyped-group.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-untyped-group.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
+CASE	tests/redaction/generated/evade-oc-untyped-group.pdf	0	0	whole	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
+CASE	tests/redaction/generated/evade-oc-untyped-group.pdf	0	0	band	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
+INPUT	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	1f89a2618761d78c71bd81d7f4f660e23057e0734fb6dda10b68f336792361a3
+CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
+CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	whole	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
+CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	band	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
+INPUT	tests/redaction/generated/evade-paths-in-form.pdf	6fcfa0207a72a226d3f84106c1a7bb66fe13b032ead85084f7ea34b7b9936c43
+CASE	tests/redaction/generated/evade-paths-in-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	pdfbuild	OK e65242b05252bb9c9f2a71630a3d1ade6d3c1079d617f89d252d0b7d45b702f8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	whole	OK 79c17d21e88061161e5f2f2fcdde8f1c91561e4c3cfc6848d0fb5d4b4c450e83 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	band	OK e65242b05252bb9c9f2a71630a3d1ade6d3c1079d617f89d252d0b7d45b702f8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0732d533f2c7b248f056b37969dba91897f2438b1ea4c90919370d82e212b0f2
+CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	pdfbuild	OK b4abc218538bad2fb8889f4623b5e5d369758ce3f40b3f0092a4e899c6276c09 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	whole	OK 06572f982b002519cbb2cb28f99355e3ed208b900f547c3b5217fe84926ebce0 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	band	OK d64051a3d512fe7836c2a5cf1894ff4e5115fc7dc7190d000e435a7f9df520a9 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+INPUT	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	5d3a4f136a22a06597063377d80882413f56ad0f70efa69dd837c7eba7a23292
+CASE	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	0	0	whole	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	0	0	band	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+INPUT	tests/redaction/generated/evade-property-list-as-a-stream.pdf	369566fb3b3e168b628a9f8517e898cc3e6a035204bb0a82c041dbd500e96e07
+CASE	tests/redaction/generated/evade-property-list-as-a-stream.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-property-list-as-a-stream.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-property-list-as-a-stream.pdf	0	0	whole	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-property-list-as-a-stream.pdf	0	0	band	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+INPUT	tests/redaction/generated/evade-resources-stream-on-a-form.pdf	92b8cc460c929a3321c2c05afea752812449f2c32279e4785e68d15b7388311b
+CASE	tests/redaction/generated/evade-resources-stream-on-a-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-resources-stream-on-a-form.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-resources-stream-on-a-form.pdf	0	0	whole	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-resources-stream-on-a-form.pdf	0	0	band	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+INPUT	tests/redaction/generated/evade-resources-stream-on-the-page.pdf	cad7591dba82c8b8f433428a0be11ff95e2493a2a1b47cc3bae1e5ebf7d99d91
+CASE	tests/redaction/generated/evade-resources-stream-on-the-page.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-resources-stream-on-the-page.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-resources-stream-on-the-page.pdf	0	0	whole	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-resources-stream-on-the-page.pdf	0	0	band	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+INPUT	tests/redaction/generated/evade-struct-without-structparents.pdf	17ab032fdb04e43be37af9126856852ce022f41a4ba7acd5b0b8bc12a7000051
+CASE	tests/redaction/generated/evade-struct-without-structparents.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-struct-without-structparents.pdf	0	0	pdfbuild	OK 119d1cb4e41801c91a8f7f4a950b5058f7fa11fad0642e88c2cbe0304e360fe2 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-struct-without-structparents.pdf	0	0	whole	OK 894ca2eea5f8ce3b6095e9653ba5437cee839d15f0690b90c0e835941422cde3 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-struct-without-structparents.pdf	0	0	band	OK 25ade957e7fbf435db0fd3fe90632e5fdb9979b7630e55582c3952ee1dad905f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-text-in-type3-via-form.pdf	e73273c6c58a9e1c800a904a73244e331235f3d11284446d2e6c26368bef2702
+CASE	tests/redaction/generated/evade-text-in-type3-via-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-text-in-type3-via-form.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/evade-text-in-type3-via-form.pdf	0	0	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/evade-text-in-type3-via-form.pdf	0	0	band	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+INPUT	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	5087b9b5c24c2ee0711fdcbfcc084f09a02e20326538e3863c39a69ae7ad6f9f
+CASE	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	0	0	pdfbuild	OK 1d9fe6526c28d2999f481149cb4a354cef34908b0eae326e400e212d2c313ba9 report 33b81d05b4e4398b764f60d0674631876121a01e05a4a68ba9fd6de17be80a2e
+CASE	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	0	0	whole	OK 99e9ccaf5241a90e616686aa7db5dd63f02a5495b7a6e1ba4462ca96746b283b report 33b81d05b4e4398b764f60d0674631876121a01e05a4a68ba9fd6de17be80a2e
+CASE	tests/redaction/generated/evade-tounicode-in-a-form-local-font.pdf	0	0	band	OK da16f1928693b63b7a6b69bd4ab10ecda1f1b018cb9152a3ad94feef66ca549a report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	c4410e5e539c5b2db83e0696dc4a87c1827cbd64a1ec729a8599881174b9cf0c
+CASE	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	0	0	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/redaction/generated/evade-type3-font-named-only-inside-a-form.pdf	0	0	band	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+INPUT	tests/redaction/generated/evade-widget-on-another-page.pdf	5d5aa0aebc4367be97236b7ec49143b2b9080235c6b03e6ad223028c255b26bb
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	0	0	pdfbuild	OK 0b0e0f6edef766bc6927c77ed9b3795ebdb4d9ca0cdb33bc7e515eb666daacea report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	0	0	whole	OK 0805c0eb1bb7cfb080f1783a8af548d49d5d1456f9424c3a674021b7ca43449b report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	0	0	band	OK fb095b2221883f1cdbfc36d824037df325c87ddfa92fb19c8e3562d7d4f59b08 report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	1	1	pdfbuild	OK fb095b2221883f1cdbfc36d824037df325c87ddfa92fb19c8e3562d7d4f59b08 report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	1	1	whole	OK 41e7b9b8e8aacb9ad150fd782a282e1eee6ef5d3dbcf350ff03ecb5a5ea59509 report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	1	1	band	OK fb095b2221883f1cdbfc36d824037df325c87ddfa92fb19c8e3562d7d4f59b08 report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/evade-widget-on-another-page.pdf	0	0,1	whole	OK 0805c0eb1bb7cfb080f1783a8af548d49d5d1456f9424c3a674021b7ca43449b report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	74bad012537e6e65df84f1b55a3ac097f8a995f88dd1325edd2c30857b6a61c8
+CASE	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	0	0	whole	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+CASE	tests/redaction/generated/evade-xobject-category-as-a-stream.pdf	0	0	band	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
+INPUT	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	46cc269657fe4ee7c3f5fcc1ddfc6709c10423cedead22939d8056d93c937bdd
+CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	0	pdfbuild	OK 28177c5f4ed5ea6aa18fd3258250c0d2283af5944694080afc2abaa356814c71 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	0	whole	OK 1e55f86821fb419be14165e1ebc3315a1417d79751d5e25b44aaf6530cf5b3c2 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
+CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	0	band	OK 0440f9e8d2a8cea38aa1ca3885ea109b2281be32710b0fc0f8d92dff46a1c478 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	239cd36ad6051d83700e69c6294efa7a26233696211f115fccec5e0249ef1a25
+CASE	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	0	0	pdfbuild	OK b90980eb62ef3475b35b65428fc785940d9f3917819dfdbe44fce58dfef13b84 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	0	0	whole	OK 4e9ca31704fcf2cf81f8e0da8e67224bad7381761446d98e26ac1ce480ca2a15 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-annotation-not-a-widget.pdf	0	0	band	OK be6c6ad5647a5a4cdd57709d9c55d7469b5011f89b1a92944366b8ecf728a68e report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	2047ef1f8df7d4c7c002631c4f857dce5057ded1d28164850c31cf75322faead
+CASE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	0	pdfbuild	OK 16ef73102774f4f6394e772b2aeccf6a54adb7c2c029d949c2210727d9c8d8ad report aaba33f717a03937cf2e18937743222a06287a0208c33227f266c8747edefc90
+CASE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	0	whole	OK 362c660b2bf4932c7d5a6df2ad82745440beafb6844742d1526be8447ca58262 report aaba33f717a03937cf2e18937743222a06287a0208c33227f266c8747edefc90
+CASE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	0	band	OK e8bce9507b2bc8512dfc590354a4b5f701daa1073a905b52bb29c6a43e5a9a81 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-image-outside-region.pdf	5f5e0ef578c35d49bc811862e55f71c44a5b06bab37dc8ec33d955b9407dce63
+CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	0	pdfbuild	OK d3daa12ec368a1fc400aaff9c1f2145a8ba943fe06a799af8618f50d78d8569f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	0	whole	OK 7858072cc6bf9c97260ebfba68b6bb8f301a0bde23b8e27669b5ad1c894a7e4d report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	0	band	OK acb19584cc427cdb0dfd0ce4ee44f19a72944569b2912fa067bd5609c4eb80df report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	d2d3a4895521dbc45715445b959f18ef99a5cfe54436a1ac6ba263df5f935235
+CASE	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	0	0	pdfbuild	OK 8e92836300dc8c781e8949bc003dd9235adb99cbe9273b956718bac1b96b828c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	0	0	whole	ERR Unsupported("pdf geometry [marked-content-named-properties-carry-text]: the selected text is inside a marked-content span whose alternative text is kept in the page's shared resources rather than beside the text, and removing it there would remove it from other text too")
+CASE	tests/redaction/generated/nearmiss-named-actualtext-outside-the-region.pdf	0	0	band	OK f8535f3e86739ec628d5f04cd638d9f257152731fae6855ecb2b3761fa2fd649 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-named-properties-decoy-on-the-page.pdf	54df725770df378e6b208ed5d0c5d2019317395fb78c68ebc41543e49a3af4ae
+CASE	tests/redaction/generated/nearmiss-named-properties-decoy-on-the-page.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-named-properties-decoy-on-the-page.pdf	0	0	pdfbuild	OK bb655b6d140feb8ed6daa77e3d6d60959743761b1f17e89c2086fa988b52005b report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-named-properties-decoy-on-the-page.pdf	0	0	whole	OK 8cc48ca71ca811ef0508788a75005143d6cf4f42db45c5b0fc08d6595f1653f4 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-named-properties-decoy-on-the-page.pdf	0	0	band	OK 6634cf3eeba29312d09091693a70e1d813faef7cca7170e6a25a6ae0a211d202 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	a9859c89dd1aa13df969c83cd11a62ed19e059cf6329f747d1f4d7e4f7ff00e9
+CASE	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	0	0	pdfbuild	OK 16fe65de8b3708f4b5bcb9daf23dcd774cfc13487d9be92a92e13bee8b3bc516 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	0	0	whole	OK 873f7f1d4b36f0fd3f0acec3c661a9308c185f340e9556e879e8082de985840c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-named-properties-without-text.pdf	0	0	band	OK 542838e3b5e2a7570614a49172948e1af4b8f80c503c6bb01cbf2923eaba53af report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	552e12c4fb86fc2392fec71e457d355c7e15b5e949731738b0255c2e0f05534f
+CASE	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	0	0	pdfbuild	OK 7aa63357cf93bc79752cc768163b6b1db316a9584b553272e3d099e10f1beeed report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	0	0	whole	OK f2e6ddfa7fe8a99d929e273723f9d5a46b099972064bb8342330c260d517ffdb report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-nested-forms-no-oc.pdf	0	0	band	OK 449e2c4f785ca8caa47b4a8e7f2eb64298e6a79d7b4743436ab3e4bcd8a7209c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	9f5d897daf7dea9666cc5ba597e1c9375639e2e0bbf0f7ad4c8a85f350f4359b
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	0	0	pdfbuild	OK 54bf9e8b3ed25fcfc0978935cb70cb37a447dad5d80f21613868b33c163841c5 report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	0	0	whole	OK 4929026494ab4c16e9cd3f7e3d74154e5446fe3e51fba8f43a78ab75815d1a27 report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	0	0	band	OK 51f9a2ce917ac15ff717182ffa73dec5ba1b0ad9d7cdeaa928d9973fbc08f91d report 9ed55736b9fcf65d9edf4e395df6a83b22a4c323dc5574db0587cc245af3e002
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	1	1	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	1	1	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	1	1	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/redaction/generated/nearmiss-oc-on-another-page.pdf	0	0,1	whole	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
+INPUT	tests/redaction/generated/nearmiss-ordinary-string-in-a-property-list.pdf	873cbdfa183b84a41ca26433cc3def5f71eabb5692a37827d3a35e9350a93159
+CASE	tests/redaction/generated/nearmiss-ordinary-string-in-a-property-list.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-ordinary-string-in-a-property-list.pdf	0	0	pdfbuild	OK 223bf050ca9b01245527ab0ca089d2ab2ef39718d34b870453d08c350820f243 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-ordinary-string-in-a-property-list.pdf	0	0	whole	OK edc141aff40ae93bba91076515367f4ac201468863a7a227971502789ec2a20d report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-ordinary-string-in-a-property-list.pdf	0	0	band	OK 127959df6ea9856790db85bc2184e8974bf4f3a6716db695968e3fdec0f28bcb report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-paths-outside-region.pdf	b2134e96b63c8dc7af4b76dcc76bd99e4e1920a22fbb986edbd5ea6c58b8fbc7
+CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	0	pdfbuild	OK 315afd199d2a296f59153d67763dcd39b129fda4dde308d782f963a3ca395047 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	0	whole	OK 3e8b6df6cf424fa3751a10f5d5072c61018361fa1ba72c1f43314c333ec83600 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	0	band	OK f9d27c90c5355aadc359c95cc7c52bb3fd00314a5fa986937284044347100347 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-resources-inherited-from-pages.pdf	aad1fcd6578dba83c5ceb7d0e802e2bf3d460cf419a3d8417b318f03f636497a
+CASE	tests/redaction/generated/nearmiss-resources-inherited-from-pages.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-resources-inherited-from-pages.pdf	0	0	pdfbuild	OK d7117a1ea195b56008c4909d3ab8f94a03b46e5f560d799f0e9ec929aa86940c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-resources-inherited-from-pages.pdf	0	0	whole	OK 62527386614b9b1fe843cb35d461f0b9e4ffc75f9bbc11aaa336ba75fe69fc56 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-resources-inherited-from-pages.pdf	0	0	band	OK 29705335dd149e7bfe9a4889a0049b9da14d1ec28d5bd95f7dab433d58e0458d report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	92d53744029a168d8b9d035a3418a2a6f996951aea39cb153395bde28ff3afad
+CASE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	0	0	pdfbuild	OK 7f974c8d55748b81b6946d4fdad3c94012a4f1238cf043491a4ab2b78a457bee report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	0	0	whole	OK 2a8afb29ff1fdf88152333525442578d0b260c7fd06baa5cd3ca1538b490ad1c report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	0	0	band	OK 91252e1b6e57c52244d28e2f4cca383c3c094740682bcb647db8a6697a99f060 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	e165355c611be327e06b6e3d2dd59f81e696dfb290974c583d33cc69065e3b8a
+CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	pdfbuild	OK 209d6595c6f1e84a62d4af1351b4f5c06ab17db46281c25b6ac082017d37a340 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	whole	OK 560f7d0c7fd7cb7b37617095bbe368877a224e96624bc0bc7e4195d07e92b208 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	band	OK ebe9057182cbdd82e7e77fad0d7903b759e000542ef259ec7c7070da3a364c91 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	faa504db0f53dc4aea80e6074f1e9efaa5561c13ab8d9d68eeda383f7bc566d3
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	pdfbuild	OK 089f6d82bccfe963042ed3b43b622d99bbb51feb5ee03360c9c9fef14a17a8bb report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	whole	OK 630e0ce786dfdac86ca5cdb40859b04013ddb72c77777557d458c8ea7aa645d9 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	band	OK f12baf404f5b9f58c3f33646ca9a0e2b10da8c5aa74a2d0f9170748421828cf0 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+INPUT	tests/conformance/fixtures/blank-1page.pdf	bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0
+CASE	tests/conformance/fixtures/blank-1page.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/blank-1page.pdf	0	0	pdfbuild	OK 7686b46cd6897f34732e68207acc189451ccbbec1f74cf9dbea7ca7aa63cd27a report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/blank-1page.pdf	0	0	whole	OK 7686b46cd6897f34732e68207acc189451ccbbec1f74cf9dbea7ca7aa63cd27a report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/blank-1page.pdf	0	0	band	OK 7686b46cd6897f34732e68207acc189451ccbbec1f74cf9dbea7ca7aa63cd27a report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+INPUT	tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	db9cb3d636c34fa287d5451f2f4717294148d5ad246d4dfaeb6b14dce88ae139
+CASE	tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	0	0	pdfbuild	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	0	0	whole	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	0	0	band	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	be9ae2de6767d19a5d51e6f2f58f4fe650aa25778762327b2a22dc18d7ef249f
+CASE	tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	0	0	pdfbuild	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	0	0	whole	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	0	0	band	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	595f25bf02c6b882d9b9e29b3fb2397c39f17c28fab96b7143f812dd4ce82a86
+CASE	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	0	0	pdfbuild	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	0	0	whole	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	0	0	band	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/conformance/fixtures/canary.pdf	0903b50fddef159b74c1d4fc5594b0ed0d05ffc49667560d0a0c6605e3ead17d
+CASE	tests/conformance/fixtures/canary.pdf	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/canary.pdf	0	0	whole	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/canary.pdf	0	0	band	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/encrypted.pdf	12877142355d88bc5062d88e4de12a02b3d6df0154fb57ded93ea217f7dade74
+CASE	tests/conformance/fixtures/encrypted.pdf	0	0	pdfbuild	ERR PasswordRequired
+CASE	tests/conformance/fixtures/encrypted.pdf	0	0	whole	ERR PasswordRequired
+CASE	tests/conformance/fixtures/encrypted.pdf	0	0	band	ERR PasswordRequired
+INPUT	tests/conformance/fixtures/five-pages-or-six.pdf	c0ada3521ae2d33c91239eb6f15f6c466836de31ca09d63cfe4d4deef66ca753
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	5	5	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	0	0	pdfbuild	OK 44065d4bcca9ec5e4ab23947d680a30135587ed6645e275ca6fd592cfc4e48fe report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	0	0	whole	OK 44065d4bcca9ec5e4ab23947d680a30135587ed6645e275ca6fd592cfc4e48fe report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	0	0	band	OK 44065d4bcca9ec5e4ab23947d680a30135587ed6645e275ca6fd592cfc4e48fe report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	4	4	pdfbuild	OK 44065d4bcca9ec5e4ab23947d680a30135587ed6645e275ca6fd592cfc4e48fe report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	4	4	whole	OK 44065d4bcca9ec5e4ab23947d680a30135587ed6645e275ca6fd592cfc4e48fe report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	4	4	band	OK 44065d4bcca9ec5e4ab23947d680a30135587ed6645e275ca6fd592cfc4e48fe report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/five-pages-or-six.pdf	0	0,1,2,3,4	whole	OK 44065d4bcca9ec5e4ab23947d680a30135587ed6645e275ca6fd592cfc4e48fe report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+INPUT	tests/conformance/fixtures/font-program-with-a-paren.pdf	7b990effc3efa904b55e07499556fe70c0f969109154cf0a4b0cd399cd927706
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	0	0	pdfbuild	ERR Malformed("pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why")
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	0	0	whole	ERR Malformed("pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why")
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	0	0	band	ERR Malformed("pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why")
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	1	1	pdfbuild	ERR Malformed("pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why")
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	1	1	whole	ERR Malformed("pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why")
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	1	1	band	ERR Malformed("pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why")
+CASE	tests/conformance/fixtures/font-program-with-a-paren.pdf	0	0,1	whole	ERR Malformed("pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why")
+INPUT	tests/conformance/fixtures/inherited-rotation-6page.pdf	334df43b50f88a6eb45f458f9ffd3c5947a62f2d7f9b228879e24f7e7067695f
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	6	6	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	0	0	pdfbuild	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	0	0	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	0	0	band	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	5	5	pdfbuild	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	5	5	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	5	5	band	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/inherited-rotation-6page.pdf	0	0,1,2,3,4,5	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+INPUT	tests/conformance/fixtures/layered.pdf	1ec9d4fe1f05bf396c37a76af1ac6912b3b6b405ff040739964b79d85a6a227d
+CASE	tests/conformance/fixtures/layered.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/layered.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/conformance/fixtures/layered.pdf	0	0	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/conformance/fixtures/layered.pdf	0	0	band	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+CASE	tests/conformance/fixtures/layered.pdf	1	1	pdfbuild	ERR Malformed("pdf geometry [no-font-selected]: text shown with no font selected by 'Tf'")
+CASE	tests/conformance/fixtures/layered.pdf	1	1	whole	ERR Malformed("pdf geometry [no-font-selected]: text shown with no font selected by 'Tf'")
+CASE	tests/conformance/fixtures/layered.pdf	1	1	band	ERR Malformed("pdf geometry [no-font-selected]: text shown with no font selected by 'Tf'")
+CASE	tests/conformance/fixtures/layered.pdf	0	0,1	whole	ERR Unsupported("pdf redaction [optional-content]: this page uses layers (optional content), which can hide text from view, and burrow does not redact a page whose content depends on which layers are shown")
+INPUT	tests/conformance/fixtures/mixed-rotation-4page.pdf	a590a94a11cc07cc589acbe11a458007956c6b5c1243500428feff806b00d5d5
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	4	4	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	0	0	pdfbuild	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	0	0	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	0	0	band	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	3	3	pdfbuild	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	3	3	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	3	3	band	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/conformance/fixtures/mixed-rotation-4page.pdf	0	0,1,2,3	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+INPUT	tests/conformance/fixtures/no-pages.pdf	375c75084e670596af448c3c48c0c048c0197baf97ab4256624929021483fbe4
+CASE	tests/conformance/fixtures/no-pages.pdf	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/no-pages.pdf	0	0	whole	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/no-pages.pdf	0	0	band	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/not-a-pdf.bin	66338f6baf4dd76fee3be07a4306744495073f0124f74d357fcf040971513a0d
+CASE	tests/conformance/fixtures/not-a-pdf.bin	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/not-a-pdf.bin	0	0	whole	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/not-a-pdf.bin	0	0	band	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/object-number-above-int-max.pdf	1457829ea5d5092a0f03e0cf82e5f6a570855a551b7d03ec476d0dd910472f4d
+CASE	tests/conformance/fixtures/object-number-above-int-max.pdf	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/object-number-above-int-max.pdf	0	0	whole	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/object-number-above-int-max.pdf	0	0	band	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/objstm-bomb.pdf	54c86f4496839d71571f8f29cebcf587a5b17f1068eaed81752436ab9aee8a9b
+CASE	tests/conformance/fixtures/objstm-bomb.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/objstm-bomb.pdf	0	0	pdfbuild	OK ca4edda40897569d318d794173602da4b570f329d3b5d620ed946165db27da59 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/objstm-bomb.pdf	0	0	whole	OK ca4edda40897569d318d794173602da4b570f329d3b5d620ed946165db27da59 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/objstm-bomb.pdf	0	0	band	OK ca4edda40897569d318d794173602da4b570f329d3b5d620ed946165db27da59 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+INPUT	tests/conformance/fixtures/pages-10.pdf	567f9f6fd007ab6ca59fe7f1f0d2976e38424e9e7a08aacb23cffd0cf312a3fe
+CASE	tests/conformance/fixtures/pages-10.pdf	10	10	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/pages-10.pdf	0	0	pdfbuild	OK e7aa993959e4f1161733ca96b8be50324ad0c239703ea73269977af6967659f0 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-10.pdf	0	0	whole	OK e7aa993959e4f1161733ca96b8be50324ad0c239703ea73269977af6967659f0 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-10.pdf	0	0	band	OK e7aa993959e4f1161733ca96b8be50324ad0c239703ea73269977af6967659f0 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-10.pdf	9	9	pdfbuild	OK e7aa993959e4f1161733ca96b8be50324ad0c239703ea73269977af6967659f0 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-10.pdf	9	9	whole	OK e7aa993959e4f1161733ca96b8be50324ad0c239703ea73269977af6967659f0 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-10.pdf	9	9	band	OK e7aa993959e4f1161733ca96b8be50324ad0c239703ea73269977af6967659f0 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-10.pdf	0	0,1,2,3,4,5,6,7,8,9	whole	OK e7aa993959e4f1161733ca96b8be50324ad0c239703ea73269977af6967659f0 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+INPUT	tests/conformance/fixtures/pages-137.pdf	257a2cf213b6f959b2126ea7e19ba60274a97bfab6e65a5ede7e07f307ba56da
+CASE	tests/conformance/fixtures/pages-137.pdf	137	137	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/pages-137.pdf	0	0	pdfbuild	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-137.pdf	0	0	whole	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-137.pdf	0	0	band	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-137.pdf	136	136	pdfbuild	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-137.pdf	136	136	whole	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-137.pdf	136	136	band	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/pages-137.pdf	0	0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136	whole	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+INPUT	tests/conformance/fixtures/render-one-quadrant.pdf	d04cb542b0a973eb658350c0f5200e03bf8c7675bae637218881213a46e2c059
+CASE	tests/conformance/fixtures/render-one-quadrant.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	pdfbuild	OK 62b10d1e23be9422a2f91f5ef13bc86e626036e8d89633f2b4d5153e05791dfb report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	whole	OK 62b10d1e23be9422a2f91f5ef13bc86e626036e8d89633f2b4d5153e05791dfb report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	band	OK 62b10d1e23be9422a2f91f5ef13bc86e626036e8d89633f2b4d5153e05791dfb report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+INPUT	tests/conformance/fixtures/trailer-removed.pdf	338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5
+CASE	tests/conformance/fixtures/trailer-removed.pdf	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/trailer-removed.pdf	0	0	whole	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/trailer-removed.pdf	0	0	band	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/truncated-mid-object.pdf	f45e36b2f99e90b2206e51161d58213697b9b4e07465f8f06c6653f7cf5a7e75
+CASE	tests/conformance/fixtures/truncated-mid-object.pdf	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/truncated-mid-object.pdf	0	0	whole	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/truncated-mid-object.pdf	0	0	band	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/truncated.pdf	46b5adcc2e35004d92b1323d49ec8fa325d78e82a2605c477b6c4cf14a8714d4
+CASE	tests/conformance/fixtures/truncated.pdf	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/truncated.pdf	0	0	whole	ERR Malformed("qpdf: the document is damaged")
+CASE	tests/conformance/fixtures/truncated.pdf	0	0	band	ERR Malformed("qpdf: the document is damaged")
+INPUT	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	58c798fc57c1f8f498cd7897df5d15b72ccf225f12b3808d5021cc53e153c85f
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	2	2	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0	band	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	pdfbuild	OK 970d7d237ab094dc94e1345b9611080a744d5f0eea7cabd482fa682924684952 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	whole	OK 970d7d237ab094dc94e1345b9611080a744d5f0eea7cabd482fa682924684952 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	band	OK 970d7d237ab094dc94e1345b9611080a744d5f0eea7cabd482fa682924684952 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0,1	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
+INPUT	tests/conformance/fixtures/xref-bomb.pdf	ae2f916b2e0867f69a4cae984094a78ac44403ebcec4ffd080d234351adc5f4b
+CASE	tests/conformance/fixtures/xref-bomb.pdf	0	0	pdfbuild	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/xref-bomb.pdf	0	0	whole	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+CASE	tests/conformance/fixtures/xref-bomb.pdf	0	0	band	ERR LimitExceeded { limit: "max_memory_bytes", stage: Prescan, requested: 1280000000, allowed: 1073741824 }
+INPUT	tests/damaged/page-loss-on-write.pdf	972fa153f4e34b62fa250f3ce561335a84d14621835703091a8cc08a1048e237
+CASE	tests/damaged/page-loss-on-write.pdf	5	5	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/damaged/page-loss-on-write.pdf	0	0	pdfbuild	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/damaged/page-loss-on-write.pdf	0	0	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/damaged/page-loss-on-write.pdf	0	0	band	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/damaged/page-loss-on-write.pdf	4	4	pdfbuild	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/damaged/page-loss-on-write.pdf	4	4	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/damaged/page-loss-on-write.pdf	4	4	band	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
+CASE	tests/damaged/page-loss-on-write.pdf	0	0,1,2,3,4	whole	ERR Malformed("pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)")
