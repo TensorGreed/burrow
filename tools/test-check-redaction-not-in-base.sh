@@ -5,13 +5,14 @@
 # artifact contains a needle. So its positives come from here, in two kinds:
 #
 #   REAL. The base Rust module is BUILT with `--cfg burrow_redaction_probe`, which compiles one
-#   export (`__burrow_redaction_probe` in bindings/burrow-wasm) reaching five of redaction's
-#   components. The checker must refuse it. This tests the premise the whole check rests on --
+#   export (`__burrow_redaction_probe` in bindings/burrow-wasm) reaching every one of redaction's
+#   components -- since #191's web half, through the public operation over the web engine. The
+#   checker must refuse it. This tests the premise the whole check rests on --
 #   that code reachable from an export keeps its literals through the real compiler and real LTO --
 #   which appending bytes to a file cannot. Which needles it covers is pinned in REAL below, so a
 #   component that stops leaving its literal in the module fails here by name.
 #
-#   PLANTED. Every needle, including the three no wasm entry point can reach yet, is written
+#   PLANTED. Every needle is also written
 #   into a copy of each shipped Rust module in turn, and the checker must refuse NAMING it.
 #   Near-misses sit beside them, so a rule that matched everything fails here too.
 #
@@ -126,17 +127,20 @@ fresh
 expect_pass "a copy of the real build passes" "$checker" "$work"
 
 # --- REAL: a base module built with the probe export ---------------------------------------------
-# The needles the probe reaches. The other three -- `pdf redaction [`, `pdf resources [`,
-# `redact: the region is not cleared` -- are spelled in code that compiles for wasm since #191's
-# first half moved it onto `redact::graph`, and that no wasm entry point can reach until the web
-# implements that trait (#191's second half): there is no wasm document to run it over. LTO strips
-# it, and the base module built from that commit is byte-identical to the one built from its parent.
+# The needles the probe reaches: ALL OF THEM, since #191's web half. Before it, three -- `pdf
+# redaction [`, `pdf resources [`, `redact: the region is not cleared` -- were spelled in code no
+# wasm entry point could reach, because nothing on the web implemented redaction's seam, so they had
+# only planted positives. The probe now runs the public operation over the web engine, and the real
+# compiler keeps all eight literals. No SHIPPED module reaches them: no shipped export calls it.
 REAL=(
   'pdf geometry ['
   'content-stream edit'
   'a /ToUnicode'
   'a string token that begins with neither'
   'pdf region ['
+  'pdf redaction ['
+  'pdf resources ['
+  'redact: the region is not cleared'
 )
 if ! command -v cargo >/dev/null || ! rustup target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown; then
   echo "  FAIL the probe build needs cargo and the wasm32-unknown-unknown target; refusing rather" >&2

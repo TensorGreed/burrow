@@ -34,13 +34,15 @@
 #     `/ToUnicode`.
 #
 # ITS POSITIVES. The PDFium check has a shipped positive (the render bundle); this one has none,
-# because no redaction module exists until #191. What it has instead, and what each covers:
+# because no redaction module ships until #137 builds its binding entry point (the web engine has
+# implemented redaction since #191, but nothing shipped calls it). What it has instead:
 #   - every needle is checked on every run to still be spelled in redaction's Rust source, outside
 #     comments, so a renamed message cannot leave a needle that matches nothing;
 #   - `tools/test-check-redaction-not-in-base.sh` BUILDS a real base module with a probe export
 #     (`__burrow_redaction_probe`, behind `--cfg burrow_redaction_probe`) and requires this check to
-#     refuse it -- a real compiler, real LTO, real literals -- for every needle whose code compiles
-#     for wasm today; and it plants the rest, which are native-only until #191, into a copy.
+#     refuse it -- a real compiler, real LTO, real literals -- for every needle: since #191's web
+#     half the probe runs the whole operation over the web engine; and it plants each needle into a
+#     copy of each shipped module as well.
 #
 # `--print-needles` prints the needles, one per line, and exits: the self-test reads the list from
 # here rather than parsing this file.
