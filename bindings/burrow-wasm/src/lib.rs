@@ -98,8 +98,15 @@ use wasm_bindgen::prelude::wasm_bindgen;
 pub fn __burrow_redaction_probe(input: Box<[u8]>) -> u32 {
     use burrow_core::ops::engines::pdfsyntax::{contents, geometry, region, strings, tounicode};
 
+    // THE WEB CLOCK AND A REAL BUDGET, as a shipped entry point would pass: a stopped clock here
+    // would still compile the walk's deadline reads in, but it is the shape the watch forbids.
+    let clock = WebClock;
+    let watch = geometry::Watch::new(
+        burrow_core::Deadline::start(&clock, &Limits::default()),
+        &clock,
+    );
     let mut refused = 0u32;
-    refused += u32::from(geometry::check_type_three_procedure(&input).is_err());
+    refused += u32::from(geometry::check_type_three_procedure(&input, &watch).is_err());
     refused += u32::from(strings::decode_string(&input).is_err());
     refused += u32::from(tounicode::ToUnicode::parse(&input).is_err());
     if let Ok(parts) = contents::Contents::concatenate(&[&input]) {
