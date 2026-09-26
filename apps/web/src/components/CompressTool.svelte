@@ -404,8 +404,8 @@
        IT WAS LEFT VISIBLE FOR A DAY ON A WRONG DIAGNOSIS. Making this class real coincided
        with a WebKit failure on /split-pdf, and removing it appeared to fix it; four runs per
        tree later, the failure happened at the same rate on a commit where the class was inert
-       and could not have been involved. The cause was the page-picture strip holding a second
-       wasm engine in the tab, and that strip is withdrawn (#107). Nothing implicates this
+       and could not have been involved. The cause turned out to be a race in Linux WebKit,
+       reached through the page-picture strip's GPU-backed canvas (#107). Nothing implicates this
        rule, and the duplicate it caused is real, so it goes back. -->
   <p class="visually-hidden" role="status" aria-live="polite">{announcement}</p>
 </section>

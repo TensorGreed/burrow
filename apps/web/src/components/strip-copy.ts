@@ -22,70 +22,43 @@
 /**
  * Whether the page-picture strip is withdrawn from the two pages that mount it.
  *
- * **`true` since 2026-09-17, and this is a withdrawal rather than a removal.** The component,
- * its tests, the render worker bundle and the PDFium engine all stay exactly as they are; this
- * decides whether the islands mount it.
+ * **`false` since 2026-09-26: mounted.** It was `true` from 2026-09-17, a withdrawal rather than
+ * a removal -- the component, its tests, the render worker bundle and PDFium stayed exactly as
+ * they were, and this decided only whether the islands mount it. It stays as the switch.
  *
- * # What was measured
+ * # Why it was withdrawn
  *
- * On WebKit, `/split-pdf` and `/rotate-pdf` -- the two pages that mount this strip -- lose the
- * tab, or fail to deliver an operation's output, about **four times in 580 runs**. With the
- * strip suppressed on the same commit, and on the commit before it existed, **zero in 580**.
- * No page without the strip has ever failed this way.
+ * On WebKit, `/split-pdf` and `/rotate-pdf` lost the tab -- or never delivered an operation's
+ * output -- about **four times in 580 runs**, and **zero** with the strip absent. Losing a tab
+ * mid-operation is the worst failure this site has, so the strip went the same day.
  *
- * **THE MECHANISM IS PDFIUM RESIDENT WHILE AN OPERATION RUNS, NOT "TWO ENGINES AT ONCE".** The
- * first framing was wrong and is corrected here rather than quietly dropped: the DOCUMENTS
- * worker persists after an operation, so qpdf and PDFium are both resident whenever the strip
- * draws at all. What distinguishes the failing case is an operation running while PDFium is
- * still there -- 1.9 MB with a 2 GiB heap ceiling, next to a qpdf heap doing the work.
- * [ADR 0015](../../../../docs/adr/0015-web-worker-lifecycle.md) §7 recorded that shape on iOS;
- * this is it on desktop WebKit.
+ * # Two mechanisms were recorded, and both were wrong
  *
- * **Losing a tab in the middle of an operation is the worst failure this site has** -- worse
- * than not showing thumbnails, which is how both pages worked for their whole life until the
- * morning of the day this flag was set. So the strip goes, today, on one line that is measured
- * to remove the failure, rather than the exposure standing while the real fix is designed.
+ * "A tab holding two engines", then "PDFium resident while an operation runs". Both were
+ * inferred from failure rates across arms. The second was built into a fix -- the strip pausing
+ * during an operation, the host refusing to acquire an engine, the resume deferred past the
+ * paint -- and it halved the rate without removing it (**4 in 1,160**), which is what showed
+ * the mechanism was not the one described. Those three pieces stay, for reasons of their own
+ * (see `PageThumbnails`' `paused`); none of them is what fixed this. One of them was itself
+ * unsound as built: the pause terminated the render worker mid-render, which crashes Firefox's
+ * content process. It now waits for the in-flight render to settle; see the pause's effect.
  *
- * # What brings it back
+ * # What it actually was: a race in Linux WebKit, reached through a GPU canvas
  *
- * Not a hunch and not a quiet flip: PDFium released for the duration of an operation, and then
- * the loop in [#107](https://github.com/TensorGreed/burrow/issues/107) run clean over **at
- * least 1,160 runs**, twice the sample that exposed the defect, on the arm that currently shows
- * it. The bar is written down here, before the fix is built, for the same reason ADR 0027's
- * progressive-render bar was: a bar set after the numbers is not a bar.
+ * Collected directly on 2026-09-26, in [#107](https://github.com/TensorGreed/burrow/issues/107):
+ * the WPE web process's main thread trapped in Skia's `SK_ABORT`, because Skia's compile of its
+ * own premultiply round-trip shader "failed". `SkSL::stoi` tests `errno`, and WebKit's
+ * thread-suspend signal handler leaves `errno` as EINTR. Three crashes in 580 runs, **zero in
+ * 1,160** with only that handler patched to preserve `errno`. Not memory: WebKit logged
+ * `reason=Crash`, and every process was at an ordinary footprint.
  *
- * **AND THE BAR MEASURES THE OUTCOME, NOT THE PROPERTY.** A clean 1,160 says the failure did
- * not occur; it does not say an engine is never acquired during an operation. No test proves
- * that end to end -- see [#114](https://github.com/TensorGreed/burrow/issues/114), which
- * records why the one written for it could not be made to fail and what an adequate one needs.
- *
- * # The bar was run on 2026-09-18 and NOT met
- *
- * The fix was built -- the strip paused for the duration of an operation, acquisition refused
- * at the host, the resume deferred past the paint -- and measured against the bar above:
- *
- * | arm | failures / runs |
- * |---|---|
- * | strip mounted, before any of it | 4 / 580 |
- * | strip mounted, WITH the fix | **4 / 1,160** |
- * | strip absent | 0 / 1,160 |
- *
- * **The rate roughly halved. The failure did not go away.** Four crashes, all
- * `Target page, context or browser has been closed`, on both pages. A twofold improvement in a
- * crash rate is not a fix, and the bar is what caught that -- an earlier reading of "roughly
- * eightfold" came from one clean pair of runs and was wrong.
- *
- * **It also undermines the mechanism this file describes.** If PDFium's absence during an
- * operation were the whole story, gating acquisition three ways should have removed the crash.
- * It did not, so something else is involved and nothing here names it. The description above is
- * what the arms support; it is not an explanation of the remainder.
- *
- * WHAT THE NEXT ATTEMPT SHOULD DO IS NOT ANOTHER GATE. Every conclusion so far -- including the
- * two that were wrong -- was inferred from correlation across arms, and the direct evidence has
- * never been collected: no WebKit crash log has been captured, only Playwright reporting that
- * the page died. That is the gap to close first.
+ * The strip reached it because its thumbnails were `putImageData` into a GPU-backed canvas. It
+ * now asks for a CPU canvas (`PageThumbnails`' `paint`), and the bar written on 2026-09-17,
+ * before any fix existed -- the #107 loop clean over at least 1,160 runs on the arm that showed
+ * it -- was met on 2026-09-26 with no patch to WebKit: **0 in 1,160**. Safari and iOS cannot hit
+ * this at all; Apple's ports compile neither Skia nor the signal-based suspend.
  */
-export const STRIP_WITHDRAWN = true;
+export const STRIP_WITHDRAWN = false;
 
 /**
  * The words a page opens with when the strip is withdrawn.

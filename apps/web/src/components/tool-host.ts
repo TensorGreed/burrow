@@ -268,8 +268,8 @@ export const ENGINE_PAUSED = Symbol("engine paused");
  * **THE LIST IS OF WHAT IS ALLOWED, NOT OF WHAT IS REFUSED, AND THAT IS THE POINT.** A method
  * added to this host later is refused while paused until somebody puts it here deliberately --
  * so a future caller inherits the refusal instead of routing around a gate nobody remembered to
- * extend. #107's first two fixes each closed one path and left the next one open; this closes
- * the shape.
+ * extend. The first two versions of the strip's pause each closed one path and left the next
+ * one open; this closes the shape.
  */
 export const ALLOWED_WHILE_PAUSED: ReadonlySet<string> = new Set([
   // Releasing is the whole point of pausing.
@@ -297,8 +297,8 @@ export function createToolHost(
    * The built host, with every acquiring call refused while paused.
    *
    * A `Proxy` rather than a hand-written wrapper because the hand-written one is a list of
-   * methods somebody has to keep current, and #107 is the issue about a gate that was current
-   * for the paths its author could see. Anything not in `ALLOWED_WHILE_PAUSED` is refused,
+   * methods somebody has to keep current, and this gate's own history is of a list that was
+   * current for the paths its author could see. Anything not in `ALLOWED_WHILE_PAUSED` is refused,
    * including a method that does not exist yet.
    */
   function guarded(
@@ -386,7 +386,7 @@ export function createToolHost(
     // worker while only one is reachable.
     ensure() {
       // FAIL CLOSED. Not "do not start the pump" -- refuse to hand anything back that could
-      // acquire an engine, so no path reaches one while an operation is running (#107).
+      // acquire an engine, so no path reaches one while an operation is running.
       if (paused()) return Promise.reject(ENGINE_PAUSED);
       building ??= build();
       // MEMOISED LIKE THE BUILD ITSELF. A fresh wrapper per call would hand two callers inside

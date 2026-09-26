@@ -640,6 +640,10 @@ questions and leaves the list.
 
 ### Correction, 2026-09-17, later the same day: the discharge above claims too much
 
+> **Superseded in part on 2026-09-26 — see the next correction.** The desktop evidence this
+> section rests on was not a memory spike, and both mechanisms recorded below were wrong. What
+> survives is the narrower point that one device surviving one document is one observation.
+
 **It says the strip's defaults "survived a long document on a real iOS device" and concludes no
 mobile-specific default is needed. Desktop WebKit says otherwise**, and the measurement is
 [#107](https://github.com/TensorGreed/burrow/issues/107): on `/split-pdf` and `/rotate-pdf` — the
@@ -648,10 +652,10 @@ about **four times in 580 runs**. With the strip suppressed on the same commit, 
 before it existed, **zero in 580**. Only the strip-bearing pages have ever failed.
 
 So the mechanism §7 warned about — a memory spike taking the whole tab — is reachable with this
-strip on a desktop browser.
+strip on a desktop browser. *(Withdrawn 2026-09-26: it was not a memory spike.)*
 
-**Corrected 2026-09-18: the mechanism is PDFium resident *while an operation runs*, not "a tab
-holding two engines".** The documents worker persists after an operation, so qpdf and PDFium are
+**Corrected 2026-09-18 — and itself wrong, see 2026-09-26: the mechanism is PDFium resident
+*while an operation runs*, not "a tab holding two engines".** The documents worker persists after an operation, so qpdf and PDFium are
 both resident whenever this strip draws at all — before a split and again afterwards. The
 withdrawal appeared to show otherwise only because a withdrawn strip never ran. What separates
 the failing case is an operation running while PDFium is still there, which is the window the
@@ -663,6 +667,78 @@ above now has to be read against.
 **What stands:** the observation itself, and everything in *What it does and does not support*.
 **What does not:** "for the thumbnail strip that question is now answered". It is not answered.
 The strip is back on §7's list, and #107 is where the answer will come from.
+
+### Correction, 2026-09-26: neither mechanism was the cause, and the tab loss was not memory
+
+**The crash was collected directly, and it is a WebKit bug in the Linux ports.** "Two engines
+resident" and "PDFium resident during an operation" were both inferred from failure rates across
+arms, and both were wrong. #107 has the evidence; the short form:
+
+- **What killed the tab.** The WPE web process's main thread hit `brk #0x1` (SIGTRAP) from Skia's
+  `SK_ABORT`, three times in 580 runs. Skia had failed to compile its **own** premultiply
+  round-trip shader (`make_unpremul_effect`), reporting `integer is too large` on `255` twice
+  and on `0` once — a different literal each time.
+- **Why.** `SkSL::stoi` clears `errno`, calls `strtoull`, and then tests `errno`. WebKit's
+  thread-suspend signal handler (`Thread::signalHandlerSuspendResume`, compiled only when
+  `!OS(DARWIN)`) ends in `sigsuspend`, which leaves `errno` set to EINTR, and never restores it.
+- **How the strip reached it.** Its thumbnails were `putImageData` into a GPU-backed canvas, and
+  the first pixel write of a process runs that shader compile.
+- **Not memory.** WebKit's UI process logged `reason=Crash` each time. There was no memory-limit
+  record and no OOM, and each process sat at about 200–225 MB.
+- **Causal test.** Wrapping only that signal handler to preserve `errno` gave **0 crashes in
+  1,160 runs**.
+- **The fix.** The strip now asks for a CPU canvas (`willReadFrequently: true`), which never
+  enters that path: **0 in 1,160 runs, no shim**. That meets the bar recorded on 2026-09-17, and
+  the strip is mounted again.
+
+**What this means for §7 and Amendment 3.** The desktop evidence used above against the
+discharge was not a memory spike, so it says **nothing** about §7 either way. That withdraws the
+reason this record gave for putting the strip back on §7's list — but not the discharge's own
+limits, which Amendment 3 stated and which stand: **one device**, one ordinary document, and a
+load phase that is still unbounded on a hostile page. The strip's memory question is where
+Amendment 3 left it: observed survivable on one 8 GB iPhone, not established for a 4 GB phone.
+
+**What the #107 work left behind, described as what it is.** The strip releases its engine while
+an operation runs. The host refuses every acquiring call while paused, with a fail-closed
+allowlist. The resume is deferred one frame past the result's paint. None of these was the fix,
+and all three stay:
+
+- **The pause and the host gate** keep an operation's peak from stacking on a second wasm
+  engine's heap. That is §7's concern, applied as a design rule rather than as a measured
+  necessity.
+- **The deferred resume** keeps a 1.9 MB engine fetch from competing with the person's results
+  being painted.
+
+**One change to the pause, found while restoring the strip.** As built, pausing *terminated* the
+render worker at once, even with a render in flight, and that crashes **Firefox**'s content
+process: a null dereference in `libxul` on a worker thread (SIGSEGV), losing the whole tab.
+This was never seen before because the pause was built after the strip was withdrawn, and
+every mounted measurement since had been WebKit's #107 loop. On the split test that edits the
+cuts mid-run:
+
+| arm | crashes / runs |
+|---|---|
+| pause as built | about 1 in 10 |
+| pause disabled | 0 / 120 |
+| pause that terminates only once the in-flight render has settled | 0 / 120 |
+
+The last is what ships. It keeps the rule — an operation gets the tab — and gives up some of its
+precision. The engine now outlives the start of an operation until the request already in
+flight settles. That request can include the render worker's **cold start**, fetching and
+compiling PDFium, and a cold start is bounded by silence, not by a duration: the host's init
+timeout is re-armed on each progress message. Only after that does the render's deadline
+apply. So a file chosen and split at once can have PDFium download and compile during the
+split, which the old immediate terminate prevented. Terminating during start-up has not been
+measured in Firefox, so it is not done blind. The rule also covers only this component's own
+release: the host's per-page watchdog and `dispose` still terminate mid-render. The crash is
+Firefox's bug; the terminate that reached it was ours.
+
+**Firefox is not known to be clean.** Four content-process deaths happened on the fixed code
+during full runs, with no test failed. They have not been reproduced in any arm since, and are
+not attributed ([#204](https://github.com/TensorGreed/burrow/issues/204)).
+
+The Safari question is answered by the code rather than by the absence of reports: Apple's ports
+compile neither Skia nor the signal-based suspend path, so this crash cannot happen there.
 
 **The pages rework ([ADR 0028](0028-an-accent-colour-and-what-it-cost-the-reserved-palette.md))
 left the strip alone**, deliberately: it works and it looks right, so that change preserves its
