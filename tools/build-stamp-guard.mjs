@@ -23,8 +23,10 @@ export function requireCurrentBuild(guard, who) {
     console.error(`${who}: malformed build-stamp guard ${JSON.stringify(guard)}`);
     process.exit(1);
   }
+  // The stamper's report goes to STDERR, its "current" lines included: `deploy.yml` sends
+  // `report-size-budget.mjs`'s stdout into the step summary, and that is a size table.
   const done = spawnSync("python3", ["-B", join(repo, script), verb, ...artifacts], {
-    stdio: "inherit",
+    stdio: ["ignore", process.stderr, process.stderr],
   });
   if (done.status !== 0) {
     console.error(

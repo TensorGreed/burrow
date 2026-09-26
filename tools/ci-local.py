@@ -60,6 +60,9 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+SELF_REL = "tools/ci-local.py"
+# `tools/build-stamp.py`'s: stamps read from a directory of the caller's choosing.
+STAMP_DIR_ENV = "BURROW_BUILD_STAMP_DIR"
 CI = REPO / ".github" / "workflows" / "ci.yml"
 CI_REL = ".github/workflows/ci.yml"
 NVMRC_REL = ".nvmrc"
@@ -1535,7 +1538,10 @@ def _shell_commands(text: str) -> str:
         opener = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?\s*$", line)
         if opener:
             heredoc = opener.group(1)
-        if not line.lstrip().startswith("#"):
+        # A COMMAND RUN WITH ITS STAMPS REDIRECTED READS NO REAL ARTIFACT. The self-tests run the
+        # consumers against planted stamps this way; followed, they made `checker-self-tests`
+        # read both bindings, which is the cost finding 2 of #149's review removed.
+        if not line.lstrip().startswith("#") and f"{STAMP_DIR_ENV}=" not in line:
             kept.append(line)
     return "\n".join(kept)
 
@@ -1576,7 +1582,11 @@ def reached_text(command: str) -> dict[str, str]:
                     texts[key] = scripts[script]
                     pending.append((scripts[script], None))
         for path in sorted(found):
-            if path in texts or not (REPO / path).is_file():
+            # NOT THIS FILE. It is reached through `test-ci-local.sh`, and its `GUARD_CASES` are
+            # guard literals in code: counted, they made `checker-self-tests` -- selected on
+            # every `--changed` run, ahead of `wasm-pack` -- read `pkg/`, so every pre-push sweep
+            # refused for a binding the same sweep was about to rebuild. Found by review.
+            if path == SELF_REL or path in texts or not (REPO / path).is_file():
                 continue
             raw = (REPO / path).read_text(encoding="utf-8", errors="replace")
             if path.endswith(".sh"):
@@ -1608,6 +1618,12 @@ GUARD_CASES: list[tuple[str, str, set[str]]] = [
     ('// requireCurrentBuild("tools/build-stamp.py check pkg", "x");\n', "js", set()),
     # NEAR-MISS: a guard inside a heredoc is data -- the self-tests carry them
     ("cat <<'EOF'\npython3 tools/build-stamp.py check pkg\nEOF\n", "sh", set()),
+    # NEAR-MISS: a guard run against planted stamps reads no real artifact
+    (
+        'BURROW_BUILD_STAMP_DIR="$d" python3 tools/build-stamp.py check pkg\n',
+        "sh",
+        set(),
+    ),
     # NEAR-MISS: building an artifact is not reading it
     ("python3 tools/build-stamp.py wrap pkg -- wasm-pack build\n", "sh", set()),
     # NEAR-MISS: an option ends the list; the stamp it names is not an artifact
@@ -1633,8 +1649,10 @@ def stamped_artifacts(jobs: list[dict]) -> tuple[dict[str, list[str]], dict[str,
 def check_artifacts(jobs: list[dict]) -> list[str]:
     """Refuse-worthy findings about the stamped artifacts the selected jobs read."""
     reads, built = stamped_artifacts(jobs)
+    readers = {reader.split(" (via ", 1)[0] for names in reads.values() for reader in names}
     print(
-        f"artifacts: {len(reads)} stamped artifact(s) read by {len(jobs)} job(s)"
+        f"artifacts: {len(reads)} stamped artifact(s) read by {len(readers)} of {len(jobs)} "
+        f"selected job(s)"
         + (f": {', '.join(sorted(reads))}" if reads else "")
         + (
             f"; built in this sweep, so not checked: "

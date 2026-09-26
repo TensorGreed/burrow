@@ -961,7 +961,7 @@ rm -f "$changed_probe" "$scenario_driver"
 # replace, and a guard that was commented out or sits in a heredoc must not count.
 status=0
 out="$(python3 "$here/ci-local.py" --only fmt --artifacts 2>&1)" || status=$?
-if [ "$status" -eq 0 ] && grep -qF "artifacts: 0 stamped artifact(s) read by 1 job(s)" <<<"$out"; then
+if [ "$status" -eq 0 ] && grep -qF "artifacts: 0 stamped artifact(s) read by 0 of 1 selected job(s)" <<<"$out"; then
   echo "  ok   a job that reads no stamped artifact is not refused for one"
   pass=$((pass + 1))
 else
@@ -986,7 +986,7 @@ fi
 # current. So the derivation is asserted on the text, and a refusal must be the artifact one.
 status=0
 out="$(python3 "$here/ci-local.py" --only web --artifacts 2>&1)" || status=$?
-if grep -qF "artifacts: 3 stamped artifact(s) read by 1 job(s): engines-wasm, pkg, pkg-render" <<<"$out" \
+if grep -qF "artifacts: 3 stamped artifact(s) read by 1 of 1 selected job(s): engines-wasm, pkg, pkg-render" <<<"$out" \
    && { [ "$status" -eq 0 ] || grep -qF "REFUSED — a build artifact the selected jobs read" <<<"$out"; }; then
   echo "  ok   the web job is derived to read all three artifacts (status $status on this machine)"
   pass=$((pass + 1))
@@ -996,38 +996,78 @@ else
   fail=$((fail + 1))
 fi
 
-# A PLANTED STALE STAMP, at the real path, restored afterwards. Planted rather than found: a
-# case that depends on the machine happening to have a stale artifact tests nothing on the day
-# it does not. The stamp is the record of the build with one input's digest changed -- the same
-# difference a checkout of another branch makes, seen from the other side.
-(
-  stamp="$repo/engines/vendor/wasm/.build-stamp"
-  created=""
-  [ -d "$repo/engines/vendor" ] || created="$repo/engines/vendor"
-  [ -n "$created" ] || [ -d "$repo/engines/vendor/wasm" ] || created="$repo/engines/vendor/wasm"
-  saved="$(mktemp)"
-  had_stamp=""
-  [ -f "$stamp" ] && { cp "$stamp" "$saved"; had_stamp=1; }
-  trap '[ -n "$had_stamp" ] && cp "$saved" "$stamp" || rm -f "$stamp"; rm -f "$saved"; [ -n "$created" ] && rm -rf "$created"; true' EXIT
-  mkdir -p "$(dirname "$stamp")"
-  python3 -B "$here/build-stamp.py" begin engines-wasm | python3 -c '
-import json, sys
-record = json.load(sys.stdin)
-assert "file:engines/pins.toml" in record, "the record no longer names engines/pins.toml"
-record["file:engines/pins.toml"] = "0" * 64
-print(json.dumps({"format": 1, "artifact": "engines-wasm", "inputs": record}))
-' >"$stamp"
-  status=0
-  out="$(python3 "$here/ci-local.py" --only checkers --artifacts 2>&1)" || status=$?
-  if [ "$status" -ne 0 ] && grep -qF "changed since the build (1): engines/pins.toml" <<<"$out" \
-     && grep -qF "engines-wasm is read by: checkers (via tools/check-wasm-exports.sh)" <<<"$out"; then
-    echo "  ok   a stale engine stamp refuses the sweep, naming the input and the job that reads it"
-    exit 0
-  fi
+# A PLANTED STALE STAMP, through `BURROW_BUILD_STAMP_DIR` so no real one is touched. The first
+# version planted it at the real path and restored it in a trap; review pointed out that a kill
+# -9 would leave the real engines looking stale for a made-up reason. Planted rather than found:
+# a case that depends on the machine happening to have a stale artifact tests nothing on the day
+# it does not. The stamp is a real one with one input's digest changed -- the difference a
+# checkout of another branch makes, seen from the other side.
+stamps="$(mktemp -d)"
+python3 -B "$here/build-stamp.py" begin engines-wasm >"$stamps/record"
+python3 -B "$here/build-stamp.py" commit engines-wasm "$stamps/record" --stamp "$stamps/engines-wasm.build-stamp" >/dev/null
+python3 - "$stamps/engines-wasm.build-stamp" <<'PYSTALE'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+stamp = json.loads(path.read_text())
+assert "file:engines/pins.toml" in stamp["inputs"], "the record no longer names engines/pins.toml"
+stamp["inputs"]["file:engines/pins.toml"] = "0" * 64
+path.write_text(json.dumps(stamp))
+PYSTALE
+
+status=0
+out="$(BURROW_BUILD_STAMP_DIR="$stamps" python3 "$here/ci-local.py" --only checkers --artifacts 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && grep -qF "changed since the build (1): engines/pins.toml" <<<"$out" \
+   && grep -qF "engines-wasm is read by: checkers (via tools/check-wasm-exports.sh)" <<<"$out"; then
+  echo "  ok   a stale engine stamp refuses the sweep, naming the input and the job that reads it"
+  pass=$((pass + 1))
+else
   echo "  FAIL a stale engine stamp did not refuse checkers by name (status $status)"
   echo "$out" | tail -8
-  exit 1
-) && pass=$((pass + 1)) || fail=$((fail + 1))
+  fail=$((fail + 1))
+fi
+
+# THE REAL RUN PATH, not only `--artifacts`. Review deleted the check from the run path and every
+# case above stayed green, because they all reach it through the flag. `fmt` is the job: it is
+# selected with `checkers` so the run has something to refuse, and if the refusal ever stopped
+# working the cost of this case is one `cargo fmt --check` and one checker pass, not a sweep.
+status=0
+out="$(BURROW_BUILD_STAMP_DIR="$stamps" python3 "$here/ci-local.py" --only checkers 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && grep -qF "Nothing was run. A job measuring an artifact" <<<"$out" \
+   && ! grep -qF "=== checkers" <<<"$out"; then
+  echo "  ok   a real run refuses on a stale stamp before its first job"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a real run did not refuse on a stale stamp before running (status $status)"
+  echo "$out" | tail -8
+  fail=$((fail + 1))
+fi
+
+# AND THE CONSUMER ITSELF. Staging is where every web build passes, so it must refuse the same
+# stamp before it copies anything -- including before it clears `public/engines/`.
+status=0
+out="$(cd "$repo/apps/web" && BURROW_BUILD_STAMP_DIR="$stamps" node ../../tools/stage-web-engines.mjs 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && grep -qF "stage-web-engines: refusing" <<<"$out" \
+   && grep -qF "changed since the build (1): engines/pins.toml" <<<"$out"; then
+  echo "  ok   staging refuses a stale engine stamp, naming the input"
+  pass=$((pass + 1))
+else
+  echo "  FAIL staging did not refuse a stale engine stamp by name (status $status)"
+  echo "$out" | tail -8
+  fail=$((fail + 1))
+fi
+rm -rf "$stamps"
+
+# THE DERIVER DOES NOT READ ITSELF. Its guard fixtures are literals in code, and counted they made
+# `checker-self-tests` read both bindings -- ahead of `wasm-pack` on every `--changed` run.
+out="$(python3 "$here/ci-local.py" --only checker-self-tests --artifacts 2>&1)" || true
+if grep -qF "artifacts: 1 stamped artifact(s) read by 1 of 1 selected job(s): engines-wasm" <<<"$out"; then
+  echo "  ok   checker-self-tests is derived to read the engines and nothing else"
+  pass=$((pass + 1))
+else
+  echo "  FAIL checker-self-tests was derived to read more than the engines"
+  grep "^artifacts\|read by" <<<"$out" | head -4
+  fail=$((fail + 1))
+fi
 
 # AND THE DERIVATION'S OWN PROBES: break the guard parse in a copy beside the original, and the
 # copy must refuse by naming the case that stopped matching.

@@ -24,8 +24,16 @@ sha256 per file, and the values that are not files (the pinned emsdk, the qpdf e
 the rustc and wasm-pack versions, the exact build command). `check` recomputes the record from
 the tree as it is now and refuses on any difference, naming the inputs that differ.
 
-  * THE OUTPUT IS NOT HASHED. The question is whether the output is stale relative to its
-    inputs; hashing the output says only that it is the output.
+  * STALENESS IS DECIDED BY THE INPUTS, NEVER BY THE OUTPUT. Hashing the output to ask "is
+    it stale?" would say only that it is the output.
+  * BUT THE OUTPUT IS HASHED, FOR A DIFFERENT QUESTION: are these still the bytes this stamp was
+    written for? wasm-pack does not clear its `--out-dir` (0.15's `create_pkg_dir` deletes only
+    `package.json`), so a build that does not go through `wrap` -- a bare `wasm-pack build` out
+    of habit, or an older branch whose runner predates this file -- overwrites `pkg/` and
+    leaves the previous stamp beside bytes it never described. Found by review, demonstrated:
+    before this digest, that stamp read "current" and every consumer accepted the other
+    branch's binding, which is #128 exactly. So `commit` and `wrap` record a digest of every
+    output file, and `check` refuses when one has been rewritten, added or removed since.
   * THE STAMP IS BESIDE THE ARTIFACT, NOT IN IT. `qpdf.wasm` is compared byte-for-byte
     against a digest in `apps/web/size-budget.json`, and a varying stamp inside it would break
     that.
@@ -42,8 +50,13 @@ WHAT IS AN INPUT, AND WHERE THAT IS OVER-INCLUSIVE ON PURPOSE
                  version and the qpdf export list read out of them (named separately so a
                  refusal can say `+_qpdf_oh_set_array_item` rather than "build-wasm.sh
                  changed"). The emsdk value is the PIN, not `emcc --version`: build-wasm.sh
-                 refuses to build on any other version, so the two cannot differ in an
-                 artifact that exists.
+                 refuses to build on any other version, and refuses when it cannot read
+                 the pin at all, so the two cannot differ in an artifact it stamped. The
+                 fetched TARBALLS are not inputs here: build-wasm.sh verifies each one it
+                 unpacks against its pinned sha256 before recording anything, so a stamp
+                 naming this `pins.toml` names these tarballs. (`pdfium-wasm.tgz` carries
+                 no version in its name, so without that check another branch's PDFium
+                 would build under this branch's stamp.)
   pkg,           every file under `bindings/burrow-wasm` and each workspace crate it depends on
   pkg-render     (build and normal dependencies, every target, every feature), the root
                  `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml`, and the `rustc` and
@@ -51,6 +64,12 @@ WHAT IS AN INPUT, AND WHERE THAT IS OVER-INCLUSIVE ON PURPOSE
                  its library and is included anyway; the whole `Cargo.lock` is included rather
                  than the entries that matter. Both cost a rebuild that was not strictly
                  needed, never a stale artifact passing -- the direction to be wrong in.
+
+NOT RECORDED, stated rather than implied: the build's ENVIRONMENT -- `RUSTFLAGS`,
+`CARGO_PROFILE_*`, `$CARGO_HOME/config.toml`. The repository has no `.cargo/config*` and the wasm
+builds enable no feature whose build script reads the engines, so these change an artifact only
+through a developer's own shell, not through a branch switch, which is the failure this exists
+for. Comparing them at check time would make the verdict depend on the shell that asks.
 
 THE CACHE KEY MUST AGREE, AND THAT IS CHECKED ON EVERY RUN
 
@@ -61,7 +80,8 @@ engines-wasm's input files plus this file. Were the key narrower, a warm cache w
 stamp for a tree that has since moved and every web job would refuse; were it wider, nothing
 would be wrong but the rule would no longer be stated in one place. This file is in the key
 because the input set is defined here: changing it must rebuild, or the cached stamp would lack
-the new input and refuse.
+the new input and refuse. The cost, accepted rather than engineered away: any edit to this file,
+a docstring included, rebuilds emsdk's qpdf in CI's web and deploy jobs once.
 
 USAGE
 
@@ -72,9 +92,11 @@ USAGE
   tools/build-stamp.py --probe                               the per-rule probes, and nothing else
 
 `begin`/`commit` are `wrap` split in two, for `engines/build-wasm.sh`, which is itself the build
-and cannot be wrapped from inside. `--stamp` reads or writes a stamp somewhere other than beside
-the artifact; it exists so `tools/test-build-stamp.sh` can plant a stale stamp without touching
-a real one. The inputs are always read from this repository.
+and cannot be wrapped from inside. `--stamp` reads or writes one stamp somewhere other than
+beside the artifact, and `BURROW_BUILD_STAMP_DIR` does the same for every stamp, as
+`<dir>/<artifact>.build-stamp` -- the environment form because the node guards and
+`tools/ci-local.py` call this tool themselves, and the self-tests plant stale stamps through them
+without touching a real one. The inputs and the outputs are always this repository's.
 
 A CONSUMER GUARDS ITSELF WITH THE LITERAL `build-stamp.py check <artifacts>`, and
 `tools/ci-local.py` derives which jobs read which artifact by finding that literal in what
@@ -86,6 +108,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -95,10 +118,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SELF = "tools/build-stamp.py"
 STAMP_NAME = ".build-stamp"
+STAMP_DIR_ENV = "BURROW_BUILD_STAMP_DIR"
 
 # Bumped whenever what a stamp records changes shape. A stamp of another format is refused by
 # name rather than diffed, because its keys would read as every input having changed.
-FORMAT = 1
+FORMAT = 2
 
 CACHE_KEY_FILE = ".github/actions/build-web-payload/action.yml"
 CACHE_KEY_PREFIX = "wasm-engines-"
@@ -323,7 +347,37 @@ def differences(recorded: dict[str, str], current: dict[str, str]) -> list[str]:
 
 
 def stamp_path(artifact: str, override: str | None) -> Path:
-    return Path(override) if override else REPO / ARTIFACTS[artifact]["output"] / STAMP_NAME
+    if override:
+        return Path(override)
+    if os.environ.get(STAMP_DIR_ENV):
+        return Path(os.environ[STAMP_DIR_ENV]) / f"{artifact}{STAMP_NAME}"
+    return REPO / ARTIFACTS[artifact]["output"] / STAMP_NAME
+
+
+def output_digest(artifact: str) -> dict[str, str]:
+    """`{path within the output: sha256}` for every file the build left, bar the stamp."""
+    root = REPO / ARTIFACTS[artifact]["output"]
+    if not root.is_dir():
+        return {}
+    return {
+        path.relative_to(root).as_posix(): sha256(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != STAMP_NAME
+    }
+
+
+def output_differences(recorded: dict[str, str], current: dict[str, str]) -> list[str]:
+    """Output files rewritten, added or removed since the stamp was written. Empty if none."""
+    lines: list[str] = []
+    for label, names in (
+        ("rewritten since the stamp", sorted(k for k in recorded.keys() & current.keys() if recorded[k] != current[k])),
+        ("added since the stamp", sorted(current.keys() - recorded.keys())),
+        ("removed since the stamp", sorted(recorded.keys() - current.keys())),
+    ):
+        if names:
+            shown = ", ".join(names[:8]) + (f" (+{len(names) - 8} more)" if len(names) > 8 else "")
+            lines.append(f"{label} ({len(names)}): {shown}")
+    return lines
 
 
 def check(artifact: str, override: str | None = None) -> tuple[bool, str]:
@@ -337,8 +391,9 @@ def check(artifact: str, override: str | None = None) -> tuple[bool, str]:
         return False, f"{artifact}: no stamp at {path.relative_to(REPO) if path.is_relative_to(REPO) else path} -- {why}; {fix}"
     try:
         stamp = json.loads(path.read_text())
-        recorded = stamp["inputs"]
         fmt, named = stamp["format"], stamp["artifact"]
+        if fmt == FORMAT:
+            recorded, outputs = stamp["inputs"], stamp["output"]
     except (OSError, ValueError, KeyError, TypeError) as error:
         return False, f"{artifact}: the stamp is unreadable ({error.__class__.__name__}); {fix}"
     if fmt != FORMAT:
@@ -354,17 +409,29 @@ def check(artifact: str, override: str | None = None) -> tuple[bool, str]:
         return False, "\n".join(
             [f"{artifact}: built from a different tree than this one --", *(f"    {l}" for l in found), f"    {fix}"]
         )
+    replaced = output_differences(outputs, output_digest(artifact))
+    if replaced:
+        return False, "\n".join(
+            [
+                f"{artifact}: the output is not what this stamp was written for -- something rebuilt "
+                "it without stamping (a bare wasm-pack build, or another branch's runner) --",
+                *(f"    {l}" for l in replaced),
+                f"    {fix}",
+            ]
+        )
     n_files = sum(1 for k in current if k.startswith("file:"))
     return True, (
         f"{artifact}: current -- {len(current)} input(s) examined, {len(recorded)} recorded "
-        f"({n_files} file(s), {len(current) - n_files} value(s))"
+        f"({n_files} file(s), {len(current) - n_files} value(s)); {len(outputs)} output file(s) "
+        "unchanged since the stamp"
     )
 
 
 def write(artifact: str, record: dict[str, str], override: str | None) -> Path:
     path = stamp_path(artifact, override)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"format": FORMAT, "artifact": artifact, "inputs": record}, indent=1, sort_keys=True) + "\n")
+    stamp = {"format": FORMAT, "artifact": artifact, "inputs": record, "output": output_digest(artifact)}
+    path.write_text(json.dumps(stamp, indent=1, sort_keys=True) + "\n")
     return path
 
 
@@ -402,6 +469,15 @@ def probes() -> tuple[int, list[str]]:
     probe(
         "a vanished file is named",
         any("gone since" in l and ": a" in l for l in differences(base, {k: v for k, v in base.items() if k != "file:a"})),
+    )
+    probe("an identical output differs in nothing", output_differences({"x": "1"}, {"x": "1"}) == [])
+    probe(
+        "a rewritten output file is named",
+        any(l.startswith("rewritten since the stamp (1): x") for l in output_differences({"x": "1"}, {"x": "2"})),
+    )
+    probe(
+        "an output file added since the stamp is named",
+        any(l.startswith("added since the stamp (1): y") for l in output_differences({"x": "1"}, {"x": "1", "y": "2"})),
     )
     probe("a changed value is named", any(l.startswith("v: built with 'x'") for l in differences(base, {**base, "value:v": "y"})))
     probe(

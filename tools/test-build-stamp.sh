@@ -14,9 +14,10 @@
 # naming what differs. The inputs are always this repository's own, so nothing here edits the
 # tree -- the doctoring happens to the stamp, which is the other side of the same comparison.
 #
-# Only `engines-wasm` is exercised end to end: its inputs are committed files, so this runs in
-# CI's `deny` job, which fetches and installs nothing. `pkg`'s record needs rustc and
-# wasm-pack; its one verdict here is the refusal to stamp a build that is not its own.
+# Everything here runs in CI's `deny` job, which fetches and installs nothing. `engines-wasm` is
+# exercised end to end because its inputs are committed files. `pkg` is exercised through
+# `begin` (its record needs no tools to be computed) and through `wrap` with a fake `wasm-pack`
+# first on PATH -- `wrap` checks the command's text, not the binary that answers it.
 #
 # Usage: tools/test-build-stamp.sh
 
@@ -35,9 +36,12 @@ bad() { echo "  FAIL $1"; [ -n "${2:-}" ] && sed 's/^/        /' <<<"$2" | tail 
 
 stamper() { python3 -B "$tool" "$@"; }
 
-# --- the baseline: the real tool passes its own probes --------------------------------------
-if out="$(stamper --probe 2>&1)"; then
-  ok "the real stamper passes its probes ($(grep -o '[0-9]* rule probe' <<<"$out"))"
+# --- the baseline: the real tool passes its own probes, ALL of them ------------------------
+# THE COUNT IS PINNED. "19 rule probe(s)" with no expectation beside it reads the same after a
+# probe is deleted; a probe added or removed changes this number on purpose, in the same commit.
+expected_probes=19
+if out="$(stamper --probe 2>&1)" && grep -qF "$expected_probes rule probe(s) verified" <<<"$out"; then
+  ok "the real stamper passes all $expected_probes of its probes"
 else
   bad "the real stamper fails its own probes, so no case below means anything" "$out"
   exit 1
@@ -104,6 +108,46 @@ mutant "a cache-key parse that reads commented lines is refused" \
         found = re.search(rf"\bkey:' \
   '        found = re.search(rf"\bkey:' \
   "a commented or native key is not the wasm key"
+mutant "a changed value that is not reported is refused" \
+  'lines.append(f"{name}: built with {recorded[key]!r}, now {current[key]!r}")' \
+  'pass' \
+  "a changed value is named"
+mutant "an export parse that reads a missing block as empty is refused" \
+  '    if block is None:
+        return None' \
+  '    if block is None:
+        return []' \
+  "no export block reads as none, not as empty"
+mutant "an emsdk parse that reads nothing is refused" \
+  'return version if isinstance(version, str) and version else None' \
+  'return None' \
+  "the emsdk pin is read from [emsdk]"
+mutant "a cache-key parse that reads nothing is refused" \
+  "return sorted(re.findall(r\"'([^']+)'\", found.group(1)))" \
+  'return []' \
+  "the wasm cache key's files are read"
+mutant "a closure that reaches a crate it does not depend on is refused" \
+  'tables = [manifest.get("dependencies", {}), manifest.get("build-dependencies", {})]' \
+  'tables = [manifest.get("dependencies", {}), manifest.get("build-dependencies", {}), {"burrow-ffi": {"path": "../../bindings/burrow-ffi"}}]' \
+  "the binding's closure does not reach the uniffi binding"
+mutant "a tree listing that lists nothing is refused" \
+  'return sorted({p for p in listed.decode().split("\0") if p and (repo / p).is_file()})' \
+  'return []' \
+  "a crate's tree lists its own manifest"
+mutant "an output rewrite that is not reported is refused" \
+  '("rewritten since the stamp", sorted(k for k in recorded.keys() & current.keys() if recorded[k] != current[k])),' \
+  '("rewritten since the stamp", []),' \
+  "a rewritten output file is named"
+mutant "an output file added since the stamp that is not reported is refused" \
+  '("added since the stamp", sorted(current.keys() - recorded.keys())),' \
+  '("added since the stamp", []),' \
+  "an output file added since the stamp is named"
+mutant "an output comparison that reports everything is refused" \
+  '    lines: list[str] = []
+    for label, names in (' \
+  '    lines: list[str] = ["everything"]
+    for label, names in (' \
+  "an identical output differs in nothing"
 mutant "a closure that stops at the crate itself is refused" \
   'stack.extend(path_dependencies(directory) - seen)' \
   'stack.extend(set())' \
@@ -190,6 +234,11 @@ verdict "an export added since the build is refused by symbol -- #201's case" \
 verdict "a different emsdk pin is refused with both versions" \
   'inputs["value:emsdk (pinned)"] = "0.0.1"' "emsdk (pinned): built with '0.0.1'"
 verdict "a stamp of another format is refused" 'stamp["format"] = 0' "is format 0"
+# THE REVIEW'S BLOCKING FINDING: wasm-pack does not clear its --out-dir, so a build that skips
+# `wrap` leaves the previous stamp beside new bytes. Doctored on the recorded side, which works
+# with or without a real vendor tree: a file the stamp saw that the output no longer has.
+verdict "an output the stamp does not describe is refused, naming the file" \
+  'stamp["output"]["lib/planted.wasm"] = "0" * 64' "removed since the stamp (1): lib/planted.wasm"
 verdict "a stamp for another artifact is refused" 'stamp["artifact"] = "pkg"' "the stamp there is for 'pkg'"
 
 out="" status=0
@@ -227,6 +276,52 @@ else
   bad "a build whose inputs moved under it was stamped, or the refusal did not name the input" "$out"
 fi
 
+# WHAT `pkg` RECORDS. The probes test the helpers; this tests that `compute` uses them -- a record
+# that stopped hashing the crate tree would read "current" across every Rust change, which is
+# #128 again. `begin` needs no rustc or wasm-pack; their values just say they are unavailable.
+out="" status=0
+out="$(stamper begin pkg 2>&1)" || status=$?
+missing=""
+for key in file:bindings/burrow-wasm/src/lib.rs file:core/burrow-types/Cargo.toml \
+  file:core/burrow-engines/src/lib.rs file:Cargo.lock value:rustc value:wasm-pack value:command; do
+  grep -qF "\"$key\"" <<<"$out" || missing="$missing $key"
+done
+if [ "$status" -eq 0 ] && [ -z "$missing" ]; then
+  ok "pkg's record covers the binding, the crates beneath it, the lockfile and the tool versions"
+else
+  bad "pkg's record is missing:${missing:- (begin failed, status $status)}" "$out"
+fi
+
+# `wrap`, WITH A FAKE wasm-pack FIRST ON PATH. `wrap` checks the command's text, not which binary
+# answers it, so this exercises the real control flow in a job that has no wasm-pack at all.
+fake="$work/bin"
+mkdir -p "$fake"
+cat >"$fake/wasm-pack" <<'FAKE'
+#!/usr/bin/env bash
+[ "${1:-}" = "-V" ] && { echo "wasm-pack 0.0.0-fake"; exit 0; }
+exit "${FAKE_WASM_PACK_STATUS:-0}"
+FAKE
+chmod +x "$fake/wasm-pack"
+real_pkg=(wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release)
+
+printf 'old stamp\n' >"$work/wrapped-fail"
+out="" status=0
+out="$(PATH="$fake:$PATH" FAKE_WASM_PACK_STATUS=3 stamper wrap pkg --stamp "$work/wrapped-fail" -- "${real_pkg[@]}" 2>&1)" || status=$?
+if [ "$status" -eq 3 ] && [ ! -e "$work/wrapped-fail" ] && grep -qF "no stamp written" <<<"$out"; then
+  ok "a failed wrapped build removes the old stamp and writes none"
+else
+  bad "a failed wrapped build left a stamp, or did not pass its status through (status $status)" "$out"
+fi
+
+out="" status=0
+out="$(PATH="$fake:$PATH" stamper wrap pkg --stamp "$work/wrapped-ok" -- "${real_pkg[@]}" 2>&1)" || status=$?
+if [ "$status" -eq 0 ] && [ -f "$work/wrapped-ok" ] \
+  && python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s["inputs"]["value:wasm-pack"]=="wasm-pack 0.0.0-fake" and "output" in s' "$work/wrapped-ok"; then
+  ok "a successful wrapped build writes a stamp recording the wasm-pack that ran"
+else
+  bad "a successful wrapped build wrote no stamp, or the wrong one (status $status)" "$out"
+fi
+
 # `wrap` stamps only the build its artifact is defined by. Run with anything else it must
 # refuse BEFORE running it, and write nothing.
 out="" status=0
@@ -239,4 +334,11 @@ fi
 
 echo
 echo "test-build-stamp: $pass passed, $fail failed"
+# AND THE CASES ARE COUNTED, for the reason the probes are: a case deleted, or one whose branch
+# stopped being reached, would otherwise leave "N passed, 0 failed" reading as success.
+expected_cases=38
+if [ "$pass" -ne "$expected_cases" ]; then
+  echo "test-build-stamp: expected $expected_cases passing cases, got $pass" >&2
+  exit 1
+fi
 [ "$fail" -eq 0 ]
