@@ -96,7 +96,10 @@ and cannot be wrapped from inside. `--stamp` reads or writes one stamp somewhere
 beside the artifact, and `BURROW_BUILD_STAMP_DIR` does the same for every stamp, as
 `<dir>/<artifact>.build-stamp` -- the environment form because the node guards and
 `tools/ci-local.py` call this tool themselves, and the self-tests plant stale stamps through them
-without touching a real one. The inputs and the outputs are always this repository's.
+without touching a real one. `BURROW_BUILD_OUTPUT_ROOT` likewise reads the OUTPUTS under another
+root, so `tools/test-build-stamp.sh` can build a fake one, stamp it, and rewrite it. The inputs
+are always this repository's. Neither variable is set by CI, and neither can make a stale
+artifact pass: a relocated stamp must still describe the tree, and the bytes it names.
 
 A CONSUMER GUARDS ITSELF WITH THE LITERAL `build-stamp.py check <artifacts>`, and
 `tools/ci-local.py` derives which jobs read which artifact by finding that literal in what
@@ -119,6 +122,7 @@ REPO = Path(__file__).resolve().parent.parent
 SELF = "tools/build-stamp.py"
 STAMP_NAME = ".build-stamp"
 STAMP_DIR_ENV = "BURROW_BUILD_STAMP_DIR"
+OUTPUT_ROOT_ENV = "BURROW_BUILD_OUTPUT_ROOT"
 
 # Bumped whenever what a stamp records changes shape. A stamp of another format is refused by
 # name rather than diffed, because its keys would read as every input having changed.
@@ -356,7 +360,7 @@ def stamp_path(artifact: str, override: str | None) -> Path:
 
 def output_digest(artifact: str) -> dict[str, str]:
     """`{path within the output: sha256}` for every file the build left, bar the stamp."""
-    root = REPO / ARTIFACTS[artifact]["output"]
+    root = Path(os.environ.get(OUTPUT_ROOT_ENV) or REPO) / ARTIFACTS[artifact]["output"]
     if not root.is_dir():
         return {}
     return {
@@ -565,6 +569,9 @@ def main(argv: list[str]) -> int:
     if not artifacts or any(n not in ARTIFACTS for n in artifacts):
         print(f"build-stamp: {verb} needs artifact(s) from {', '.join(ARTIFACTS)}; got {names}", file=sys.stderr)
         return 2
+    relocated = [v for v in (STAMP_DIR_ENV, OUTPUT_ROOT_ENV) if os.environ.get(v)]
+    if relocated:
+        print(f"build-stamp: relocated by {', '.join(f'{v}={os.environ[v]}' for v in relocated)}", file=sys.stderr)
     if override and len(names) > 1 and verb == "check":
         print("build-stamp: --stamp names one stamp, so check one artifact with it", file=sys.stderr)
         return 2

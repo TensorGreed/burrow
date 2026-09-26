@@ -299,6 +299,12 @@ mkdir -p "$fake"
 cat >"$fake/wasm-pack" <<'FAKE'
 #!/usr/bin/env bash
 [ "${1:-}" = "-V" ] && { echo "wasm-pack 0.0.0-fake"; exit 0; }
+if [ -n "${BURROW_BUILD_OUTPUT_ROOT:-}" ]; then
+  out="$BURROW_BUILD_OUTPUT_ROOT/bindings/burrow-wasm/pkg"
+  mkdir -p "$out/snippets/x"
+  printf 'module' >"$out/burrow_wasm_bg.wasm"
+  printf 'glue' >"$out/snippets/x/a.js"
+fi
 exit "${FAKE_WASM_PACK_STATUS:-0}"
 FAKE
 chmod +x "$fake/wasm-pack"
@@ -322,6 +328,32 @@ else
   bad "a successful wrapped build wrote no stamp, or the wrong one (status $status)" "$out"
 fi
 
+# THE OUTPUT DIGEST, END TO END -- the fix for the review's blocking finding, which was tested
+# only on the comparison side: a stamper that recorded `{}`, or skipped subdirectories, passed
+# everything. So the fake build writes two files, one nested, under a relocated output root; the
+# stamp must name both, and rewriting either after the stamp must be refused by name.
+outroot="$work/outroot"
+out="" status=0
+out="$(PATH="$fake:$PATH" BURROW_BUILD_OUTPUT_ROOT="$outroot" stamper wrap pkg --stamp "$work/out-stamp" -- "${real_pkg[@]}" 2>&1)" || status=$?
+recorded="$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1]))["output"])))' "$work/out-stamp" 2>/dev/null || true)"
+if [ "$status" -eq 0 ] && [ "$recorded" = "burrow_wasm_bg.wasm snippets/x/a.js" ]; then
+  ok "a stamp records every output file, nested ones included"
+else
+  bad "the stamp recorded outputs '$recorded', not both files (status $status)" "$out"
+fi
+for rewritten in burrow_wasm_bg.wasm snippets/x/a.js; do
+  cp "$outroot/bindings/burrow-wasm/pkg/$rewritten" "$work/saved"
+  printf 'another branch' >"$outroot/bindings/burrow-wasm/pkg/$rewritten"
+  out="" status=0
+  out="$(PATH="$fake:$PATH" BURROW_BUILD_OUTPUT_ROOT="$outroot" stamper check pkg --stamp "$work/out-stamp" 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && grep -qF "rewritten since the stamp (1): $rewritten" <<<"$out"; then
+    ok "an output rewritten after the stamp is refused by name: $rewritten"
+  else
+    bad "an output rewritten after the stamp was not refused: $rewritten (status $status)" "$out"
+  fi
+  cp "$work/saved" "$outroot/bindings/burrow-wasm/pkg/$rewritten"
+done
+
 # `wrap` stamps only the build its artifact is defined by. Run with anything else it must
 # refuse BEFORE running it, and write nothing.
 out="" status=0
@@ -336,7 +368,7 @@ echo
 echo "test-build-stamp: $pass passed, $fail failed"
 # AND THE CASES ARE COUNTED, for the reason the probes are: a case deleted, or one whose branch
 # stopped being reached, would otherwise leave "N passed, 0 failed" reading as success.
-expected_cases=38
+expected_cases=41
 if [ "$pass" -ne "$expected_cases" ]; then
   echo "test-build-stamp: expected $expected_cases passing cases, got $pass" >&2
   exit 1

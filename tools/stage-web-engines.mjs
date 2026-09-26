@@ -260,6 +260,22 @@ async function main() {
     pkgRender: join(repo, "bindings", "burrow-wasm", "pkg-render"),
   };
 
+  // BUILT FROM THIS TREE, OR NOT STAGED AT ALL (#149). Every web build comes through here, so
+  // this is the one place a `pkg/` or `qpdf.wasm` left behind by another branch cannot get
+  // past -- before this, it was staged, shipped into `dist/`, and measured by the size budget
+  // as this branch's. The engines are only stamped for the wasm build; the knob above
+  // exists for spike 0002's measurements, which stage something else on purpose.
+  //
+  // BEFORE THE EXISTENCE CHECKS BELOW, so a missing build and a stale one get the same refusal
+  // with the same rebuild command -- and so the self-test that plants a stale stamp reaches it
+  // on a runner with no build at all, which is where CI runs it.
+  if (arch === "wasm") {
+    requireCurrentBuild("tools/build-stamp.py check pkg pkg-render engines-wasm", "stage-web-engines");
+  } else {
+    console.warn(`stage-web-engines: BURROW_ENGINE_ARCH=${arch} -- engines not stamp-checked`);
+    requireCurrentBuild("tools/build-stamp.py check pkg pkg-render", "stage-web-engines");
+  }
+
   if (!existsSync(sources.engines)) {
     console.error(`stage-web-engines: ${sources.engines} does not exist.`);
     console.error("  Run engines/fetch.sh && engines/build-wasm.sh first.");
@@ -280,18 +296,6 @@ async function main() {
       "   carries no PDFium -- the two cargo features are mutually exclusive on wasm32.)",
     );
     process.exit(1);
-  }
-
-  // BUILT FROM THIS TREE, OR NOT STAGED AT ALL (#149). Every web build comes through here, so
-  // this is the one place a `pkg/` or `qpdf.wasm` left behind by another branch cannot get
-  // past -- before this, it was staged, shipped into `dist/`, and measured by the size budget
-  // as this branch's. The engines are only stamped for the wasm build; the knob above
-  // exists for spike 0002's measurements, which stage something else on purpose.
-  if (arch === "wasm") {
-    requireCurrentBuild("tools/build-stamp.py check pkg pkg-render engines-wasm", "stage-web-engines");
-  } else {
-    console.warn(`stage-web-engines: BURROW_ENGINE_ARCH=${arch} -- engines not stamp-checked`);
-    requireCurrentBuild("tools/build-stamp.py check pkg pkg-render", "stage-web-engines");
   }
 
   // Start clean, so a renamed artifact from a previous build cannot linger in `dist/` and

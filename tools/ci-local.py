@@ -61,8 +61,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SELF_REL = "tools/ci-local.py"
-# `tools/build-stamp.py`'s: stamps read from a directory of the caller's choosing.
-STAMP_DIR_ENV = "BURROW_BUILD_STAMP_DIR"
+# `tools/build-stamp.py`'s relocations: stamps, or outputs, read from somewhere of the caller's
+# choosing. Only with a VALUE -- `BURROW_BUILD_STAMP_DIR= tools/x.sh` relocates nothing, and
+# dropping that line would hide a real reader. Review.
+RELOCATED = re.compile(r"\bBURROW_BUILD_(?:STAMP_DIR|OUTPUT_ROOT)=(?![\s;&|]|$)")
 CI = REPO / ".github" / "workflows" / "ci.yml"
 CI_REL = ".github/workflows/ci.yml"
 NVMRC_REL = ".nvmrc"
@@ -1055,6 +1057,14 @@ def verify_parser() -> list[str]:
         for text, exp in USES_CASES
         if programs_used_in(text, candidates) != exp
     ]
+    # THE BUILDER EXEMPTS ONLY THE READERS AFTER IT. Jobs run in table order, so a reader ahead
+    # of the build reads whatever was there before. Synthetic tables, both orders. Review.
+    reader = {"name": "reader", "run": "python3 tools/build-stamp.py check pkg"}
+    builder = {"name": "builder", "run": "python3 tools/build-stamp.py wrap pkg -- wasm-pack build"}
+    if "pkg" not in stamped_artifacts([reader, builder])[0]:
+        problems.append("a reader ahead of the job that builds its artifact was exempted")
+    if "pkg" in stamped_artifacts([builder, reader])[0]:
+        problems.append("a reader after the job that builds its artifact was still checked")
     for text, kind, exp in GUARD_CASES:
         got = guards_in(_shell_commands(text) if kind == "sh" else _uncommented(text))
         if got != exp:
@@ -1541,7 +1551,7 @@ def _shell_commands(text: str) -> str:
         # A COMMAND RUN WITH ITS STAMPS REDIRECTED READS NO REAL ARTIFACT. The self-tests run the
         # consumers against planted stamps this way; followed, they made `checker-self-tests`
         # read both bindings, which is the cost finding 2 of #149's review removed.
-        if not line.lstrip().startswith("#") and f"{STAMP_DIR_ENV}=" not in line:
+        if not line.lstrip().startswith("#") and not RELOCATED.search(line):
             kept.append(line)
     return "\n".join(kept)
 
@@ -1624,6 +1634,8 @@ GUARD_CASES: list[tuple[str, str, set[str]]] = [
         "sh",
         set(),
     ),
+    # ...but an EMPTY relocation relocates nothing, and the guard still reads the real stamp
+    ("BURROW_BUILD_STAMP_DIR= python3 tools/build-stamp.py check pkg\n", "sh", {"pkg"}),
     # NEAR-MISS: building an artifact is not reading it
     ("python3 tools/build-stamp.py wrap pkg -- wasm-pack build\n", "sh", set()),
     # NEAR-MISS: an option ends the list; the stamp it names is not an artifact
@@ -2144,15 +2156,17 @@ def main(argv: list[str]) -> int:
     # THE ENVIRONMENT, BEFORE ANY JOB RUNS. Scoped to the jobs actually selected, so
     # `--only prune-is-reached` is not refused for a cargo it never invokes -- and so the qpdf
     # case below still reaches its own refusal rather than being pre-empted by this one.
-    findings = preflight(jobs)
-    if findings:
-        report_environment(findings)
-        return 1
-
-    # AND THE ARTIFACTS THOSE JOBS READ, before any of them runs (#149).
+    # THE ARTIFACTS THOSE JOBS READ, before any of them runs (#149) -- and before the tool
+    # check, so the refusal does not depend on what the machine has installed: CI's self-test
+    # of it runs in a job that installs nothing.
     stale = check_artifacts(jobs)
     if stale:
         report_artifacts(stale)
+        return 1
+
+    findings = preflight(jobs)
+    if findings:
+        report_environment(findings)
         return 1
 
     # THE `qpdf` CLI, RESOLVED BEFORE ANYTHING RUNS. `needs_qpdf_cli` was declared on three

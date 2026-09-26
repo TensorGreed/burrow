@@ -1027,9 +1027,10 @@ else
 fi
 
 # THE REAL RUN PATH, not only `--artifacts`. Review deleted the check from the run path and every
-# case above stayed green, because they all reach it through the flag. `fmt` is the job: it is
-# selected with `checkers` so the run has something to refuse, and if the refusal ever stopped
-# working the cost of this case is one `cargo fmt --check` and one checker pass, not a sweep.
+# case above stayed green, because they all reach it through the flag. `checkers` is the job: it
+# reads the engines, and if the refusal ever stopped working the cost of this case is one pass
+# of the checkers, not a sweep. The artifact refusal precedes the tool check, so this holds on a
+# runner with none of the checkers' tools installed.
 status=0
 out="$(BURROW_BUILD_STAMP_DIR="$stamps" python3 "$here/ci-local.py" --only checkers 2>&1)" || status=$?
 if [ "$status" -ne 0 ] && grep -qF "Nothing was run. A job measuring an artifact" <<<"$out" \
