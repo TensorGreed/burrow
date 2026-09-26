@@ -12,14 +12,23 @@
 // from -- so the table answers "how much has this grown since someone last looked at it",
 // which is the question, and answers it offline and deterministically.
 //
-// Never fails the build. `apps/web/src/size-budget.test.ts` is the gate; this is the report,
-// and a report that can fail a build turns into one people stop reading.
+// Never fails the build on a NUMBER. `apps/web/src/size-budget.test.ts` is the gate; this is the
+// report, and a report that can fail a build turns into one people stop reading.
+//
+// IT DOES REFUSE TO MEASURE ANOTHER TREE (#149). Twice it printed a figure for a `pkg/` left
+// behind by another branch -- #128 and #130 -- and both were caught only because somebody
+// recognised the number. A wrong number here is where the wrong number does its damage: it is
+// what a reviewer reads instead of the gate. So it measures only when the artifacts that went
+// into the build carry stamps matching this tree. In CI they are always fresh, because the same
+// job built them; the refusal is for a local run. What it cannot see is a `dist/` built on
+// another branch from artifacts that were current THEN -- that is #202's.
 
 import { readFileSync } from "node:fs";
 import { appendFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { requireCurrentBuild } from "./build-stamp-guard.mjs";
 import {
   byBudgetKey,
   engineClosures,
@@ -29,6 +38,8 @@ import {
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webApp = join(repo, "apps", "web");
+
+requireCurrentBuild("tools/build-stamp.py check pkg pkg-render engines-wasm", "report-size-budget");
 
 const buildDir = process.argv[2] ?? join(webApp, "dist");
 const budget = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));

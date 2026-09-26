@@ -26,4 +26,5 @@
 - [Residual bound by an uncounted dimension](feedback_residual_bound_by_uncounted_dimension.md) — "N ms at the X ceiling": time the input the caps do not count (1 GiB whitespace lexes 330 ms); mutate a read's position.
 - [Build a real positive for absence gates](feedback_build_real_positive_for_absence_gates.md) — plant an export per component, build the real wasm, run the checker; refusal-only needles missed splice, font surgery, strings.
 - [Funnelled check: plant it inert](feedback_funnelled_check_plant_inert.md) — a refactor that collapses N checks into one method: make it inert; #191 drained() and page() bound survived all tests.
+- [Stamp survives an unwrapped writer](feedback_stamp_survives_unwrapped_writer.md) — wasm-pack never clears pkg/; a stamp beside output must be bound to the bytes. Plant "stamp A, bytes B".
 - [Differential probe bypasses harness](feedback_differential_probe_bypasses_harness.md) — an "engine B is really asked" probe that calls B alone passes when B delegates to A; count calls on B's own seam.

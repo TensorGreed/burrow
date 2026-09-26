@@ -746,6 +746,20 @@ jobs:
       # It lives under `.claude/hooks/` rather than `tools/` because that is the path
       # `.claude/settings.json` names. Its self-test needs nothing but python3, so it belongs
       # in a job that fetches nothing and still runs on a clean checkout.
+      # A BUILD ARTIFACT IS TIED TO THE TREE IT WAS BUILT FROM (#149). `tools/build-stamp.py`
+      # records what `engines/vendor/wasm/` and `bindings/burrow-wasm/pkg*/` were built from, and
+      # every consumer refuses one that does not match. Its probes run on every invocation, and
+      # so does its check that the `wasm-engines-` cache key hashes exactly what the stamp
+      # records -- a narrower key would restore a stamp for a tree that has since moved.
+      #
+      # In `deny`, which fetches nothing: the probes and the self-test's verdicts read only
+      # committed files. The stamps themselves are written and checked in the `web` job, where
+      # the artifacts are.
+      - name: Build stamps still refuse a stale artifact, and the cache key agrees with them
+        run: |
+          python3 tools/build-stamp.py --probe
+          tools/test-build-stamp.sh
+
       - name: The force-push hook still refuses the property, and still allows the near-misses
         run: .claude/hooks/test-refuse-force-push-to-main.sh
 

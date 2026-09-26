@@ -45,7 +45,11 @@ source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
 
 want_emsdk="$(sed -n '/^\[emsdk\]/,/^\[/p' "$here/pins.toml" | sed -n 's/^version = "\(.*\)"/\1/p')"
 have_emsdk="$(emcc --version 2>/dev/null | sed -n '1s/.*) \([0-9.]*\).*/\1/p')"
-if [ -n "$want_emsdk" ] && [ "$want_emsdk" != "$have_emsdk" ]; then
+# AN UNREADABLE PIN IS A REFUSAL, not a skip. This comparison used to run only when the pin
+# parsed, so a `version="x"` that tomllib accepts and this sed does not built on whatever emsdk
+# was installed -- and the build stamp, which records the pin, would have called it current.
+[ -n "$want_emsdk" ] || { echo "build-wasm: cannot read [emsdk] version from pins.toml" >&2; exit 1; }
+if [ "$want_emsdk" != "$have_emsdk" ]; then
   echo "build-wasm: emsdk version mismatch -- pins.toml wants $want_emsdk, found ${have_emsdk:-unknown}" >&2
   echo "  Emscripten contributes code to the shipped artifact, so this is not cosmetic." >&2
   exit 1
@@ -53,6 +57,30 @@ fi
 
 rm -rf "$prefix"
 mkdir -p "$prefix/lib" "$prefix/include" "$src"
+
+# THE BUILD'S INPUTS, RECORDED BEFORE IT STARTS (#149). `commit` at the end compares them again
+# and writes `$prefix/.build-stamp` only if nothing moved, so the stamp describes the tree this
+# build actually read. The `rm -rf` above has already removed any previous stamp: a build that
+# fails from here on leaves none, and every consumer refuses the artifact until it is rebuilt.
+#
+# THE TARBALLS ARE CHECKED AGAINST THEIR PINS FIRST, because the stamp records `pins.toml` and not
+# the tarballs, and that is only honest if the tarballs are the ones pins.toml names. fetch.sh
+# verifies them -- when it runs; this script only checked they existed. `pdfium-wasm.tgz` has no
+# version in its name, so after another branch's fetch this would unpack THAT branch's PDFium
+# under THIS branch's stamp. Found by review.
+for pin in pdfium.artifacts.wasm:pdfium-wasm.tgz qpdf:qpdf-$QPDF_VERSION.tar.gz \
+  zlib:zlib-$ZLIB_VERSION.tar.gz libjpeg-turbo:libjpeg-turbo-$JPEG_VERSION.tar.gz; do
+  want="$(pins_get "${pin%%:*}.sha256")" || { echo "build-wasm: no sha256 for ${pin%%:*} in pins.toml" >&2; exit 1; }
+  have="$(sha256sum "$vendor/${pin#*:}" | cut -d' ' -f1)"
+  [ "$want" = "$have" ] || {
+    echo "build-wasm: $vendor/${pin#*:} is not the tarball pins.toml names (sha256 $have, pinned $want)." >&2
+    echo "  Run engines/fetch.sh, which replaces it with the pinned one." >&2
+    exit 1
+  }
+done
+echo "   4 tarballs match their pinned sha256"
+stamp_record="$src/engines-wasm.stamp-record"
+python3 "$here/../tools/build-stamp.py" begin engines-wasm >"$stamp_record"
 
 say() { printf '\n== %s\n' "$1"; }
 
@@ -388,5 +416,8 @@ createQpdfModule({
 ' "$src/qpdf-engine.cjs" "$prefix/lib/qpdf.wasm" 2>&1 | tail -1)"
 echo "   qpdf reports: ${version:-<no answer>}"
 [ "$version" = "$QPDF_VERSION" ] || { echo "build-wasm: wasm qpdf reported '${version}', expected $QPDF_VERSION" >&2; exit 1; }
+
+say "stamp: what this artifact was built from"
+python3 "$here/../tools/build-stamp.py" commit engines-wasm "$stamp_record"
 
 say "done: $prefix"

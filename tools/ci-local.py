@@ -60,6 +60,11 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+SELF_REL = "tools/ci-local.py"
+# `tools/build-stamp.py`'s relocations: stamps, or outputs, read from somewhere of the caller's
+# choosing. Only with a VALUE -- `BURROW_BUILD_STAMP_DIR= tools/x.sh` relocates nothing, and
+# dropping that line would hide a real reader. Review.
+RELOCATED = re.compile(r"\bBURROW_BUILD_(?:STAMP_DIR|OUTPUT_ROOT)=(?![\s;&|]|$)")
 CI = REPO / ".github" / "workflows" / "ci.yml"
 CI_REL = ".github/workflows/ci.yml"
 NVMRC_REL = ".nvmrc"
@@ -367,6 +372,8 @@ JOBS: list[dict] = [
                 "python3 tools/check-proptest-regressions.py",
                 "tools/test-check-proptest-regressions.sh",
                 "tools/test-name-requires-slash.sh",
+                "python3 tools/build-stamp.py --probe",
+                "tools/test-build-stamp.sh",
             ]
         ),
         "covers": [
@@ -402,6 +409,7 @@ JOBS: list[dict] = [
             "tools/check-proptest-regressions.py",
             "tools/test-check-proptest-regressions.sh",
             "tools/test-name-requires-slash.sh",
+            "tools/test-build-stamp.sh",
         ],
     },
     {
@@ -466,8 +474,10 @@ JOBS: list[dict] = [
     {
         "name": "wasm-pack",
         "run": (
-            "wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release"
-            " && wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render"
+            "python3 tools/build-stamp.py wrap pkg --"
+            " wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release"
+            " && python3 tools/build-stamp.py wrap pkg-render --"
+            " wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render"
             " --release -- --no-default-features --features render"
             # IMMEDIATELY AFTER BOTH BUILDS, for the reason the workflow gives: this is the
             # only point at which both generated `.d.ts` files exist.
@@ -477,6 +487,7 @@ JOBS: list[dict] = [
         "covers": [
             "wasm-pack:bindings/burrow-wasm:pkg",
             "wasm-pack:bindings/burrow-wasm:pkg-render",
+            "tools/build-stamp.py",
             "tools/check-wasm-binding-names.py",
             "tools/test-check-wasm-binding-names.sh",
         ],
@@ -1046,6 +1057,18 @@ def verify_parser() -> list[str]:
         for text, exp in USES_CASES
         if programs_used_in(text, candidates) != exp
     ]
+    # THE BUILDER EXEMPTS ONLY THE READERS AFTER IT. Jobs run in table order, so a reader ahead
+    # of the build reads whatever was there before. Synthetic tables, both orders. Review.
+    reader = {"name": "reader", "run": "python3 tools/build-stamp.py check pkg"}
+    builder = {"name": "builder", "run": "python3 tools/build-stamp.py wrap pkg -- wasm-pack build"}
+    if "pkg" not in stamped_artifacts([reader, builder])[0]:
+        problems.append("a reader ahead of the job that builds its artifact was exempted")
+    if "pkg" in stamped_artifacts([builder, reader])[0]:
+        problems.append("a reader after the job that builds its artifact was still checked")
+    for text, kind, exp in GUARD_CASES:
+        got = guards_in(_shell_commands(text) if kind == "sh" else _uncommented(text))
+        if got != exp:
+            problems.append(f"stamp guards in {text!r}: expected {sorted(exp)}, got {sorted(got)}")
     # AND THE PARSER OVER THE REAL TABLE, not only over fixtures. `shlex` raises on an
     # unbalanced quote, so a job string containing an apostrophe -- an `awk` one-liner, a
     # `don't` in a message -- would give a traceback instead of a refusal. That is the failure
@@ -1474,6 +1497,211 @@ def preflight(jobs: list[dict]) -> list[str]:
     return problems
 
 
+# --- build artifacts that are gitignored, and whether they match this tree (#149) ----------
+#
+# `engines/vendor/wasm/` and `bindings/burrow-wasm/pkg*/` are rebuilt per machine, and five
+# sweeps failed on one left behind by another branch -- each after running whatever came before
+# the job that finally tripped over it. `tools/build-stamp.py` records what each was built from;
+# this refuses the sweep, before any job, when a job it is about to run reads one that does not
+# match.
+#
+# WHICH JOB READS WHICH ARTIFACT IS DERIVED, NOT LISTED. A consumer guards itself by invoking
+# the stamper's `check` verb with the artifacts it reads, spelled out literally; this follows
+# each job's command into the scripts and pnpm scripts it names, transitively, and collects
+# those guards. A new consumer that guards itself is picked up without an edit here -- the
+# person adding it is exactly the person who would not think to update a table. Full-line
+# comments are skipped, so a guard that was commented out stops counting. A guard reached
+# only through something this walk does not follow (a Playwright `webServer` command, say)
+# still refuses when it runs; it just refuses mid-sweep rather than before it.
+#
+# AN ARTIFACT A SELECTED JOB BUILDS IS NOT CHECKED for the jobs after it: `wasm-pack` rebuilds
+# both bindings before `web` stages them, so a stale `pkg/` at the start of that sweep is not
+# a reason to refuse it. The builder is recognised by the stamper's `wrap` verb in its command.
+
+# `"?` because a shell guard quotes the path: `python3 "$here/build-stamp.py" check ...`.
+STAMP_GUARD = re.compile(r"build-stamp\.py\"? check((?: [a-z][a-z-]*)+)")
+STAMP_BUILD = re.compile(r"build-stamp\.py wrap ([a-z][a-z-]*)")
+REACHABLE = re.compile(r"(?<![\w.\-])(?:\.\./)*((?:tools|engines|\.claude/hooks)/[\w.\-]+\.(?:sh|py|mjs))")
+PNPM_SCRIPT = re.compile(r"\bpnpm (?:-C \S+ )?(?:run )?(?!exec\b|install\b|dlx\b)([a-z][\w:-]*)")
+
+
+def _uncommented(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith(("#", "//"))
+    )
+
+
+def _shell_commands(text: str) -> str:
+    """A shell script without its comment lines and heredoc bodies -- the parts it runs.
+
+    The same exclusion `programs_used_in` makes, for the same reason: `test-ci-local.sh` embeds
+    Python that rewrites a copy of ci.yml, so it contains `node ../../tools/report-size-budget.mjs`
+    as DATA, and following it made `checker-self-tests` read three artifacts it never touches.
+    """
+    kept: list[str] = []
+    heredoc: str | None = None
+    for line in text.splitlines():
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        opener = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?\s*$", line)
+        if opener:
+            heredoc = opener.group(1)
+        # A COMMAND RUN WITH ITS STAMPS REDIRECTED READS NO REAL ARTIFACT. The self-tests run the
+        # consumers against planted stamps this way; followed, they made `checker-self-tests`
+        # read both bindings, which is the cost finding 2 of #149's review removed.
+        if not line.lstrip().startswith("#") and not RELOCATED.search(line):
+            kept.append(line)
+    return "\n".join(kept)
+
+
+# `"$here/check-wasm-exports.sh"` is how every script here names a sibling: 113 of them, and
+# no other spelling. Resolved against the directory of the script it appears in.
+HERE_REF = re.compile(r"\$\{?here\}?/((?:\.\./)*[\w.\-]+(?:/[\w.\-]+)*\.(?:sh|py|mjs))")
+
+
+def reached_text(command: str) -> dict[str, str]:
+    """`{where: text}` for the command and everything it transitively RUNS.
+
+    References are FOLLOWED only out of shell -- the job's command, a pnpm script, a `.sh` file
+    -- and only from the lines that run. A `.py` or `.mjs` that is reached is searched for a
+    guard and not followed further: Python and JavaScript mention paths in docstrings, tables
+    and strings far more often than they execute them, and following those made `checkers` read
+    `pkg/` through this file's own JOBS table. The stated residual is the same one
+    `SCANNABLE` carries: a Python or Node tool that runs another script is not followed.
+    """
+    texts = {"(the job's command)": command}
+    directory = next(iter(re.findall(r"cd\s+([A-Za-z0-9_./-]+)", command)), None)
+    scripts: dict[str, str] = {}
+    if directory and (REPO / directory / "package.json").is_file():
+        scripts = json.loads((REPO / directory / "package.json").read_text()).get("scripts", {})
+    pending: list[tuple[str, Path | None]] = [(command, None)]
+    while pending:
+        text, base = pending.pop()
+        found = set(REACHABLE.findall(text))
+        if base is not None:
+            for relative in HERE_REF.findall(text):
+                target = (base / relative).resolve()
+                if target.is_relative_to(REPO):
+                    found.add(target.relative_to(REPO).as_posix())
+        for name in PNPM_SCRIPT.findall(text):
+            for script in (f"pre{name}", name):
+                key = f"{directory}/package.json:{script}"
+                if script in scripts and key not in texts:
+                    texts[key] = scripts[script]
+                    pending.append((scripts[script], None))
+        for path in sorted(found):
+            # NOT THIS FILE. It is reached through `test-ci-local.sh`, and its `GUARD_CASES` are
+            # guard literals in code: counted, they made `checker-self-tests` -- selected on
+            # every `--changed` run, ahead of `wasm-pack` -- read `pkg/`, so every pre-push sweep
+            # refused for a binding the same sweep was about to rebuild. Found by review.
+            if path == SELF_REL or path in texts or not (REPO / path).is_file():
+                continue
+            raw = (REPO / path).read_text(encoding="utf-8", errors="replace")
+            if path.endswith(".sh"):
+                texts[path] = _shell_commands(raw)
+                pending.append((texts[path], (REPO / path).parent))
+            else:
+                texts[path] = _uncommented(raw)
+    return texts
+
+
+def guards_in(text: str) -> set[str]:
+    """The artifacts a text's stamp guards name."""
+    return {artifact for guard in STAMP_GUARD.findall(text) for artifact in guard.split()}
+
+
+# The guard derivation's rules, each with its case and near-miss, checked on every run by
+# `verify_parser`. `(text, "sh" or "js", expected artifacts)`.
+GUARD_CASES: list[tuple[str, str, set[str]]] = [
+    # the shell spelling, with its quoted path
+    ('  python3 -B "$here/build-stamp.py" check engines-wasm || exit 1\n', "sh", {"engines-wasm"}),
+    # the node spelling: one literal string naming several
+    (
+        'requireCurrentBuild("tools/build-stamp.py check pkg pkg-render engines-wasm", "x");\n',
+        "js",
+        {"pkg", "pkg-render", "engines-wasm"},
+    ),
+    # NEAR-MISS: a commented-out guard guards nothing
+    ("# python3 tools/build-stamp.py check pkg\n", "sh", set()),
+    ('// requireCurrentBuild("tools/build-stamp.py check pkg", "x");\n', "js", set()),
+    # NEAR-MISS: a guard inside a heredoc is data -- the self-tests carry them
+    ("cat <<'EOF'\npython3 tools/build-stamp.py check pkg\nEOF\n", "sh", set()),
+    # NEAR-MISS: a guard run against planted stamps reads no real artifact
+    (
+        'BURROW_BUILD_STAMP_DIR="$d" python3 tools/build-stamp.py check pkg\n',
+        "sh",
+        set(),
+    ),
+    # ...but an EMPTY relocation relocates nothing, and the guard still reads the real stamp
+    ("BURROW_BUILD_STAMP_DIR= python3 tools/build-stamp.py check pkg\n", "sh", {"pkg"}),
+    # NEAR-MISS: building an artifact is not reading it
+    ("python3 tools/build-stamp.py wrap pkg -- wasm-pack build\n", "sh", set()),
+    # NEAR-MISS: an option ends the list; the stamp it names is not an artifact
+    ('python3 tools/build-stamp.py check engines-wasm --stamp "$work/s"\n', "sh", {"engines-wasm"}),
+]
+
+
+def stamped_artifacts(jobs: list[dict]) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """`({artifact: [reader, ...]}, {artifact: the selected job that builds it first})`."""
+    reads: dict[str, list[str]] = {}
+    built: dict[str, str] = {}
+    for job in jobs:
+        for where, text in reached_text(job["run"]).items():
+            for artifact in sorted(guards_in(text)):
+                reader = f"{job['name']} (via {where})"
+                if artifact not in built and reader not in reads.get(artifact, []):
+                    reads.setdefault(artifact, []).append(reader)
+        for artifact in STAMP_BUILD.findall(job["run"]):
+            built.setdefault(artifact, job["name"])
+    return reads, built
+
+
+def check_artifacts(jobs: list[dict]) -> list[str]:
+    """Refuse-worthy findings about the stamped artifacts the selected jobs read."""
+    reads, built = stamped_artifacts(jobs)
+    readers = {reader.split(" (via ", 1)[0] for names in reads.values() for reader in names}
+    print(
+        f"artifacts: {len(reads)} stamped artifact(s) read by {len(readers)} of {len(jobs)} "
+        f"selected job(s)"
+        + (f": {', '.join(sorted(reads))}" if reads else "")
+        + (
+            f"; built in this sweep, so not checked: "
+            + ", ".join(f"{a} (by {j})" for a, j in sorted(built.items()))
+            if built
+            else ""
+        )
+    )
+    if not reads:
+        return []
+    done = subprocess.run(
+        [sys.executable, "-B", str(REPO / "tools" / "build-stamp.py"), "check", *sorted(reads)],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    print(done.stdout, end="")
+    if done.returncode == 0:
+        return []
+    findings = [done.stderr.rstrip() or f"build-stamp.py exited {done.returncode} and said nothing"]
+    for artifact, readers in sorted(reads.items()):
+        findings.append(f"{artifact} is read by: {'; '.join(readers[:4])}" + (f" (+{len(readers) - 4})" if len(readers) > 4 else ""))
+    return findings
+
+
+def report_artifacts(findings: list[str]) -> None:
+    print("\nREFUSED — a build artifact the selected jobs read does not match this tree:", file=sys.stderr)
+    for finding in findings:
+        print("  " + finding.replace("\n", "\n  "), file=sys.stderr)
+    print(
+        "\n  Nothing was run. A job measuring an artifact built from another tree reports that\n"
+        "  tree's result as this one's -- which is how five sweeps failed before #149, each on a\n"
+        "  qpdf.wasm, a pkg/ or a dist/ left behind by another branch. Rebuild it as named above.",
+        file=sys.stderr,
+    )
+
+
 def qpdf_cli() -> tuple[str | None, str]:
     """Where a `qpdf` CLI can be found, and how it was found.
 
@@ -1899,6 +2127,15 @@ def main(argv: list[str]) -> int:
             return 1
         jobs, skipped = select_changed(jobs, since)
 
+    # THE ARTIFACT CHECK, REACHABLE WITHOUT RUNNING A JOB -- separately from `--preflight`,
+    # which CI runs in a job that builds nothing and must not refuse for want of a `pkg/`.
+    if "--artifacts" in argv:
+        found_stale = check_artifacts(jobs)
+        if found_stale:
+            report_artifacts(found_stale)
+            return 1
+        return 0
+
     if preflight_only:
         findings = preflight(jobs)
         if findings:
@@ -1919,6 +2156,14 @@ def main(argv: list[str]) -> int:
     # THE ENVIRONMENT, BEFORE ANY JOB RUNS. Scoped to the jobs actually selected, so
     # `--only prune-is-reached` is not refused for a cargo it never invokes -- and so the qpdf
     # case below still reaches its own refusal rather than being pre-empted by this one.
+    # THE ARTIFACTS THOSE JOBS READ, before any of them runs (#149) -- and before the tool
+    # check, so the refusal does not depend on what the machine has installed: CI's self-test
+    # of it runs in a job that installs nothing.
+    stale = check_artifacts(jobs)
+    if stale:
+        report_artifacts(stale)
+        return 1
+
     findings = preflight(jobs)
     if findings:
         report_environment(findings)

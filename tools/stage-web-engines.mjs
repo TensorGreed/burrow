@@ -59,6 +59,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveBuildOrigin } from "./build-origin.mjs";
+import { requireCurrentBuild } from "./build-stamp-guard.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
@@ -259,6 +260,22 @@ async function main() {
     pkgRender: join(repo, "bindings", "burrow-wasm", "pkg-render"),
   };
 
+  // BUILT FROM THIS TREE, OR NOT STAGED AT ALL (#149). Every web build comes through here, so
+  // this is the one place a `pkg/` or `qpdf.wasm` left behind by another branch cannot get
+  // past -- before this, it was staged, shipped into `dist/`, and measured by the size budget
+  // as this branch's. The engines are only stamped for the wasm build; the knob above
+  // exists for spike 0002's measurements, which stage something else on purpose.
+  //
+  // BEFORE THE EXISTENCE CHECKS BELOW, so a missing build and a stale one get the same refusal
+  // with the same rebuild command -- and so the self-test that plants a stale stamp reaches it
+  // on a runner with no build at all, which is where CI runs it.
+  if (arch === "wasm") {
+    requireCurrentBuild("tools/build-stamp.py check pkg pkg-render engines-wasm", "stage-web-engines");
+  } else {
+    console.warn(`stage-web-engines: BURROW_ENGINE_ARCH=${arch} -- engines not stamp-checked`);
+    requireCurrentBuild("tools/build-stamp.py check pkg pkg-render", "stage-web-engines");
+  }
+
   if (!existsSync(sources.engines)) {
     console.error(`stage-web-engines: ${sources.engines} does not exist.`);
     console.error("  Run engines/fetch.sh && engines/build-wasm.sh first.");
@@ -266,19 +283,14 @@ async function main() {
   }
   if (!existsSync(sources.pkg)) {
     console.error(`stage-web-engines: ${sources.pkg} does not exist.`);
-    console.error(
-      "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release",
-    );
+    console.error("  Run: tools/ci-local.py --only wasm-pack   (both bindings, stamped -- #149)");
     console.error("  (no-modules, not web: the worker is classic -- it is one concatenated");
     console.error("   bundle under a single integrity digest -- and cannot import an ES module.)");
     process.exit(1);
   }
   if (!existsSync(sources.pkgRender)) {
     console.error(`stage-web-engines: ${sources.pkgRender} does not exist.`);
-    console.error(
-      "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render \\",
-    );
-    console.error("         --release -- --no-default-features --features render");
+    console.error("  Run: tools/ci-local.py --only wasm-pack   (both bindings, stamped -- #149)");
     console.error("  (ADR 0026: the render bundle carries PDFium and no qpdf, and the base bundle");
     console.error(
       "   carries no PDFium -- the two cargo features are mutually exclusive on wasm32.)",
@@ -339,9 +351,7 @@ async function main() {
         console.error(
           file.source === "engines"
             ? "  Run engines/build-wasm.sh -- it builds qpdf.js/qpdf.wasm and unpacks pdfium."
-            : file.source === "pkgRender"
-              ? "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render \\\n         --release -- --no-default-features --features render"
-              : "  Run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release",
+            : "  Run: tools/ci-local.py --only wasm-pack   (both bindings, stamped -- #149)",
         );
         process.exit(1);
       }
