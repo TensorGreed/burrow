@@ -35,6 +35,11 @@ trap 'rm -rf "$work"; rm -f "$here/.wasm-exports-fixture.sh"' EXIT
   exit 1
 }
 
+# THE REAL MODULE MUST BE THIS TREE'S (#149). The happy path below runs against it, and in #201
+# a `qpdf.wasm` left behind by another branch failed it with "the real inputs do not pass" --
+# true, and about the wrong tree. The stamp names the input that actually differs.
+python3 -B "$here/build-stamp.py" check engines-wasm || exit 1
+
 # The happy path first: without it, every case below could be failing for the wrong reason.
 if out="$("$tool" "$wasm" "$ffi_rs" "$not_exported" 2>&1)"; then
   echo "  ok   the real inputs pass"

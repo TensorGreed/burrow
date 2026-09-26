@@ -54,6 +54,13 @@ fi
 rm -rf "$prefix"
 mkdir -p "$prefix/lib" "$prefix/include" "$src"
 
+# THE BUILD'S INPUTS, RECORDED BEFORE IT STARTS (#149). `commit` at the end compares them again
+# and writes `$prefix/.build-stamp` only if nothing moved, so the stamp describes the tree this
+# build actually read. The `rm -rf` above has already removed any previous stamp: a build that
+# fails from here on leaves none, and every consumer refuses the artifact until it is rebuilt.
+stamp_record="$src/engines-wasm.stamp-record"
+python3 "$here/../tools/build-stamp.py" begin engines-wasm >"$stamp_record"
+
 say() { printf '\n== %s\n' "$1"; }
 
 # Surface the build logs when something fails.
@@ -388,5 +395,8 @@ createQpdfModule({
 ' "$src/qpdf-engine.cjs" "$prefix/lib/qpdf.wasm" 2>&1 | tail -1)"
 echo "   qpdf reports: ${version:-<no answer>}"
 [ "$version" = "$QPDF_VERSION" ] || { echo "build-wasm: wasm qpdf reported '${version}', expected $QPDF_VERSION" >&2; exit 1; }
+
+say "stamp: what this artifact was built from"
+python3 "$here/../tools/build-stamp.py" commit engines-wasm "$stamp_record"
 
 say "done: $prefix"

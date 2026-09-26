@@ -27,10 +27,15 @@ The wasm modules come from `bindings/burrow-wasm`, and there are **two**; rebuil
 the repository root:
 
 ```bash
-wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
-wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render --release \
-  -- --no-default-features --features render
+tools/ci-local.py --only wasm-pack
 ```
+
+That runs the two builds CI runs, each through `tools/build-stamp.py wrap`, which records what
+the build read in `pkg*/.build-stamp` (#149). **A bare `wasm-pack build` leaves no stamp, and
+staging refuses a binding without a current one** — that is what stops a `pkg/` left behind by
+another branch from being staged, shipped into `dist/` and measured as this branch's, which
+happened twice before the stamp existed. The same holds for the engines:
+`engines/build-wasm.sh` stamps `engines/vendor/wasm/`.
 
 **Two builds, two output directories, and the crate refuses to be both at once on `wasm32`.**
 [ADR 0026](../../docs/adr/0026-how-rendering-loads-without-returning-to-the-old-payload.md):

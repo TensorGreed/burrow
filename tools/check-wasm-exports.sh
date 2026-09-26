@@ -49,6 +49,14 @@ not_exported="${3:-$repo/engines/qpdf-not-exported.toml}"
   exit 1
 }
 
+# THE BUILT MODULE MUST BE THIS TREE'S (#149), when it is the vendored one. Twice this check
+# refused a `qpdf.wasm` left behind by another branch -- correctly, and with a message about
+# exports that read like the branch's own defect. The stamp says which input actually differs.
+# A module passed by path is the caller's to vouch for; the self-test passes fixtures.
+if [ -z "${1:-}" ]; then
+  python3 -B "$here/build-stamp.py" check engines-wasm || exit 1
+fi
+
 # PROBE THE PARSE BEFORE TRUSTING IT. The `-n` guard below catches a sed that matches NOTHING;
 # it cannot catch one that matches the wrong thing -- a looser expression that also picked up a
 # commented-out declaration would quietly widen the set this check exists to narrow. So the

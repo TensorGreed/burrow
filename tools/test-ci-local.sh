@@ -953,6 +953,110 @@ else
 fi
 rm -f "$changed_probe" "$scenario_driver"
 
+# --- #149: a sweep refuses a build artifact from another tree, before its first job --------
+#
+# Which job reads which artifact is DERIVED from the stamp guards the job's scripts run, so the
+# cases are about the derivation as much as the refusal: a job that reads nothing must not be
+# refused, a job that rebuilds an artifact must not be refused for the stale one it is about to
+# replace, and a guard that was commented out or sits in a heredoc must not count.
+status=0
+out="$(python3 "$here/ci-local.py" --only fmt --artifacts 2>&1)" || status=$?
+if [ "$status" -eq 0 ] && grep -qF "artifacts: 0 stamped artifact(s) read by 1 job(s)" <<<"$out"; then
+  echo "  ok   a job that reads no stamped artifact is not refused for one"
+  pass=$((pass + 1))
+else
+  echo "  FAIL fmt was refused, or reported reading an artifact (status $status)"
+  echo "$out" | tail -6
+  fail=$((fail + 1))
+fi
+
+status=0
+out="$(python3 "$here/ci-local.py" --only wasm-pack --artifacts 2>&1)" || status=$?
+if [ "$status" -eq 0 ] && grep -qF "built in this sweep, so not checked: pkg (by wasm-pack), pkg-render (by wasm-pack)" <<<"$out"; then
+  echo "  ok   the job that rebuilds both bindings is not refused for the ones it replaces"
+  pass=$((pass + 1))
+else
+  echo "  FAIL wasm-pack was refused for the bindings it rebuilds (status $status)"
+  echo "$out" | tail -6
+  fail=$((fail + 1))
+fi
+
+# THE STATUS DEPENDS ON THE MACHINE and the text does not: this runs in a job with no artifacts
+# at all, where the right answer is a refusal, and on a developer machine where they may be
+# current. So the derivation is asserted on the text, and a refusal must be the artifact one.
+status=0
+out="$(python3 "$here/ci-local.py" --only web --artifacts 2>&1)" || status=$?
+if grep -qF "artifacts: 3 stamped artifact(s) read by 1 job(s): engines-wasm, pkg, pkg-render" <<<"$out" \
+   && { [ "$status" -eq 0 ] || grep -qF "REFUSED — a build artifact the selected jobs read" <<<"$out"; }; then
+  echo "  ok   the web job is derived to read all three artifacts (status $status on this machine)"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the web job's reads were not derived as the three artifacts (status $status)"
+  echo "$out" | tail -6
+  fail=$((fail + 1))
+fi
+
+# A PLANTED STALE STAMP, at the real path, restored afterwards. Planted rather than found: a
+# case that depends on the machine happening to have a stale artifact tests nothing on the day
+# it does not. The stamp is the record of the build with one input's digest changed -- the same
+# difference a checkout of another branch makes, seen from the other side.
+(
+  stamp="$repo/engines/vendor/wasm/.build-stamp"
+  created=""
+  [ -d "$repo/engines/vendor" ] || created="$repo/engines/vendor"
+  [ -n "$created" ] || [ -d "$repo/engines/vendor/wasm" ] || created="$repo/engines/vendor/wasm"
+  saved="$(mktemp)"
+  had_stamp=""
+  [ -f "$stamp" ] && { cp "$stamp" "$saved"; had_stamp=1; }
+  trap '[ -n "$had_stamp" ] && cp "$saved" "$stamp" || rm -f "$stamp"; rm -f "$saved"; [ -n "$created" ] && rm -rf "$created"; true' EXIT
+  mkdir -p "$(dirname "$stamp")"
+  python3 -B "$here/build-stamp.py" begin engines-wasm | python3 -c '
+import json, sys
+record = json.load(sys.stdin)
+assert "file:engines/pins.toml" in record, "the record no longer names engines/pins.toml"
+record["file:engines/pins.toml"] = "0" * 64
+print(json.dumps({"format": 1, "artifact": "engines-wasm", "inputs": record}))
+' >"$stamp"
+  status=0
+  out="$(python3 "$here/ci-local.py" --only checkers --artifacts 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && grep -qF "changed since the build (1): engines/pins.toml" <<<"$out" \
+     && grep -qF "engines-wasm is read by: checkers (via tools/check-wasm-exports.sh)" <<<"$out"; then
+    echo "  ok   a stale engine stamp refuses the sweep, naming the input and the job that reads it"
+    exit 0
+  fi
+  echo "  FAIL a stale engine stamp did not refuse checkers by name (status $status)"
+  echo "$out" | tail -8
+  exit 1
+) && pass=$((pass + 1)) || fail=$((fail + 1))
+
+# AND THE DERIVATION'S OWN PROBES: break the guard parse in a copy beside the original, and the
+# copy must refuse by naming the case that stopped matching.
+guard_fixture="$here/.ci-local-guard-fixture.py"
+python3 - "$here/ci-local.py" "$guard_fixture" <<'PYGUARD'
+import pathlib, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = 'STAMP_GUARD = re.compile(r"build-stamp\\.py\\"? check'
+assert old in text, "STAMP_GUARD is not spelled as this test expects"
+dst.write_text(text.replace(old, 'STAMP_GUARD = re.compile(r"build-stamp\\.py check', 1))
+PYGUARD
+if cmp -s "$here/ci-local.py" "$guard_fixture"; then
+  echo "  FAIL the guard-parse mutation did not apply, so this case measured nothing"
+  fail=$((fail + 1))
+else
+  status=0
+  out="$(python3 -B "$guard_fixture" --check 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && grep -qF "stamp guards in" <<<"$out"; then
+    echo "  ok   a guard parse that misses the shell spelling is refused by its own case"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL a broken guard parse was not refused by name (status $status)"
+    echo "$out" | tail -4
+    fail=$((fail + 1))
+  fi
+fi
+rm -f "$guard_fixture"
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "FAILED — $fail case(s) failed, $pass passed" >&2

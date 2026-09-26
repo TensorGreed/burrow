@@ -35,12 +35,18 @@ description: >-
 runs:
   using: composite
   steps:
+    # THE KEY HASHES EXACTLY WHAT THE BUILD STAMP RECORDS, plus the stamper (#149).
+    # `engines/build-wasm.sh` writes `engines/vendor/wasm/.build-stamp` from these inputs, and
+    # every consumer of the artifact refuses one whose stamp differs from the tree. A key
+    # narrower than the stamp would restore a stamp for a tree that has since moved and every
+    # web job would refuse, so `tools/build-stamp.py` refuses to run at all while the two
+    # disagree -- this line is read by it, on every invocation.
     - name: Cache vendored wasm engines
       id: wasm-engines-cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: engines/vendor
-        key: wasm-engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/fetch.sh', 'engines/build-wasm.sh') }}
+        key: wasm-engines-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engines/pins.toml', 'engines/pins.sh', 'engines/fetch.sh', 'engines/build-wasm.sh', 'tools/build-stamp.py') }}
 
     - name: Read the pinned emsdk version and repo commit
       id: emsdk
@@ -163,11 +169,18 @@ runs:
     # exists to make impossible, arriving through the build rather than through the code.
     - name: Build the wasm binding
       shell: bash
-      run: wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
+      # WRAPPED, so `pkg/.build-stamp` records what this build read (#149). The staging step
+      # refuses a binding whose stamp does not match the tree, which is what makes a `pkg/`
+      # left behind by another branch visible locally; here it is always fresh, and the
+      # wrapper is what keeps the local and CI builds one command.
+      run: |
+        python3 tools/build-stamp.py wrap pkg -- \
+          wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg --release
     - name: Build the render wasm binding
       shell: bash
       run: |
-        wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render --release \
+        python3 tools/build-stamp.py wrap pkg-render -- \
+          wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render --release \
           -- --no-default-features --features render
 
     # THE WORKER IS TYPE-CHECKED AGAINST HAND-WRITTEN DECLARATIONS, NOT AGAINST THE BINDING.
