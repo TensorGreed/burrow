@@ -3456,10 +3456,27 @@ found was checks that could not fail:
 
 Every mutation above was asserted to apply and to recompile `burrow-engines`, and each is killed.
 
-A **posture question** the security review raised is left open rather than decided here. The
-removed exemption argued against exporting an array-mutation primitive while no shipped path can
-run redaction. Its written removal condition, a web `Steps` implementation, is met. Its reason
-still holds until #137 ships an entry point, and `qpdf.wasm` on every page carries the export
-meanwhile.
+**The export stays: decided 2026-09-25.** The security review raised a posture question. The removed
+exemption had argued against exporting an array-mutation primitive while no shipped path can run
+redaction. The decision is to keep it: `engines/qpdf-not-exported.toml` records **sequencing**,
+not a standing refusal, and its written removal condition was a web implementation of redaction,
+which now exists. `qpdf.wasm` on every page carries the export from this change on, callable only
+from the worker's JavaScript, and #137 is what first gives it a shipped caller.
+
+The exemption gave a second reason, that ADR 0026 puts redaction in a separate wasm module. That
+amendment is about redaction's **Rust**, and it still holds: `check-redaction-not-in-base.sh` finds
+none of its eight needles in either shipped Rust module. `qpdf.wasm` is the one C++ engine module
+every tool shares by design, and the export adds a qpdf function to it, not redaction code.
+
+**The order of #195 is confirmed with it**: moving the drain into the accessors comes after this
+half, as the first-half amendment filed it. The evidence is that amendment's: the defence suite
+(`redaction_defences`) caught the changed refusal where the corpus golden did not.
+
+**What that evidence says about the web, stated rather than implied.** On the web, #195 would run
+under the differential above, and the differential takes its cases only from the golden. The
+defence suite has no web path. So the instruments that would watch #195 on the web are exactly the
+two that missed that shape. #195 carries the remedy as a requirement: the defence suite's cases
+join the differential, or the corpus, before the drain moves, so the shape that caught it natively
+is asked of the web too.
 
 [#191]: https://github.com/TensorGreed/burrow/issues/191
