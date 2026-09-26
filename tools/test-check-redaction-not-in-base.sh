@@ -57,6 +57,11 @@ fresh() {
   rm -rf "$work"
   cp -r "$real" "$work"
   rm -rf "$work/harness" "$work/host"
+  # AND REDACTION'S BUNDLE, which a harness build carries since #137. The header accepts a
+  # harness build as the SOURCE of this copy, and the hold rule would otherwise refuse every case
+  # below for a reason none of them is about -- which is what happened after the first local
+  # `pnpm e2e` (code review). The hold itself has its own cases, which plant these files back.
+  rm -f "$work"/engines/burrow-redact-worker.* "$work"/engines/burrow_wasm_redact_*
   base="$(find "$work/engines" -maxdepth 1 -name 'burrow_wasm_bg.*.wasm' | head -1)"
   render="$(find "$work/engines" -maxdepth 1 -name 'burrow_wasm_render_bg.*.wasm' | head -1)"
 }

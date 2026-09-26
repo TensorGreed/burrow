@@ -13,8 +13,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,34 +68,55 @@ function sha256(text: string): string {
 const WRITER = "tests/redaction/fixtures/producer-writer.pdf";
 
 /**
+ * The generators' builders for the two fixtures these cases use, by file name: the module, and
+ * the expression that yields the builder from it.
+ */
+const BUILDERS: Record<string, [string, string]> = {
+  "09-actualtext.pdf": ["make-redaction-fixtures.py", "m.ch09_actualtext"],
+  "evade-widget-on-another-page.pdf": [
+    "make-evasion-fixtures.py",
+    'm.BUILDERS["evade-widget-on-another-page"]',
+  ],
+};
+
+/**
  * A GENERATED redaction fixture's bytes, held to the digest `outcomes.tsv` records for it.
  *
- * `tests/redaction/generated/` is gitignored and CI's e2e job never builds it, and no COMMITTED
- * fixture produces a non-zero disclosure count -- scanned, 2026-09-26. So the two generators
- * run here, into a temporary directory (pure Python, nothing written into the repository), and
- * every file used is checked against its `INPUT` line first: a generator that changed would
+ * `tests/redaction/generated/` is gitignored, and no COMMITTED fixture produces a non-zero
+ * disclosure count -- scanned, 2026-09-26. So the fixture is built here by calling its
+ * generator's BUILDER directly, and nothing else: the generators' `main` also validates every
+ * fixture with a native `qpdf --check` and needs a native `cjpeg` for channel 20, neither of
+ * which CI's `web` job has (both reviews of #137 caught the first version, which ran `main`).
+ * The bytes come back on stdout; nothing is written anywhere, and `-B` keeps Python from
+ * leaving bytecode in `tools/`.
+ *
+ * Every fixture is checked against its `INPUT` line before use: a builder that changed would
  * otherwise be compared against the pin for a different document, and fail for a reason
  * nobody is looking for.
  */
-let generatedDir: string | null = null;
 function generated(name: string): number[] {
-  generatedDir ??= (() => {
-    const dir = mkdtempSync(join(tmpdir(), "burrow-redaction-generated-"));
-    for (const tool of ["make-redaction-fixtures.py", "make-evasion-fixtures.py"]) {
-      execFileSync("python3", [join(repo, "tools", tool), dir], { stdio: "pipe" });
-    }
-    return dir;
-  })();
-  const bytes = readFileSync(join(generatedDir, name));
-  const input = GOLDEN.find(
-    (line) =>
-      line ===
-      `INPUT\ttests/redaction/generated/${name}\t${createHash("sha256").update(bytes).digest("hex")}`,
+  const [tool, builder] = BUILDERS[name];
+  const bytes = execFileSync(
+    "python3",
+    [
+      "-B",
+      "-c",
+      [
+        "import importlib.util, sys",
+        `spec = importlib.util.spec_from_file_location("gen", ${JSON.stringify(join(repo, "tools", tool))})`,
+        "m = importlib.util.module_from_spec(spec)",
+        `sys.path.insert(0, ${JSON.stringify(join(repo, "tools"))})`,
+        "spec.loader.exec_module(m)",
+        `sys.stdout.buffer.write(${builder}())`,
+      ].join("\n"),
+    ],
+    { maxBuffer: 16 * 1024 * 1024 },
   );
+  const digest = createHash("sha256").update(bytes).digest("hex");
   expect(
-    input,
-    `${name} is not the document outcomes.tsv pins; regenerate or re-bless`,
-  ).toBeDefined();
+    GOLDEN.includes(`INPUT\ttests/redaction/generated/${name}\t${digest}`),
+    `${name} is not the document outcomes.tsv pins; the builder changed, so re-bless or fix it`,
+  ).toBe(true);
   return Array.from(bytes);
 }
 

@@ -141,6 +141,23 @@ for forbidden in harness host; do
 done
 echo "  no harness route and no /host/ directory"
 
+# --- and redaction's bundle must not be here while it is held (#137) ---------------------------
+#
+# `/redact-pdf` is held under #125 and #180-#183. Staging keys redaction's bundle on
+# BURROW_HARNESS=1, which also puts `/harness` in the build and trips the rule above -- but a
+# plain `astro build` over a previous harness STAGING ships the bundle with no harness route, and
+# before this rule the deploy caught that only through a module COUNT in
+# `check-pdfium-is-render-only.sh`, which says nothing about why (security review of #137). By
+# name here, at the last gate before an upload. This comes off with the hold.
+mapfile -t held < <(
+  find "$dist/engines" -maxdepth 1 \( -name 'burrow-redact-worker.*' -o -name 'burrow_wasm_redact_*' \) \
+    2>/dev/null | sort
+)
+[ "${#held[@]}" -eq 0 ] ||
+  fail "redaction's bundle is in this build ($(printf '%s ' "${held[@]##*/}")) while #125 and \
+#180-#183 hold /redact-pdf. Stage without BURROW_HARNESS (\`pnpm build\`) and rebuild"
+echo "  no redaction bundle (held: #125, #180-#183)"
+
 # --- what a crawler is told ------------------------------------------------------------------
 #
 # LAST GATE BEFORE THE UPLOAD, and these two are the quietest way to get the origin wrong:

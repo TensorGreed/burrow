@@ -13,4 +13,6 @@ Reviewed 2026-09-26 at 6f577de (branch feat/137-redaction-binding). No exploitab
 - redaction.rs doc says check-pdfium-is-render-only.sh holds "no PDFium in the redact module"; that script refuses harness builds and the bundle exists only in them. Measured: 52 imports, 0 PDFium.
 - **Method:** e2e ports 4391/4392 collided with the code reviewer's run (EADDRINUSE; one run lost). Use an unusual port pair such as 4471/4472 and check `ss -ltnp` first.
 
+**Round 2 (96d4689):** every survivor above except the R8/R9 plants now dies (region, covered and count swap by e2e; budget by vitest input-budget.test.ts only, since the e2e cannot tell the pre-check from the engine's own max_input_bytes). The by-name hold refusal is in check-redaction-not-in-base.sh, which is NOT in deploy.yml, so on deploy the pdfium module count still holds the line alone. The redaction e2e needs native qpdf plus `engines/vendor/native-aarch64` (cjpeg) to generate fixtures, and it never removes its mkdtemp dir.
+
 Related: [[m2-web-redaction-impl]], [[m1-render-worker-bundle]], [[m2-redact-verify]].
