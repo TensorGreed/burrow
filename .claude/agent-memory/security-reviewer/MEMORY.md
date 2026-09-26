@@ -48,3 +48,4 @@
 - [#176 r2 + #175 Watch](m2_expect_after_round2_and_175.md) — ch06/21 partial removal passes --after (measured); deadline loops outside the Watch (unmeasured).
 - [Fuzz report steps (d5e11d9)](fuzz_report_steps.md) — the summary is an unredacted channel (unanchored verdict), describe SIGPIPE at ~1000 offsets, grep -xF newline bypass.
 - [Redaction handle trait (#191 s1)](m2_redact_handle_trait.md) — golden catches edits not drains; GAT binds generic code, not impls; base wasm identical.
+- [Web redaction impl (#191 web half)](m2_web_redaction_impl.md) — copy_in latch fail-closed 8840/8840 but not isolated (qpdf latches on handle 0); web open ceilings untested.

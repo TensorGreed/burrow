@@ -89,8 +89,9 @@ use wasm_bindgen::prelude::wasm_bindgen;
 /// about the compiler -- that code reachable from an export keeps its literals through LTO -- which
 /// planting bytes into a copy of a build cannot test. This can:
 /// `tools/test-check-redaction-not-in-base.sh` builds the base module with this export, which
-/// reaches four of redaction's components from one entry point, and requires the checker to refuse
-/// the result by name.
+/// reaches every one of redaction's components from one entry point -- since #191's web half, the
+/// steps, the resolver and the read-back too, through the public operation over the web engine --
+/// and requires the checker to refuse the result by name.
 ///
 /// Every call's outcome feeds the return value, so none of them can be folded away.
 #[cfg(burrow_redaction_probe)]
@@ -134,6 +135,27 @@ pub fn __burrow_redaction_probe(input: Box<[u8]>) -> u32 {
         height: first,
     };
     refused += u32::from(area.to_content_space(&frame).is_err());
+    // THE WHOLE OPERATION, over the web engine the base module already holds (#191). Before the
+    // web implemented redaction's seam nothing here could reach the steps, the resolver or the
+    // read-back, so three of the checker's needles had only planted positives.
+    #[cfg(feature = "documents")]
+    {
+        let options = burrow_core::engines::OpenOptions::new(
+            Limits::default(),
+            std::sync::Arc::new(WebClock) as std::sync::Arc<dyn Clock>,
+        );
+        refused += u32::from(
+            burrow_core::ops::redact::page(
+                &documents::qpdf(),
+                &input,
+                0,
+                &std::collections::BTreeSet::from([0]),
+                area,
+                &options,
+            )
+            .is_err(),
+        );
+    }
     refused
 }
 

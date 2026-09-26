@@ -39,6 +39,15 @@ pub mod recycle;
 // The web half of the pruning seam; the policy above it is shared (crate::prune).
 mod extract;
 mod prune;
+// The web half of redaction's seam; the policy above it is written once (crate::redact, #191).
+mod redact;
+#[cfg(all(
+    test,
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+pub(crate) use self::redact::testing as redact_testing;
 mod reorder;
 mod rotate;
 

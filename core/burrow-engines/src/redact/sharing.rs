@@ -160,7 +160,12 @@ pub(crate) struct FormUseCounts {
     /// Which pages reference each content stream object.
     content_pages: BTreeMap<ObjectId, std::collections::BTreeSet<usize>>,
     /// How many `/Properties` dictionaries the walk listed, for the test that pins the memo.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "native-engines",
+        burrow_native_engines,
+        target_os = "linux"
+    ))]
     properties_listed: usize,
 }
 
@@ -170,7 +175,12 @@ impl FormUseCounts {
     /// A count rather than a clock, because the cost the memo removes is small beside the cost
     /// of opening a document large enough to show it: 2.8 s against 4.8 s at a thousand forms,
     /// which no wall-clock bound separates reliably on a slower machine.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "native-engines",
+        burrow_native_engines,
+        target_os = "linux"
+    ))]
     pub(crate) const fn properties_listed(&self) -> usize {
         self.properties_listed
     }
@@ -184,7 +194,12 @@ impl FormUseCounts {
     }
 
     /// Every form this walk found, for the tests that need to see the whole answer.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "native-engines",
+        burrow_native_engines,
+        target_os = "linux"
+    ))]
     pub(crate) fn all(&self) -> &BTreeMap<ObjectId, usize> {
         &self.counts
     }
@@ -212,15 +227,15 @@ impl FormUseCounts {
     // walk was awaiting its first caller, which stopped being true when #134 wired it in (code
     // review of #191).
     #[cfg_attr(
-        all(
-            not(test),
+        not(all(
+            test,
             feature = "native-engines",
             burrow_native_engines,
             target_os = "linux"
-        ),
+        )),
         expect(
             dead_code,
-            reason = "asserted by the tests; the operation asks `pages_outside` per font"
+            reason = "asserted by the native tests; the operation asks `pages_outside` per font"
         )
     )]
     pub(crate) fn fonts_wholly_within(
@@ -276,7 +291,12 @@ impl FormUseCounts {
     }
 
     /// Every content stream this walk counted, for the tests that need the whole answer.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "native-engines",
+        burrow_native_engines,
+        target_os = "linux"
+    ))]
     pub(crate) const fn all_contents(&self) -> &BTreeMap<ObjectId, usize> {
         &self.content_refs
     }
@@ -314,7 +334,12 @@ impl FormUseCounts {
     }
 
     /// Which pages use each font, for the survey and the tests.
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "native-engines",
+        burrow_native_engines,
+        target_os = "linux"
+    ))]
     pub(crate) fn font_pages(&self) -> &BTreeMap<ObjectId, std::collections::BTreeSet<usize>> {
         &self.fonts
     }
@@ -346,7 +371,12 @@ pub(crate) fn count_form_uses<D: PdfDocument>(
         container: None,
         fonts_read: BTreeSet::new(),
         properties_read: BTreeSet::new(),
-        #[cfg(test)]
+        #[cfg(all(
+            test,
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ))]
         properties_listed: 0,
         deadline,
         clock,
@@ -381,7 +411,12 @@ pub(crate) fn count_form_uses<D: PdfDocument>(
         font_part_names: walk.font_parts.clone(),
         content_refs: walk.content_refs.clone(),
         content_pages: walk.content_pages.clone(),
-        #[cfg(test)]
+        #[cfg(all(
+            test,
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ))]
         properties_listed: walk.properties_listed,
         fonts,
     })
@@ -507,7 +542,12 @@ struct Walk<'a> {
     /// from every form's resources was re-listed once per form: a security review measured 4,000
     /// forms over one 4,000-entry dictionary at **44.3 s against a 1 s deadline**.
     properties_read: BTreeSet<ObjectId>,
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "native-engines",
+        burrow_native_engines,
+        target_os = "linux"
+    ))]
     properties_listed: usize,
     /// The operation's deadline, consulted per resource dictionary as well as per page. One page
     /// can hold every form in the document, so a per-page checkpoint alone let that 44 s run
@@ -716,7 +756,12 @@ impl Walk<'_> {
         if identity != (0, 0) && !self.properties_read.insert(identity) {
             return Ok(());
         }
-        #[cfg(test)]
+        #[cfg(all(
+            test,
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ))]
         {
             self.properties_listed += 1;
         }

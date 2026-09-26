@@ -703,6 +703,15 @@ pub trait QpdfBridge: Send + Sync {
     /// `qpdf_oh_erase_item`. **Everything after `at` shifts down**; the policy walks backwards.
     fn oh_erase_item(&self, data: QpdfPtr, oh: u32, at: i32);
 
+    /// `qpdf_oh_set_array_item`. Replaces the item at `at` with the object `item`, **in place**:
+    /// unlike [`oh_erase_item`](QpdfBridge::oh_erase_item) it does not renumber.
+    ///
+    /// Redaction's font surgery (#191): `/Widths` is positional, so a removed code's entry is
+    /// zeroed rather than erased, and `/Differences` narrows by writing the integer for the next
+    /// code over a name. It decides nothing: which item, and what goes there, is the policy's,
+    /// and whether `item` belongs to this document is checked in Rust before this is called.
+    fn oh_set_array_item(&self, data: QpdfPtr, oh: u32, at: i32, item: u32);
+
     /// `qpdf_oh_get_dict`. A stream's dictionary -- a distinct type from a dictionary, so a
     /// Form XObject's `/Resources` is unreachable without it.
     fn oh_get_dict(&self, data: QpdfPtr, oh: u32) -> u32;

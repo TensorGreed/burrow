@@ -49,6 +49,9 @@ mod resources_tests;
 mod rotate;
 #[cfg(test)]
 mod sharing_tests;
+// The web engine over real qpdf, held to this one case for case (#191).
+#[cfg(test)]
+mod web_differential_tests;
 
 #[cfg(feature = "fuzzing")]
 pub use limits::enable_fuzz_mode;

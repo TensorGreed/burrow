@@ -65,8 +65,11 @@ impl PartialEq for Name {
 impl Eq for Name {}
 
 impl Name {
-    /// The name's bytes, slash and terminator included.
-    fn bytes(&self) -> &[u8] {
+    /// The name's bytes, slash and terminator included: what the engine is handed.
+    ///
+    /// `pub(crate)` for the web half of redaction's seam (#191), which copies exactly these
+    /// bytes into the engine heap where the native side passes a pointer to them.
+    pub(crate) fn bytes(&self) -> &[u8] {
         match self {
             Self::Literal(bytes) => bytes,
             Self::Read(owned) => owned,
@@ -77,6 +80,15 @@ impl Name {
     ///
     /// What `prune`'s object-graph seam compares against — it has always used the slashed
     /// spelling (`b"/Form"`), which is why nothing there had the bug `resources.rs` did.
+    // NATIVE ONLY: `qpdf::prune`'s graph compares slashed names, and the web graph reads its names
+    // across the bridge instead. So a build without the native engines has no caller.
+    #[cfg_attr(
+        not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
+        expect(
+            dead_code,
+            reason = "only the native prune graph asks for the slashed spelling"
+        )
+    )]
     pub(crate) fn slashed(&self) -> &[u8] {
         let bytes = self.bytes();
         bytes.strip_suffix(b"\0".as_slice()).unwrap_or(bytes)

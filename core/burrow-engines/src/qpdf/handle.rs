@@ -230,10 +230,9 @@ impl<'a> ObjectHandle<'a> {
     ///
     /// - [`Error::Internal`] if `filter` or `decode_parms` belongs to another document.
     /// - Whatever qpdf latched, mapped at the engine boundary as everywhere else.
-    #[allow(
-        dead_code,
-        reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
-    )]
+    ///
+    /// Declared, exported and wrapped before its caller, under an allowance that said so; the
+    /// caller is redaction's policy, through `PdfObject::replace_stream_data` (#191).
     pub(super) fn replace_stream_data(
         &self,
         bytes: &[u8],
@@ -270,9 +269,12 @@ impl<'a> ObjectHandle<'a> {
     ///
     /// It exists for [`Self::replace_stream_data`]'s two object arguments: a null is how the C
     /// API says "no filter".
-    #[allow(
-        dead_code,
-        reason = "the caller arrives with #131; declared, exported and wrapped first so the error drain cannot be forgotten when it does. Exercised by `qpdf::write_path_tests` against the real engine"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the policy makes its nulls beside a handle (`null_beside`, #191); this document-level constructor is the write-path tests'"
+        )
     )]
     pub(super) fn new_null(document: &'a Document) -> Self {
         // SAFETY: `document.data` is live. Untrapped and argued in

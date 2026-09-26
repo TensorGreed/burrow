@@ -20,9 +20,10 @@
 //!
 //! # Not a route
 //!
-//! This makes redaction callable from the core. It does not put it on the site: #125 blocks
-//! that and is untouched here — no wasm binding, no page, and the web has no implementation of
-//! [`burrow_engines::PageRedactor`].
+//! This makes redaction callable from the core, on both engines: the native `Qpdf` and, since
+//! #191, the web `WebQpdf` implement [`burrow_engines::PageRedactor`] over one policy. It does not
+//! put redaction on the site: #125 blocks that and is untouched here, and there is no wasm binding
+//! entry point (#137) and no page (#136).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

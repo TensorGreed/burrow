@@ -95,21 +95,12 @@ pub(crate) mod blank;
 pub mod pdfsyntax;
 // A PDF name in the one form qpdf's C API accepts, on either platform: slash first, NUL last.
 // Ungated since #191, which moved redaction's policy onto a trait both platforms implement and
-// whose every key-taking method takes one of these. Called only by the native engine until the web
-// half of #191 implements that trait, so a build without the engines compiles it and calls none of
-// it; `expect`, so the day the web does call it this has to go.
-#[cfg_attr(
-    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
-    expect(
-        dead_code,
-        reason = "the native engine is the only caller until #191's web half"
-    )
-)]
+// whose every key-taking method takes one of these.
 pub(crate) mod name;
 pub mod redact;
 /// #134's read-back. Ungated since #191: it names no engine. It reads through its own
-/// `ClearedWitness` trait, which `redact::witness` implements over `redact::graph`, so the web half
-/// of #191 will verify through it as native does.
+/// `ClearedWitness` trait, which `redact::witness` implements over `redact::graph`, so the web
+/// engine verifies through it as the native one does (#191).
 pub mod redact_verify;
 
 /// Every glyph the walk places on a document's first page.
@@ -1020,10 +1011,11 @@ pub trait DocumentCompressor {
 /// So the seam is one call. What `burrow-ops` adds is the half ADR 0022 shares with every other
 /// operation: the page count and the `/Rotate` vector, through `verify::output`.
 ///
-/// # This does not put redaction on the web
+/// # Implemented on both engines, and still not a route
 ///
-/// A seam is not a route. `#125` blocks the redaction tool reaching the site and is untouched by
-/// this: there is no wasm binding and no page, and the web has no implementation of this trait.
+/// The native `qpdf::Qpdf` and, since #191, the web `web::WebQpdf` implement it, over one policy
+/// written once in [`redact`]. A seam is not a route: `#125` blocks the redaction tool reaching the
+/// site and is untouched by this, and there is no wasm binding entry point (#137) and no page.
 pub trait PageRedactor {
     /// Short identifier for the backing engine, e.g. `"qpdf"`. Used in diagnostics.
     fn name(&self) -> &'static str;

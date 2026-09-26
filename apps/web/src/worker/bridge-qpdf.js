@@ -168,6 +168,10 @@ self.__burrow_qpdf_oh_get_array_n_items = (data, oh) => qpdf()._qpdf_oh_get_arra
 self.__burrow_qpdf_oh_get_array_item = (data, oh, at) =>
   qpdf()._qpdf_oh_get_array_item(data, oh, at);
 self.__burrow_qpdf_oh_erase_item = (data, oh, at) => qpdf()._qpdf_oh_erase_item(data, oh, at);
+// In place, unlike erase: redaction's font surgery overwrites a `/Widths` entry or a
+// `/Differences` name without renumbering what follows (#191).
+self.__burrow_qpdf_oh_set_array_item = (data, oh, at, item) =>
+  qpdf()._qpdf_oh_set_array_item(data, oh, at, item);
 self.__burrow_qpdf_oh_get_dict = (data, oh) => qpdf()._qpdf_oh_get_dict(data, oh);
 self.__burrow_qpdf_oh_new_null = (data) => u32(qpdf()._qpdf_oh_new_null(data));
 

@@ -3334,4 +3334,149 @@ lost ceiling or checkpoint. What they found was defences that nothing could see 
   offers no `raw()` and no comparison. But a check that examines less without saying so is the
   shape this repository keeps finding, so it is fixed rather than argued.
 
+## Amendment, 2026-09-25 — #191's second half: the web implements the seam, and a differential holds it to native
+
+### What it is
+
+`web/redact.rs` implements `redact::graph` over the JS bridge, and `WebQpdf` implements
+`PageRedactor` with the same body as the native engine, `redact::redact_page`: the same steps, the
+same sharing rules, and the same read-back through a fresh document. What differs is only what each
+half marshals. **Every method makes the call its native twin makes, and drains exactly when it
+does**, so the engine sees the same calls in the same order on both platforms. That is what lets
+the check below hold the web to the native outcome byte for byte, rather than argue it.
+
+Two things are the web's alone:
+
+- **A key is copied into the engine heap**, memoised per distinct name as pruning's web graph does.
+  The copy can fail, where a native `Name` cannot, and `PdfObject::key` returns no `Result` because
+  natively it cannot fail. So a refused copy is **latched** on the document, the way qpdf reports its
+  own failures, and the next drain reports it before anything qpdf latched.
+  - Measured: the handle-to-nothing it returns reads as `ot_uninitialized`, not as null.
+  - Asking it for its type makes qpdf latch an error of its own, which the drain after reports.
+  - The policy stops at the first error, so the refused key is what names the refusal.
+- **The web handle's two writes that take a second handle** refuse one from another session. The
+  check returns an error; it is not a debug assertion, unlike the handle's `replace_key`. Measured
+  with the check removed: the foreign id collided with a live object and the test overflowed its
+  stack, which is the collision the native test measured, reproduced on the web path.
+
+It needed one new `qpdf.wasm` export, `qpdf_oh_set_array_item`, which font surgery writes with. It
+leaves `engines/qpdf-not-exported.toml` empty again. Measured as an A/B of the `em++` link, with a
+control that is byte-identical to the shipped artifact: **+2,496 raw, +642 brotli** on `qpdf.wasm`.
+The bridge method it needs is imported by the base binding, because `JsQpdf` implements the whole
+bridge trait. So the base Rust module grows: **+1,902 bytes** in the release cargo build before
+wasm-bindgen (353,600 to 355,502), which is **+178 brotli** on the shipped `burrow_wasm_bg.wasm`.
+That is the import and its glue, and **none of redaction's literals**. `check-redaction-not-in-base.sh` still finds
+none of its eight needles in either shipped module.
+
+The dead-code expectations the first half put on the policy are gone. They said a build without
+the native engines compiles the policy and calls none of it, and the web now calls it in every
+build. What remains is item by item, each with its own reason:
+
+- a report field only the tests read;
+- one accessor only the tests read;
+- the slashed name spelling, which only the native prune graph asks for;
+- the sharing walk's test-only accessors, gated to the native tests that are their only readers.
+
+### How it is held to native
+
+`qpdf::web_differential_tests` implements the bridge over the native C API, one call for one call.
+It reproduces what `bridge-qpdf.js` does with each answer, and drives `WebQpdf` over it. That
+exercises the web's own Rust: its session, handles, key cache, latch, drains and write. It runs
+over the same qpdf the native engine links. The test takes its cases from
+`tests/redaction/outcomes.tsv`, so it covers exactly the golden's cases.
+
+- **463 of 463 redaction outcomes, and 107 of 107 rotation vectors, are identical on the two
+  engines.** That is the sha256 of the bytes and of the report, or the error in full.
+- **Every web outcome is the one the golden pinned, errors included**, 212 redactions among them.
+  Engine-level outcomes equal the golden's operation-level ones on every case, measured, so none
+  is exempt from the comparison.
+- **Each engine, and only it, is asked.** The bridge counts the documents opened through it around
+  every case: the native engine must open none, and the web at least one, unless a ceiling that
+  applies before any engine refused the input. That exception is 12 cases, the bomb fixtures.
+- **Nothing is left in the engine heap** after the run: no copied-in buffer and no live document.
+- **Five mutations planted in the web half were each caught**, measured at between 20 and 209 of
+  570 outcomes diverging:
+  - object streams packed on write;
+  - an integer written off by one;
+  - `remove_key` made inert;
+  - the key cache keyed on a prefix;
+  - the identity's halves swapped.
+- A probe requires two regions over one fixture to give two outputs. That checks the instrument
+  and not the engine: native passes it too.
+
+**What it cannot see**: the JavaScript glue, and `qpdf.wasm` itself. A marshalling defect in
+`bridge-qpdf.js`, or a difference in how the wasm build of qpdf behaves, is outside it. The
+browser-level comparison needs a redaction entry point in a wasm binding and a worker op, and #137
+owns both. It is owed there, and #137 carries it now.
+
+### What it changes in the gates
+
+- `check-redaction-not-in-base.sh`'s self-test has had compiled positives for five of its eight
+  needles. The other three were spelled in code no wasm export could reach. Its probe export now
+  runs the public operation over the web engine, and **the real compiler keeps all eight**.
+- `check-wasm-exports.sh` passes in all three directions:
+  - the new artifact passes against the new list;
+  - the old artifact is refused, naming the function;
+  - the new artifact against the old exemption is refused as stale.
+- `apps/web/size-budget.json` is re-recorded from one build. The total moved 472,818 to 473,742,
+  +924: `qpdf.wasm` +642, `burrow_wasm_bg.wasm` +178 and `burrow-worker.js` +103. Not raised.
+
+### What the two reviews found
+
+Both ran before the push, each in its own worktree. Neither found a leak, a memory-safety bug or a
+privacy leak. The security review failed a key copy at every possible point across all 212
+redactions, 8,840 runs in all, and every one returned an error, never a smaller removal. What they
+found was checks that could not fail:
+
+- **The differential could not tell which engine ran.** The code review made
+  `WebQpdf::redact_page` call the native engine, and all five differential tests stayed green: the
+  probe that was supposed to rule that out passes for native too. This amendment's first draft said
+  "a harness that asked the native engine twice could not pass", and that was false. The bridge now
+  counts the documents each engine opens, per case, and the same mutation fails with 451 of 463
+  cases "not asked". The other 12 are the pre-scan refusals.
+- **It compared only the redactions with the golden, and gated on "more than none".** It now
+  compares every outcome in full and gates on the exact count.
+- **The web open's page ceiling and measured-memory check could be deleted** with every test green.
+  The corpus has no document over the page ceiling, and the native-backed bridge reads a heap of
+  zero. Both are tested now: with a lowered ceiling, and with a bridge whose heap grows on demand.
+  - The first memory test planted a growth of the ceiling plus one byte. The check's noise margin
+    let that through, correctly, so the test was wrong and the check was right.
+  - The open's first deadline checkpoint is, as natively, the start point: it passes for every
+    budget by design, so there is nothing to test.
+- **The web's four drains had no tests**, the gap the first half closed natively. They are held now
+  by the same technique: a key of a free-standing null, which qpdf raises for.
+- **`write` did not read the marshalling latch.** Nothing reached it with one pending, but only
+  because every step ends in a drain. It reads the latch first now, and makes no new qpdf call.
+- **The mirror was not exact**, on three error paths the module header now states. An error status
+  with nothing latched goes on where native says `Malformed`. The bridge out of scratch memory reads
+  as "could not decode". A negative generation refuses as `Internal` where native passes it
+  through. All three come from the bridge's shape, and all fail closed.
+- **The new JS forwarder had no test.** A vitest now passes four distinct values through it, and
+  fails when two are swapped.
+
+Every mutation above was asserted to apply and to recompile `burrow-engines`, and each is killed.
+
+**The export stays: decided 2026-09-25.** The security review raised a posture question. The removed
+exemption had argued against exporting an array-mutation primitive while no shipped path can run
+redaction. The decision is to keep it: `engines/qpdf-not-exported.toml` records **sequencing**,
+not a standing refusal, and its written removal condition was a web implementation of redaction,
+which now exists. `qpdf.wasm` on every page carries the export from this change on, callable only
+from the worker's JavaScript, and #137 is what first gives it a shipped caller.
+
+The exemption gave a second reason, that ADR 0026 puts redaction in a separate wasm module. That
+amendment is about redaction's **Rust**, and it still holds: `check-redaction-not-in-base.sh` finds
+none of its eight needles in either shipped Rust module. `qpdf.wasm` is the one C++ engine module
+every tool shares by design, and the export adds a qpdf function to it, not redaction code.
+
+**The order of #195 is confirmed with it**: moving the drain into the accessors comes after this
+half, as the first-half amendment filed it. The evidence is that amendment's: the defence suite
+(`redaction_defences`) caught the changed refusal where the corpus golden did not.
+
+**What that evidence says about the web, stated rather than implied.** On the web, #195 would run
+under the differential above, and the differential takes its cases only from the golden. The
+defence suite has no web path. So the instruments that would watch #195 on the web are exactly the
+two that missed that shape. #195 carries the remedy as a requirement: the defence suite's cases
+join the differential, or the corpus, before the drain moves, so the shape that caught it natively
+is asked of the web too.
+
 [#191]: https://github.com/TensorGreed/burrow/issues/191
