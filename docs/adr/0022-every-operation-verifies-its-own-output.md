@@ -460,8 +460,15 @@ only through the trailer, and that is where this stops.
 | route | blocked by | the decision it needs |
 |---|---|---|
 | a structural walk of the page tree, outside the engine | in an ordinary 11 MB PDF 1.6 file, `/Type/Pages`, `/Type/Page` and `/Count` appear **zero** times in the raw bytes — the tree is inside 67 object streams | an inflater, [#24](https://github.com/TensorGreed/burrow/issues/24) |
-| ask the other engine | a tab holding qpdf and PDFium at once loses the tab on WebKit | [#107](https://github.com/TensorGreed/burrow/issues/107) |
+| ask the other engine | a tab holding qpdf and PDFium at once loses the tab on WebKit — **premise withdrawn 2026-09-26**, see the note below this table | [#107](https://github.com/TensorGreed/burrow/issues/107) |
 | read the trailer through qpdf | `qpdf_get_root` and `qpdf_get_trailer` are both untrapped, and both **resolve an object** | weakening [ADR 0013](0013-qpdf-error-trapping.md)'s bar |
+
+**Correction, 2026-09-26: the second row's blocker was a misdiagnosis.** #107's tab loss was not
+caused by holding two engines. It was a race in Linux WebKit, reached through a GPU-backed
+canvas (ADR 0027's 2026-09-26 correction). So "ask the other engine" is no longer blocked by a
+tab-loss risk. What remains is its cost: a further full open, and on the web a second bundle.
+**This note changes no decision.** Whether that route is now worth taking for #111 is a
+decision in its own right, and it is left to #111.
 
 **The third is refused rather than deferred.** `engines/qpdf-untrapped-accepted.toml` admits a
 function only when it "never touches the PDF's bytes, never resolves an object"; returning an

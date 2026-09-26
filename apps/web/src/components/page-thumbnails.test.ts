@@ -112,6 +112,37 @@ describe("the page-picture strip", () => {
     }
   });
 
+  it("asks for a CPU canvas every time, which keeps Linux WebKit off the path that crashed (#107)", () => {
+    // Every `getContext` in the component, not the first: a second call site added later with a
+    // bare `getContext("2d")` would give that canvas a GPU buffer, and its first `putImageData`
+    // would reopen #107's race. The contexts are counted so a scan that found none cannot pass.
+    const calls = [...source.matchAll(/getContext\(([^)]*)\)/g)].map((m) => m[1]!);
+    expect(calls.length, "the component draws with no 2D context at all").toBeGreaterThan(0);
+    for (const args of calls) {
+      expect(args).toMatch(/^"2d",\s*\{\s*willReadFrequently:\s*true\s*\}$/);
+    }
+    // And the rule is a rule: the bare form it exists to refuse does not match it.
+    expect('"2d"').not.toMatch(/^"2d",\s*\{\s*willReadFrequently:\s*true\s*\}$/);
+  });
+
+  it("never terminates its worker while a render is in flight", () => {
+    // Terminating the render worker mid-render crashed Firefox's content process (SIGSEGV in
+    // libxul, the whole tab) about one run in ten on the split test that edits the cuts while
+    // it runs; releasing only once the render settles measured 0 in 120. A source scan, and it
+    // says so: every `discardWorker()` in the component must be either guarded by `!running`
+    // or in the `finally` that runs once the render has settled -- and there must be both.
+    const discards = [...source.matchAll(/discardWorker\(\)/g)].map((m) => m.index!);
+    expect(discards.length, "the component never releases its engine").toBe(2);
+    const guarded = discards.filter((at) =>
+      /if \(!running\) host\.$/.test(source.slice(at - 25, at)),
+    );
+    const settled = discards.filter((at) =>
+      /finally \{\s*running = false;\s*if \(paused\) host\.$/.test(source.slice(at - 400, at)),
+    );
+    expect(guarded.length, "the pause terminates the worker without checking for a render").toBe(1);
+    expect(settled.length, "nothing releases the engine after an in-flight render settles").toBe(1);
+  });
+
   it("sends the same LIMITS every other operation sends", () => {
     // Including `maxPixels`, which is the ceiling ADR 0027 chose. A strip that sent its own
     // limits would be a second place for them to be decided.

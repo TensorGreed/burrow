@@ -73,6 +73,16 @@ test("a tile is drawn with real pixels, which is the half the CSP could break si
   // exactly what an `<img src="blob:...">` would have produced under `img-src 'self'`. The
   // canvas is read back and required to have more than one colour in it: a fixture page is ink
   // on paper, so a drawn tile is not uniform and an undrawn one is.
+  // THE CANVAS IS A CPU ONE (#107), read from the browser rather than from the source: the
+  // context the strip created is the one returned here, and its settings say how it was made.
+  // Where `getContextAttributes` is missing the answer is "unknown", which fails, rather than
+  // a pass that measured nothing.
+  const willReadFrequently = await canvas.evaluate(
+    (node: HTMLCanvasElement) =>
+      node.getContext("2d")?.getContextAttributes?.().willReadFrequently ?? "unknown",
+  );
+  expect(willReadFrequently, "the strip's canvas is GPU-backed, which reopens #107").toBe(true);
+
   const distinct = await canvas.evaluate((node: HTMLCanvasElement) => {
     const context = node.getContext("2d");
     if (!context || node.width === 0) return 0;

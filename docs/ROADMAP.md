@@ -559,6 +559,20 @@ nothing, and one seed failed on the first execution.
   so pictures arrive there with dragging or not at all
   ([#105](https://github.com/TensorGreed/burrow/issues/105)).
 
+  **Withdrawn 2026-09-17 to 2026-09-26, and the cause was not what this project said it was.**
+  On WebKit those two pages lost the tab about four times in 580 runs. Two mechanisms were
+  recorded — "two engines resident", then "PDFium resident during an operation" — and both were
+  wrong ([#107](https://github.com/TensorGreed/burrow/issues/107)). Collected directly, it was a
+  **race in Linux WebKit**: its thread-suspend signal handler leaves `errno` as EINTR, and Skia's
+  shader compiler trusts `errno`. The strip reached it through a GPU-backed canvas. The strip now
+  draws into a CPU canvas: **0 in 1,160 runs**, against the bar set before any fix existed. Safari
+  and iOS cannot hit the race, because Apple's ports compile neither half. The pause during an
+  operation and the host's acquisition gate stay, as an operation's memory headroom, not as the
+  fix. The pause now releases the engine only once a render in flight has settled: terminating
+  it mid-render crashed Firefox's content process about one run in ten, a defect found only when
+  the strip was mounted again ([ADR 0027](adr/0027-what-a-render-promises-and-what-it-refuses.md)'s 2026-09-26
+  correction).
+
   ADR 0020 remains the decision for `rotate` v1: it selects by page number and range, and
   `/split-pdf` will want thumbnails too, so they are built once for both rather than bolted onto
   whichever page reaches for them first.

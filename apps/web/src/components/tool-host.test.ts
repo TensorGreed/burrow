@@ -153,9 +153,11 @@ describe("the shared tool host", () => {
 });
 
 describe("a paused host refuses to acquire an engine", () => {
-  // #107: a tab may hold qpdf OR PDFium, never both. The strip releases its engine while an
-  // operation runs -- and the first two attempts at that gated one path each, in the component,
-  // and left the next one open. This is the gate in the host, where every caller passes.
+  // The strip releases its engine while an operation runs, so an operation's memory peak is not
+  // stacked on PDFium's heap -- and the first two attempts at that gated one path each, in the
+  // component, and left the next one open. This is the gate in the host, where every caller
+  // passes. (It was built as #107's fix and was not one; #107 was a WebKit race reached through
+  // a GPU canvas. The gate stands on its own terms.)
 
   it("refuses `ensure` while paused, by identity", async () => {
     const { deps: d, release } = deps();
@@ -195,7 +197,7 @@ describe("a paused host refuses to acquire an engine", () => {
     // FAIL CLOSED, AND THIS IS THE ASSERTION THAT SAYS SO. The wrapper allows a named set and
     // refuses everything else, so a method added to the worker host later is refused while
     // paused until somebody puts it on the list deliberately. The alternative -- a list of
-    // what is refused -- is the shape that let #107 recur twice.
+    // what is refused -- is the shape that let the pause leak twice.
     const { deps: d } = deps();
     let paused = true;
     const host = createToolHost(d, DOCUMENTS, { paused: () => paused });
@@ -237,8 +239,8 @@ describe("a paused host refuses to acquire an engine", () => {
   });
 
   it("does not stick: the gate lifts the moment the predicate goes false", async () => {
-    // A GATE THAT STICKS IS A STRIP THAT NEVER DRAWS, and it would pass #107's measurement bar
-    // for entirely the wrong reason -- zero failures because zero engines. The predicate is
+    // A GATE THAT STICKS IS A STRIP THAT NEVER DRAWS, and it would pass any crash-rate
+    // measurement for entirely the wrong reason -- zero failures because zero engines. The predicate is
     // read per call rather than latched, so nothing can leave it true.
     const { deps: d, release } = deps();
     let paused = true;

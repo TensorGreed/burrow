@@ -46,18 +46,18 @@
     /**
      * True while the tool is running an operation, so the strip must not hold an engine.
      *
-     * **PDFIUM IS ABSENT WHILE AN OPERATION RUNS (#107)**, which is narrower than the claim
-     * this comment used to make and is the one the measurement supports.
+     * **WHAT THIS IS FOR: an operation gets the tab to itself.** PDFium is a second wasm engine
+     * with a 2 GiB heap ceiling, and an operation's peak should not be stacked on top of it --
+     * ADR 0015 §7's concern, that on a phone a memory spike takes the whole tab. The strip is
+     * the one that yields, because a thumbnail is an aid and the operation is what the person
+     * came for. That is a design rule, not a measured necessity: nothing here has shown the
+     * stacking to cost a tab.
      *
-     * "One engine in the tab at a time" was wrong: the DOCUMENTS worker persists after an
-     * operation, so qpdf and PDFium are both resident whenever the strip draws at all -- before
-     * a split and again afterwards. The withdrawal appeared to prove otherwise only because a
-     * withdrawn strip never ran.
-     *
-     * What the pause achieves is that PDFium is not resident DURING an operation, which is the
-     * window where the spike happens: four failures in 580 runs with the strip mounted, zero in
-     * 580 without. The strip is the one that yields, because a thumbnail is an aid and the
-     * operation is what the person came for.
+     * **IT IS NOT THE FIX FOR #107, though it was built as one.** Two mechanisms were recorded
+     * for #107 -- "two engines resident", then "PDFium resident during an operation" -- and both
+     * were wrong. The tab died of a race in Linux WebKit between its thread-suspend signal
+     * handler and Skia's shader compiler, reached through a GPU-backed canvas; see `paint`
+     * below, which is where that is actually answered.
      */
     paused: boolean;
   }
@@ -172,21 +172,31 @@
    * second request would queue behind this one carrying a deadline it did not spend. ADR 0015
    * §2a; the host queues, and this simply does not ask twice.
    */
-  // THE RELEASE, AND IT IS THE WHOLE OF #107's FIX ON THIS SIDE.
+  // THE RELEASE: the strip gives its engine back while an operation runs (see `paused`).
   //
   // `discardWorker()` terminates the render worker, so PDFium's heap goes with it rather than
   // sitting resident while qpdf does the operation. The tiles already drawn are `ImageData` on
   // the main thread and are untouched -- what is released is the engine, not the pictures, so
   // a person watching sees nothing change.
   //
-  // WHAT THIS GUARANTEES, PRECISELY: the strip stops asking and its engine is released when an
-  // operation starts. It does NOT guarantee that no instant exists where both are resident --
-  // the discard runs in an effect after the flag changes, and a render already inside PDFium
-  // ends when the worker is terminated rather than before. The measurement in #107 is what
-  // says whether that residue matters; the claim here is not stronger than the mechanism.
+  // NEVER MID-RENDER. The strip stops asking at once; the worker is terminated only when no
+  // request is in flight -- here if the strip is idle, otherwise in `pump`'s `finally` once the
+  // render in flight has settled. Terminating it while PDFium was running crashed FIREFOX's
+  // content process: a null dereference in libxul on a worker thread, SIGSEGV, the whole tab.
+  // Measured 2026-09-26 on the split test that edits the cuts mid-run: about one run in ten
+  // with the old immediate discard, 0 in 120 with the strip's pause disabled, 0 in 120 with
+  // this rule. The crash is Firefox's; the terminate that reached it was ours.
+  //
+  // WHAT THIS GUARANTEES, PRECISELY: the strip asks for nothing new once an operation starts,
+  // and its engine is released as soon as the render already in flight ends. So both engines
+  // can be resident for the rest of that render -- which is bounded by the render's own
+  // deadline. Nothing depends on a stronger claim: this is about an operation's headroom, and
+  // #107 turned out not to be.
   $effect(() => {
     if (paused) {
-      host.discardWorker();
+      // `running` is a plain variable, so this effect does not re-run when it changes; the
+      // release after an in-flight render is `pump`'s, below.
+      if (!running) host.discardWorker();
       return;
     }
     // Resuming is just asking again: the viewport's wants are still recorded, and tiles that
@@ -213,12 +223,15 @@
       }
     } catch (error) {
       // A REFUSAL FROM THE GATE IS NOT A FAILURE. `ensure()` and every acquiring call reject
-      // with `ENGINE_PAUSED` while an operation is running (#107) -- by identity, never by
+      // with `ENGINE_PAUSED` while an operation is running -- by identity, never by
       // reading the value. The pages stay `waiting`; the effect below asks again when the
       // operation ends. Anything else is rethrown rather than swallowed.
       if (error !== ENGINE_PAUSED) throw error;
     } finally {
       running = false;
+      // THE DEFERRED RELEASE: an operation started while this render was in flight, and the
+      // render has now settled, so the engine can go without terminating anything mid-run.
+      if (paused) host.discardWorker();
     }
   }
 
@@ -229,7 +242,7 @@
       // view never downloads PDFium -- which is ADR 0026's promise, kept at the last possible
       // moment rather than at the first convenient one.
       // ACQUISITION IS GATED, NOT JUST THE PUMP, and this line is the difference between the
-      // two versions of #107's fix. `pump` refuses to start while paused; a request that was
+      // two versions of the pause. `pump` refuses to start while paused; a request that was
       // ALREADY past that point still awaited `ensure()`, and `run` then spawned a fresh worker
       // -- re-fetching PDFium in the middle of the operation the pause exists to protect.
       // Measured: chromium fetched `pdfium.wasm` inside the window while firefox and webkit did
@@ -260,7 +273,7 @@
       if (!reply.ok && reply.kind === CANCELLED) return false;
 
       // A WORKER THIS COMPONENT ITSELF DISCARDED IS NOT A PAGE THAT FAILED. Pausing releases
-      // the render worker mid-flight (#107), which settles this request exactly as a crash
+      // the render worker mid-flight, which settles this request exactly as a crash
       // would -- and the inference below would then blame whichever page was in the queue and
       // mark it refused for as long as the file stayed chosen. The pages stay `waiting`; the
       // next round after the operation asks for them again.
@@ -334,7 +347,14 @@
   /** Put a tile's pixels on its canvas. Re-run whenever the tile's data changes. */
   function paint(node: HTMLCanvasElement, data: ImageData | null) {
     const draw = (image: ImageData | null) => {
-      const context = node.getContext("2d");
+      // A CPU CANVAS, ON PURPOSE (#107). On Linux WebKit (WPE and WebKitGTK) a GPU-backed
+      // canvas's first `putImageData` makes Skia compile a built-in shader, and a race in
+      // WebKit's thread-suspend signal handler -- it leaves `errno` as EINTR -- can make that
+      // compile fail and abort the tab. Measured: 3 crashes in 580 runs, 0 in 1,160 with the
+      // handler patched. `willReadFrequently` makes WebKit allocate an unaccelerated buffer
+      // (`CanvasRenderingContext2DBase::allocateImageBuffer`), which never enters that path.
+      // A thumbnail is one `putImageData` of a finished bitmap; the GPU bought it nothing.
+      const context = node.getContext("2d", { willReadFrequently: true });
       if (!context) return;
       if (!image) {
         context.clearRect(0, 0, node.width, node.height);

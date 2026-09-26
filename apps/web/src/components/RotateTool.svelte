@@ -39,8 +39,8 @@
   let pageCount = $state<number | null>(null);
   let phase = $state<"idle" | "working" | "done">("idle");
   /**
-   * How many operations are in flight, which is NOT the same as `phase` (#107). See
-   * `SplitTool.svelte`, where the measurement that produced this is recorded: `choose()` resets
+   * How many operations are in flight, which is NOT the same as `phase`. See
+   * `SplitTool.svelte`, where the hole that produced this is recorded: `choose()` resets
    * `phase`, so a second document chosen mid-operation cleared the pause and let the strip take
    * PDFium back while the first operation's worker was still running.
    */
@@ -320,7 +320,7 @@
         error === ORIGIN_MISMATCH ? originMismatchNotice() : messageFor({ kind: "Internal" });
       phase = "idle";
     } finally {
-      // RESUMED AFTER THE RESULT IS ON SCREEN, not the moment the state changes (#107).
+      // RESUMED AFTER THE RESULT IS ON SCREEN, not the moment the state changes.
       //
       // `results` is assigned inside the `try`, and Svelte flushes the DOM after the current
       // tick -- so decrementing here without waiting let the strip re-acquire PDFium 16-34 ms
@@ -451,17 +451,18 @@
   <!-- THE STRIP, after the file line and before the controls. It is an AID: if it draws
        nothing the selection below still works by number, which is how both these pages worked
        before there were pictures at all (ADR 0020). -->
-  <!-- WITHDRAWN, NOT REMOVED. `STRIP_WITHDRAWN` in `strip-copy.ts` carries the measurement:
-       a tab running an operation while PDFium is resident loses itself on WebKit, about four times in 580
-       runs, and zero without the strip. Losing a tab mid-operation is worse than not seeing
-       thumbnails, and this page selected pages by number for its whole life before the strip
-       existed. The component, its tests and the render bundle are untouched; restoring it is
-       this one boolean, and `strip-copy.test.ts` makes the prose follow it. #107. -->
-  <!-- PAUSED WHILE THE OPERATION RUNS (#107). PDFium resident DURING an operation is what
-       loses the tab on WebKit, so the strip releases its engine for the duration and picks the
-       tiles back up afterwards. Not "one engine at a time": the documents worker persists, so
-       both are resident whenever the strip draws at all. The thumbnail is the aid; the
-       operation is what the person came for, so the strip is the one that yields.
+  <!-- MOUNTED AGAIN SINCE 2026-09-26, behind `STRIP_WITHDRAWN` in `strip-copy.ts`, which
+       stays as the switch and carries the history: withdrawn on 2026-09-17 for #107, where a
+       WebKit tab was lost about once in 200 test runs. The cause was a race in Linux
+       WebKit reached through the strip's GPU-backed canvas, and `PageThumbnails`' `paint` now
+       asks for a CPU canvas, which does not reach it. `strip-copy.test.ts` makes the prose
+       follow the switch. -->
+  <!-- PAUSED WHILE THE OPERATION RUNS. The strip releases its engine for the duration and
+       picks the tiles back up afterwards, so an operation's memory peak is not stacked on a
+       second wasm engine's heap -- the thumbnail is the aid, the operation is what the person
+       came for, so the strip is the one that yields. This was built as #107's fix and was
+       not it; it stays because it is the right priority on its own terms -- releasing only
+       once no render is in flight, because terminating one crashed Firefox (PageThumbnails).
 
        The comment is ABOVE the `{#if}` rather than inside it because `strip-copy.test.ts`
        asserts the island gates the component with nothing between them -- which it caught
@@ -554,8 +555,8 @@
        IT WAS LEFT VISIBLE FOR A DAY ON A WRONG DIAGNOSIS. Making this class real coincided
        with a WebKit failure on /split-pdf, and removing it appeared to fix it; four runs per
        tree later, the failure happened at the same rate on a commit where the class was inert
-       and could not have been involved. The cause was the page-picture strip holding a second
-       wasm engine in the tab, and that strip is withdrawn (#107). Nothing implicates this
+       and could not have been involved. The cause turned out to be a race in Linux WebKit,
+       reached through the page-picture strip's GPU-backed canvas (#107). Nothing implicates this
        rule, and the duplicate it caused is real, so it goes back. -->
   <p class="visually-hidden" role="status" aria-live="polite">{announcement}</p>
 </section>

@@ -380,7 +380,10 @@ and it belongs with whoever next touches them.
 **What becomes easier.** M2 can start. The write verb is trapped, the read verbs and the
 tokeniser ship today, and nothing in this record reopens the linking gate, needs PDFium in a
 document worker, or needs two engines resident in one tab. [#107](https://github.com/TensorGreed/burrow/issues/107)
-and [#111](https://github.com/TensorGreed/burrow/issues/111) are both untouched by it.
+and [#111](https://github.com/TensorGreed/burrow/issues/111) are both untouched by it. *(2026-09-26:
+#107 turned out not to be about engines resident in a tab at all — it was a Linux WebKit race
+reached through a GPU canvas; ADR 0027's 2026-09-26 correction. Nothing in this record
+depended on the old diagnosis.)*
 
 **What becomes harder, and it is most of the work.** Five refusals, **four of which have no
 adequate trigger yet** (§5) — two whose signal reads only the page's content stream and so misses
@@ -657,7 +660,9 @@ the first fatal. It is **not admissible evidence**: a document can write a `/ToU
 lies or an `/ActualText` that substitutes, and a check that decodes through the font is verifying
 the document's own claim about itself — with the same font's `cmap` measured disagreeing. It also
 collides with `tools/check-pdfium-is-render-only.sh`'s three-layer claim, and running the pass in
-the render worker to sidestep #107 puts it in **a sibling heap**, which R10 forbids. Cheap —
+the render worker to sidestep #107 puts it in **a sibling heap**, which R10 forbids. (#107 has
+since been shown not to need sidestepping — 2026-09-26 — but R10 alone is sufficient, and the
+rejection stands on it and on admissibility.) Cheap —
 330 µs for 137 pages — and inadmissible.
 
 **Render every page and check the region is blank.** Rejected on cost and on meaning. Roughly
