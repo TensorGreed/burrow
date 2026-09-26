@@ -322,6 +322,17 @@ console — and it fires for files that parse _successfully_, not just failures.
 **Never send file content anywhere**, including in logs and error messages. If an
 operation fails, report the typed error from the core, not the input.
 
+**Input and decoded content are wiped in the JS heap too, and decoded content is never a string.**
+Every `ArrayBuffer` or typed array holding a person's input or content qpdf decoded is zeroed
+(`.fill(0)`) before it is released, and decoded content never becomes a JS string, because a
+string cannot be wiped. A worker serves many documents in one session, and a buffer released
+with its bytes intact is the secret persisting after the operation that removed it from the
+document. **This half cannot be tested** -- the JS heap is not reliably inspectable from a test --
+so it is an invariant, and **the review of any change to the worker, the bridges or the binding
+checks it**. The wasm heaps are held by a canary test. Both are #199's discharge, a ship blocker
+for the redaction page (`docs/ROADMAP.md`); until it lands this rule is not yet true of the code,
+and saying so is the point of writing it here.
+
 ## Design
 
 The visual language every tool page inherits. It landed in M1 PR A, before any tool page
