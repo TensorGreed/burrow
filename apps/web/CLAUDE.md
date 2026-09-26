@@ -23,14 +23,16 @@ pnpm e2e        # playwright, against a build with the harness route
 pnpm build:harness  # that build, by hand
 ```
 
-The wasm modules come from `bindings/burrow-wasm`, and there are **two**; rebuild both from
-the repository root:
+The wasm modules come from `bindings/burrow-wasm`, and there are **three**; rebuild all of them
+from the repository root:
 
 ```bash
 tools/ci-local.py --only wasm-pack
 ```
 
-That runs the two builds CI runs, each through `tools/build-stamp.py wrap`, which records what
+That runs the three builds CI runs — the base (`pkg/`), the renderer (`pkg-render/`) and
+redaction's (`pkg-redact/`, #137, staged into harness builds only while `/redact-pdf` is held) —
+each through `tools/build-stamp.py wrap`, which records what
 the build read in `pkg*/.build-stamp` (#149). **A bare `wasm-pack build` leaves no stamp, and
 staging refuses a binding without a current one** — that is what stops a `pkg/` left behind by
 another branch from being staged, shipped into `dist/` and measured as this branch's, which

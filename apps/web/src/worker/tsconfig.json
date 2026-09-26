@@ -34,6 +34,7 @@
   "include": [
     "globals.d.ts",
     "globals-qpdf.d.ts",
+    "globals-documents.d.ts",
     "prelude.js",
     "bridge-common.js",
     "bridge-qpdf.js",

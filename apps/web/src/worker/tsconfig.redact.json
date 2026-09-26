@@ -1,0 +1,27 @@
+{
+  // The redaction bundle's project (#137). `tsconfig.json` explains why each bundle has its
+  // own: a worker scope is whatever its own bundle concatenated into it. This one links qpdf
+  // like the base bundle -- so `globals-qpdf.d.ts` -- and exports only `redact` -- so
+  // `globals-redact.d.ts`, and never `globals-documents.d.ts`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": [
+    "globals.d.ts",
+    "globals-qpdf.d.ts",
+    "globals-redact.d.ts",
+    "prelude.js",
+    "bridge-common.js",
+    "bridge-qpdf.js",
+    "worker-protocol.js",
+    "redact-main.js"
+  ]
+}

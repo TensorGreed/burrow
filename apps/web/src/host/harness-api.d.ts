@@ -41,6 +41,17 @@ export interface Reply {
    * quietly became a plain write. See `Operation::Compress` on the Rust side.
    */
   compressed?: boolean;
+  /**
+   * What a redaction did beyond the bytes, in the Rust `Debug` form `tests/redaction/outcomes.tsv`
+   * pins by digest. `redactDocument` only (#137).
+   */
+  report?: string;
+  /** Fonts a redaction left intact because uncovered pages use them. `redactDocument` only. */
+  retainedFonts?: number;
+  /** Marked-content property lists whose carried text a redaction dropped. `redactDocument` only. */
+  droppedCarriedText?: number;
+  /** The produced document's sha256, hex, or null when there was none. `redactDocument` only. */
+  outputSha256?: string | null;
 }
 
 /** What a CSP probe inside a worker observed. */
@@ -201,6 +212,20 @@ export interface BurrowHarness {
   fetchFromWorker(url: string): Promise<ProbeResult>;
   workerInheritsCsp(): Promise<boolean>;
 
+  /**
+   * Redact one region on one page through REDACTION's own worker (#137), staged into harness
+   * builds only. Returns the reply and the output's sha256; the bytes stay in the page.
+   *
+   * `page` and `covered` are 1-based.
+   */
+  redactDocument(
+    name: string,
+    bytes: Uint8Array,
+    page: number,
+    covered: number[],
+    region: { left: number; top: number; width: number; height: number },
+    options?: { limits?: Partial<HarnessLimits> },
+  ): Promise<Reply>;
   /**
    * Open a document with the RENDER bundle -- PDFium -- and report its page count.
    *

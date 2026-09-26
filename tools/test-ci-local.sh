@@ -972,8 +972,8 @@ fi
 
 status=0
 out="$(python3 "$here/ci-local.py" --only wasm-pack --artifacts 2>&1)" || status=$?
-if [ "$status" -eq 0 ] && grep -qF "built in this sweep, so not checked: pkg (by wasm-pack), pkg-render (by wasm-pack)" <<<"$out"; then
-  echo "  ok   the job that rebuilds both bindings is not refused for the ones it replaces"
+if [ "$status" -eq 0 ] && grep -qF "built in this sweep, so not checked: pkg (by wasm-pack), pkg-redact (by wasm-pack), pkg-render (by wasm-pack)" <<<"$out"; then
+  echo "  ok   the job that rebuilds all three bindings is not refused for the ones it replaces"
   pass=$((pass + 1))
 else
   echo "  FAIL wasm-pack was refused for the bindings it rebuilds (status $status)"
@@ -986,12 +986,12 @@ fi
 # current. So the derivation is asserted on the text, and a refusal must be the artifact one.
 status=0
 out="$(python3 "$here/ci-local.py" --only web --artifacts 2>&1)" || status=$?
-if grep -qF "artifacts: 3 stamped artifact(s) read by 1 of 1 selected job(s): engines-wasm, pkg, pkg-render" <<<"$out" \
+if grep -qF "artifacts: 4 stamped artifact(s) read by 1 of 1 selected job(s): engines-wasm, pkg, pkg-redact, pkg-render" <<<"$out" \
    && { [ "$status" -eq 0 ] || grep -qF "REFUSED — a build artifact the selected jobs read" <<<"$out"; }; then
-  echo "  ok   the web job is derived to read all three artifacts (status $status on this machine)"
+  echo "  ok   the web job is derived to read all four artifacts, redaction's included (status $status on this machine)"
   pass=$((pass + 1))
 else
-  echo "  FAIL the web job's reads were not derived as the three artifacts (status $status)"
+  echo "  FAIL the web job's reads were not derived as the four artifacts (status $status)"
   echo "$out" | tail -6
   fail=$((fail + 1))
 fi

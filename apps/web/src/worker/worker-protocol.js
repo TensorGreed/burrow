@@ -216,6 +216,13 @@ function drainReply(id, reply) {
       // for every other operation.
       originalBytes: reply.originalBytes.toString(),
       producedBytes: reply.producedBytes.toString(),
+      // WHAT A REDACTION DID BEYOND THE BYTES (#137). `report` is the Rust `Debug` form the
+      // native golden file pins -- for the browser differential, not for display; the two
+      // counts are what a page shows. Empty and zero for every other operation, as the two
+      // sizes above are for everything but `compress`.
+      report: reply.report,
+      retainedFonts: reply.retainedFonts,
+      droppedCarriedText: reply.droppedCarriedText,
       // WHICH input failed, as a number rather than something to parse out of `message`.
       // -1 when the failure is not about a particular input.
       failedInput: reply.failedInput,

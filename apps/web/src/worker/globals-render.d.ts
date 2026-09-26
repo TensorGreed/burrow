@@ -140,8 +140,10 @@ interface WorkerGlobalScope {
   __burrow_pdfium_copy_out(ptr: number, len: number): Uint8Array;
 }
 
-/** The operations the render artifact exports. `page_count` is in `globals.d.ts`: both have one. */
+/** The operations the render artifact exports. */
 interface BurrowWasm {
+  /** Open with **PDFium** and report the page count. The base artifact's is qpdf's. */
+  page_count(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
   /**
    * ADR 0023's shape for ADR 0027 §2's reason: a strip in progress, pulled one page at a time,
    * so the engine heap holds at most one bitmap however long the strip is.

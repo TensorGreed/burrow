@@ -76,6 +76,12 @@
  *   input (ADR 0025 §3), so there is no document left to measure.
  *
  *   ABSENT ON EVERY OTHER OPERATION, hence optional: nothing but `compress` computes them.
+ * @property {string} [report] What a redaction did beyond the bytes, in the Rust `Debug` form
+ *   `tests/redaction/outcomes.tsv` pins (#137). For the browser differential, not for display.
+ * @property {number} [retainedFonts] Fonts a redaction left intact because uncovered pages use
+ *   them -- the number ADR 0029 §7's disclosure is about.
+ * @property {number} [droppedCarriedText] Marked-content property lists whose carried text a
+ *   redaction dropped.
  * @property {Blob | null} [output] The document an operation produced, or null.
  *
  *   A Blob rather than bytes, for the same reason the INPUT is one (ADR 0015 §4):

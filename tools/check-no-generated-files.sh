@@ -59,7 +59,9 @@ PATTERNS=(
   '(^|/)target/'
   '(^|/)dist/'
   '(^|/)dist-[A-Za-z0-9-]+/'
-  '(^|/)pkg/'
+  # EVERY wasm-pack OUTPUT DIRECTORY, not only the first. `pkg/` was the only one matched, so
+  # `pkg-render/` (ADR 0026) was never covered, and #137 added `pkg-redact/`.
+  '(^|/)pkg(-[a-z]+)?/'
   '\.wasm$'
   '\.data$'
   '\.generated\.(pdf|json|txt)$'

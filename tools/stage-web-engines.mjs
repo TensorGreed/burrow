@@ -172,6 +172,38 @@ const BUNDLES = [
       { app: "src/worker/render-main.js" },
     ],
   },
+  // THE THIRD BUNDLE, REDACTION'S (#137, ADR 0029's 2026-09-21 amendment). qpdf again, through
+  // the same bridge as the base bundle, with redaction's own Rust module -- 164,616 brotli bytes
+  // that would otherwise land on every tool page's first load.
+  //
+  // HARNESS BUILDS ONLY. `/redact-pdf` is held (#125, #180-#183) and `src/production-build.test.ts`
+  // holds the op name `redact` out of every shipped script, so this bundle is staged only when
+  // `BURROW_HARNESS=1` -- which is what #137's R8/R9 specs and the browser differential drive.
+  // A production build's manifest, CSP and generated exports never mention it. The flag comes
+  // off when the hold does, deliberately, in the change that ships the page.
+  {
+    id: "redactWorker",
+    name: "burrow-redact-worker",
+    harnessOnly: true,
+    modules: [
+      { id: "qpdfWasm", from: "qpdf.wasm", as: "qpdf.wasm", source: "engines" },
+      {
+        id: "burrowRedactWasm",
+        from: "burrow_wasm_bg.wasm",
+        as: "burrow_wasm_redact_bg.wasm",
+        source: "pkgRedact",
+      },
+    ],
+    order: [
+      { app: "src/worker/prelude.js" },
+      { app: "src/worker/bridge-common.js" },
+      { app: "src/worker/bridge-qpdf.js" },
+      { engines: "qpdf.js" },
+      { pkgRedact: "burrow_wasm.js" },
+      { app: "src/worker/worker-protocol.js" },
+      { app: "src/worker/redact-main.js" },
+    ],
+  },
 ];
 
 /** The same manifest with page-relative URLs rewritten against the build's origin. */
@@ -249,6 +281,10 @@ function policyFor(wasmUrls, { forMeta }) {
 
 async function main() {
   const arch = process.env.BURROW_ENGINE_ARCH ?? "wasm";
+  // WHICH BUILD THIS IS, because the bundle list depends on it: a harness build stages the
+  // held bundles too. Read from the same variable `astro.config.mjs` reads, and the same value.
+  const harness = process.env.BURROW_HARNESS === "1";
+  const bundles = BUNDLES.filter((bundle) => harness || !bundle.harnessOnly);
   const sources = {
     engines: join(repo, "engines", "vendor", arch, "lib"),
     pkg: join(repo, "bindings", "burrow-wasm", "pkg"),
@@ -258,6 +294,8 @@ async function main() {
     // whichever build ran last silently supplying both bundles, which is the failure this
     // whole split exists to make impossible.
     pkgRender: join(repo, "bindings", "burrow-wasm", "pkg-render"),
+    // The third, for redaction (#137). Read only by a harness build.
+    pkgRedact: join(repo, "bindings", "burrow-wasm", "pkg-redact"),
   };
 
   // BUILT FROM THIS TREE, OR NOT STAGED AT ALL (#149). Every web build comes through here, so
@@ -269,8 +307,16 @@ async function main() {
   // BEFORE THE EXISTENCE CHECKS BELOW, so a missing build and a stale one get the same refusal
   // with the same rebuild command -- and so the self-test that plants a stale stamp reaches it
   // on a runner with no build at all, which is where CI runs it.
-  if (arch === "wasm") {
-    requireCurrentBuild("tools/build-stamp.py check pkg pkg-render engines-wasm", "stage-web-engines");
+  if (arch === "wasm" && harness) {
+    requireCurrentBuild(
+      "tools/build-stamp.py check pkg pkg-render pkg-redact engines-wasm",
+      "stage-web-engines",
+    );
+  } else if (arch === "wasm") {
+    requireCurrentBuild(
+      "tools/build-stamp.py check pkg pkg-render engines-wasm",
+      "stage-web-engines",
+    );
   } else {
     console.warn(`stage-web-engines: BURROW_ENGINE_ARCH=${arch} -- engines not stamp-checked`);
     requireCurrentBuild("tools/build-stamp.py check pkg pkg-render", "stage-web-engines");
@@ -283,14 +329,14 @@ async function main() {
   }
   if (!existsSync(sources.pkg)) {
     console.error(`stage-web-engines: ${sources.pkg} does not exist.`);
-    console.error("  Run: tools/ci-local.py --only wasm-pack   (both bindings, stamped -- #149)");
+    console.error("  Run: tools/ci-local.py --only wasm-pack   (every binding, stamped -- #149)");
     console.error("  (no-modules, not web: the worker is classic -- it is one concatenated");
     console.error("   bundle under a single integrity digest -- and cannot import an ES module.)");
     process.exit(1);
   }
   if (!existsSync(sources.pkgRender)) {
     console.error(`stage-web-engines: ${sources.pkgRender} does not exist.`);
-    console.error("  Run: tools/ci-local.py --only wasm-pack   (both bindings, stamped -- #149)");
+    console.error("  Run: tools/ci-local.py --only wasm-pack   (every binding, stamped -- #149)");
     console.error("  (ADR 0026: the render bundle carries PDFium and no qpdf, and the base bundle");
     console.error(
       "   carries no PDFium -- the two cargo features are mutually exclusive on wasm32.)",
@@ -342,16 +388,23 @@ async function main() {
   // "the base worker has no reason to fetch PDFium" and "the base worker CANNOT": its copy of
   // the manifest has no such URL in it.
   const moduleIdsByBundle = {};
-  for (const bundle of BUNDLES) {
+  for (const bundle of bundles) {
     moduleIdsByBundle[bundle.id] = [];
     for (const file of bundle.modules) {
+      // A MODULE TWO BUNDLES SHARE IS STAGED ONCE. `qpdf.wasm` is in the base bundle and in
+      // redaction's (#137): one file, one URL, one CSP entry, and each bundle's manifest slice
+      // still names it -- the id is what a bundle fetches by, and it means the same bytes.
+      if (staged[file.id]) {
+        moduleIdsByBundle[bundle.id].push(file.id);
+        continue;
+      }
       const source = join(sources[file.source], file.from);
       if (!existsSync(source)) {
         console.error(`stage-web-engines: ${source} is missing.`);
         console.error(
           file.source === "engines"
             ? "  Run engines/build-wasm.sh -- it builds qpdf.js/qpdf.wasm and unpacks pdfium."
-            : "  Run: tools/ci-local.py --only wasm-pack   (both bindings, stamped -- #149)",
+            : "  Run: tools/ci-local.py --only wasm-pack   (every binding, stamped -- #149)",
         );
         process.exit(1);
       }
@@ -391,8 +444,9 @@ async function main() {
     engines: sources.engines,
     pkg: sources.pkg,
     pkgRender: sources.pkgRender,
+    pkgRedact: sources.pkgRedact,
   };
-  for (const bundle of BUNDLES) {
+  for (const bundle of bundles) {
     const parts = ["// GENERATED by tools/stage-web-engines.mjs. Do not edit.\n"];
 
     // THIS BUNDLE'S SLICE OF THE MANIFEST, not the whole of it.
@@ -479,14 +533,18 @@ export const ENGINES = ${JSON.stringify(staged, null, 2)};
  * how many the host will honour come from one place. See \`EXPECTED_ENGINE_MODULES\` in
  * \`src/host/worker-host.js\` for why that is no longer a constant.
  */
-${BUNDLES.map(
-    (b) =>
-      `export const ${bundleExportName(b.id)} = ${JSON.stringify(
+${BUNDLES.map((b) =>
+  bundles.includes(b)
+    ? `export const ${bundleExportName(b.id)} = ${JSON.stringify(
         { worker: staged[b.id], modules: moduleIdsByBundle[b.id].length },
         null,
         2,
-      )};`,
-  ).join("\n\n")}
+      )};`
+    : // A HARNESS-ONLY BUNDLE IN A BUILD THAT DOES NOT STAGE IT IS \`null\`, NOT ABSENT: the
+      // harness page imports the name in every build \`astro check\` type-checks, and a
+      // missing export would be an error there rather than a clean "not in this build".
+      `export const ${bundleExportName(b.id)} = null;`,
+).join("\n\n")}
 
 /** The Content-Security-Policy this build is served under. */
 export const CSP = ${JSON.stringify(metaPolicy)};

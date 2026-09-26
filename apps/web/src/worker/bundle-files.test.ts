@@ -49,10 +49,12 @@ function projectSources(file: string): string[] {
 describe("each bundle's sources and its TypeScript project", () => {
   const bundles = bundleSources();
 
-  it("finds both bundles and their sources, so a broken parse cannot pass", () => {
+  it("finds all three bundles and their sources, so a broken parse cannot pass", () => {
     // THE PROBE. Two empty lists compare equal, and a regex that stopped matching would report
     // a clean run over nothing at all — the shape this repository keeps being caught by.
-    expect(Object.keys(bundles).sort()).toEqual(["renderWorker", "worker"]);
+    // THREE SINCE #137: redaction's is staged into harness builds only, and is checked like the
+    // others -- a held bundle is still one whose sources ship somewhere.
+    expect(Object.keys(bundles).sort()).toEqual(["redactWorker", "renderWorker", "worker"]);
     for (const [id, sources] of Object.entries(bundles)) {
       expect(sources.length, `${id} has no app sources, so the parse failed`).toBeGreaterThan(3);
     }
@@ -61,6 +63,7 @@ describe("each bundle's sources and its TypeScript project", () => {
   it.each([
     ["worker", "tsconfig.json"],
     ["renderWorker", "tsconfig.render.json"],
+    ["redactWorker", "tsconfig.redact.json"],
   ])("%s is checked by exactly the files it is built from", (id, config) => {
     // IN ORDER, not as a set. The concatenation order is load-bearing — `render-prelude.js`
     // must precede `pdfium.js` because that glue reads `self.Module` at parse time — and a

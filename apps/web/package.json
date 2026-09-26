@@ -8,12 +8,12 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check && tsc -p src/worker/tsconfig.json && tsc -p src/worker/tsconfig.render.json && tsc -p src/host/tsconfig.json",
+    "check": "astro check && tsc -p src/worker/tsconfig.json && tsc -p src/worker/tsconfig.render.json && tsc -p src/worker/tsconfig.redact.json && tsc -p src/host/tsconfig.json",
     "lint": "prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run --passWithNoTests",
     "prebuild": "node ../../tools/stage-web-engines.mjs && node ../../tools/generate-credits.mjs",
-    "build:harness": "node ../../tools/stage-web-engines.mjs && node ../../tools/generate-credits.mjs && BURROW_HARNESS=1 astro build",
+    "build:harness": "BURROW_HARNESS=1 node ../../tools/stage-web-engines.mjs && node ../../tools/generate-credits.mjs && BURROW_HARNESS=1 astro build",
     "e2e": "playwright test"
   },
   "dependencies": {

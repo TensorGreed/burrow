@@ -235,7 +235,7 @@ function normalisePath(base, specifier) {
  * or a stray file staged beside them, fails here rather than being quietly free.
  *
  * @param {string} dir
- * @returns {{ base: string[], render: string[], byBundle: Record<string, string[]> }}
+ * @returns {{ base: string[], render: string[], redact: string[], byBundle: Record<string, string[]> }}
  */
 export function engineClosures(dir) {
   const files = walk(dir);
@@ -284,15 +284,53 @@ export function engineClosures(dir) {
   if (base === undefined) {
     throw new Error(`${dir}: no engines/burrow-worker.<hash>.js; the base payload is unknown`);
   }
-  // The render bundle's OWN cost: what it adds on top of the base, which is what a page that
-  // renders actually pays extra. The guard control is in both manifests and is counted once.
-  const render = Object.entries(byBundle)
-    .filter(([name]) => name !== bundles.find((b) => b.startsWith("engines/burrow-worker.")))
-    .flatMap(([, paths]) => paths)
-    .filter((path) => !base.includes(path))
-    .sort();
+  // EACH OTHER BUNDLE'S OWN COST: what it adds on top of the base, which is what a page that
+  // uses it actually pays extra. The guard control is in every manifest and is counted once.
+  //
+  // BY NAME, NOT "EVERY BUNDLE BUT THE BASE". That was the rule while there were two, and the
+  // third (#137) would have been counted as render's: a harness build's render payload would
+  // have gained redaction's 160 KB and nothing would have said why.
+  /** @param {string} prefix */
+  const ownCost = (prefix) =>
+    Object.entries(byBundle)
+      .filter(([name]) => name.startsWith(prefix))
+      .flatMap(([, paths]) => paths)
+      .filter((path) => !base.includes(path))
+      .sort();
+  const render = ownCost("engines/burrow-render-worker.");
+  const redact = ownCost("engines/burrow-redact-worker.");
 
-  return { base, render, byBundle };
+  // AND EVERY NON-BASE BUNDLE IS ONE OF THOSE, so a fourth one cannot hide in neither.
+  const unnamed = bundles.filter(
+    (b) =>
+      !["engines/burrow-worker.", "engines/burrow-render-worker.", "engines/burrow-redact-worker."].some(
+        (prefix) => b.startsWith(prefix),
+      ),
+  );
+  if (unnamed.length > 0) {
+    throw new Error(`${dir}: worker bundle(s) no payload claims: ${unnamed.join(", ")}`);
+  }
+
+  return { base, render, redact, byBundle };
+}
+
+/**
+ * What redaction's bundle adds on top of the base: its worker source and its own module (#137).
+ *
+ * A HARNESS BUILD ONLY, since that is the only build that stages it; in any other this is empty,
+ * and a caller that expects it asks the harness build. Weighed like everything else here, so
+ * its line in `size-budget.json` is comparable with the rest.
+ *
+ * @param {string} dir
+ * @returns {{ entries: { path: string, raw: number, brotli: number }[] }}
+ */
+export function redactPayload(dir) {
+  return {
+    entries: engineClosures(dir).redact.map((path) => {
+      const bytes = readFileSync(join(dir, path));
+      return { path, raw: bytes.length, brotli: brotli(bytes) };
+    }),
+  };
 }
 
 /**
