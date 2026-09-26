@@ -2418,7 +2418,7 @@ pub const WATCH_EVERY: u32 = 256;
 ///
 /// # Why this exists (#175)
 ///
-/// Every `max_duration_ms` checkpoint used to sit between engine calls in `redact_steps.rs`, and
+/// Every `max_duration_ms` checkpoint used to sit between engine calls in the redaction steps, and
 /// none inside this module, so one call here was a single uncooperative step of any length.
 /// Measured before this type existed, against a budget of 100 ms: a page drawing one form 4,000
 /// times, each form holding 100,000 operations, **17.9 s** from a 233 KB file. The form is
@@ -3612,7 +3612,7 @@ mod tests {
         /// [`super::Resources`] trait allows: what a document drives.
         Content,
         /// A public function the redaction steps call, named, with inputs a walk produced. The
-        /// gate checks the name is called in `qpdf/redact_steps.rs`.
+        /// gate checks the name is called in `redact/steps.rs`.
         Entry(&'static str),
         /// Forged state no walk produces, or a function no production code calls: an
         /// invariant check, not a refusal a file can trigger.
@@ -4076,7 +4076,7 @@ mod tests {
         // counted invariant checks as refusals a file can trigger. The expectation comes from
         // the source, and the report says which kind each site is.
         let sites = raise_sites(include_str!("geometry.rs")).expect("the sites read");
-        let steps = include_str!("../qpdf/redact_steps.rs");
+        let steps = include_str!("../redact/steps.rs");
         let mut covered: BTreeMap<u32, (String, Reach)> = BTreeMap::new();
         let mut failures = Vec::new();
         for rule in Refusal::ALL {
@@ -4089,7 +4089,7 @@ mod tests {
                         .any(|line| !line.trim_start().starts_with("//") && line.contains(&call))
                     {
                         failures.push(format!(
-                            "`{}` claims entry `{name}`, which qpdf/redact_steps.rs never calls",
+                            "`{}` claims entry `{name}`, which redact/steps.rs never calls",
                             rule.rule()
                         ));
                     }

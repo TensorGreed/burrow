@@ -1,18 +1,3 @@
-// AWAITING ITS CONSUMER, and said so rather than silenced. Nothing calls this yet: #131's
-// removal operation is the caller, and it is not assembled. `expect` rather than `allow`
-// because it becomes an error the moment the walk is wired in, so this note cannot rot into a
-// blanket exemption for genuinely dead code.
-// Conditional because the tests DO use it: an unconditional `expect` is unfulfilled under
-// `--all-targets`, which CI treats as an error. The shape says exactly what is true -- covered
-// by tests, not yet called by production.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the sharing walk is complete and tested; #131's operation is its first caller"
-    )
-)]
-
 //! How many places in a document draw each Form XObject.
 //!
 //! [ADR 0029](../../../../docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md)'s
@@ -65,10 +50,9 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Deadline, Error, Result};
 
-use super::Document;
-use super::handle::ObjectHandle;
-use super::name::Name;
 use crate::codes::qpdf::object_type;
+use crate::name::Name;
+use crate::redact::graph::{PdfDocument, PdfObject};
 
 /// How deep the resource graph may nest before the walk refuses.
 ///
@@ -222,6 +206,23 @@ impl FormUseCounts {
     ///
     /// So: cut when the operation already covers every page that would be affected, and
     /// otherwise leave the font intact and disclose it (§7).
+    // UNCALLED BY PRODUCTION, and said so. `cut_fonts` asks `pages_outside` per font instead,
+    // because one expression then decides both the cut and the disclosure; this set is what the
+    // tests assert against. It was covered by a module-wide expectation whose note said the whole
+    // walk was awaiting its first caller, which stopped being true when #134 wired it in (code
+    // review of #191).
+    #[cfg_attr(
+        all(
+            not(test),
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ),
+        expect(
+            dead_code,
+            reason = "asserted by the tests; the operation asks `pages_outside` per font"
+        )
+    )]
     pub(crate) fn fonts_wholly_within(
         &self,
         redacted: &std::collections::BTreeSet<usize>,
@@ -332,13 +333,12 @@ impl FormUseCounts {
 /// is cyclic or nests past [`MAX_RESOURCE_DEPTH`], or `contents-too-many` for a `/Contents`
 /// array past [`crate::pdfsyntax::contents::MAX_ELEMENTS`]; [`Error::Malformed`] for a page
 /// tree that does not terminate. Whatever the engine failed with.
-pub(crate) fn count_form_uses(
-    document: &Document,
+pub(crate) fn count_form_uses<D: PdfDocument>(
+    document: &D,
     deadline: &Deadline,
     clock: &Arc<dyn Clock>,
 ) -> Result<FormUseCounts> {
     let mut walk = Walk {
-        document,
         from_pages: BTreeMap::new(),
         edges: BTreeMap::new(),
         descended: BTreeSet::new(),
@@ -369,11 +369,8 @@ pub(crate) fn count_form_uses(
         deadline.checkpoint(clock.as_ref())?;
         let at = usize::try_from(index)
             .map_err(|_| Error::Internal("qpdf: a page index that is not an index".to_owned()))?;
-        // SAFETY: `at` is below the page count just read from this document.
-        let page = unsafe { ObjectHandle::page(document, at) };
-        if let Some(error) = document.take_error() {
-            return Err(error);
-        }
+        // Below the page count just read from this document; `page` checks again, and drains.
+        let page = document.page(at)?;
         walk.at_page = at;
         walk.page(&page)?;
     }
@@ -486,7 +483,6 @@ fn propagate(
 
 /// The walk's state: what it has counted, what it has already descended, and what is open.
 struct Walk<'a> {
-    document: &'a Document,
     /// Forms referenced straight from a page's resources or a page's annotations.
     from_pages: BTreeMap<ObjectId, usize>,
     /// `container -> form -> how many times that container references it`.
@@ -550,7 +546,7 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     /// One page: its inherited resources, then its annotations' appearance streams.
-    fn page(&mut self, page: &ObjectHandle<'_>) -> Result<()> {
+    fn page<O: PdfObject>(&mut self, page: &O) -> Result<()> {
         self.page_contents(page)?;
         let resources = self.inherited_resources(page)?;
         if let Some(resources) = resources {
@@ -584,18 +580,14 @@ impl Walk<'_> {
     /// drains after every call. A separate traversal would be a second thing to keep in step
     /// with the page tree, and `inherited_resources` above is the evidence that staying in step
     /// is the hard part.
-    fn page_contents(&mut self, page: &ObjectHandle<'_>) -> Result<()> {
+    fn page_contents<O: PdfObject>(&mut self, page: &O) -> Result<()> {
         let contents = page.key(&CONTENTS);
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        page.drained()?;
         match contents.type_code() {
             object_type::STREAM => self.record_content(&contents)?,
             object_type::ARRAY => {
                 let length = contents.array_len();
-                if let Some(error) = self.document.take_error() {
-                    return Err(error);
-                }
+                contents.drained()?;
                 // `try_from` RATHER THAN A SATURATING FALLBACK. A negative `array_len` is an
                 // engine error state, not a long array, and folding it onto `usize::MAX` made
                 // it come back as `contents-too-many` — a rule name describing something that
@@ -615,9 +607,7 @@ impl Walk<'_> {
                         Error::Internal("qpdf: a /Contents index that does not fit".to_owned())
                     })?;
                     let element = contents.array_item(at);
-                    if let Some(error) = self.document.take_error() {
-                        return Err(error);
-                    }
+                    contents.drained()?;
                     // A non-stream element is not a content stream and is left to the operation
                     // to refuse: this walk counts what it can identify and claims nothing about
                     // the rest.
@@ -634,7 +624,7 @@ impl Walk<'_> {
     }
 
     /// Record one reference to a content stream object.
-    fn record_content(&mut self, stream: &ObjectHandle<'_>) -> Result<()> {
+    fn record_content<O: PdfObject>(&mut self, stream: &O) -> Result<()> {
         let identity = stream.object()?;
         *self.content_refs.entry(identity).or_insert(0) += 1;
         self.content_pages
@@ -649,20 +639,16 @@ impl Walk<'_> {
     /// The same shape as `rotate::effective_rotation`, and for the same reason: a page that
     /// inherits its resources draws whatever the ancestor names, and a walk that stopped at the
     /// page dictionary would count those forms once instead of once per page.
-    fn inherited_resources<'h>(&self, page: &ObjectHandle<'h>) -> Result<Option<ObjectHandle<'h>>> {
+    fn inherited_resources<O: PdfObject>(&self, page: &O) -> Result<Option<O>> {
         let direct = self.dictionary_key(page, &RESOURCES)?;
         if direct.is_some() {
             return Ok(direct);
         }
         let mut current = page.key(&PARENT);
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        page.drained()?;
         for _ in 0..MAX_PAGE_TREE_DEPTH {
             let code = current.type_code();
-            if let Some(error) = self.document.take_error() {
-                return Err(error);
-            }
+            current.drained()?;
             match code {
                 object_type::DICTIONARY => {}
                 // The top of the tree, or a `/Parent` that is not a node. Either way there is
@@ -673,9 +659,7 @@ impl Walk<'_> {
                 return Ok(Some(found));
             }
             let next = current.key(&PARENT);
-            if let Some(error) = self.document.take_error() {
-                return Err(error);
-            }
+            current.drained()?;
             current = next;
         }
         Err(Error::Malformed(
@@ -686,7 +670,7 @@ impl Walk<'_> {
     }
 
     /// One resource dictionary: its forms, patterns and Type 3 fonts.
-    fn resources(&mut self, resources: &ObjectHandle<'_>, depth: u32) -> Result<()> {
+    fn resources<O: PdfObject>(&mut self, resources: &O, depth: u32) -> Result<()> {
         self.deadline.checkpoint(self.clock.as_ref())?;
         self.dictionaries_read += 1;
         if self.dictionaries_read > MAX_RESOURCE_DICTIONARIES {
@@ -709,9 +693,7 @@ impl Walk<'_> {
             };
             for name in self.keys_of(&dictionary)? {
                 let entry = dictionary.key(&name);
-                if let Some(error) = self.document.take_error() {
-                    return Err(error);
-                }
+                dictionary.drained()?;
                 self.drawable(&entry, is_form, depth)?;
             }
         }
@@ -726,7 +708,7 @@ impl Walk<'_> {
     /// marked-content rules and for optional content, and PDFium reads a stream entry's own
     /// dictionary as the list. See [`Self::dictionary_key`]. **Once per dictionary**, by
     /// identity: see `properties_read`.
-    fn properties(&mut self, resources: &ObjectHandle<'_>) -> Result<()> {
+    fn properties<O: PdfObject>(&mut self, resources: &O) -> Result<()> {
         let Some(properties) = self.dictionary_key(resources, &PROPERTIES)? else {
             return Ok(());
         };
@@ -740,13 +722,9 @@ impl Walk<'_> {
         }
         for name in self.keys_of(&properties)? {
             let entry = properties.key(&name);
-            if let Some(error) = self.document.take_error() {
-                return Err(error);
-            }
+            properties.drained()?;
             let code = entry.type_code();
-            if let Some(error) = self.document.take_error() {
-                return Err(error);
-            }
+            entry.drained()?;
             if code != object_type::DICTIONARY && code != object_type::NULL {
                 return Err(not_a_dictionary_where_one_belongs());
             }
@@ -755,11 +733,9 @@ impl Walk<'_> {
     }
 
     /// A Form XObject, or a tiling pattern, reached from a resource dictionary.
-    fn drawable(&mut self, entry: &ObjectHandle<'_>, count: bool, depth: u32) -> Result<()> {
+    fn drawable<O: PdfObject>(&mut self, entry: &O, count: bool, depth: u32) -> Result<()> {
         let code = entry.type_code();
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        entry.drained()?;
         if code != object_type::STREAM {
             // An image `/XObject`, a shading pattern, or a key that is not an object at all.
             // None of them draws glyphs, so none of them is a use of a form.
@@ -789,7 +765,7 @@ impl Walk<'_> {
     }
 
     /// A stream's own `/Resources`, once per object however many times it is referenced.
-    fn descend(&mut self, stream: &ObjectHandle<'_>, object: ObjectId, depth: u32) -> Result<()> {
+    fn descend<O: PdfObject>(&mut self, stream: &O, object: ObjectId, depth: u32) -> Result<()> {
         // A CYCLE IS A REFUSAL, not a stop. Keyed on the OPEN PATH rather than on everything
         // seen: a form drawn from two pages is sharing, which is the thing being measured, and
         // a walk that called that a cycle would refuse every document it exists for.
@@ -804,9 +780,7 @@ impl Walk<'_> {
             return Ok(());
         }
         let dictionary = stream.stream_dict();
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        stream.drained()?;
         let Some(resources) = self.dictionary_key(&dictionary, &RESOURCES)? else {
             return Ok(());
         };
@@ -819,15 +793,13 @@ impl Walk<'_> {
     }
 
     /// `/Font` entries that are Type 3, whose `/CharProcs` draw like any other stream.
-    fn type_three_fonts(&mut self, resources: &ObjectHandle<'_>, depth: u32) -> Result<()> {
+    fn type_three_fonts<O: PdfObject>(&mut self, resources: &O, depth: u32) -> Result<()> {
         let Some(fonts) = self.dictionary_key(resources, &FONT)? else {
             return Ok(());
         };
         for name in self.keys_of(&fonts)? {
             let font = fonts.key(&name);
-            if let Some(error) = self.document.take_error() {
-                return Err(error);
-            }
+            fonts.drained()?;
             // EVERY FONT, not only the Type 3 ones: the page set is what decides whether a
             // font may be cut, and a TrueType font shared with another page matters exactly as
             // much as a Type 3 one. Recorded against the CONTAINER, and joined to pages after
@@ -859,9 +831,7 @@ impl Walk<'_> {
             // had been affected, while page 1 had.
             for key in [&TO_UNICODE, &ENCODING, &WIDTHS] {
                 let part = font.key(key);
-                if let Some(error) = self.document.take_error() {
-                    return Err(error);
-                }
+                font.drained()?;
                 let part_id = part.object()?;
                 // A DIRECT object has object number 0 in qpdf, and a direct sub-object cannot
                 // be shared -- it exists only inside this font.
@@ -889,9 +859,7 @@ impl Walk<'_> {
             }
             for proc_name in self.keys_of(&procs)? {
                 let procedure = procs.key(&proc_name);
-                if let Some(error) = self.document.take_error() {
-                    return Err(error);
-                }
+                procs.drained()?;
                 // A glyph procedure is not itself a form, so it is descended but not counted.
                 self.drawable(&procedure, false, depth)?;
             }
@@ -900,35 +868,25 @@ impl Walk<'_> {
     }
 
     /// `/Annots` → `/AP` → `/N`, `/D`, `/R`: appearance streams are forms with resources.
-    fn annotations(&mut self, page: &ObjectHandle<'_>) -> Result<()> {
+    fn annotations<O: PdfObject>(&mut self, page: &O) -> Result<()> {
         let annots = page.key(&ANNOTS);
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        page.drained()?;
         let code = annots.type_code();
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        annots.drained()?;
         if code != object_type::ARRAY {
             return Ok(());
         }
         let count = annots.array_len();
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        annots.drained()?;
         for at in 0..count {
             let annotation = annots.array_item(at);
-            if let Some(error) = self.document.take_error() {
-                return Err(error);
-            }
+            annots.drained()?;
             // AN ANNOTATION IS A DICTIONARY, and anything else is refused, not skipped. The
             // removal step skipped a stream entry, so an annotation over the region survived
             // with its appearance -- found by the #166 security review, rendered by MuPDF in
             // burrow's output. PDFium's array lookup reads a stream entry's dictionary.
             let kind = annotation.type_code();
-            if let Some(error) = self.document.take_error() {
-                return Err(error);
-            }
+            annotation.drained()?;
             match kind {
                 object_type::DICTIONARY => {}
                 object_type::NULL => continue,
@@ -939,20 +897,14 @@ impl Walk<'_> {
             };
             for state in [&N, &D, &R] {
                 let appearance = appearances.key(state);
-                if let Some(error) = self.document.take_error() {
-                    return Err(error);
-                }
+                appearances.drained()?;
                 // An appearance may be a stream, or a dictionary of states each of which is.
                 let kind = appearance.type_code();
-                if let Some(error) = self.document.take_error() {
-                    return Err(error);
-                }
+                appearance.drained()?;
                 if kind == object_type::DICTIONARY {
                     for name in self.keys_of(&appearance)? {
                         let one = appearance.key(&name);
-                        if let Some(error) = self.document.take_error() {
-                            return Err(error);
-                        }
+                        appearance.drained()?;
                         self.drawable(&one, true, 0)?;
                     }
                 } else {
@@ -1000,11 +952,7 @@ impl Walk<'_> {
     /// hold. **It is not every lookup redaction makes**: font sub-objects, array items and
     /// `/LastChar` are read elsewhere. The measured divergences there are filed separately. See
     /// ADR 0029's #166 amendment.
-    fn dictionary_key<'h>(
-        &self,
-        object: &ObjectHandle<'h>,
-        key: &Name,
-    ) -> Result<Option<ObjectHandle<'h>>> {
+    fn dictionary_key<O: PdfObject>(&self, object: &O, key: &Name) -> Result<Option<O>> {
         // THE CONTAINER'S TYPE FIRST. `qpdf_oh_get_key` on a non-dictionary reaches
         // `QPDFObjectHandle::typeWarning` -> `Common::warn`, which appends to qpdf's warning
         // vector **whatever `suppress_warnings` says** -- that flag only stops the printing.
@@ -1014,9 +962,7 @@ impl Walk<'_> {
         // at **265 MB** and took 401 ms; the same array of empty dictionaries grew nothing.
         // Roughly 330x amplification, linear in the array, inside the engine thread.
         let container = object.type_code();
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        object.drained()?;
         // A STREAM CONTAINER IS NOT ACCEPTED. qpdf's `getKey` on a stream returns null rather
         // than reading the stream's dictionary, so accepting one answered `None` for every key --
         // silently -- and retained a warning each time. Callers pass `stream_dict()` instead.
@@ -1024,13 +970,9 @@ impl Walk<'_> {
             return Ok(None);
         }
         let value = object.key(key);
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        object.drained()?;
         let code = value.type_code();
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        value.drained()?;
         match code {
             object_type::DICTIONARY => Ok(Some(value)),
             object_type::NULL => Ok(None),
@@ -1046,11 +988,9 @@ impl Walk<'_> {
     /// `top_level_keys` strips the leading `/` and qpdf requires it; [`Name::from_stripped`]
     /// is the one place that conversion happens, and it refuses a key containing a NUL rather
     /// than letting the C string end early and act on a shorter key.
-    fn keys_of(&self, dictionary: &ObjectHandle<'_>) -> Result<Vec<Name>> {
+    fn keys_of<O: PdfObject>(&self, dictionary: &O) -> Result<Vec<Name>> {
         let unparsed = dictionary.unparse();
-        if let Some(error) = self.document.take_error() {
-            return Err(error);
-        }
+        dictionary.drained()?;
         crate::pdfsyntax::dict::top_level_keys(&unparsed)?
             .iter()
             .map(|key| Name::from_stripped(key))

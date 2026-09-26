@@ -34,21 +34,19 @@ mod compress;
 mod extract;
 mod ffi;
 mod handle;
-mod name;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod limits;
 // Removing what `qpdf_add_page`'s reachability closure dragged along (ADR 0019 §2b, #54).
 mod prune;
-mod redact_frame;
-mod redact_optional_content;
-mod redact_steps;
-mod redact_witness;
+// The native half of redaction's seam; the policy above it is written once, in `crate::redact`
+// (#191). The policy's native tests stay here, because they open documents with this engine.
+mod redact_graph;
+#[cfg(test)]
+mod redact_witness_tests;
 mod reorder;
-mod resources;
 #[cfg(test)]
 mod resources_tests;
 mod rotate;
-mod sharing;
 #[cfg(test)]
 mod sharing_tests;
 
@@ -61,6 +59,7 @@ use std::sync::Arc;
 
 use burrow_types::{Deadline, Error, Limits, Result, Stage};
 
+use crate::redact::graph::{PdfDocument, PdfObject};
 use crate::{CheckOptions, StructureEngine, StructureReport};
 
 /// The qpdf-backed structure engine.
@@ -564,14 +563,10 @@ pub(crate) fn walk_first_page_for_probe(
     // absent (#166). A probe that skipped it resolved `/Resources` the other way: the calibration
     // measured burrow placing 14 glyphs where PDFium read 41, on a page whose `/XObject` is a
     // stream -- the operation refuses that page, and the probe must say what the operation says.
-    sharing::count_form_uses(&document, &deadline, &options.clock)?;
-    // SAFETY: page 0 is below the page count just read from this document.
-    let page = unsafe { handle::ObjectHandle::page(&document, 0) };
-    if let Some(error) = document.take_error() {
-        return Err(error);
-    }
-    let content = page.page_content()?;
-    let resources = resources::PageResources::of(&page)?;
+    crate::redact::sharing::count_form_uses(&document, &deadline, &options.clock)?;
+    let page = PdfDocument::page(&document, 0)?;
+    let content = PdfObject::page_content(&page)?;
+    let resources = crate::redact::resources::PageResources::of(&page)?;
     crate::pdfsyntax::geometry::glyphs_in(
         &content,
         &resources,
@@ -593,7 +588,7 @@ impl crate::PageRedactor for Qpdf {
         region: crate::pdfsyntax::region::Region,
         options: &crate::OpenOptions<'_>,
     ) -> Result<(Vec<u8>, crate::redact::Report)> {
-        redact_page_inner(bytes, page, redacted, region, options)
+        crate::redact::redact_page(self, bytes, page, redacted, region, options)
     }
 
     fn input_rotations(
@@ -626,84 +621,6 @@ pub(crate) fn page_frame_for(
             "pdf geometry: a page index past the end of the document".to_owned(),
         ));
     }
-    // SAFETY: `page` is below the page count, checked immediately above.
-    let handle = unsafe { handle::ObjectHandle::page(&document, page) };
-    if let Some(error) = document.take_error() {
-        return Err(error);
-    }
-    redact_frame::of(&document, &handle)
-}
-
-/// Clear a region on one page, verify the emitted bytes, and return them.
-///
-/// The body of [`crate::PageRedactor::redact_page`] for qpdf. Separate from the trait method so
-/// the `#[cfg]` gate sits in one place rather than on every line of it.
-fn redact_page_inner(
-    bytes: &[u8],
-    page: usize,
-    redacted: &std::collections::BTreeSet<usize>,
-    region: crate::pdfsyntax::region::Region,
-    options: &crate::OpenOptions<'_>,
-) -> Result<(Vec<u8>, crate::redact::Report)> {
-    use std::sync::Arc;
-
-    // THE CALLER'S CLOCK AND THE CALLER'S CEILINGS. The probe built its own `SystemClock` and
-    // `Limits::default()`, which was right for a probe and wrong for an operation: an operation
-    // spends the budget it was given, and `verify::output` says so in capitals about the
-    // deadline.
-    let clock = Arc::clone(&options.clock);
-    let limits = options.limits;
-    let (document, _, _, deadline) = open_document(bytes.to_vec().into_boxed_slice(), options)?;
-    // THE PAGE BOUND IS THE CONSTRUCTOR'S, and it is checked there and only there.
-    //
-    // It used to be checked here as well. That is one check too many rather than one too few:
-    // `QpdfRedaction::page_handle` calls the unsafe `ObjectHandle::page`, and its SAFETY
-    // comment names the constructor as where the invariant is established. With the check
-    // duplicated in this caller, deleting the constructor's changed nothing any test could
-    // see — a mutation sweep planted exactly that and the suite stayed green, which is a
-    // defence with no test standing behind an `unsafe` block.
-    let steps = redact_steps::QpdfRedaction::new(
-        document,
-        page,
-        region,
-        limits,
-        deadline,
-        Arc::clone(&clock),
-    )?;
-
-    // #134. The bytes reach a caller only through this closure, because `emit_verified` takes
-    // it and there is no other way to a `Vec<u8>` from the finished state. A fresh qpdf opens
-    // the emitted bytes: the handle that wrote them holds a page tree it built and then edited,
-    // and an engine in a bad state agrees with itself.
-    // THE CUT SET COMES FROM THE REPORT, and `Cleared::cut_fonts` states what that leaves
-    // undetectable. It is filled after the steps run, so the closure reads it through a cell
-    // rather than closing over a value that does not exist yet.
-    let cut_fonts: std::cell::RefCell<std::collections::BTreeSet<u64>> =
-        std::cell::RefCell::new(std::collections::BTreeSet::new());
-    let witness = redact_witness::QpdfWitness::new(limits, clock, deadline);
-    let verify = |emitted: &[u8]| {
-        let expected = crate::redact_verify::Cleared {
-            page,
-            region,
-            cut_fonts: cut_fonts.borrow().clone(),
-        };
-        // WHAT THE CHECK WAS TOLD, recorded so a test can read it back.
-        //
-        // This wiring is the seam a fake cannot reach: `redact_verify`'s `Liar` tests build a
-        // `Cleared` by hand, and `burrow-ops`' fake engine never verifies at all -- so a
-        // mutation forcing `cut_fonts` empty disabled the whole mapping check and the entire
-        // suite stayed green. A security review planted exactly that. The argument the check
-        // receives is now observable, which is the only way a test can say it was right.
-        #[cfg(test)]
-        tests::record_expectation(&expected);
-        crate::redact_verify::region_is_cleared(&witness, emitted, &expected)
-    };
-    crate::redact::run_reporting(steps, redacted.clone(), &verify, &|report| {
-        *cut_fonts.borrow_mut() = report
-            .fonts
-            .iter()
-            .filter(|font| font.cut)
-            .map(|font| font.font)
-            .collect();
-    })
+    let handle = PdfDocument::page(&document, page)?;
+    crate::redact::frame::of(&handle)
 }

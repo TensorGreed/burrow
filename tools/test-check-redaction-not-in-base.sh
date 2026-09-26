@@ -11,7 +11,7 @@
 #   which appending bytes to a file cannot. Which needles it covers is pinned in REAL below, so a
 #   component that stops leaving its literal in the module fails here by name.
 #
-#   PLANTED. Every needle, including the three whose code is native-only until #191, is written
+#   PLANTED. Every needle, including the three no wasm entry point can reach yet, is written
 #   into a copy of each shipped Rust module in turn, and the checker must refuse NAMING it.
 #   Near-misses sit beside them, so a rule that matched everything fails here too.
 #
@@ -126,9 +126,11 @@ fresh
 expect_pass "a copy of the real build passes" "$checker" "$work"
 
 # --- REAL: a base module built with the probe export ---------------------------------------------
-# The needles whose code compiles for wasm today, and which the probe reaches. The other three --
-# `pdf redaction [`, `pdf resources [`, `redact: the region is not cleared` -- are spelled only in
-# code behind the native engines until #191, so no wasm build can contain them yet.
+# The needles the probe reaches. The other three -- `pdf redaction [`, `pdf resources [`,
+# `redact: the region is not cleared` -- are spelled in code that compiles for wasm since #191's
+# first half moved it onto `redact::graph`, and that no wasm entry point can reach until the web
+# implements that trait (#191's second half): there is no wasm document to run it over. LTO strips
+# it, and the base module built from that commit is byte-identical to the one built from its parent.
 REAL=(
   'pdf geometry ['
   'content-stream edit'

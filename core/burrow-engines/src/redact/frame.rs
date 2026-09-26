@@ -10,12 +10,11 @@
 
 use burrow_types::{Error, Result};
 
-use super::Document;
-use super::handle::ObjectHandle;
-use super::name::Name;
 use crate::codes::qpdf::object_type;
+use crate::name::Name;
 use crate::pdfsyntax::geometry::Rect;
 use crate::pdfsyntax::region::PageFrame;
+use crate::redact::graph::PdfObject;
 
 const CROP_BOX: Name = Name::literal(b"/CropBox\0");
 const MEDIA_BOX: Name = Name::literal(b"/MediaBox\0");
@@ -33,9 +32,9 @@ const MAX_PAGE_TREE_DEPTH: u32 = 64;
 /// [`Error::Malformed`] when no box can be found, which leaves nothing to measure a region
 /// against — refused rather than defaulted to a letter page, because a default frame converts
 /// every region to the wrong place silently.
-pub(super) fn of(document: &Document, page: &ObjectHandle<'_>) -> Result<PageFrame> {
-    let display_box = inherited_rect(document, page, &CROP_BOX)?
-        .or(inherited_rect(document, page, &MEDIA_BOX)?)
+pub(crate) fn of<O: PdfObject>(page: &O) -> Result<PageFrame> {
+    let display_box = inherited_rect(page, &CROP_BOX)?
+        .or(inherited_rect(page, &MEDIA_BOX)?)
         .ok_or_else(|| {
             Error::Malformed(
                 "pdf redaction [no-display-box]: a page with neither /CropBox nor /MediaBox, \
@@ -44,7 +43,7 @@ pub(super) fn of(document: &Document, page: &ObjectHandle<'_>) -> Result<PageFra
             )
         })?;
 
-    let rotate = inherited_numbers(document, page, &ROTATE)?
+    let rotate = inherited_numbers(page, &ROTATE)?
         .first()
         .copied()
         .unwrap_or(0.0);
@@ -79,12 +78,8 @@ pub(super) fn of(document: &Document, page: &ObjectHandle<'_>) -> Result<PageFra
 }
 
 /// An inheritable rectangle-valued key.
-fn inherited_rect(
-    document: &Document,
-    page: &ObjectHandle<'_>,
-    key: &Name,
-) -> Result<Option<Rect>> {
-    let found = inherited_numbers(document, page, key)?;
+fn inherited_rect<O: PdfObject>(page: &O, key: &Name) -> Result<Option<Rect>> {
+    let found = inherited_numbers(page, key)?;
     Ok(match found.as_slice() {
         [left, bottom, right, top] => Some(Rect {
             left: left.min(*right),
@@ -97,7 +92,7 @@ fn inherited_rect(
 }
 
 /// An inheritable key's numbers, climbing `/Parent` when the page declares none.
-fn inherited_numbers(document: &Document, page: &ObjectHandle<'_>, key: &Name) -> Result<Vec<f64>> {
+fn inherited_numbers<O: PdfObject>(page: &O, key: &Name) -> Result<Vec<f64>> {
     let direct = numbers(&page.key(key));
     if !direct.is_empty() {
         return Ok(direct);
@@ -107,9 +102,7 @@ fn inherited_numbers(document: &Document, page: &ObjectHandle<'_>, key: &Name) -
         if current.type_code() != object_type::DICTIONARY {
             return Ok(Vec::new());
         }
-        if let Some(error) = document.take_error() {
-            return Err(error);
-        }
+        current.drained()?;
         let found = numbers(&current.key(key));
         if !found.is_empty() {
             return Ok(found);
@@ -121,7 +114,7 @@ fn inherited_numbers(document: &Document, page: &ObjectHandle<'_>, key: &Name) -
     ))
 }
 
-fn numbers(handle: &ObjectHandle<'_>) -> Vec<f64> {
+fn numbers<O: PdfObject>(handle: &O) -> Vec<f64> {
     if handle.type_code() == object_type::NULL {
         return Vec::new();
     }

@@ -1,28 +1,39 @@
-// AWAITING #134, and said so rather than silenced. Nothing calls this: ADR 0022 forbids a
-// public entry point that emits an unverified redaction, and #134 is the verification. The
-// assembly and its order are complete and tested; the caller is what is missing.
-//
-// `expect` rather than `allow` because it becomes an error the moment the operation is wired
-// in, so this note cannot rot into a blanket exemption. Conditional on `not(test)` because the
-// tests DO use it, and an unconditional expectation is unfulfilled under `--all-targets`.
+// UNINSTANTIATED WITHOUT AN ENGINE, and said so rather than silenced. The policy under this
+// module is written once over `graph`'s traits (#191), and until the web implements them the only
+// implementation is the native one: a build without the native engines compiles all of it and
+// calls none of it. `expect` rather than `allow`, so the day the web instantiates it this becomes
+// an error and has to go.
 #![cfg_attr(
-    not(test),
+    not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")),
     expect(
         dead_code,
-        reason = "the assembly is complete and tested; #134's verified path is its first caller"
+        reason = "the native engine is the policy's only implementation until #191's web half"
     )
 )]
+// NO `unsafe` IN THE POLICY. It reaches the engines only through `graph`'s traits, whose native
+// implementation lives in `qpdf` with its `// SAFETY:` comments; a page lookup that was `unsafe`
+// in three of these files before #191 is bounds-checked behind `PdfDocument::page` now.
+#![forbid(unsafe_code)]
 
 //! The order the steps of a redaction run in, and what happens when one fails.
 //!
-//! # Not a public entry point, and deliberately so
+//! # The only way out is the verified one
 //!
 //! ADR 0022: an operation verifies its own output before returning it, and redaction's
-//! verification is [#134](https://github.com/TensorGreed/burrow/issues/134). Until that exists
-//! this module assembles the steps and hands back bytes **to the crate**, with no exported
-//! function that emits a redacted document. Shipping an unverified redaction "temporarily" is
-//! the shortcut ADR 0029 will not take: an operation that removes a secret and cannot say
-//! whether it did is, from outside, indistinguishable from one that did not.
+//! verification is [#134](https://github.com/TensorGreed/burrow/issues/134). Before #134 this
+//! module assembled the steps and handed bytes back **to the crate** only, with no exported
+//! function that emitted a redacted document, because shipping an unverified redaction
+//! "temporarily" is the shortcut ADR 0029 will not take: an operation that removes a secret and
+//! cannot say whether it did is, from outside, indistinguishable from one that did not. #134 made
+//! the read-back a parameter of the only route to bytes (`Finished::emit_verified`), and
+//! `redact_page` is the one caller of that route.
+//!
+//! # The policy under this module is written once (#191)
+//!
+//! `steps`, `witness`, `sharing`, `resources`, `optional_content` and `frame` decide what a
+//! redaction removes, keeps or refuses. They are written over `graph`'s traits and name no
+//! engine; `qpdf` implements the traits natively, and the web implements them in #191's second
+//! half. See `graph`'s header for what those traits hold and what they cannot.
 //!
 //! # The order is load-bearing, not incidental
 //!
@@ -72,6 +83,19 @@
 use std::collections::BTreeSet;
 
 use burrow_types::{Error, Result};
+
+// THE POLICY, written once over `graph`'s traits and implemented by each engine (#191, ADR 0029's
+// #191 amendment). Everything below decides what a redaction removes, keeps or refuses; nothing
+// below names an engine.
+pub(crate) mod frame;
+pub(crate) mod graph;
+#[cfg(test)]
+pub(crate) mod hooks;
+pub(crate) mod optional_content;
+pub(crate) mod resources;
+pub(crate) mod sharing;
+pub(crate) mod steps;
+pub(crate) mod witness;
 
 /// What happened to one font, and why.
 ///
@@ -240,6 +264,18 @@ pub(crate) struct Redaction<S: Steps> {
 pub(crate) struct ContentEdited<S: Steps> {
     steps: S,
     /// How many streams were rewritten, so a caller can assert the work happened.
+    #[cfg_attr(
+        all(
+            not(test),
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ),
+        expect(
+            dead_code,
+            reason = "asserted by the tests; the operation reads the report"
+        )
+    )]
     rewritten: usize,
     redacted: BTreeSet<usize>,
 }
@@ -289,6 +325,18 @@ impl<S: Steps> Redaction<S> {
 
 impl<S: Steps> ContentEdited<S> {
     /// How many streams were rewritten.
+    #[cfg_attr(
+        all(
+            not(test),
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ),
+        expect(
+            dead_code,
+            reason = "asserted by the tests; the operation reads the report"
+        )
+    )]
     pub(crate) const fn rewritten(&self) -> usize {
         self.rewritten
     }
@@ -372,6 +420,13 @@ impl<S: Steps> Finished<S> {
 /// # Errors
 ///
 /// The first failing step's error, with the document discarded. See the module header.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the operation always wants the report before verification; the tests do not"
+    )
+)]
 pub(crate) fn run<S: Steps>(
     steps: S,
     redacted: BTreeSet<usize>,
@@ -409,8 +464,92 @@ pub(crate) fn run_reporting<S: Steps>(
 }
 
 /// The refusal a poisoned document produces, so callers can name it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "named for the tests' planted failures; no production step raises it yet"
+    )
+)]
 pub(crate) fn poisoned(detail: &str) -> Error {
     Error::Malformed(format!("pdf redaction [document-poisoned]: {detail}"))
+}
+
+/// Clear a region on one page, verify the emitted bytes, and return them.
+///
+/// The body of [`crate::PageRedactor::redact_page`], for any engine that opens a document for
+/// redaction. Written once (#191): the read-back is the same engine's, through a fresh document,
+/// and the check it runs is the same on both platforms.
+///
+/// # Errors
+///
+/// As [`crate::PageRedactor::redact_page`].
+pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
+    engine: &E,
+    bytes: &[u8],
+    page: usize,
+    redacted: &std::collections::BTreeSet<usize>,
+    region: crate::pdfsyntax::region::Region,
+    options: &crate::OpenOptions<'_>,
+) -> Result<(Vec<u8>, crate::redact::Report)> {
+    use std::sync::Arc;
+
+    // THE CALLER'S CLOCK AND THE CALLER'S CEILINGS. The probe built its own `SystemClock` and
+    // `Limits::default()`, which was right for a probe and wrong for an operation: an operation
+    // spends the budget it was given, and `verify::output` says so in capitals about the
+    // deadline.
+    let clock = Arc::clone(&options.clock);
+    let limits = options.limits;
+    let (document, deadline) = engine.open_for_redaction(bytes, options)?;
+    // THE PAGE BOUND IS THE CONSTRUCTOR'S, with the error that names the rule, and it is not
+    // checked again here. `PdfDocument::page` checks it too since #191, with a different error,
+    // and that one is what makes the lookup safe; it cannot mask this one, because the golden
+    // outcomes and `redaction_defences` pin `[page-out-of-range]`.
+    //
+    // It used to be checked here as well. That is one check too many rather than one too few:
+    // `PageRedaction::page_handle` once called the unsafe `ObjectHandle::page`, and its SAFETY
+    // comment named the constructor as where the invariant is established. With the check
+    // duplicated in this caller, deleting the constructor's changed nothing any test could
+    // see — a mutation sweep planted exactly that and the suite stayed green, which is a
+    // defence with no test standing behind an `unsafe` block.
+    let steps =
+        steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
+
+    // #134. The bytes reach a caller only through this closure, because `emit_verified` takes
+    // it and there is no other way to a `Vec<u8>` from the finished state. A fresh document of
+    // the same engine opens the emitted bytes: the one that wrote them holds a page tree it built
+    // and then edited, and an engine in a bad state agrees with itself.
+    // THE CUT SET COMES FROM THE REPORT, and `Cleared::cut_fonts` states what that leaves
+    // undetectable. It is filled after the steps run, so the closure reads it through a cell
+    // rather than closing over a value that does not exist yet.
+    let cut_fonts: std::cell::RefCell<std::collections::BTreeSet<u64>> =
+        std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let witness = witness::Witness::over(engine.clone(), limits, clock, deadline);
+    let verify = |emitted: &[u8]| {
+        let expected = crate::redact_verify::Cleared {
+            page,
+            region,
+            cut_fonts: cut_fonts.borrow().clone(),
+        };
+        // WHAT THE CHECK WAS TOLD, recorded so a test can read it back.
+        //
+        // This wiring is the seam a fake cannot reach: `redact_verify`'s `Liar` tests build a
+        // `Cleared` by hand, and `burrow-ops`' fake engine never verifies at all -- so a
+        // mutation forcing `cut_fonts` empty disabled the whole mapping check and the entire
+        // suite stayed green. A security review planted exactly that. The argument the check
+        // receives is now observable, which is the only way a test can say it was right.
+        #[cfg(test)]
+        hooks::record_expectation(&expected);
+        crate::redact_verify::region_is_cleared(&witness, emitted, &expected)
+    };
+    run_reporting(steps, redacted.clone(), &verify, &|report| {
+        *cut_fonts.borrow_mut() = report
+            .fonts
+            .iter()
+            .filter(|font| font.cut)
+            .map(|font| font.font)
+            .collect();
+    })
 }
 
 #[cfg(test)]

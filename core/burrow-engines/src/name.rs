@@ -17,9 +17,10 @@
 //!
 //! # What this type enforces, and where
 //!
-//! [`ObjectHandle`](super::handle::ObjectHandle)'s key methods take a `&Name` rather than a
-//! `*const c_char`, so a raw string cannot reach the FFI at all. A `Name` comes from one of
-//! exactly two places:
+//! The native `qpdf::handle::ObjectHandle`'s key methods, and every key-taking method of
+//! [`crate::redact::graph::PdfObject`] on both platforms, take a `&Name` rather than a
+//! `*const c_char` or a byte string, so a raw string cannot reach the engine at all. A `Name`
+//! comes from one of exactly three places:
 //!
 //! - [`Name::literal`], a `const fn` whose `assert!` fails **at compile time** in a `const`
 //!   item. `const PARENT: Name = Name::literal(b"Parent\0")` does not build.
@@ -36,8 +37,6 @@
 //! see. Every library call site here is a `const` item; the residue is stated rather than
 //! claimed away.
 
-use core::ffi::c_char;
-
 use burrow_types::{Error, Result};
 
 /// A NUL-terminated PDF name with its leading `/`.
@@ -45,7 +44,7 @@ use burrow_types::{Error, Result};
 /// Borrowed for the compile-time case so a constant costs no allocation; owned for names built
 /// from a document's bytes.
 #[derive(Debug, Clone)]
-pub(super) enum Name {
+pub(crate) enum Name {
     /// A name written in this source, checked when it was written.
     Literal(&'static [u8]),
     /// A name read out of a document, checked when it was built.
@@ -78,13 +77,13 @@ impl Name {
     ///
     /// What `prune`'s object-graph seam compares against — it has always used the slashed
     /// spelling (`b"/Form"`), which is why nothing there had the bug `resources.rs` did.
-    pub(super) fn slashed(&self) -> &[u8] {
+    pub(crate) fn slashed(&self) -> &[u8] {
         let bytes = self.bytes();
         bytes.strip_suffix(b"\0".as_slice()).unwrap_or(bytes)
     }
 
     /// The name without its leading slash or its terminator, for a message.
-    pub(super) fn plain(&self) -> &[u8] {
+    pub(crate) fn plain(&self) -> &[u8] {
         let bytes = self.bytes();
         bytes
             .strip_prefix(b"/".as_slice())
@@ -102,7 +101,7 @@ impl Name {
     /// call site uses a `const`. The slice pattern rather than indexing because
     /// `indexing_slicing` is denied in this crate and a bounds check is not the interesting
     /// part.
-    pub(super) const fn literal(bytes: &'static [u8]) -> Self {
+    pub(crate) const fn literal(bytes: &'static [u8]) -> Self {
         assert!(
             matches!(bytes, [b'/', _, .., 0]),
             "a PDF name for qpdf must begin with '/' and end with a NUL, as b\"/Parent\\0\""
@@ -120,7 +119,7 @@ impl Name {
     /// [`Error::Malformed`] if the key contains a NUL. A C string would end there, so the call
     /// would silently act on a **different, shorter key** — the same class of silent wrong
     /// answer this whole type is about, arriving from the document instead of from the source.
-    pub(super) fn from_stripped(key: &[u8]) -> Result<Self> {
+    pub(crate) fn from_stripped(key: &[u8]) -> Result<Self> {
         if key.contains(&0) {
             return Err(Error::Malformed(
                 "pdf name [embedded-nul]: a dictionary key containing a NUL, which a C string \
@@ -145,7 +144,7 @@ impl Name {
     /// # Errors
     ///
     /// [`Error::Malformed`] for a missing leading `/` or an embedded NUL.
-    pub(super) fn from_canonical(key: &[u8]) -> Result<Self> {
+    pub(crate) fn from_canonical(key: &[u8]) -> Result<Self> {
         if !matches!(key, [b'/', ..]) {
             return Err(Error::Malformed(
                 "pdf name [missing-slash]: a canonical PDF name must begin with '/'".to_owned(),
@@ -165,7 +164,10 @@ impl Name {
     }
 
     /// The pointer qpdf wants.
-    pub(super) fn as_ptr(&self) -> *const c_char {
+    ///
+    /// Native only: the web hands the engine a copy of the bytes, not a pointer into this heap.
+    #[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+    pub(crate) fn as_ptr(&self) -> *const core::ffi::c_char {
         match self {
             Self::Literal(bytes) => bytes.as_ptr().cast(),
             Self::Read(owned) => owned.as_ptr().cast(),

@@ -220,38 +220,15 @@ fn a_report_is_send_and_sync() {
     assert_send_sync::<StructureReport>();
 }
 
-// // What the last redaction told its region check, for the tests that assert on the wiring.
-//
-// The `Cleared` the verification receives is built inside a closure in `redact_page_inner` and
-// consumed immediately. Nothing returns it, and a security review measured what that costs:
-// forcing `cut_fonts` empty disabled the mapping check for every document and the whole suite
-// stayed green, because `redact_verify`'s fakes construct a `Cleared` by hand and `burrow-ops`'
-// fake engine never verifies. THE WIRING IS THE SEAM NEITHER FAKE REACHES.
-//
-// A `thread_local` rather than a parameter because the closure's signature is
-// `Fn(&[u8]) -> Result<()>`, and widening it for a test would put the test in the type.
-thread_local! {
-    static LAST_EXPECTATION: std::cell::RefCell<Option<crate::redact_verify::Cleared>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Record what the check was handed. Called from `redact_page_inner` under `cfg(test)`.
-#[cfg(test)]
-pub(super) fn record_expectation(expected: &crate::redact_verify::Cleared) {
-    LAST_EXPECTATION.with(|slot| *slot.borrow_mut() = Some(expected.clone()));
-}
-
-/// What the last redaction on this thread told its check.
-#[cfg(test)]
-fn last_expectation() -> Option<crate::redact_verify::Cleared> {
-    LAST_EXPECTATION.with(|slot| slot.borrow().clone())
-}
+// What the last redaction told its region check, for the tests that assert on the wiring:
+// `LAST_EXPECTATION` and `last_expectation`, which moved to `crate::redact::hooks` with the policy
+// (#191).
 
 #[cfg(all(test, feature = "native-engines", burrow_native_engines))]
 mod wiring {
-    use super::{LAST_EXPECTATION, last_expectation};
     use crate::PageRedactor;
     use crate::pdfsyntax::region::Region;
+    use crate::redact::hooks::{LAST_EXPECTATION, last_expectation};
     use burrow_types::{Limits, SystemClock};
     use std::collections::BTreeSet;
     use std::sync::Arc;
@@ -354,31 +331,14 @@ mod wiring {
     }
 }
 
-// A read-back failure a test can force, for the one question no document can ask.
-//
-// `region_is_cleared` only fails on a document that a correct operation never produces, so
-// "does the operation propagate a rejection" has no fixture. Read by `QpdfWitness::open_output`
-// -- in the witness rather than in the verify closure, because a hook in the closure would be
-// bypassed by the very mutation this exists to catch.
-#[cfg(test)]
-thread_local! {
-    static FORCED_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Whether the read-back should fail, and the error it fails with.
-#[cfg(test)]
-pub(super) fn forced_read_back_failure() -> Option<burrow_types::Error> {
-    FORCED_FAILURE
-        .with(std::cell::Cell::get)
-        .then(|| burrow_types::Error::Malformed("planted read-back failure".to_owned()))
-}
+// `FORCED_FAILURE` moved to `crate::redact::hooks` with the policy (#191).
 
 #[cfg(all(test, feature = "native-engines", burrow_native_engines))]
 mod propagation {
     use super::super::Qpdf;
-    use super::FORCED_FAILURE;
     use crate::PageRedactor;
     use crate::pdfsyntax::region::Region;
+    use crate::redact::hooks::FORCED_FAILURE;
     use burrow_types::{Limits, SystemClock};
     use std::collections::BTreeSet;
     use std::sync::Arc;

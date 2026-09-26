@@ -48,9 +48,9 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Deadline, Error, Result};
 
-use super::handle::ObjectHandle;
-use super::name::Name;
 use crate::codes::qpdf::object_type;
+use crate::name::Name;
+use crate::redact::graph::PdfObject;
 
 const ANNOTS: Name = Name::literal(b"/Annots\0");
 const AP: Name = Name::literal(b"/AP\0");
@@ -77,9 +77,9 @@ const IMAGE: Name = Name::literal(b"/Image\0");
 ///
 /// [`Error::Unsupported`] naming `optional-content`; `max_duration_ms` through the deadline; and
 /// whatever reading a dictionary's keys failed with.
-pub(super) fn refuse_optional_content(
-    page: &ObjectHandle<'_>,
-    resources: &ObjectHandle<'_>,
+pub(crate) fn refuse_optional_content<O: PdfObject>(
+    page: &O,
+    resources: &O,
     deadline: &Deadline,
     clock: &Arc<dyn Clock>,
 ) -> Result<()> {
@@ -103,15 +103,15 @@ pub(super) fn refuse_optional_content(
 }
 
 /// Something reached and not yet read.
-enum Pending<'a> {
+enum Pending<O> {
     /// A form, image, tiling pattern or appearance stream: its `/OC`, its own content's `/OC`
     /// marks unless it is an image, then its `/Resources`.
-    Stream(ObjectHandle<'a>),
+    Stream(O),
     /// A font: its `/Resources`, which a Type 3 font's glyph procedures draw against.
-    Font(ObjectHandle<'a>),
+    Font(O),
 }
 
-struct Walk<'a, 'd> {
+struct Walk<'d, O> {
     /// Objects already queued, by identity. A graph that reaches one object by many routes
     /// reads it once, which is what makes the walk linear rather than exponential in a DAG.
     seen: BTreeSet<(core::ffi::c_int, core::ffi::c_int)>,
@@ -123,14 +123,14 @@ struct Walk<'a, 'd> {
     /// poppler and MuPDF hiding the layer. A memo answers "have I done *this* to it", and doing
     /// one thing to an object is not doing the other.
     dictionaries: BTreeSet<(core::ffi::c_int, core::ffi::c_int)>,
-    pending: Vec<Pending<'a>>,
+    pending: Vec<Pending<O>>,
     deadline: &'d Deadline,
     clock: &'d Arc<dyn Clock>,
 }
 
-impl<'a> Walk<'a, '_> {
+impl<O: PdfObject> Walk<'_, O> {
     /// `/Annots`: each annotation's own `/OC`, and its appearance streams queued.
-    fn annotations(&mut self, page: &ObjectHandle<'a>) -> Result<()> {
+    fn annotations(&mut self, page: &O) -> Result<()> {
         let annots = page.key(&ANNOTS);
         if annots.type_code() != object_type::ARRAY {
             return Ok(());
@@ -172,7 +172,7 @@ impl<'a> Walk<'a, '_> {
     }
 
     /// One resource dictionary: its optional-content groups, and everything it can draw queued.
-    fn resources(&mut self, resources: &ObjectHandle<'a>) -> Result<()> {
+    fn resources(&mut self, resources: &O) -> Result<()> {
         // A STREAM HERE NEVER ARRIVES: the sharing walk refuses a stream in a dictionary's place
         // before this runs. See `sharing::Walk::dictionary_key`.
         if resources.type_code() != object_type::DICTIONARY {
@@ -223,7 +223,7 @@ impl<'a> Walk<'a, '_> {
     }
 
     /// A stream's own `/OC`, then its `/Resources`.
-    fn stream(&mut self, stream: &ObjectHandle<'a>) -> Result<()> {
+    fn stream(&mut self, stream: &O) -> Result<()> {
         if has_oc(&stream.stream_dict()) {
             return refused();
         }
@@ -235,7 +235,7 @@ impl<'a> Walk<'a, '_> {
     }
 
     /// A font's `/Resources`, which only a Type 3 font has and which its procedures draw against.
-    fn font(&mut self, font: &ObjectHandle<'a>) -> Result<()> {
+    fn font(&mut self, font: &O) -> Result<()> {
         self.resources(&font.key(&RESOURCES))
     }
 
@@ -262,7 +262,7 @@ impl<'a> Walk<'a, '_> {
     /// nobody asked about -- which the third review measured with an inline image in an
     /// appearance elsewhere on the page. A stream that does not decode is skipped: no reader can
     /// draw it either, so nothing in it is shown or hidden.
-    fn marks(&mut self, stream: &ObjectHandle<'a>) -> Result<()> {
+    fn marks(&mut self, stream: &O) -> Result<()> {
         let Some(content) = stream.stream_data()? else {
             return Ok(());
         };
@@ -287,7 +287,7 @@ impl<'a> Walk<'a, '_> {
     }
 
     /// Queue a stream unless it has been queued before.
-    fn queue_stream(&mut self, stream: ObjectHandle<'a>) -> Result<()> {
+    fn queue_stream(&mut self, stream: O) -> Result<()> {
         if self.first_time(&stream)? {
             self.pending.push(Pending::Stream(stream));
         }
@@ -299,7 +299,7 @@ impl<'a> Walk<'a, '_> {
     /// A **direct** object has no identity — qpdf reports `(0, 0)` — and is always new. That is
     /// safe rather than a hole: a direct object exists inside exactly one parent, and the parent
     /// is what the memo stops re-reading.
-    fn first_time(&mut self, object: &ObjectHandle<'a>) -> Result<bool> {
+    fn first_time(&mut self, object: &O) -> Result<bool> {
         let identity = object.object()?;
         Ok(identity == (0, 0) || self.seen.insert(identity))
     }
@@ -316,13 +316,13 @@ fn refused() -> Result<()> {
 }
 
 /// Whether a dictionary carries a non-null `/OC`.
-fn has_oc(dictionary: &ObjectHandle<'_>) -> bool {
+fn has_oc<O: PdfObject>(dictionary: &O) -> bool {
     dictionary.type_code() == object_type::DICTIONARY
         && dictionary.key(&OC).type_code() != object_type::NULL
 }
 
 /// Whether a stream dictionary is an image XObject's.
-fn is_image(dictionary: &ObjectHandle<'_>) -> Result<bool> {
+fn is_image<O: PdfObject>(dictionary: &O) -> Result<bool> {
     let subtype = dictionary.key(&SUBTYPE);
     if subtype.type_code() != object_type::NAME {
         return Ok(false);
@@ -331,7 +331,7 @@ fn is_image(dictionary: &ObjectHandle<'_>) -> Result<bool> {
 }
 
 /// Whether `entry` is an optional-content group or membership dictionary.
-fn is_optional_content_group(entry: &ObjectHandle<'_>) -> Result<bool> {
+fn is_optional_content_group<O: PdfObject>(entry: &O) -> Result<bool> {
     if entry.type_code() != object_type::DICTIONARY {
         return Ok(false);
     }
@@ -344,7 +344,7 @@ fn is_optional_content_group(entry: &ObjectHandle<'_>) -> Result<bool> {
 }
 
 /// A dictionary's keys, through `unparse` because qpdf's own key iterator may not be called.
-fn keys_of(dictionary: &ObjectHandle<'_>) -> Result<Vec<Name>> {
+fn keys_of<O: PdfObject>(dictionary: &O) -> Result<Vec<Name>> {
     crate::pdfsyntax::dict::top_level_keys(&dictionary.unparse())?
         .iter()
         .map(|key| Name::from_stripped(key))

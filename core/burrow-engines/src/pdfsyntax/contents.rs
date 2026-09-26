@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn apply_always_returns_one_buffer_per_element() {
-        // THE INVARIANT THE OPERATION GUARDS AND CANNOT REACH. `redact_steps::rewrite` checks
+        // THE INVARIANT THE OPERATION GUARDS AND CANNOT REACH. `redact::steps`' `rewrite` checks
         // that the splice returned as many buffers as the page has elements, and a mutation
         // sweep found that deleting the check changes nothing any test can see -- because
         // `apply` cannot return a different count, by construction.

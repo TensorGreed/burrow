@@ -27,7 +27,9 @@ plant_complete() {
   for crate in burrow_types burrow_engines burrow_ops burrow_core burrow_ffi burrow_wasm; do
     mkdir -p "$tree/$crate" && : >"$tree/$crate/index.html"
   done
-  for module in pdfium qpdf redact_verify; do
+  # `redact_verify` is not among them since #191 ungated it: it names no engine, and its page is
+  # written without the engines too.
+  for module in pdfium qpdf; do
     mkdir -p "$tree/burrow_engines/$module" && : >"$tree/burrow_engines/$module/index.html"
   done
   : >"$tree/burrow_engines/fn.glyphs_on_first_page.html"
@@ -63,16 +65,16 @@ expect() {
 
 # The baseline: a complete tree passes, and says how much it examined.
 plant_complete
-expect "a complete tree passes and reports 6 of 6 crates, 5 of 5 gated items" "$original" \
-  "6 of 6 workspace crate(s) documented; 5 of 5 public engine-gated" yes
+expect "a complete tree passes and reports 6 of 6 crates, 4 of 4 gated items" "$original" \
+  "6 of 6 workspace crate(s) documented; 4 of 4 public engine-gated" yes
 
 # THE #174 CASE: what `cargo doc` without --all-features writes -- every crate, and none of the
 # engine-gated items. The old job printed OK over exactly this.
 plant_complete
-rm -rf "$tree/burrow_engines/pdfium" "$tree/burrow_engines/qpdf" "$tree/burrow_engines/redact_verify" \
+rm -rf "$tree/burrow_engines/pdfium" "$tree/burrow_engines/qpdf" \
   "$tree/burrow_engines/fn.glyphs_on_first_page.html" "$tree/burrow_engines/fn.page_frame.html"
 expect "a tree documented without the engines is refused, naming what is missing" "$original" \
-  "mod redact_verify" no
+  "mod qpdf" no
 
 # One gated FUNCTION missing, so the fn half of the page mapping is exercised on its own.
 plant_complete
