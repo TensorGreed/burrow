@@ -188,10 +188,20 @@
   // this rule. The crash is Firefox's; the terminate that reached it was ours.
   //
   // WHAT THIS GUARANTEES, PRECISELY: the strip asks for nothing new once an operation starts,
-  // and its engine is released as soon as the render already in flight ends. So both engines
-  // can be resident for the rest of that render -- which is bounded by the render's own
-  // deadline. Nothing depends on a stronger claim: this is about an operation's headroom, and
-  // #107 turned out not to be.
+  // and its engine is released as soon as the request already in flight ends. That request
+  // can include the render worker's COLD START -- fetching and compiling PDFium -- which is
+  // bounded by silence rather than by a duration (the host's init timeout, re-armed on each
+  // progress message), and only then the render's deadline. So a file chosen and split at once
+  // can have PDFium download and compile during the split, which the old immediate terminate
+  // prevented. Terminating during that start-up has not been measured in Firefox, so it is not
+  // done blind. And this rule covers only this component's own release: the host's per-page
+  // watchdog and `dispose` still terminate mid-render.
+  //
+  // Firefox is NOT known to be clean. Four content-process deaths happened on this code during
+  // full runs, with no test failed, and have not been reproduced or attributed:
+  // [#204](https://github.com/TensorGreed/burrow/issues/204). Nothing here depends on a
+  // stronger claim than the one above: this is about an operation's headroom, and #107 turned
+  // out not to be.
   $effect(() => {
     if (paused) {
       // `running` is a plain variable, so this effect does not re-run when it changes; the
@@ -347,8 +357,9 @@
   /** Put a tile's pixels on its canvas. Re-run whenever the tile's data changes. */
   function paint(node: HTMLCanvasElement, data: ImageData | null) {
     const draw = (image: ImageData | null) => {
-      // A CPU CANVAS, ON PURPOSE (#107). On Linux WebKit (WPE and WebKitGTK) a GPU-backed
-      // canvas's first `putImageData` makes Skia compile a built-in shader, and a race in
+      // A CPU CANVAS, ON PURPOSE (#107). On Linux WebKit -- measured on WPE; WebKitGTK shares
+      // the code -- a GPU-backed canvas's first pixel read or write makes Skia compile a
+      // built-in shader (the strip only writes: `putImageData`), and a race in
       // WebKit's thread-suspend signal handler -- it leaves `errno` as EINTR -- can make that
       // compile fail and abort the tab. Measured: 3 crashes in 580 runs, 0 in 1,160 with the
       // handler patched. `willReadFrequently` makes WebKit allocate an unaccelerated buffer

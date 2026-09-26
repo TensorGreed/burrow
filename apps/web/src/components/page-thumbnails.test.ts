@@ -118,6 +118,12 @@ describe("the page-picture strip", () => {
     // would reopen #107's race. The contexts are counted so a scan that found none cannot pass.
     const calls = [...source.matchAll(/getContext\(([^)]*)\)/g)].map((m) => m[1]!);
     expect(calls.length, "the component draws with no 2D context at all").toBeGreaterThan(0);
+    // EVERY SPELLING COUNTED: `getContext?.(` or `getContext (` would slip past the call pattern
+    // above, so the bare token count must equal the calls it matched.
+    expect(
+      [...source.matchAll(/\bgetContext\b/g)].length,
+      "a getContext spelled so the rule above cannot read it",
+    ).toBe(calls.length);
     for (const args of calls) {
       expect(args).toMatch(/^"2d",\s*\{\s*willReadFrequently:\s*true\s*\}$/);
     }

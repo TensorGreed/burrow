@@ -722,9 +722,20 @@ cuts mid-run:
 | pause disabled | 0 / 120 |
 | pause that terminates only once the in-flight render has settled | 0 / 120 |
 
-The last is what ships. It keeps the rule — an operation gets the tab — and gives up its
-precision: the engine now outlives the start of an operation by up to one render's deadline.
-The crash is Firefox's bug; the terminate that reached it was ours.
+The last is what ships. It keeps the rule — an operation gets the tab — and gives up some of its
+precision. The engine now outlives the start of an operation until the request already in
+flight settles. That request can include the render worker's **cold start**, fetching and
+compiling PDFium, and a cold start is bounded by silence, not by a duration: the host's init
+timeout is re-armed on each progress message. Only after that does the render's deadline
+apply. So a file chosen and split at once can have PDFium download and compile during the
+split, which the old immediate terminate prevented. Terminating during start-up has not been
+measured in Firefox, so it is not done blind. The rule also covers only this component's own
+release: the host's per-page watchdog and `dispose` still terminate mid-render. The crash is
+Firefox's bug; the terminate that reached it was ours.
+
+**Firefox is not known to be clean.** Four content-process deaths happened on the fixed code
+during full runs, with no test failed. They have not been reproduced in any arm since, and are
+not attributed ([#204](https://github.com/TensorGreed/burrow/issues/204)).
 
 The Safari question is answered by the code rather than by the absence of reports: Apple's ports
 compile neither Skia nor the signal-based suspend path, so this crash cannot happen there.

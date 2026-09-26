@@ -62,9 +62,10 @@
    * The strip releases its engine while an operation runs (`PageThumbnails`' `paused`).
    * Gating that on `phase === "working"` left a hole: `choose()` sets `phase = "idle"`, so
    * picking a second document mid-split cleared the pause while the first split's worker was
-   * still running, and the strip resumed straight back into PDFium.
-   * `the render engine is not brought back while a split is running` pins it deterministically
-   * -- it counted three render-engine fetches during a running split. (A crash was once
+   * still running, and the strip resumed straight back into PDFium. NO TEST PINS THIS: a test by
+   * that description was written and could not be made to fail, and
+   * [#114](https://github.com/TensorGreed/burrow/issues/114) records why and what an adequate one
+   * needs. The counter is argued, not witnessed. (A crash was once
    * attributed to this hole. It was #107's WebKit race, which had nothing to do with it; the
    * hole is real regardless.)
    *
@@ -383,8 +384,8 @@
       // BEFORE the person could see their files (measured). Re-fetching a 1.9 MB engine while
       // the browser is still painting the result competes with the thing they are waiting for.
       // `tick()` puts the resume after the paint, which is better for them whatever any test
-      // says -- and it also makes "the result reached the caller" observable, which is what
-      // `the render engine is not brought back while a split is running` measures.
+      // says -- and it also makes "the result reached the caller" observable, which is what a
+      // test of the pause would need to anchor on (#114; none exists yet).
       await tick();
       // AND A FRAME, WHICH IS WHAT "ON SCREEN" ACTUALLY MEANS. `tick()` flushes Svelte's DOM
       // update; the browser has not painted it yet, and the strip was still re-acquiring

@@ -570,7 +570,8 @@ nothing, and one seed failed on the first execution.
   operation and the host's acquisition gate stay, as an operation's memory headroom, not as the
   fix. The pause now releases the engine only once a render in flight has settled: terminating
   it mid-render crashed Firefox's content process about one run in ten, a defect found only when
-  the strip was mounted again ([ADR 0027](adr/0027-what-a-render-promises-and-what-it-refuses.md)'s 2026-09-26
+  the strip was mounted again. Four further Firefox content-process deaths on the fixed code are
+  unexplained and unattributed ([#204](https://github.com/TensorGreed/burrow/issues/204)) ([ADR 0027](adr/0027-what-a-render-promises-and-what-it-refuses.md)'s 2026-09-26
   correction).
 
   ADR 0020 remains the decision for `rotate` v1: it selects by page number and range, and

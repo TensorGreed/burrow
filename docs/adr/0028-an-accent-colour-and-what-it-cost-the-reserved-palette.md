@@ -196,7 +196,7 @@ Two of the three inert uses are fixed and stay fixed — the tool heading and th
 genuinely hidden now. The `role="status"` region keeps the visibility it has had all along,
 which is the status quo and no regression, because nothing measured here justifies moving it in
 either direction. Hiding it is the correct behaviour and wants its own change, with #107
-understood first.
+understood first. *(#107 is understood as of 2026-09-26, and does not bear on it.)*
 
 **The thumbnail strip is untouched.** It works and it looks right; this piece preserves its
 behaviour rather than redesigning it, and the only thing that reaches it is the site-wide button

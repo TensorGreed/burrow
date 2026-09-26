@@ -21,10 +21,11 @@ import { isPinnedArtifact, mark, since } from "./request-log";
 
 import { STRIP_WITHDRAWN } from "../src/components/strip-copy.js";
 
-// SKIPPED WHILE THE STRIP IS WITHDRAWN, AND DERIVED FROM THE FLAG RATHER THAN COMMENTED OUT.
+// SKIPPED WHENEVER THE STRIP IS WITHDRAWN, AND DERIVED FROM THE FLAG RATHER THAN COMMENTED OUT.
 //
-// `STRIP_WITHDRAWN` is true: `/split-pdf` and `/rotate-pdf` do not mount the strip, so every
-// test below would fail on an element that is deliberately absent. Deleting them, or marking
+// The strip was withdrawn from 2026-09-17 to 2026-09-26 (#107) and is mounted again. While
+// `STRIP_WITHDRAWN` is true, `/split-pdf` and `/rotate-pdf` do not mount it, so every test
+// below would fail on an element that is deliberately absent. Deleting them, or marking
 // them `test.skip` by hand, would mean restoring the strip depends on somebody remembering
 // that these exist -- the same trap `strip-copy.ts` exists to close for the prose.
 //
@@ -73,8 +74,10 @@ test("a tile is drawn with real pixels, which is the half the CSP could break si
   // exactly what an `<img src="blob:...">` would have produced under `img-src 'self'`. The
   // canvas is read back and required to have more than one colour in it: a fixture page is ink
   // on paper, so a drawn tile is not uniform and an undrawn one is.
-  // THE CANVAS IS A CPU ONE (#107), read from the browser rather than from the source: the
-  // context the strip created is the one returned here, and its settings say how it was made.
+  // THE CANVAS WAS ASKED FOR AS A CPU ONE (#107), read from the browser rather than from the
+  // source: the context the strip created is the one returned here, and its settings say what
+  // it was created with. That the setting yields an unaccelerated buffer is WebKit's
+  // `allocateImageBuffer` plus #107's 0-in-1,160 measurement, not something this reads.
   // Where `getContextAttributes` is missing the answer is "unknown", which fails, rather than
   // a pass that measured nothing.
   const willReadFrequently = await canvas.evaluate(
