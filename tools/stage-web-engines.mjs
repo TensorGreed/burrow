@@ -317,6 +317,12 @@ async function main() {
       "tools/build-stamp.py check pkg pkg-render engines-wasm",
       "stage-web-engines",
     );
+  } else if (harness) {
+    console.warn(`stage-web-engines: BURROW_ENGINE_ARCH=${arch} -- engines not stamp-checked`);
+    requireCurrentBuild(
+      "tools/build-stamp.py check pkg pkg-render pkg-redact",
+      "stage-web-engines",
+    );
   } else {
     console.warn(`stage-web-engines: BURROW_ENGINE_ARCH=${arch} -- engines not stamp-checked`);
     requireCurrentBuild("tools/build-stamp.py check pkg pkg-render", "stage-web-engines");
@@ -388,6 +394,8 @@ async function main() {
   // "the base worker has no reason to fetch PDFium" and "the base worker CANNOT": its copy of
   // the manifest has no such URL in it.
   const moduleIdsByBundle = {};
+  /** @type {Record<string, { source: string, from: string, as: string }>} */
+  const sharedFrom = {};
   for (const bundle of bundles) {
     moduleIdsByBundle[bundle.id] = [];
     for (const file of bundle.modules) {
@@ -395,9 +403,22 @@ async function main() {
       // redaction's (#137): one file, one URL, one CSP entry, and each bundle's manifest slice
       // still names it -- the id is what a bundle fetches by, and it means the same bytes.
       if (staged[file.id]) {
+        // THE SAME BYTES, OR NOT SHARED AT ALL. The id is what a bundle fetches by, so a second
+        // bundle reusing one for a DIFFERENT file would silently be handed the first's bytes.
+        // Refused rather than trusted (security review of #137).
+        const first = sharedFrom[file.id];
+        if (first.source !== file.source || first.from !== file.from || first.as !== file.as) {
+          console.error(
+            `stage-web-engines: ${bundle.id} reuses the module id ${file.id} for a different file ` +
+              `(${file.source}/${file.from}) than the one already staged under it ` +
+              `(${first.source}/${first.from}). Give it its own id.`,
+          );
+          process.exit(1);
+        }
         moduleIdsByBundle[bundle.id].push(file.id);
         continue;
       }
+      sharedFrom[file.id] = file;
       const source = join(sources[file.source], file.from);
       if (!existsSync(source)) {
         console.error(`stage-web-engines: ${source} is missing.`);

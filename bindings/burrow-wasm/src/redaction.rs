@@ -13,7 +13,12 @@
 //!
 //! It links **qpdf** through the same bridge the base module uses (`crate::qpdf_engine`), and
 //! no PDFium: redaction's verification reads back through qpdf and burrow's own pdfsyntax,
-//! never through a renderer. `tools/check-pdfium-is-render-only.sh` holds that.
+//! never through a renderer. What holds that is structural, not a scan: `lib.rs`'s
+//! `compile_error!` refuses a `wasm32` build with `redact` and `render` together, so this module
+//! cannot compile the PDFium bridge; and the bundle's own source list in
+//! `tools/stage-web-engines.mjs` concatenates no PDFium glue. **No scan examines this module for
+//! PDFium**: `tools/check-pdfium-is-render-only.sh` reads production builds, and this bundle is
+//! staged into harness builds only (security and code review of #137).
 //!
 //! # What this does not do
 //!

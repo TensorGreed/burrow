@@ -27,15 +27,18 @@
 # web payload" after reading two files:
 #   - The JavaScript. Rust error strings live in the wasm, never in a bundle, so a bundle scan for
 #     these needles could not fire. A redaction reaching the base BUNDLE would arrive as a redact
-#     worker or glue imported into it, named `burrow-redact-worker` / `burrow_wasm_redact`, and those
-#     names do not exist until #137 builds them; `src/production-build.test.ts` meanwhile holds the
-#     `redact` op out of every shipped script.
+#     worker or glue imported into it, named `burrow-redact-worker` / `burrow_wasm_redact` -- and
+#     THOSE NAMES ARE REFUSED IN A PRODUCTION BUILD by the hold rule below, while #125 and
+#     #180-#183 hold `/redact-pdf`. `src/production-build.test.ts` holds the `redact` op out of
+#     every shipped script as well.
 #   - `qpdf.wasm` and `pdfium.*.wasm`, which are C++ and legitimately spell strings like
 #     `/ToUnicode`.
 #
-# ITS POSITIVES. The PDFium check has a shipped positive (the render bundle); this one has none,
-# because no redaction module ships until #137 builds its binding entry point (the web engine has
-# implemented redaction since #191, but nothing shipped calls it). What it has instead:
+# ITS POSITIVES. The PDFium check has a shipped positive (the render bundle). This one has a BUILT
+# positive since #137: redaction's own module, `bindings/burrow-wasm/pkg-redact/`, which must
+# carry EVERY needle -- so a needle that no longer reaches the code it names fails here, against
+# the real artifact, rather than passing an absence check vacuously. Nothing ships it yet (the
+# hold), so it is read from the binding's build output, stamped. And besides it:
 #   - every needle is checked on every run to still be spelled in redaction's Rust source, outside
 #     comments, so a renamed message cannot leave a needle that matches nothing;
 #   - `tools/test-check-redaction-not-in-base.sh` BUILDS a real base module with a probe export
@@ -96,6 +99,17 @@ fi
 dist="${1:-$repo/apps/web/dist}"
 [ -d "$dist" ] || fail "no build at $dist -- run \`pnpm build\` in apps/web first"
 
+# REDACTION'S OWN MODULE, the positive (#137). The second argument exists so the self-test can
+# hand it one; the default is the real build output, which must be this tree's.
+redaction_module="${2:-}"
+if [ -z "$redaction_module" ]; then
+  redaction_module="$repo/bindings/burrow-wasm/pkg-redact/burrow_wasm_bg.wasm"
+  python3 -B "$here/build-stamp.py" check pkg-redact || exit 1
+fi
+[ -f "$redaction_module" ] ||
+  fail "no redaction module at $redaction_module -- run tools/ci-local.py --only wasm-pack; without it \
+this check has no positive and every absence below would pass on names that exist nowhere"
+
 # THE PRODUCTION PAYLOAD, NOT A HARNESS BUILD, for the reason `check-pdfium-is-render-only.sh`
 # records: a verdict that depends on an unstated precondition is a gate somebody learns to re-run.
 for variant in harness host; do
@@ -132,6 +146,21 @@ ${source_root#"$repo"/}, so it can match nothing -- update it to what the code n
   echo "  needle '$needle': spelled in $(printf '%s\n' "${spelled[@]}" | sed "s|^$source_root/||" | tr '\n' ' ')"
 done
 
+# --- THE HOLD, BY NAME (#137) ---------------------------------------------------------------------
+#
+# While #125 and #180-#183 hold `/redact-pdf`, no production build carries redaction's bundle or
+# module. Staging keys that on `BURROW_HARNESS=1`, which also puts `/harness` in the build and so
+# trips the harness rule above -- but a plain `astro build` over a previous harness STAGING ships
+# both files, and before this rule the only thing that noticed was a module COUNT in another
+# script (security review). Named here, where the claim is. This comes off with the hold.
+mapfile -t held < <(
+  find "$dist/engines" -maxdepth 1 \( -name 'burrow-redact-worker.*' -o -name 'burrow_wasm_redact_*' \) \
+    2>/dev/null | sort
+)
+[ "${#held[@]}" -eq 0 ] ||
+  fail "redaction's bundle is in a production build ($(printf '%s ' "${held[@]##*/}")) while #125 \
+and #180-#183 hold /redact-pdf -- stage without BURROW_HARNESS (\`pnpm build\`) and rebuild"
+
 # --- the positive controls ----------------------------------------------------------------------
 #
 # Each module imports its own engine's bridge. Without this, every absence rule passes on a
@@ -144,6 +173,14 @@ for module in "${modules[@]}"; do
   grep -qaF -- "$control" "$module" ||
     fail "the positive control '$control' is missing from ${module#"$dist"/}, so this scan is \
 not looking at a built module"
+done
+
+# AND THE REAL POSITIVE: every needle IS in redaction's own module. An absence rule whose needle is
+# absent from the code it names is a rule that cannot fire.
+for index in "${!NEEDLES[@]}"; do
+  grep -qaF -- "${NEEDLES[$index]}" "$redaction_module" ||
+    fail "the needle '${NEEDLES[$index]}' is not in redaction's own module \
+(${redaction_module#"$repo"/}) -- so its absence from the base proves nothing; fix the needle"
 done
 
 # --- the rules --------------------------------------------------------------------------------
@@ -168,5 +205,6 @@ done
 echo "check-redaction-not-in-base: ${#NEEDLES[@]} needle(s) absent from ${#modules[@]} Rust \
 module(s) -- $(printf '%s ' "${modules[@]##*/}")-- each module's own engine control present."
 echo "  Scanned: those modules only. Not the JavaScript (no Rust literal reaches it) and not the \
-C++ engines. No SHIPPED module is a positive yet; the self-test builds one."
+C++ engines. Every needle present in redaction's own module (${redaction_module##*/}, the positive); \
+no redaction artifact in this build (the hold)."
 echo "OK -- redaction's code reaches neither of the Rust modules a tool page downloads."

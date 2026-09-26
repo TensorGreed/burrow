@@ -35,6 +35,12 @@ export const MAIN = [
   readFileSync(join(here, "main.js"), "utf8"),
 ].join("\n");
 
+/** Redaction's bundle's worker code (#137), same order, same reason. */
+export const REDACT_MAIN = [
+  readFileSync(join(here, "worker-protocol.js"), "utf8"),
+  readFileSync(join(here, "redact-main.js"), "utf8"),
+].join("\n");
+
 /** The render bundle's worker code, same order, same reason. */
 export const RENDER_MAIN = [
   readFileSync(join(here, "worker-protocol.js"), "utf8"),
@@ -176,6 +182,9 @@ export function load(
       free: () => {},
     }),
     WebLimits: class {},
+    // Redaction's bundle (#137): its one operation and the region it constructs.
+    WebRegion: class {},
+    redact: reply,
     page_count: reply,
     structure_check: reply,
     merge: reply,

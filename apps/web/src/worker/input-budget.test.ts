@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { MAIN, load, operation, replyShape } from "./test-scope.js";
+import { MAIN, REDACT_MAIN, load, operation, replyShape } from "./test-scope.js";
 
 /** A refusal shaped exactly as `check_input_budget` returns one. */
 function overBudget(): Record<string, unknown> {
@@ -114,5 +114,46 @@ describe("the input budget is decided before the input is read", () => {
       budgetAt,
       "the budget is consulted after the bytes are read, which is no earlier than the core",
     ).toBeLessThan(readAt);
+  });
+});
+
+describe("redaction's bundle decides the budget before reading too (#137)", () => {
+  // THE SAME RULE IN THE THIRD BUNDLE, which review found only `main.js` was held to: moving
+  // `arrayBuffer()` above the budget call in `redact-main.js` passed every test there was.
+  async function redact(budget: () => Record<string, unknown>) {
+    const harness = load(REDACT_MAIN, true, budget);
+    harness.releaseQpdf();
+    await harness.ensureReady();
+    await harness.send({
+      ...harness.op(1),
+      op: "redact",
+      page: 1,
+      covered: [1],
+      region: { left: 0, top: 0, width: 10, height: 10 },
+    });
+    return harness;
+  }
+
+  it("reads nothing when the budget refuses", async () => {
+    const harness = await redact(overBudget);
+    expect(harness.blobReads(), "the document was read before the ceiling was applied").toBe(0);
+    expect(harness.budgetCalls).toEqual([[8]]);
+  });
+
+  it("reads the input when the budget allows it", async () => {
+    // THE CONTROL, as above: a bundle that never read anything would pass the case before it.
+    const harness = await redact(() => ({ ...replyShape(), ok: true }));
+    expect(harness.blobReads()).toBe(1);
+  });
+
+  it("the source checks before reading, not merely in this stub", () => {
+    const budgetAt = REDACT_MAIN.indexOf("check_input_budget(");
+    const readAt = REDACT_MAIN.indexOf("request.blob.arrayBuffer()");
+    expect(budgetAt, "redact-main.js no longer calls check_input_budget").toBeGreaterThan(0);
+    expect(
+      readAt,
+      "redact-main.js no longer reads its blob the way this rule looks for",
+    ).toBeGreaterThan(0);
+    expect(budgetAt).toBeLessThan(readAt);
   });
 });

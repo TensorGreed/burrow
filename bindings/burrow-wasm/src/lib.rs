@@ -1112,6 +1112,47 @@ pub fn available_operations() -> &'static [&'static str] {
 mod tests {
     use super::*;
 
+    /// THE TWO DISCLOSURE COUNTS, pinned against a report whose every field is non-trivial.
+    ///
+    /// Nothing read them before this: the browser smoke compared the report's digest, and a
+    /// reply that zeroed `retained_fonts` or swapped the two counts passed it. They are what a
+    /// page shows — ADR 0029 §7's "this font still carries what you removed" keys on the first —
+    /// so a silent zero is a disclosure that never appears. Found by both reviews of #137.
+    #[cfg(feature = "redact")]
+    #[test]
+    fn a_redaction_reply_carries_the_report_and_both_disclosure_counts() {
+        use burrow_core::engines::redact::{FontOutcome, Report};
+
+        let report = Report {
+            fonts: vec![
+                FontOutcome {
+                    font: 1,
+                    cut: true,
+                    also_used_by: 0,
+                },
+                FontOutcome {
+                    font: 2,
+                    cut: false,
+                    also_used_by: 3,
+                },
+                FontOutcome {
+                    font: 3,
+                    cut: false,
+                    also_used_by: 1,
+                },
+            ],
+            dropped_carried_text: 5,
+        };
+        let mut reply = Reply::redacted(vec![7, 8, 9], &report);
+
+        assert!(reply.ok());
+        // DIFFERENT NUMBERS, so a swap of the two cannot pass.
+        assert_eq!(reply.retained_fonts(), 2);
+        assert_eq!(reply.dropped_carried_text(), 5);
+        assert_eq!(reply.report(), format!("{report:?}"));
+        assert_eq!(reply.take_output(), vec![7, 8, 9]);
+    }
+
     // Only the tests name a `Stage` directly: `Reply::failure` reads one off an error rather
     // than choosing one, which is the whole point -- the binding classifies nothing.
     use burrow_core::Stage;

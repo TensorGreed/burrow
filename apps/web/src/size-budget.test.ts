@@ -500,6 +500,19 @@ describe("the first-load size budget", () => {
     ).toBe(budget.total.measured_brotli);
   });
 
+  it("has render measurements that add up to the recorded render total", () => {
+    // THE SAME RULE FOR THE SECOND PAYLOAD, which had none: #205 re-recorded the base total and
+    // left the render total 2,600 bytes behind its own lines, and nothing noticed until code
+    // review of #137 did the sum by hand. The render total is what a rendering page pays
+    // altogether -- the base total plus the render lines -- so it is derivable, and checked.
+    const lines = Object.values(budget.render.artifacts).reduce((n, a) => n + a.measured_brotli, 0);
+    expect(
+      budget.total.measured_brotli + lines,
+      "size-budget.json's render total is not the base total plus its render lines; one was " +
+        "re-recorded and the other was not",
+    ).toBe(budget.render.total.measured_brotli);
+  });
+
   it("records the measurement each budget was set from", () => {
     // `measured_brotli` is what makes a budget auditable: a reviewer can see how much slack a
     // line has without rebuilding. A budget below its own measurement is a typo that would
@@ -668,9 +681,10 @@ describe("redaction's payload, off the base (#137)", () => {
     for (const [key, line] of Object.entries(budget.redact.artifacts)) {
       const actual = redactGroups[key];
       if (!actual) continue; // covered by the coverage assertion below
-      expect(actual.brotli, `${key}: ${kb(actual.brotli)} > ${kb(line.budget_brotli)}`).toBeLessThanOrEqual(
-        line.budget_brotli,
-      );
+      expect(
+        actual.brotli,
+        `${key}: ${kb(actual.brotli)} > ${kb(line.budget_brotli)}`,
+      ).toBeLessThanOrEqual(line.budget_brotli);
     }
   });
 
@@ -679,6 +693,23 @@ describe("redaction's payload, off the base (#137)", () => {
     expect(unbudgeted, `redaction artifacts with no budget: ${unbudgeted.join(", ")}`).toEqual([]);
     const stale = Object.keys(budget.redact.artifacts).filter((key) => !(key in redactGroups));
     expect(stale, `redaction budgets for files that do not ship: ${stale.join(", ")}`).toEqual([]);
+  });
+
+  it("keeps redaction's payload out of the render payload in a build that has both", () => {
+    // `engineClosures` named render's payload as "every bundle but the base" while there were
+    // two, and the third would have been counted as render's -- 160 KB of redaction in the
+    // picture strip's cost, with nothing saying why. Only a HARNESS build has all three, so this
+    // is the one place the fix is observable; code review found it unwitnessed.
+    const closures = engineClosures(HARNESS_DIR);
+    const redactFiles = closures.redact;
+    expect(redactFiles.length, "the harness build staged no redaction payload").toBe(2);
+    for (const path of redactFiles) {
+      expect(closures.render, `${path} is counted as render's`).not.toContain(path);
+    }
+    expect(
+      closures.render.some((path) => path.includes("pdfium")),
+      "render lost PDFium",
+    ).toBe(true);
   });
 
   it("finds no drift in the redaction lines", () => {
