@@ -130,6 +130,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | **`/EmbeddedFiles`** attachments | **disclose** |
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
 | an **inline image** whose extent the page cannot derive | **refuse** — added by the [2026-09-21 amendment](#amendment-2026-09-21--the-channel-the-spike-missed-inline-image-extent). Spike 0006 did not measure this channel |
+| text shown inside a **Form XObject with a font `Tf` selected outside it** | **refuse**, `[font-selected-in-another-scope]` — added 2026-09-28 ([#218], round 4). A reader binds the font where `Tf` runs; the walk carried only its name and resolved it again in the form's own `/Resources`. A review got two `Ok`s from that: a secret measured with a zero-width form font, placed outside the region and left in plain text (older than [#218]); and a removed character credited to the form's font, so the font that drew it kept mapping it. Refused rather than resolved through the `Tf`'s scope. None of the 463 golden cases has the shape |
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
@@ -235,6 +236,9 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > through the scope in force at each step. A route the walk recorded cannot disagree with the
   > walk. The same review measured the search at 58 s for 100 glyphs on a 178 kB file; the route
   > costs what the base did, 0.7 s. The golden outcomes are unchanged by either.
+  > A route is the scope of the *stream*, and a font is bound in the scope of its `Tf`: text shown
+  > in a form with a font selected outside it is refused as `[font-selected-in-another-scope]`
+  > (§3), because the two scopes can name different fonts and a reader uses the `Tf`'s.
   > The web half of "refuses with the narrowing off" is held by the browser differential, which
   > plants it in `bridge-qpdf.js`: `oh_set_array_item` made a no-op, so no `/Differences` name is
   > overwritten. On `04-differences-encoding.pdf` the web then refuses with `OutputRejected`,

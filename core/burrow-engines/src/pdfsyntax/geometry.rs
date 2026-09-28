@@ -152,6 +152,8 @@ pub enum Refusal {
     SharedFormWouldChangeElsewhere,
     /// A Type 3 glyph procedure that shows text the walk does not reach.
     TypeThreeProcedureShowsText,
+    /// Text shown inside a Form XObject with a font `Tf` selected in another scope.
+    FontSelectedInAnotherScope,
     /// A shown string that does not divide into whole codes.
     StringNotWholeCodes,
     /// Glyphs cut from one string disagreeing on the font's code width.
@@ -280,6 +282,7 @@ impl Refusal {
         Self::AdjustmentNotExpressible,
         Self::SharedFormWouldChangeElsewhere,
         Self::TypeThreeProcedureShowsText,
+        Self::FontSelectedInAnotherScope,
         Self::StringNotWholeCodes,
         Self::MixedCodeWidths,
         Self::FormCycle,
@@ -324,6 +327,7 @@ impl Refusal {
             Self::AdjustmentNotExpressible => "adjustment-not-expressible",
             Self::SharedFormWouldChangeElsewhere => "shared-form-would-change-elsewhere",
             Self::TypeThreeProcedureShowsText => "type-three-procedure-shows-text",
+            Self::FontSelectedInAnotherScope => "font-selected-in-another-scope",
             Self::StringNotWholeCodes => "string-not-whole-codes",
             Self::MixedCodeWidths => "mixed-code-widths",
             Self::FormCycle => "form-cycle",
@@ -360,6 +364,7 @@ impl Refusal {
                 | Self::UnreadableCMap
                 | Self::SharedFormWouldChangeElsewhere
                 | Self::TypeThreeProcedureShowsText
+                | Self::FontSelectedInAnotherScope
         )
     }
 
@@ -2673,6 +2678,8 @@ struct GraphicsState {
     ctm: Matrix,
     text: TextState,
     font: Option<Vec<u8>>,
+    /// The route of the stream whose `Tf` selected [`Self::font`] -- see [`show`]'s refusal.
+    font_selected_along: Arc<[Vec<u8>]>,
 }
 
 /// Walk a content stream and place every glyph it draws.
@@ -2710,6 +2717,7 @@ pub fn glyphs_in(
             ctm: Matrix::IDENTITY,
             text: TextState::default(),
             font: None,
+            font_selected_along: Arc::from(Vec::new()),
         },
         &mut budget,
         &mut out,
@@ -2858,6 +2866,7 @@ fn walk(
                     Some(Operand::Name { value, .. }) => Some(value.clone()),
                     _ => None,
                 };
+                state.font_selected_along = Arc::clone(&budget.route);
             }
             b"Do" => {
                 let Some(Operand::Name { value, .. }) = operation.operands.first() else {
@@ -3113,6 +3122,20 @@ fn show(
     let Some(font) = state.font.clone() else {
         return Refusal::NoFontSelected.refuse("text shown with no font selected by 'Tf'");
     };
+    // A FONT IS BOUND WHERE `Tf` RUNS, NOT WHERE THE TEXT IS SHOWN (#218, round 4). The graphics
+    // state a form inherits carries the font `Tf` selected -- the object, found in the scope the
+    // `Tf` ran in. This walk carries only its name and would resolve it again in the form's own
+    // `/Resources`, so a form whose `/F1` differs from the page's was measured with one font and
+    // drawn by PDFium with the other. A review got both halves of that to `Ok`: a secret placed
+    // at the wrong width, outside the region, and left in the output in plain text; and a removed
+    // character credited to the form's font, so the font that drew it kept mapping it. Refused
+    // rather than resolved through the `Tf`'s scope, which is the smaller change and fails closed.
+    if *state.font_selected_along != **shown.route {
+        return Refusal::FontSelectedInAnotherScope.refuse(
+            "text shown inside a Form XObject with a font selected outside it, which readers \
+             resolve in the scope that selected it",
+        );
+    }
     // THE STRING'S BYTES, decoded from its span. `Token::Str` carries no value -- #128's note
     // that nothing `names_in_content` answers depends on what a string SAYS -- so the value
     // comes from slicing and decoding, which is exactly what that span exists for.
@@ -3381,7 +3404,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 38,
+            total, 39,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -3954,6 +3977,13 @@ mod tests {
                     )
                 }),
             ],
+            Refusal::FontSelectedInAnotherScope => vec![(Content, || {
+                // `Tf` on the page, the text shown in a form: PDFium draws it with the page's
+                // font, and this walk would have resolved the name in the form's.
+                let resources =
+                    Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "BT 0 0 Td (A) Tj ET");
+                walk_with("/F1 10 Tf /Fm0 Do", &resources)
+            })],
             Refusal::SharedFormWouldChangeElsewhere => {
                 vec![(Entry("check_form_sharing"), || {
                     let (glyphs, _) = form_glyphs(b"/Fm0 Do", "/F1 10 Tf BT 0 0 Td (ABC) Tj ET");
@@ -4538,11 +4568,38 @@ mod tests {
 
     #[test]
     fn a_form_inherits_the_text_state_in_force_at_the_do() {
-        let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "BT 0 0 Td (A) Tj ET");
-        // The font and size are set OUTSIDE the form and never inside it.
-        let glyphs = glyphs_in(b"/F1 10 Tf /Fm0 Do", &resources, &unwatched()).expect("walks");
+        // The rise is set OUTSIDE the form and never inside it. The font is selected inside:
+        // one selected outside is refused, see the next test.
+        let resources =
+            Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "/F1 10 Tf BT 0 0 Td (A) Tj ET");
+        let glyphs = glyphs_in(b"7 Ts /Fm0 Do", &resources, &unwatched()).expect("walks");
         assert_eq!(glyphs.len(), 1);
-        assert!((glyphs[0].font_size - 10.0).abs() < 1e-9);
+        assert!(
+            (glyphs[0].origin.1 - 7.0).abs() < 1e-9,
+            "the rise set outside the form did not reach it: {:?}",
+            glyphs[0].origin
+        );
+    }
+
+    #[test]
+    fn a_font_selected_outside_a_form_and_shown_inside_it_is_refused() {
+        // #218 round 4: PDFium binds the font where `Tf` ran; this walk would resolve the name
+        // again in the form's own resources. And the near-miss beside it: the same `Tf` inside
+        // the form walks.
+        let outside = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "BT 0 0 Td (A) Tj ET");
+        match glyphs_in(b"/F1 10 Tf /Fm0 Do", &outside, &unwatched()) {
+            Err(error) => assert!(
+                Refusal::FontSelectedInAnotherScope.caught(&error),
+                "refused, but not by this rule: {error:?}"
+            ),
+            Ok(glyphs) => panic!(
+                "walked {} glyphs with the font of another scope",
+                glyphs.len()
+            ),
+        }
+        let inside =
+            Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "/F1 10 Tf BT 0 0 Td (A) Tj ET");
+        glyphs_in(b"/F1 10 Tf /Fm0 Do", &inside, &unwatched()).expect("the form's own Tf walks");
     }
 
     // ---- (4) every early exit is a refusal ------------------------------------------------

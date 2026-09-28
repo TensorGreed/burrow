@@ -836,6 +836,157 @@ mod wiring {
         }
     }
 
+    /// A Form XObject stream with `resources` and `body`, for the round-4 fixtures.
+    fn form_stream(resources: &str, body: &str) -> String {
+        format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] {resources} /Length {} >>\n\
+             stream\n{body}endstream",
+            body.len()
+        )
+    }
+
+    /// A `/ToUnicode` program mapping each `(code, unicode)` pair, in hex.
+    fn mappings(pairs: &[(&str, &str)]) -> String {
+        let entries: String = pairs
+            .iter()
+            .map(|(code, unicode)| format!("<{code}> <{unicode}> "))
+            .collect();
+        stream(&format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+             1 begincodespacerange <00> <FF> endcodespacerange \
+             {} beginbfchar {entries}endbfchar endcmap end end\n",
+            pairs.len()
+        ))
+    }
+
+    fn refused_as(outcome: burrow_types::Result<()>, rule: &str) {
+        match outcome {
+            Err(burrow_types::Error::Unsupported(message)) => assert!(
+                message.contains(rule),
+                "refused, but not as [{rule}]: {message}"
+            ),
+            other => panic!("expected [{rule}], got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_secret_shown_in_a_form_with_the_pages_font_is_refused_not_misplaced() {
+        // #218 round 4, and older than #218: the page selects `/F1` -- 556 wide -- and draws
+        // `X`, whose own `/F1` is zero wide and which shows `AAASECRET` with no `Tf` of its own.
+        // PDFium draws it with the page's font, so `SECRET` lands inside the region; this walk
+        // resolved `/F1` in `X`'s resources, placed every glyph at x = 20 with no width, found
+        // nothing to remove, and returned `Ok` with the secret in the output in plain text.
+        let zero_widths = format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+             /FirstChar 32 /LastChar 94 /Widths [{}] >>",
+            "0 ".repeat(63)
+        );
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R >> /XObject << /X 8 0 R >> >>",
+            "BT /F1 24 Tf 72 300 Td (ACERST) Tj ET\nq /X Do Q\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                zero_widths,
+                form_stream(
+                    "/Resources << /Font << /F1 7 0 R >> >>",
+                    "BT 20 700 Td (AAASECRET) Tj ET\n",
+                ),
+            ],
+        );
+        refused_as(redact_bytes(&bytes, &[0]), "font-selected-in-another-scope");
+    }
+
+    #[test]
+    fn a_removed_glyph_shown_with_an_inherited_font_is_refused_not_credited_elsewhere() {
+        // #218 round 4, and a regression of this branch: `A` selects its `/F1` (`S` is `Q` to
+        // it), ends the text object, and draws `B`, whose own `/F1` (`S` is `x`) is never
+        // selected. `B` shows `S` in the region. PDFium extracts `Q`: the font is `A`'s. The
+        // route credited the glyph to `B`'s font, narrowed that, and returned `Ok` with `A`'s
+        // font still mapping the removed `S`. `main` refused it, as `Internal`.
+        let bytes = two_pages(
+            "<< /XObject << /A 6 0 R >> >>",
+            "q /A Do Q\n",
+            "<< >>",
+            &[
+                form_stream(
+                    "/Resources << /Font << /F1 7 0 R >> /XObject << /B 9 0 R >> >>",
+                    "BT /F1 24 Tf ET\n/B Do\n",
+                ),
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 8 0 R"),
+                mappings(&[("53", "0051")]),
+                form_stream(
+                    "/Resources << /Font << /F1 10 0 R >> >>",
+                    "BT 72 700 Td (S) Tj ET\n",
+                ),
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 11 0 R"),
+                mappings(&[("53", "0078")]),
+            ],
+        );
+        refused_as(redact_bytes(&bytes, &[0]), "font-selected-in-another-scope");
+    }
+
+    /// One name, two fonts, one page, both still drawing: the page's `/F1` (`P`) draws `S` in
+    /// the region and `K` below it; form `X`'s own `/F1` (`F`) draws `S` below it. Resolution
+    /// cached by NAME would credit `X`'s `S` to whichever `/F1` it met first (#218 round 4).
+    fn one_name_two_fonts() -> Vec<u8> {
+        two_pages(
+            "<< /Font << /F1 6 0 R >> /XObject << /X 8 0 R >> >>",
+            "BT /F1 24 Tf 72 700 Td (S) Tj 72 -400 Td (K) Tj ET\nq /X Do Q\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 7 0 R"),
+                mappings(&[("4B", "004B"), ("53", "0051")]),
+                form_stream(
+                    "/Resources << /Font << /F1 9 0 R >> >>",
+                    "BT /F1 24 Tf 72 300 Td (S) Tj ET\n",
+                ),
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 10 0 R"),
+                mappings(&[("53", "0078")]),
+            ],
+        )
+    }
+
+    #[test]
+    fn one_name_for_two_fonts_on_a_page_is_resolved_per_scope() {
+        // The operation's cache: `X`'s `S` credited to `P` keeps `P` mapping the removed `S`.
+        let output = redact_output(&one_name_two_fonts(), &[0]).expect("redacts");
+        assert!(
+            !maps(&output, &[], "F1", 0x53),
+            "the page font still maps the S removed from the page"
+        );
+        assert!(
+            maps(&output, &[], "F1", 0x4B),
+            "the page font lost the K it still draws"
+        );
+        assert!(
+            maps(&output, &["X"], "F1", 0x53),
+            "the form's font lost the S it still draws"
+        );
+    }
+
+    #[test]
+    fn one_name_for_two_fonts_is_resolved_per_scope_by_the_read_back_too() {
+        // THE READ-BACK'S CACHE: with the narrowing off, `P` still maps the removed `S`, and a
+        // read-back crediting `X`'s `S` to `P` would call that mapping drawn and pass it.
+        use crate::redact::hooks::{NARROWINGS_SKIPPED, SKIP_NARROWING};
+        NARROWINGS_SKIPPED.with(|n| n.set(0));
+        SKIP_NARROWING.with(|flag| flag.set(true));
+        let outcome = redact_bytes(&one_name_two_fonts(), &[0]);
+        SKIP_NARROWING.with(|flag| flag.set(false));
+        assert!(
+            NARROWINGS_SKIPPED.with(std::cell::Cell::get) > 0,
+            "the narrowing hook was never reached"
+        );
+        match outcome {
+            Err(burrow_types::Error::OutputRejected(message)) => assert!(
+                message.contains("still maps"),
+                "refused, but not for the mapping: {message}"
+            ),
+            other => panic!("the page font's mapping of a removed code passed: {other:?}"),
+        }
+    }
+
     #[test]
     fn a_nested_form_with_no_same_named_page_font_is_redacted() {
         // Without the decoy the old resolution found nothing and failed with `Internal` --
