@@ -255,6 +255,48 @@ render-only. The test asserts burrow's geometry agrees with a second implementat
 where both are asked; the runtime check continues to assert burrow's own rule against burrow's
 own reading, and that residue stays exactly as stated above.
 
+**Amended 2026-09-27 (owner, for #206): the oracle also runs at RUNTIME, for geometry only.** The
+paragraph above made it test-only for two reasons, and neither holds on the redaction page any
+more:
+
+- **#107.** "A tab holding qpdf and PDFium" was the reason a second engine could not be in the
+  tab. #107 was never that: it was a Linux WebKit race reached through a GPU-backed canvas,
+  fixed by drawing on a CPU canvas (ADR 0027's 2026-09-26 correction).
+- **The payload.** "The engine this project deliberately keeps render-only" is kept render-only
+  so that a tool page that draws nothing downloads no PDFium. The redaction page draws: it holds
+  PDFium for its thumbnails, so the reading costs no new download there, and no page that does
+  not already fetch PDFium starts to.
+
+**Geometry, never mapping.** The runtime reading asks PDFium where glyphs ARE -- boxes and
+origins computed from the text state and the font's metrics -- and never what they SAY. No
+`FPDFText_GetUnicode`, no `/ToUnicode`, no `/ActualText`: spike 0006's channel 21 measured a
+document whose `/ToUnicode` lies while its font's `cmap` tells the truth, and a check that decodes
+through the font verifies the document's own claim about itself. The "not admissible evidence"
+objection in *Alternatives considered* is about mapping and stands unchanged; what is admitted is
+the half it does not reach.
+
+**It can only ADD a refusal, never remove one.** The operation's own verification (§6, over
+burrow's pdfsyntax walk) runs as before and its refusals stand whatever PDFium says. The PDFium
+reading is a second, independent opinion on placement: if PDFium places a character inside a
+redacted region, the output is refused; if PDFium sees nothing there, that is no evidence the
+first verdict was wrong and changes nothing. There is no path by which the second engine turns
+a refusal into a success.
+
+**Under R8 the page receives nothing until BOTH verdicts are in.** The worker that produced the
+document -- redaction's qpdf worker, `burrow-redact-worker.js` -- holds the bytes, and posts
+nothing, until the render worker has answered. A copy crosses to the render worker for the
+reading, bound to the emitted bytes by a hash under R10 as amended (ADR 0006, 2026-09-27); the
+render worker returns a verdict, never bytes. Only when both verdicts are "cleared" does the one
+reply carrying the document go to the page. A render worker that dies, times out or is
+unavailable is a refusal, not a pass: an unanswered second opinion is not a clean one.
+
+**What this leaves as it was.** Test-time calibration (`tests/glyph_geometry.rs`) stays: it is
+what sets the tolerance the runtime reading uses, from the disagreements this record already
+names (PDFium's invented space; `/Arial-Bold`'s `@` at 975 against 1072). Mapping-side residue is
+unchanged. `tools/check-pdfium-is-render-only.sh` keeps its claim -- a page that does not render
+downloads no PDFium -- and ADR 0026's wording that PDFium is used "only to render" becomes
+"to render, and on the redaction page to read glyph placement", in #206's change.
+
 #### PDFium invents a space where a redaction leaves a gap
 
 Measured during #131, and recorded here rather than only in a code comment because §6's
