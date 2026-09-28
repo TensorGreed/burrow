@@ -35,6 +35,10 @@ apps/web/src/generated/
 apps/web/dist-production-check/
 apps/web/dist-harness-check/
 apps/web/test-results/
+# tools/test-redaction-differential-ledger.sh's planted copies, removed by its trap -- and left
+# behind by a SIGKILL, where the next `playwright test` would run them and `git add -A` stage them.
+apps/web/e2e/*.mutant.*
+apps/web/*.mutant.*
 apps/web/playwright-report/
 apps/web/.astro/
 apps/web/.vercel/
