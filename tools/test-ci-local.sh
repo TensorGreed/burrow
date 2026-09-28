@@ -356,6 +356,10 @@ restore_all() {
   trap - EXIT INT TERM HUP
   cp "$backup" "$ci"
   rm -f "$backup" "$broken" "$allow_fixture" "$implies_fixture"
+  # EVERY FIXTURE THIS SCRIPT WRITES is named `.ci-local-*`, in the three directories it writes
+  # to, and no tracked file is. An aborted run left four behind where `git add -A` would stage
+  # them (review, measured); each case's own `rm` only runs when the case finishes.
+  rm -f "$here"/.ci-local-* "$repo"/apps/web/.ci-local-* "$repo"/engines/.ci-local-*
   if [ -n "$tbackup" ] && [ -s "$tbackup" ]; then
     cp "$tbackup" "$repo/rust-toolchain.toml"
     rm -f "$tbackup"
@@ -1072,6 +1076,356 @@ PYEOF
     fail=$((fail + 1))
   fi
 done
+
+# PROSE IS ATTRIBUTED BY WHO NAMES IT, and every uncertainty narrows nothing. One scenario per
+# rule, on real files: a note selects what always runs; a source file beside it is an orphan; a
+# spike a web file names selects the web jobs; an ADR cited only in comments selects nothing more;
+# a licence notice among data, a licence text an unowned manifest names, and a note among fixtures
+# each narrow nothing.
+scenario "a reviewer's note runs only the always-run checkers" \
+  ".claude/agent-memory/code-reviewer/MEMORY.md" "checkers,checker-self-tests" "test,clippy,doc,web,web-e2e"
+scenario "a source file planted beside the notes narrows nothing" \
+  ".claude/agent-memory/code-reviewer/planted.rs" "test,clippy,doc,web,web-e2e" ""
+scenario "a document a web file names selects the web jobs" \
+  "docs/spikes/0001-wasm-engines.md" "web,web-e2e" "test,clippy"
+scenario "an ADR cited only in comments selects nothing more" \
+  "docs/adr/0022-every-operation-verifies-its-own-output.md" "checkers" "test,web,web-e2e"
+scenario "a licence notice in a directory of data narrows nothing" \
+  "engines/licences/qpdf-NOTICE.md" "test,web,web-e2e" ""
+# `engines/licenses.toml` names it, and so does the generated SBOM, which no job accounts for.
+scenario "a licence text an unaccounted file reads narrows nothing" \
+  "docs/adr/licences/LicenseRef-AGG-2.3.txt" "test,web,web-e2e" ""
+scenario "a document only an unowned workflow names narrows nothing" \
+  "docs/ROADMAP.md" "test,web,web-e2e" ""
+scenario "a note among fixtures narrows nothing" \
+  "tests/conformance/fixtures/NOTES.md" "test" ""
+
+# EACH RULE, removed in a copy, must change a selection. The comment leaders and the resolution
+# roots are pure functions with their own cases in `verify_parser`, on every run.
+for mutation in classification directory owner self comments wiring; do
+  mutant="$here/.ci-local-prose-$mutation.py"
+  python3 - "$here/ci-local.py" "$mutant" "$mutation" <<'PYEOF'
+import pathlib, sys
+source, target, which = sys.argv[1:4]
+text = pathlib.Path(source).read_text()
+old, new = {
+    "classification": (
+        '    return path.endswith(".md") or path.startswith("docs/")\n',
+        "    return False\n",
+    ),
+    "directory": (
+        '        return set(), f"its directory also holds {others[0]}, which is not prose"\n',
+        "        pass\n",
+    ),
+    "owner": (
+        '            return set(), f"{namer} names it, and no job accounts for that file"\n',
+        "            continue\n",
+    ),
+    "self": (
+        "        if namer == path or namer == SELF_REL or is_prose(namer):\n",
+        "        if namer == path or is_prose(namer):\n",
+    ),
+    "comments": (
+        "    if name not in line or _is_comment(line):\n        return False\n",
+        "    if name not in line:\n        return False\n",
+    ),
+    "wiring": (
+        '        hit = job["name"] in forced or any(\n',
+        "        hit = any(\n",
+    ),
+}[which]
+assert text.count(old) == 1, f"the {which} rule is not spelled as this test expects"
+pathlib.Path(target).write_text(text.replace(old, new, 1))
+assert old not in pathlib.Path(target).read_text(), f"the {which} mutation did not apply"
+PYEOF
+  case "$mutation" in
+    classification) probe_file=".claude/agent-memory/code-reviewer/MEMORY.md"; job=test; want=RUNS ;;
+    # ROOT PROSE: `CONTRIBUTING.md` shares the root with `Cargo.toml`, and nothing but the
+    # directory rule stops it narrowing -- measured; every other mixed-directory file also has an
+    # unaccounted namer, which refuses it on its own.
+    directory) probe_file="CONTRIBUTING.md"; job=test; want=SKIPS ;;
+    owner) probe_file="docs/ROADMAP.md"; job=test; want=SKIPS ;;
+    self) probe_file=".claude/agent-memory/code-reviewer/MEMORY.md"; job=test; want=RUNS ;;
+    comments) probe_file="docs/adr/0022-every-operation-verifies-its-own-output.md"; job=test; want=RUNS ;;
+    wiring) probe_file="docs/spikes/0001-wasm-engines.md"; job=web; want=SKIPS ;;
+  esac
+  out="$(python3 "$scenario_driver" "$mutant" "$probe_file" 2>&1)"
+  rm -f "$mutant"
+  if grep -Eq "^$want:(.*,)?$job(,|$)" <<<"$out"; then
+    echo "  ok   without the prose $mutation rule, $probe_file $([ "$want" = RUNS ] && echo runs || echo skips) $job"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL removing the prose $mutation rule changed nothing a scenario can see"
+    echo "$out" | tail -3
+    fail=$((fail + 1))
+  fi
+done
+
+# A FAILED git NARROWS NOTHING. `git grep` and `git ls-files` are stubbed to fail in turn; a note,
+# which otherwise selects 14, must then select everything.
+git_driver="$here/.ci-local-git-failure-driver.py"
+cat > "$git_driver" <<'PYEOF'
+import importlib.util
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("cil", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["cil"] = module
+spec.loader.exec_module(module)
+failing = sys.argv[2]
+real = subprocess.run
+
+
+def run(argv, *args, **kwargs):
+    if argv[:2] == ["git", failing]:
+        return subprocess.CompletedProcess(argv, 128, "", "fatal: planted")
+    return real(argv, *args, **kwargs)
+
+
+module.subprocess.run = run
+module.changed_paths = lambda base: ([".claude/agent-memory/code-reviewer/MEMORY.md"], "a scenario")
+jobs, skipped = module.select_changed(list(module.JOBS), None)
+print("RUNS:" + ",".join(j["name"] for j in jobs))
+PYEOF
+for failing in grep ls-files; do
+  out="$(python3 "$git_driver" "$changed_probe" "$failing" 2>&1)"
+  if grep -Eq '^RUNS:(.*,)?test(,|$)' <<<"$out"; then
+    echo "  ok   a failed \`git $failing\` narrows nothing"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL a failed \`git $failing\` still narrowed a note"
+    echo "$out" | tail -3
+    fail=$((fail + 1))
+  fi
+done
+rm -f "$git_driver"
+
+# A LISTING READS WHAT IT DOES NOT NAME. No glob over a prose directory exists in the tree, so a
+# fixture supplies one: `git grep` for the directory's name is made to return it, and spike 0005 --
+# otherwise read only by the always-run checkers -- must then narrow nothing, because the lister
+# is a file no job accounts for. With the listing wiring removed it selects 14 again.
+glob_fixture="$here/.ci-local-glob-fixture.ts"
+printf 'const spikes = import.meta.glob("../docs/spikes/*.md");\n' >"$glob_fixture"
+glob_driver="$here/.ci-local-glob-driver.py"
+cat > "$glob_driver" <<'PYEOF'
+import importlib.util
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("cil", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["cil"] = module
+spec.loader.exec_module(module)
+real = subprocess.run
+
+
+def run(argv, *args, **kwargs):
+    if argv == ["git", "grep", "-l", "-F", "-e", "spikes"]:
+        return subprocess.CompletedProcess(argv, 0, "tools/.ci-local-glob-fixture.ts\n", "")
+    # NO IMPORTERS. This script names the fixture to write it, and `checker-self-tests` runs this
+    # script, so the real search attributes the fixture to an always-run job -- correctly. A
+    # lister no job runs is what the case is about, so the search reports none.
+    if argv == ["git", "grep", "-l", "-F", "-e", ".ci-local-glob-fixture.ts"]:
+        return subprocess.CompletedProcess(argv, 1, "", "")
+    return real(argv, *args, **kwargs)
+
+
+module.subprocess.run = run
+module.changed_paths = lambda base: (["docs/spikes/0005-what-qpdf-alone-compresses.md"], "a scenario")
+jobs, skipped = module.select_changed(list(module.JOBS), None)
+print("RUNS:" + ",".join(j["name"] for j in jobs))
+PYEOF
+out="$(python3 "$glob_driver" "$changed_probe" 2>&1)"
+listing_mutant="$here/.ci-local-prose-listing.py"
+python3 - "$here/ci-local.py" "$listing_mutant" <<'PYEOF'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+old = "            if any(_line_lists(namer, line, directory) for line in text.splitlines()):\n"
+assert text.count(old) == 1, "the listing wiring is not spelled as this test expects"
+pathlib.Path(sys.argv[2]).write_text(text.replace(old, "            if False:\n", 1))
+assert old not in pathlib.Path(sys.argv[2]).read_text(), "the listing mutation did not apply"
+PYEOF
+mutated="$(python3 "$glob_driver" "$listing_mutant" 2>&1)"
+rm -f "$glob_driver" "$glob_fixture" "$listing_mutant"
+if grep -Eq '^RUNS:(.*,)?test(,|$)' <<<"$out" && ! grep -Eq '^RUNS:(.*,)?test(,|$)' <<<"$mutated"; then
+  echo "  ok   a glob over a prose directory is a read, and without the listing rule it is not"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the listing rule is not what decides a globbed spike's selection"
+  echo "$out" | tail -2
+  echo "$mutated" | tail -2
+  fail=$((fail + 1))
+fi
+
+# AN IMPORT IS A RUN, AND EVERY IMPORTER MUST BE ACCOUNTED FOR. No tool in the tree both names
+# prose and is imported by a narrowed job, so fixtures supply one: a tool naming spike 0005, and a
+# file under `apps/web/` importing that tool. `git grep` is made to report them. The spike must
+# select the web jobs; with a second importer no job accounts for, it must narrow nothing. Each
+# outcome flips with its rule removed.
+import_tool="$here/.ci-local-import-tool.mutant.mjs"
+import_web="$repo/apps/web/.ci-local-import-web.mutant.mjs"
+import_stray="$repo/engines/.ci-local-import-stray.mutant.txt"
+printf 'export const spike = "docs/spikes/0005-what-qpdf-alone-compresses.md";\n' >"$import_tool"
+printf 'import { spike } from "../../tools/.ci-local-import-tool.mutant.mjs";\n' >"$import_web"
+printf 'see tools/.ci-local-import-tool.mutant.mjs\n' >"$import_stray"
+import_driver="$here/.ci-local-import-driver.py"
+cat > "$import_driver" <<'PYEOF'
+import importlib.util
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("cil", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["cil"] = module
+spec.loader.exec_module(module)
+stray = sys.argv[2] == "stray"
+real = subprocess.run
+
+
+def run(argv, *args, **kwargs):
+    if argv == ["git", "grep", "-l", "-F", "-e", "0005-what-qpdf-alone-compresses.md"]:
+        return subprocess.CompletedProcess(argv, 0, "tools/.ci-local-import-tool.mutant.mjs\n", "")
+    if argv == ["git", "grep", "-l", "-F", "-e", ".ci-local-import-tool.mutant.mjs"]:
+        listed = "apps/web/.ci-local-import-web.mutant.mjs\n"
+        if stray:
+            listed += "engines/.ci-local-import-stray.mutant.txt\n"
+        return subprocess.CompletedProcess(argv, 0, listed, "")
+    return real(argv, *args, **kwargs)
+
+
+module.subprocess.run = run
+module.changed_paths = lambda base: (["docs/spikes/0005-what-qpdf-alone-compresses.md"], "a scenario")
+jobs, skipped = module.select_changed(list(module.JOBS), None)
+print("RUNS:" + ",".join(j["name"] for j in jobs))
+PYEOF
+import_mutant() {
+  python3 - "$here/ci-local.py" "$1" "$2" <<'PYEOF'
+import pathlib, sys
+source, target, which = sys.argv[1:4]
+text = pathlib.Path(source).read_text()
+old, new = {
+    "search": (
+        "        if not any(owns(paths, namer) for _, paths in derivable):\n",
+        "        if False:\n",
+    ),
+    "unaccounted": (
+        "                if not through:\n                    return set()\n",
+        "                if not through:\n                    continue\n",
+    ),
+}[which]
+assert text.count(old) == 1, f"the {which} rule is not spelled as this test expects"
+pathlib.Path(target).write_text(text.replace(old, new, 1))
+assert old not in pathlib.Path(target).read_text(), f"the {which} mutation did not apply"
+PYEOF
+}
+runs_web() { grep -Eq '^RUNS:(.*,)?web(,|$)' <<<"$1"; }
+runs_test() { grep -Eq '^RUNS:(.*,)?test(,|$)' <<<"$1"; }
+imported="$(python3 "$import_driver" "$changed_probe" plain 2>&1)"
+strayed="$(python3 "$import_driver" "$changed_probe" stray 2>&1)"
+import_mutant "$here/.ci-local-prose-search.py" search
+no_search="$(python3 "$import_driver" "$here/.ci-local-prose-search.py" plain 2>&1)"
+import_mutant "$here/.ci-local-prose-unaccounted.py" unaccounted
+no_refusal="$(python3 "$import_driver" "$here/.ci-local-prose-unaccounted.py" stray 2>&1)"
+rm -f "$import_driver" "$import_tool" "$import_web" "$import_stray" \
+  "$here/.ci-local-prose-search.py" "$here/.ci-local-prose-unaccounted.py"
+if runs_web "$imported" && ! runs_test "$imported" && runs_test "$strayed" \
+  && ! { runs_web "$no_search" && ! runs_test "$no_search"; } && ! runs_test "$no_refusal"; then
+  echo "  ok   an importer's jobs run, an unaccounted importer narrows nothing, and each rule decides it"
+  pass=$((pass + 1))
+else
+  echo "  FAIL the importer rules are not what decides an imported namer's selection"
+  for o in "$imported" "$strayed" "$no_search" "$no_refusal"; do grep '^RUNS:' <<<"$o" | cut -c1-120; done
+  fail=$((fail + 1))
+fi
+
+# EVERY git grep's STATUS, not only the first's: the namer search, the directory search, and the
+# importer search each fail in turn, and a note must then narrow nothing. The directory search is
+# the note's directory name; the importer search is for the script that names the note.
+git_each_driver="$here/.ci-local-git-each-driver.py"
+cat > "$git_each_driver" <<'PYEOF'
+import importlib.util
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("cil", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["cil"] = module
+spec.loader.exec_module(module)
+pattern = sys.argv[2]
+real = subprocess.run
+
+
+def run(argv, *args, **kwargs):
+    if argv == ["git", "grep", "-l", "-F", "-e", pattern]:
+        return subprocess.CompletedProcess(argv, 2, "", "fatal: planted")
+    return real(argv, *args, **kwargs)
+
+
+module.subprocess.run = run
+module.changed_paths = lambda base: ([".claude/agent-memory/code-reviewer/MEMORY.md"], "a scenario")
+jobs, skipped = module.select_changed(list(module.JOBS), None)
+print("RUNS:" + ",".join(j["name"] for j in jobs))
+PYEOF
+for pattern in MEMORY.md code-reviewer test-ci-local.sh; do
+  out="$(python3 "$git_each_driver" "$changed_probe" "$pattern" 2>&1)"
+  if runs_test "$out"; then
+    echo "  ok   a failed \`git grep\` for $pattern narrows nothing"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL a failed \`git grep\` for $pattern still narrowed a note"
+    fail=$((fail + 1))
+  fi
+done
+rm -f "$git_each_driver"
+
+# A JOB OFF THE PRE-PUSH PATH IS NAMED AS SUCH: `fuzz/known-crashes.toml` names this exposure note,
+# and the output must say fuzz is off the path rather than that it runs.
+out="$(python3 "$scenario_driver" "$changed_probe" "docs/security/exposure-2026-09-14-qpdf-uaf.md" 2>&1)"
+if grep -qF "off the pre-push path" <<<"$out" && ! grep -qF "prose a job reads: fuzz" <<<"$out"; then
+  echo "  ok   a note only fuzz reads says fuzz is off the pre-push path"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a note only fuzz reads reported fuzz as running"
+  echo "$out" | tail -3
+  fail=$((fail + 1))
+fi
+
+# A JOB'S OWN COMMAND IS A READER. The commands live in this runner's `JOBS`, which is skipped as a
+# namer, so a copy gives `web` a command that reads spike 0005 directly -- the review's plant. The
+# spike must then select `web`; with `command_reads` removed it must not.
+command_copy="$here/.ci-local-command-reader.py"
+command_blind="$here/.ci-local-command-blind.py"
+python3 - "$here/ci-local.py" "$command_copy" "$command_blind" <<'PYEOF'
+import pathlib, sys
+source, reader, blind = sys.argv[1:4]
+text = pathlib.Path(source).read_text()
+old = '"pnpm test && node ../../tools/report-size-budget.mjs dist"'
+assert text.count(old) == 1, "the web job's command is not spelled as this test expects"
+planted = text.replace(
+    old,
+    '"pnpm test && node ../../tools/report-size-budget.mjs dist"\n'
+    '            " && test -s ../../docs/spikes/0005-what-qpdf-alone-compresses.md"',
+    1,
+)
+assert planted != text, "the command plant did not apply"
+pathlib.Path(reader).write_text(planted)
+rule = '        readers = set(readers) | {job["name"] for job in jobs if command_reads(job, f)}\n'
+assert planted.count(rule) == 1, "the command rule is not spelled as this test expects"
+pathlib.Path(blind).write_text(planted.replace(rule, "        readers = set(readers)\n", 1))
+PYEOF
+seen="$(python3 "$scenario_driver" "$command_copy" "docs/spikes/0005-what-qpdf-alone-compresses.md" 2>&1)"
+unseen="$(python3 "$scenario_driver" "$command_blind" "docs/spikes/0005-what-qpdf-alone-compresses.md" 2>&1)"
+rm -f "$command_copy" "$command_blind"
+if grep -Eq '^RUNS:(.*,)?web(,|$)' <<<"$seen" && grep -Eq '^SKIPS:(.*,)?web(,|$)' <<<"$unseen"; then
+  echo "  ok   a job whose own command reads a note runs for it, and without the rule it would not"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a job's own command reading prose is not what decides its selection"
+  grep -E '^(RUNS|SKIPS):' <<<"$seen" | cut -c1-120
+  grep -E '^(RUNS|SKIPS):' <<<"$unseen" | cut -c1-120
+  fail=$((fail + 1))
+fi
 rm -f "$changed_probe" "$scenario_driver"
 
 # --- #149: a sweep refuses a build artifact from another tree, before its first job --------

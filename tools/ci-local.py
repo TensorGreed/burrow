@@ -1110,6 +1110,22 @@ def verify_parser() -> list[str]:
     inputs, underivable = artifact_inputs([torn])
     if "pkg" in inputs or "pkg" not in underivable:
         problems.append("a wrap that does not parse as a build left its readers narrow")
+    for text, exp in COMMENT_CASES:
+        if _is_comment(text) != exp:
+            problems.append(f"comment line {text!r}: expected {exp}")
+    for namer, token, path, exp in MENTION_CASES:
+        got = _mention(namer, token, path)
+        if got != exp:
+            problems.append(f"mention of {token!r} in {namer}: expected {exp}, got {got}")
+    for namer, line, name, path, exp in LINE_READS_CASES:
+        if _line_reads(namer, line, name, path) != exp:
+            problems.append(f"line {line!r} in {namer} as a read of {path}: expected {exp}")
+    for namer, line, directory, exp in LINE_LISTS_CASES:
+        if _line_lists(namer, line, directory) != exp:
+            problems.append(f"line {line!r} in {namer} as a listing of {directory}: expected {exp}")
+    # A SPLICED PATH'S LEADING SLASH is dropped before resolving (`${REPO}/docs/...`).
+    if _path_tokens("`${REPO}/docs/x.md`", "x.md") != ["docs/x.md"]:
+        problems.append("a leading slash survived into a token, which resolves to the filesystem root")
     for text, exp in PLAYWRIGHT_CASES:
         if bool(PLAYWRIGHT_RUN.search(text)) != exp:
             problems.append(f"playwright run in {text!r}: expected {exp}")
@@ -1829,6 +1845,65 @@ GUARD_CASES: list[tuple[str, str, set[str]]] = [
 ]
 
 
+# What `_is_comment` treats as a comment line: each leader, and the Rust attributes it must not.
+COMMENT_CASES: list[tuple[str, bool]] = [
+    ("# a TOML or shell comment naming docs/x.md", True),
+    ("    // a Rust or TS comment", True),
+    ("/* a block comment opening */", True),
+    ("   * inside a block comment", True),
+    ("<!-- an HTML comment -->", True),
+    # NEAR-MISSES: an attribute that reads a file, a plain attribute, and code with a trailing comment
+    ('#![doc = include_str!("../README.md")]', False),
+    ('#[doc = include_str!("x.md")]', False),
+    ('let s = "docs/x.md"; // cited', False),
+]
+
+# What `_line_reads` makes of one line: a spliced join, a bare name with a root twin, a slashed
+# path about another file, and a comment.
+LINE_READS_CASES: list[tuple[str, str, str, str, bool]] = [
+    ("apps/web/src/x.ts", 'readFileSync(join(REPO, "docs", "spikes", "x-only.md"))', "x-only.md",
+     "docs/spikes/x-only.md", True),
+    ("apps/web/src/x.ts", 'readFileSync(join(REPO, "docs", "adr", "README.md"))', "README.md",
+     "docs/adr/README.md", True),
+    ("apps/web/fonts.toml", 'note = "apps/web/CLAUDE.md"', "CLAUDE.md", "CLAUDE.md", False),
+    ("apps/web/src/x.ts", '// see docs/spikes/x-only.md', "x-only.md", "docs/spikes/x-only.md", False),
+]
+
+# What `_line_lists` makes of a line near a prose directory: a glob over it, and the near-miss
+# that names it without listing it.
+LINE_LISTS_CASES: list[tuple[str, str, str, bool]] = [
+    ("apps/web/src/pages/credits.astro", 'import.meta.glob("../../../../docs/spikes/*.md")',
+     "docs/spikes", True),
+    ("apps/web/src/pages/credits.astro", 'const where = "../../../../docs/spikes/"', "docs/spikes", False),
+    # One per listing word, each spelled the way that language spells it.
+    ("apps/web/src/x.ts", 'readdirSync(join(REPO, "docs", "spikes"))', "docs/spikes", True),
+    ("tools/x.py", 'os.listdir(REPO / "docs" / "spikes")', "docs/spikes", True),
+    ("tools/x.py", '(REPO / "docs/spikes").rglob("*.md")', "docs/spikes", True),
+    ("tools/x.py", 'for p in (REPO / "docs/spikes").iterdir():', "docs/spikes", True),
+    ("tools/x.py", 'os.scandir("docs/spikes")', "docs/spikes", True),
+    ("tools/x.mjs", 'globSync("docs/spikes/*.md")', "docs/spikes", True),
+    ("core/x.rs", 'WalkDir::new("docs/spikes")', "docs/spikes", True),
+    ("core/x.rs", 'std::fs::read_dir("docs/spikes")?', "docs/spikes", True),
+    ("tools/x.c", 'opendir("docs/spikes")', "docs/spikes", True),
+    ("tools/x.mjs", 'await readdir(join(REPO, "docs", "spikes"))', "docs/spikes", True),
+    # NEAR-MISS: the component quoted with a different parent
+    ("apps/web/src/x.ts", 'readdirSync(join(REPO, "tools", "spikes"))', "docs/spikes", False),
+    ("apps/web/src/x.ts", "readdirSync(join(REPO, `docs`, `spikes`))", "docs/spikes", True),
+]
+
+# What `_mention` makes of a token written in a namer: resolved from the root, from the namer's
+# own directory, with a spliced path's leading slash dropped, about another file, or nothing.
+MENTION_CASES: list[tuple[str, str, str, str]] = [
+    # (namer, token, prose path, expected)
+    ("apps/web/fonts.toml", "docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md",
+     "docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md", "about"),
+    ("apps/web/fonts.toml", "../../docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md",
+     "docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md", "about"),
+    ("apps/web/fonts.toml", "0029-what-redaction-does-and-what-it-refuses-to-do.md",
+     "docs/adr/0029-what-redaction-does-and-what-it-refuses-to-do.md", "unresolved"),
+    ("apps/web/fonts.toml", "apps/web/CLAUDE.md", "CLAUDE.md", "elsewhere"),
+]
+
 # What counts as running Playwright, which is what the hop and its property are about.
 PLAYWRIGHT_CASES: list[tuple[str, bool]] = [
     ("playwright test", True),
@@ -2174,6 +2249,203 @@ NEVER_ON_THE_CHANGED_PATH = {
 FUZZ_OWN_PATHS = ("fuzz",)
 
 
+def is_prose(path: str) -> bool:
+    """A file of prose by its kind: Markdown anywhere, and everything under `docs/`.
+
+    Necessary, not sufficient. `prose_verdict` decides whether a prose file can be attributed at
+    all; a `.rs` or a `.sh` is never prose, so one planted beside the notes stays an orphan.
+    """
+    return path.endswith(".md") or path.startswith("docs/")
+
+
+def _is_comment(line: str) -> bool:
+    """A line that is only a comment, in the languages the repository holds.
+
+    `#[` and `#!` OPEN RUST ATTRIBUTES: `#![doc = include_str!("../README.md")]` is how a crate
+    reads its README, and treating it as a comment let that read go unseen (review, measured).
+    """
+    stripped = line.lstrip()
+    if stripped.startswith(("#[", "#!")):
+        return False
+    return stripped.startswith(COMMENT_LEADERS)
+
+
+COMMENT_LEADERS = ("#", "//", "/*", "*", "<!--")
+
+
+def _path_tokens(line: str, name: str) -> list[str]:
+    """Path-like tokens in `line` ending in `name`, with any leading `/` removed.
+
+    The slash is what `${REPO}/docs/x.md` and `concat!(env!(...), "/../x.md")` leave in front of
+    the path; kept, it resolved to the filesystem root and the read went unseen (review).
+    """
+    return [t.lstrip("/") for t in re.findall(r"[\w./-]*" + re.escape(name), line)]
+
+
+def _mention(namer: str, token: str, path: str) -> str:
+    """What `token`, written in `namer`, refers to: `"about"` `path`, `"elsewhere"` (another file
+    that exists), or `"unresolved"`. Resolved from the repository root and from `namer`'s own
+    directory.
+
+    ONLY A TOKEN WITH A `/` CAN BE ELSEWHERE. A bare `README.md` resolves from the root to the
+    root README, and dismissing it hid `join(REPO, "docs", "adr", "README.md")` (review, measured):
+    a bare name does not say which file it means, so it is not proof of another one.
+    """
+    targets = {(root / token).resolve() for root in (REPO, (REPO / namer).parent)}
+    if any(t.is_relative_to(REPO) and t.relative_to(REPO).as_posix() == path for t in targets):
+        return "about"
+    if "/" in token and any(t.is_file() for t in targets):
+        return "elsewhere"
+    return "unresolved"
+
+
+def _line_reads(namer: str, line: str, name: str, path: str) -> bool:
+    """Whether one line of `namer` may read `path`: a non-comment line mentioning its name, with a
+    token that is not provably about another file."""
+    if name not in line or _is_comment(line):
+        return False
+    return any(_mention(namer, t, path) != "elsewhere" for t in _path_tokens(line, name))
+
+
+# A line that LISTS a directory rather than naming a file: `import.meta.glob("docs/x/*.md")`,
+# `read_dir`, `readdirSync`. No line spells the file it reads, so the directory is the name.
+# NO WORD BOUNDARIES, AND ANY CASE: `rglob`, `globSync`, `WalkDir`, `opendir` and `readdirSync` are
+# each a listing, and a `\b` around the word missed four of them (review, measured).
+DIRECTORY_LISTING = re.compile(r"(glob|readdir|read_dir|iterdir|listdir|scandir|opendir|walk)", re.I)
+
+
+def _line_lists(namer: str, line: str, directory: str) -> bool:
+    """Whether one line of `namer` lists `directory`: a listing call, and a token resolving to it."""
+    if _is_comment(line) or not DIRECTORY_LISTING.search(line):
+        return False
+    last = directory.rsplit("/", 1)[-1]
+    for token in _path_tokens(line, last):
+        for root in (REPO, (REPO / namer).parent):
+            target = (root / token).resolve()
+            if target.is_relative_to(REPO) and target.relative_to(REPO).as_posix() == directory:
+                return True
+    # A PATH BUILT FROM COMPONENTS -- `join(REPO, "docs", "spikes")`, `REPO / "docs" / "spikes"`:
+    # the last component quoted, and its parent a word on the same line. A bare `spikes` resolves
+    # to the top-level `spikes/`, which is why the token rule above does not see these.
+    if "/" in directory:
+        parent = directory.rsplit("/", 2)[-2]
+        quoted = re.search(r"[\"'`]" + re.escape(last) + r"[\"'`]", line)
+        if quoted and re.search(r"(?<![\w-])" + re.escape(parent) + r"(?![\w-])", line):
+            return True
+    return False
+
+
+def prose_namers(path: str) -> tuple[list[str], str | None]:
+    """`(files that may read `path`, why that cannot be established)`, over EVERY tracked file.
+
+    Over the whole tree, not only a job's paths: `engines/licenses.toml` names the engines'
+    licence notices, and `tools/generate-credits.mjs` embeds them in a page `web` builds -- a
+    search confined to job paths called them unnamed and skipped `web` (review, measured).
+
+    A namer is a non-Markdown file with a non-comment line mentioning `path`'s name. Markdown
+    citing Markdown is not a read. A mention whose every token resolves to a DIFFERENT existing
+    file is about that file -- there is a `MEMORY.md` under `apps/web/.claude/` too -- and does not
+    make a namer; anything else does, resolved or not, because `join(REPO, "docs", ...)` and a
+    spliced path read a file without spelling it. A line that LISTS the file's directory -- a
+    glob, a `read_dir` -- is a namer too. A `git grep` that fails is not "no namers".
+
+    THE RESIDUE, stated rather than implied: a read that spells neither the file's name nor its
+    directory next to a listing call -- a path assembled from variables, a directory walked from a
+    parent -- is not seen. None exists in the tree today, and the scenarios would not know if one
+    were added.
+    """
+    name = path.rsplit("/", 1)[-1]
+    done = subprocess.run(
+        ["git", "grep", "-l", "-F", "-e", name],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode not in (0, 1):
+        return [], f"`git grep` for it failed ({done.returncode}), so its readers are unknown"
+    namers: list[str] = []
+    for namer in done.stdout.splitlines():
+        # NOT THIS FILE: it is a path every job depends on, and what it mentions -- `MEMORY.md` in
+        # this very docstring -- it describes rather than reads.
+        if namer == path or namer == SELF_REL or is_prose(namer):
+            continue
+        text = (REPO / namer).read_text(encoding="utf-8", errors="replace")
+        if any(_line_reads(namer, line, name, path) for line in text.splitlines()):
+            namers.append(namer)
+    # AND WHAT LISTS ITS DIRECTORY: a glob or a walk reads every file there without naming one.
+    if "/" in path:
+        directory = path.rsplit("/", 1)[0]
+        listed = subprocess.run(
+            ["git", "grep", "-l", "-F", "-e", directory.rsplit("/", 1)[-1]],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+        )
+        if listed.returncode not in (0, 1):
+            return [], f"`git grep` for its directory failed ({listed.returncode})"
+        for namer in listed.stdout.splitlines():
+            if namer in namers or namer == SELF_REL or is_prose(namer):
+                continue
+            text = (REPO / namer).read_text(encoding="utf-8", errors="replace")
+            if any(_line_lists(namer, line, directory) for line in text.splitlines()):
+                namers.append(namer)
+    return namers, None
+
+
+def command_reads(job: dict, path: str) -> bool:
+    """Whether `job`'s OWN command -- its `run`, or its `paths_as` -- reads `path`.
+
+    A job's command lives in this file's `JOBS`, which is skipped as a namer because what it
+    mentions it describes. So a job whose command reads a file directly -- `... && test -s
+    ../../docs/x.md` -- was invisible (review, measured). Each command is read as a namer written
+    at the repository root and in every directory it `cd`s into.
+    """
+    name = path.rsplit("/", 1)[-1]
+    directory = path.rsplit("/", 1)[0] if "/" in path else ""
+    for command in (job["run"], job.get("paths_as") or ""):
+        roots = [""] + re.findall(r"cd\s+([A-Za-z0-9_./-]+)", command)
+        for root in roots:
+            where = f"{root.rstrip('/')}/_" if root else "_"
+            if _line_reads(where, command, name, path):
+                return True
+            if directory and _line_lists(where, command, directory):
+                return True
+    return False
+
+
+def prose_verdict(
+    path: str, tracked: list[str], owners_of
+) -> tuple[set[str], str | None]:
+    """`(jobs that must run for it, why it cannot be attributed)`, for prose no job's paths own.
+
+    ONLY IN A DIRECTORY OF PROSE. A `.md` among fixtures is data: `conformance.rs` lists
+    `tests/conformance/fixtures/` and fails on a file no case uses (review, reasoned).
+
+    EVERY NAMER SELECTS THE JOBS THAT ACCOUNT FOR IT -- the jobs whose paths contain it and the
+    jobs that run it. A namer only the always-run checkers run costs nothing; one a narrowed job
+    runs selects that job; one NO job accounts for -- `engines/licenses.toml`, which the web build
+    reads through `generate-credits.mjs` -- means its reader is unknown, and nothing is narrowed.
+    """
+    directory = path.rsplit("/", 1)[0] if "/" in path else ""
+    others = [
+        t
+        for t in tracked
+        if (t.rsplit("/", 1)[0] if "/" in t else "") == directory and not is_prose(t)
+    ]
+    if others:
+        return set(), f"its directory also holds {others[0]}, which is not prose"
+    namers, why = prose_namers(path)
+    if why:
+        return set(), why
+    jobs: set[str] = set()
+    for namer in namers:
+        owners = owners_of(namer)
+        if not owners:
+            return set(), f"{namer} names it, and no job accounts for that file"
+        jobs |= owners
+    return jobs, None
+
+
 def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list[tuple[str, str]]]:
     """`(jobs to run, [(skipped job, why)])`."""
     touched = changed_paths(base)
@@ -2211,6 +2483,110 @@ def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list
             paths = paths | inputs.get(artifact, set())
         derivable.append((job, paths))
     known = {p for _, paths in derivable if paths for p in paths}
+    derivable_names = [(job["name"], paths) for job, paths in derivable]
+
+    # PROSE IS ATTRIBUTED BY WHO NAMES IT. A reviewer's notes are Markdown under no job's paths,
+    # so the orphan rule below ran all 25 jobs for them. Prose that nothing reads selects only the
+    # jobs that always run; prose a job's file names stands in for that file; and anything this
+    # cannot place -- a namer no job owns, a mention that resolves to nothing, a directory shared
+    # with data -- narrows nothing, which is where every uncertainty here is meant to land.
+    # `docs/` was exempted wholesale before this, which skipped `web` on an edit to ADR 0008.
+    tracked = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True)
+    runs: dict[str, set[str]] = {}
+
+    def owns(paths, candidate: str) -> bool:
+        return bool(paths) and any(candidate == q or candidate.startswith(f"{q}/") for q in paths)
+
+    def owners_of(namer: str) -> set[str]:
+        """The jobs whose paths contain `namer`, that run it, or whose files import it.
+
+        IMPORTS COUNT. `tools/build-origin.mjs` is run by `deployable-build` alone, and imported by
+        `apps/web/astro.config.mjs`, so `web` runs it too; a namer reached only through an import
+        read as always-run-only and skipped `web` (review, measured).
+        """
+        if not runs:
+            for job in jobs:
+                runs[job["name"]] = set(job_texts(job))
+        owners = {
+            job["name"]
+            for job, paths in derivable
+            if owns(paths, namer) or namer in runs[job["name"]]
+        }
+        if not any(owns(paths, namer) for _, paths in derivable):
+            # OVER THE WHOLE TREE, and every importer must be accounted for. Searching only under
+            # job paths let one known importer speak for another nobody runs: a `tools/` file read
+            # by `burrow-ffi` and by `stage-web-engines.mjs` selected the Rust jobs and skipped
+            # `web` (review, measured). An importer no job accounts for means the namer's readers
+            # are unknown, so the namer has no owners -- and that narrows nothing.
+            name = namer.rsplit("/", 1)[-1]
+            found = subprocess.run(
+                ["git", "grep", "-l", "-F", "-e", name],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+            )
+            if found.returncode not in (0, 1):
+                return set()
+            for importer in found.stdout.splitlines():
+                # CI's OWN DEFINITION IS ACCOUNTED FOR BY CONSTRUCTION: what `ci.yml` and its local
+                # actions run is what this file's jobs replicate, and parity refuses a gap. Counted
+                # as an importer, `ci.yml` naming `tools/test-ci-local.sh` erased that script's
+                # owner. Other workflows -- `release.yml` -- are not replicated, and still count.
+                if (
+                    importer in (namer, SELF_REL)
+                    or is_prose(importer)
+                    or importer == CI_REL
+                    or importer.startswith(".github/actions/")
+                ):
+                    continue
+                text = (REPO / importer).read_text(encoding="utf-8", errors="replace")
+                if not any(_line_reads(importer, line, name, namer) for line in text.splitlines()):
+                    continue
+                through = {
+                    job["name"]
+                    for job, paths in derivable
+                    if owns(paths, importer) or importer in runs[job["name"]]
+                }
+                if not through:
+                    return set()
+                owners |= through
+        return owners
+
+    prose: list[str] = []
+    unnamed: list[str] = []
+    forced: set[str] = set()
+    for f in files:
+        if any(f == p or f.startswith(f"{p}/") for p in known) or not is_prose(f):
+            continue
+        if tracked.returncode != 0:
+            print(f"  {f} is prose, and `git ls-files` failed, so nothing is narrowed")
+            return jobs, []
+        readers, why = prose_verdict(f, tracked.stdout.splitlines(), owners_of)
+        if why is not None:
+            print(f"  {f} is prose that cannot be attributed ({why}), so nothing is narrowed")
+            return jobs, []
+        readers = set(readers) | {job["name"] for job in jobs if command_reads(job, f)}
+        prose.append(f)
+        narrowed = sorted(
+            r
+            for r in readers
+            if dict(derivable_names).get(r) is not None and r not in NEVER_ON_THE_CHANGED_PATH
+        )
+        # A JOB OFF THE PRE-PUSH PATH is named as such: saying "fuzz runs" and then skipping it is
+        # the output contradicting itself (review).
+        off_path = sorted(r for r in readers if r in NEVER_ON_THE_CHANGED_PATH)
+        if off_path:
+            print(f"  {f} is read by {', '.join(off_path)}, which is off the pre-push path")
+        if narrowed:
+            print(f"  {f} is prose a job reads: {', '.join(narrowed)} run")
+            forced.update(narrowed)
+        else:
+            unnamed.append(f)
+    # EVERY SUCH FILE BY NAME, counted on its own: a count of files compared with a count of
+    # readers hid one when another had two readers (review, measured).
+    if unnamed:
+        shown = ", ".join(unnamed[:5]) + (f" (+{len(unnamed) - 5} more)" if len(unnamed) > 5 else "")
+        print(f"  {len(unnamed)} prose file(s) only the always-run checkers read: {shown}")
 
     # A FILE UNDER NO JOB'S PATHS CANNOT BE ATTRIBUTED, so nothing is narrowed. `cargo test`
     # reads fixtures at run time -- `tests/conformance/` is loaded by path, not compiled in --
@@ -2219,8 +2595,7 @@ def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list
     orphans = [
         f
         for f in files
-        if not any(f == p or f.startswith(f"{p}/") for p in known)
-        and not f.startswith("docs/")
+        if not any(f == p or f.startswith(f"{p}/") for p in known) and f not in prose
     ]
     if orphans:
         print(
@@ -2241,7 +2616,9 @@ def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list
         if paths is None:
             selected.append(job)
             continue
-        hit = any(f == p or f.startswith(f"{p}/") for f in files for p in paths)
+        hit = job["name"] in forced or any(
+            f == p or f.startswith(f"{p}/") for f in files for p in paths
+        )
         if hit:
             selected.append(job)
         else:
