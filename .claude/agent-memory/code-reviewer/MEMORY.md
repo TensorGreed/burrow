@@ -34,4 +34,7 @@
 - [Timing witness decays under load](feedback_timing_witness_decays_under_load.md) — re-run a timed defence ablation with CPUs spun; uncounted exemptions are channels.
 - [Rule table: ablate per entry](feedback_rule_table_ablate_per_entry.md) — FIELD_RULES: 8 entries unwitnessed behind shared validators; a File's name rides a "bytes" shape.
 - [Harness-own prefix exemption](feedback_harness_own_prefix_exemption.md) — `startsWith("__burrow")` skip let `{__burrowChunk: bytes}` pass R8; disable each `found.push` and list survivors.
+- [All went red includes a near-miss](feedback_all_went_red_includes_near_miss.md) — neutering a rule leaves the must-pass near-miss green; "all N went red" is suspect, re-run it.
+- [Regex-parsed config list](feedback_regex_parsed_config_list.md) — expected set by regex over a config undercounts; plant a hyphenated/wrapped entry, diff vs the tool's own list.
 - [Exemption list postable first](feedback_exemption_list_postable_first.md) — "trusted if message 0" is forgeable when the harness posts nothing; revert tightenings, not just rules.
+- [Hyphenated job-name match](feedback_hyphenated_job_name_match.md) — scenario() `\bweb\b` hits web-e2e, `\bwasm\b` hits wasm-pack; force-skip the short name.
