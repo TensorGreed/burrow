@@ -54,6 +54,27 @@ export interface Reply {
   outputSha256?: string | null;
 }
 
+/** One message redaction's worker posted to the page, as the harness recorded it (#137). */
+export interface RedactionMessage {
+  /**
+   * For a message the PAGE posted to the worker, its `op` (or `type`, for start-up); null for a
+   * message the worker posted. Everything else below describes whichever it was.
+   */
+  sent: string | null;
+  /** The request it belongs to, or null for a message with none (start-up, a stray post). */
+  id: number | null;
+  /** Its top-level keys, sorted. */
+  keys: string[];
+  /** How many byte-carrying values it holds, at any depth: ArrayBuffers, typed arrays, Blobs. */
+  bytes: number;
+  /** Its `ok`, or null when it has none -- only a reply has one. */
+  ok: boolean | null;
+  /** The R9 exit a stub saw called, when this message is that report. */
+  sideChannel: string | null;
+  /** The stubs that installed, when this message is the prologue's first report. */
+  armed: string[] | null;
+}
+
 /** What a CSP probe inside a worker observed. */
 export interface ProbeResult {
   blocked: boolean;
@@ -212,6 +233,17 @@ export interface BurrowHarness {
   fetchFromWorker(url: string): Promise<ProbeResult>;
   workerInheritsCsp(): Promise<boolean>;
 
+  /**
+   * Arm redaction's worker for the R8/R9 specs and start the next redaction on a fresh one.
+   * `stubSideChannels` installs R9's stubs before the bundle runs; `mutate` applies ONE
+   * replacement to a copy of the bundle's text. `applied` says whether it matched exactly once.
+   */
+  armRedaction(options?: {
+    stubSideChannels?: boolean;
+    mutate?: { from: string; to: string } | null;
+  }): Promise<{ applied: boolean }>;
+  /** Every message redaction's worker posted since the last arming, described, in order. */
+  redactMessages(): RedactionMessage[];
   /**
    * Redact one region on one page through REDACTION's own worker (#137), staged into harness
    * builds only. Returns the reply and the output's sha256; the bytes stay in the page.

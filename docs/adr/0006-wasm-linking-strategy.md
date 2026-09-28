@@ -196,6 +196,43 @@ until its named check exists and has been shown to fail without the property.**
   `e2e/zero-requests.spec.ts`, which already asserts a negative about what an operation does.
   Shown to fail by calling `URL.createObjectURL` before verification in a copy.
 
+  **Both checks exist (2026-09-27, #137), and both have been shown to fail.** They run in all
+  three browsers against redaction's own worker, on every e2e run. What each one reads, and what
+  it does not:
+
+  - **They observe from outside the worker, not from the host.** The harness wraps the redaction
+    worker before the host sees it and records every message in both directions: the page's
+    requests, so a reply's id is attributed to the request that carried it (the host's start-up
+    handshake draws its id from the same counter), and the worker's replies, before the host has
+    chosen what to keep. A message under the request's id that is not the real reply is what the
+    host takes as the answer. Measured on the spec's own mutation: the real reply had not arrived
+    when the log was read. So R8's predicate reports bytes-carrying messages whether or not a
+    terminal reply was seen.
+  - **R8 counts byte-carrying values, not messages**, at any depth and inside a `Map` or `Set`.
+    That is ADR 0023's "exactly one part carrying bytes, not merely one message". Shown to fail
+    by two copies of the worker, each posting a 16-byte chunk before the call: one with no id and
+    one under the request's id. A two-documents-in-one-reply case cannot be planted from
+    `redact-main.js`, because the reply is built by the shared `worker-protocol.js`. So that rule
+    is shown to fail on a hand-written log, beside a near-miss it passes.
+  - **R9 stubs six exits, not three.** It stubs the three named above plus `BroadcastChannel`,
+    IndexedDB and the Cache API, each also a way out of the heap that the page can read back. The
+    stubs report which of them installed. A second spec asks a throwaway worker which exits exist
+    in that browser and requires a stub for each, so "never called" cannot be "never watched".
+    Measured: all six are reachable, and all six are armed, in Chromium, Firefox and WebKit. Shown
+    to fail by two copies: one makes a `blob:` URL of the input before the call, and one
+    broadcasts it.
+  - **Every planted copy asserts that its mutation applied** before its verdict counts.
+  - **Neither sees a `MessagePort`.** Nothing in redaction's worker has one today. #206's
+    second-engine reading will: ADR 0029's 2026-09-27 amendment sends the copy worker to worker.
+    When that lands, R8's check must follow the port.
+  - **A nested worker and a `SharedArrayBuffer` are refused at one remove, not observed.**
+    - A nested worker: `worker-src blob:` permits one, and the only way to get a `blob:` URL is
+      `URL.createObjectURL`, which R9 stubs. A nested worker reaches the page only through its
+      parent or a port, and a port is the gap in the previous bullet.
+    - A `SharedArrayBuffer` needs cross-origin isolation, and `_headers` sends neither COOP nor
+      COEP. R9's spec asserts that the page is not `crossOriginIsolated`, so a header that turned
+      it on would fail the spec rather than quietly open a seventh exit.
+
 Under an unwind both cases are recoverable — Rust returns `Err`, the buffer drops, a `Drop`
 impl deletes the file. Under a trap they are not. **These two conditions are what make reason
 4 true; without them, closing this gate on reason 4 would be wrong.**

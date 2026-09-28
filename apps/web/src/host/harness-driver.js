@@ -216,26 +216,164 @@ function renderBundle() {
 }
 
 /** @param {"renderWorker" | "redactWorker"} id */
-async function buildBundleHost(id) {
+/** @param {"renderWorker" | "redactWorker"} id */
+async function fetchBundleSource(id) {
   const bundle = BUNDLES[id];
   if (!bundle) {
     // Redaction's bundle is staged into harness builds only (#137); a harness page served from
     // anything else has no entry for it, and says so rather than failing inside `fetch`.
     throw new Error(`no ${id} bundle in this build`);
   }
-  const entry = bundle.worker;
-  const response = await fetch(entry.url, { integrity: entry.integrity });
+  const response = await fetch(bundle.worker.url, { integrity: bundle.worker.integrity });
   if (!response.ok) {
     throw new Error(`${id} fetch failed`);
   }
-  const source = await response.text();
+  return { bundle, source: await response.text() };
+}
+
+// --- redaction's worker, as R8 and R9 observe it (#137) ------------------------------------------
+//
+// ADR 0006's R8 and R9 are claims about WHAT REDACTION'S WORKER SENDS AND DOES, so their specs
+// need three things no other test did: every message the worker posts to the page, recorded
+// before the host reads it; stubs in the worker's scope for the three ways bytes could leave the
+// heap early; and a COPY of the worker with a planted violation, to show each spec can fail.
+// All three act on the integrity-checked text, like the base worker's prologue does.
+
+/** @type {{ prologue: string, source: string | null }} */
+let redactArming = { prologue: "", source: null };
+/**
+ * Every message redaction's worker posted since the last arming, described, in order.
+ *
+ * @type {import("./harness-api").RedactionMessage[]}
+ */
+let redactLog = [];
+
+/**
+ * How many byte-carrying values a message holds: each `ArrayBuffer`, typed array or `Blob`
+ * counts once, found at ANY depth and inside a `Map` or `Set` -- structured clone carries both,
+ * and `Object.values` sees nothing in either. A count rather than a yes, because ADR 0023 asks
+ * R8's check for exactly one PART carrying bytes, and one message can carry two.
+ *
+ * @param {unknown} value
+ * @param {Set<object>} seen
+ * @returns {number}
+ */
+function countBytes(value, seen = new Set()) {
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
+    return 1;
+  }
+  if (value === null || typeof value !== "object" || seen.has(value)) return 0;
+  seen.add(value);
+  const inner =
+    value instanceof Map
+      ? [...value.keys(), ...value.values()]
+      : value instanceof Set
+        ? [...value]
+        : Object.values(value);
+  return inner.reduce((sum, item) => sum + countBytes(item, seen), 0);
+}
+
+/**
+ * Record every message a redaction worker posts, BEFORE the host sees it, and keep the harness's
+ * own tagged messages away from the host.
+ *
+ * @param {Worker} worker
+ * @returns {Worker}
+ */
+function recordRedaction(worker) {
+  /** @type {{ current: ((event: { data: any }) => void) | null }} */
+  const hostHandler = { current: null };
+  Object.defineProperty(worker, "onmessage", {
+    configurable: true,
+    get: () => hostHandler.current,
+    set: (handler) => {
+      hostHandler.current = handler;
+    },
+  });
+  // WHAT THE PAGE SENT, TOO, so a reply's id is attributed to the request that carried it rather
+  // than guessed: the host's start-up handshake takes an id from the same counter as an operation.
+  const send = worker.postMessage.bind(worker);
+  worker.postMessage = (/** @type {any} */ message, /** @type {any} */ transfer) => {
+    redactLog.push({
+      sent: String(message?.op ?? message?.type ?? "?"),
+      id: typeof message?.id === "number" ? message.id : null,
+      keys: message && typeof message === "object" ? Object.keys(message).sort() : [],
+      bytes: countBytes(message),
+      ok: null,
+      sideChannel: null,
+      armed: null,
+    });
+    return transfer === undefined ? send(message) : send(message, transfer);
+  };
+  worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
+    const data = event.data;
+    redactLog.push({
+      sent: null,
+      id: data && typeof data === "object" && "id" in data ? data.id : null,
+      keys: data && typeof data === "object" ? Object.keys(data).sort() : [],
+      bytes: countBytes(data),
+      ok: data && typeof data === "object" && "ok" in data ? data.ok : null,
+      sideChannel: data?.__burrowSideChannel ?? null,
+      armed: data?.__burrowSideChannelArmed ?? null,
+    });
+    if (data?.__burrowSideChannel || data?.__burrowSideChannelArmed) return;
+    hostHandler.current?.(event);
+  });
+  return worker;
+}
+
+/**
+ * Stubs for R9's three exits, installed in the worker's scope before the bundle runs.
+ *
+ * Each still does what it did -- a stub that broke the call would change what the worker does
+ * next -- and reports that it was called. The list of stubs that actually installed is posted
+ * first, so a spec can tell "never called" from "never watched".
+ */
+const SIDE_CHANNEL_STUBS = `
+(() => {
+  const armed = [];
+  const tell = (name) => self.postMessage({ __burrowSideChannel: name });
+  const wrap = (owner, key, name) => {
+    try {
+      const original = owner[key];
+      Object.defineProperty(owner, key, {
+        configurable: true,
+        writable: true,
+        value: function (...args) {
+          tell(name);
+          return typeof original === "function" ? original.apply(this, args) : undefined;
+        },
+      });
+      armed.push(name);
+    } catch {}
+  };
+  wrap(URL, "createObjectURL", "createObjectURL");
+  wrap(self, "showSaveFilePicker", "showSaveFilePicker");
+  if (typeof StorageManager !== "undefined") wrap(StorageManager.prototype, "getDirectory", "getDirectory");
+  // BEYOND ADR 0006's THREE, because each is a way out of the heap the page can read back:
+  // a channel to the page that is not the worker's own port, and two stores that outlive it.
+  if (typeof BroadcastChannel !== "undefined") wrap(BroadcastChannel.prototype, "postMessage", "BroadcastChannel");
+  if (typeof IDBFactory !== "undefined") wrap(IDBFactory.prototype, "open", "indexedDB");
+  if (typeof CacheStorage !== "undefined") wrap(CacheStorage.prototype, "open", "caches");
+  self.postMessage({ __burrowSideChannelArmed: armed });
+})();
+`;
+
+/** @param {"renderWorker" | "redactWorker"} id */
+async function buildBundleHost(id) {
+  const fetched = await fetchBundleSource(id);
+  const bundle = fetched.bundle;
+  const redaction = id === "redactWorker";
+  const source = redaction && redactArming.source !== null ? redactArming.source : fetched.source;
+  const prologue = redaction ? redactArming.prologue : "";
   return createWorkerHost({
     spawn: () => {
       const previous = lazyUrls[id];
       if (previous) URL.revokeObjectURL(previous);
-      const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      const url = URL.createObjectURL(new Blob([prologue, source], { type: "text/javascript" }));
       lazyUrls[id] = url;
-      return new Worker(url);
+      const worker = new Worker(url);
+      return redaction ? recordRedaction(worker) : worker;
     },
     release: () => {
       const previous = lazyUrls[id];
@@ -765,6 +903,42 @@ const harness = {
   async workerInheritsCsp() {
     host.discardWorker();
     return harness.ready();
+  },
+
+  /**
+   * Arm redaction's worker for the R8 and R9 specs (#137), and start the next redaction on a
+   * fresh one: `stubSideChannels` installs R9's stubs before the bundle runs, and `mutate`
+   * applies ONE replacement to a copy of the bundle's text -- the planted violation a spec must
+   * catch. Returns whether the replacement applied, because a mutation that matched nothing
+   * leaves the real worker in place and measures nothing. Clears the message log.
+   *
+   * @param {{ stubSideChannels?: boolean, mutate?: { from: string, to: string } | null }} options
+   */
+  async armRedaction(options = {}) {
+    const { source } = await fetchBundleSource("redactWorker");
+    let mutated = source;
+    let applied = false;
+    if (options.mutate) {
+      const at = source.indexOf(options.mutate.from);
+      if (at !== -1 && source.indexOf(options.mutate.from, at + 1) === -1) {
+        mutated = source.replace(options.mutate.from, options.mutate.to);
+        applied = mutated !== source;
+      }
+    }
+    redactArming = {
+      prologue: options.stubSideChannels ? SIDE_CHANNEL_STUBS : "",
+      source: options.mutate ? mutated : null,
+    };
+    const existing = lazyHosts.redactWorker;
+    delete lazyHosts.redactWorker;
+    if (existing) (await existing).dispose();
+    redactLog = [];
+    return { applied };
+  },
+
+  /** Every message redaction's worker has posted since the last arming, described, in order. */
+  redactMessages() {
+    return redactLog.map((entry) => ({ ...entry }));
   },
 
   /**

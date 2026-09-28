@@ -776,6 +776,10 @@ the one that has nothing to do with panics: it exists because PDFium and qpdf ha
 linear memories, so "verified" against one heap's copy says nothing about the bytes leaving the
 other.
 
+**R8's and R9's checks exist, since 2026-09-27 (#137).** Both have been shown to fail and both run
+in all three browsers. R9 stubs three exits beyond the three named. Neither sees a `MessagePort`,
+which #206 will add. ADR 0006's R8 note has the detail. R10's check is still to be written.
+
 ### Decided: ADR 0029, and the blocker it carries
 
 [Spike 0006](spikes/0006-what-survives-a-redaction.md) measured where a page's text can also
