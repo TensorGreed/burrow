@@ -988,6 +988,70 @@ mod wiring {
     }
 
     #[test]
+    fn one_name_for_two_fonts_is_cached_per_scope_when_the_form_comes_first() {
+        // THE CACHE'S OTHER HALF (#218 round 5): the tests above meet the page's `/F1` first, so
+        // a cache that looked up by scope but STORED by name passed them. Here form `X`'s `/F1`
+        // (`F`) is met first: it draws `S` in the region and `K` below it, and the page's `/F1`
+        // (`P`) then draws `S` below. Stored by name, `P`'s `S` is credited to `F`, which then
+        // keeps mapping the removed `S` -- with both caches mutated, `Ok`.
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R >> /XObject << /X 8 0 R >> >>",
+            "q /X Do Q\nBT /F1 24 Tf 72 300 Td (S) Tj ET\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 7 0 R"),
+                mappings(&[("53", "0071")]),
+                form_stream(
+                    "/Resources << /Font << /F1 9 0 R >> >>",
+                    "BT /F1 24 Tf 72 700 Td (S) Tj 0 -300 Td (K) Tj ET\n",
+                ),
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 10 0 R"),
+                mappings(&[("4B", "004B"), ("53", "0078")]),
+            ],
+        );
+        let output = redact_output(&bytes, &[0]).expect("redacts");
+        assert!(
+            !maps(&output, &["X"], "F1", 0x53),
+            "the form's font still maps the S removed from the form"
+        );
+        assert!(
+            maps(&output, &["X"], "F1", 0x4B),
+            "the form's font lost the K it still draws"
+        );
+        assert!(
+            maps(&output, &[], "F1", 0x53),
+            "the page font lost the S it still draws"
+        );
+    }
+
+    #[test]
+    fn a_font_selected_one_form_up_under_the_same_name_is_still_another_scope() {
+        // #218 round 5: form `A`, drawn as `/X`, selects its `/F1` and draws a DIFFERENT form
+        // through its own `/X`. The routes are `[X]` and `[X, X]`: equal in their last step, so
+        // a comparison of only that passed, and `A`'s font kept mapping the removed `S`.
+        let bytes = two_pages(
+            "<< /XObject << /X 6 0 R >> >>",
+            "q /X Do Q\n",
+            "<< >>",
+            &[
+                form_stream(
+                    "/Resources << /Font << /F1 7 0 R >> /XObject << /X 9 0 R >> >>",
+                    "BT /F1 24 Tf ET\n/X Do\n",
+                ),
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 8 0 R"),
+                mappings(&[("53", "0051")]),
+                form_stream(
+                    "/Resources << /Font << /F1 10 0 R >> >>",
+                    "BT 72 700 Td (S) Tj ET\n",
+                ),
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 11 0 R"),
+                mappings(&[("53", "0078")]),
+            ],
+        );
+        refused_as(redact_bytes(&bytes, &[0]), "font-selected-in-another-scope");
+    }
+
+    #[test]
     fn a_nested_form_with_no_same_named_page_font_is_redacted() {
         // Without the decoy the old resolution found nothing and failed with `Internal` --
         // burrow disagreeing with itself over a valid document.

@@ -3130,6 +3130,11 @@ fn show(
     // at the wrong width, outside the region, and left in the output in plain text; and a removed
     // character credited to the form's font, so the font that drew it kept mapping it. Refused
     // rather than resolved through the `Tf`'s scope, which is the smaller change and fails closed.
+    //
+    // It over-refuses one safe shape, stated rather than implied: a child form with no
+    // `/Resources` of its own inherits the scope that ran the `Tf`, so it draws with the same
+    // font, and its longer route is refused anyway. A review found neither shape on 1,918 pages
+    // of 224 local PDFs.
     if *state.font_selected_along != **shown.route {
         return Refusal::FontSelectedInAnotherScope.refuse(
             "text shown inside a Form XObject with a font selected outside it, which readers \
