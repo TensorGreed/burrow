@@ -867,7 +867,8 @@ would have spent the margin on exactly that.
 
 The third feature, module and bundle exist, and a redaction through the real worker produces the
 natively pinned document byte for byte — report included — in Chromium, Firefox and WebKit
-(`apps/web/e2e/redaction-worker.spec.ts`; the full-corpus differential follows it). Measured:
+(`apps/web/e2e/redaction-worker.spec.ts`; the full-corpus differential follows it, and
+landed 2026-09-28 -- see below). Measured:
 **`burrow_wasm_redact_bg.wasm` is 164,616 brotli**, nearly three times the base module, and
 `burrow-redact-worker.js` 33,425. The base total moved 476,342 → 476,734 (+392), all of it the
 reply's three new report fields and none of it redaction. The split is what this amendment said
@@ -900,6 +901,33 @@ A split nothing verifies is a split that closes quietly the first time someone i
 the render bundle and no other part of the build — and the redaction module gets its counterpart:
 **the base bundle contains no redaction symbol.** [#137] owns both, because it owns the binding
 entry point, and the entry point is what decides which module the code is compiled into.
+
+### Landed, 2026-09-28 (#137): the full-corpus browser differential
+
+**Every case in `tests/redaction/outcomes.tsv` is held to the web engines**, in Chromium, Firefox
+and WebKit: 107 documents and 463 cases, every one matching on the day it landed
+(`apps/web/e2e/redaction-differential.spec.ts`).
+
+**What is compared, and how:**
+- A redaction is compared by both digests: the document's and the report's.
+- A refusal is compared by its typed kind and its `[rule-name]`, never its prose. Both sides
+  write that name into the error where the rule decides, so a mapping derived from text, the
+  shape that rots, is never needed.
+- A ceiling is compared by every typed field.
+- The 24 refusals that carry no rule name have only their kind compared, and are counted as
+  their own class rather than folded into "matched". They are 21 of qpdf's
+  `the document is damaged` and 3 `PasswordRequired`.
+
+**The corpus is the golden file's, all of it.**
+- The 79 generated documents are built by CI's `test` job, which has the vendored `qpdf` and
+  `cjpeg`. They reach the `web` job as an artifact, the hand-over `native-conformance-record`
+  already uses.
+- A document that is missing, or is not the one the golden file recorded, fails by name.
+
+**How it is shown to fail:**
+- by copies of the worker with three planted divergences: a region's sides swapped in the glue,
+  a refusal under another rule's name, and a ceiling at another stage;
+- by hand-written replies, one per compared field.
 
 [#130]: https://github.com/TensorGreed/burrow/issues/130
 [#131]: https://github.com/TensorGreed/burrow/issues/131
