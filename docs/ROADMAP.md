@@ -778,14 +778,15 @@ other.
 
 **R8's and R9's checks exist, since 2026-09-27 (#137).** Both have been shown to fail, and both
 run in all three browsers.
-- **R8** allows only what the real worker was measured to send, shape by shape and field by field.
-  About ninety bytes a reply of number-shaped data still fit, and the reply's prose is not checked.
+- **R8** allows only what the real worker was measured to send, shape by shape and field by field,
+  and each field's rule is witnessed on its own. Some sixty bytes a reply of number-shaped data
+  still fit, and a refusal's `message` is not checked.
 - **R9** is held as "no exit at all". It uses hand-enumerated stubs, which are a tripwire and not a
   boundary, plus the server's request log.
 - **Neither** sees a `MessagePort` that the page never receives, and #206 will add one.
 
-Three versions reviewed before push were got past in all three browsers. ADR 0006's R8/R9 note
-has what each lacked and what is still out of reach. R10's check is still to be written.
+Four versions reviewed before push fell short. ADR 0006's R8/R9 note has what each lacked and what
+is still out of reach. R10's check is still to be written.
 
 ### Decided: ADR 0029, and the blocker it carries
 

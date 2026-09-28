@@ -61,6 +61,17 @@ for (const [outcome, pageNumber] of [
       description: requests.map((entry) => entry.url).join(", ") || "none",
     });
     expect(networkViolations(requests, new URL(page.url()).origin)).toEqual([]);
+    // AND EXACTLY THE FOUR, one each: a window that saw nothing would pass every rule above, and a
+    // fresh worker is measured to fetch all four inside it in all three browsers.
+    expect(
+      requests.map((entry) => entry.url.replace(/\.[0-9a-f]{16}\./, ".<hash>.")).sort(),
+      "the window did not hold redaction's four artifacts, once each",
+    ).toEqual([
+      "/engines/burrow-redact-worker.<hash>.js",
+      "/engines/burrow_wasm_redact_bg.<hash>.wasm",
+      "/engines/control.<hash>.txt",
+      "/engines/qpdf.<hash>.wasm",
+    ]);
   });
 }
 

@@ -27,7 +27,7 @@ export const WHOLE = { left: 0, top: 0, width: 5000, height: 5000 };
 /** THE LINE A PLANTED VIOLATION GOES BEFORE: `redact-main.js`'s one call into Rust. */
 export const THE_CALL = "  return wasm_bindgen.redact(";
 
-/** How long the worker is given to go quiet after its reply: on its clock, then on the page's. */
+/** The settle: the worker echoes after this long, and the page reads the log `2 *` this after the send. */
 export const SETTLE_MS = 500;
 
 /** What `redactAndSettle` hands back: the reply, the log, and the nonce the log must echo. */
@@ -202,20 +202,41 @@ const LIMIT_NAMES = [
 ];
 
 const U32 = 2 ** 32;
+const U64_MAX = 2n ** 64n - 1n;
+/** A whole number in range, and not `-0`: a sign bit is a bit. */
 const integer = (low: number, high: number) => (v: unknown) =>
-  typeof v === "number" && Number.isInteger(v) && v >= low && v <= high;
+  typeof v === "number" && Number.isInteger(v) && !Object.is(v, -0) && v >= low && v <= high;
+/** A `u64` as the worker writes one: canonical digits -- no leading zero -- no larger than 2^64 - 1. */
 const u64 = (v: unknown) =>
-  (typeof v === "string" && /^\d{1,20}$/.test(v)) || integer(0, Number.MAX_SAFE_INTEGER)(v);
+  (typeof v === "string" && /^(0|[1-9]\d{0,19})$/.test(v) && BigInt(v) <= U64_MAX) ||
+  integer(0, Number.MAX_SAFE_INTEGER)(v);
 const oneOf = (values: string[]) => (v: unknown) => typeof v === "string" && values.includes(v);
 
 /**
- * WHAT EACH FIELD'S VALUE MAY BE, where the shape says only its type. Enumerations are copied from
- * the Rust that produces them; numbers are whole and bounded, so no NaN payload and no 53-bit
- * double rides in one. What still fits is NUMBER-SHAPED: about 4 bytes per 32-bit field and 8 per
- * `u64`, some ninety bytes a reply -- not text, and not a name or a number a person would recognise
- * as the secret, but not nothing, and stated rather than closed.
+ * `format!("{report:?}")` of `burrow_ops::redact::Report`, as `Reply::redacted` writes it: fonts,
+ * each an object number, a flag and a count, and one more count -- integers and booleans, nothing
+ * else. NOT PROSE, and it was called that until review found the whole document passing in it
+ * (#137). A `String` added to `Report` would now fail this spec rather than widen it silently.
+ * Empty for a refusal.
  */
-const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
+const FONT = "FontOutcome \\{ font: \\d{1,10}, cut: (true|false), also_used_by: \\d{1,10} \\}";
+const REPORT = new RegExp(
+  `^(|Report \\{ fonts: \\[(${FONT}(, ${FONT}){0,63})?\\], dropped_carried_text: \\d{1,10} \\})$`,
+);
+
+/**
+ * WHAT EACH FIELD'S VALUE MAY BE, where the shape says only its type. Enumerations are copied from
+ * the Rust that produces them; numbers are whole, bounded and never `-0`; the two sizes that only
+ * `compress` fills are pinned to "0"; a success's `message` is empty and its output a PDF.
+ *
+ * WHAT STILL FITS IS NUMBER-SHAPED, and this is its arithmetic rather than an estimate: three `u64`
+ * fields a reply at 8 bytes, five 32-bit counts at 4, the enumerations' and booleans' few bits,
+ * about 8 bytes in the order of the reply's keys (the shape sorts them), and the report's font
+ * numbers -- up to 64 fonts of about 4 bytes. Some sixty bytes a reply without the report, a few
+ * hundred with it at its ceiling. Not text, and not a name a person would recognise as the secret;
+ * stated, not closed.
+ */
+export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   id: integer(0, U32),
   // Empty on a success, measured: `kind` names an error.
   kind: oneOf(["", ...KINDS]),
@@ -225,13 +246,17 @@ const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   allowed: u64,
   requested: u64,
   engineHeapBytes: u64,
-  originalBytes: u64,
-  producedBytes: u64,
+  // Only `compress` fills these; every redaction writes "0", measured.
+  originalBytes: oneOf(["0"]),
+  producedBytes: oneOf(["0"]),
   minConvergingMemoryBytes: u64,
   pages: integer(0, U32),
   retainedFonts: integer(0, U32),
   droppedCarriedText: integer(0, U32),
   failedInput: integer(-1, U32),
+  message: oneOf([""]),
+  report: (v) => typeof v === "string" && REPORT.test(v),
+  "output.type": oneOf(["application/pdf"]),
   "defaultLimits.maxDurationMs": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxInputBytes": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxMemoryBytes": integer(0, Number.MAX_SAFE_INTEGER),
@@ -240,6 +265,26 @@ const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   __burrowSettled: integer(1, 2 ** 31),
   __burrowSideChannel: (v) => typeof v === "string" && Object.hasOwn(EXITS, v),
 };
+
+/** The fields whose values are numbers; every other rule is over a string. */
+const NUMERIC = new Set([
+  "id",
+  "pages",
+  "retainedFonts",
+  "droppedCarriedText",
+  "failedInput",
+  "defaultLimits.maxDurationMs",
+  "defaultLimits.maxInputBytes",
+  "defaultLimits.maxMemoryBytes",
+  "defaultLimits.maxPages",
+  "defaultLimits.maxPixels",
+  "__burrowSettled",
+]);
+
+/** A value each rule refuses, for the hand-written case that shows the rule is there. */
+export const REFUSED_BY: Record<string, string | number> = Object.fromEntries(
+  Object.keys(FIELD_RULES).map((key) => [key, NUMERIC.has(key) ? 1.5 : "x y"]),
+);
 
 /** Every field value in `m` no rule admits, named. Booleans and `null` are the shape's to fix. */
 function badFields(m: RedactionMessage): string[] {
@@ -255,16 +300,20 @@ function badFields(m: RedactionMessage): string[] {
 /**
  * The harness's own messages, EXACTLY:
  * - the armed list, ONCE, as the worker's very first message, naming only exits a stub exists for;
- * - a stub's report, naming such an exit;
+ * - a stub's report, naming an exit that armed list named;
  * - the settle echo carrying THIS nonce.
  * Each earlier version exempted more: anything beginning `__burrow`, then an armed list at any
  * count carrying a document three bits a name, with `in` walking the prototype chain (reviews of
  * #137).
  */
-function harnessOwn(m: RedactionMessage, at: number, nonce: number): boolean {
+function harnessOwn(m: RedactionMessage, at: number, nonce: number, armed: string[]): boolean {
   const exit = (name: unknown) => typeof name === "string" && Object.hasOwn(EXITS, name);
   if (m.shape === shape({ __burrowSettled: "number" })) return m.settled === nonce;
-  if (m.shape === shape({ __burrowSideChannel: "string" })) return exit(m.sideChannel);
+  // ONLY FOR AN EXIT THE ARMED LIST NAMED: with no stubs armed there are no reports, and 1800
+  // forged ones carried 600 bytes past a version that accepted any (review of #137).
+  if (m.shape === shape({ __burrowSideChannel: "string" })) {
+    return exit(m.sideChannel) && armed.includes(m.sideChannel ?? "");
+  }
   if (
     m.shape === shape({ __burrowSideChannelArmed: "[string]" }) ||
     m.shape === shape({ __burrowSideChannelArmed: "[]" })
@@ -289,8 +338,9 @@ function harnessOwn(m: RedactionMessage, at: number, nonce: number): boolean {
  * - No message transfers a port.
  * - Every field's value is one `FIELD_RULES` admits.
  *
- * WHAT `message` AND `report` SAY IS NOT CHECKED: they are Rust's prose, and an error quoting the
- * document would pass. The typed-error rule holds that, not this spec.
+ * WHAT A REFUSAL'S `message` SAYS IS NOT CHECKED, at any length: it is Rust's prose, and an error
+ * quoting the document would pass. The typed-error rule holds that, not this spec. `report` is not
+ * prose -- it is held to its `Debug` grammar -- and a success's `message` must be empty.
  */
 export function r8Violations(all: RedactionMessage[], id: number, nonce: number): string[] {
   const log = all.filter((m) => m.sent === null);
@@ -302,6 +352,11 @@ export function r8Violations(all: RedactionMessage[], id: number, nonce: number)
   const terminal = replies.length > 0 ? replies[replies.length - 1] : null;
   if (terminal === null) found.push("no terminal reply");
   const after = terminal === null ? log.length : log.indexOf(terminal);
+  const first = log[0];
+  const armedList =
+    first !== undefined && first.armed !== null && harnessOwn(first, 0, nonce, [])
+      ? first.armed
+      : [];
   const seen = new Map<string, number>();
   log.forEach((m, at) => {
     const what = `message ${at} (id ${m.id}, keys ${m.keys})`;
@@ -314,7 +369,7 @@ export function r8Violations(all: RedactionMessage[], id: number, nonce: number)
       }
       return;
     }
-    if (harnessOwn(m, at, nonce)) return;
+    if (harnessOwn(m, at, nonce, armedList)) return;
     const group = EARLY[m.shape];
     if (group === undefined) {
       found.push(
@@ -476,7 +531,31 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
       bytes: 1,
       ok: true,
       shape: success,
-      fields: { id, ok: true, kind: "", stage: "", pages: 0 },
+      // A SUCCESS AS THE REAL WORKER SENDS ONE, field for field -- `report` as measured on
+      // `producer-writer.pdf` -- so a case that changes one field provokes that field's rule alone.
+      fields: {
+        id,
+        ok: true,
+        fatal: false,
+        recycle: false,
+        kind: "",
+        innerKind: "",
+        stage: "",
+        limit: "",
+        message: "",
+        allowed: "0",
+        requested: "0",
+        engineHeapBytes: "20971520",
+        originalBytes: "0",
+        producedBytes: "0",
+        pages: 0,
+        retainedFonts: 0,
+        droppedCarriedText: 0,
+        failedInput: -1,
+        report:
+          "Report { fonts: [FontOutcome { font: 1179648, cut: true, also_used_by: 0 }, FontOutcome { font: 851968, cut: true, also_used_by: 0 }], dropped_carried_text: 0 }",
+        "output.type": "application/pdf",
+      },
     },
     {
       ...blank,

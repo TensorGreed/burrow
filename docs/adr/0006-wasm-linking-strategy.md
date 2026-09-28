@@ -199,8 +199,8 @@ until its named check exists and has been shown to fail without the property.**
   **Both checks exist (2026-09-27, #137), and both have been shown to fail.** They run in all
   three browsers against redaction's own worker, on every e2e run.
 
-  **Four versions, and the first three did not hold.** Each was reviewed before it was pushed, by
-  both reviewers, and each was got past in all three browsers.
+  **Five versions.** Each was reviewed before it was pushed, by both reviewers. The first three
+  were got past in all three browsers; the fourth held its structure and overclaimed its residue.
   - **Version 1, 3 ways:** R8 by bytes under a foreign or `undefined` id; R9 by a nested worker.
   - **Version 2, 11 ways.** Among them:
     - a `__burrow` key the harness exempted by prefix;
@@ -214,9 +214,16 @@ until its named check exists and has been shown to fail without the property.**
     - an early message after the reply;
     - a settle forged with a capture listener, in Firefox and WebKit;
     - a secret in a string field whose type and length were right.
+  - **Version 4** held against every earlier bypass. But:
+    - its `report` field, called prose, is a `Debug` form of integers and booleans that carried
+      the whole document unchecked;
+    - a `File`'s name and a `Blob`'s type were text nobody read;
+    - forged stub reports were accepted at any count;
+    - one plant per shared validator left eight field rules unwitnessed;
+    - its stated residue, "about ninety bytes", was the wrong number in both directions.
   - **The lesson every round repeated:** a rule that lists what to look for, or bounds how much,
-    is got past by what it did not list. So version 4 allows only what the real worker was
-    measured to send, **field by field**.
+    is got past by what it did not list. So the fifth version allows only what the real worker
+    was measured to send, **field by field**, and witnesses every field's rule on its own.
   - Each version's notes also claimed something false, and are superseded by what follows.
 
   - **The observation point.** The harness wraps the redaction worker before the host sees it, and
@@ -234,13 +241,14 @@ until its named check exists and has been shown to fail without the property.**
     - any byte value as `bytes`;
     - an array as its elements' types, and only if it carries no named properties;
     - anything else as `other:<name>`.
-  - **Every non-prose field value is recorded as well.** R8 then requires:
+  - **Every field value is recorded as well**, including a `Blob`'s `type`, but not a refusal's
+    `message`. R8 then requires:
     - The terminal reply's shape is one of the reply shapes `worker-protocol.js` builds, with
       empty `rotations`. Only the success shape holds bytes, and only in `output`. That is ADR
       0023's "exactly one part", held by the shape.
     - Every other message is one of the harness's own, exactly:
       - the armed list, once, as the first message, naming only listed exits (`Object.hasOwn`);
-      - a stub's report naming one;
+      - a stub's report naming an exit **that list** named, so with nothing armed there is none;
       - the echo carrying this nonce.
     - Otherwise it is one of the four early shapes, measured on the real worker. It must come
       **before** the reply, and within its group's count: `starting` twice, one answer to `init`,
@@ -249,18 +257,27 @@ until its named check exists and has been shown to fail without the property.**
     - **Every field's value is admitted by a rule**, and a field without one is refused:
       - `kind`, `innerKind`, `stage` and `limit` are enumerations copied from the Rust that
         produces them;
-      - `u64` fields are digits;
-      - every number is a whole, bounded integer.
-  - **What still fits is number-shaped**: about ninety bytes a reply, in bounded integers and
-    digit strings. It is not text, and not a name a person would recognise, but it is not nothing,
-    and it is stated rather than closed.
-  - **What `message` and `report` say is not checked.** They are Rust's prose, and holding them to
-    the typed-error rule is someone else's job.
+      - `u64` fields are canonical digits no larger than 2^64 − 1;
+      - `originalBytes` and `producedBytes`, which only `compress` fills, are `"0"`;
+      - every number is a whole, bounded integer, never `-0`;
+      - a success's `message` is empty;
+      - `report` matches the `Debug` grammar of `Report`, with up to 64 fonts. A `String` added to
+        `Report` would fail this spec rather than widen it;
+      - the output's `type` is `application/pdf`, and a `File` is not a `Blob`.
+  - **What still fits is number-shaped**, and `FIELD_RULES` carries the arithmetic: some sixty
+    bytes a reply, and a few hundred with the report's font numbers at their 64-font ceiling. It
+    is not text, and not a name a person would recognise, but it is not nothing, and it is stated
+    rather than closed.
+  - **What a refusal's `message` says is not checked**, at any length. It is Rust's prose, and
+    holding it to the typed-error rule is someone else's job.
   - **How R8 is shown to fail:**
-    - **28 planted copies of the worker.** These include every bypass above, and a short secret in
-      `stage` and in `allowed`.
-    - **10 hand-written logs**, for the rules no copy of this worker can reach, beside a near-miss
-      that passes with and without an armed list.
+    - **32 planted copies of the worker.** These include every bypass above, and a short secret in
+      `stage`, `allowed`, a success's `message` and the output's `type`.
+    - **35 hand-written logs**, beside a near-miss that passes with and without an armed list:
+      - 10 for the structural rules that no copy of this worker can reach;
+      - one per field rule, 25 in all, each naming its own field.
+    - **Two tests** in which a mutation that matches nowhere, or twice, is reported as not
+      applied.
   - **R9 is held more strictly than it is worded: no exit at all**, from arming until the settle,
     on a success and on a refusal. Redaction's worker has no reason to take an exit, because the
     page makes the download link from the `Blob` it is handed. The rule has two halves.
@@ -280,6 +297,8 @@ until its named check exists and has been shown to fail without the property.**
     - Every request in the window must be a GET from the site of one of redaction's four
       artifacts, each at most once. The four are the bundle, qpdf, redaction's module, and the
       policy guard's control.
+    - A clean run must see **exactly those four**, so a window that recorded nothing cannot
+      pass.
     - The path is matched by a hash pattern, not the build's exact URLs. A request to another hash
       would need `connect-src` to regress first, and that residual is stated.
     - A copy sent the input's first bytes in a query string while every stub stayed silent. Only
@@ -292,9 +311,15 @@ until its named check exists and has been shown to fail without the property.**
 
     Two hand-written logs cover the settle rule and the network rules.
   - **Every rule was switched off in turn**, each switch-off asserted to apply, and each turned
-    the suite red, except three stated belts, which another rule holds:
-    - the capture phase and the captured timer, because the page's clock decides the window;
-    - the `other:` encoding, because every listed shape is literal.
+    the suite red, except these **belts**, which another rule holds:
+    - the settle's capture phase, its captured timer and captured `postMessage`, and the page's
+      nonce match, because the page's clock decides the window and a missing echo fails closed;
+    - the `other:` encoding, and `shapeOf`'s `Array.prototype` test, because every listed shape
+      is literal and structured clone gives every array that prototype;
+    - `describe`'s number-or-null `id`, and `fieldsOf`' nested branch, because the shape fixes
+      both.
+
+    The first count of belts, in version 4's note, was three, and a review found eight more.
   - **What neither check sees:**
     - an exit nobody has listed;
     - anything later than 1000 ms after the settle's send;

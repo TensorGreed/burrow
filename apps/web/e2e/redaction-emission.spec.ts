@@ -9,11 +9,12 @@
 // applied, and by hand-written logs for the rules no copy of this worker can reach.
 //
 // WHAT IT DOES NOT SEE:
-// - WHAT THE REPLY'S OWN `message` AND `report` SAY. They are Rust's prose; an error quoting the
-//   document would pass. The typed-error rule holds that, not this spec.
 // - A message later than `2 * SETTLE_MS` after the settle handshake, on the page's clock.
-// - About ninety bytes a reply of NUMBER-SHAPED data, in fields whose values are bounded but not
-//   fixed (see `FIELD_RULES`). Not text, but not nothing.
+// - NUMBER-SHAPED data in fields whose values are bounded but not fixed -- some sixty bytes a
+//   reply, a few hundred with the report's font numbers at their ceiling (`FIELD_RULES` has the
+//   arithmetic). Not text, but not nothing.
+// - What a REFUSAL's `message` says: Rust's prose, and an error quoting the document would pass,
+//   at any length. The typed-error rule holds that, not this spec.
 // - A `MessagePort` the page never received. One transferred to the page is caught; #206's
 //   second-engine reading will add a worker-to-worker port, and ADR 0029's 2026-09-27 amendment
 //   requires this spec to follow it.
@@ -23,6 +24,8 @@ import { expect, test } from "@playwright/test";
 import type { RedactionMessage } from "../src/host/harness-api";
 import { openHarness } from "./harness";
 import {
+  FIELD_RULES,
+  REFUSED_BY,
   THE_CALL,
   cleanLog,
   onlyRequest,
@@ -221,7 +224,34 @@ const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
     ),
     finding: REPLY_UNLISTED,
   },
+  // The output's own text: a File's name, and a Blob's type.
+  {
+    // Text, not the input: the channel is what is being shown, and a name is text of any length.
+    name: "text as the output File's name",
+    ...afterReply(
+      'self.postMessage({ ...d, output: new File([new Uint8Array(4)], "x".repeat(300)) });',
+    ),
+    finding: REPLY_UNLISTED,
+  },
+  {
+    name: "a secret as the output's type",
+    from: '        reply.outputLength > 0 ? new Blob([reply.takeOutput()], { type: "application/pdf" }) : null,\n',
+    to: '        reply.outputLength > 0 ? new Blob([reply.takeOutput()], { type: "text/x-123-45-6789" }) : null,\n',
+    finding: /a value no rule admits in output.type/,
+  },
+  // A stub's report with no stub armed: no exit was watched, so there is nothing to report.
+  {
+    name: "a forged stub report",
+    ...before('self.postMessage({ __burrowSideChannel: "locks" });'),
+    finding: UNLISTED,
+  },
   // A short secret in a field whose TYPE is right: only the value rules see it.
+  {
+    // A success has no message; a refusal's is the one field left unchecked.
+    name: "a secret in a success's message",
+    ...field("message: reply.message,", 'message: reply.ok ? "123-45-6789" : reply.message,'),
+    finding: /a value no rule admits in message/,
+  },
   {
     name: "a secret in stage",
     ...field("stage: reply.stage,", 'stage: "123-45-6789",'),
@@ -354,5 +384,38 @@ test("the hand-written near-miss passes every rule, with and without an armed li
 for (const hand of HAND) {
   test(`SHOWN TO FAIL, by hand: ${hand.name}`, () => {
     expect(r8Violations(hand.change(cleanLog(7, 42)), 7, 42).join("\n")).toMatch(hand.finding);
+  });
+}
+
+// ONE CASE PER FIELD RULE: a validator shared by several fields was witnessed once and left every
+// other field using it unwitnessed, so loosening `requested` to any string stayed green (review of
+// #137). Each case puts that rule's refused value in the clean reply, and must name that field.
+for (const key of Object.keys(FIELD_RULES)) {
+  test(`SHOWN TO FAIL, by hand: a value the ${key} rule refuses`, () => {
+    const log = cleanLog(7, 42);
+    const changed = [
+      log[0],
+      { ...log[1], fields: { ...log[1].fields, [key]: REFUSED_BY[key] } },
+      log[2],
+    ];
+    expect(r8Violations(changed, 7, 42).join("\n")).toMatch(
+      new RegExp(`a value no rule admits in ([\\w.]+,)*${key.replace(".", "\\.")}(,|$)`, "m"),
+    );
+  });
+}
+
+// THE ARMING ITSELF: a mutation that matched nowhere, or in two places, is reported as not applied
+// -- or every "SHOWN TO FAIL" above could be measuring the real worker.
+for (const [name, from] of [
+  ["a text found nowhere", "this text is in no bundle"],
+  ["a text found twice", "self.postMessage("],
+] as const) {
+  test(`a mutation of ${name} is reported as not applied`, async ({ page }) => {
+    await openHarness(page);
+    const { applied } = await page.evaluate(
+      (mutate) => window.burrowHarness.armRedaction({ mutate }),
+      { from, to: "/* planted */" },
+    );
+    expect(applied).toBe(false);
   });
 }

@@ -69,7 +69,7 @@ export interface RedactionMessage {
   bytes: number;
   /** Its type as a canonical string; anything but plain data and bytes is `other:<name>`. */
   shape: string;
-  /** Every primitive value, one level of plain objects deep, except a reply's `message` and `report`. */
+  /** Every primitive value, one level of plain objects deep, and a Blob's `type`; not a refusal's `message`. */
   fields: Record<string, string | number | boolean | null>;
   /** How many MessagePorts it transferred. */
   ports: number;

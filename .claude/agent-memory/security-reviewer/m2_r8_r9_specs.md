@@ -1,6 +1,6 @@
 ---
 name: m2-r8-r9-specs
-description: R8/R9 named checks (#137) — rounds 1-3 (5c3c174, 9d9ec66, cf4bf34) measured bypasses; r3 deny-by-default holds for all r2 plants but array named props, forged armed msgs and a capture-listener settle forge get past it
+description: R8/R9 named checks (#137) — rounds 1-4 (5c3c174..2930dfb); r4 closes every r3 bypass 3/3; residue is `report`/`message` (unbounded, whole doc passes R8 but report is digest-pinned elsewhere) and ~56-68 B of numbers
 metadata:
   type: project
 ---
@@ -25,5 +25,13 @@ metadata:
 - Firefox + WebKit fire a later-registered CAPTURE listener before SETTLE's bubble one at the worker global; Chromium does not. So there a bundle reads the nonce, stops SETTLE and echoes at once; a copy 700 ms later passes (control without the forge is caught).
 - Network half is tight in practice (all 4 redact URLs are fetched in-window, so any 5th is "twice"; CSP pins exact URLs). But `networkViolations` ignores origin and method and admits any 16-hex hash: a hand log of foreign-origin POSTs to `qpdf.0000…` passes. Matters only if CSP regresses.
 - Method note: Playwright's page.evaluate return drops array named props — witness them through the recorder, not the returned reply.
+
+**Round 4, 2930dfb (2026-09-28).** Field rules + capture-first settle. All 14 r3 re-plants caught 3/3 (named props success+refusal, forged armed lists, fatal init after reply, 64-char enums, NaN/fraction, 64 doubles, lone surrogate, capture forge + 900 ms copy, 321 starting). A later capture listener and an onmessage wrapper never see the nonce in any browser. Still passing R8, 3/3:
+- Whole 20,406-char input in `report` (success AND refusal) or `message`. Not "prose": `report` is `Debug` of `Report`/`FontOutcome` (u64/bool/usize only), 160 chars on producer-writer; `message` is "" on success. redaction-worker.spec pins report by sha256 for its fixtures, so the JS-side plant is caught there, not by R8.
+- 56 input bytes verbatim through 5 u64 digit strings + 4 u32 (decoded at the page). Theoretical ~68 B incl. key order (21! ≈ 65 bits) and -0; digit regex admits > 2^64 and leading zeros. For redact, originalBytes/producedBytes/allowed/requested are "0" (measured) — pinnable.
+- Output as `File` with name = whole doc and 4 kB Blob type: shape says `bytes`.
+- Forged `__burrowSideChannel` reports ×64 pass R8 (no count, no armed-list tie) but R9 flags all 64.
+- Doc-derived hash `/engines/control.<hex>.txt`: server log empty 3/3 (CSP).
+- A throw at the call → fatal internalFailure → worker terminated → settle unanswered → fails closed.
 
 Related: [[m2-redaction-binding-137]], [[m2-web-redaction-impl]].

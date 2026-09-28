@@ -292,10 +292,12 @@ function shapeOf(value, seen = new Set()) {
   if (typeof value !== "object") return typeof value;
   if (seen.has(value)) return "cycle";
   seen.add(value);
-  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
+  const prototype = Object.getPrototypeOf(value);
+  // A PLAIN BLOB, not a File: a File's name carried the whole document past `instanceof Blob`
+  // (review of #137). A Blob's `type` is text too, and `fieldsOf` records it for a rule.
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || prototype === Blob.prototype) {
     return "bytes";
   }
-  const prototype = Object.getPrototypeOf(value);
   // AN ARRAY IS ITS ELEMENTS AND NOTHING ELSE: structured clone carries an array's named
   // properties too, and a document went past the first version as 426 of them (review of #137).
   if (
@@ -350,7 +352,8 @@ function describe(data, ports) {
 
 /**
  * Every primitive value in a message, one level of plain objects deep (`defaultLimits.maxPages`),
- * EXCEPT a reply's `message` and `report`: Rust's prose, which R8 states it does not check. What
+ * and a Blob's `type` -- EXCEPT a refusal's `message`: Rust's prose, which R8 states it does not
+ * check. What
  * R8 holds each field's VALUE to, where the shape holds only its type -- a shape admits any
  * string, and 60 bytes of a document went past the version that checked only length, in `stage`
  * (review of #137).
@@ -362,7 +365,10 @@ function fieldsOf(data) {
   /** @type {Record<string, string | number | boolean | null>} */
   const fields = {};
   for (const [key, value] of Object.entries(data)) {
-    if (key === "message" || key === "report") continue;
+    // A REFUSAL'S `message` is Rust's prose, and the one thing R8 states it does not check. A
+    // success has none, so there it is recorded -- and must be empty.
+    if (key === "message" && data.ok !== true) continue;
+    if (value instanceof Blob) fields[`${key}.type`] = value.type;
     if (value === null || ["string", "number", "boolean"].includes(typeof value)) {
       fields[key] = /** @type {string | number | boolean | null} */ (value);
     } else if (
