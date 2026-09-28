@@ -20,6 +20,12 @@
 //!    the bullet rather than four screens away in `Cleared::cut_fonts`, because it is the
 //!    difference between a true sentence and a false one: a *retained* font still maps
 //!    everything it ever mapped, by design.
+//!
+//!    **NOT HELD TODAY ([#218]).** The cut set holds INPUT object ids, and the fonts read back
+//!    carry the output's renumbered ones, so a font is examined only when the ids happen to
+//!    coincide -- often on a different font -- and a font only a form reaches is never listed.
+//!    Measured over the golden corpus: at most 14 of 213 cut fonts were checked. ADR 0029 §6
+//!    carries the dated note, and this bullet is corrected by the change that closes #218.
 //! 3. **No page key outside ADR 0029 §2's allowlist.** The same list `prune` uses.
 //!
 //! # What it does not assert, stated because the wording could be read as though it did
@@ -55,6 +61,8 @@
 //! defects in *placing* are not. The residue is placement, and the instrument that would close
 //! it is `FPDFText_GetCharOrigin`: `tests/glyph_geometry.rs` pins the walk against PDFium on
 //! committed fixtures, which is the calibration this check inherits rather than performs.
+//!
+//! [#218]: https://github.com/TensorGreed/burrow/issues/218
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -94,7 +102,9 @@ pub struct Cleared {
     /// #111 is about — so it is worth saying exactly which direction it fails in.
     ///
     /// - The operation claims it **cut** a font it did not: the orphaned mappings are still
-    ///   there and the check fires. Caught.
+    ///   there and the check fires. Caught -- **as designed, not today** (#218): the ids here are
+    ///   the input's, the fonts read back carry the output's renumbered ones, and a review got
+    ///   exactly this case to return `Ok` with the narrowing disabled.
     /// - The operation claims it **retained** a font it actually cut: the check skips it. Not
     ///   caught — but the failure that produces is another page's text reflowing, which no
     ///   read-back of *this* page could see anyway, and which the sharing rules exist to stop
