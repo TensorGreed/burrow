@@ -563,8 +563,10 @@ thinner audit gate than qpdf's**. Three things stand against using it:
    resolved** — a decision about the web payload, and it belongs in an ADR.
 3. **#107 is a separate question from the payload, and the existing split may already answer it.**
    *(2026-09-26: the diagnosis this item quotes was wrong — #107 was a race in Linux WebKit
-   reached through a GPU canvas, not PDFium residency; ADR 0027's 2026-09-26 correction. R10's
-   half of the argument below is unaffected.)*
+   reached through a GPU canvas, not PDFium residency; ADR 0027's 2026-09-26 correction. And
+   2026-09-27: R10 now states its property, which a hash binding satisfies, so for GEOMETRY the
+   render worker CAN help -- ADR 0029 §6's 2026-09-27 amendment and #206. For text, the
+   admissibility argument below still stands on its own.)*
    Its refined diagnosis (ADR 0027, corrected 2026-09-18) is that the mechanism is *PDFium
    resident while an operation runs*. So running a text pass in the **render worker** is worth
    measuring before anything is conceded — but it cannot help here, because a text pass in the

@@ -768,7 +768,7 @@ of claim that reads as coverage. See the ADR's 2026-09-12 amendment for why each
 |---|---|---|
 | **R8** | Redaction output is a single value returned from one Rust call, posted only after that call returns success. Progress may report *position*; it may not emit *content*. | `redaction-emission.spec.ts` — record every `postMessage`; assert no message before the final reply carries bytes, and exactly one carries output |
 | **R9** | Nothing is written outside the wasm heap before verification passes — no OPFS, no File System Access, no `blob:` URL handed to the page. | `redaction-no-side-channel.spec.ts` — stub `getDirectory`, `showSaveFilePicker`, `createObjectURL`; assert none is called before the verified reply |
-| **R10** | Verification runs on the exact byte sequence that is emitted, in the heap it is emitted from — never a sibling heap's copy. | `redact_verify_same_bytes` in `core/burrow-ops`, plus a conformance case for a both-engine path |
+| **R10** | The bytes verification examines are proven identical to the bytes emitted (amended 2026-09-27: its property, not its mechanism). Running in the emitting heap satisfies it; so does a hash binding, which is what admits #206's second reading. | `redact_verify_same_bytes` in `core/burrow-ops`, plus a conformance case for a both-engine path |
 
 Under an unwind, violating R8 or R9 is recoverable: Rust returns `Err`, the buffer drops, a
 `Drop` impl deletes the file. Under a trap — which is what the web has — they are not. R10 is

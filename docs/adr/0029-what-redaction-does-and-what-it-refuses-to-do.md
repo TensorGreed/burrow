@@ -13,7 +13,8 @@ construction is `.claude/skills/add-operation`'s job and is deliberately not her
 Extends [0022](0022-every-operation-verifies-its-own-output.md) with redaction's content
 predicate, which that record left as M2's whole problem. Applies
 [0019](0019-how-split-builds-its-outputs.md) §2 to an operation that excludes no page. Carries
-[0006](0006-wasm-linking-strategy.md)'s R8, R9 and R10 unchanged.
+[0006](0006-wasm-linking-strategy.md)'s R8 and R9 unchanged, and R10 as amended on 2026-09-27
+(its property: the bytes verified proven identical to the bytes emitted).
 
 ## Context
 
@@ -254,6 +255,73 @@ shipped path would reintroduce every objection *Alternatives considered* raises 
 render-only. The test asserts burrow's geometry agrees with a second implementation on documents
 where both are asked; the runtime check continues to assert burrow's own rule against burrow's
 own reading, and that residue stays exactly as stated above.
+
+**Amended 2026-09-27 (owner, for #206): the oracle also runs at RUNTIME, for geometry only.**
+
+**Why the test-only ruling no longer holds, in the owner's words: both of its reasons -- #107 and
+the payload -- no longer hold on the redaction page.** Where each reason actually lives, since
+neither is stated in the paragraph above in those words:
+
+- **#107.** The paragraph above rests on *Alternatives considered*'s objections to `FPDFText_*`,
+  and #107 enters there: running a PDFium pass in the render worker "to sidestep #107" (and ADR
+  0022's route table, "a tab holding qpdf and PDFium at once loses the tab on WebKit"). #107 was
+  never two engines in a tab: it was a Linux WebKit race reached through a GPU-backed canvas,
+  fixed by drawing on a CPU canvas (ADR 0027's 2026-09-26 correction).
+- **The payload.** The paragraph above's "the engine this project deliberately keeps render-only"
+  -- ADR 0026's design, whose checked claim is that a visitor who merges two files downloads no
+  PDFium at all. That claim is about pages that do not render.
+
+**A condition, stated because it is not yet decided.** The payload reason falls on the owner's
+premise that the redaction page holds PDFium for page pictures. No redaction page exists yet
+(`/redact-pdf` is held under #125 and #180–#183), and #136 records the choice between thumbnails
+and page numbers there as **not taken**. If the page ships without page pictures, the runtime
+reading would be that page's only reason to fetch PDFium, and its cost -- the render payload,
+about 2.4 MB brotli, 1.9 MB of it `pdfium.wasm` (`apps/web/size-budget.json`'s `render.total`) --
+has to be weighed again rather than assumed away. The artifacts are not new either way; the
+render bundle does GROW: the reading needs new `__burrow_pdfium_*` bridge imports beyond the seven
+ADR 0026 counts, and the bridge glue behind them. ADR 0026's table and the render size budget
+record them in #206's change. Nothing today checks which PDFium exports the render bundle calls:
+`pdfium.wasm` is a prebuilt with 429 `FPDF_*` exports and no allowlist.
+
+**Geometry, never mapping.** The runtime reading asks PDFium where glyphs ARE -- boxes and
+origins computed from the text state and the font's metrics -- and never what they SAY. No
+`FPDFText_GetUnicode`, no `/ToUnicode`, no `/ActualText`: spike 0006's channel 21 measured a
+document whose `/ToUnicode` lies while its font's `cmap` tells the truth, and a check that decodes
+through the font verifies the document's own claim about itself. The "not admissible evidence"
+objection in *Alternatives considered* is about mapping and stands unchanged; what is admitted is
+the half it does not reach.
+
+**It can only ADD a refusal, never remove one.** The operation's own verification (§6, over
+burrow's pdfsyntax walk) runs as before and its refusals stand whatever PDFium says. The PDFium
+reading is a second, independent opinion on placement. **What it refuses on is not decided here**
+and is #206's item 4: the case this record already documents -- PDFium *inventing* a `U+0020` in
+exactly the gap a redaction cuts out of a run -- is a whole character inside the region, which no
+tolerance absorbs; the test-time oracle handles it by excluding characters `FPDFText_IsGenerated`
+flags (`core/burrow-engines/tests/support/char_box_oracle.rs`), and `/Arial-Bold`'s `@` (975 against
+1072) is refused by `DISPUTED` before any reading. The rule, the tolerance and the exclusions are
+decided from that calibration and from `core/burrow-engines/tests/glyph_geometry.rs`, in #206,
+before anything is wired. What IS decided: whatever that rule is, a PDFium verdict can turn a
+success into a refusal and never the reverse.
+
+**Under R8 the page receives nothing until BOTH verdicts are in.** The worker that produced the
+document -- redaction's qpdf worker, `burrow-redact-worker.js` -- holds the bytes, and posts
+nothing, until the render worker has answered. A copy crosses to the render worker for the
+reading, bound to the emitted bytes by a hash under R10 as amended (ADR 0006, 2026-09-27); the
+render worker returns a verdict, never bytes. Only when both verdicts are "cleared" does the one
+reply carrying the document go to the page. A render worker that dies, times out or is
+unavailable is a refusal, not a pass: an unanswered second opinion is not a clean one.
+
+**And the copy never touches the page.** Workers are created by the page, so the obvious route --
+redaction's worker posts the copy to the page, the page forwards it -- hands the page unverified
+bytes, which is exactly what R8 forbids. The copy travels over a `MessageChannel` port given to
+both workers, worker to worker. `redaction-emission.spec.ts` -- R8's check, being written for
+#137 -- is specified to record what redaction's worker posts to the page; a `port.postMessage`
+would walk past it, so #206's change must extend that spec to
+the port, or route nothing else through it.
+
+**What this leaves as it was.** The test-time oracle stays, and is what the runtime rule is
+calibrated from. Mapping-side residue is unchanged. `tools/check-pdfium-is-render-only.sh` keeps
+its claim -- a page that does not render downloads no PDFium.
 
 #### PDFium invents a space where a redaction leaves a gap
 
@@ -663,7 +731,11 @@ collides with `tools/check-pdfium-is-render-only.sh`'s three-layer claim, and ru
 the render worker to sidestep #107 puts it in **a sibling heap**, which R10 forbids. (#107 has
 since been shown not to need sidestepping — 2026-09-26 — but R10 alone is sufficient, and the
 rejection stands on it and on admissibility.) Cheap —
-330 µs for 137 pages — and inadmissible.
+330 µs for 137 pages — and inadmissible. *(2026-09-27: the R10 ground has fallen for GEOMETRY.
+R10 now states its property -- the bytes verified proven identical to the bytes emitted -- and a
+hash binding satisfies it (ADR 0006's 2026-09-27 amendment), so a PDFium geometry reading in the
+render worker is admitted as a second opinion by §6's 2026-09-27 amendment. The rejection stands
+for finding and verifying TEXT, on admissibility, the fatal ground.)*
 
 **Render every page and check the region is blank.** Rejected on cost and on meaning. Roughly
 3.8 s for 137 *empty* pages at 4×, against ADR 0027 §2a's measured 34 s and 819 MB for one

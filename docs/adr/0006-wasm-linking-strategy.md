@@ -227,6 +227,32 @@ design requirement:
   natively and on the web, which is what `tests/conformance/` exists to catch. Shown to fail by
   verifying a copy taken before the final write.
 
+  **Amended 2026-09-27 (owner, for #206): R10 states its property, not its mechanism.** The rule
+  now reads:
+
+  > **R10. The bytes redaction verification examines must be PROVEN IDENTICAL to the bytes that
+  > are emitted.**
+
+  "In the heap it is emitted from" was one way to satisfy that, written when it was the only way
+  in view. It is not the property: what R10 protects against is a verdict about bytes other than
+  the ones a person receives -- a sibling heap's stale copy, a copy taken before the final
+  write, a copy some glue mis-marshalled. A **hash binding** satisfies the property directly: the
+  verifier's copy is digested, the digest is compared with the digest of the emitted bytes in
+  the heap that emitted them, and a verdict counts only if the two agree. Running in the
+  emitting heap remains the simplest way to meet it. **What pins that today is an argument, not a
+  test:** `burrow_ops::verify` takes the emitted `&[u8]` and nothing else (`verify.rs`), and the
+  `redact_verify_same_bytes` test named above has not been written.
+
+  **What this admits, and what it does not.** It admits a *second* reading of the output in a
+  sibling heap -- #206's PDFium geometry reading, in the render worker -- provided its input is
+  bound to the emitted bytes by that hash. It does not relax the first reading, and it does not
+  let a sibling heap's verdict stand in for the emitting heap's: under ADR 0029's 2026-09-27
+  amendment the sibling reading can only ADD a refusal. The check for the sibling half is #206's
+  to write. **Proposed for it, not decided here:** "shown to fail" means a copy that differs from
+  the emitted bytes by one byte makes the OPERATION refuse -- not merely its verdict ignored,
+  since an unbound second opinion is an unanswered one, and ADR 0029's amendment makes that a
+  refusal.
+
 Nothing about the memory ceiling. Spike 0002 is still unadopted, issue #25 is still *mitigated,
 not resolved*, and [ADR 0007](0007-limit-enforcement-per-platform.md)'s 2026-09-12 amendment is
 unchanged. Closing this gate makes M2 plannable against option 1; it adopts nothing.
