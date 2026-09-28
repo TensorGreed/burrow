@@ -44,7 +44,7 @@ burrow-ops.workspace = true
 # The provenance test hashes whichever libpdfium the loader actually mapped, so it needs
 # the same digest the build script uses. The conformance tests reuse it to pin each
 # committed fixture by content.
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 # Property tests. Required by the definition of done, not optional per operation.
 proptest = { version = "1", default-features = false, features = ["std"] }
 # Reads tests/conformance/expectations.json, which M1 PR 4's web harness reads too -- the
@@ -56,7 +56,7 @@ serde_json = "1"
 # For re-verifying the vendored libraries' checksums in build.rs. Shelling out to
 # sha256sum was the alternative and was rejected: a subprocess plus a PATH dependency in
 # a build script is worse than one small, ubiquitous crate.
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 
 [lints.rust]
 # Relaxed from the workspace `forbid`: this crate wraps C/C++ engines. Every `unsafe`
