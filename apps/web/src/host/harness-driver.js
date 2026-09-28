@@ -368,6 +368,12 @@ function fieldsOf(data) {
     // A REFUSAL'S `message` is Rust's prose, and the one thing R8 states it does not check. A
     // success has none, so there it is recorded -- and must be empty.
     if (key === "message" && data.ok !== true) continue;
+    // A REFUSAL'S `report` is empty, and is recorded under its own name so a rule can say so: the
+    // report's grammar admitted six hundred bytes of numbers on a refusal (review of #137).
+    if (key === "report" && data.ok === false) {
+      fields.refusalReport = /** @type {string} */ (value);
+      continue;
+    }
     if (value instanceof Blob) fields[`${key}.type`] = value.type;
     if (value === null || ["string", "number", "boolean"].includes(typeof value)) {
       fields[key] = /** @type {string | number | boolean | null} */ (value);
@@ -527,6 +533,11 @@ const SIDE_CHANNEL_STUBS = `
   wrapConstructor("SharedWorker");
   post({ __burrowSideChannelArmed: armed });
 })();
+`;
+
+/** The armed list when no stub is armed: empty, and still first. */
+const NO_STUBS = `
+self.postMessage({ __burrowSideChannelArmed: [] });
 `;
 
 /** @param {"renderWorker" | "redactWorker"} id */
@@ -1100,7 +1111,10 @@ const harness = {
       }
     }
     redactArming = {
-      prologue: SETTLE + (options.stubSideChannels ? SIDE_CHANNEL_STUBS : ""),
+      // THE ARMED LIST IS ALWAYS POSTED, EMPTY WHEN NOTHING IS ARMED: R8 admits it only as the
+      // worker's first message, and with no prologue list there a bundle's own post was first --
+      // and a forged list then vouched for any number of forged reports (review of #137).
+      prologue: SETTLE + (options.stubSideChannels ? SIDE_CHANNEL_STUBS : NO_STUBS),
       source,
     };
     const existing = lazyHosts.redactWorker;

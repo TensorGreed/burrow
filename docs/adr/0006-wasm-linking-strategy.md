@@ -199,8 +199,9 @@ until its named check exists and has been shown to fail without the property.**
   **Both checks exist (2026-09-27, #137), and both have been shown to fail.** They run in all
   three browsers against redaction's own worker, on every e2e run.
 
-  **Five versions.** Each was reviewed before it was pushed, by both reviewers. The first three
-  were got past in all three browsers; the fourth held its structure and overclaimed its residue.
+  **Six versions.** Each was reviewed before it was pushed, by both reviewers.
+  - The first three were got past in all three browsers.
+  - The fourth and fifth held their structure, and overclaimed what was left.
   - **Version 1, 3 ways:** R8 by bytes under a foreign or `undefined` id; R9 by a nested worker.
   - **Version 2, 11 ways.** Among them:
     - a `__burrow` key the harness exempted by prefix;
@@ -221,6 +222,12 @@ until its named check exists and has been shown to fail without the property.**
     - forged stub reports were accepted at any count;
     - one plant per shared validator left eight field rules unwitnessed;
     - its stated residue, "about ninety bytes", was the wrong number in both directions.
+  - **Version 5:**
+    - R8 alone accepted an armed list that the bundle posted first when nothing was armed, and so
+      any number of forged reports. R9's spec caught it.
+    - Its refinements, such as canonical digits, the 2^64 bound and `-0`, were witnessed only by
+      blunt values that any version of the rule refuses.
+    - Its residue arithmetic counted one of each font's two numbers.
   - **The lesson every round repeated:** a rule that lists what to look for, or bounds how much,
     is got past by what it did not list. So the fifth version allows only what the real worker
     was measured to send, **field by field**, and witnesses every field's rule on its own.
@@ -247,7 +254,9 @@ until its named check exists and has been shown to fail without the property.**
       empty `rotations`. Only the success shape holds bytes, and only in `output`. That is ADR
       0023's "exactly one part", held by the shape.
     - Every other message is one of the harness's own, exactly:
-      - the armed list, once, as the first message, naming only listed exits (`Object.hasOwn`);
+      - the armed list, once, as the first message, naming only listed exits (`Object.hasOwn`),
+        each once. The prologue **always** posts one, empty when nothing is armed, so a list the
+        bundle posts can never be first;
       - a stub's report naming an exit **that list** named, so with nothing armed there is none;
       - the echo carrying this nonce.
     - Otherwise it is one of the four early shapes, measured on the real worker. It must come
@@ -261,21 +270,28 @@ until its named check exists and has been shown to fail without the property.**
       - `originalBytes` and `producedBytes`, which only `compress` fills, are `"0"`;
       - every number is a whole, bounded integer, never `-0`;
       - a success's `message` is empty;
-      - `report` matches the `Debug` grammar of `Report`, with up to 64 fonts. A `String` added to
-        `Report` would fail this spec rather than widen it;
+      - a success's `report` matches the `Debug` grammar of `Report`. Every number in it is
+        canonical and within its type's range: a font identity in 48 bits, the counts in 32. It
+        allows up to 64 fonts, the regex's ceiling, so a page with more fails closed. A `String`
+        added to `Report` would fail this spec rather than widen it;
+      - a refusal's `report` is empty;
       - the output's `type` is `application/pdf`, and a `File` is not a `Blob`.
   - **What still fits is number-shaped**, and `FIELD_RULES` carries the arithmetic: some sixty
-    bytes a reply, and a few hundred with the report's font numbers at their 64-font ceiling. It
+    bytes a reply, and about 650 more in a success's report at its 64-font ceiling (about 10 bytes
+    a font). It
     is not text, and not a name a person would recognise, but it is not nothing, and it is stated
     rather than closed.
   - **What a refusal's `message` says is not checked**, at any length. It is Rust's prose, and
     holding it to the typed-error rule is someone else's job.
   - **How R8 is shown to fail:**
-    - **32 planted copies of the worker.** These include every bypass above, and a short secret in
-      `stage`, `allowed`, a success's `message` and the output's `type`.
-    - **35 hand-written logs**, beside a near-miss that passes with and without an armed list:
-      - 10 for the structural rules that no copy of this worker can reach;
-      - one per field rule, 25 in all, each naming its own field.
+    - **34 planted copies of the worker.** These include every bypass above, a short secret in
+      `stage`, `allowed`, a success's `message` and the output's `type`, and a report on a
+      refusal.
+    - **47 hand-written logs**, beside a near-miss that passes with and without an armed list:
+      - 11 for the structural rules that no copy of this worker can reach;
+      - one per field rule, 26 in all, each naming its own field;
+      - 10 with a value that only a refinement refuses: a leading zero, 2^64, `-0`, a pinned
+        size, a 65th font, a 2^48 font identity, and a 2^32 count.
     - **Two tests** in which a mutation that matches nowhere, or twice, is reported as not
       applied.
   - **R9 is held more strictly than it is worded: no exit at all**, from arming until the settle,
@@ -319,7 +335,8 @@ until its named check exists and has been shown to fail without the property.**
     - `describe`'s number-or-null `id`, and `fieldsOf`' nested branch, because the shape fixes
       both.
 
-    The first count of belts, in version 4's note, was three, and a review found eight more.
+    Version 4's note listed three belts where there were eight. It also said every other rule was
+    witnessed, where eight field rules and, in version 5, five refinements were not.
   - **What neither check sees:**
     - an exit nobody has listed;
     - anything later than 1000 ms after the settle's send;

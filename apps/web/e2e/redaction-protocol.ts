@@ -212,29 +212,50 @@ const u64 = (v: unknown) =>
   integer(0, Number.MAX_SAFE_INTEGER)(v);
 const oneOf = (values: string[]) => (v: unknown) => typeof v === "string" && values.includes(v);
 
-/**
- * `format!("{report:?}")` of `burrow_ops::redact::Report`, as `Reply::redacted` writes it: fonts,
- * each an object number, a flag and a count, and one more count -- integers and booleans, nothing
- * else. NOT PROSE, and it was called that until review found the whole document passing in it
- * (#137). A `String` added to `Report` would now fail this spec rather than widen it silently.
- * Empty for a refusal.
- */
-const FONT = "FontOutcome \\{ font: \\d{1,10}, cut: (true|false), also_used_by: \\d{1,10} \\}";
-const REPORT = new RegExp(
-  `^(|Report \\{ fonts: \\[(${FONT}(, ${FONT}){0,63})?\\], dropped_carried_text: \\d{1,10} \\})$`,
+/** A canonical whole number, as digits: no leading zero, no sign. */
+const DIGITS = "(0|[1-9]\\d*)";
+const FONT = `FontOutcome \\{ font: ${DIGITS}, cut: (true|false), also_used_by: ${DIGITS} \\}`;
+const REPORT_GRAMMAR = new RegExp(
+  `^Report \\{ fonts: \\[(${FONT}(, ${FONT})*)?\\], dropped_carried_text: ${DIGITS} \\}$`,
 );
+/** The report's ceiling on fonts: the regex's, not the report's -- a page with more fails closed. */
+const FONTS_MAX = 64;
+const U32_MAX = 2n ** 32n - 1n;
+/** `(number << 16) | generation`, a 32-bit object number and a 16-bit generation. */
+const FONT_ID_MAX = 2n ** 48n - 1n;
+
+/**
+ * `format!("{report:?}")` of `burrow_ops::redact::Report`, as `Reply::redacted` writes it on a
+ * success: fonts, each an object identity, a flag and a count, then one more count -- integers and
+ * booleans, nothing else, each canonical and in its type's range. NOT PROSE, and it was called
+ * that until review found the whole document passing in it (#137). A `String` added to `Report`
+ * would now fail this spec rather than widen it silently.
+ */
+function isReport(v: unknown): boolean {
+  if (typeof v !== "string" || !REPORT_GRAMMAR.test(v)) return false;
+  const fonts = [...v.matchAll(/font: (\d+), cut: (?:true|false), also_used_by: (\d+)/g)];
+  const dropped = /dropped_carried_text: (\d+) \}$/.exec(v);
+  return (
+    fonts.length <= FONTS_MAX &&
+    fonts.every(([, font, users]) => BigInt(font) <= FONT_ID_MAX && BigInt(users) <= U32_MAX) &&
+    dropped !== null &&
+    BigInt(dropped[1]) <= U32_MAX
+  );
+}
 
 /**
  * WHAT EACH FIELD'S VALUE MAY BE, where the shape says only its type. Enumerations are copied from
  * the Rust that produces them; numbers are whole, bounded and never `-0`; the two sizes that only
  * `compress` fills are pinned to "0"; a success's `message` is empty and its output a PDF.
  *
- * WHAT STILL FITS IS NUMBER-SHAPED, and this is its arithmetic rather than an estimate: three `u64`
- * fields a reply at 8 bytes, five 32-bit counts at 4, the enumerations' and booleans' few bits,
- * about 8 bytes in the order of the reply's keys (the shape sorts them), and the report's font
- * numbers -- up to 64 fonts of about 4 bytes. Some sixty bytes a reply without the report, a few
- * hundred with it at its ceiling. Not text, and not a name a person would recognise as the secret;
- * stated, not closed.
+ * WHAT STILL FITS IS NUMBER-SHAPED, and this is its arithmetic rather than an estimate:
+ * - three `u64` fields at 8 bytes, five 32-bit counts at 4, the enumerations' and booleans' few
+ *   bits, and about 8 bytes in the order of the reply's keys (the shape sorts them): some sixty
+ *   bytes a reply;
+ * - and a success's report: per font, a 48-bit identity, a 32-bit count and a flag, about 10 bytes,
+ *   up to 64 fonts -- about 650 bytes more at that ceiling.
+ * Not text, and not a name a person would recognise as the secret; stated, not closed. (The first
+ * version of this said "about 4 bytes a font", counting one of the font's two numbers.)
  */
 export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   id: integer(0, U32),
@@ -255,7 +276,9 @@ export const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
   droppedCarriedText: integer(0, U32),
   failedInput: integer(-1, U32),
   message: oneOf([""]),
-  report: (v) => typeof v === "string" && REPORT.test(v),
+  report: isReport,
+  // A refusal's report, recorded apart so it can be held empty.
+  refusalReport: oneOf([""]),
   "output.type": oneOf(["application/pdf"]),
   "defaultLimits.maxDurationMs": integer(0, Number.MAX_SAFE_INTEGER),
   "defaultLimits.maxInputBytes": integer(0, Number.MAX_SAFE_INTEGER),
@@ -281,6 +304,31 @@ const NUMERIC = new Set([
   "__burrowSettled",
 ]);
 
+/**
+ * VALUES EACH TIGHTENING REFUSES, which a blunt value cannot show: `REFUSED_BY` proves each rule is
+ * there, and every loosening of these -- a leading zero, 2^64, `-0`, a pinned size, a 65th font, a
+ * font identity past 48 bits -- stayed green against it (review of #137).
+ */
+const FONT_OK = "FontOutcome { font: 851968, cut: true, also_used_by: 0 }";
+const report = (fonts: string[], dropped = "0") =>
+  `Report { fonts: [${fonts.join(", ")}], dropped_carried_text: ${dropped} }`;
+export const REFINED: [string, string | number, string][] = [
+  ["allowed", "01", "a leading zero"],
+  ["allowed", "18446744073709551616", "2^64"],
+  ["pages", -0, "-0"],
+  ["originalBytes", "1", "a size only compress fills"],
+  ["producedBytes", "1", "a size only compress fills"],
+  ["report", report(Array.from({ length: FONTS_MAX + 1 }, () => FONT_OK)), "a 65th font"],
+  ["report", report([FONT_OK.replace("851968", "281474976710656")]), "a font identity of 2^48"],
+  [
+    "report",
+    report([FONT_OK.replace("also_used_by: 0", "also_used_by: 4294967296")]),
+    "a count of 2^32",
+  ],
+  ["report", report([FONT_OK.replace("851968", "0851968")]), "a font identity with a leading zero"],
+  ["report", report([FONT_OK], "4294967296"), "a dropped count of 2^32"],
+];
+
 /** A value each rule refuses, for the hand-written case that shows the rule is there. */
 export const REFUSED_BY: Record<string, string | number> = Object.fromEntries(
   Object.keys(FIELD_RULES).map((key) => [key, NUMERIC.has(key) ? 1.5 : "x y"]),
@@ -299,7 +347,8 @@ function badFields(m: RedactionMessage): string[] {
 
 /**
  * The harness's own messages, EXACTLY:
- * - the armed list, ONCE, as the worker's very first message, naming only exits a stub exists for;
+ * - the armed list, ONCE, as the worker's very first message -- the prologue always posts one, empty
+ *   when nothing is armed -- naming only exits a stub exists for, each once;
  * - a stub's report, naming an exit that armed list named;
  * - the settle echo carrying THIS nonce.
  * Each earlier version exempted more: anything beginning `__burrow`, then an armed list at any
@@ -318,7 +367,8 @@ function harnessOwn(m: RedactionMessage, at: number, nonce: number, armed: strin
     m.shape === shape({ __burrowSideChannelArmed: "[string]" }) ||
     m.shape === shape({ __burrowSideChannelArmed: "[]" })
   ) {
-    return at === 0 && (m.armed ?? []).every(exit);
+    const names = m.armed ?? [];
+    return at === 0 && names.every(exit) && new Set(names).size === names.length;
   }
   return false;
 }

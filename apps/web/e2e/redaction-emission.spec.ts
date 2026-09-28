@@ -11,8 +11,8 @@
 // WHAT IT DOES NOT SEE:
 // - A message later than `2 * SETTLE_MS` after the settle handshake, on the page's clock.
 // - NUMBER-SHAPED data in fields whose values are bounded but not fixed -- some sixty bytes a
-//   reply, a few hundred with the report's font numbers at their ceiling (`FIELD_RULES` has the
-//   arithmetic). Not text, but not nothing.
+//   reply, and about 650 more in a success's report at its 64-font ceiling (`FIELD_RULES` has
+//   the arithmetic). Not text, but not nothing.
 // - What a REFUSAL's `message` says: Rust's prose, and an error quoting the document would pass,
 //   at any length. The typed-error rule holds that, not this spec.
 // - A `MessagePort` the page never received. One transferred to the page is caught; #206's
@@ -25,6 +25,7 @@ import type { RedactionMessage } from "../src/host/harness-api";
 import { openHarness } from "./harness";
 import {
   FIELD_RULES,
+  REFINED,
   REFUSED_BY,
   THE_CALL,
   cleanLog,
@@ -76,7 +77,8 @@ const latin1 = 'new TextDecoder("latin1").decode(bytes.subarray(0, 256))';
 const UNLISTED = /has a shape nobody listed/;
 const REPLY_UNLISTED = /the terminal reply has a shape nobody listed/;
 
-const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
+/** Page 1 succeeds; a leak with `page: 2` runs on a refusal (one past the end). */
+const LEAKS: { name: string; from: string; to: string; finding: RegExp; page?: number }[] = [
   {
     name: "a chunk naming no request",
     ...before(`self.postMessage({ chunk: ${chunk} });`),
@@ -239,6 +241,15 @@ const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
     to: '        reply.outputLength > 0 ? new Blob([reply.takeOutput()], { type: "text/x-123-45-6789" }) : null,\n',
     finding: /a value no rule admits in output.type/,
   },
+  {
+    // At the TOP of the bundle, before anything of its own: the prologue's list is already first.
+    name: "a forged armed list before the bundle's first message, vouching for reports",
+    from: "  self.postMessage({ starting: true });",
+    // ONCE: this line runs per engine module, and a second forged list is caught at index 1
+    // whether or not the prologue posted one -- which left the always-posted list unwitnessed.
+    to: '  if (!self.__forged) { self.__forged = true; self.postMessage({ __burrowSideChannelArmed: ["locks"] }); self.postMessage({ __burrowSideChannel: "locks" }); } self.postMessage({ starting: true });',
+    finding: UNLISTED,
+  },
   // A stub's report with no stub armed: no exit was watched, so there is nothing to report.
   {
     name: "a forged stub report",
@@ -246,6 +257,16 @@ const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
     finding: UNLISTED,
   },
   // A short secret in a field whose TYPE is right: only the value rules see it.
+  {
+    // A refusal has no report; the grammar would admit hundreds of bytes of numbers in one.
+    name: "a report on a refusal",
+    ...field(
+      "report: reply.report,",
+      'report: reply.ok ? reply.report : "Report { fonts: [], dropped_carried_text: 7 }",',
+    ),
+    finding: /a value no rule admits in refusalReport/,
+    page: 2,
+  },
   {
     // A success has no message; a refusal's is the one field left unchecked.
     name: "a secret in a success's message",
@@ -281,7 +302,7 @@ for (const leak of LEAKS) {
     // THE MUTATION APPLIED, or this case measures the real worker and proves nothing.
     expect(applied, `the planted leak did not apply: ${leak.name}`).toBe(true);
 
-    const { log, nonce } = await redactAndSettle(page, 1);
+    const { log, nonce } = await redactAndSettle(page, leak.page ?? 1);
     expect(
       r8Violations(log, onlyRequest(log), nonce).join("\n"),
       "R8's check passed a leaking worker",
@@ -369,6 +390,11 @@ const HAND: {
     finding: UNLISTED,
   },
   {
+    name: "an armed list naming an exit twice",
+    change: (log) => [log[0], armed(["Worker", "Worker"]), ...log.slice(1)],
+    finding: UNLISTED,
+  },
+  {
     name: "an armed list naming a prototype property",
     change: (log) => [log[0], armed(["toString"]), ...log.slice(1)],
     finding: UNLISTED,
@@ -417,5 +443,16 @@ for (const [name, from] of [
       { from, to: "/* planted */" },
     );
     expect(applied).toBe(false);
+  });
+}
+
+// EACH TIGHTENING, with a value only the tightening refuses.
+for (const [key, value, what] of REFINED) {
+  test(`SHOWN TO FAIL, by hand: ${key} as ${what}`, () => {
+    const log = cleanLog(7, 42);
+    const changed = [log[0], { ...log[1], fields: { ...log[1].fields, [key]: value } }, log[2]];
+    expect(r8Violations(changed, 7, 42).join("\n")).toMatch(
+      new RegExp(`a value no rule admits in ([\\w.]+,)*${key}(,|$)`, "m"),
+    );
   });
 }
