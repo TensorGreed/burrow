@@ -30,3 +30,8 @@
 - [Cited test name must exist](feedback_cited_test_name_must_exist.md) — rg every test title a touched comment names as a witness; #107's cited one never existed.
 - [Differential probe bypasses harness](feedback_differential_probe_bypasses_harness.md) — an "engine B is really asked" probe that calls B alone passes when B delegates to A; count calls on B's own seam.
 - [Harness-only artifact vs exact lists](feedback_harness_only_artifact_exact_lists.md) — run the whole e2e suite and pnpm lint; #137 broke integrity.spec exact id list.
+- [Worker-scope stubs miss nested workers](feedback_worker_scope_stubs_nested_worker.md) — plant `new Worker(self.location.href)` taking the exit; also probe foreign/undefined ids and number-array bytes.
+- [Timing witness decays under load](feedback_timing_witness_decays_under_load.md) — re-run a timed defence ablation with CPUs spun; uncounted exemptions are channels.
+- [Rule table: ablate per entry](feedback_rule_table_ablate_per_entry.md) — FIELD_RULES: 8 entries unwitnessed behind shared validators; a File's name rides a "bytes" shape.
+- [Harness-own prefix exemption](feedback_harness_own_prefix_exemption.md) — `startsWith("__burrow")` skip let `{__burrowChunk: bytes}` pass R8; disable each `found.push` and list survivors.
+- [Exemption list postable first](feedback_exemption_list_postable_first.md) — "trusted if message 0" is forgeable when the harness posts nothing; revert tightenings, not just rules.

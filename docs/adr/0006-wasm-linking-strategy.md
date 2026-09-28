@@ -196,6 +196,157 @@ until its named check exists and has been shown to fail without the property.**
   `e2e/zero-requests.spec.ts`, which already asserts a negative about what an operation does.
   Shown to fail by calling `URL.createObjectURL` before verification in a copy.
 
+  **Both checks exist (2026-09-27, #137), and both have been shown to fail.** They run in all
+  three browsers against redaction's own worker, on every e2e run.
+
+  **Six versions.** Each was reviewed before it was pushed, by both reviewers.
+  - The first three were got past in all three browsers.
+  - The fourth and fifth held their structure, and overclaimed what was left.
+  - **Version 1, 3 ways:** R8 by bytes under a foreign or `undefined` id; R9 by a nested worker.
+  - **Version 2, 11 ways.** Among them:
+    - a `__burrow` key the harness exempted by prefix;
+    - a BigInt, an `Error`, a boxed `String`, an object's key, and a transferred stream;
+    - a forged settle echo, and silenced stub reports;
+    - `Worker.prototype.constructor`;
+    - bytes in the query string of the worker's own module URL.
+  - **Version 3:**
+    - the document as named properties on an array;
+    - the document in forged "armed" lists, three bits a name;
+    - an early message after the reply;
+    - a settle forged with a capture listener, in Firefox and WebKit;
+    - a secret in a string field whose type and length were right.
+  - **Version 4** held against every earlier bypass. But:
+    - its `report` field, called prose, is a `Debug` form of integers and booleans that carried
+      the whole document unchecked;
+    - a `File`'s name and a `Blob`'s type were text nobody read;
+    - forged stub reports were accepted at any count;
+    - one plant per shared validator left eight field rules unwitnessed;
+    - its stated residue, "about ninety bytes", was the wrong number in both directions.
+  - **Version 5:**
+    - R8 alone accepted an armed list that the bundle posted first when nothing was armed, and so
+      any number of forged reports. R9's spec caught it.
+    - Its refinements, such as canonical digits, the 2^64 bound and `-0`, were witnessed only by
+      blunt values that any version of the rule refuses.
+    - Its residue arithmetic counted one of each font's two numbers.
+  - **The lesson every round repeated:** a rule that lists what to look for, or bounds how much,
+    is got past by what it did not list. So the fifth version allows only what the real worker
+    was measured to send, **field by field**, and witnesses every field's rule on its own.
+  - Each version's notes also claimed something false, and are superseded by what follows.
+
+  - **The observation point.** The harness wraps the redaction worker before the host sees it, and
+    records every message in both directions.
+  - **The settle.**
+    - It reads the log only after a **settle**: a random nonce is sent to the worker, and caught
+      by a capture-phase listener registered before the bundle ran.
+    - The page then waits until 1000 ms after the send, **on its own clock**, whenever the echo
+      returns. The echo proves only that the worker is alive.
+    - A marker without the nonce is a violation.
+  - **R8 is deny-by-default, over every message the worker posts, whatever id it names.** Each
+    message is recorded as a canonical **shape**:
+    - a plain object's sorted keys and value types;
+    - `true` and `false` as themselves;
+    - any byte value as `bytes`;
+    - an array as its elements' types, and only if it carries no named properties;
+    - anything else as `other:<name>`.
+  - **Every field value is recorded as well**, including a `Blob`'s `type`, but not a refusal's
+    `message`. R8 then requires:
+    - The terminal reply's shape is one of the reply shapes `worker-protocol.js` builds, with
+      empty `rotations`. Only the success shape holds bytes, and only in `output`. That is ADR
+      0023's "exactly one part", held by the shape.
+    - Every other message is one of the harness's own, exactly:
+      - the armed list, once, as the first message, naming only listed exits (`Object.hasOwn`),
+        each once. The prologue **always** posts one, empty when nothing is armed, so a list the
+        bundle posts can never be first;
+      - a stub's report naming an exit **that list** named, so with nothing armed there is none;
+      - the echo carrying this nonce.
+    - Otherwise it is one of the four early shapes, measured on the real worker. It must come
+      **before** the reply, and within its group's count: `starting` twice, one answer to `init`,
+      one ack.
+    - No message transfers a port.
+    - **Every field's value is admitted by a rule**, and a field without one is refused:
+      - `kind`, `innerKind`, `stage` and `limit` are enumerations copied from the Rust that
+        produces them;
+      - `u64` fields are canonical digits no larger than 2^64 − 1;
+      - `originalBytes` and `producedBytes`, which only `compress` fills, are `"0"`;
+      - every number is a whole, bounded integer, never `-0`;
+      - a success's `message` is empty;
+      - a success's `report` matches the `Debug` grammar of `Report`. Every number in it is
+        canonical and within its type's range: a font identity in 48 bits, the counts in 32. It
+        allows up to 64 fonts, the regex's ceiling, so a page with more fails closed. A `String`
+        added to `Report` would fail this spec rather than widen it;
+      - a refusal's `report` is empty;
+      - the output's `type` is `application/pdf`, and a `File` is not a `Blob`.
+  - **What still fits is number-shaped**, and `FIELD_RULES` carries the arithmetic: some sixty
+    bytes a reply, and about 650 more in a success's report at its 64-font ceiling (about 10 bytes
+    a font). It
+    is not text, and not a name a person would recognise, but it is not nothing, and it is stated
+    rather than closed.
+  - **What a refusal's `message` says is not checked**, at any length. It is Rust's prose, and
+    holding it to the typed-error rule is someone else's job.
+  - **How R8 is shown to fail:**
+    - **34 planted copies of the worker.** These include every bypass above, a short secret in
+      `stage`, `allowed`, a success's `message` and the output's `type`, and a report on a
+      refusal.
+    - **47 hand-written logs**, beside a near-miss that passes with and without an armed list:
+      - 11 for the structural rules that no copy of this worker can reach;
+      - one per field rule, 26 in all, each naming its own field;
+      - 10 with a value that only a refinement refuses: a leading zero, 2^64, `-0`, a pinned
+        size, a 65th font, a 2^48 font identity, and a 2^32 count.
+    - **Two tests** in which a mutation that matches nowhere, or twice, is reported as not
+      applied.
+  - **R9 is held more strictly than it is worded: no exit at all**, from arming until the settle,
+    on a success and on a refusal. Redaction's worker has no reason to take an exit, because the
+    page makes the download link from the `Blob` it is handed. The rule has two halves.
+  - **The first half is stubs in the worker's scope.**
+    - The list is **enumerated by hand, and is not complete**. It covers:
+      - ADR 0006's three;
+      - `BroadcastChannel`, IndexedDB and the Cache API;
+      - `navigator.locks`;
+      - the `Worker` and `SharedWorker` constructors, and their prototypes' `constructor`.
+    - Each installs only where its exit exists. The stubs armed must equal, as a set, the exits a
+      throwaway worker reports it can reach. Measured: seven, in Chromium, Firefox and WebKit
+      alike, with `showSaveFilePicker` and `SharedWorker` in no worker scope there.
+    - Reports go through a `postMessage` captured before the bundle ran. R8 is run over R9's own
+      logs, which is the real near-miss for the armed and report exemptions.
+    - **They are a tripwire for a regression, not a boundary**: they share the bundle's realm.
+  - **The second half is the test server's own log**, which nothing in the browser can touch.
+    - Every request in the window must be a GET from the site of one of redaction's four
+      artifacts, each at most once. The four are the bundle, qpdf, redaction's module, and the
+      policy guard's control.
+    - A clean run must see **exactly those four**, so a window that recorded nothing cannot
+      pass.
+    - The path is matched by a hash pattern, not the build's exact URLs. A request to another hash
+      would need `connect-src` to regress first, and that residual is stated.
+    - A copy sent the input's first bytes in a query string while every stub stayed silent. Only
+      this half caught it.
+  - **How R9 is shown to fail:** by 12 planted copies:
+    - one per exit, with SharedWorker's skipped where no worker can reach it;
+    - the two stub evasions;
+    - a `blob:` URL deferred past a refusal;
+    - the query-string fetch.
+
+    Two hand-written logs cover the settle rule and the network rules.
+  - **Every rule was switched off in turn**, each switch-off asserted to apply, and each turned
+    the suite red, except these **belts**, which another rule holds:
+    - the settle's capture phase, its captured timer and captured `postMessage`, and the page's
+      nonce match, because the page's clock decides the window and a missing echo fails closed;
+    - the `other:` encoding, and `shapeOf`'s `Array.prototype` test, because every listed shape
+      is literal and structured clone gives every array that prototype;
+    - `describe`'s number-or-null `id`, and `fieldsOf`' nested branch, because the shape fixes
+      both.
+
+    Version 4's note listed three belts where there were eight. It also said every other rule was
+    witnessed, where eight field rules and, in version 5, five refinements were not.
+  - **What neither check sees:**
+    - an exit nobody has listed;
+    - anything later than 1000 ms after the settle's send;
+    - a `MessagePort` the page never receives. One transferred to the page is caught. #206's
+      second-engine reading will add a worker-to-worker port, and ADR 0029's 2026-09-27 amendment
+      sends the copy that way. When that lands, R8's check must follow the port.
+  - **Every planted copy asserts that its mutation applied**, spliced by slicing rather than
+    `String.replace`. A `SharedArrayBuffer` needs cross-origin isolation, and R9's spec asserts
+    that the page has none.
+
 Under an unwind both cases are recoverable — Rust returns `Err`, the buffer drops, a `Drop`
 impl deletes the file. Under a trap they are not. **These two conditions are what make reason
 4 true; without them, closing this gate on reason 4 would be wrong.**

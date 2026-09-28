@@ -216,26 +216,345 @@ function renderBundle() {
 }
 
 /** @param {"renderWorker" | "redactWorker"} id */
-async function buildBundleHost(id) {
+async function fetchBundleSource(id) {
   const bundle = BUNDLES[id];
   if (!bundle) {
     // Redaction's bundle is staged into harness builds only (#137); a harness page served from
     // anything else has no entry for it, and says so rather than failing inside `fetch`.
     throw new Error(`no ${id} bundle in this build`);
   }
-  const entry = bundle.worker;
-  const response = await fetch(entry.url, { integrity: entry.integrity });
+  const response = await fetch(bundle.worker.url, { integrity: bundle.worker.integrity });
   if (!response.ok) {
     throw new Error(`${id} fetch failed`);
   }
-  const source = await response.text();
+  return { bundle, source: await response.text() };
+}
+
+// --- redaction's worker, as R8 and R9 observe it (#137) ------------------------------------------
+//
+// ADR 0006's R8 and R9 are claims about WHAT REDACTION'S WORKER SENDS AND DOES, so their specs
+// need four things no other test did: every message between the page and the worker, recorded
+// before the host reads it; stubs in the worker's scope for the ways bytes could leave the heap;
+// a way to wait until the worker has gone quiet, so "posted once" is not "posted once so far";
+// and a COPY of the worker with a planted violation, to show each spec can fail. All of them act
+// on the integrity-checked text, like the base worker's prologue does.
+
+/** @type {{ prologue: string, source: string | null }} */
+let redactArming = { prologue: "", source: null };
+/**
+ * Every message redaction's worker posted since the last arming, described, in order.
+ *
+ * @type {import("./harness-api").RedactionMessage[]}
+ */
+let redactLog = [];
+/**
+ * The raw redaction worker, for `settleRedaction` -- which must post around the host, because
+ * the host has no message for "tell me when you are quiet".
+ *
+ * @type {{ worker: Worker, send: (message: unknown) => void } | null}
+ */
+let redactRaw = null;
+
+/**
+ * How many byte-carrying values a message holds -- each `ArrayBuffer`, typed array or `Blob`,
+ * at any depth. NOT A RULE: R8's rules are the shapes below, which refuse bytes anywhere but the
+ * reply's `output`. This is the recorder's own witness, so a spec can require that it saw the
+ * document at all.
+ *
+ * @param {unknown} value
+ * @param {Set<object>} seen
+ * @returns {number}
+ */
+function countBytes(value, seen = new Set()) {
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
+    return 1;
+  }
+  if (value === null || typeof value !== "object" || seen.has(value)) return 0;
+  seen.add(value);
+  return Object.values(value).reduce((sum, item) => sum + countBytes(item, seen), 0);
+}
+
+/**
+ * A message's TYPE, as a canonical string, DENY-BY-DEFAULT: a plain object is its sorted keys and
+ * each value's type, an array the set of its elements' types, `true`/`false` themselves, a byte
+ * value `bytes`, and anything else -- an Error, a boxed String, a ReadableStream, a Map, an
+ * ImageData, an array carrying named properties -- is `other:<name>`, which no listed shape
+ * contains. Each of those carried a whole document past a
+ * walker that listed what to look at rather than what to allow (review of #137).
+ *
+ * @param {unknown} value
+ * @param {Set<object>} seen
+ * @returns {string}
+ */
+function shapeOf(value, seen = new Set()) {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return String(value);
+  if (typeof value !== "object") return typeof value;
+  if (seen.has(value)) return "cycle";
+  seen.add(value);
+  const prototype = Object.getPrototypeOf(value);
+  // A PLAIN BLOB, not a File: a File's name carried the whole document past `instanceof Blob`
+  // (review of #137). A Blob's `type` is text too, and `fieldsOf` records it for a rule.
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || prototype === Blob.prototype) {
+    return "bytes";
+  }
+  // AN ARRAY IS ITS ELEMENTS AND NOTHING ELSE: structured clone carries an array's named
+  // properties too, and a document went past the first version as 426 of them (review of #137).
+  if (
+    Array.isArray(value) &&
+    prototype === Array.prototype &&
+    Reflect.ownKeys(value).length === value.length + 1
+  ) {
+    return `[${[...new Set(value.map((item) => shapeOf(item, seen)))].sort().join("|")}]`;
+  }
+  if (prototype === Object.prototype || prototype === null) {
+    const fields = Reflect.ownKeys(value).map((key) =>
+      typeof key === "string"
+        ? `${key}:${shapeOf(/** @type {any} */ (value)[key], seen)}`
+        : "symbol",
+    );
+    return `{${fields.sort().join(",")}}`;
+  }
+  return `other:${prototype?.constructor?.name ?? "?"}`;
+}
+
+/** @param {unknown} value */
+function isPort(value) {
+  return typeof MessagePort !== "undefined" && value instanceof MessagePort;
+}
+
+/**
+ * One message, described without its content.
+ *
+ * THE ID IS A NUMBER OR NULL, and nothing else: a message whose `id` is `undefined` or a string
+ * names no request, and recording it verbatim let one be neither (review of #137).
+ *
+ * @param {any} data
+ * @param {number} ports
+ */
+function describe(data, ports) {
+  const object = data !== null && typeof data === "object";
+  return {
+    id: object && typeof data.id === "number" ? data.id : null,
+    keys: object ? Object.keys(data).sort() : [],
+    bytes: countBytes(data),
+    shape: shapeOf(data),
+    fields: object ? fieldsOf(data) : {},
+    ports,
+    ok: object && typeof data.ok === "boolean" ? data.ok : null,
+    sideChannel:
+      object && typeof data.__burrowSideChannel === "string" ? data.__burrowSideChannel : null,
+    armed:
+      object && Array.isArray(data.__burrowSideChannelArmed) ? data.__burrowSideChannelArmed : null,
+    settled: object && typeof data.__burrowSettled === "number" ? data.__burrowSettled : null,
+  };
+}
+
+/**
+ * Every primitive value in a message, one level of plain objects deep (`defaultLimits.maxPages`),
+ * and a Blob's `type` -- EXCEPT a refusal's `message`: Rust's prose, which R8 states it does not
+ * check. What
+ * R8 holds each field's VALUE to, where the shape holds only its type -- a shape admits any
+ * string, and 60 bytes of a document went past the version that checked only length, in `stage`
+ * (review of #137).
+ *
+ * @param {Record<string, unknown>} data
+ * @returns {Record<string, string | number | boolean | null>}
+ */
+function fieldsOf(data) {
+  /** @type {Record<string, string | number | boolean | null>} */
+  const fields = {};
+  for (const [key, value] of Object.entries(data)) {
+    // A REFUSAL'S `message` is Rust's prose, and the one thing R8 states it does not check. A
+    // success has none, so there it is recorded -- and must be empty.
+    if (key === "message" && data.ok !== true) continue;
+    // A REFUSAL'S `report` is empty, and is recorded under its own name so a rule can say so: the
+    // report's grammar admitted six hundred bytes of numbers on a refusal (review of #137).
+    if (key === "report" && data.ok === false) {
+      fields.refusalReport = /** @type {string} */ (value);
+      continue;
+    }
+    if (value instanceof Blob) fields[`${key}.type`] = value.type;
+    if (value === null || ["string", "number", "boolean"].includes(typeof value)) {
+      fields[key] = /** @type {string | number | boolean | null} */ (value);
+    } else if (
+      value !== null &&
+      typeof value === "object" &&
+      Object.getPrototypeOf(value) === Object.prototype
+    ) {
+      for (const [inner, innerValue] of Object.entries(value)) {
+        if (innerValue === null || ["string", "number", "boolean"].includes(typeof innerValue)) {
+          fields[`${key}.${inner}`] = /** @type {string | number | boolean | null} */ (innerValue);
+        }
+      }
+    }
+  }
+  return fields;
+}
+
+/**
+ * Record every message a redaction worker posts, BEFORE the host sees it, and keep the harness's
+ * own tagged messages away from the host.
+ *
+ * @param {Worker} worker
+ * @returns {Worker}
+ */
+function recordRedaction(worker) {
+  /** @type {{ current: ((event: { data: any }) => void) | null }} */
+  const hostHandler = { current: null };
+  Object.defineProperty(worker, "onmessage", {
+    configurable: true,
+    get: () => hostHandler.current,
+    set: (handler) => {
+      hostHandler.current = handler;
+    },
+  });
+  // WHAT THE PAGE SENT, TOO, so a reply's id is attributed to the request that carried it rather
+  // than guessed: the host's start-up handshake takes an id from the same counter as an operation.
+  const send = worker.postMessage.bind(worker);
+  worker.postMessage = (/** @type {any} */ message, /** @type {any} */ transfer) => {
+    redactLog.push({
+      sent: String(message?.op ?? message?.type ?? "?"),
+      ...describe(message, Array.isArray(transfer) ? transfer.filter(isPort).length : 0),
+    });
+    return transfer === undefined ? send(message) : send(message, transfer);
+  };
+  redactRaw = { worker, send };
+  worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
+    const data = event.data;
+    redactLog.push({ sent: null, ...describe(data, event.ports.length) });
+    if (data?.__burrowSideChannel || data?.__burrowSideChannelArmed || data?.__burrowSettled) {
+      return;
+    }
+    hostHandler.current?.(event);
+  });
+  return worker;
+}
+
+/**
+ * The settle handshake, installed whenever redaction's worker is armed: a NONCE the page sends
+ * around the host, echoed after `ms` on the worker's clock.
+ *
+ * WHAT THE WORKER CANNOT DO TO IT, and why each holds:
+ * - Forge it: it never sees the nonce -- this listener is registered first, in the capture
+ *   phase, and stops the handshake -- and a marker with any other value is a violation.
+ * - Shorten it: WHAT BOUNDS THE WINDOW IS THE PAGE'S CLOCK, not this one. The page waits until
+ *   `2 * ms` after it sent the handshake whenever the echo comes back; the echo proves only that
+ *   the worker is alive and took the handshake. (`setTimeout` and `postMessage` are captured here
+ *   anyway, so a bundle that replaces them does not also silence the echo.)
+ * - Suppress it: a worker that never answers fails closed -- `settled` is false.
+ */
+const SETTLE = `
+(() => {
+  const post = self.postMessage.bind(self);
+  const later = self.setTimeout.bind(self);
+  self.addEventListener(
+    "message",
+    (event) => {
+      const nonce = event.data && event.data.__burrowSettle;
+      if (typeof nonce !== "number") return;
+      event.stopImmediatePropagation();
+      later(() => post({ __burrowSettled: nonce }), event.data.ms);
+    },
+    // CAPTURE, and first: Firefox and WebKit run a capture listener registered LATER before a
+    // non-capture one registered first, so a bundle could read the nonce and echo it early
+    // (review of #137). Registered first in the capture phase, nothing precedes this one.
+    { capture: true },
+  );
+})();
+`;
+
+/**
+ * Stubs for R9's exits, installed in the worker's scope before the bundle runs.
+ *
+ * Each still does what it did -- a stub that broke the call would change what the worker does
+ * next -- and reports that it was called. A stub installs ONLY where the thing it wraps exists:
+ * defining `showSaveFilePicker` in a scope that has none would change what feature detection in
+ * the worker sees, and report as "watched" an exit nobody can take (review of #137). The list of
+ * stubs that installed is posted first, so a spec can tell "never called" from "never watched".
+ *
+ * THE LIST IS ENUMERATED BY HAND, and is not every way out there is. It is ADR 0006's three, and
+ * every other one found so far by trying to get bytes to the page past it: a broadcast, two
+ * stores, a lock's name, and a nested worker, whose own stubs would report to its parent rather
+ * than to this page (all three found by the review of #137).
+ */
+const SIDE_CHANNEL_STUBS = `
+(() => {
+  const armed = [];
+  // CAPTURED, so a bundle that filters \`self.postMessage\` cannot silence a report (review of #137).
+  const post = self.postMessage.bind(self);
+  const tell = (name) => post({ __burrowSideChannel: name });
+  const wrap = (owner, key, name) => {
+    const original = owner && owner[key];
+    if (typeof original !== "function") return;
+    try {
+      Object.defineProperty(owner, key, {
+        configurable: true,
+        writable: true,
+        value: function (...args) {
+          tell(name);
+          return original.apply(this, args);
+        },
+      });
+      armed.push(name);
+    } catch {}
+  };
+  const wrapConstructor = (key) => {
+    const original = self[key];
+    if (typeof original !== "function") return;
+    const watched = new Proxy(original, {
+      construct(target, args, newTarget) {
+        tell(key);
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+    self[key] = watched;
+    // AND THE PROTOTYPE'S BACK-REFERENCE: the Proxy forwards \`.prototype\` to its target, so
+    // \`Worker.prototype.constructor\` was the unwatched original (review of #137).
+    try {
+      Object.defineProperty(original.prototype, "constructor", {
+        configurable: true,
+        writable: true,
+        value: watched,
+      });
+    } catch {
+      return;
+    }
+    armed.push(key);
+  };
+  wrap(URL, "createObjectURL", "createObjectURL");
+  wrap(self, "showSaveFilePicker", "showSaveFilePicker");
+  if (typeof StorageManager !== "undefined") wrap(StorageManager.prototype, "getDirectory", "getDirectory");
+  if (typeof BroadcastChannel !== "undefined") wrap(BroadcastChannel.prototype, "postMessage", "BroadcastChannel");
+  if (typeof IDBFactory !== "undefined") wrap(IDBFactory.prototype, "open", "indexedDB");
+  if (typeof CacheStorage !== "undefined") wrap(CacheStorage.prototype, "open", "caches");
+  if (typeof LockManager !== "undefined") wrap(LockManager.prototype, "request", "locks");
+  wrapConstructor("Worker");
+  wrapConstructor("SharedWorker");
+  post({ __burrowSideChannelArmed: armed });
+})();
+`;
+
+/** The armed list when no stub is armed: empty, and still first. */
+const NO_STUBS = `
+self.postMessage({ __burrowSideChannelArmed: [] });
+`;
+
+/** @param {"renderWorker" | "redactWorker"} id */
+async function buildBundleHost(id) {
+  const fetched = await fetchBundleSource(id);
+  const bundle = fetched.bundle;
+  const redaction = id === "redactWorker";
+  const source = redaction && redactArming.source !== null ? redactArming.source : fetched.source;
+  const prologue = redaction ? redactArming.prologue : "";
   return createWorkerHost({
     spawn: () => {
       const previous = lazyUrls[id];
       if (previous) URL.revokeObjectURL(previous);
-      const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      const url = URL.createObjectURL(new Blob([prologue, source], { type: "text/javascript" }));
       lazyUrls[id] = url;
-      return new Worker(url);
+      const worker = new Worker(url);
+      return redaction ? recordRedaction(worker) : worker;
     },
     release: () => {
       const previous = lazyUrls[id];
@@ -765,6 +1084,88 @@ const harness = {
   async workerInheritsCsp() {
     host.discardWorker();
     return harness.ready();
+  },
+
+  /**
+   * Arm redaction's worker for the R8 and R9 specs (#137), and start the next redaction on a
+   * fresh one: `stubSideChannels` installs R9's stubs before the bundle runs, and `mutate`
+   * applies ONE replacement to a copy of the bundle's text -- the planted violation a spec must
+   * catch. Returns whether the replacement applied, because a mutation that matched nothing
+   * leaves the real worker in place and measures nothing. Clears the message log.
+   *
+   * @param {{ stubSideChannels?: boolean, mutate?: { from: string, to: string } | null }} options
+   */
+  async armRedaction(options = {}) {
+    let source = null;
+    let applied = false;
+    if (options.mutate) {
+      const { from, to } = options.mutate;
+      source = (await fetchBundleSource("redactWorker")).source;
+      const at = source.indexOf(from);
+      if (at !== -1 && source.indexOf(from, at + 1) === -1) {
+        // SLICED, NOT `replace`: a string replacement expands `$&` and its kin, so the planted
+        // text could differ from the text asked for while this still said it applied.
+        source = source.slice(0, at) + to + source.slice(at + from.length);
+        // The unique match above is what decides it; a splice cannot then fail to apply.
+        applied = true;
+      }
+    }
+    redactArming = {
+      // THE ARMED LIST IS ALWAYS POSTED, EMPTY WHEN NOTHING IS ARMED: R8 admits it only as the
+      // worker's first message, and with no prologue list there a bundle's own post was first --
+      // and a forged list then vouched for any number of forged reports (review of #137).
+      prologue: SETTLE + (options.stubSideChannels ? SIDE_CHANNEL_STUBS : NO_STUBS),
+      source,
+    };
+    const existing = lazyHosts.redactWorker;
+    delete lazyHosts.redactWorker;
+    if (existing) (await existing).dispose();
+    redactLog = [];
+    redactRaw = null;
+    return { applied };
+  },
+
+  /**
+   * Wait until redaction's worker has gone quiet: send a nonce around the host, wait for its echo,
+   * and in any case until `2 * ms` after the send on the page's own clock. Anything the worker
+   * posted in that window has been recorded; anything later has not, and the specs say so.
+   * `settled` is false when no echo arrived within `ms` plus five seconds.
+   *
+   * @param {number} ms
+   */
+  async settleRedaction(ms = 500) {
+    if (redactRaw === null) return { settled: false, nonce: 0 };
+    const { worker, send } = redactRaw;
+    const nonce = 1 + Math.floor(Math.random() * 2 ** 31);
+    const deadline = performance.now() + 2 * ms;
+    const echoed = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        worker.removeEventListener("message", heard);
+        resolve(false);
+      }, ms + 5_000);
+      /** @param {MessageEvent} event */
+      function heard(event) {
+        if (event.data?.__burrowSettled !== nonce) return;
+        clearTimeout(timer);
+        worker.removeEventListener("message", heard);
+        resolve(true);
+      }
+      worker.addEventListener("message", heard);
+      send({ __burrowSettle: nonce, ms });
+    });
+    // THE PAGE'S CLOCK DECIDES, measured from the send: an echo that came back early -- however
+    // it did -- does not shorten the window.
+    if (echoed) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, deadline - performance.now())),
+      );
+    }
+    return { settled: Boolean(echoed), nonce };
+  },
+
+  /** Every message between the page and redaction's worker since the last arming, in order. */
+  redactMessages() {
+    return redactLog.map((entry) => ({ ...entry }));
   },
 
   /**
