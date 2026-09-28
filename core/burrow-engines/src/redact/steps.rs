@@ -639,12 +639,13 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         &mut self,
         still_drawn: &[(u64, Vec<u32>)],
         redacted: &BTreeSet<usize>,
-    ) -> Result<Vec<FontOutcome>> {
+    ) -> Result<(Vec<FontOutcome>, Vec<crate::redact_verify::FontPath>)> {
         self.deadline.checkpoint(self.clock.as_ref())?;
         let page = self.page_handle()?;
         let resources = PageResources::of(&page)?;
 
         let mut outcomes = Vec::new();
+        let mut cut_paths = Vec::new();
 
         // EVERY FONT THE OPERATION DREW WITH, in whatever scope named it. This iterated the
         // page's `/Font` keys, so a font named only by a form's own `/Resources` was never
@@ -673,7 +674,7 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
             // sharing one full-range `/ToUnicode` ran **36 s** against a 100 ms budget, from a
             // 500 KB file.
             self.deadline.checkpoint(self.clock.as_ref())?;
-            let Ok(font) = resources.font_in_scope(scoped_font) else {
+            let Ok((font, path)) = resources.font_path_in_scope(scoped_font) else {
                 // A name that resolves nowhere is not a font to cut. `font_names` yields the
                 // page's own keys, which always resolve, and a glyph's name resolved once for
                 // the walk to place it; this arm is for neither.
@@ -683,6 +684,20 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
                 continue;
             }
             let identity = font.object()?;
+            // A DIRECT FONT HAS NO IDENTITY (#218, owner's decision 2026-09-28). qpdf reports
+            // `(0, 0)` for every font dictionary written inline, so two of them are one font to
+            // the dedupe below -- the first was narrowed and the second never touched, and the
+            // sharing rule cannot say whether an object with no identity is shared. A security
+            // review got that to return `Ok` with a removed character still mapped. Refused by
+            // name: none of the golden corpus's documents has one.
+            if identity == (0, 0) {
+                return Err(Error::Unsupported(
+                    "pdf redaction [direct-font]: a font dictionary written inline, which has no \
+                     identity to tell it from another, so whether it is shared and whether it was \
+                     narrowed cannot be established"
+                        .to_owned(),
+                ));
+            }
             let packed = pack(identity);
             if !seen.insert(packed) {
                 continue;
@@ -716,8 +731,10 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
                 cut: true,
                 also_used_by: outside,
             });
+            // WHERE IT WAS CUT, by names the writer keeps, for the read-back (#218).
+            cut_paths.push(path);
         }
-        Ok(outcomes)
+        Ok((outcomes, cut_paths))
     }
 
     fn strip_page_keys(&mut self) -> Result<()> {
@@ -1529,8 +1546,14 @@ fn form_handle<O: PdfObject>(resources: &PageResources<O>, id: u64) -> Result<O>
 /// `U+0001` at the origin where readable text had been. `/Differences` was not measured; it is
 /// the same shape, found by looking again at the other half of the same function.
 fn narrow_font<O: PdfObject>(font: &O, keeps: &BTreeSet<u32>) -> Result<()> {
-    narrow_to_unicode(font, keeps)?;
-    narrow_differences(font, keeps)?;
+    #[cfg(test)]
+    let skip = super::hooks::narrowing_skipped();
+    #[cfg(not(test))]
+    let skip = false;
+    if !skip {
+        narrow_to_unicode(font, keeps)?;
+        narrow_differences(font, keeps)?;
+    }
 
     // `/Widths` is positional, so an entry cannot be removed without moving every later code.
     // Zeroing the removed ones keeps the array's shape and says nothing about what was there.

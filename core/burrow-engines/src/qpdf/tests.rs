@@ -292,6 +292,426 @@ mod wiring {
             .map(|_| ())
     }
 
+    /// A one-page redaction over a font with `/Differences` AND `/ToUnicode` naming both drawn
+    /// codes, numbered so qpdf must renumber it when it writes (#218).
+    ///
+    /// The font is object 3, ahead of the page that names it, so a writer that emits objects in
+    /// traversal order gives it another number -- the condition the old check failed under: it
+    /// matched the report's INPUT id against the read-back's OUTPUT id, found no match, and
+    /// skipped the font.
+    fn renumbered_document() -> Vec<u8> {
+        let widths = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556]";
+        let content = "BT /F1 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (K) Tj ET\n";
+        let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                    /CMapName /Burrow218 def 1 begincodespacerange <00> <FF> endcodespacerange \
+                    2 beginbfchar <4B> <004B> <53> <0053> endbfchar endcmap \
+                    CMapName currentdict /CMap defineresource pop end end\n";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [4 0 R 7 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                 << /BaseEncoding /WinAnsiEncoding /Differences [75 /K 83 /S] >> \
+                 /ToUnicode 6 0 R /FirstChar 32 /LastChar 94 /Widths {widths} >>"
+            ),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            format!("<< /Length {} >>\nstream\n{cmap}endstream", cmap.len()),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".to_owned(),
+        ];
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    fn redact_renumbered(skip_narrowing: bool) -> burrow_types::Result<()> {
+        use crate::redact::hooks::{NARROWINGS_SKIPPED, SKIP_NARROWING};
+        LAST_EXPECTATION.with(|slot| *slot.borrow_mut() = None);
+        NARROWINGS_SKIPPED.with(|n| n.set(0));
+        SKIP_NARROWING.with(|flag| flag.set(skip_narrowing));
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        let outcome = super::super::Qpdf
+            .redact_page(
+                &renumbered_document(),
+                0,
+                &BTreeSet::from([0, 1]),
+                region,
+                &options,
+            )
+            .map(|_| ());
+        SKIP_NARROWING.with(|flag| flag.set(false));
+        outcome
+    }
+
+    #[test]
+    fn a_cut_font_left_mapping_a_removed_code_is_refused_by_verification_itself() {
+        // #218. With the narrowing switched off, `/Differences` still names `/S` and
+        // `/ToUnicode` still maps 0x53 after the `S` is removed. The OLD check compared the
+        // report's input id with the renumbered output id, skipped the font, and returned `Ok`;
+        // a review got exactly this to return `Ok` natively and on the web.
+        let outcome = redact_renumbered(true);
+        let skipped = crate::redact::hooks::NARROWINGS_SKIPPED.with(std::cell::Cell::get);
+        assert!(
+            skipped > 0,
+            "the narrowing hook was never reached, so this measured nothing"
+        );
+        match outcome {
+            Err(burrow_types::Error::OutputRejected(message)) => assert!(
+                message.contains("still maps"),
+                "refused, but not for the orphaned mapping: {message}"
+            ),
+            other => panic!("verification passed a font still mapping a removed code: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_same_redaction_with_the_narrowing_on_is_verified_and_names_the_font_it_cut() {
+        // THE NEAR-MISS: the refusal above is the narrowing's absence, not the document.
+        redact_renumbered(false).expect("a correct redaction of this document verifies");
+        let skipped = crate::redact::hooks::NARROWINGS_SKIPPED.with(std::cell::Cell::get);
+        assert_eq!(
+            skipped, 0,
+            "the hook skipped a narrowing it was not asked to"
+        );
+        let expected = last_expectation().expect("the check was called");
+        assert_eq!(
+            expected.cut_fonts,
+            BTreeSet::from([crate::redact_verify::FontPath {
+                form: Vec::new(),
+                name: b"F1".to_vec(),
+            }]),
+            "the check must be told the page font it cut, by the path the writer keeps"
+        );
+    }
+
+    /// A PDF from its object bodies, numbered from 1, with a correct cross-reference table.
+    fn pdf(objects: &[String]) -> Vec<u8> {
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    fn stream(body: &str) -> String {
+        format!("<< /Length {} >>\nstream\n{body}endstream", body.len())
+    }
+
+    const WIDTHS: &str = "/FirstChar 32 /LastChar 94 /Widths [556 556 556 556 556 556 556 556 \
+        556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+        556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+        556 556 556 556 556 556 556 556 556 556 556]";
+
+    fn helvetica(extra: &str) -> String {
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica {extra} {WIDTHS} >>")
+    }
+
+    /// Redact page 0 of `bytes` over the band `redact` uses, covering `covered`.
+    fn redact_bytes(bytes: &[u8], covered: &[usize]) -> burrow_types::Result<()> {
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        super::super::Qpdf
+            .redact_page(
+                bytes,
+                0,
+                &covered.iter().copied().collect(),
+                region,
+                &options,
+            )
+            .map(|_| ())
+    }
+
+    /// A two-page catalog whose first page carries `resources` and draws `content`; page 2 has
+    /// `second_resources`. Objects 1-5 are fixed; `extra` follow from 6.
+    fn two_pages(
+        resources: &str,
+        content: &str,
+        second_resources: &str,
+        extra: &[String],
+    ) -> Vec<u8> {
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 5 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources {resources} \
+                 /Contents 4 0 R >>"
+            ),
+            stream(content),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources {second_resources} >>"
+            ),
+        ];
+        objects.extend(extra.iter().cloned());
+        pdf(&objects)
+    }
+
+    // THE OVER-REFUSALS A REVIEW DEMONSTRATED (#218). An earlier fix examined every unshared font
+    // the page reached, while the operation narrows only the page's fonts and those its cut
+    // glyphs came from; each of these redacted `Ok` before it and was refused by it. The check
+    // examines exactly what the operation cut, so each must redact.
+
+    #[test]
+    fn a_forms_own_font_nothing_was_cut_from_is_not_examined() {
+        // A form below the region draws `A` with its own font, whose `/Differences` also names
+        // `B`, which it never draws. Nothing was cut from it; its mappings are the document's.
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R >> /XObject << /Fm0 7 0 R >> >>",
+            "BT /F1 24 Tf 72 700 Td (S) Tj ET\nq /Fm0 Do Q\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << \
+                     /F2 8 0 R >> >> /Length {} >>\nstream\nBT /F2 24 Tf 72 300 Td (A) Tj ET\n\
+                     endstream",
+                    "BT /F2 24 Tf 72 300 Td (A) Tj ET\n".len()
+                ),
+                helvetica("/Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /A /B] >>"),
+            ],
+        );
+        redact_bytes(&bytes, &[0]).expect("the form's font was never touched");
+    }
+
+    #[test]
+    fn a_font_entry_that_is_not_a_dictionary_is_left_alone() {
+        // The operation skips a `/Font` entry that is not a dictionary; the check must too.
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R /F9 42 >> >>",
+            "BT /F1 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (K) Tj ET\n",
+            "<< >>",
+            &[helvetica("/Encoding /WinAnsiEncoding")],
+        );
+        redact_bytes(&bytes, &[0]).expect("a non-dictionary entry is not a font to check");
+    }
+
+    #[test]
+    fn an_unreadable_to_unicode_on_a_page_outside_the_operation_does_not_refuse() {
+        // Page 2's font carries a `/ToUnicode` the parser rejects. The operation never reads it,
+        // and neither may the check of page 1.
+        let broken = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                      1 begincodespacerange <00> <FF> endcodespacerange \
+                      1 beginbfrange <41> <42> <FFFF> endbfrange endcmap end end\n";
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R >> >>",
+            "BT /F1 24 Tf 72 700 Td (S) Tj ET\n",
+            "<< /Font << /F2 7 0 R >> >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 8 0 R"),
+                stream(broken),
+            ],
+        );
+        redact_bytes(&bytes, &[0]).expect("page 2's fonts are not this redaction's to check");
+    }
+
+    #[test]
+    fn an_annotation_appearance_font_outside_the_region_is_not_examined() {
+        // A widget below the region, whose appearance draws `A` in a font whose `/Differences`
+        // names `A` and `B`: the common filled-form shape. The operation does not narrow it.
+        let appearance = "BT /Helv 12 Tf 2 2 Td (A) Tj ET\n";
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R >> >> /Annots [<< /Type /Annot /Subtype /Widget \
+             /Rect [72 300 172 320] /AP << /N 7 0 R >> >>]",
+            "BT /F1 24 Tf 72 700 Td (S) Tj ET\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << \
+                     /Helv 8 0 R >> >> /Length {} >>\nstream\n{appearance}endstream",
+                    appearance.len()
+                ),
+                helvetica("/Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /A /B] >>"),
+            ],
+        );
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("/Annots [<< /Type /Annot"),
+            "the annotation is not on the page"
+        );
+        redact_bytes(&bytes, &[0]).expect("an annotation's appearance font was never touched");
+    }
+
+    #[test]
+    fn two_fonts_written_inline_are_refused_by_name() {
+        // `[direct-font]` (#218): both fonts are `(0, 0)` to the engine, so the operation
+        // narrowed only the first and the check merged them; a review got that to return `Ok`
+        // with a removed character still mapped.
+        let bytes = two_pages(
+            &format!(
+                "<< /Font << /F1 {} /F2 {} >> >>",
+                helvetica("/Encoding /WinAnsiEncoding"),
+                helvetica("/Encoding << /BaseEncoding /WinAnsiEncoding /Differences [83 /S] >>")
+            ),
+            "BT /F2 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (S) Tj ET\n",
+            "<< >>",
+            &[],
+        );
+        match redact_bytes(&bytes, &[0]) {
+            Err(burrow_types::Error::Unsupported(message)) => {
+                assert!(
+                    message.contains("[direct-font]"),
+                    "refused, but not by name: {message}"
+                );
+            }
+            other => panic!("two inline fonts were not refused: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_same_fonts_written_indirectly_are_redacted() {
+        // THE NEAR-MISS: the refusal is the fonts' lack of identity, not the document.
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R /F2 7 0 R >> >>",
+            "BT /F2 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (S) Tj ET\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                helvetica("/Encoding << /BaseEncoding /WinAnsiEncoding /Differences [83 /S] >>"),
+            ],
+        );
+        redact_bytes(&bytes, &[0]).expect("two indirect fonts have identities to check by");
+    }
+
+    /// Page → `X0` → `X1`, where `X1`'s own `/F9` draws `S` inside the region. With `decoy`,
+    /// the page also has an `/F9` of its own, drawing `S` below the region (#221).
+    fn nested(decoy: bool) -> Vec<u8> {
+        let inner = "BT /F9 24 Tf 72 700 Td (S) Tj ET\n";
+        let outer = "/X1 Do\n";
+        let cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                    1 begincodespacerange <00> <FF> endcodespacerange \
+                    1 beginbfchar <53> <0058> endbfchar endcmap end end\n";
+        let (page_resources, content) = if decoy {
+            (
+                "<< /Font << /F9 6 0 R >> /XObject << /X0 7 0 R >> >>",
+                "BT /F9 24 Tf 72 300 Td (S) Tj ET\nq /X0 Do Q\n",
+            )
+        } else {
+            ("<< /XObject << /X0 7 0 R >> >>", "q /X0 Do Q\n")
+        };
+        two_pages(
+            page_resources,
+            content,
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << \
+                     /XObject << /X1 8 0 R >> >> /Length {} >>\nstream\n{outer}endstream",
+                    outer.len()
+                ),
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << \
+                     /Font << /F9 9 0 R >> >> /Length {} >>\nstream\n{inner}endstream",
+                    inner.len()
+                ),
+                helvetica(
+                    "/Encoding << /BaseEncoding /WinAnsiEncoding /Differences [83 /Sacute] >> \
+                     /ToUnicode 10 0 R",
+                ),
+                stream(cmap),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_glyph_in_a_nested_form_narrows_the_font_that_drew_it_not_a_same_named_page_font() {
+        // #221: resolution looked for the form among the page's own `/XObject` and fell back to
+        // the page's `/F9`, so the decoy was narrowed, the real font kept `/Sacute`, and the
+        // redaction returned `Ok`. The path recorded is now the real one.
+        LAST_EXPECTATION.with(|slot| *slot.borrow_mut() = None);
+        redact_bytes(&nested(true), &[0]).expect("the nested font is found and narrowed");
+        let expected = last_expectation().expect("the check was called");
+        let real = crate::redact_verify::FontPath {
+            form: vec![b"X0".to_vec(), b"X1".to_vec()],
+            name: b"F9".to_vec(),
+        };
+        assert!(
+            expected.cut_fonts.contains(&real),
+            "the font that drew the removed glyph was not the one cut: {:?}",
+            expected.cut_fonts
+        );
+    }
+
+    #[test]
+    fn the_nested_font_left_mapping_the_removed_code_is_refused() {
+        // AND THE CHECK EXAMINES THAT FONT: with the narrowing off, the real `/F9` still maps
+        // `S`, and verification refuses rather than passing over the decoy.
+        use crate::redact::hooks::{NARROWINGS_SKIPPED, SKIP_NARROWING};
+        NARROWINGS_SKIPPED.with(|n| n.set(0));
+        SKIP_NARROWING.with(|flag| flag.set(true));
+        let outcome = redact_bytes(&nested(true), &[0]);
+        SKIP_NARROWING.with(|flag| flag.set(false));
+        assert!(
+            NARROWINGS_SKIPPED.with(std::cell::Cell::get) > 0,
+            "the narrowing hook was never reached"
+        );
+        match outcome {
+            Err(burrow_types::Error::OutputRejected(message)) => {
+                assert!(
+                    message.contains("still maps"),
+                    "refused, but not for the mapping: {message}"
+                );
+            }
+            other => panic!("the nested font's mapping of a removed code passed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_nested_form_with_no_same_named_page_font_is_redacted() {
+        // Without the decoy the old resolution found nothing and failed with `Internal` --
+        // burrow disagreeing with itself over a valid document.
+        redact_bytes(&nested(false), &[0]).expect("a nested form's own font is found");
+    }
+
     #[test]
     fn the_check_is_told_the_fonts_the_report_says_were_cut() {
         // KILLS: forcing `cut_fonts` empty in the observe closure, which disables the mapping

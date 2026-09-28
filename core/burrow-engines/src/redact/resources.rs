@@ -182,43 +182,88 @@ impl<O: PdfObject> PageResources<O> {
     /// through it, so this is burrow disagreeing with itself rather than the document being
     /// wrong — and a silent `None` would be the narrowing every leak here has been.
     pub(crate) fn font_in_scope(&self, font: &ScopedFont) -> Result<O> {
-        const RESOURCES: Name = Name::literal(b"/Resources\0");
-        const XOBJECT: Name = Name::literal(b"/XObject\0");
-        let key = Name::from_stripped(font.name())?;
-        if let Some(id) = font.drawn_in() {
-            // BY IDENTITY, not by name: the form is known by the object it is, and its entry in
-            // the page's `/XObject` is where its own `/Resources` hang.
-            let xobjects = self.category(&XOBJECT);
-            for entry_key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
-                let entry = xobjects.key(&Name::from_stripped(&entry_key)?);
-                if entry.type_code() != object_type::STREAM {
-                    continue;
-                }
-                let (number, generation) = entry.object()?;
-                let packed = (u64::from(number.unsigned_abs()) << 16)
-                    | u64::from(generation.unsigned_abs() & 0xffff);
-                if packed != id {
-                    continue;
-                }
-                let own = entry.stream_dict().key(&RESOURCES);
-                if own.type_code() == object_type::DICTIONARY {
-                    let found = own.key(&FONT).key(&key);
-                    if found.type_code() == object_type::DICTIONARY {
-                        return Ok(found);
-                    }
-                }
-                break;
-            }
-        }
-        let found = self.category(&FONT).key(&key);
-        if found.type_code() == object_type::DICTIONARY {
-            return Ok(found);
-        }
-        Err(Error::Internal(
-            "pdf resources: a font the walk drew a glyph with resolves in neither the form's \
-             own resources nor the page's"
-                .to_owned(),
-        ))
+        self.font_path_in_scope(font).map(|(found, _)| found)
+    }
+
+    /// [`Self::font_in_scope`], and the path it was found by (#218, #221): the chain of
+    /// `/XObject` entry names from the page down to the form whose stream named the font, and
+    /// the font's name.
+    ///
+    /// # Resolved the way the walk resolved it
+    ///
+    /// The geometry walk enters a form through the `/XObject` of the scope it is in, and inside it
+    /// uses the form's own `/Resources` if it declares them and the enclosing scope's if it does
+    /// not (`Resources::within`). The font a glyph was drawn with is found in the scope in force
+    /// at the end of that chain -- and nowhere else. This looked for the form among the page's
+    /// top-level `/XObject` only and then fell back to the page's font of the same name, so a
+    /// glyph in a nested form narrowed a same-named font on the page instead of its own, and the
+    /// redaction returned `Ok` with the removed character still mapped (#221). A form the chain
+    /// cannot be found for is refused by name rather than resolved somewhere else.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unsupported`] naming `font-scope-unresolved` when the form that drew the glyph is
+    /// not reachable from the page within [`crate::redact::sharing::MAX_RESOURCE_DEPTH`];
+    /// [`Error::Internal`] when the name does not resolve in the scope the walk used.
+    pub(crate) fn font_path_in_scope(
+        &self,
+        font: &ScopedFont,
+    ) -> Result<(O, crate::redact_verify::FontPath)> {
+        let chain = match font.drawn_in() {
+            None => Vec::new(),
+            Some(id) => self.chain_to(id)?.ok_or_else(|| {
+                Error::Unsupported(
+                    "pdf redaction [font-scope-unresolved]: a glyph drawn in a form the page's \
+                     resources do not reach, so which font drew it cannot be established"
+                        .to_owned(),
+                )
+            })?,
+        };
+        let path = crate::redact_verify::FontPath {
+            form: chain,
+            name: font.name().to_vec(),
+        };
+        let found = self.resolve(&path)?.ok_or_else(|| {
+            Error::Internal(
+                "pdf resources: a font the walk drew a glyph with does not resolve in the scope \
+                 the walk used"
+                    .to_owned(),
+            )
+        })?;
+        Ok((found, path))
+    }
+
+    /// The chain of `/XObject` names from the page to the form `target`, by the walk's scoping.
+    ///
+    /// Depth-first, each form visited once: the operation refuses a form drawn under two names
+    /// (`shared-form-would-change-elsewhere`), so a form it cut from has one chain.
+    fn chain_to(&self, target: u64) -> Result<Option<Vec<Vec<u8>>>> {
+        let mut visited: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut chain = Vec::new();
+        chain_from(&self.dictionary, target, &mut chain, &mut visited)
+    }
+
+    /// The font dictionary `path` names, or `None`: each chain entry through the `/XObject` of
+    /// the scope in force, stepping into a form's own `/Resources` where it declares them.
+    fn resolve(&self, path: &crate::redact_verify::FontPath) -> Result<Option<O>> {
+        resolve_from(&self.dictionary, &path.form, &path.name)
+    }
+
+    /// The font dictionary a [`crate::redact_verify::FontPath`] names, for the read-back (#218).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::OutputRejected`] when the path does not reach a font dictionary: a font the
+    /// operation cut that the output does not have where it was cut is a check that cannot find
+    /// its subject, and that refuses.
+    pub(crate) fn font_at(&self, path: &crate::redact_verify::FontPath) -> Result<O> {
+        self.resolve(path)?.ok_or_else(|| {
+            Error::OutputRejected(
+                "redact: the region is not cleared -- a font the operation cut is not where it \
+                 was cut in the output"
+                    .to_owned(),
+            )
+        })
     }
 
     fn font_facts(&self, name: &[u8]) -> Result<FontFacts> {
@@ -622,6 +667,72 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
 ///
 /// A handle that is not a name is not the name asked about, which is `false` rather than an
 /// error: the callers are all "is this a Type 3 font" questions where absent means no.
+/// [`PageResources::chain_to`]'s search from one scope. Bounded by
+/// [`crate::redact::sharing::MAX_RESOURCE_DEPTH`], which is also the walk's.
+fn chain_from<O: PdfObject>(
+    scope: &O,
+    target: u64,
+    chain: &mut Vec<Vec<u8>>,
+    visited: &mut std::collections::BTreeSet<u64>,
+) -> Result<Option<Vec<Vec<u8>>>> {
+    const RESOURCES: Name = Name::literal(b"/Resources\0");
+    if chain.len() >= crate::redact::sharing::MAX_RESOURCE_DEPTH as usize {
+        return Ok(None);
+    }
+    let xobjects = scope.key(&XOBJECT);
+    if xobjects.type_code() != object_type::DICTIONARY {
+        return Ok(None);
+    }
+    for entry_key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
+        let entry = xobjects.key(&Name::from_stripped(&entry_key)?);
+        if entry.type_code() != object_type::STREAM
+            || !names(&entry.stream_dict().key(&SUBTYPE), &SUBTYPE_FORM)
+        {
+            continue;
+        }
+        let (number, generation) = entry.object()?;
+        let packed = (u64::from(number.unsigned_abs()) << 16)
+            | u64::from(generation.unsigned_abs() & 0xffff);
+        chain.push(entry_key.clone());
+        if packed == target {
+            return Ok(Some(chain.clone()));
+        }
+        if visited.insert(packed) {
+            // THE WALK'S SCOPING: the form's own resources, or the enclosing ones.
+            let own = entry.stream_dict().key(&RESOURCES);
+            let found = if own.type_code() == object_type::DICTIONARY {
+                chain_from(&own, target, chain, visited)?
+            } else {
+                chain_from(scope, target, chain, visited)?
+            };
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        chain.pop();
+    }
+    Ok(None)
+}
+
+/// [`PageResources::resolve`]'s walk from one scope along `steps`.
+fn resolve_from<O: PdfObject>(scope: &O, steps: &[Vec<u8>], name: &[u8]) -> Result<Option<O>> {
+    const RESOURCES: Name = Name::literal(b"/Resources\0");
+    let Some((step, rest)) = steps.split_first() else {
+        let found = scope.key(&FONT).key(&Name::from_stripped(name)?);
+        return Ok((found.type_code() == object_type::DICTIONARY).then_some(found));
+    };
+    let entry = scope.key(&XOBJECT).key(&Name::from_stripped(step)?);
+    if entry.type_code() != object_type::STREAM {
+        return Ok(None);
+    }
+    let own = entry.stream_dict().key(&RESOURCES);
+    if own.type_code() == object_type::DICTIONARY {
+        resolve_from(&own, rest, name)
+    } else {
+        resolve_from(scope, rest, name)
+    }
+}
+
 fn names<O: PdfObject>(handle: &O, want: &Name) -> bool {
     handle.name().is_ok_and(|found| found == *want)
 }

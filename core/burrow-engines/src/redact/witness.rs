@@ -16,6 +16,7 @@ use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::pdfsyntax::geometry::{Glyph, Watch, glyphs_in};
 use crate::pdfsyntax::region::PageFrame;
+use crate::pdfsyntax::tounicode::ToUnicode;
 use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 use crate::redact_verify::ClearedWitness;
 
@@ -136,6 +137,46 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         glyphs_in(&content, &resources, &self.watch(read))
     }
 
+    fn orphaned_codes(
+        &self,
+        read: &Self::Read,
+        page: usize,
+        cut: &BTreeSet<crate::redact_verify::FontPath>,
+        drawn: &BTreeMap<u64, BTreeSet<u32>>,
+    ) -> Result<usize> {
+        read.deadline.checkpoint(self.clock.as_ref())?;
+        let handle = read.page(page)?;
+        let resources = PageResources::of(&handle)?;
+        // THE PARSED MAP IS MEMOISED, NEVER ITS DOMAIN: two fonts sharing one `/ToUnicode` parse
+        // it once, and nothing here holds 65,536 codes per font.
+        let mut parsed: BTreeMap<(core::ffi::c_int, core::ffi::c_int), std::rc::Rc<ToUnicode>> =
+            BTreeMap::new();
+        let mut examined: BTreeSet<u64> = BTreeSet::new();
+        let mut orphaned = 0;
+        let nothing = BTreeSet::new();
+        for path in cut {
+            // CHECKPOINTED PER FONT: the trip count is the operation's, which is the file's.
+            read.deadline.checkpoint(self.clock.as_ref())?;
+            let font = resources.font_at(path)?;
+            let identity = font.object()?;
+            // THE SECOND LINE BEHIND `[direct-font]`: a font with no identity cannot be keyed
+            // against what it draws, because every such font shares the key.
+            if identity == (0, 0) {
+                return Err(burrow_types::Error::OutputRejected(
+                    "redact: the region is not cleared -- a cut font has no identity to check it by"
+                        .to_owned(),
+                ));
+            }
+            let key = super::steps::pack(identity);
+            if !examined.insert(key) {
+                continue;
+            }
+            let still = drawn.get(&key).unwrap_or(&nothing);
+            orphaned += orphans_of(&font, still, &mut parsed)?;
+        }
+        Ok(orphaned)
+    }
+
     fn drawn_codes(&self, read: &Self::Read, page: usize) -> Result<BTreeMap<u64, BTreeSet<u32>>> {
         read.deadline.checkpoint(self.clock.as_ref())?;
         let handle = read.page(page)?;
@@ -151,94 +192,88 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         Ok(drawn)
     }
 
-    fn mapped_codes(&self, read: &Self::Read, page: usize) -> Result<BTreeMap<u64, BTreeSet<u32>>> {
-        const FONT: Name = Name::literal(b"/Font\0");
-        const TO_UNICODE: Name = Name::literal(b"/ToUnicode\0");
-        const ENCODING: Name = Name::literal(b"/Encoding\0");
-        const DIFFERENCES: Name = Name::literal(b"/Differences\0");
-
-        read.deadline.checkpoint(self.clock.as_ref())?;
-        let handle = read.page(page)?;
-        let resources = PageResources::of(&handle)?;
-        let fonts = resources.dictionary().key(&FONT);
-        if fonts.type_code() != object_type::DICTIONARY {
-            return Ok(BTreeMap::new());
-        }
-
-        let mut mapped: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
-        // MEMOISED PER STREAM OBJECT. Two fonts sharing one `/ToUnicode` parsed it twice, and
-        // the `/Font` dictionary's size is the file's to choose -- the same shape a security
-        // review measured at 19.8 s against a 100 ms budget in the operation's own font loop.
-        let mut parsed: BTreeMap<(core::ffi::c_int, core::ffi::c_int), BTreeSet<u32>> =
-            BTreeMap::new();
-        for key in crate::pdfsyntax::dict::top_level_keys(&fonts.unparse())? {
-            // CHECKPOINTED PER FONT, not once for the loop. The trip count comes from the
-            // file, which is the definition of a loop that needs one inside it.
-            read.deadline.checkpoint(self.clock.as_ref())?;
-            let font = fonts.key(&Name::from_stripped(&key)?);
-            if font.type_code() != object_type::DICTIONARY {
-                continue;
-            }
-            let identity = font.object()?;
-            let packed = (u64::from(identity.0.unsigned_abs()) << 16)
-                | u64::from(identity.1.unsigned_abs() & 0xffff);
-            let codes = mapped.entry(packed).or_default();
-
-            // `/ToUnicode`'s domain, read the same way the narrowing writes it.
-            let to_unicode = font.key(&TO_UNICODE);
-            if to_unicode.type_code() == object_type::STREAM {
-                let identity = to_unicode.object()?;
-                if let Some(already) = parsed.get(&identity) {
-                    codes.extend(already.iter().copied());
-                } else if let Some(program) = to_unicode.stream_data()? {
-                    let read_map = crate::pdfsyntax::tounicode::ToUnicode::parse(&program)?;
-                    let mut domain = BTreeSet::new();
-                    for code in 0..=u32::from(u16::MAX) {
-                        if read_map.maps(code) {
-                            domain.insert(code);
-                        }
-                    }
-                    codes.extend(domain.iter().copied());
-                    parsed.insert(identity, domain);
-                }
-            }
-
-            // `/Differences`' names, by the same walk `narrow_differences` makes.
-            let encoding = font.key(&ENCODING);
-            if encoding.type_code() == object_type::DICTIONARY {
-                let differences = encoding.key(&DIFFERENCES);
-                if differences.type_code() == object_type::ARRAY {
-                    let mut code: u32 = 0;
-                    for at in 0..differences.array_len() {
-                        let item = differences.array_item(at);
-                        if item.type_code() == object_type::INTEGER {
-                            // SKIPPED, NOT FOLDED TO ZERO. `narrow_differences` refuses an
-                            // anchor outside a character code; folding it here would register
-                            // a mapped code 0 that is not there and reject the document for it.
-                            // Two readings of one array that are supposed to agree.
-                            let Ok(anchor) = u32::try_from(item.integer_value()) else {
-                                continue;
-                            };
-                            code = anchor;
-                            continue;
-                        }
-                        if item.type_code() != object_type::NAME {
-                            continue;
-                        }
-                        codes.insert(code);
-                        code = code.saturating_add(1);
-                    }
-                }
-            }
-            // THE FONT'S DOCUMENT, which is the read-back's: the drain goes through the handle
-            // that did the reading (#191).
-            font.drained()?;
-        }
-        Ok(mapped)
-    }
-
     fn page_keys(&self, read: &Self::Read, page: usize) -> Result<Vec<Vec<u8>>> {
         read.deadline.checkpoint(self.clock.as_ref())?;
         crate::pdfsyntax::dict::top_level_keys(&read.page(page)?.unparse())
     }
+}
+
+/// How many codes `font`'s `/ToUnicode` and `/Differences` name that are not in `still`, read the
+/// way the narrowing writes them so the read-back and the operation agree on what "mapped" means.
+///
+/// Counted, never collected: a code in both halves counts once.
+///
+/// # Errors
+///
+/// [`burrow_types::Error::OutputRejected`] for a `/ToUnicode` whose program cannot be read: a
+/// domain that cannot be established cannot be checked. [`burrow_types::Error::Malformed`] from
+/// parsing it. Whatever reading the font refused.
+fn orphans_of<O: PdfObject>(
+    font: &O,
+    still: &BTreeSet<u32>,
+    parsed: &mut BTreeMap<(core::ffi::c_int, core::ffi::c_int), std::rc::Rc<ToUnicode>>,
+) -> Result<usize> {
+    const TO_UNICODE: Name = Name::literal(b"/ToUnicode\0");
+    const ENCODING: Name = Name::literal(b"/Encoding\0");
+    const DIFFERENCES: Name = Name::literal(b"/Differences\0");
+
+    let mut map: Option<std::rc::Rc<ToUnicode>> = None;
+    let to_unicode = font.key(&TO_UNICODE);
+    if to_unicode.type_code() == object_type::STREAM {
+        let identity = to_unicode.object()?;
+        // A DIRECT STREAM HAS NO IDENTITY -- qpdf reports `(0, 0)` for every one -- so it is
+        // never taken from the memo.
+        if let Some(already) = parsed.get(&identity).filter(|_| identity != (0, 0)) {
+            map = Some(std::rc::Rc::clone(already));
+        } else {
+            let Some(program) = to_unicode.stream_data()? else {
+                return Err(burrow_types::Error::OutputRejected(
+                    "redact: the region is not cleared -- a cut font's /ToUnicode cannot be read back"
+                        .to_owned(),
+                ));
+            };
+            let read_map = std::rc::Rc::new(ToUnicode::parse(&program)?);
+            parsed.insert(identity, std::rc::Rc::clone(&read_map));
+            map = Some(read_map);
+        }
+    }
+    let mut orphaned = 0;
+    if let Some(map) = &map {
+        orphaned += (0..=u32::from(u16::MAX))
+            .filter(|code| map.maps(*code) && !still.contains(code))
+            .count();
+    }
+    // `/Differences`' names, by the same walk `narrow_differences` makes.
+    let encoding = font.key(&ENCODING);
+    if encoding.type_code() == object_type::DICTIONARY {
+        let differences = encoding.key(&DIFFERENCES);
+        if differences.type_code() == object_type::ARRAY {
+            let mut code: u32 = 0;
+            for at in 0..differences.array_len() {
+                let item = differences.array_item(at);
+                if item.type_code() == object_type::INTEGER {
+                    // SKIPPED, NOT FOLDED TO ZERO. `narrow_differences` refuses an anchor outside
+                    // a character code; folding it here would register a mapped code 0 that is
+                    // not there and reject the document for it.
+                    let Ok(anchor) = u32::try_from(item.integer_value()) else {
+                        continue;
+                    };
+                    code = anchor;
+                    continue;
+                }
+                if item.type_code() != object_type::NAME {
+                    continue;
+                }
+                let counted_already = map.as_ref().is_some_and(|m| m.maps(code));
+                if !still.contains(&code) && !counted_already {
+                    orphaned += 1;
+                }
+                code = code.saturating_add(1);
+            }
+        }
+    }
+    // THE FONT'S DOCUMENT, which is the read-back's: the drain goes through the handle that did
+    // the reading (#191).
+    font.drained()?;
+    Ok(orphaned)
 }

@@ -1,4 +1,4 @@
-//! Two seams a test needs and no document can reach, shared by every engine the policy runs on.
+//! Three seams a test needs and no document can reach, shared by every engine the policy runs on.
 //!
 //! Moved here from `qpdf::tests` with the policy (#191): they are read by the generic witness and
 //! the generic operation, so they belong beside them rather than beside one engine's tests.
@@ -45,4 +45,23 @@ pub(crate) fn forced_read_back_failure() -> Option<burrow_types::Error> {
     FORCED_FAILURE
         .with(std::cell::Cell::get)
         .then(|| burrow_types::Error::Malformed("planted read-back failure".to_owned()))
+}
+
+// THE NARROWING, SWITCHED OFF, for the one question the verification exists to answer: if font
+// surgery stops removing the mappings of the codes it removed, does the read-back refuse? No
+// document can ask it, because a correct operation always narrows. #218's defect was a check that
+// never fired on exactly this, and a review found it by editing the engine; this is that edit as a
+// seam. Counted, so a test can assert the narrowing was actually reached and skipped.
+thread_local! {
+    pub(crate) static SKIP_NARROWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static NARROWINGS_SKIPPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether font surgery should leave `/ToUnicode` and `/Differences` alone, counting each skip.
+pub(crate) fn narrowing_skipped() -> bool {
+    let skip = SKIP_NARROWING.with(std::cell::Cell::get);
+    if skip {
+        NARROWINGS_SKIPPED.with(|n| n.set(n.get() + 1));
+    }
+    skip
 }

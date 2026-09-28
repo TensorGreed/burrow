@@ -15,17 +15,14 @@
 //! 1. **No text-showing operator remains whose glyphs fall inside the region.** The walk runs
 //!    again over the output and every glyph's conservative box is tested against the region.
 //! 2. **No `/ToUnicode` or `/Differences` entry remains for a code the output no longer draws
-//!    — for the fonts the operation reports having cut.** Computed from the output alone: the
-//!    codes each font still draws against the codes it still maps. The qualification belongs in
-//!    the bullet rather than four screens away in `Cleared::cut_fonts`, because it is the
-//!    difference between a true sentence and a false one: a *retained* font still maps
-//!    everything it ever mapped, by design.
-//!
-//!    **NOT HELD TODAY ([#218]).** The cut set holds INPUT object ids, and the fonts read back
-//!    carry the output's renumbered ones, so a font is examined only when the ids happen to
-//!    coincide -- often on a different font -- and a font only a form reaches is never listed.
-//!    Measured over the golden corpus: at most 14 of 213 cut fonts were checked. ADR 0029 §6
-//!    carries the dated note, and this bullet is corrected by the change that closes #218.
+//!    -- for every font the operation cut.** Each is found in the output by the path the
+//!    operation found it by -- the page `/XObject` entry whose own resources named it, and its
+//!    name there -- because resource names survive the write and object ids do not: matching the
+//!    input's ids against the renumbered output was #218, a check that examined almost nothing.
+//!    A path that does not resolve is refused. A *retained* font still maps everything it ever
+//!    mapped, by design, which is why only the cut fonts are examined. The check inherits the
+//!    operation's scope resolution, so that resolution follows the chain of forms the way the
+//!    geometry walk does, with no fallback to a same-named font elsewhere (#221).
 //! 3. **No page key outside ADR 0029 §2's allowlist.** The same list `prune` uses.
 //!
 //! # What it does not assert, stated because the wording could be read as though it did
@@ -61,8 +58,6 @@
 //! defects in *placing* are not. The residue is placement, and the instrument that would close
 //! it is `FPDFText_GetCharOrigin`: `tests/glyph_geometry.rs` pins the walk against PDFium on
 //! committed fixtures, which is the calibration this check inherits rather than performs.
-//!
-//! [#218]: https://github.com/TensorGreed/burrow/issues/218
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -81,37 +76,55 @@ pub struct Cleared {
     pub page: usize,
     /// The region, in the frame [`crate::pdfsyntax::region::Region`] documents.
     pub region: Region,
-    /// The fonts the operation reports having **cut**, packed as
-    /// [`crate::redact::FontOutcome::font`].
+    /// Every font the operation **cut**, by where the verified page finds it (#218).
     ///
-    /// # The mapping check applies to these and only these, and that is not a weakening
+    /// # By path, because object ids do not survive the write
+    ///
+    /// This was a set of **input** object ids, looked up among fonts read back by **output** id.
+    /// qpdf renumbers objects when it writes, so the check examined at most 14 of the 213 cut
+    /// fonts in the golden corpus -- some of them a different font that happened to reuse the
+    /// number -- and returned `Ok` over a font still mapping a removed code. A resource name is a
+    /// dictionary key, and the writer keeps it: the path from the page through its `/XObject`
+    /// entry to the `/Font` key names the same font on both sides of the write.
+    ///
+    /// # Exactly the fonts the operation narrowed, and that is not a weakening
     ///
     /// The assertion "no `/ToUnicode` or `/Differences` entry remains for a code the output no
     /// longer draws" is **false for a retained font, by design**. A font shared with a page
     /// outside the operation is left intact precisely so that page's text keeps working, so it
-    /// still maps every code it ever mapped — which is what ADR 0029 §7's disclosure says out
-    /// loud, and the reason it is a disclosure rather than a fix.
+    /// still maps every code it ever mapped -- which is what ADR 0029 §7's disclosure says out
+    /// loud. The check examines what the operation cut, no more: a font it never touched is not
+    /// one whose mappings it changed, and examining those refused documents it had handled
+    /// correctly (a form's own font nothing was cut from; an annotation's appearance font).
     ///
-    /// Found by wiring the check up: `a_font_whose_encoding_is_shared_with_another_page_is_
-    /// retained_rather_than_cut` began failing verification, and it was right to and the check
-    /// was wrong.
+    /// # What taking the set from the operation leaves undetectable
     ///
-    /// # What taking this from the report leaves undetectable
+    /// The set is the operation's own account of what it cut, which is #111's circularity, so the
+    /// direction it fails in is stated:
     ///
-    /// The set comes from the operation's own account of what it did, which is the circularity
-    /// #111 is about — so it is worth saying exactly which direction it fails in.
-    ///
-    /// - The operation claims it **cut** a font it did not: the orphaned mappings are still
-    ///   there and the check fires. Caught -- **as designed, not today** (#218): the ids here are
-    ///   the input's, the fonts read back carry the output's renumbered ones, and a review got
-    ///   exactly this case to return `Ok` with the narrowing disabled.
-    /// - The operation claims it **retained** a font it actually cut: the check skips it. Not
-    ///   caught — but the failure that produces is another page's text reflowing, which no
-    ///   read-back of *this* page could see anyway, and which the sharing rules exist to stop
-    ///   upstream.
-    ///
-    /// So the circularity costs nothing the read-back could otherwise have offered.
-    pub cut_fonts: BTreeSet<u64>,
+    /// - The operation claims it **cut** a font and did not narrow it: the orphaned mappings are
+    ///   still there and the check fires. Caught -- and shown to be, with the narrowing switched
+    ///   off over a font qpdf renumbers.
+    /// - The operation **retained** a font it should have cut: not examined. The sharing rule is
+    ///   what decides that, upstream, and a retained font is disclosed by §7 rather than claimed.
+    /// - A path that no longer resolves to a font dictionary in the output: **refused**, never
+    ///   skipped. A check that cannot find its subject does not pass.
+    pub cut_fonts: BTreeSet<FontPath>,
+}
+
+/// Where a font the operation cut is found from the verified page, by names the writer keeps.
+///
+/// Resolved the way the geometry walk resolves a glyph's font: the scope in force at the end of
+/// the chain, with no fallback to a same-named font elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FontPath {
+    /// The chain of `/XObject` entry names, without slashes, from the page down to the form whose
+    /// stream named the font -- empty for the page's own content. Each step is taken through the
+    /// scope in force, and a form without `/Resources` of its own inherits the enclosing ones
+    /// (#221).
+    pub form: Vec<Vec<u8>>,
+    /// The font's name in that `/Font` dictionary, without the slash.
+    pub name: Vec<u8>,
 }
 
 /// What a fresh reading of the emitted bytes offers.
@@ -162,13 +175,26 @@ pub trait ClearedWitness {
     /// a document burrow wrote and cannot walk is one it should not hand back.
     fn glyphs_on(&self, read: &Self::Read, page: usize) -> Result<Vec<Glyph>>;
 
-    /// For each font on `page`, its packed identity and the codes it still **maps** — the union
-    /// of its `/ToUnicode` domain and its `/Differences` names.
+    /// How many codes the fonts `cut` names still **map** -- in `/ToUnicode` or `/Differences` --
+    /// that `drawn` says they no longer draw.
+    ///
+    /// `drawn` is [`Self::drawn_codes`]' answer for the same page, keyed by the same packed
+    /// **output** identity a path resolves to. Counted font by font and never collected: a
+    /// `/ToUnicode` can name 65,536 codes, and holding that per font ran to 3.3 GB on a 470 kB
+    /// file (review, measured).
     ///
     /// # Errors
     ///
-    /// Whatever reading the font refused.
-    fn mapped_codes(&self, read: &Self::Read, page: usize) -> Result<BTreeMap<u64, BTreeSet<u32>>>;
+    /// [`Error::OutputRejected`] for a path that does not resolve to a font dictionary in the
+    /// output, or one that resolves to a font with no identity; whatever reading the font
+    /// refused.
+    fn orphaned_codes(
+        &self,
+        read: &Self::Read,
+        page: usize,
+        cut: &BTreeSet<FontPath>,
+        drawn: &BTreeMap<u64, BTreeSet<u32>>,
+    ) -> Result<usize>;
 
     /// For each font on `page`, its packed identity and the codes the page still **draws** with
     /// it.
@@ -235,27 +261,23 @@ pub fn region_is_cleared<W: ClearedWitness>(
     }
 
     // 2. NO MAPPING SURVIVES FOR A CODE THE OUTPUT NO LONGER DRAWS.
-    let mapped = fresh
-        .mapped_codes(&read, expected.page)
-        .map_err(|error| wrapped("its fonts cannot be read", error))?;
+    //
+    // FOR EVERY FONT THE OPERATION CUT, FOUND BY PATH (#218). The cut set was input object ids,
+    // compared with fonts read back by output id; qpdf renumbers, so this examined at most 14 of
+    // the 213 cut fonts in the golden corpus and returned `Ok` over a font still mapping a
+    // removed code. A path of resource names survives the write, and one that does not resolve
+    // is refused inside `orphaned_codes` (by `font_at`) rather than skipped.
     let drawn = fresh
         .drawn_codes(&read, expected.page)
         .map_err(|error| wrapped("its drawn codes cannot be read", error))?;
-    for (font, codes) in &mapped {
-        // RETAINED FONTS ARE EXEMPT, and `Cleared::cut_fonts` says why at length: a font left
-        // intact for a page outside this operation still maps everything it ever mapped, and
-        // §7 discloses that rather than claiming otherwise.
-        if !expected.cut_fonts.contains(font) {
-            continue;
-        }
-        let still_drawn = drawn.get(font).cloned().unwrap_or_default();
-        let orphaned = codes.difference(&still_drawn).count();
-        if orphaned > 0 {
-            return Err(rejected(format!(
-                "a font on page {} still maps {orphaned} code(s) the page no longer draws",
-                expected.page
-            )));
-        }
+    let orphaned = fresh
+        .orphaned_codes(&read, expected.page, &expected.cut_fonts, &drawn)
+        .map_err(|error| wrapped("its cut fonts cannot be read", error))?;
+    if orphaned > 0 {
+        return Err(rejected(format!(
+            "a font on page {} still maps {orphaned} code(s) the page no longer draws",
+            expected.page
+        )));
     }
 
     // 3. NO PAGE KEY OUTSIDE §2'S ALLOWLIST.
@@ -300,9 +322,10 @@ fn wrapped(what: &str, error: Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cleared, ClearedWitness, region_is_cleared};
+    use super::{Cleared, ClearedWitness, FontPath, region_is_cleared};
     use crate::pdfsyntax::geometry::{Glyph, GlyphSource, Matrix, Rect};
     use crate::pdfsyntax::region::{PageFrame, Region};
+    use burrow_types::Error;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
     use std::rc::Rc;
@@ -370,13 +393,31 @@ mod tests {
             Ok(self.glyphs.clone())
         }
 
-        fn mapped_codes(
+        fn orphaned_codes(
             &self,
             _read: &Self::Read,
             page: usize,
-        ) -> crate::Result<BTreeMap<u64, BTreeSet<u32>>> {
-            self.asked.borrow_mut().push(("mapped_codes", page));
-            Ok(self.mapped.clone())
+            cut: &BTreeSet<FontPath>,
+            drawn: &BTreeMap<u64, BTreeSet<u32>>,
+        ) -> crate::Result<usize> {
+            self.asked.borrow_mut().push(("orphaned_codes", page));
+            // A PATH RESOLVES TO THE FONT NAMED BY ITS NUMBER, in this fake: `mapped` is the
+            // output, and a cut path the output lacks is refused, as the real witness does.
+            let mut orphaned = 0;
+            for path in cut {
+                let found = self
+                    .mapped
+                    .iter()
+                    .find(|(id, _)| id.to_string().into_bytes() == path.name);
+                let Some((id, codes)) = found else {
+                    return Err(Error::OutputRejected(
+                        "a font the operation cut is not in the output".to_owned(),
+                    ));
+                };
+                let still = drawn.get(id).cloned().unwrap_or_default();
+                orphaned += codes.difference(&still).count();
+            }
+            Ok(orphaned)
         }
 
         fn drawn_codes(
@@ -428,11 +469,18 @@ mod tests {
         }
     }
 
+    /// A path per cut font, named by the font's number so the `Liar` can resolve it.
     fn expect(page: usize, cut_fonts: BTreeSet<u64>) -> Cleared {
         Cleared {
             page,
             region: band(),
-            cut_fonts,
+            cut_fonts: cut_fonts
+                .into_iter()
+                .map(|id| FontPath {
+                    form: Vec::new(),
+                    name: id.to_string().into_bytes(),
+                })
+                .collect(),
         }
     }
 
@@ -477,9 +525,9 @@ mod tests {
 
     #[test]
     fn the_same_mapping_on_a_retained_font_is_accepted() {
-        // THE EXEMPTION, and it is not a weakening: a font left intact for a page outside the
-        // operation still maps everything it ever mapped, which is what ADR 0029 §7 discloses.
-        // Without this test, `cut_fonts` could be ignored entirely and nothing would fail.
+        // THE EXEMPTION: a font left intact for a page outside the operation still maps
+        // everything it ever mapped, which ADR 0029 §7 discloses. It is not in the cut set, so it
+        // is not examined; without this test the cut set could be ignored and nothing would fail.
         let liar = Liar {
             mapped: [(7, [65u32, 66].into_iter().collect())]
                 .into_iter()
@@ -489,6 +537,16 @@ mod tests {
         };
         region_is_cleared(&liar, b"%PDF", &expect(0, BTreeSet::new()))
             .expect("font 7 was retained, so its mappings are disclosed rather than checked");
+    }
+
+    #[test]
+    fn a_cut_font_the_read_back_cannot_find_is_refused() {
+        // #218: the old check skipped a cut font it could not match, which is how it examined
+        // almost nothing. One the output lacks is a check that cannot find its subject.
+        let liar = Liar::default();
+        let error = region_is_cleared(&liar, b"%PDF", &expect(0, [7].into_iter().collect()))
+            .expect_err("font 7 was cut and is not in the output");
+        assert!(format!("{error}").contains("not in the output"), "{error}");
     }
 
     #[test]
@@ -545,7 +603,7 @@ mod tests {
         }
         // And every read the check makes is represented, so a method dropped from the check
         // shows up here rather than silently not being asked.
-        for wanted in ["glyphs_on", "mapped_codes", "drawn_codes", "page_keys"] {
+        for wanted in ["glyphs_on", "orphaned_codes", "drawn_codes", "page_keys"] {
             assert!(
                 asked.iter().any(|(method, _)| *method == wanted),
                 "{wanted} was never called: {asked:?}"
@@ -594,7 +652,7 @@ mod tests {
 
 #[cfg(test)]
 mod limit_tests {
-    use super::{Cleared, ClearedWitness, region_is_cleared};
+    use super::{Cleared, ClearedWitness, FontPath, region_is_cleared};
     use crate::pdfsyntax::geometry::Glyph;
     use crate::pdfsyntax::region::{PageFrame, Region};
     use burrow_types::{Error, Result};
@@ -636,12 +694,14 @@ mod limit_tests {
             })
         }
 
-        fn mapped_codes(
+        fn orphaned_codes(
             &self,
             _read: &Self::Read,
             _page: usize,
-        ) -> Result<BTreeMap<u64, BTreeSet<u32>>> {
-            Ok(BTreeMap::new())
+            _cut: &BTreeSet<FontPath>,
+            _drawn: &BTreeMap<u64, BTreeSet<u32>>,
+        ) -> Result<usize> {
+            Ok(0)
         }
 
         fn drawn_codes(

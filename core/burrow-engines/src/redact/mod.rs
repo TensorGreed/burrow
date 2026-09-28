@@ -222,7 +222,7 @@ pub(crate) trait Steps {
         &mut self,
         still_drawn: &[(u64, Vec<u32>)],
         redacted: &BTreeSet<usize>,
-    ) -> Result<Vec<FontOutcome>>;
+    ) -> Result<(Vec<FontOutcome>, Vec<crate::redact_verify::FontPath>)>;
 
     /// Strip the page keys outside ADR 0029 §2's allowlist.
     ///
@@ -267,12 +267,14 @@ pub(crate) struct ContentEdited<S: Steps> {
 pub(crate) struct FontsCut<S: Steps> {
     steps: S,
     report: Report,
+    cut_paths: Vec<crate::redact_verify::FontPath>,
 }
 
 /// Everything is done; the only thing left is to emit.
 pub(crate) struct Finished<S: Steps> {
     steps: S,
     report: Report,
+    cut_paths: Vec<crate::redact_verify::FontPath>,
 }
 
 impl<S: Steps> Redaction<S> {
@@ -329,7 +331,7 @@ impl<S: Steps> ContentEdited<S> {
         // caller cannot reach it without having finished step 1, so "no longer drawn" is a
         // fact about the finished content rather than about a snapshot taken part-way.
         let still_drawn = self.steps.codes_still_drawn(&self.redacted)?;
-        let fonts = self.steps.cut_fonts(&still_drawn, &self.redacted)?;
+        let (fonts, cut_paths) = self.steps.cut_fonts(&still_drawn, &self.redacted)?;
         let dropped_carried_text = self.steps.dropped_carried_text();
         Ok(FontsCut {
             steps: self.steps,
@@ -337,6 +339,7 @@ impl<S: Steps> ContentEdited<S> {
                 fonts,
                 dropped_carried_text,
             },
+            cut_paths,
         })
     }
 }
@@ -352,6 +355,7 @@ impl<S: Steps> FontsCut<S> {
         Ok(Finished {
             steps: self.steps,
             report: self.report,
+            cut_paths: self.cut_paths,
         })
     }
 }
@@ -391,6 +395,13 @@ impl<S: Steps> Finished<S> {
     pub(crate) const fn report(&self) -> &Report {
         &self.report
     }
+
+    /// Where each font the operation cut is found from the page, for the read-back (#218).
+    /// Carried beside the report rather than in it: the report's `Debug` form is what the golden
+    /// file records.
+    pub(crate) fn cut_paths(&self) -> &[crate::redact_verify::FontPath] {
+        &self.cut_paths
+    }
 }
 
 /// Run the whole sequence.
@@ -410,7 +421,7 @@ pub(crate) fn run<S: Steps>(
     redacted: BTreeSet<usize>,
     verify: &dyn Fn(&[u8]) -> Result<()>,
 ) -> Result<(Vec<u8>, Report)> {
-    run_reporting(steps, redacted, verify, &|_| {})
+    run_reporting(steps, redacted, verify, &|_, _| {})
 }
 
 /// As [`run`], telling `observe` what the report says **before** the bytes are verified.
@@ -430,14 +441,14 @@ pub(crate) fn run_reporting<S: Steps>(
     steps: S,
     redacted: BTreeSet<usize>,
     verify: &dyn Fn(&[u8]) -> Result<()>,
-    observe: &dyn Fn(&Report),
+    observe: &dyn Fn(&Report, &[crate::redact_verify::FontPath]),
 ) -> Result<(Vec<u8>, Report)> {
     let finished = Redaction::new(steps, redacted)
         .edit_content()?
         .cut_fonts()?
         .strip_page()?;
     let report = finished.report().clone();
-    observe(&report);
+    observe(&report, finished.cut_paths());
     Ok((finished.emit_verified(verify)?, report))
 }
 
@@ -500,7 +511,7 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // THE CUT SET COMES FROM THE REPORT, and `Cleared::cut_fonts` states what that leaves
     // undetectable. It is filled after the steps run, so the closure reads it through a cell
     // rather than closing over a value that does not exist yet.
-    let cut_fonts: std::cell::RefCell<std::collections::BTreeSet<u64>> =
+    let cut_fonts: std::cell::RefCell<std::collections::BTreeSet<crate::redact_verify::FontPath>> =
         std::cell::RefCell::new(std::collections::BTreeSet::new());
     let witness = witness::Witness::over(engine.clone(), limits, clock, deadline);
     let verify = |emitted: &[u8]| {
@@ -520,13 +531,8 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
         hooks::record_expectation(&expected);
         crate::redact_verify::region_is_cleared(&witness, emitted, &expected)
     };
-    run_reporting(steps, redacted.clone(), &verify, &|report| {
-        *cut_fonts.borrow_mut() = report
-            .fonts
-            .iter()
-            .filter(|font| font.cut)
-            .map(|font| font.font)
-            .collect();
+    run_reporting(steps, redacted.clone(), &verify, &|_report, paths| {
+        *cut_fonts.borrow_mut() = paths.iter().cloned().collect();
     })
 }
 
@@ -631,13 +637,13 @@ mod tests {
             &mut self,
             still_drawn: &[(u64, Vec<u32>)],
             redacted: &BTreeSet<usize>,
-        ) -> Result<Vec<FontOutcome>> {
+        ) -> Result<(Vec<FontOutcome>, Vec<crate::redact_verify::FontPath>)> {
             self.note(&format!(
                 "cut_fonts {} over {} page(s)",
                 still_drawn.len(),
                 redacted.len()
             ));
-            Ok(self
+            let outcomes = self
                 .fonts
                 .iter()
                 .map(|(font, outside)| FontOutcome {
@@ -645,7 +651,9 @@ mod tests {
                     cut: *outside == 0,
                     also_used_by: *outside,
                 })
-                .collect())
+                .collect();
+            // NO PATHS: this fake never writes a document the read-back could resolve them in.
+            Ok((outcomes, Vec::new()))
         }
 
         fn strip_page_keys(&mut self) -> Result<()> {

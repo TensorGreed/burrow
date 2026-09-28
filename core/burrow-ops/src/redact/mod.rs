@@ -5,10 +5,9 @@
 //! 1. **The glyphs the region reached are no longer drawn.** Re-derived from the emitted bytes
 //!    through a fresh parse — not from the operation's record of what it removed.
 //! 2. **The fonts it cut no longer map codes the page no longer draws**, and the page carries
-//!    no key outside ADR 0029 §2's allowlist. Both read back from the output. **The first half
-//!    is not held by its check today** (#218): the check matches cut fonts by input object id
-//!    against the output's renumbered ones, and at most 14 of 213 cut fonts in the golden corpus
-//!    were actually examined. ADR 0029 §6 carries the dated note.
+//!    no key outside ADR 0029 §2's allowlist. Both read back from the output: each font it cut
+//!    is found there by the resource path it was cut by, and one that cannot be found refuses
+//!    (#218).
 //! 3. **The same pages came out, displaying the same way.** The half every operation makes,
 //!    through [`crate::verify::output`].
 //!
