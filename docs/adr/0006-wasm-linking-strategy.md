@@ -197,77 +197,90 @@ until its named check exists and has been shown to fail without the property.**
   Shown to fail by calling `URL.createObjectURL` before verification in a copy.
 
   **Both checks exist (2026-09-27, #137), and both have been shown to fail.** They run in all
-  three browsers against redaction's own worker, on every e2e run. The first version was
-  reviewed before it was pushed. Both reviewers got a violating worker past each check in all
-  three browsers: bytes under a foreign or `undefined` id past R8, and a nested worker past R9.
-  That version's note also claimed two things that were false. What follows describes the
-  version that was fixed afterwards.
+  three browsers against redaction's own worker, on every e2e run.
+
+  **Three versions, and the first two did not hold.** Each was reviewed before it was pushed, by
+  both reviewers.
+  - **Version 1:** got past in all three browsers, R8 by bytes under a foreign or `undefined` id,
+    R9 by a nested worker.
+  - **Version 2:** got past eleven ways. Among them:
+    - a `__burrow` key the harness exempted by prefix;
+    - a BigInt, an `Error`, a boxed `String`, an object's key, and a transferred `ReadableStream`;
+    - a forged settle echo, and a worker that shortened its own `setTimeout`;
+    - stub reports filtered out of `self.postMessage`;
+    - `Worker.prototype.constructor`;
+    - a fetch of the worker's own module with bytes in the query string.
+  - **The lesson both carried:** a rule that lists what to look for is got past by what it did not
+    list. So version 3 lists what is **allowed**.
+  - Each version's notes also claimed something false, and are superseded by what follows.
 
   - **They observe from outside the worker, not from the host.**
     - The harness wraps the redaction worker before the host sees it, and records every message
       in both directions.
-    - It records the page's requests too, so a reply's id is attributed to the request that
-      carried it. The host's start-up handshake takes its id from the same counter.
-    - It records the worker's messages before the host has chosen what to keep.
-    - It reads the log only after a **settle handshake**, which the worker answers 500 ms later
-      on its own clock. So "posted once" is not "posted once so far". A copy that posted the
-      document a second time 200 ms after the reply passed the unsettled version.
-  - **R8 is checked over every message the worker posts, whatever id it names.**
-    - The one terminal reply carries exactly one byte-carrying value on success, and none on a
-      refusal. That is ADR 0023's "one part, not merely one message".
-    - Every other message must:
-      - carry no bytes (an `ArrayBuffer`, typed array, `Blob` or `ImageData`, at any depth);
-      - transfer no port;
-      - have one of the four listed shapes;
-      - hold no string or array longer than 64.
-    - Shown to fail by ten copies of the worker and one hand-written log, each caught by the
-      rule it was planted against:
-      - a chunk under no id, under the request's id, under a foreign id, and under an
-        `undefined` id;
-      - the input as a number array;
-      - the input as a Latin-1 string in a listed shape;
-      - the input as `ImageData`;
-      - a transferred port;
-      - a second copy after the reply;
-      - a reply carrying two documents;
-      - and, by hand, a log read before the worker went quiet, beside the same log with the
-        marker, which passes.
-    - The second copy and the two-document reply are planted in the shared `worker-protocol.js`, which the mutation reaches
-      because it acts on the whole bundle's text. The first version said they could not be.
-    - **What the reply's own `message` and `report` strings say is not checked.** Those strings
-      are Rust's, and holding them to the typed-error rule is someone else's job.
-  - **R9 is held more strictly than it is worded: no exit at all**, from arming until the worker
-    goes quiet, on a success and on a refusal.
-    - This is stricter because redaction's worker has no reason to take an exit. The page makes
-      the download link from the `Blob` it is handed.
-    - It catches an exit on a refusal, where nothing was ever verified. It also catches one that a
-      timer deferred past the reply.
-    - **The list of stubs is enumerated by hand, and is not complete:**
+    - It reads the log only after a **settle handshake**: a random nonce is sent to the worker and
+      echoed back 500 ms later, on a timer captured before the bundle ran. The page then waits
+      500 ms more on its own clock.
+    - A marker without this nonce is a violation, not a marker. Each clock is witnessed alone, by
+      a copy that posts the document 700 ms later.
+  - **R8 is deny-by-default, over every message the worker posts, whatever id it names.** Each
+    message is recorded as a canonical **shape**:
+    - a plain object's sorted keys and value types;
+    - `true` and `false` as themselves;
+    - any byte value as `bytes`;
+    - anything else as `other:<name>`.
+  - **What R8 then requires:**
+    - The terminal reply's shape is one of the reply shapes `worker-protocol.js` builds. A
+      successful reply carries exactly one byte value, which is ADR 0023's "one part, not merely
+      one message". A refusal carries none.
+    - Every other message is either one of the four early shapes, measured on the real worker, no
+      more often than measured (`starting` twice), or the harness's own messages, exactly.
+    - No message transfers a port or carries bytes outside the reply.
+    - Nothing anywhere holds a string, array or key longer than 64.
+  - **R8 has twenty-two planted copies**, among them every bypass above. It also has eight
+    hand-written logs, for rules no copy of this worker can reach, beside a near-miss that passes.
+  - **Every rule was then switched off in turn**, and each switch-off was asserted to apply. Each
+    one turned the suite red, apart from two belts that another rule also holds:
+    - the `other:` encoding, since every listed shape is literal;
+    - a BigInt's length, since its type is refused anyway. That line was removed rather than left
+      unwitnessed.
+  - **What the reply's own `message` and `report` strings say is not checked.** They are Rust's
+    prose, and holding them to the typed-error rule is someone else's job.
+  - **R9 is held more strictly than it is worded: no exit at all**, from arming until the settle,
+    on a success and on a refusal. Redaction's worker has no reason to take an exit, because the
+    page makes the download link from the `Blob` it is handed. The rule has two halves.
+  - **The first half is stubs in the worker's scope.**
+    - The list is **enumerated by hand, and is not complete**. It covers:
       - ADR 0006's three;
       - `BroadcastChannel`, IndexedDB and the Cache API;
-      - `navigator.locks`, whose lock names the page can read back;
-      - the `Worker` and `SharedWorker` constructors.
-    - The first version claimed a nested worker needed a `blob:` URL from `createObjectURL`. That
-      was false: `new Worker(self.location.href)` reuses the worker's own URL, and the nested
-      worker's stubs report to its parent, which the page never sees.
-    - Each stub installs only where its exit exists. The spec requires the stubs armed to equal,
-      as a set, the exits that a throwaway worker in that browser reports it can reach.
-    - Measured: seven in Chromium, Firefox and WebKit alike. `showSaveFilePicker` and
-      `SharedWorker` exist in no worker scope there. The first version defined
-      `showSaveFilePicker` where none existed and counted it as watched.
-    - Shown to fail once per reachable exit, and once by a `blob:` URL a timer defers past a
-      refusal.
-    - An exit deferred by more than the 500 ms settle is not seen. That bound is stated, not
-      closed.
+      - `navigator.locks`;
+      - the `Worker` and `SharedWorker` constructors, and their prototypes' `constructor`.
+    - Each installs only where its exit exists. The stubs armed must equal, as a set, the exits a
+      throwaway worker reports it can reach. Measured: seven, in Chromium, Firefox and WebKit
+      alike, with `showSaveFilePicker` and `SharedWorker` in no worker scope there.
+    - Reports go through a `postMessage` captured before the bundle ran.
+    - **They are a tripwire for a regression, not a boundary**: they share the bundle's realm, and
+      a bundle determined to take an exit unseen is not what they are for.
+  - **The second half is the test server's own log**, which nothing in the browser can touch.
+    - Between arming and the settle, every request must be one of redaction's four artifacts by
+      exact path, each at most once. The four are the bundle, qpdf, redaction's module, and the
+      policy guard's control.
+    - `connect-src` admits `…/qpdf.<hash>.wasm?leak=…`, and every stub stayed silent while a copy
+      sent the input's first bytes that way. Only this half caught it.
+  - **How R9 is shown to fail:**
+    - once per reachable exit;
+    - by the two measured stub evasions;
+    - by a `blob:` URL deferred past a refusal;
+    - by the query-string fetch;
+    - by hand-written logs for the settle rule and the at-most-once rule.
+  - **What R9 does not see:** an exit nobody has listed, and one deferred beyond both 500 ms waits.
   - **Every planted copy asserts that its mutation applied** before its verdict counts. The
     mutation is spliced by slicing, not `String.replace`, whose `$&` would silently change the
     planted text.
   - **A `SharedArrayBuffer` needs cross-origin isolation, and R9's spec asserts the page has
-    none.** A header that turned it on would fail the spec rather than quietly open an exit no
-    stub can watch.
-  - **A `MessagePort` the page never receives is not seen.** One transferred to the page is. #206's
-    second-engine reading will add a worker-to-worker port, and ADR 0029's 2026-09-27 amendment
-    sends the copy that way. When that lands, R8's check must follow the port.
+    none.**
+  - **A `MessagePort` the page never receives is not seen.** One transferred to the page is.
+    #206's second-engine reading will add a worker-to-worker port, and ADR 0029's 2026-09-27
+    amendment sends the copy that way. When that lands, R8's check must follow the port.
 
 Under an unwind both cases are recoverable — Rust returns `Err`, the buffer drops, a `Drop`
 impl deletes the file. Under a trap they are not. **These two conditions are what make reason

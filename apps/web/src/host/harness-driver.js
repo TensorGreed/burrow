@@ -284,25 +284,70 @@ function countBytes(value, seen = new Set()) {
 }
 
 /**
- * The longest string or array anywhere in a message: how much a non-terminal message could be
- * carrying in a shape `countBytes` does not count -- a number array, a Latin-1 string.
+ * The longest run anywhere in a message: every string, array and KEY, at any
+ * depth, found by `Reflect.ownKeys` -- which sees a non-enumerable `message` and a key an
+ * `Object.values` walk never looks at (both measured as ways past the first version, review of
+ * #137). How much a message could be carrying in a shape `countBytes` does not count.
  *
  * @param {unknown} value
  * @param {Set<object>} seen
+ * @param {Set<string>} skip top-level keys left out -- the reply's own prose, stated as unchecked
  * @returns {number}
  */
-function longestRun(value, seen = new Set()) {
+function longestRun(value, seen = new Set(), skip = new Set()) {
   if (typeof value === "string") return value.length;
   if (value === null || typeof value !== "object" || seen.has(value)) return 0;
   seen.add(value);
-  const own = Array.isArray(value) ? value.length : 0;
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) return 0;
+  let most = Array.isArray(value) ? value.length : 0;
   const inner =
     value instanceof Map
       ? [...value.keys(), ...value.values()]
       : value instanceof Set
         ? [...value]
-        : Object.values(value);
-  return inner.reduce((most, item) => Math.max(most, longestRun(item, seen)), own);
+        : Reflect.ownKeys(value)
+            .filter((key) => !(typeof key === "string" && skip.has(key)))
+            .flatMap((key) => {
+              most = Math.max(most, typeof key === "string" ? key.length : 0);
+              return [/** @type {any} */ (value)[key]];
+            });
+  return inner.reduce((max, item) => Math.max(max, longestRun(item, seen)), most);
+}
+
+/**
+ * A message's TYPE, as a canonical string, DENY-BY-DEFAULT: a plain object is its sorted keys and
+ * each value's type, an array the set of its elements' types, `true`/`false` themselves, a byte
+ * value `bytes`, and anything else -- an Error, a boxed String, a ReadableStream, a Map -- is
+ * `other:<name>`, which no listed shape contains. Each of those carried a whole document past a
+ * walker that listed what to look at rather than what to allow (review of #137).
+ *
+ * @param {unknown} value
+ * @param {Set<object>} seen
+ * @returns {string}
+ */
+function shapeOf(value, seen = new Set()) {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return String(value);
+  if (typeof value !== "object") return typeof value;
+  if (seen.has(value)) return "cycle";
+  seen.add(value);
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
+    return "bytes";
+  }
+  if (typeof ImageData !== "undefined" && value instanceof ImageData) return "bytes";
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value) && prototype === Array.prototype) {
+    return `[${[...new Set(value.map((item) => shapeOf(item, seen)))].sort().join("|")}]`;
+  }
+  if (prototype === Object.prototype || prototype === null) {
+    const fields = Reflect.ownKeys(value).map((key) =>
+      typeof key === "string"
+        ? `${key}:${shapeOf(/** @type {any} */ (value)[key], seen)}`
+        : "symbol",
+    );
+    return `{${fields.sort().join(",")}}`;
+  }
+  return `other:${prototype?.constructor?.name ?? "?"}`;
 }
 
 /** @param {unknown} value */
@@ -326,12 +371,17 @@ function describe(data, ports) {
     keys: object ? Object.keys(data).sort() : [],
     bytes: countBytes(data),
     longest: longestRun(data),
+    // The same, leaving out a reply's `message` and `report`: Rust's prose, which R8 states it
+    // does not check. Every other field of a reply is held to the early messages' bound.
+    longestBesideProse: longestRun(data, new Set(), new Set(["message", "report"])),
+    shape: shapeOf(data),
     ports,
     ok: object && typeof data.ok === "boolean" ? data.ok : null,
     sideChannel:
       object && typeof data.__burrowSideChannel === "string" ? data.__burrowSideChannel : null,
     armed:
       object && Array.isArray(data.__burrowSideChannelArmed) ? data.__burrowSideChannelArmed : null,
+    settled: object && typeof data.__burrowSettled === "number" ? data.__burrowSettled : null,
   };
 }
 
@@ -375,20 +425,31 @@ function recordRedaction(worker) {
 }
 
 /**
- * The settle handshake, installed whenever redaction's worker is armed: a message the page sends
- * around the host, answered after `ms` by a marker. Timers fire in order of expiry, so anything
- * the worker deferred by up to `ms` before the handshake arrived has run by the time the marker
- * does. The listener is registered before the bundle's `onmessage`, and stops the handshake
- * reaching it -- if it ever did, the bundle would answer "unknown operation" with no id, which R8
- * reports.
+ * The settle handshake, installed whenever redaction's worker is armed: a NONCE the page sends
+ * around the host, echoed after `ms` on the worker's clock. Timers fire in order of expiry, so
+ * anything the worker deferred by up to `ms` before the handshake arrived has run by the time the
+ * echo does.
+ *
+ * WHAT THE WORKER CANNOT DO TO IT, and why each holds:
+ * - Forge it early: it does not know the nonce until the handshake arrives, and a marker with any
+ *   other value is a violation, not a marker.
+ * - Shorten it by replacing `setTimeout` or `postMessage`: both are captured here, before the
+ *   bundle runs. The page ALSO waits `ms` on its own clock after the echo, so the worker's clock
+ *   is not the only one (both measured as ways past the first version, review of #137).
+ * - Suppress it: this listener is registered before the bundle's `onmessage` and stops the
+ *   handshake reaching it. A worker that never answers fails closed -- `settled` is false.
  */
 const SETTLE = `
-self.addEventListener("message", (event) => {
-  const ms = event.data && event.data.__burrowSettle;
-  if (typeof ms !== "number") return;
-  event.stopImmediatePropagation();
-  setTimeout(() => self.postMessage({ __burrowSettled: true }), ms);
-});
+(() => {
+  const post = self.postMessage.bind(self);
+  const later = self.setTimeout.bind(self);
+  self.addEventListener("message", (event) => {
+    const nonce = event.data && event.data.__burrowSettle;
+    if (typeof nonce !== "number") return;
+    event.stopImmediatePropagation();
+    later(() => post({ __burrowSettled: nonce }), event.data.ms);
+  });
+})();
 `;
 
 /**
@@ -408,7 +469,9 @@ self.addEventListener("message", (event) => {
 const SIDE_CHANNEL_STUBS = `
 (() => {
   const armed = [];
-  const tell = (name) => self.postMessage({ __burrowSideChannel: name });
+  // CAPTURED, so a bundle that filters \`self.postMessage\` cannot silence a report (review of #137).
+  const post = self.postMessage.bind(self);
+  const tell = (name) => post({ __burrowSideChannel: name });
   const wrap = (owner, key, name) => {
     const original = owner && owner[key];
     if (typeof original !== "function") return;
@@ -427,12 +490,24 @@ const SIDE_CHANNEL_STUBS = `
   const wrapConstructor = (key) => {
     const original = self[key];
     if (typeof original !== "function") return;
-    self[key] = new Proxy(original, {
+    const watched = new Proxy(original, {
       construct(target, args, newTarget) {
         tell(key);
         return Reflect.construct(target, args, newTarget);
       },
     });
+    self[key] = watched;
+    // AND THE PROTOTYPE'S BACK-REFERENCE: the Proxy forwards \`.prototype\` to its target, so
+    // \`Worker.prototype.constructor\` was the unwatched original (review of #137).
+    try {
+      Object.defineProperty(original.prototype, "constructor", {
+        configurable: true,
+        writable: true,
+        value: watched,
+      });
+    } catch {
+      return;
+    }
     armed.push(key);
   };
   wrap(URL, "createObjectURL", "createObjectURL");
@@ -444,7 +519,7 @@ const SIDE_CHANNEL_STUBS = `
   if (typeof LockManager !== "undefined") wrap(LockManager.prototype, "request", "locks");
   wrapConstructor("Worker");
   wrapConstructor("SharedWorker");
-  self.postMessage({ __burrowSideChannelArmed: armed });
+  post({ __burrowSideChannelArmed: armed });
 })();
 `;
 
@@ -1014,7 +1089,8 @@ const harness = {
         // SLICED, NOT `replace`: a string replacement expands `$&` and its kin, so the planted
         // text could differ from the text asked for while this still said it applied.
         source = source.slice(0, at) + to + source.slice(at + from.length);
-        applied = source.includes(to);
+        // The unique match above is what decides it; a splice cannot then fail to apply.
+        applied = true;
       }
     }
     redactArming = {
@@ -1030,31 +1106,34 @@ const harness = {
   },
 
   /**
-   * Wait until redaction's worker has gone quiet: send the settle handshake around the host, and
-   * resolve when its marker comes back, `ms` later on the worker's own clock. Anything the worker
+   * Wait until redaction's worker has gone quiet: send a nonce around the host, wait for its echo
+   * `ms` later on the worker's clock, then wait `ms` more on the page's. Anything the worker
    * deferred by up to `ms` has been recorded by then; anything deferred longer has not, and the
-   * specs say so. `settled` is false when no marker arrived within `ms` plus five seconds.
+   * specs say so. `settled` is false when no echo arrived within `ms` plus five seconds.
    *
    * @param {number} ms
    */
   async settleRedaction(ms = 500) {
-    if (redactRaw === null) return { settled: false };
+    if (redactRaw === null) return { settled: false, nonce: 0 };
     const { worker, send } = redactRaw;
-    return new Promise((resolve) => {
+    const nonce = 1 + Math.floor(Math.random() * 2 ** 31);
+    const echoed = await new Promise((resolve) => {
       const timer = setTimeout(() => {
         worker.removeEventListener("message", heard);
-        resolve({ settled: false });
+        resolve(false);
       }, ms + 5_000);
       /** @param {MessageEvent} event */
       function heard(event) {
-        if (!event.data?.__burrowSettled) return;
+        if (event.data?.__burrowSettled !== nonce) return;
         clearTimeout(timer);
         worker.removeEventListener("message", heard);
-        resolve({ settled: true });
+        resolve(true);
       }
       worker.addEventListener("message", heard);
-      send({ __burrowSettle: ms });
+      send({ __burrowSettle: nonce, ms });
     });
+    if (echoed) await new Promise((resolve) => setTimeout(resolve, ms));
+    return { settled: Boolean(echoed), nonce };
   },
 
   /** Every message between the page and redaction's worker since the last arming, in order. */

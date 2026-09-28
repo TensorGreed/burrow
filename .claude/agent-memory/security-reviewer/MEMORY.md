@@ -49,5 +49,5 @@
 - [Fuzz report steps (d5e11d9)](fuzz_report_steps.md) — the summary is an unredacted channel (unanchored verdict), describe SIGPIPE at ~1000 offsets, grep -xF newline bypass.
 - [Redaction handle trait (#191 s1)](m2_redact_handle_trait.md) — golden catches edits not drains; GAT binds generic code, not impls; base wasm identical.
 - [Web redaction impl (#191 web half)](m2_web_redaction_impl.md) — copy_in latch fail-closed 8840/8840 but not isolated (qpdf latches on handle 0); web open ceilings untested.
-- [R8/R9 specs (5c3c174)](m2_r8_r9_specs.md) — foreign-id bytes, strings, deferred exits, locks, nested worker via location.href all pass; ADR blob claim false.
+- [R8/R9 specs (#137)](m2_r8_r9_specs.md) — r1 fixed; r2: any `__burrow*` key, BigInt/Error/keys/stream, forgeable settle, postMessage-silenced stubs, fetch query hole.
 - [Redaction binding (#137)](m2_redaction_binding_137.md) — the harness-only hold is caught on deploy only by a module count; report counts untested; e2e port collisions.

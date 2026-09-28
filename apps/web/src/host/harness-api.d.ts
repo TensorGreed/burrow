@@ -67,8 +67,14 @@ export interface RedactionMessage {
   keys: string[];
   /** How many byte-carrying values it holds, at any depth: ArrayBuffers, typed arrays, Blobs, ImageData. */
   bytes: number;
-  /** The longest string or array anywhere in it: content in a shape `bytes` does not count. */
+  /** The longest string, array, BigInt or key anywhere in it: content `bytes` does not count. */
   longest: number;
+  /** The same, leaving out a reply's `message` and `report`. */
+  longestBesideProse: number;
+  /** Its type as a canonical string; anything but plain data and bytes is `other:<name>`. */
+  shape: string;
+  /** The nonce, when this is the settle handshake's echo. */
+  settled: number | null;
   /** How many MessagePorts it transferred. */
   ports: number;
   /** Its `ok`, or null when it has none -- only a reply has one. */
@@ -253,7 +259,7 @@ export interface BurrowHarness {
    * handshake, so anything it deferred by up to `ms` has been recorded. `settled` is false when
    * the marker never came back.
    */
-  settleRedaction(ms?: number): Promise<{ settled: boolean }>;
+  settleRedaction(ms?: number): Promise<{ settled: boolean; nonce: number }>;
   /**
    * Redact one region on one page through REDACTION's own worker (#137), staged into harness
    * builds only. Returns the reply and the output's sha256; the bytes stay in the page.

@@ -778,12 +778,14 @@ other.
 
 **R8's and R9's checks exist, since 2026-09-27 (#137).** Both have been shown to fail, and both
 run in all three browsers.
-- R8 covers every message, whatever id it names.
-- R9 is held as "no exit at all", with a hand-enumerated list of stubs.
+- R8 is deny-by-default over every message: an exact, measured shape for each.
+- R9 is held as "no exit at all". It uses hand-enumerated stubs, which are a tripwire and not a
+  boundary, plus the server's request log.
 - Neither sees a `MessagePort` that the page never receives, and #206 will add one.
 
-The review before push got a leaking worker past each check in its first version. ADR 0006's R8/R9
-note has what was fixed and what is still out of reach. R10's check is still to be written.
+The two versions reviewed before push were got past, in all three browsers, 3 and 11 ways. ADR
+0006's R8/R9 note has what each lacked and what is still out of reach. R10's check is still to be
+written.
 
 ### Decided: ADR 0029, and the blocker it carries
 
