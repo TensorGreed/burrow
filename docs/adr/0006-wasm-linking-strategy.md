@@ -239,16 +239,19 @@ design requirement:
   write, a copy some glue mis-marshalled. A **hash binding** satisfies the property directly: the
   verifier's copy is digested, the digest is compared with the digest of the emitted bytes in
   the heap that emitted them, and a verdict counts only if the two agree. Running in the
-  emitting heap remains the simplest way to meet it, and `redact_verify_same_bytes` still pins
-  that the core's own verifier is handed the identical buffer.
+  emitting heap remains the simplest way to meet it. **What pins that today is an argument, not a
+  test:** `burrow_ops::verify` takes the emitted `&[u8]` and nothing else (`verify.rs`), and the
+  `redact_verify_same_bytes` test named above has not been written.
 
   **What this admits, and what it does not.** It admits a *second* reading of the output in a
   sibling heap -- #206's PDFium geometry reading, in the render worker -- provided its input is
   bound to the emitted bytes by that hash. It does not relax the first reading, and it does not
   let a sibling heap's verdict stand in for the emitting heap's: under ADR 0029's 2026-09-27
   amendment the sibling reading can only ADD a refusal. The check for the sibling half is #206's
-  to write, and "shown to fail" there means a copy that differs from the emitted bytes by one
-  byte is refused before its verdict is read.
+  to write. **Proposed for it, not decided here:** "shown to fail" means a copy that differs from
+  the emitted bytes by one byte makes the OPERATION refuse -- not merely its verdict ignored,
+  since an unbound second opinion is an unanswered one, and ADR 0029's amendment makes that a
+  refusal.
 
 Nothing about the memory ceiling. Spike 0002 is still unadopted, issue #25 is still *mitigated,
 not resolved*, and [ADR 0007](0007-limit-enforcement-per-platform.md)'s 2026-09-12 amendment is
