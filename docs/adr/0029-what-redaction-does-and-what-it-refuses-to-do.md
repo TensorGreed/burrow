@@ -231,7 +231,10 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > it, and a form it cannot reach is refused as `[font-scope-unresolved]`. The golden outcomes
   > are unchanged by it.
   > The web half of "refuses with the narrowing off" is held by the browser differential, which
-  > plants that edit in `bridge-qpdf.js`.
+  > plants it in `bridge-qpdf.js`: `oh_set_array_item` made a no-op, so no `/Differences` name is
+  > overwritten. On `04-differences-encoding.pdf` the web then refuses with `OutputRejected`,
+  > "still maps N code(s)", where native redacted. Measured against the pre-fix core, the same plant
+  > was **silent**, "a different document": the web's verification passed it.
 
 - **the named page carriers are absent**: `/Thumb`, every annotation whose `/Rect` intersects the
   region, and every page key outside the allowlist;
@@ -964,8 +967,9 @@ and WebKit: 107 documents and 463 cases, every one matching on the day it landed
 **How it is shown to fail:**
 - by copies of the worker with three planted divergences: a region's sides swapped in the glue,
   a refusal under another rule's name, and a ceiling at another stage;
-- by two more in `bridge-qpdf.js`, the JavaScript between the Rust policy and `qpdf.wasm`, which
-  #200's native-backed differential cannot see (added 2026-09-28, #137's last item):
+- by three more in `bridge-qpdf.js`, the JavaScript between the Rust policy and `qpdf.wasm`,
+  which #200's native-backed differential cannot see (the first two added 2026-09-28, #137's last
+  item; the third with [#218]):
   - `oh_set_array_item` with its index and item swapped, #137's own example. qpdf refuses it,
     so it arrives as a web refusal where native redacted. Measured across the corpus: 8
     documents.
@@ -974,6 +978,10 @@ and WebKit: 107 documents and 463 cases, every one matching on the day it landed
     sees it. Measured across the corpus: 113 cases in 56 documents, every one "a different
     document". The lost byte was whitespace in every stream logged, so the output means the same
     and verification is right to accept it; dropping 20 bytes instead is refused on read-back.
+  - `oh_set_array_item` made a no-op, which is the `/Differences` narrowing turned off. On
+    `04-differences-encoding.pdf` it must arrive as an `OutputRejected` refusal naming the
+    orphaned codes, and the page-out-of-range case must still agree with native. Against the
+    core before [#218] the same plant was silent, "a different document".
 - by hand-written replies, one per compared field.
 
 **The count is gated, and so is each verdict.** Each document test records, for every case it
