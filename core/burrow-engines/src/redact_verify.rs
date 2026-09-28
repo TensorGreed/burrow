@@ -16,13 +16,13 @@
 //!    again over the output and every glyph's conservative box is tested against the region.
 //! 2. **No `/ToUnicode` or `/Differences` entry remains for a code the output no longer draws
 //!    -- for every font the operation cut.** Each is found in the output by the path the
-//!    operation found it by -- the page `/XObject` entry whose own resources named it, and its
-//!    name there -- because resource names survive the write and object ids do not: matching the
+//!    operation found it by -- the route of `Do` names the walk took to the stream that named it,
+//!    and its name there -- because resource names survive the write and object ids do not: matching the
 //!    input's ids against the renumbered output was #218, a check that examined almost nothing.
 //!    A path that does not resolve is refused. A *retained* font still maps everything it ever
 //!    mapped, by design, which is why only the cut fonts are examined. The check inherits the
-//!    operation's scope resolution, so that resolution follows the chain of forms the way the
-//!    geometry walk does, with no fallback to a same-named font elsewhere (#221).
+//!    operation's scope resolution, so that resolution follows the route the walk recorded on
+//!    each glyph and never searches for one (#221).
 //! 3. **No page key outside ADR 0029 §2's allowlist.** The same list `prune` uses.
 //!
 //! # What it does not assert, stated because the wording could be read as though it did
@@ -114,14 +114,14 @@ pub struct Cleared {
 
 /// Where a font the operation cut is found from the verified page, by names the writer keeps.
 ///
-/// Resolved the way the geometry walk resolves a glyph's font: the scope in force at the end of
-/// the chain, with no fallback to a same-named font elsewhere.
+/// The route the geometry walk recorded on the glyph, followed step by step to the scope in force
+/// at its end -- never searched for, and with no fallback to a same-named font elsewhere.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FontPath {
-    /// The chain of `/XObject` entry names, without slashes, from the page down to the form whose
-    /// stream named the font -- empty for the page's own content. Each step is taken through the
-    /// scope in force, and a form without `/Resources` of its own inherits the enclosing ones
-    /// (#221).
+    /// The `Do` names, without slashes, the walk followed from the page's content down to the
+    /// form whose stream named the font -- empty for the page's own content. Each step is taken
+    /// through the scope in force, and a form without `/Resources` of its own inherits the
+    /// enclosing ones (#221).
     pub form: Vec<Vec<u8>>,
     /// The font's name in that `/Font` dictionary, without the slash.
     pub name: Vec<u8>,

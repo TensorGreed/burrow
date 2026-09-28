@@ -611,6 +611,11 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         // special case; it is the same question asked of each page in turn.
         let mut drawn: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
         for at in self.pages_in_scope(redacted)? {
+            // ONCE PER FONT AND ROUTE ON A PAGE, not once per glyph. A route is at most
+            // `MAX_FORM_DEPTH` lookups, but a page may draw 200,000 glyphs, and a per-glyph
+            // resolution is the shape a review measured at 58 s for 100 glyphs when resolution
+            // was a search (#218, round 3). Per page, because resources are.
+            let mut resolved: BTreeMap<ScopedFont, u64> = BTreeMap::new();
             self.deadline.checkpoint(self.clock.as_ref())?;
             // `pages_in_scope` yields only indices below the document's page count, which it
             // reads from the document itself. `page` checks again, and drains as this did.
@@ -625,7 +630,14 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
                 // IN THE SCOPE THAT DREW IT. `font_object` searches the page's `/Font`
                 // only, so an ordinary document whose form carries its own failed with
                 // `font-missing` -- blaming the file for a one-scope lookup.
-                let font = pack(resources.font_in_scope(&glyph.source.font)?.object()?);
+                let font = match resolved.get(&glyph.source.font) {
+                    Some(&font) => font,
+                    None => {
+                        let font = pack(resources.font_in_scope(&glyph.source.font)?.object()?);
+                        resolved.insert(glyph.source.font.clone(), font);
+                        font
+                    }
+                };
                 drawn.entry(font).or_default().insert(glyph.source.code);
             }
         }
@@ -657,28 +669,31 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         // mean different objects in different scopes -- which is what name-based enumeration was
         // quietly assuming away.
         let mut seen: BTreeSet<u64> = BTreeSet::new();
-        let mut scoped: Vec<ScopedFont> = self
-            .cut
-            .iter()
-            .map(|glyph| glyph.source.font.clone())
-            .collect();
-        for name in font_names(&resources)? {
-            scoped.push(ScopedFont::on_page(name.plain().to_vec()));
+        // WHETHER A GLYPH DREW WITH IT, beside each font: a glyph's font resolved once for the
+        // walk to place it, so failing to resolve it now is burrow disagreeing with itself and
+        // propagates. A page `/Font` key is only a candidate -- one naming something that is not
+        // a font dictionary is not a font to cut, and refusing it refused documents burrow
+        // handles (#218's first design).
+        let mut scoped: BTreeMap<ScopedFont, bool> = BTreeMap::new();
+        for glyph in &self.cut {
+            scoped.insert(glyph.source.font.clone(), true);
         }
-        scoped.sort();
-        scoped.dedup();
+        for name in font_names(&resources)? {
+            scoped
+                .entry(ScopedFont::on_page(name.plain().to_vec()))
+                .or_insert(false);
+        }
 
-        for scoped_font in &scoped {
+        for (scoped_font, drew) in &scoped {
             // PER FONT: a page may name 4,096, and narrowing one parses its `/ToUnicode` (up to
             // 65,536 entries) and rewrites its `/Widths`. Checked only on entry, 4,000 fonts
             // sharing one full-range `/ToUnicode` ran **36 s** against a 100 ms budget, from a
             // 500 KB file.
             self.deadline.checkpoint(self.clock.as_ref())?;
-            let Ok((font, path)) = resources.font_path_in_scope(scoped_font) else {
-                // A name that resolves nowhere is not a font to cut. `font_names` yields the
-                // page's own keys, which always resolve, and a glyph's name resolved once for
-                // the walk to place it; this arm is for neither.
-                continue;
+            let (font, path) = match resources.font_path_in_scope(scoped_font) {
+                Ok(found) => found,
+                Err(error) if *drew => return Err(error),
+                Err(_) => continue,
             };
             if font.type_code() != object_type::DICTIONARY {
                 continue;

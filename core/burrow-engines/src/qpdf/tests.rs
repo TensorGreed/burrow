@@ -452,6 +452,11 @@ mod wiring {
 
     /// Redact page 0 of `bytes` over the band `redact` uses, covering `covered`.
     fn redact_bytes(bytes: &[u8], covered: &[usize]) -> burrow_types::Result<()> {
+        redact_output(bytes, covered).map(|_| ())
+    }
+
+    /// [`redact_bytes`], keeping the output.
+    fn redact_output(bytes: &[u8], covered: &[usize]) -> burrow_types::Result<Vec<u8>> {
         let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
         let region = Region {
             left: 40.0,
@@ -467,7 +472,7 @@ mod wiring {
                 region,
                 &options,
             )
-            .map(|_| ())
+            .map(|(output, _)| output)
     }
 
     /// A two-page catalog whose first page carries `resources` and draws `content`; page 2 has
@@ -702,6 +707,132 @@ mod wiring {
                 );
             }
             other => panic!("the nested font's mapping of a removed code passed: {other:?}"),
+        }
+    }
+
+    /// A form `X` with no `/Resources` of its own, listed twice: on the page, never drawn there,
+    /// and inside form `A`, which draws it -- so `X`'s glyphs are drawn with `A`'s `/F1`, `S`.
+    /// The page draws `(S)` in the region with its own `/F1`, `P`. With `a_draws_too`, `A` also
+    /// draws `(S)` in the region with `S`, and `X` draws `(K)` with `S` below it. `order` names
+    /// the page's two `/XObject` entries, `(for X, for A)`: qpdf sorts them, and the search this
+    /// replaces took whichever came first (#218, round 3).
+    fn two_scopes(order: (&str, &str), a_draws_too: bool) -> Vec<u8> {
+        let (x, a) = order;
+        let cmap = |pairs: &str, n: usize| {
+            stream(&format!(
+                "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                 1 begincodespacerange <00> <FF> endcodespacerange \
+                 {n} beginbfchar {pairs} endbfchar endcmap end end\n"
+            ))
+        };
+        let form = |resources: &str, body: &str| {
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] {resources} /Length {} \
+                 >>\nstream\n{body}endstream",
+                body.len()
+            )
+        };
+        let (page_content, a_body, x_body) = if a_draws_too {
+            (
+                format!("q /{a} Do Q\n"),
+                "BT /F1 24 Tf 72 700 Td (S) Tj ET\nq /X Do Q\n",
+                "BT /F1 24 Tf 72 300 Td (K) Tj ET\n",
+            )
+        } else {
+            (
+                format!("BT /F1 24 Tf 72 700 Td (S) Tj ET\nq /{a} Do Q\n"),
+                "q /X Do Q\n",
+                "BT /F1 24 Tf 72 300 Td (S) Tj ET\n",
+            )
+        };
+        two_pages(
+            &format!("<< /Font << /F1 6 0 R >> /XObject << /{x} 8 0 R /{a} 9 0 R >> >>"),
+            &page_content,
+            "<< >>",
+            &[
+                // 6, 7: P, the page's font. `S` is `Q` to it.
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 7 0 R"),
+                cmap("<53> <0051>", 1),
+                // 8: X, no resources of its own.
+                form("", x_body),
+                // 9: A, whose `/F1` is S and whose `/X` is X.
+                form(
+                    "/Resources << /Font << /F1 10 0 R >> /XObject << /X 8 0 R >> >>",
+                    a_body,
+                ),
+                // 10, 11: S. `S` is `x` to it, and `K` is `K`.
+                helvetica("/Encoding /WinAnsiEncoding /ToUnicode 11 0 R"),
+                cmap("<4B> <004B> <53> <0078>", 2),
+            ],
+        )
+    }
+
+    /// Whether the font at `form`/`name` on page 0 of `output` still maps `code`, read back
+    /// through the engine by a path the test names. NOT A BYTE SEARCH: qpdf flates on write, so
+    /// a search of the output for a CMap entry finds nothing and passes every absence test.
+    fn maps(output: &[u8], form: &[&str], name: &str, code: u32) -> bool {
+        use crate::redact::graph::{OpensForRedaction, PdfDocument};
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let (document, _) = super::super::Qpdf
+            .open_for_redaction(output, &options)
+            .expect("the output opens");
+        let page = document.page(0).expect("page 0");
+        let resources = crate::redact::resources::PageResources::of(&page).expect("resources");
+        let font = resources
+            .font_at(&crate::redact_verify::FontPath {
+                form: form.iter().map(|step| step.as_bytes().to_vec()).collect(),
+                name: name.as_bytes().to_vec(),
+            })
+            .expect("the font the test names is in the output");
+        let to_unicode = font.key(&crate::name::Name::literal(b"/ToUnicode\0"));
+        // Removed outright when nothing it mapped is still drawn.
+        if to_unicode.type_code() != crate::codes::qpdf::object_type::STREAM {
+            return false;
+        }
+        match to_unicode.stream_data().expect("readable") {
+            None => panic!("a /ToUnicode the test cannot decode answers nothing"),
+            Some(program) => crate::pdfsyntax::tounicode::ToUnicode::parse(&program)
+                .expect("a CMap burrow wrote or kept")
+                .maps(code),
+        }
+    }
+
+    #[test]
+    fn a_form_drawn_from_two_scopes_credits_its_glyphs_to_the_scope_that_drew_them() {
+        // #218 round 3: `X`'s `(S)` is drawn with `S`, through `A`. Credited to `P` instead --
+        // the page's `/F1`, reached through the page's never-drawn `/XObject` entry for `X` --
+        // it kept `P`'s mapping of the removed `S` alive, and the read-back made the same
+        // mistake, so it returned `Ok`. In one key order and not the other.
+        for order in [("B", "Z"), ("Z", "B")] {
+            let output = redact_output(&two_scopes(order, false), &[0])
+                .unwrap_or_else(|error| panic!("{order:?}: refused: {error:?}"));
+            assert!(
+                maps(&output, &[order.1], "F1", 0x53),
+                "{order:?}: S, which still draws S through A, lost its mapping"
+            );
+            assert!(
+                !maps(&output, &[], "F1", 0x53),
+                "{order:?}: P still maps the S the page no longer draws"
+            );
+        }
+    }
+
+    #[test]
+    fn a_form_drawn_from_two_scopes_keeps_what_it_still_draws() {
+        // THE MIRROR: `A` draws `(S)` in the region with `S`, and `X` still draws `(K)` with
+        // `S`. `K` credited to `P` left `S` drawing nothing, so it lost its `/ToUnicode` and
+        // every width -- `Ok`, and the `K` on a part of the page nobody selected corrupted.
+        for order in [("B", "Z"), ("Z", "B")] {
+            let output = redact_output(&two_scopes(order, true), &[0])
+                .unwrap_or_else(|error| panic!("{order:?}: refused: {error:?}"));
+            assert!(
+                maps(&output, &[order.1], "F1", 0x4B),
+                "{order:?}: the K still drawn below the region lost its mapping"
+            );
+            assert!(
+                !maps(&output, &[order.1], "F1", 0x53),
+                "{order:?}: the S removed from the region is still mapped"
+            );
         }
     }
 

@@ -14,7 +14,7 @@ use burrow_types::{Clock, Deadline, Limits, Result};
 use super::resources::PageResources;
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
-use crate::pdfsyntax::geometry::{Glyph, Watch, glyphs_in};
+use crate::pdfsyntax::geometry::{Glyph, ScopedFont, Watch, glyphs_in};
 use crate::pdfsyntax::region::PageFrame;
 use crate::pdfsyntax::tounicode::ToUnicode;
 use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
@@ -183,10 +183,20 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         let content = read.content(page)?;
         let resources = PageResources::of(&handle)?;
         let mut drawn: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
+        let mut resolved: BTreeMap<ScopedFont, u64> = BTreeMap::new();
         for glyph in &glyphs_in(&content, &resources, &self.watch(read))? {
             // IN THE SCOPE THAT DREW IT. The read-back resolved against the page too, so
-            // it refused documents the redaction had handled correctly.
-            let font = super::steps::pack(resources.font_in_scope(&glyph.source.font)?.object()?);
+            // it refused documents the redaction had handled correctly. ONCE PER FONT AND
+            // ROUTE, not per glyph: see `Steps::codes_still_drawn`.
+            let font = match resolved.get(&glyph.source.font) {
+                Some(&font) => font,
+                None => {
+                    let font =
+                        super::steps::pack(resources.font_in_scope(&glyph.source.font)?.object()?);
+                    resolved.insert(glyph.source.font.clone(), font);
+                    font
+                }
+            };
             drawn.entry(font).or_default().insert(glyph.source.code);
         }
         Ok(drawn)

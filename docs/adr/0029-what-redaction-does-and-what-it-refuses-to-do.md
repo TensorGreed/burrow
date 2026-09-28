@@ -130,7 +130,6 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | **`/EmbeddedFiles`** attachments | **disclose** |
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
 | an **inline image** whose extent the page cannot derive | **refuse** — added by the [2026-09-21 amendment](#amendment-2026-09-21--the-channel-the-spike-missed-inline-image-extent). Spike 0006 did not measure this channel |
-| a glyph drawn in a **form the page's resources do not reach** by any chain of `/XObject` entries | **refuse**, `[font-scope-unresolved]` — added 2026-09-28 ([#221]). Before it, resolution fell back to the page's font of the same name, narrowing the wrong font |
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
@@ -206,8 +205,8 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > redaction returned `Ok` with a removed character's glyph name still in the output.
   >
   > *What it examines now:* exactly the fonts the operation cut, each found in the output by
-  > **path** -- the page's `/XObject` entry whose own `/Resources` named it, if any, and the
-  > font's name in that `/Font` dictionary. A resource name is a dictionary key and survives the
+  > **path** -- the `Do` names the geometry walk followed from the page's content to the form
+  > whose stream named it, and the font's name in the `/Font` dictionary in force there. A resource name is a dictionary key and survives the
   > write. A path that does not resolve to a font dictionary is refused, never skipped. Each font's
   > mapped codes are counted against the codes the page still draws with it, font by font and
   > never collected. A font with no identity cannot be checked this way, and the operation
@@ -224,12 +223,18 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > *What it cannot see:* a font the operation **retained** that it should have cut is not
   > examined -- the sharing rule decides that upstream, and a retained font is §7's disclosure.
   > And the check inherits the operation's scope resolution, so that resolution has to be
-  > right. It was not: a glyph in a nested form was resolved among the page's top-level
-  > `/XObject` only, then against the page's font of the same name, and a review got a decoy
+  > right, and twice it was not. A glyph in a nested form was resolved among the page's
+  > top-level `/XObject` only, then against the page's font of the same name, so a decoy was
   > narrowed and `Ok` returned with the real font still mapping the removed code ([#221]). The
-  > path is now the chain of forms from the page, resolved the way the geometry walk resolves
-  > it, and a form it cannot reach is refused as `[font-scope-unresolved]`. The golden outcomes
-  > are unchanged by it.
+  > first fix searched for the drawing form by object id and took the first route it found,
+  > which is wrong for a form drawn from two scopes -- listed on the page and inside another
+  > form, with no `/Resources` of its own -- and which route came first depended on how qpdf
+  > sorted two names; a review got `Ok` with the page's font still mapping a removed code, and,
+  > mirrored, a retained character's mapping and widths cut. Nothing searches now: the walk
+  > records on each glyph the route of `Do` names it took, and resolution follows that route
+  > through the scope in force at each step. A route the walk recorded cannot disagree with the
+  > walk. The same review measured the search at 58 s for 100 glyphs on a 178 kB file; the route
+  > costs what the base did, 0.7 s. The golden outcomes are unchanged by either.
   > The web half of "refuses with the narrowing off" is held by the browser differential, which
   > plants it in `bridge-qpdf.js`: `oh_set_array_item` made a no-op, so no `/Differences` name is
   > overwritten. On `04-differences-encoding.pdf` the web then refuses with `OutputRejected`,
@@ -1814,7 +1819,7 @@ down rather than implied:
 | the operation claims | reality | caught? |
 |---|---|---|
 | cut | not cut | orphaned mappings remain — **yes**, each cut font found by its resource path rather than the input's ids ([#218]); until 2026-09-28 this row returned `Ok` |
-| cut a font | the glyph was drawn by a different one | **yes, as of 2026-09-28** ([#221]): the font is resolved through the chain of forms the walk used, with no fallback to a same-named font; before it, a glyph in a nested form narrowed the page's decoy and returned `Ok` |
+| cut a font | the glyph was drawn by a different one | **yes, as of 2026-09-28** ([#221]): the font is resolved along the route of `Do` names the walk recorded on the glyph, never searched for; before it, a glyph in a nested form narrowed the page's decoy, and a form drawn from two scopes was credited to whichever came first, each returning `Ok` |
 | retained | actually cut | **no** — but the failure is another page's text reflowing, which no read-back of *this* page could see anyway |
 
 ### The frame is read from the output

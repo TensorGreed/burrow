@@ -76,6 +76,7 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use burrow_types::{Clock, Deadline, Error, Result};
 
@@ -740,23 +741,41 @@ pub struct Glyph {
 /// So resolving against the wrong scope now has to be **written down**: the only ways to get one
 /// of these are from a glyph, which knows where it was read, and [`Self::on_page`], which says
 /// what it is doing.
+///
+/// # The route, not the form (#218, #221)
+///
+/// Knowing *which* form drew a glyph is not enough to resolve its font. A form declaring no
+/// `/Resources` inherits the enclosing scope, and one form can be drawn from two scopes -- listed
+/// on the page and inside another form -- so the same form id resolves a name differently
+/// depending on how the walk got there. Searching for the form by id and taking the first route
+/// found credited a glyph to a font it was not drawn with, and a review got that to return `Ok`
+/// with the page's font still mapping a removed code; which font was credited depended on how
+/// qpdf sorted two names. So the walk records the route it took -- every `Do` name from the page
+/// down -- and resolution follows exactly that route.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScopedFont {
     /// The Form XObject whose stream named it, or `None` for the page's own content.
     ///
-    /// **Not the resolving scope by itself.** A form declaring no `/Resources` inherits the
-    /// enclosing ones, so resolution is own-then-enclosing — the rule `Resources::within`
-    /// applies, and the caller doing anything else is the bypass this type exists to prevent.
+    /// **Not the resolving scope by itself.** See [`Self::route`].
     drawn_in: Option<u64>,
+    /// The `Do` names the walk followed from the page's content to the stream that named it,
+    /// outermost first; empty for the page's own content. Each is looked up in the scope in
+    /// force where it was drawn -- the form's own `/Resources`, or the enclosing ones where it
+    /// declares none, as `Resources::within` does.
+    route: Arc<[Vec<u8>]>,
     /// The name as the content stream spells it, without the slash.
     name: Vec<u8>,
 }
 
 impl ScopedFont {
-    /// A name read in `drawn_in`'s stream.
+    /// A name read in `drawn_in`'s stream, reached from the page through `route`.
     #[must_use]
-    pub fn new(drawn_in: Option<u64>, name: Vec<u8>) -> Self {
-        Self { drawn_in, name }
+    pub fn new(drawn_in: Option<u64>, route: Arc<[Vec<u8>]>, name: Vec<u8>) -> Self {
+        Self {
+            drawn_in,
+            route,
+            name,
+        }
     }
 
     /// A name read in the page's own content stream, or otherwise known to be a page resource.
@@ -767,6 +786,7 @@ impl ScopedFont {
     pub fn on_page(name: Vec<u8>) -> Self {
         Self {
             drawn_in: None,
+            route: Arc::from(Vec::new()),
             name,
         }
     }
@@ -775,6 +795,12 @@ impl ScopedFont {
     #[must_use]
     pub const fn drawn_in(&self) -> Option<u64> {
         self.drawn_in
+    }
+
+    /// The `Do` names from the page's content to the stream that named it, outermost first.
+    #[must_use]
+    pub fn route(&self) -> &[Vec<u8>] {
+        &self.route
     }
 
     /// The name as the content stream spells it.
@@ -2497,6 +2523,10 @@ struct Budget<'w> {
     /// Carried so a `GlyphSource` span is never separated from the stream it indexes. A span
     /// alone would be read against the page and silently name the wrong bytes.
     in_form: Option<u64>,
+    /// The `Do` names followed to reach that stream, outermost first -- what a glyph's
+    /// [`ScopedFont`] resolves by. Shared, and rebuilt only at a `Do`, so a glyph costs a
+    /// reference count rather than a copy of the route.
+    route: Arc<[Vec<u8>]>,
 }
 
 /// A Form XObject, resolved.
@@ -2671,6 +2701,7 @@ pub fn glyphs_in(
         open_forms: Vec::new(),
         forms_drawn: 0,
         in_form: None,
+        route: Arc::from(Vec::new()),
     };
     walk(
         content,
@@ -2900,6 +2931,9 @@ fn draw_form(
     // error path, so a refusal deep in a form cannot leave the caller recording page spans
     // against a form's bytes.
     let enclosing = budget.in_form.replace(form.id);
+    let mut route = budget.route.to_vec();
+    route.push(name.to_vec());
+    let enclosing_route = std::mem::replace(&mut budget.route, Arc::from(route));
     // THE FORM'S MATRIX COMPOSES WITH THE CTM AT THE `Do`, in that order. The other order puts
     // the form's own transform outside the page's, which is plausible and wrong.
     // THE FORM'S OWN RESOURCES, falling back to the enclosing ones where it declares none.
@@ -2917,6 +2951,7 @@ fn draw_form(
         out,
     );
     budget.in_form = enclosing;
+    budget.route = enclosing_route;
     budget.open_forms.pop();
     result
 }
@@ -2962,6 +2997,7 @@ fn text_operator(
                     content,
                     at: (operation.span, 0),
                     form: budget.in_form,
+                    route: &budget.route,
                 },
                 operation.operands.first(),
                 state,
@@ -2980,6 +3016,7 @@ fn text_operator(
                     content,
                     at: (operation.span, 2),
                     form: budget.in_form,
+                    route: &budget.route,
                 },
                 operation.operands.get(2),
                 state,
@@ -2993,6 +3030,7 @@ fn text_operator(
                 content,
                 at: (operation.span, 0),
                 form: budget.in_form,
+                route: &budget.route,
             },
             operation.operands.first(),
             state,
@@ -3013,6 +3051,7 @@ fn text_operator(
                                 content,
                                 at: (operation.span, operand),
                                 form: budget.in_form,
+                                route: &budget.route,
                             },
                             Some(item),
                             state,
@@ -3054,6 +3093,8 @@ struct Shown<'a> {
     at: (Span, usize),
     /// Which form's stream that is, or `None` for the caller's own.
     form: Option<u64>,
+    /// The `Do` names followed to reach it. See [`ScopedFont::route`].
+    route: &'a Arc<[Vec<u8>]>,
 }
 
 fn show(
@@ -3171,7 +3212,7 @@ fn show(
             scaled_font_size: state.text.font_size * scale,
             displacement,
             source: GlyphSource {
-                font: ScopedFont::new(shown.form, font.clone()),
+                font: ScopedFont::new(shown.form, Arc::clone(shown.route), font.clone()),
                 code,
                 form: shown.form,
                 operation: at.0,

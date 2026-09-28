@@ -204,6 +204,29 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_font_written_inline_in_the_output_is_refused() {
+        // THE SECOND LINE BEHIND `[direct-font]`, which the operation's refusal otherwise keeps
+        // unreachable, so a review deleted it and the suite stayed green (#218, round 3). An
+        // output whose cut font is inline has no identity to key it by.
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 \
+             << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>"
+                .to_owned(),
+        ]);
+        let witness = witness();
+        let read = witness.open_output(&bytes).expect("opens");
+        let outcome = witness.orphaned_codes(
+            &read,
+            0,
+            &path(None, b"F1"),
+            &std::collections::BTreeMap::new(),
+        );
+        refused(outcome, "no identity");
+    }
+
+    #[test]
     fn two_cut_fonts_sharing_one_to_unicode_are_each_counted() {
         // THE MEMO: the second font reads the first's parsed map, and must still count it. The
         // shared `/ToUnicode` maps three codes and nothing is drawn, so each font orphans three.
