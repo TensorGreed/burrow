@@ -839,11 +839,13 @@ scenario() {
   local runs skips ok=1
   runs="$(grep '^RUNS:' <<<"$out" | cut -d: -f2-)"
   skips="$(grep '^SKIPS:' <<<"$out" | cut -d: -f2-)"
+  # EXACT NAMES in the comma-separated lists. `\b$job\b` let `wasm-pack` answer for `wasm` and
+  # `web-e2e` for `web`: a review forced `wasm` to be skipped and every scenario stayed green.
   for job in ${must_run//,/ }; do
-    grep -q "\b$job\b" <<<"$runs" || { echo "  FAIL $name: $job should have run"; ok=0; }
+    grep -Eq "(^|,)$job(,|$)" <<<"$runs" || { echo "  FAIL $name: $job should have run"; ok=0; }
   done
   for job in ${must_skip//,/ }; do
-    grep -q "\b$job\b" <<<"$skips" || { echo "  FAIL $name: $job should have been skipped"; ok=0; }
+    grep -Eq "(^|,)$job(,|$)" <<<"$skips" || { echo "  FAIL $name: $job should have been skipped"; ok=0; }
   done
   if [ "$ok" -eq 1 ]; then
     echo "  ok   $name"
@@ -855,12 +857,20 @@ scenario() {
   fi
 }
 
-scenario "a Rust change runs the Rust jobs and skips the web ones" \
-  "core/burrow-engines/src/pdfsyntax/geometry.rs" "clippy,test,doc" "web,web-e2e,fuzz"
+# OUTSIDE THE WASM BINDING'S CRATE GRAPH: `burrow-ffi` is the one crate `bindings/burrow-wasm` does
+# not depend on. Every `core/` crate is under it, so since #214 a change there runs the web jobs too
+# -- the next scenarios.
+scenario "a Rust change outside the wasm binding runs the Rust jobs and skips the web ones" \
+  "bindings/burrow-ffi/src/lib.rs" "clippy,test,doc" "web,web-e2e,fuzz"
 scenario "a web change skips the Rust jobs" \
   "apps/web/src/pages/index.astro" "web,web-e2e" "clippy,test,doc,wasm"
-scenario "a change to a dependency selects its dependents" \
-  "core/burrow-types/src/lib.rs" "test,ignored-tests,wasm" "web,web-e2e"
+# #214: THIS SCENARIO USED TO REQUIRE `web` AND `web-e2e` TO BE SKIPPED, which was the gap itself
+# written down as a requirement. `burrow-types` is under `bindings/burrow-wasm`, whose build is
+# `pkg*`, which both web jobs stage and test.
+scenario "a change to a dependency selects its dependents, and the jobs reading what it builds" \
+  "core/burrow-types/src/lib.rs" "test,ignored-tests,wasm,web,web-e2e" ""
+scenario "a binding change runs the jobs that read the artifacts built from it" \
+  "bindings/burrow-wasm/src/lib.rs" "wasm,web,web-e2e" "fuzz"
 scenario "a fuzz-target change runs the fuzz jobs, which nothing else compiles" \
   "fuzz/fuzz_targets/pdfsyntax_geometry.rs" "fuzz,fuzz-seed" "clippy,test"
 scenario "an unattributable file narrows nothing" \
@@ -951,6 +961,117 @@ else
   echo "  FAIL the fuzz exclusion could be removed without any scenario noticing"
   fail=$((fail + 1))
 fi
+
+# A BUILD WHOSE INPUTS CANNOT BE DERIVED makes its readers run, never narrow (#214, review). A
+# synthetic table: a crate's test, a `cargo run` that builds `pkg` from it, and a job reading `pkg`
+# through the real staging script. A change to the crate must run the reader.
+underivable_driver="$here/.ci-local-underivable-driver.py"
+cat > "$underivable_driver" <<'PYEOF'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("cil", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["cil"] = module
+spec.loader.exec_module(module)
+module.JOBS = [
+    {"name": "rust", "run": "cargo test -p burrow-engines"},
+    {"name": "builder", "run": "python3 tools/build-stamp.py wrap pkg -- cargo run -p burrow-engines --example gen"},
+    {"name": "reader", "run": "cd apps/web && pnpm prebuild"},
+]
+module.changed_paths = lambda base: (["core/burrow-engines/src/lib.rs"], "a scenario")
+jobs, skipped = module.select_changed(list(module.JOBS), None)
+print("RUNS:" + ",".join(j["name"] for j in jobs))
+PYEOF
+out="$(python3 "$underivable_driver" "$changed_probe" 2>&1)"
+rm -f "$underivable_driver"
+if grep -Eq '^RUNS:(.*,)?reader(,|$)' <<<"$out" && grep -qF "reads pkg, and its build in builder" <<<"$out"; then
+  echo "  ok   a reader of an artifact whose build derives nothing always runs, and says why"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a reader of an underivable artifact narrowed"
+  echo "$out" | tail -4
+  fail=$((fail + 1))
+fi
+
+# A WRAPPER SCRIPT THAT DECLARES WHAT IT RUNS reads through its declaration (#214, #215's shape).
+# `tools/run-web-e2e.sh` has no `cd` of its own that `reached_text` can place, so the Playwright
+# hop is reached only through `paths_as`. A synthetic table with that shape and the real
+# `wasm-pack`: a binding change must run it, and the stamp check must count it as a reader.
+wrapper_fixture="$here/.ci-local-wrapper-fixture.sh"
+printf '#!/usr/bin/env bash\nset -euo pipefail\ncd "$(dirname "$0")/.."\ncd apps/web && pnpm e2e\n' >"$wrapper_fixture"
+wrapper_driver="$here/.ci-local-wrapper-driver.py"
+cat > "$wrapper_driver" <<'PYEOF'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("cil", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules["cil"] = module
+spec.loader.exec_module(module)
+builder = next(job for job in module.JOBS if job["name"] == "wasm-pack")
+# `wasm` CLAIMS THE BINDING. Without a job that does, the changed file is under no job's paths,
+# the orphan rule runs everything, and this passed with the fix reverted (review, measured).
+claimant = next(job for job in module.JOBS if job["name"] == "wasm")
+wrapped = {
+    "name": "wrapped-e2e",
+    "run": "tools/.ci-local-wrapper-fixture.sh",
+    "paths_as": "cd apps/web && pnpm e2e",
+}
+module.JOBS = [builder, claimant, wrapped]
+module.changed_paths = lambda base: (["bindings/burrow-wasm/src/lib.rs"], "a scenario")
+jobs, skipped = module.select_changed(list(module.JOBS), None)
+print("RUNS:" + ",".join(j["name"] for j in jobs))
+reads, _ = module.stamped_artifacts([wrapped])
+print("READERS:" + ",".join(sorted(reads)))
+PYEOF
+out="$(python3 "$wrapper_driver" "$changed_probe" 2>&1)"
+rm -f "$wrapper_driver" "$wrapper_fixture"
+if grep -Eq '^RUNS:(.*,)?wrapped-e2e(,|$)' <<<"$out" && grep -Eq '^READERS:(.*,)?pkg(,|$)' <<<"$out" \
+  && ! grep -qF "under no job's derived paths" <<<"$out"; then
+  echo "  ok   a wrapper declaring \`cd apps/web && pnpm e2e\` reads the bindings and runs on a binding change"
+  pass=$((pass + 1))
+else
+  echo "  FAIL a wrapper's declared command did not carry the Playwright hop"
+  echo "$out" | tail -4
+  fail=$((fail + 1))
+fi
+
+# #214's TWO RULES, each removed in a copy and required to matter: without the inheritance a
+# binding change skips both web jobs; without the Playwright hop it runs `web` and skips `web-e2e`,
+# whose build happens in its global setup and nowhere its command says.
+for mutation in inheritance hop; do
+  mutant="$here/.ci-local-214-$mutation.py"
+  python3 - "$here/ci-local.py" "$mutant" "$mutation" <<'PYEOF'
+import pathlib, sys
+source, target, which = sys.argv[1:4]
+text = pathlib.Path(source).read_text()
+old = {
+    "inheritance": "            paths = paths | inputs.get(artifact, set())\n",
+    "hop": "            names += playwright_setup_scripts(directory, texts)\n",
+}[which]
+assert text.count(old) == 1, f"the {which} rule is not spelled as this test expects"
+indent = old[: len(old) - len(old.lstrip())]
+pathlib.Path(target).write_text(text.replace(old, indent + "pass\n", 1))
+assert old not in pathlib.Path(target).read_text(), f"the {which} mutation did not apply"
+PYEOF
+  out="$(python3 "$scenario_driver" "$mutant" "bindings/burrow-wasm/src/lib.rs" 2>&1)"
+  rm -f "$mutant"
+  skipped_e2e=0
+  ran_web=0
+  # EXACT NAMES in the comma-separated lists: `\bweb\b` also matches inside `web-e2e`.
+  grep -Eq '^SKIPS:(.*,)?web-e2e(,|$)' <<<"$out" && skipped_e2e=1
+  grep -Eq '^RUNS:(.*,)?web(,|$)' <<<"$out" && ran_web=1
+  if { [ "$mutation" = inheritance ] && [ "$skipped_e2e" = 1 ] && [ "$ran_web" = 0 ]; } ||
+    { [ "$mutation" = hop ] && [ "$skipped_e2e" = 1 ] && [ "$ran_web" = 1 ]; }; then
+    echo "  ok   without the $mutation rule, a binding change skips what it should (#214)"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL removing the $mutation rule changed nothing a scenario can see"
+    echo "$out" | tail -3
+    fail=$((fail + 1))
+  fi
+done
 rm -f "$changed_probe" "$scenario_driver"
 
 # --- #149: a sweep refuses a build artifact from another tree, before its first job --------
