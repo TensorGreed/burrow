@@ -776,9 +776,14 @@ the one that has nothing to do with panics: it exists because PDFium and qpdf ha
 linear memories, so "verified" against one heap's copy says nothing about the bytes leaving the
 other.
 
-**R8's and R9's checks exist, since 2026-09-27 (#137).** Both have been shown to fail and both run
-in all three browsers. R9 stubs three exits beyond the three named. Neither sees a `MessagePort`,
-which #206 will add. ADR 0006's R8 note has the detail. R10's check is still to be written.
+**R8's and R9's checks exist, since 2026-09-27 (#137).** Both have been shown to fail, and both
+run in all three browsers.
+- R8 covers every message, whatever id it names.
+- R9 is held as "no exit at all", with a hand-enumerated list of stubs.
+- Neither sees a `MessagePort` that the page never receives, and #206 will add one.
+
+The review before push got a leaking worker past each check in its first version. ADR 0006's R8/R9
+note has what was fixed and what is still out of reach. R10's check is still to be written.
 
 ### Decided: ADR 0029, and the blocker it carries
 

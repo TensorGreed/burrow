@@ -156,9 +156,10 @@ anyway.
 **So the rule redaction inherits is:** an operation may post `of` parts, and each part must be a
 complete output that has passed its own verification. Redaction produces one document, so it uses
 this channel with `of: 1` and R8 holds verbatim. **`of > 1` is not available to redaction as a way
-to emit a document in pieces**, and `redaction-emission.spec.ts` — R8's named check — must assert that the operation produces exactly one part carrying bytes, not merely one
-message. **It does, since 2026-09-27 (#137)**: it counts byte-carrying values rather than
-messages, and ADR 0006's R8 note records how that rule was shown to fail.
+to emit a document in pieces**, and `redaction-emission.spec.ts` — R8's named check — must assert that the operation produces
+exactly one part carrying bytes, not merely one message. **It does, since 2026-09-27 (#137)**:
+it counts byte-carrying values rather than messages, and ADR 0006's R8 note records how that rule
+was shown to fail.
 
 That sentence is the reason this is an ADR. A general channel added for `split` is exactly how R8
 would come to be violated by accident two milestones later, by someone who read the protocol and

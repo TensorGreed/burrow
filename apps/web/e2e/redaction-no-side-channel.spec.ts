@@ -2,121 +2,114 @@
 // OPFS or File System Access write, and no `blob:` URL handed to the page. `worker.terminate()`
 // reclaims linear memory; it does not reclaim a file handle the page already holds.
 //
-// The three exits ADR 0006 names are stubbed in the worker's own scope before the bundle runs, and
-// three more besides -- BroadcastChannel, IndexedDB and the Cache API, each also a way out of the
-// heap the page can read back. Each stub reports its call in order with everything else the worker
-// posts, and they report which of them installed, so "never called" is distinguishable from "never
-// watched". SHOWN TO FAIL twice, by copies of the worker that make a `blob:` URL of the input and
-// that broadcast it before the call, each mutation asserted to have applied.
+// HELD MORE STRICTLY THAN THE ADR WORDS IT: no exit at all, from arming until the worker has gone
+// quiet, on a success and on a refusal -- see `r9Violations`. The exits are stubbed in the
+// worker's own scope before the bundle runs: ADR 0006's three and every other one found so far by
+// trying to get bytes to the page past them. Each stub installs only where its exit exists, and
+// the specs require the stubs armed to be EXACTLY the exits a worker in that browser can reach.
+// SHOWN TO FAIL once per reachable exit, and once by an exit a timer defers past a refusal, each
+// mutation asserted to have applied.
+//
+// WHAT IT DOES NOT SEE: an exit nobody has listed (the list is enumerated by hand, not complete),
+// and one deferred by more than `SETTLE_MS`.
 
 import { expect, test } from "@playwright/test";
 
 import { openHarness } from "./harness";
 import {
+  EXITS,
+  PLANTS,
   THE_CALL,
   armedStubs,
-  onlyRequest,
+  reachableExits,
   r9Violations,
-  redactWriter,
+  redactAndSettle,
 } from "./redaction-protocol";
 
-test("no exit is taken before the verified reply", async ({ page }) => {
+for (const [outcome, pageNumber] of [
+  ["a successful redaction", 1],
+  ["a refused redaction", 2],
+] as const) {
+  test(`${outcome} takes no exit at all`, async ({ page }) => {
+    await openHarness(page);
+    await page.evaluate(() => window.burrowHarness.armRedaction({ stubSideChannels: true }));
+    const { reply, log } = await redactAndSettle(page, pageNumber);
+    expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(pageNumber === 1);
+    expect(armedStubs(log).length, "no stub installed").toBeGreaterThan(0);
+    expect(r9Violations(log)).toEqual([]);
+  });
+}
+
+test("the stubs armed are exactly the exits a worker here can reach", async ({ page }) => {
   await openHarness(page);
   await page.evaluate(() => window.burrowHarness.armRedaction({ stubSideChannels: true }));
-  const reply = await redactWriter(page, 1);
-  expect(reply.ok, `${reply.kind}: ${reply.message}`).toBe(true);
-
-  const log = await page.evaluate(() => window.burrowHarness.redactMessages());
-  const armed = armedStubs(log);
-  // THE TWO THAT EVERY WORKER SCOPE CAN BE STUBBED FOR, required. `getDirectory` is required where
-  // the worker has a `StorageManager` at all, and its absence is reported rather than passed over.
-  expect(armed, "the blob: and save-dialog stubs did not install").toEqual(
-    expect.arrayContaining(["createObjectURL", "showSaveFilePicker"]),
+  const { log } = await redactAndSettle(page, 1);
+  const reachable = await reachableExits(page);
+  // NOT EMPTY: a probe that reported nothing reachable would make the equality vacuous.
+  expect(reachable, "the probe reported no reachable exit").toContain("createObjectURL");
+  expect([...armedStubs(log)].sort()).toEqual([...reachable].sort());
+  test.info().annotations.push(
+    { type: "stubs armed", description: armedStubs(log).join(", ") },
+    {
+      type: "not reachable from a worker here",
+      description:
+        Object.keys(EXITS)
+          .filter((name) => !reachable.includes(name))
+          .join(", ") || "none",
+    },
   );
-  test.info().annotations.push({ type: "stubs armed", description: armed.join(", ") });
-  expect(r9Violations(log, onlyRequest(log))).toEqual([]);
-});
 
-/**
- * The exits a worker CAN reach here, each named by the interface its stub wraps. Asked of a
- * throwaway worker rather than the page, because the two scopes differ -- and the exit is the
- * worker's.
- */
-const REACHABLE = `self.postMessage({
-  getDirectory: typeof StorageManager !== "undefined",
-  BroadcastChannel: typeof BroadcastChannel !== "undefined",
-  indexedDB: typeof IDBFactory !== "undefined",
-  caches: typeof CacheStorage !== "undefined",
-})`;
-
-test("every exit the worker can reach is watched", async ({ page }) => {
-  await openHarness(page);
-  await page.evaluate(() => window.burrowHarness.armRedaction({ stubSideChannels: true }));
-  await redactWriter(page, 1);
-  const log = await page.evaluate(() => window.burrowHarness.redactMessages());
-  const reachable = await page.evaluate(async (source) => {
-    const probe = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
-    return new Promise<Record<string, boolean>>((done) => {
-      probe.onmessage = (event) => {
-        done(event.data);
-        probe.terminate();
-      };
-    });
-  }, REACHABLE);
-  // A SharedArrayBuffer would be a seventh exit, and one no stub can watch: memory the page and
-  // the worker both hold. It needs cross-origin isolation, so the page must not have it.
+  // A SharedArrayBuffer would be one more exit, and one no stub can watch: memory the page and the
+  // worker both hold. It needs cross-origin isolation, so the page must not have it.
   expect(
     await page.evaluate(() => self.crossOriginIsolated),
     "the page is cross-origin isolated",
   ).toBe(false);
-  const expected = Object.entries(reachable)
-    .filter(([, here]) => here)
-    .map(([name]) => name);
-  // NOT EMPTY: a probe that reported nothing reachable would make this assertion vacuous.
+});
+
+test("every exit a stub exists for has a planted copy, or no worker here can reach it", async ({
+  page,
+}) => {
+  await openHarness(page);
+  const reachable = await reachableExits(page);
+  const unplanted = reachable.filter((name) => !(name in PLANTS));
   expect(
-    expected.length,
-    `the probe reported no reachable exit: ${JSON.stringify(reachable)}`,
-  ).toBeGreaterThan(0);
-  expect(armedStubs(log).sort()).toEqual(expect.arrayContaining(expected.sort()));
-  test.info().annotations.push({
-    type: "not reachable from a worker here",
-    description:
-      Object.keys(reachable)
-        .filter((name) => !reachable[name])
-        .join(", ") || "none",
+    unplanted,
+    "a reachable exit with no planted copy is watched by a stub nobody has seen fire",
+  ).toEqual([]);
+});
+
+for (const [exit, plant] of Object.entries(PLANTS)) {
+  test(`SHOWN TO FAIL: a copy of the worker that takes ${exit} before the call is caught`, async ({
+    page,
+  }) => {
+    await openHarness(page);
+    if (!(await reachableExits(page)).includes(exit)) {
+      test.skip(true, `${exit} is not reachable from a worker here, so there is nothing to take`);
+    }
+    const { applied } = await page.evaluate(
+      (mutate) => window.burrowHarness.armRedaction({ stubSideChannels: true, mutate }),
+      { from: THE_CALL, to: `  ${plant}\n${THE_CALL}` },
+    );
+    expect(applied, `the planted ${exit} did not apply to the worker's copy`).toBe(true);
+
+    const { log } = await redactAndSettle(page, 1);
+    expect(r9Violations(log).join("\n")).toContain(`${exit} was called`);
   });
-});
+}
 
-test("SHOWN TO FAIL: a copy of the worker that makes a blob: URL before the call is caught", async ({
-  page,
-}) => {
+test("SHOWN TO FAIL: a copy that defers a blob: URL past a REFUSAL is caught", async ({ page }) => {
   await openHarness(page);
   const { applied } = await page.evaluate(
     (mutate) => window.burrowHarness.armRedaction({ stubSideChannels: true, mutate }),
-    { from: THE_CALL, to: `  URL.createObjectURL(new Blob([bytes]));\n${THE_CALL}` },
+    {
+      from: THE_CALL,
+      to: `  setTimeout(() => URL.createObjectURL(new Blob([bytes])), 0);\n${THE_CALL}`,
+    },
   );
-  expect(applied, "the planted blob: URL did not apply to the worker's copy").toBe(true);
+  expect(applied, "the deferred blob: URL did not apply to the worker's copy").toBe(true);
 
-  await redactWriter(page, 1);
-  const log = await page.evaluate(() => window.burrowHarness.redactMessages());
-  expect(r9Violations(log, onlyRequest(log)).join("\n")).toMatch(
-    /createObjectURL was called .* before the verified reply/,
-  );
-});
-
-test("SHOWN TO FAIL: a copy of the worker that broadcasts the input before the call is caught", async ({
-  page,
-}) => {
-  await openHarness(page);
-  const { applied } = await page.evaluate(
-    (mutate) => window.burrowHarness.armRedaction({ stubSideChannels: true, mutate }),
-    { from: THE_CALL, to: `  new BroadcastChannel("out").postMessage(bytes);\n${THE_CALL}` },
-  );
-  expect(applied, "the planted broadcast did not apply to the worker's copy").toBe(true);
-
-  await redactWriter(page, 1);
-  const log = await page.evaluate(() => window.burrowHarness.redactMessages());
-  expect(r9Violations(log, onlyRequest(log)).join("\n")).toMatch(
-    /BroadcastChannel was called .* before the verified reply/,
-  );
+  const { reply, log } = await redactAndSettle(page, 2);
+  expect(reply.ok, "the redaction was meant to be refused").toBe(false);
+  expect(r9Violations(log).join("\n")).toContain("createObjectURL was called");
 });

@@ -61,12 +61,16 @@ export interface RedactionMessage {
    * message the worker posted. Everything else below describes whichever it was.
    */
   sent: string | null;
-  /** The request it belongs to, or null for a message with none (start-up, a stray post). */
+  /** The request it names, as a number; null for a message whose `id` is absent or not a number. */
   id: number | null;
   /** Its top-level keys, sorted. */
   keys: string[];
-  /** How many byte-carrying values it holds, at any depth: ArrayBuffers, typed arrays, Blobs. */
+  /** How many byte-carrying values it holds, at any depth: ArrayBuffers, typed arrays, Blobs, ImageData. */
   bytes: number;
+  /** The longest string or array anywhere in it: content in a shape `bytes` does not count. */
+  longest: number;
+  /** How many MessagePorts it transferred. */
+  ports: number;
   /** Its `ok`, or null when it has none -- only a reply has one. */
   ok: boolean | null;
   /** The R9 exit a stub saw called, when this message is that report. */
@@ -242,8 +246,14 @@ export interface BurrowHarness {
     stubSideChannels?: boolean;
     mutate?: { from: string; to: string } | null;
   }): Promise<{ applied: boolean }>;
-  /** Every message redaction's worker posted since the last arming, described, in order. */
+  /** Every message between the page and redaction's worker since the last arming, in order. */
   redactMessages(): RedactionMessage[];
+  /**
+   * Wait until redaction's worker has gone quiet: resolves `ms` after the worker saw the
+   * handshake, so anything it deferred by up to `ms` has been recorded. `settled` is false when
+   * the marker never came back.
+   */
+  settleRedaction(ms?: number): Promise<{ settled: boolean }>;
   /**
    * Redact one region on one page through REDACTION's own worker (#137), staged into harness
    * builds only. Returns the reply and the output's sha256; the bytes stay in the page.

@@ -216,7 +216,6 @@ function renderBundle() {
 }
 
 /** @param {"renderWorker" | "redactWorker"} id */
-/** @param {"renderWorker" | "redactWorker"} id */
 async function fetchBundleSource(id) {
   const bundle = BUNDLES[id];
   if (!bundle) {
@@ -234,10 +233,11 @@ async function fetchBundleSource(id) {
 // --- redaction's worker, as R8 and R9 observe it (#137) ------------------------------------------
 //
 // ADR 0006's R8 and R9 are claims about WHAT REDACTION'S WORKER SENDS AND DOES, so their specs
-// need three things no other test did: every message the worker posts to the page, recorded
-// before the host reads it; stubs in the worker's scope for the three ways bytes could leave the
-// heap early; and a COPY of the worker with a planted violation, to show each spec can fail.
-// All three act on the integrity-checked text, like the base worker's prologue does.
+// need four things no other test did: every message between the page and the worker, recorded
+// before the host reads it; stubs in the worker's scope for the ways bytes could leave the heap;
+// a way to wait until the worker has gone quiet, so "posted once" is not "posted once so far";
+// and a COPY of the worker with a planted violation, to show each spec can fail. All of them act
+// on the integrity-checked text, like the base worker's prologue does.
 
 /** @type {{ prologue: string, source: string | null }} */
 let redactArming = { prologue: "", source: null };
@@ -247,6 +247,13 @@ let redactArming = { prologue: "", source: null };
  * @type {import("./harness-api").RedactionMessage[]}
  */
 let redactLog = [];
+/**
+ * The raw redaction worker, for `settleRedaction` -- which must post around the host, because
+ * the host has no message for "tell me when you are quiet".
+ *
+ * @type {{ worker: Worker, send: (message: unknown) => void } | null}
+ */
+let redactRaw = null;
 
 /**
  * How many byte-carrying values a message holds: each `ArrayBuffer`, typed array or `Blob`
@@ -262,6 +269,9 @@ function countBytes(value, seen = new Set()) {
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
     return 1;
   }
+  // BY NAME, because its pixels are a prototype getter: Firefox's `Object.values` sees nothing in
+  // one, so the walk below counted it in Chromium and WebKit and not there (review of #137).
+  if (typeof ImageData !== "undefined" && value instanceof ImageData) return 1;
   if (value === null || typeof value !== "object" || seen.has(value)) return 0;
   seen.add(value);
   const inner =
@@ -271,6 +281,58 @@ function countBytes(value, seen = new Set()) {
         ? [...value]
         : Object.values(value);
   return inner.reduce((sum, item) => sum + countBytes(item, seen), 0);
+}
+
+/**
+ * The longest string or array anywhere in a message: how much a non-terminal message could be
+ * carrying in a shape `countBytes` does not count -- a number array, a Latin-1 string.
+ *
+ * @param {unknown} value
+ * @param {Set<object>} seen
+ * @returns {number}
+ */
+function longestRun(value, seen = new Set()) {
+  if (typeof value === "string") return value.length;
+  if (value === null || typeof value !== "object" || seen.has(value)) return 0;
+  seen.add(value);
+  const own = Array.isArray(value) ? value.length : 0;
+  const inner =
+    value instanceof Map
+      ? [...value.keys(), ...value.values()]
+      : value instanceof Set
+        ? [...value]
+        : Object.values(value);
+  return inner.reduce((most, item) => Math.max(most, longestRun(item, seen)), own);
+}
+
+/** @param {unknown} value */
+function isPort(value) {
+  return typeof MessagePort !== "undefined" && value instanceof MessagePort;
+}
+
+/**
+ * One message, described without its content.
+ *
+ * THE ID IS A NUMBER OR NULL, and nothing else: a message whose `id` is `undefined` or a string
+ * names no request, and recording it verbatim let one be neither (review of #137).
+ *
+ * @param {any} data
+ * @param {number} ports
+ */
+function describe(data, ports) {
+  const object = data !== null && typeof data === "object";
+  return {
+    id: object && typeof data.id === "number" ? data.id : null,
+    keys: object ? Object.keys(data).sort() : [],
+    bytes: countBytes(data),
+    longest: longestRun(data),
+    ports,
+    ok: object && typeof data.ok === "boolean" ? data.ok : null,
+    sideChannel:
+      object && typeof data.__burrowSideChannel === "string" ? data.__burrowSideChannel : null,
+    armed:
+      object && Array.isArray(data.__burrowSideChannelArmed) ? data.__burrowSideChannelArmed : null,
+  };
 }
 
 /**
@@ -296,65 +358,92 @@ function recordRedaction(worker) {
   worker.postMessage = (/** @type {any} */ message, /** @type {any} */ transfer) => {
     redactLog.push({
       sent: String(message?.op ?? message?.type ?? "?"),
-      id: typeof message?.id === "number" ? message.id : null,
-      keys: message && typeof message === "object" ? Object.keys(message).sort() : [],
-      bytes: countBytes(message),
-      ok: null,
-      sideChannel: null,
-      armed: null,
+      ...describe(message, Array.isArray(transfer) ? transfer.filter(isPort).length : 0),
     });
     return transfer === undefined ? send(message) : send(message, transfer);
   };
+  redactRaw = { worker, send };
   worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const data = event.data;
-    redactLog.push({
-      sent: null,
-      id: data && typeof data === "object" && "id" in data ? data.id : null,
-      keys: data && typeof data === "object" ? Object.keys(data).sort() : [],
-      bytes: countBytes(data),
-      ok: data && typeof data === "object" && "ok" in data ? data.ok : null,
-      sideChannel: data?.__burrowSideChannel ?? null,
-      armed: data?.__burrowSideChannelArmed ?? null,
-    });
-    if (data?.__burrowSideChannel || data?.__burrowSideChannelArmed) return;
+    redactLog.push({ sent: null, ...describe(data, event.ports.length) });
+    if (data?.__burrowSideChannel || data?.__burrowSideChannelArmed || data?.__burrowSettled) {
+      return;
+    }
     hostHandler.current?.(event);
   });
   return worker;
 }
 
 /**
- * Stubs for R9's three exits, installed in the worker's scope before the bundle runs.
+ * The settle handshake, installed whenever redaction's worker is armed: a message the page sends
+ * around the host, answered after `ms` by a marker. Timers fire in order of expiry, so anything
+ * the worker deferred by up to `ms` before the handshake arrived has run by the time the marker
+ * does. The listener is registered before the bundle's `onmessage`, and stops the handshake
+ * reaching it -- if it ever did, the bundle would answer "unknown operation" with no id, which R8
+ * reports.
+ */
+const SETTLE = `
+self.addEventListener("message", (event) => {
+  const ms = event.data && event.data.__burrowSettle;
+  if (typeof ms !== "number") return;
+  event.stopImmediatePropagation();
+  setTimeout(() => self.postMessage({ __burrowSettled: true }), ms);
+});
+`;
+
+/**
+ * Stubs for R9's exits, installed in the worker's scope before the bundle runs.
  *
  * Each still does what it did -- a stub that broke the call would change what the worker does
- * next -- and reports that it was called. The list of stubs that actually installed is posted
- * first, so a spec can tell "never called" from "never watched".
+ * next -- and reports that it was called. A stub installs ONLY where the thing it wraps exists:
+ * defining `showSaveFilePicker` in a scope that has none would change what feature detection in
+ * the worker sees, and report as "watched" an exit nobody can take (review of #137). The list of
+ * stubs that installed is posted first, so a spec can tell "never called" from "never watched".
+ *
+ * THE LIST IS ENUMERATED BY HAND, and is not every way out there is. It is ADR 0006's three, and
+ * every other one found so far by trying to get bytes to the page past it: a broadcast, two
+ * stores, a lock's name, and a nested worker, whose own stubs would report to its parent rather
+ * than to this page (all three found by the review of #137).
  */
 const SIDE_CHANNEL_STUBS = `
 (() => {
   const armed = [];
   const tell = (name) => self.postMessage({ __burrowSideChannel: name });
   const wrap = (owner, key, name) => {
+    const original = owner && owner[key];
+    if (typeof original !== "function") return;
     try {
-      const original = owner[key];
       Object.defineProperty(owner, key, {
         configurable: true,
         writable: true,
         value: function (...args) {
           tell(name);
-          return typeof original === "function" ? original.apply(this, args) : undefined;
+          return original.apply(this, args);
         },
       });
       armed.push(name);
     } catch {}
   };
+  const wrapConstructor = (key) => {
+    const original = self[key];
+    if (typeof original !== "function") return;
+    self[key] = new Proxy(original, {
+      construct(target, args, newTarget) {
+        tell(key);
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+    armed.push(key);
+  };
   wrap(URL, "createObjectURL", "createObjectURL");
   wrap(self, "showSaveFilePicker", "showSaveFilePicker");
   if (typeof StorageManager !== "undefined") wrap(StorageManager.prototype, "getDirectory", "getDirectory");
-  // BEYOND ADR 0006's THREE, because each is a way out of the heap the page can read back:
-  // a channel to the page that is not the worker's own port, and two stores that outlive it.
   if (typeof BroadcastChannel !== "undefined") wrap(BroadcastChannel.prototype, "postMessage", "BroadcastChannel");
   if (typeof IDBFactory !== "undefined") wrap(IDBFactory.prototype, "open", "indexedDB");
   if (typeof CacheStorage !== "undefined") wrap(CacheStorage.prototype, "open", "caches");
+  if (typeof LockManager !== "undefined") wrap(LockManager.prototype, "request", "locks");
+  wrapConstructor("Worker");
+  wrapConstructor("SharedWorker");
   self.postMessage({ __burrowSideChannelArmed: armed });
 })();
 `;
@@ -915,28 +1004,60 @@ const harness = {
    * @param {{ stubSideChannels?: boolean, mutate?: { from: string, to: string } | null }} options
    */
   async armRedaction(options = {}) {
-    const { source } = await fetchBundleSource("redactWorker");
-    let mutated = source;
+    let source = null;
     let applied = false;
     if (options.mutate) {
-      const at = source.indexOf(options.mutate.from);
-      if (at !== -1 && source.indexOf(options.mutate.from, at + 1) === -1) {
-        mutated = source.replace(options.mutate.from, options.mutate.to);
-        applied = mutated !== source;
+      const { from, to } = options.mutate;
+      source = (await fetchBundleSource("redactWorker")).source;
+      const at = source.indexOf(from);
+      if (at !== -1 && source.indexOf(from, at + 1) === -1) {
+        // SLICED, NOT `replace`: a string replacement expands `$&` and its kin, so the planted
+        // text could differ from the text asked for while this still said it applied.
+        source = source.slice(0, at) + to + source.slice(at + from.length);
+        applied = source.includes(to);
       }
     }
     redactArming = {
-      prologue: options.stubSideChannels ? SIDE_CHANNEL_STUBS : "",
-      source: options.mutate ? mutated : null,
+      prologue: SETTLE + (options.stubSideChannels ? SIDE_CHANNEL_STUBS : ""),
+      source,
     };
     const existing = lazyHosts.redactWorker;
     delete lazyHosts.redactWorker;
     if (existing) (await existing).dispose();
     redactLog = [];
+    redactRaw = null;
     return { applied };
   },
 
-  /** Every message redaction's worker has posted since the last arming, described, in order. */
+  /**
+   * Wait until redaction's worker has gone quiet: send the settle handshake around the host, and
+   * resolve when its marker comes back, `ms` later on the worker's own clock. Anything the worker
+   * deferred by up to `ms` has been recorded by then; anything deferred longer has not, and the
+   * specs say so. `settled` is false when no marker arrived within `ms` plus five seconds.
+   *
+   * @param {number} ms
+   */
+  async settleRedaction(ms = 500) {
+    if (redactRaw === null) return { settled: false };
+    const { worker, send } = redactRaw;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        worker.removeEventListener("message", heard);
+        resolve({ settled: false });
+      }, ms + 5_000);
+      /** @param {MessageEvent} event */
+      function heard(event) {
+        if (!event.data?.__burrowSettled) return;
+        clearTimeout(timer);
+        worker.removeEventListener("message", heard);
+        resolve({ settled: true });
+      }
+      worker.addEventListener("message", heard);
+      send({ __burrowSettle: ms });
+    });
+  },
+
+  /** Every message between the page and redaction's worker since the last arming, in order. */
   redactMessages() {
     return redactLog.map((entry) => ({ ...entry }));
   },
