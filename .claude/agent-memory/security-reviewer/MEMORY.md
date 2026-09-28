@@ -51,4 +51,5 @@
 - [Web redaction impl (#191 web half)](m2_web_redaction_impl.md) — copy_in latch fail-closed 8840/8840 but not isolated (qpdf latches on handle 0); web open ceilings untested.
 - [R8/R9 specs (#137)](m2_r8_r9_specs.md) — r5: r4 all caught; bundle-first armed list passes whole doc via R8 (R9 catches); 564 B numeric; 5 refinements unwitnessed.
 - [Web differential + ledger (#137)](m2_web_differential_137.md) — leak-tight compare; r2: parking fixed; ledger test itself parkable, misbound verdict green (measured).
+- [Verify cut_fonts vs renumbering](m2_verify_cut_fonts_renumbering.md) — read-back check #2 examined no cut font in 151 of 170 verifications (input ids vs output ids); plus the #137 bridge-plant notes.
 - [Redaction binding (#137)](m2_redaction_binding_137.md) — the harness-only hold is caught on deploy only by a module count; report counts untested; e2e port collisions.

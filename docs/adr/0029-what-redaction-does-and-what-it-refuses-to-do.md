@@ -927,6 +927,16 @@ and WebKit: 107 documents and 463 cases, every one matching on the day it landed
 **How it is shown to fail:**
 - by copies of the worker with three planted divergences: a region's sides swapped in the glue,
   a refusal under another rule's name, and a ceiling at another stage;
+- by two more in `bridge-qpdf.js`, the JavaScript between the Rust policy and `qpdf.wasm`, which
+  #200's native-backed differential cannot see (added 2026-09-28, #137's last item):
+  - `oh_set_array_item` with its index and item swapped, #137's own example. qpdf refuses it,
+    so it arrives as a web refusal where native redacted. Measured across the corpus: 8
+    documents.
+  - every stream written through `oh_replace_stream_data` losing its last byte. This one is
+    **silent**: the web redaction passes its own verification, and only the digest comparison
+    sees it. Measured across the corpus: 113 cases in 56 documents, every one "a different
+    document". The lost byte was whitespace in every stream logged, so the output means the same
+    and verification is right to accept it; dropping 20 bytes instead is refused on read-back.
 - by hand-written replies, one per compared field.
 
 **The count is gated, and so is each verdict.** Each document test records, for every case it

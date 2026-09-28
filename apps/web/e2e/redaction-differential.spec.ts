@@ -191,6 +191,15 @@ for (const document of PLAN) {
 // Each planted divergence goes into a COPY of the worker, asserted to have applied, and runs the
 // same cases through the same `divergence`. One per comparison class that a copy of the glue can
 // reach; the rest are held by hand below.
+//
+// AND TWO IN `bridge-qpdf.js`, the JS between the Rust policy and `qpdf.wasm` -- which #200's
+// native-backed differential cannot see, and which is why #137 asked for this one. The first is
+// #137's own example, `oh_set_array_item`'s arguments swapped: qpdf refuses it, so it arrives as
+// a web refusal where native redacted. The second is SILENT: every stream written through
+// `oh_replace_stream_data` loses its last byte -- whitespace, in every one logged, so the output
+// means the same and nothing SHOULD reject it -- the web redaction passes its own verification,
+// and only the digest comparison here sees it. Measured over the corpus on 2026-09-28: 113 cases
+// in 56 documents. Dropping 20 bytes instead is refused on read-back, as it should be.
 
 const WRITER = DOCUMENTS.find((d) => d.name === "tests/redaction/fixtures/producer-writer.pdf");
 const BOMB = DOCUMENTS.find((d) => d.cases.some((c) => classOf(c.outcome) === "limit"));
@@ -218,6 +227,25 @@ for (const planted of [
     to: '      stage: reply.stage === "prescan" ? "measured" : reply.stage,\n',
     finding: /stage measured, not prescan/,
   },
+  {
+    name: "the bridge's `oh_set_array_item` given its index and item swapped",
+    document: WRITER,
+    from: "qpdf()._qpdf_oh_set_array_item(data, oh, at, item);",
+    to: "qpdf()._qpdf_oh_set_array_item(data, oh, item, at);",
+    finding: /native redacted it; the web refused, Internal/,
+    // NOT A BROKEN WORKER: a copy that throws on load or on any call produces the same finding.
+    // qpdf's own refusal is the message, and the case the plant cannot reach -- a page out of
+    // range, refused before any array is written -- still agrees with native (review).
+    message: /qpdf reported an internal error/,
+    unaffected: /\[page-out-of-range\]/,
+  },
+  {
+    name: "the bridge dropping the last byte of every stream it rewrites",
+    document: WRITER,
+    from: "module._qpdf_oh_replace_stream_data(data, stream, buf, bytes.length, filter, decodeParms);",
+    to: "module._qpdf_oh_replace_stream_data(data, stream, buf, Math.max(0, bytes.length - 1), filter, decodeParms);",
+    finding: /a different document/,
+  },
 ]) {
   test(`SHOWN TO FAIL: a copy of the worker with ${planted.name} diverges`, async ({ page }) => {
     const document = planted.document;
@@ -237,6 +265,27 @@ for (const planted of [
     expect(divergences.join("\n"), "the differential passed a diverging worker").toMatch(
       planted.finding,
     );
+    // NARROWED BY VALUE, not by `in`: the planted list is a union of object literals, and `in`
+    // leaves the optional field `RegExp | undefined` under strict checking.
+    const message = "message" in planted ? planted.message : undefined;
+    if (message !== undefined) {
+      const messages = replies.filter((r) => !r.ok).map((r) => r.message);
+      expect(messages.join("\n"), "the refusal is not the planted defect's").toMatch(message);
+    }
+    const unaffected = "unaffected" in planted ? planted.unaffected : undefined;
+    if (unaffected !== undefined) {
+      const untouched = document.cases.flatMap((c, i) =>
+        unaffected.test(c.outcome) ? [divergence(c.outcome, replies[i])] : [],
+      );
+      expect(
+        untouched.length,
+        "no case the plant cannot reach, so nothing tells it from a broken worker",
+      ).toBeGreaterThan(0);
+      expect(
+        untouched,
+        "a case the plant cannot reach diverged: the worker is broken, not planted",
+      ).toEqual(untouched.map(() => null));
+    }
   });
 }
 
