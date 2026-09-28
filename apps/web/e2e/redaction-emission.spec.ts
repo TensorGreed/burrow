@@ -11,7 +11,9 @@
 // WHAT IT DOES NOT SEE:
 // - WHAT THE REPLY'S OWN `message` AND `report` SAY. They are Rust's prose; an error quoting the
 //   document would pass. The typed-error rule holds that, not this spec.
-// - A message deferred by more than `SETTLE_MS`.
+// - A message later than `2 * SETTLE_MS` after the settle handshake, on the page's clock.
+// - About ninety bytes a reply of NUMBER-SHAPED data, in fields whose values are bounded but not
+//   fixed (see `FIELD_RULES`). Not text, but not nothing.
 // - A `MessagePort` the page never received. One transferred to the page is caught; #206's
 //   second-engine reading will add a worker-to-worker port, and ADR 0029's 2026-09-27 amendment
 //   requires this spec to follow it.
@@ -58,48 +60,61 @@ test("a refused redaction posts no bytes at all", async ({ page }) => {
 
 /** A planted leak before the call, and the finding R8 must report for it. */
 const before = (leak: string) => ({ from: THE_CALL, to: `  ${leak}\n${THE_CALL}` });
+/** A planted leak in the SHARED protocol, right after the reply is posted. */
+const REPLY_LINE = "    self.postMessage(drainReply(request.id, reply));";
+const afterReply = (leak: string) => ({
+  from: REPLY_LINE,
+  to: `    const d = drainReply(request.id, reply); self.postMessage(d); ${leak}`,
+});
+/** A planted change to one field of the reply `drainReply` builds. */
+const field = (from: string, to: string) => ({ from: `      ${from}\n`, to: `      ${to}\n` });
 const chunk = "bytes.subarray(0, 16)";
 const latin1 = 'new TextDecoder("latin1").decode(bytes.subarray(0, 256))';
-const BYTES = /carries bytes, and is not the terminal reply/;
 const UNLISTED = /has a shape nobody listed/;
+const REPLY_UNLISTED = /the terminal reply has a shape nobody listed/;
 
 const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
   {
     name: "a chunk naming no request",
     ...before(`self.postMessage({ chunk: ${chunk} });`),
-    finding: BYTES,
+    finding: UNLISTED,
   },
   // The host takes a message under the request's id as its reply, so this one does not merely
   // leak -- it becomes the answer, and the real reply arrives after anyone looked.
   {
     name: "a chunk under the request's id",
     ...before(`self.postMessage({ id: request.id, chunk: ${chunk} });`),
-    finding: BYTES,
+    finding: UNLISTED,
   },
   {
     name: "a chunk under a foreign id",
     ...before(`self.postMessage({ id: request.id + 1000, chunk: ${chunk} });`),
-    finding: BYTES,
+    finding: UNLISTED,
   },
   {
     name: "a chunk whose id is undefined",
     ...before(`self.postMessage({ id: undefined, chunk: ${chunk} });`),
-    finding: BYTES,
+    finding: UNLISTED,
   },
-  // Under a key the harness's own messages use: the first exemption was by prefix.
+  // Under the keys the harness's own messages use: the exemptions were loose twice.
   {
     name: "a chunk under a __burrow key",
     ...before(`self.postMessage({ __burrow_chunk: ${chunk} });`),
-    finding: BYTES,
+    finding: UNLISTED,
   },
   {
     name: "a chunk as a forged settle echo",
     ...before(`self.postMessage({ __burrowSettled: ${chunk} });`),
-    finding: BYTES,
+    finding: UNLISTED,
   },
   {
     name: "a settle echo with the wrong nonce",
     ...before("self.postMessage({ __burrowSettled: 1 });"),
+    finding: UNLISTED,
+  },
+  {
+    name: "a forged armed list",
+    ...before('self.postMessage({ __burrowSideChannelArmed: ["createObjectURL"] });'),
     finding: UNLISTED,
   },
   {
@@ -115,12 +130,12 @@ const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
   {
     name: "the input as an object's key",
     ...before(`self.postMessage({ starting: { [${latin1}]: true } });`),
-    finding: /holds a run of 256/,
+    finding: UNLISTED,
   },
   {
     name: "the input as a BigInt",
     ...before(
-      `self.postMessage({ starting: BigInt("0x" + Array.from(bytes.subarray(0, 64), (b) => b.toString(16).padStart(2, "0")).join("")) });`,
+      'self.postMessage({ starting: BigInt("0x" + Array.from(bytes.subarray(0, 64), (b) => b.toString(16).padStart(2, "0")).join("")) });',
     ),
     finding: UNLISTED,
   },
@@ -139,7 +154,7 @@ const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
     ...before(
       "self.postMessage({ starting: new ImageData(new Uint8ClampedArray(bytes.slice(0, 64)), 4, 4) });",
     ),
-    finding: BYTES,
+    finding: UNLISTED,
   },
   {
     name: "the input down a transferred stream",
@@ -155,48 +170,72 @@ const LEAKS: { name: string; from: string; to: string; finding: RegExp }[] = [
     ),
     finding: /transfers 1 port/,
   },
-  // A listed shape, once too often: the count is what refuses it.
+  // Listed shapes, too often, in the wrong combination, or too late: the counts and the position.
   {
     name: "a listed message once too often",
     ...before("self.postMessage({ starting: true });"),
     finding: /one starting too many/,
   },
-  // THE SETTLE'S TWO CLOCKS, each witnessed alone. A copy 700 ms after the plant lands after the
-  // worker's 500 ms echo and before the page's own 500 ms wait ends: so the plain one is caught
-  // only because the page waits too, and the one behind a shortened `setTimeout` -- which would
-  // bring the echo forward to ~0 -- only because the settle captured its timer before the bundle
-  // ran. Each was green with its own defence removed and the other in place.
   {
-    name: "a copy 700 ms later",
-    ...before("setTimeout(() => self.postMessage({ copy: bytes }), 700);"),
-    finding: BYTES,
+    name: "both answers to init",
+    ...before('self.postMessage({ id: 0, ready: false, fatal: true, kind: "Internal" });'),
+    finding: /one init too many/,
   },
   {
-    name: "a copy 700 ms later, behind a shortened setTimeout",
-    ...before(
-      "{ const t = self.setTimeout; self.setTimeout = (f, ms, ...a) => t(f, 0, ...a); t(() => self.postMessage({ copy: bytes }), 700); }",
+    name: "a listed message after the reply",
+    ...afterReply("self.postMessage({ id: request.id, ack: true });"),
+    finding: /ack message after the reply/,
+  },
+  // THE SETTLE'S WINDOW, which the page's clock decides: a copy 700 ms after the reply lands
+  // after the worker's 500 ms echo and inside the page's 1000 ms from the send. The second copy
+  // shortens the worker's timer first, which the page's clock makes irrelevant.
+  {
+    name: "a second copy, 700 ms after the reply",
+    ...afterReply("setTimeout(() => self.postMessage({ copy: d.output }), 700);"),
+    finding: UNLISTED,
+  },
+  {
+    name: "a second copy, 700 ms after the reply, behind a shortened setTimeout",
+    ...afterReply(
+      "{ const t = self.setTimeout; self.setTimeout = (f, ms, ...a) => t(f, 0, ...a); t(() => self.postMessage({ copy: d.output }), 700); }",
     ),
-    finding: BYTES,
+    finding: UNLISTED,
   },
-  {
-    // In the SHARED protocol, which `mutate` reaches because it acts on the whole bundle's text.
-    name: "a second copy of the document, 200 ms after the reply",
-    from: "    self.postMessage(drainReply(request.id, reply));",
-    to: "    const d = drainReply(request.id, reply); self.postMessage(d); setTimeout(() => self.postMessage({ copy: d.output }), 200);",
-    finding: BYTES,
-  },
+  // The reply itself: its shape, and each field's value.
   {
     name: "a reply carrying two documents",
-    from: "      output:\n",
-    to: "      extra: new Blob([new Uint8Array(4)]),\n      output:\n",
-    finding: /carries 2 byte values; exactly one may/,
+    ...field("output:", "extra: new Blob([new Uint8Array(4)]),\n      output:"),
+    finding: REPLY_UNLISTED,
   },
   {
-    // Content in a listed field of the reply itself, which only the length bound can see.
-    name: "a reply whose rotations are 300 long",
-    from: "      rotations: Array.from(reply.rotations, (n) => Number(n)),\n",
-    to: "      rotations: Array.from({ length: 300 }, () => 0),\n",
-    finding: /holds a run of 300/,
+    name: "a reply whose rotations are not empty",
+    ...field("rotations: Array.from(reply.rotations, (n) => Number(n)),", "rotations: [0, 90],"),
+    finding: REPLY_UNLISTED,
+  },
+  {
+    // Structured clone carries an array's named properties; a document went past as 426 of them.
+    name: "a reply whose rotations carry named properties",
+    ...field(
+      "rotations: Array.from(reply.rotations, (n) => Number(n)),",
+      'rotations: Object.assign([], { a: "x".repeat(300) }),',
+    ),
+    finding: REPLY_UNLISTED,
+  },
+  // A short secret in a field whose TYPE is right: only the value rules see it.
+  {
+    name: "a secret in stage",
+    ...field("stage: reply.stage,", 'stage: "123-45-6789",'),
+    finding: /a value no rule admits in stage/,
+  },
+  {
+    name: "a secret in allowed",
+    ...field("allowed: reply.allowed.toString(),", 'allowed: "4111 1111",'),
+    finding: /a value no rule admits in allowed/,
+  },
+  {
+    name: "bits in pages",
+    ...field("pages: Number(reply.pages),", "pages: 2 ** 40 + 12345,"),
+    finding: /a value no rule admits in pages/,
   },
 ];
 
@@ -224,6 +263,19 @@ for (const leak of LEAKS) {
  * THE RULES NO COPY OF THIS WORKER REACHES, on hand-written logs. Each changes one thing in
  * `cleanLog`, and `cleanLog` itself is the near-miss beside all of them.
  */
+const armed = (names: string[]) => ({
+  sent: null,
+  id: null,
+  keys: ["__burrowSideChannelArmed"],
+  bytes: 0,
+  fields: {},
+  ports: 0,
+  ok: null,
+  sideChannel: null,
+  armed: names,
+  settled: null,
+  shape: "{__burrowSideChannelArmed:[string]}",
+});
 const HAND: {
   name: string;
   change: (log: RedactionMessage[]) => RedactionMessage[];
@@ -243,7 +295,21 @@ const HAND: {
   {
     name: "a reply of an unlisted shape",
     change: (log) => [log[0], { ...log[1], shape: "{id:number,ok:true,output:bytes}" }, log[2]],
-    finding: /terminal reply has a shape nobody listed/,
+    finding: REPLY_UNLISTED,
+  },
+  {
+    name: "a reply that transfers a port",
+    change: (log) => [log[0], { ...log[1], ports: 1 }, log[2]],
+    finding: /transfers 1 port/,
+  },
+  {
+    name: "a kind no Rust arm produces",
+    change: (log) => [
+      log[0],
+      { ...log[1], fields: { ...log[1].fields, kind: "Jane Doe" } },
+      log[2],
+    ],
+    finding: /a value no rule admits in kind/,
   },
   {
     name: "a stub's report naming no exit anyone listed",
@@ -254,30 +320,35 @@ const HAND: {
         keys: ["__burrowSideChannel"],
         settled: null,
         sideChannel: "nowhere",
+        fields: {},
         shape: "{__burrowSideChannel:string}",
       },
     ],
-    finding: /has a shape nobody listed/,
+    finding: UNLISTED,
   },
   {
-    name: "a reply that transfers a port",
-    change: (log) => [log[0], { ...log[1], ports: 1 }, log[2]],
-    finding: /transfers 1 port/,
+    // No listed shape has a field without a rule, so no copy of this worker can reach this one.
+    name: "a field no rule is written for",
+    change: (log) => [log[0], { ...log[1], fields: { ...log[1].fields, mystery: "x" } }, log[2]],
+    finding: /a value no rule admits in mystery/,
+  },
+  // The armed list: first and once, and naming only exits -- `in` walked the prototype chain.
+  {
+    name: "an armed list that is not the first message",
+    change: (log) => [log[0], log[1], armed(["Worker"]), log[2]],
+    finding: UNLISTED,
   },
   {
-    name: "a successful reply carrying nothing",
-    change: (log) => [log[0], { ...log[1], bytes: 0 }, log[2]],
-    finding: /carries 0 byte values; exactly one may/,
-  },
-  {
-    name: "a refusal carrying bytes",
-    change: (log) => [log[0], { ...log[1], ok: false }, log[2]],
-    finding: /a refusal, and it carried 1 byte value/,
+    name: "an armed list naming a prototype property",
+    change: (log) => [log[0], armed(["toString"]), ...log.slice(1)],
+    finding: UNLISTED,
   },
 ];
 
-test("the hand-written near-miss passes every rule", () => {
-  expect(r8Violations(cleanLog(7, 42), 7, 42)).toEqual([]);
+test("the hand-written near-miss passes every rule, with and without an armed list first", () => {
+  const log = cleanLog(7, 42);
+  expect(r8Violations(log, 7, 42)).toEqual([]);
+  expect(r8Violations([log[0], armed(["Worker", "locks"]), ...log.slice(1)], 7, 42)).toEqual([]);
 });
 
 for (const hand of HAND) {

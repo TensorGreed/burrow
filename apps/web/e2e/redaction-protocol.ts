@@ -90,37 +90,34 @@ const LIMITS = shape({
 });
 
 /**
- * EVERY SHAPE THE WORKER MAY POST BEFORE ITS REPLY, exactly, and how many times: `prelude.js`'
- * `starting` once per engine module (two in this bundle), the two answers to `init`, and the ack.
- * Measured on the real worker in all three browsers, not read off the code. Anything else --
- * another shape, a value of another type, one of these too often -- is a violation.
+ * EVERY SHAPE THE WORKER MAY POST BEFORE ITS REPLY, exactly, and in which group: `prelude.js`'
+ * `starting` once per engine module (two in this bundle), ONE answer to `init` -- ready or not --
+ * and the ack. Measured on the real worker in all three browsers, not read off the code. Anything
+ * else, one of these too often, or one of these AFTER the reply, is a violation.
  */
-const EARLY: Record<string, number> = {
-  [shape({ starting: "true" })]: 2,
+const EARLY: Record<string, string> = {
+  [shape({ starting: "true" })]: "starting",
   [shape({
     defaultLimits: LIMITS,
     id: "number",
     minConvergingMemoryBytes: "string",
     ready: "true",
-  })]: 1,
-  [shape({ fatal: "true", id: "number", kind: "string", ready: "false" })]: 1,
-  [shape({ ack: "true", id: "number" })]: 1,
+  })]: "init",
+  [shape({ fatal: "true", id: "number", kind: "string", ready: "false" })]: "init",
+  [shape({ ack: "true", id: "number" })]: "ack",
 };
-
-/**
- * The longest run a message may hold outside a reply's prose. The largest legitimate one is a key
- * (`minConvergingMemoryBytes`, 24) or a `u64` as digits (20); a document does not fit in 64.
- */
-const LONGEST = 64;
+const EARLY_COUNT: Record<string, number> = { starting: 2, init: 1, ack: 1 };
 
 /**
  * EVERY SHAPE A REPLY MAY TAKE, exactly: `drainReply` on success and on refusal, and the three
  * literals `worker-protocol.js` and `redact-main.js` build by hand -- `refusal`, the unknown-op
- * refusal and `internalFailure`. The success shape is the only one with `output:bytes`.
+ * refusal and `internalFailure`. The success shape is the only one with bytes in it, and only in
+ * `output`: that is ADR 0023's "exactly one part", held by the shape rather than by a count.
+ * `rotations` is empty in every one, because redaction never fills it.
  */
 const REPLIES: Set<string> = (() => {
   const shapes = new Set<string>();
-  const drained = (ok: string, output: string, fatal: string, recycle: string, rotations: string) =>
+  const drained = (ok: string, output: string, fatal: string, recycle: string) =>
     shape({
       allowed: "string",
       droppedCarriedText: "number",
@@ -141,15 +138,13 @@ const REPLIES: Set<string> = (() => {
       report: "string",
       requested: "string",
       retainedFonts: "number",
-      rotations,
+      rotations: "[]",
       stage: "string",
     });
   for (const fatal of ["true", "false"]) {
     for (const recycle of ["true", "false"]) {
-      for (const rotations of ["[]", "[number]"]) {
-        shapes.add(drained("true", "bytes", fatal, recycle, rotations));
-        shapes.add(drained("false", "null", fatal, recycle, rotations));
-      }
+      shapes.add(drained("true", "bytes", fatal, recycle));
+      shapes.add(drained("false", "null", fatal, recycle));
     }
   }
   const common = {
@@ -172,24 +167,109 @@ const REPLIES: Set<string> = (() => {
   return shapes;
 })();
 
+/** `kind_of` in `bindings/burrow-wasm/src/lib.rs`, every arm. A new one fails this spec, loudly. */
+const KINDS = [
+  "Malformed",
+  "Unsupported",
+  "PasswordRequired",
+  "LimitExceeded",
+  "InvalidArgument",
+  "InputFailed",
+  "Io",
+  "OutputRejected",
+  "Internal",
+  "Unknown",
+];
+/** `Stage::as_str` in `core/burrow-types/src/stage.rs`, every arm, and "" for none. */
+const STAGES = [
+  "",
+  "input_size",
+  "size_estimate",
+  "prescan",
+  "page_count",
+  "pixels",
+  "measured",
+  "deadline",
+];
+/** The `Limits` fields a `LimitExceeded` can name, and "" for none. */
+const LIMIT_NAMES = [
+  "",
+  "max_input_bytes",
+  "max_memory_bytes",
+  "max_duration_ms",
+  "max_pages",
+  "max_pixels",
+];
+
+const U32 = 2 ** 32;
+const integer = (low: number, high: number) => (v: unknown) =>
+  typeof v === "number" && Number.isInteger(v) && v >= low && v <= high;
+const u64 = (v: unknown) =>
+  (typeof v === "string" && /^\d{1,20}$/.test(v)) || integer(0, Number.MAX_SAFE_INTEGER)(v);
+const oneOf = (values: string[]) => (v: unknown) => typeof v === "string" && values.includes(v);
+
 /**
- * The harness's own messages, EXACTLY: the settle echo carrying THIS nonce, a stub's report naming
- * an exit a stub exists for, and the armed list. The first version exempted anything whose one key
- * began `__burrow`, and a document went past it under `__burrowChunk` (review of #137); these are
- * still held to the byte, port and length rules.
+ * WHAT EACH FIELD'S VALUE MAY BE, where the shape says only its type. Enumerations are copied from
+ * the Rust that produces them; numbers are whole and bounded, so no NaN payload and no 53-bit
+ * double rides in one. What still fits is NUMBER-SHAPED: about 4 bytes per 32-bit field and 8 per
+ * `u64`, some ninety bytes a reply -- not text, and not a name or a number a person would recognise
+ * as the secret, but not nothing, and stated rather than closed.
  */
-function harnessOwn(m: RedactionMessage, nonce: number): boolean {
+const FIELD_RULES: Record<string, (v: unknown) => boolean> = {
+  id: integer(0, U32),
+  // Empty on a success, measured: `kind` names an error.
+  kind: oneOf(["", ...KINDS]),
+  innerKind: oneOf(["", ...KINDS]),
+  stage: oneOf(STAGES),
+  limit: oneOf(LIMIT_NAMES),
+  allowed: u64,
+  requested: u64,
+  engineHeapBytes: u64,
+  originalBytes: u64,
+  producedBytes: u64,
+  minConvergingMemoryBytes: u64,
+  pages: integer(0, U32),
+  retainedFonts: integer(0, U32),
+  droppedCarriedText: integer(0, U32),
+  failedInput: integer(-1, U32),
+  "defaultLimits.maxDurationMs": integer(0, Number.MAX_SAFE_INTEGER),
+  "defaultLimits.maxInputBytes": integer(0, Number.MAX_SAFE_INTEGER),
+  "defaultLimits.maxMemoryBytes": integer(0, Number.MAX_SAFE_INTEGER),
+  "defaultLimits.maxPages": integer(0, Number.MAX_SAFE_INTEGER),
+  "defaultLimits.maxPixels": integer(0, Number.MAX_SAFE_INTEGER),
+  __burrowSettled: integer(1, 2 ** 31),
+  __burrowSideChannel: (v) => typeof v === "string" && Object.hasOwn(EXITS, v),
+};
+
+/** Every field value in `m` no rule admits, named. Booleans and `null` are the shape's to fix. */
+function badFields(m: RedactionMessage): string[] {
+  return Object.entries(m.fields)
+    .filter(([, value]) => typeof value === "string" || typeof value === "number")
+    .filter(([key, value]) => {
+      const rule = FIELD_RULES[key];
+      return rule === undefined || !rule(value);
+    })
+    .map(([key]) => key);
+}
+
+/**
+ * The harness's own messages, EXACTLY:
+ * - the armed list, ONCE, as the worker's very first message, naming only exits a stub exists for;
+ * - a stub's report, naming such an exit;
+ * - the settle echo carrying THIS nonce.
+ * Each earlier version exempted more: anything beginning `__burrow`, then an armed list at any
+ * count carrying a document three bits a name, with `in` walking the prototype chain (reviews of
+ * #137).
+ */
+function harnessOwn(m: RedactionMessage, at: number, nonce: number): boolean {
+  const exit = (name: unknown) => typeof name === "string" && Object.hasOwn(EXITS, name);
   if (m.shape === shape({ __burrowSettled: "number" })) return m.settled === nonce;
-  if (m.shape === shape({ __burrowSideChannel: "string" })) {
-    return m.sideChannel !== null && m.sideChannel in EXITS;
-  }
+  if (m.shape === shape({ __burrowSideChannel: "string" })) return exit(m.sideChannel);
   if (
-    [
-      shape({ __burrowSideChannelArmed: "[string]" }),
-      shape({ __burrowSideChannelArmed: "[]" }),
-    ].includes(m.shape)
+    m.shape === shape({ __burrowSideChannelArmed: "[string]" }) ||
+    m.shape === shape({ __burrowSideChannelArmed: "[]" })
   ) {
-    return (m.armed ?? []).every((name) => name in EXITS);
+    return at === 0 && (m.armed ?? []).every(exit);
   }
   return false;
 }
@@ -198,18 +278,19 @@ function harnessOwn(m: RedactionMessage, nonce: number): boolean {
  * R8: the output is ONE value, posted after the Rust call returned. Returns every way `all`
  * breaks it, or nothing. DENY BY DEFAULT, over EVERY message the worker posted whatever id it
  * names, because each version of this that listed what to look for was got past by something it
- * did not list -- a foreign id, a `__burrow` key, a BigInt, an Error, a boxed String, a stream
- * (reviews of #137):
+ * did not list (reviews of #137):
  *
- * - The terminal reply is the last message for the request that has an `ok`. Its shape is one of
- *   `REPLIES`; a successful one carries exactly ONE byte value -- ADR 0023's "one part, not merely
- *   one message" -- and a refusal none.
- * - Every other message is the harness's own (exactly) or one of `EARLY`, no more often than it
- *   says, and carries no bytes.
- * - No message transfers a port, and none holds a run longer than `LONGEST` outside the reply's
- *   `message` and `report`. WHAT THOSE TWO SAY IS NOT CHECKED: they are Rust's prose, and an error
- *   quoting the document would pass. The typed-error rule holds that, not this spec.
  * - The log contains THIS nonce's settle echo, or "nothing after the reply" was never observed.
+ * - The terminal reply is the last message for the request that has an `ok`, and its shape is one
+ *   of `REPLIES`.
+ * - Every other message is the harness's own (exactly), or one of `EARLY`, BEFORE the reply and no
+ *   more often than its group allows. A message of any other shape is refused -- as "a second
+ *   reply" when it has an `ok`.
+ * - No message transfers a port.
+ * - Every field's value is one `FIELD_RULES` admits.
+ *
+ * WHAT `message` AND `report` SAY IS NOT CHECKED: they are Rust's prose, and an error quoting the
+ * document would pass. The typed-error rule holds that, not this spec.
  */
 export function r8Violations(all: RedactionMessage[], id: number, nonce: number): string[] {
   const log = all.filter((m) => m.sent === null);
@@ -220,51 +301,48 @@ export function r8Violations(all: RedactionMessage[], id: number, nonce: number)
   const replies = log.filter((m) => m.id === id && m.ok !== null);
   const terminal = replies.length > 0 ? replies[replies.length - 1] : null;
   if (terminal === null) found.push("no terminal reply");
+  const after = terminal === null ? log.length : log.indexOf(terminal);
   const seen = new Map<string, number>();
   log.forEach((m, at) => {
     const what = `message ${at} (id ${m.id}, keys ${m.keys})`;
     if (m.ports > 0) found.push(`${what} transfers ${m.ports} port(s)`);
-    if (m.longestBesideProse > LONGEST)
-      found.push(`${what} holds a run of ${m.longestBesideProse}`);
-    if (m === terminal) return;
-    if (m.bytes > 0) found.push(`${what} carries bytes, and is not the terminal reply`);
-    if (harnessOwn(m, nonce)) return;
-    if (m.ok !== null) {
-      found.push(`${what} is a second reply`);
+    const bad = badFields(m);
+    if (bad.length > 0) found.push(`${what} has a value no rule admits in ${bad}`);
+    if (m === terminal) {
+      if (!REPLIES.has(m.shape)) {
+        found.push(`the terminal reply has a shape nobody listed: ${m.shape.slice(0, 200)}`);
+      }
       return;
     }
-    if (!(m.shape in EARLY)) {
-      found.push(`${what} has a shape nobody listed: ${m.shape.slice(0, 200)}`);
+    if (harnessOwn(m, at, nonce)) return;
+    const group = EARLY[m.shape];
+    if (group === undefined) {
+      found.push(
+        m.ok !== null
+          ? `${what} is a second reply`
+          : `${what} has a shape nobody listed: ${m.shape.slice(0, 200)}`,
+      );
       return;
     }
-    const count = (seen.get(m.shape) ?? 0) + 1;
-    seen.set(m.shape, count);
-    if (count === EARLY[m.shape] + 1) found.push(`${what} is one ${m.keys} too many`);
+    if (at > after) found.push(`${what} is a ${group} message after the reply`);
+    const count = (seen.get(group) ?? 0) + 1;
+    seen.set(group, count);
+    if (count === EARLY_COUNT[group] + 1) found.push(`${what} is one ${group} too many`);
   });
-  if (terminal === null) return found;
-  if (!REPLIES.has(terminal.shape)) {
-    found.push(`the terminal reply has a shape nobody listed: ${terminal.shape.slice(0, 200)}`);
-  }
-  if (terminal.ok === true && terminal.bytes !== 1) {
-    found.push(`the successful reply carries ${terminal.bytes} byte values; exactly one may`);
-  }
-  if (terminal.ok === false && terminal.bytes !== 0) {
-    found.push(`a refusal, and it carried ${terminal.bytes} byte value(s) anyway`);
-  }
   return found;
 }
 
 /**
  * R9, HELD MORE STRICTLY THAN ADR 0006 WORDS IT. The ADR says no exit before verification; this
- * says NO EXIT AT ALL, from arming until the settle echo. Redaction's worker has no reason to
- * take one at any point -- the page makes the download link from the Blob it is handed -- and the
- * stricter rule is what catches an exit on a REFUSAL, where nothing was ever verified, and one a
- * timer deferred past the reply (review of #137). Returns every exit taken, or nothing.
+ * says NO EXIT AT ALL, from arming until the settle. Redaction's worker has no reason to take one
+ * at any point -- the page makes the download link from the Blob it is handed -- and the stricter
+ * rule is what catches an exit on a REFUSAL, where nothing was ever verified, and one a timer
+ * deferred past the reply (review of #137). Returns every exit taken, or nothing.
  *
- * Deferred by more than `SETTLE_MS`, an exit is not seen; that bound is stated, not closed. And the
- * stubs are a TRIPWIRE FOR A REGRESSION, not a boundary against code that sets out to evade them:
- * they share the worker's realm, and a bundle determined to take an exit unseen is not what this
- * spec is for.
+ * An exit later than `2 * SETTLE_MS` after the settle handshake is not seen; that bound is stated,
+ * not closed. And the stubs are a TRIPWIRE FOR A REGRESSION, not a boundary against code that sets
+ * out to evade them: they share the worker's realm, and a bundle determined to take an exit unseen
+ * is not what this spec is for.
  */
 export function r9Violations(all: RedactionMessage[], nonce: number): string[] {
   const log = all.filter((m) => m.sent === null);
@@ -279,28 +357,31 @@ export function r9Violations(all: RedactionMessage[], nonce: number): string[] {
 }
 
 /**
- * The request paths a redaction may make, exactly: its bundle, its two modules, and the policy
- * guard's control -- the request `prelude.js` pairs with a probe the CSP must refuse, which every
- * bundle makes before it touches a file (measured in all three browsers; its probe never reaches
- * the server, because the browser refuses it).
+ * The request paths a redaction may make: its bundle, its two modules, and the policy guard's
+ * control -- the request `prelude.js` pairs with a probe the CSP must refuse, which every bundle
+ * makes before it touches a file (measured in all three browsers; its probe never reaches the
+ * server, because the browser refuses it). A PATTERN over the content hash, not the build's exact
+ * URLs: the CSP pins those, and a request to another hash would need `connect-src` to regress
+ * first -- a gap this check does not close, stated.
  */
 const REDACTION_ARTIFACT =
   /^\/engines\/(burrow-redact-worker\.[0-9a-f]{16}\.js|(qpdf|burrow_wasm_redact_bg)\.[0-9a-f]{16}\.wasm|control\.[0-9a-f]{16}\.txt)$/;
 
 /**
  * The network half of R9, from the test server's own log: between a marker written after arming
- * and the settle echo, every request is one of `REDACTION_ARTIFACT`'s four paths EXACTLY, each at
- * most once. The query string is the point -- `connect-src` admits `…/qpdf.<hash>.wasm?leak=…`,
- * and a copy of this worker sent the input's first bytes that way while every stub stayed silent
- * (review of #137). `e2e/zero-requests.spec.ts` documents the hole; this is the check for the
- * worker holding the most sensitive content.
+ * and the settle, every request is a GET from `site` to one of `REDACTION_ARTIFACT`'s four paths,
+ * each at most once. The query string is the point -- `connect-src` admits
+ * `…/qpdf.<hash>.wasm?leak=…`, and a copy of this worker sent the input's first bytes that way
+ * while every stub stayed silent (review of #137). `e2e/zero-requests.spec.ts` documents the hole;
+ * this is the check for the worker holding the most sensitive content.
  */
-export function networkViolations(entries: LogEntry[]): string[] {
+export function networkViolations(entries: LogEntry[], site: string): string[] {
   const found: string[] = [];
   const seen = new Set<string>();
   for (const entry of entries) {
-    if (!REDACTION_ARTIFACT.test(entry.url)) {
-      found.push(`${entry.method} ${entry.url.slice(0, 120)} is not one of redaction's artifacts`);
+    const what = `${entry.method} ${entry.origin}${entry.url.slice(0, 120)}`;
+    if (entry.origin !== site || entry.method !== "GET" || !REDACTION_ARTIFACT.test(entry.url)) {
+      found.push(`${what} is not a GET of one of redaction's artifacts`);
     } else if (seen.has(entry.url)) {
       found.push(`${entry.url} was requested twice`);
     }
@@ -374,8 +455,7 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
   const blank = {
     keys: [],
     bytes: 0,
-    longest: 0,
-    longestBesideProse: 0,
+    fields: {},
     ports: 0,
     ok: null,
     sideChannel: null,
@@ -383,16 +463,21 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
     settled: null,
   };
   const success = [...REPLIES].find(
-    (s) =>
-      s.includes("ok:true") &&
-      s.includes("fatal:false") &&
-      s.includes("recycle:false") &&
-      s.includes("rotations:[]"),
+    (s) => s.includes("ok:true") && s.includes("fatal:false") && s.includes("recycle:false"),
   );
   if (success === undefined) throw new Error("no successful reply shape is listed");
   return [
     { ...blank, sent: "redact", id, keys: ["blob", "id", "op"], bytes: 1, shape: "request" },
-    { ...blank, sent: null, id, keys: ["id", "ok", "output"], bytes: 1, ok: true, shape: success },
+    {
+      ...blank,
+      sent: null,
+      id,
+      keys: ["id", "ok", "output"],
+      bytes: 1,
+      ok: true,
+      shape: success,
+      fields: { id, ok: true, kind: "", stage: "", pages: 0 },
+    },
     {
       ...blank,
       sent: null,
@@ -400,6 +485,7 @@ export function cleanLog(id: number, nonce: number): RedactionMessage[] {
       keys: ["__burrowSettled"],
       settled: nonce,
       shape: shape({ __burrowSettled: "number" }),
+      fields: { __burrowSettled: nonce },
     },
   ];
 }

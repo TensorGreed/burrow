@@ -256,10 +256,10 @@ let redactLog = [];
 let redactRaw = null;
 
 /**
- * How many byte-carrying values a message holds: each `ArrayBuffer`, typed array or `Blob`
- * counts once, found at ANY depth and inside a `Map` or `Set` -- structured clone carries both,
- * and `Object.values` sees nothing in either. A count rather than a yes, because ADR 0023 asks
- * R8's check for exactly one PART carrying bytes, and one message can carry two.
+ * How many byte-carrying values a message holds -- each `ArrayBuffer`, typed array or `Blob`,
+ * at any depth. NOT A RULE: R8's rules are the shapes below, which refuse bytes anywhere but the
+ * reply's `output`. This is the recorder's own witness, so a spec can require that it saw the
+ * document at all.
  *
  * @param {unknown} value
  * @param {Set<object>} seen
@@ -269,56 +269,17 @@ function countBytes(value, seen = new Set()) {
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
     return 1;
   }
-  // BY NAME, because its pixels are a prototype getter: Firefox's `Object.values` sees nothing in
-  // one, so the walk below counted it in Chromium and WebKit and not there (review of #137).
-  if (typeof ImageData !== "undefined" && value instanceof ImageData) return 1;
   if (value === null || typeof value !== "object" || seen.has(value)) return 0;
   seen.add(value);
-  const inner =
-    value instanceof Map
-      ? [...value.keys(), ...value.values()]
-      : value instanceof Set
-        ? [...value]
-        : Object.values(value);
-  return inner.reduce((sum, item) => sum + countBytes(item, seen), 0);
-}
-
-/**
- * The longest run anywhere in a message: every string, array and KEY, at any
- * depth, found by `Reflect.ownKeys` -- which sees a non-enumerable `message` and a key an
- * `Object.values` walk never looks at (both measured as ways past the first version, review of
- * #137). How much a message could be carrying in a shape `countBytes` does not count.
- *
- * @param {unknown} value
- * @param {Set<object>} seen
- * @param {Set<string>} skip top-level keys left out -- the reply's own prose, stated as unchecked
- * @returns {number}
- */
-function longestRun(value, seen = new Set(), skip = new Set()) {
-  if (typeof value === "string") return value.length;
-  if (value === null || typeof value !== "object" || seen.has(value)) return 0;
-  seen.add(value);
-  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) return 0;
-  let most = Array.isArray(value) ? value.length : 0;
-  const inner =
-    value instanceof Map
-      ? [...value.keys(), ...value.values()]
-      : value instanceof Set
-        ? [...value]
-        : Reflect.ownKeys(value)
-            .filter((key) => !(typeof key === "string" && skip.has(key)))
-            .flatMap((key) => {
-              most = Math.max(most, typeof key === "string" ? key.length : 0);
-              return [/** @type {any} */ (value)[key]];
-            });
-  return inner.reduce((max, item) => Math.max(max, longestRun(item, seen)), most);
+  return Object.values(value).reduce((sum, item) => sum + countBytes(item, seen), 0);
 }
 
 /**
  * A message's TYPE, as a canonical string, DENY-BY-DEFAULT: a plain object is its sorted keys and
  * each value's type, an array the set of its elements' types, `true`/`false` themselves, a byte
- * value `bytes`, and anything else -- an Error, a boxed String, a ReadableStream, a Map -- is
- * `other:<name>`, which no listed shape contains. Each of those carried a whole document past a
+ * value `bytes`, and anything else -- an Error, a boxed String, a ReadableStream, a Map, an
+ * ImageData, an array carrying named properties -- is `other:<name>`, which no listed shape
+ * contains. Each of those carried a whole document past a
  * walker that listed what to look at rather than what to allow (review of #137).
  *
  * @param {unknown} value
@@ -334,9 +295,14 @@ function shapeOf(value, seen = new Set()) {
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value) || value instanceof Blob) {
     return "bytes";
   }
-  if (typeof ImageData !== "undefined" && value instanceof ImageData) return "bytes";
   const prototype = Object.getPrototypeOf(value);
-  if (Array.isArray(value) && prototype === Array.prototype) {
+  // AN ARRAY IS ITS ELEMENTS AND NOTHING ELSE: structured clone carries an array's named
+  // properties too, and a document went past the first version as 426 of them (review of #137).
+  if (
+    Array.isArray(value) &&
+    prototype === Array.prototype &&
+    Reflect.ownKeys(value).length === value.length + 1
+  ) {
     return `[${[...new Set(value.map((item) => shapeOf(item, seen)))].sort().join("|")}]`;
   }
   if (prototype === Object.prototype || prototype === null) {
@@ -370,11 +336,8 @@ function describe(data, ports) {
     id: object && typeof data.id === "number" ? data.id : null,
     keys: object ? Object.keys(data).sort() : [],
     bytes: countBytes(data),
-    longest: longestRun(data),
-    // The same, leaving out a reply's `message` and `report`: Rust's prose, which R8 states it
-    // does not check. Every other field of a reply is held to the early messages' bound.
-    longestBesideProse: longestRun(data, new Set(), new Set(["message", "report"])),
     shape: shapeOf(data),
+    fields: object ? fieldsOf(data) : {},
     ports,
     ok: object && typeof data.ok === "boolean" ? data.ok : null,
     sideChannel:
@@ -383,6 +346,38 @@ function describe(data, ports) {
       object && Array.isArray(data.__burrowSideChannelArmed) ? data.__burrowSideChannelArmed : null,
     settled: object && typeof data.__burrowSettled === "number" ? data.__burrowSettled : null,
   };
+}
+
+/**
+ * Every primitive value in a message, one level of plain objects deep (`defaultLimits.maxPages`),
+ * EXCEPT a reply's `message` and `report`: Rust's prose, which R8 states it does not check. What
+ * R8 holds each field's VALUE to, where the shape holds only its type -- a shape admits any
+ * string, and 60 bytes of a document went past the version that checked only length, in `stage`
+ * (review of #137).
+ *
+ * @param {Record<string, unknown>} data
+ * @returns {Record<string, string | number | boolean | null>}
+ */
+function fieldsOf(data) {
+  /** @type {Record<string, string | number | boolean | null>} */
+  const fields = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (key === "message" || key === "report") continue;
+    if (value === null || ["string", "number", "boolean"].includes(typeof value)) {
+      fields[key] = /** @type {string | number | boolean | null} */ (value);
+    } else if (
+      value !== null &&
+      typeof value === "object" &&
+      Object.getPrototypeOf(value) === Object.prototype
+    ) {
+      for (const [inner, innerValue] of Object.entries(value)) {
+        if (innerValue === null || ["string", "number", "boolean"].includes(typeof innerValue)) {
+          fields[`${key}.${inner}`] = /** @type {string | number | boolean | null} */ (innerValue);
+        }
+      }
+    }
+  }
+  return fields;
 }
 
 /**
@@ -426,29 +421,34 @@ function recordRedaction(worker) {
 
 /**
  * The settle handshake, installed whenever redaction's worker is armed: a NONCE the page sends
- * around the host, echoed after `ms` on the worker's clock. Timers fire in order of expiry, so
- * anything the worker deferred by up to `ms` before the handshake arrived has run by the time the
- * echo does.
+ * around the host, echoed after `ms` on the worker's clock.
  *
  * WHAT THE WORKER CANNOT DO TO IT, and why each holds:
- * - Forge it early: it does not know the nonce until the handshake arrives, and a marker with any
- *   other value is a violation, not a marker.
- * - Shorten it by replacing `setTimeout` or `postMessage`: both are captured here, before the
- *   bundle runs. The page ALSO waits `ms` on its own clock after the echo, so the worker's clock
- *   is not the only one (both measured as ways past the first version, review of #137).
- * - Suppress it: this listener is registered before the bundle's `onmessage` and stops the
- *   handshake reaching it. A worker that never answers fails closed -- `settled` is false.
+ * - Forge it: it never sees the nonce -- this listener is registered first, in the capture
+ *   phase, and stops the handshake -- and a marker with any other value is a violation.
+ * - Shorten it: WHAT BOUNDS THE WINDOW IS THE PAGE'S CLOCK, not this one. The page waits until
+ *   `2 * ms` after it sent the handshake whenever the echo comes back; the echo proves only that
+ *   the worker is alive and took the handshake. (`setTimeout` and `postMessage` are captured here
+ *   anyway, so a bundle that replaces them does not also silence the echo.)
+ * - Suppress it: a worker that never answers fails closed -- `settled` is false.
  */
 const SETTLE = `
 (() => {
   const post = self.postMessage.bind(self);
   const later = self.setTimeout.bind(self);
-  self.addEventListener("message", (event) => {
-    const nonce = event.data && event.data.__burrowSettle;
-    if (typeof nonce !== "number") return;
-    event.stopImmediatePropagation();
-    later(() => post({ __burrowSettled: nonce }), event.data.ms);
-  });
+  self.addEventListener(
+    "message",
+    (event) => {
+      const nonce = event.data && event.data.__burrowSettle;
+      if (typeof nonce !== "number") return;
+      event.stopImmediatePropagation();
+      later(() => post({ __burrowSettled: nonce }), event.data.ms);
+    },
+    // CAPTURE, and first: Firefox and WebKit run a capture listener registered LATER before a
+    // non-capture one registered first, so a bundle could read the nonce and echo it early
+    // (review of #137). Registered first in the capture phase, nothing precedes this one.
+    { capture: true },
+  );
 })();
 `;
 
@@ -1106,10 +1106,10 @@ const harness = {
   },
 
   /**
-   * Wait until redaction's worker has gone quiet: send a nonce around the host, wait for its echo
-   * `ms` later on the worker's clock, then wait `ms` more on the page's. Anything the worker
-   * deferred by up to `ms` has been recorded by then; anything deferred longer has not, and the
-   * specs say so. `settled` is false when no echo arrived within `ms` plus five seconds.
+   * Wait until redaction's worker has gone quiet: send a nonce around the host, wait for its echo,
+   * and in any case until `2 * ms` after the send on the page's own clock. Anything the worker
+   * posted in that window has been recorded; anything later has not, and the specs say so.
+   * `settled` is false when no echo arrived within `ms` plus five seconds.
    *
    * @param {number} ms
    */
@@ -1117,6 +1117,7 @@ const harness = {
     if (redactRaw === null) return { settled: false, nonce: 0 };
     const { worker, send } = redactRaw;
     const nonce = 1 + Math.floor(Math.random() * 2 ** 31);
+    const deadline = performance.now() + 2 * ms;
     const echoed = await new Promise((resolve) => {
       const timer = setTimeout(() => {
         worker.removeEventListener("message", heard);
@@ -1132,7 +1133,13 @@ const harness = {
       worker.addEventListener("message", heard);
       send({ __burrowSettle: nonce, ms });
     });
-    if (echoed) await new Promise((resolve) => setTimeout(resolve, ms));
+    // THE PAGE'S CLOCK DECIDES, measured from the send: an echo that came back early -- however
+    // it did -- does not shorten the window.
+    if (echoed) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, deadline - performance.now())),
+      );
+    }
     return { settled: Boolean(echoed), nonce };
   },
 

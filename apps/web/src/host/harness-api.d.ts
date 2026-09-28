@@ -65,16 +65,12 @@ export interface RedactionMessage {
   id: number | null;
   /** Its top-level keys, sorted. */
   keys: string[];
-  /** How many byte-carrying values it holds, at any depth: ArrayBuffers, typed arrays, Blobs, ImageData. */
+  /** How many byte values it holds, at any depth: ArrayBuffers, typed arrays, Blobs. A witness, not a rule. */
   bytes: number;
-  /** The longest string, array, BigInt or key anywhere in it: content `bytes` does not count. */
-  longest: number;
-  /** The same, leaving out a reply's `message` and `report`. */
-  longestBesideProse: number;
   /** Its type as a canonical string; anything but plain data and bytes is `other:<name>`. */
   shape: string;
-  /** The nonce, when this is the settle handshake's echo. */
-  settled: number | null;
+  /** Every primitive value, one level of plain objects deep, except a reply's `message` and `report`. */
+  fields: Record<string, string | number | boolean | null>;
   /** How many MessagePorts it transferred. */
   ports: number;
   /** Its `ok`, or null when it has none -- only a reply has one. */
@@ -83,6 +79,8 @@ export interface RedactionMessage {
   sideChannel: string | null;
   /** The stubs that installed, when this message is the prologue's first report. */
   armed: string[] | null;
+  /** The nonce, when this is the settle handshake's echo. */
+  settled: number | null;
 }
 
 /** What a CSP probe inside a worker observed. */

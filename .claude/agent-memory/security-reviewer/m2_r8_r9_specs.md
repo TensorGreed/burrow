@@ -1,6 +1,6 @@
 ---
 name: m2-r8-r9-specs
-description: R8/R9 named checks (#137) — round 1 (5c3c174) and round 2 (9d9ec66) measured bypasses; the checks describe message SHAPE, so any value type the walkers skip carries content
+description: R8/R9 named checks (#137) — rounds 1-3 (5c3c174, 9d9ec66, cf4bf34) measured bypasses; r3 deny-by-default holds for all r2 plants but array named props, forged armed msgs and a capture-listener settle forge get past it
 metadata:
   type: project
 ---
@@ -16,5 +16,14 @@ metadata:
 - Settle can be forged (`{__burrowSettled:true}` at 50 ms after the reply) or sped up (the prologue reads global `setTimeout` at event time, so a hijack makes it 0). Either way a copy posted at 300–400 ms is missed.
 - R9: the stubs' `tell` reads `self.postMessage` at call time, so overriding it silences every report. `Worker.prototype.constructor` is the un-proxied original (nested worker ran, trap count 0). `fetch(<connect-src wasm>?leak=hex)` reached the server log in all 3; zero-requests.spec has no redaction case. `webkitURL` is absent in all worker scopes, so it is not a bypass.
 - Method: worktree + symlinks, ports 4481/4482, zz-bypass2.spec.ts reusing the shipped predicates; a separate throwaway-worker probe for the Proxy, webkitURL and stream facts.
+
+**Round 3, cf4bf34 (2026-09-28).** Deny-by-default `shapeOf`. Every r2 bypass re-planted is caught 3/3 (shipped suite 150 pass + 3 skips). New, measured in all 3 browsers unless noted:
+- `shapeOf` encodes an array by ELEMENT types only; structured clone carries an array's named props (probe: 3/3). Whole 20 kB input as 48-char props of the reply's `rotations` passes (success AND refusal); a 65-char prop is flagged, so they do arrive.
+- `harnessOwn` accepts `{__burrowSideChannelArmed: []}` any number of times, at any time, even with no stubs armed: the whole doc in 5 such messages passes.
+- The unused `fatal` EARLY slot can be posted after the reply (64 UTF-16 chars + a double). EARLY has no position rule.
+- In-bounds budget per op, passing: 9 strings × 64 UTF-16 units (lone surrogates survive) + 4 doubles (NaN payloads survive) + 64-double rotations ≈ 1.7 kB. Secrets redaction removes are < 64 chars.
+- Firefox + WebKit fire a later-registered CAPTURE listener before SETTLE's bubble one at the worker global; Chromium does not. So there a bundle reads the nonce, stops SETTLE and echoes at once; a copy 700 ms later passes (control without the forge is caught).
+- Network half is tight in practice (all 4 redact URLs are fetched in-window, so any 5th is "twice"; CSP pins exact URLs). But `networkViolations` ignores origin and method and admits any 16-hex hash: a hand log of foreign-origin POSTs to `qpdf.0000…` passes. Matters only if CSP regresses.
+- Method note: Playwright's page.evaluate return drops array named props — witness them through the recorder, not the returned reply.
 
 Related: [[m2-redaction-binding-137]], [[m2-web-redaction-impl]].
