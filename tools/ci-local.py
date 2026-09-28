@@ -1079,11 +1079,67 @@ def verify_parser() -> list[str]:
     # THE BUILDER EXEMPTS ONLY THE READERS AFTER IT. Jobs run in table order, so a reader ahead
     # of the build reads whatever was there before. Synthetic tables, both orders. Review.
     reader = {"name": "reader", "run": "python3 tools/build-stamp.py check pkg"}
-    builder = {"name": "builder", "run": "python3 tools/build-stamp.py wrap pkg -- wasm-pack build"}
+    builder = {
+        "name": "builder",
+        "run": "python3 tools/build-stamp.py wrap pkg -- wasm-pack build bindings/burrow-wasm",
+    }
     if "pkg" not in stamped_artifacts([reader, builder])[0]:
         problems.append("a reader ahead of the job that builds its artifact was exempted")
     if "pkg" in stamped_artifacts([builder, reader])[0]:
         problems.append("a reader after the job that builds its artifact was still checked")
+    # #214's RULES, each with its near-miss. A build names what it reads...
+    inputs, underivable = artifact_inputs([builder])
+    if "bindings/burrow-wasm" not in inputs.get("pkg", set()) or underivable:
+        problems.append(f"a wrap of `wasm-pack build bindings/burrow-wasm` read nothing: {inputs}")
+    # ...and a build that derives nothing makes its artifact underivable, never absent.
+    ran = {"name": "ran", "run": "python3 tools/build-stamp.py wrap pkg -- cargo run -p x --example g"}
+    inputs, underivable = artifact_inputs([ran])
+    if "pkg" in inputs or "pkg" not in underivable:
+        problems.append("a wrap whose build derives nothing left its readers narrow")
+    # A job's own command is still read when it declares `paths_as`: an inline stamp check there
+    # must not be replaced by the declared command's reach.
+    declared = {
+        "name": "declared",
+        "run": "python3 tools/build-stamp.py check pkg && tools/check-rustdoc.sh",
+        "paths_as": "cargo doc --workspace",
+    }
+    if "pkg" not in artifacts_read(declared):
+        problems.append("a job's own stamp check was lost behind its paths_as")
+    # ...and so does a wrap whose build does not parse at all -- the other branch.
+    torn = {"name": "torn", "run": "python3 tools/build-stamp.py wrap pkg --\n  wasm-pack build x"}
+    inputs, underivable = artifact_inputs([torn])
+    if "pkg" in inputs or "pkg" not in underivable:
+        problems.append("a wrap that does not parse as a build left its readers narrow")
+    for text, exp in PLAYWRIGHT_CASES:
+        if bool(PLAYWRIGHT_RUN.search(text)) != exp:
+            problems.append(f"playwright run in {text!r}: expected {exp}")
+    for text, exp in SETUP_CASES:
+        if global_setup_of(text) != exp:
+            problems.append(f"globalSetup in {text!r}: expected {exp!r}, got {global_setup_of(text)!r}")
+    for text, exp in PNPM_RUN_CASES:
+        got = set(pnpm_scripts_run_by(text))
+        if got != exp:
+            problems.append(f"pnpm scripts run from {text!r}: expected {sorted(exp)}, got {sorted(got)}")
+    # AND OVER THE REAL TABLE, as a property rather than a job name: EVERY job that runs
+    # `playwright test` builds the harness in its global setup, so every one of them reads the
+    # bindings. Naming `web-e2e` would miss the next job that runs Playwright -- a review found one.
+    playwright = [job for job in JOBS if runs_playwright(job)]
+    if not playwright:
+        problems.append("no job runs `playwright test`, so the hop's property examined nothing")
+    for job in playwright:
+        if not {"pkg", "pkg-render", "pkg-redact"} <= artifacts_read(job):
+            problems.append(f"`{job['name']}` runs Playwright and no longer reads the bindings")
+    # AND #215's SHAPE, before any job in the table has it: a wrapper with no `cd` of its own,
+    # declaring the command it runs. Both halves must see through the declaration -- a review
+    # reverted `runs_playwright` to the job's own command and every case stayed green.
+    wrapper = {"name": "wrapper", "run": "tools/run-web-e2e.sh", "paths_as": "cd apps/web && pnpm e2e"}
+    if not runs_playwright(wrapper):
+        problems.append("a wrapper declaring `cd apps/web && pnpm e2e` was not seen to run Playwright")
+    if not {"pkg", "pkg-render", "pkg-redact"} <= artifacts_read(wrapper):
+        problems.append("a wrapper declaring `cd apps/web && pnpm e2e` did not read the bindings")
+    # NEAR-MISS: a command in the same app that runs no Playwright reads nothing through the hop.
+    if artifacts_read({"run": "cd apps/web && pnpm lint"}):
+        problems.append("`pnpm lint` was read as reaching the harness build")
     for text, kind, exp in GUARD_CASES:
         got = guards_in(_shell_commands(text) if kind == "sh" else _uncommented(text))
         if got != exp:
@@ -1542,6 +1598,21 @@ STAMP_GUARD = re.compile(r"build-stamp\.py\"? check((?: [a-z][a-z-]*)+)")
 STAMP_BUILD = re.compile(r"build-stamp\.py wrap ([a-z][a-z-]*)")
 REACHABLE = re.compile(r"(?<![\w.\-])(?:\.\./)*((?:tools|engines|\.claude/hooks)/[\w.\-]+\.(?:sh|py|mjs))")
 PNPM_SCRIPT = re.compile(r"\bpnpm (?:-C \S+ )?(?:run )?(?!exec\b|install\b|dlx\b)([a-z][\w:-]*)")
+# THE PLAYWRIGHT HOP (#214). `playwright test` runs its config's `globalSetup` first, and this
+# repository's builds the harness site there -- `execFileSync("pnpm", ["run", "build:harness"])` --
+# which is where `stage-web-engines.mjs` and its guards on `pkg*` are reached from. Nothing in the
+# job's command names that script, so without this hop `web-e2e` read no artifact and a change to
+# the binding it tests skipped it. Followed ONE step, as `.mjs` reaches are: the setup file is
+# searched for the pnpm scripts it runs, and nothing else in it is followed.
+# NOT FOLLOWED BY A WORD OR A HYPHEN, rather than `\b`: a hyphen is a word boundary, and
+# `"playwright test-results"` -- a fixture string in `test-check-no-generated-files.sh` -- matched.
+# Nor "followed by whitespace", the first fix: that missed `playwright test)` and `test;`, and a
+# job spelled that way narrowed silently. Review measured both.
+PLAYWRIGHT_RUN = re.compile(r"(?<![\w-])playwright test(?![\w-])")
+GLOBAL_SETUP = re.compile(r"""globalSetup:\s*["'](\./[\w./-]+)["']""")
+PNPM_RUN_IN_JS = re.compile(r"""["']pnpm["']\s*,\s*\[\s*["']run["']\s*,\s*["']([\w:-]+)["']""")
+# `build-stamp.py wrap <artifact> -- <the build>`: the artifact, and the command that builds it.
+STAMP_BUILD_COMMAND = re.compile(r"build-stamp\.py wrap ([a-z][a-z-]*) -- (.+?)(?= && |$)")
 
 
 def _uncommented(text: str) -> str:
@@ -1604,7 +1675,10 @@ def reached_text(command: str) -> dict[str, str]:
                 target = (base / relative).resolve()
                 if target.is_relative_to(REPO):
                     found.add(target.relative_to(REPO).as_posix())
-        for name in PNPM_SCRIPT.findall(text):
+        names = PNPM_SCRIPT.findall(text)
+        if directory and PLAYWRIGHT_RUN.search(text):
+            names += playwright_setup_scripts(directory, texts)
+        for name in names:
             for script in (f"pre{name}", name):
                 key = f"{directory}/package.json:{script}"
                 if script in scripts and key not in texts:
@@ -1624,6 +1698,99 @@ def reached_text(command: str) -> dict[str, str]:
             else:
                 texts[path] = _uncommented(raw)
     return texts
+
+
+def global_setup_of(config_text: str) -> str | None:
+    """The `globalSetup` a Playwright config's text names, or None. Comments name nothing."""
+    found = GLOBAL_SETUP.search(_uncommented(config_text))
+    return found.group(1) if found else None
+
+
+def pnpm_scripts_run_by(setup_text: str) -> list[str]:
+    """The pnpm scripts a JavaScript file runs by `execFileSync("pnpm", ["run", ...])`."""
+    return PNPM_RUN_IN_JS.findall(_uncommented(setup_text))
+
+
+def playwright_setup_scripts(directory: str, texts: dict[str, str]) -> list[str]:
+    """The pnpm scripts `directory`'s Playwright `globalSetup` runs; the setup joins `texts`."""
+    config = REPO / directory / "playwright.config.ts"
+    if not config.is_file():
+        return []
+    named = global_setup_of(config.read_text(encoding="utf-8"))
+    if named is None:
+        return []
+    setup = (REPO / directory / named).resolve()
+    if not setup.is_file() or not setup.is_relative_to(REPO):
+        return []
+    key = setup.relative_to(REPO).as_posix()
+    text = setup.read_text(encoding="utf-8")
+    texts.setdefault(key, _uncommented(text))
+    return pnpm_scripts_run_by(text)
+
+
+def artifact_inputs(jobs: list[dict]) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """`({artifact: the paths its build reads}, {artifact: why they cannot be derived})`.
+
+    DERIVED FROM THE BUILD, the same way a job's paths are: `wasm-pack build bindings/burrow-wasm`
+    reads the binding and every crate it depends on. An artifact a job wraps whose build derives
+    NOTHING -- a `cargo run`, a checker, a spelling the pattern does not parse -- is not absent:
+    it is underivable, and so is every job that reads it. Letting its readers keep their own
+    narrow paths was a guess, and a review showed one: a sweep rebuilding `pkg` from a changed
+    crate while skipping the job that reads it.
+    """
+    inputs: dict[str, set[str]] = {}
+    underivable: dict[str, str] = {}
+    for job in jobs:
+        parsed = dict(STAMP_BUILD_COMMAND.findall(job["run"]))
+        for artifact in STAMP_BUILD.findall(job["run"]):
+            build = parsed.get(artifact)
+            if build is None:
+                underivable[artifact] = f"{job['name']}'s wrap of it does not parse as a build"
+                continue
+            paths, reason = job_paths({"name": artifact, "run": build})
+            if paths is None:
+                underivable[artifact] = f"its build in {job['name']} {reason}"
+            else:
+                inputs.setdefault(artifact, set()).update(paths)
+    return inputs, underivable
+
+
+def job_texts(job: dict) -> dict[str, str]:
+    """Everything `job` runs: its command's reach, and its declared `paths_as` command's.
+
+    `paths_as` IS WHAT A WRAPPER SCRIPT RUNS, and `job_paths` has already checked the script still
+    runs it. Reading it here is what keeps a wrapper with no `cd` of its own -- `cd "$repo"` and
+    then `cd apps/web && pnpm e2e` -- from hiding the Playwright hop behind it.
+    """
+    texts = reached_text(job["run"])
+    if job.get("paths_as"):
+        # UNDER ITS OWN KEY: both reaches name their command "(the job's command)", and an
+        # `update` replaced the job's real command -- with any stamp check written inline in it --
+        # by the declared one. A review measured the lost check.
+        for where, text in reached_text(job["paths_as"]).items():
+            key = "(its paths_as command)" if where == "(the job's command)" else where
+            texts.setdefault(key, text)
+    return texts
+
+
+def runs_playwright(job: dict) -> bool:
+    """Whether `job` runs `playwright test` -- in a text that RUNS, as the hop reads it.
+
+    Shell texts only: the job's command, a pnpm script, a `.sh`. A `.py` or `.mjs` that is
+    reached is searched and never run, and this file is one: a copy of it (every fixture in
+    `test-ci-local.sh`) reaches the original through the self-test, whose `PLAYWRIGHT_CASES` then
+    read as `checker-self-tests` running Playwright.
+    """
+    return any(
+        PLAYWRIGHT_RUN.search(text)
+        for where, text in job_texts(job).items()
+        if not where.endswith((".py", ".mjs"))
+    )
+
+
+def artifacts_read(job: dict) -> set[str]:
+    """The stamped artifacts `job` reads, by the guards in everything it runs."""
+    return {a for text in job_texts(job).values() for a in guards_in(text)}
 
 
 def guards_in(text: str) -> set[str]:
@@ -1662,12 +1829,41 @@ GUARD_CASES: list[tuple[str, str, set[str]]] = [
 ]
 
 
+# What counts as running Playwright, which is what the hop and its property are about.
+PLAYWRIGHT_CASES: list[tuple[str, bool]] = [
+    ("playwright test", True),
+    ('cd apps/web && pnpm exec playwright test "e2e/x.spec.ts" --project chromium', True),
+    ("(cd apps/web && pnpm exec playwright test)", True),
+    ("pnpm exec playwright test; true", True),
+    # NEAR-MISS: a path that begins with the words is not a run
+    ('refuses "playwright test-results" "apps/web/test-results/run.json"', False),
+    # NEAR-MISS: another program whose name ends in the word
+    ("my-playwright test", False),
+]
+
+# A Playwright config's `globalSetup`, which the hop follows.
+SETUP_CASES: list[tuple[str, str | None]] = [
+    ('  globalSetup: "./e2e/global-setup.mjs",\n', "./e2e/global-setup.mjs"),
+    # NEAR-MISS: commented out, it names nothing
+    ('  // globalSetup: "./e2e/global-setup.mjs",\n', None),
+]
+
+# The JS spelling of running a pnpm script, which the Playwright hop reads from a global setup.
+PNPM_RUN_CASES: list[tuple[str, set[str]]] = [
+    ('    execFileSync("pnpm", ["run", "build:harness"], {\n', {"build:harness"}),
+    # NEAR-MISS: commented out, it runs nothing
+    ('    // execFileSync("pnpm", ["run", "build:harness"], {\n', set()),
+    # NEAR-MISS: `exec` runs a binary, not a script
+    ('    execFileSync("pnpm", ["exec", "astro", "build"], {\n', set()),
+]
+
+
 def stamped_artifacts(jobs: list[dict]) -> tuple[dict[str, list[str]], dict[str, str]]:
     """`({artifact: [reader, ...]}, {artifact: the selected job that builds it first})`."""
     reads: dict[str, list[str]] = {}
     built: dict[str, str] = {}
     for job in jobs:
-        for where, text in reached_text(job["run"]).items():
+        for where, text in job_texts(job).items():
             for artifact in sorted(guards_in(text)):
                 reader = f"{job['name']} (via {where})"
                 if artifact not in built and reader not in reads.get(artifact, []):
@@ -1997,7 +2193,23 @@ def select_changed(jobs: list[dict], base: str | None) -> tuple[list[dict], list
         print(f"  {universal[0]} is a path every job depends on, so nothing is narrowed")
         return jobs, []
 
-    derivable = [(job, job_paths(job)[0]) for job in jobs]
+    # A JOB READS WHAT ANOTHER BUILT, AND DEPENDS ON WHAT THAT BUILD READ (#214). `web` and
+    # `web-e2e` narrowed to `apps/web` while staging `pkg*`, which `wasm-pack` builds from
+    # `bindings/burrow-wasm` and every crate under it -- so a change to the binding the browser
+    # tests exercise rebuilt it and then skipped them. Only CI caught such a change, before the
+    # merge rather than the push. Derived from the stamp guards a job's scripts run and the builds
+    # `wrap` names, not from a table of which job consumes what.
+    inputs, underivable = artifact_inputs(jobs)
+    derivable = []
+    for job in jobs:
+        paths = job_paths(job)[0]
+        for artifact in sorted(artifacts_read(job)) if paths is not None else []:
+            if artifact in underivable:
+                print(f"  {job['name']} reads {artifact}, and {underivable[artifact]}: it always runs")
+                paths = None
+                break
+            paths = paths | inputs.get(artifact, set())
+        derivable.append((job, paths))
     known = {p for _, paths in derivable if paths for p in paths}
 
     # A FILE UNDER NO JOB'S PATHS CANNOT BE ATTRIBUTED, so nothing is narrowed. `cargo test`
