@@ -33,6 +33,7 @@ import { describe, expect, test } from "vitest";
 
 const raw = readFileSync(fileURLToPath(new URL("./main.js", import.meta.url)), "utf8");
 const rawRender = readFileSync(fileURLToPath(new URL("./render-main.js", import.meta.url)), "utf8");
+const rawRedact = readFileSync(fileURLToPath(new URL("./redact-main.js", import.meta.url)), "utf8");
 
 /** Blank comments, preserving offsets. See `source`. */
 function withoutComments(text: string): string {
@@ -52,6 +53,9 @@ const source = withoutComments(raw);
 
 /** The same, for the render bundle's dispatch. */
 const renderSource = withoutComments(rawRender);
+
+/** And redaction's (#137). */
+const redactSource = withoutComments(rawRedact);
 
 /**
  * The body of a top-level `function name(...)`, by brace matching.
@@ -213,5 +217,42 @@ describe("the render bundle's strip protocol is opt-in too", () => {
     expect(rest, "the page_count fall-through is not where it was").toContain("page_count(");
     expect(rest).not.toContain("page: {");
     expect(rest).not.toContain("renderStrip(");
+  });
+});
+
+describe("redaction's bundle posts one reply and nothing before it (#137, ADR 0006 R8)", () => {
+  // R8: the output is ONE value, posted after the Rust call returned. This bundle never posts a
+  // part, a page or a progress message, and its only `postMessage` is a refusal made before the
+  // document is read. A third bundle nobody scanned is the failure this file's header records
+  // one bundle ago. (The browser-level R8 spec, which records every message a real redaction
+  // sends, is #137's next piece; this is the structural half.)
+  test("posts no part, page or progress message", () => {
+    for (const marker of ["part: {", "page: {", "progress: {", "output:"]) {
+      expect(redactSource, `redact-main.js posts ${marker}`).not.toContain(marker);
+    }
+  });
+
+  test("its one direct post is the argument refusal, before anything is read", () => {
+    // COUNTED, so a scan that stopped matching cannot pass vacuously.
+    const posts = occurrences(redactSource, "self.postMessage(");
+    expect(posts.length, "redact-main.js's postMessage calls changed shape").toBe(2);
+    const refusal = functionBody("badArguments", redactSource);
+    const read = redactSource.indexOf("request.blob.arrayBuffer()");
+    expect(read, "redact-main.js no longer reads its blob the way this looks for").toBeGreaterThan(
+      0,
+    );
+    const inRefusal = posts.filter(
+      (at) =>
+        redactSource.indexOf(refusal) <= at && at < redactSource.indexOf(refusal) + refusal.length,
+    );
+    expect(inRefusal.length, "the argument refusal no longer posts").toBe(1);
+    // The other is the over-budget verdict, which is also posted before the read.
+    for (const at of posts)
+      expect(at, "a message is posted after the document is read").toBeLessThan(read);
+  });
+
+  test("hands the one reply back to the protocol rather than posting it", () => {
+    const body = functionBody("runOperation", redactSource);
+    expect(body).toContain("return wasm_bindgen.redact(");
   });
 });

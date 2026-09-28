@@ -35,7 +35,12 @@
 // `worker-host.test.ts` can import the state machine directly and drive every transition
 // against a fake worker.
 import BaseLayout from "../layouts/BaseLayout.astro";
-import { BUNDLE_RENDER_WORKER, BUNDLE_WORKER, ENGINES } from "../generated/engines.js";
+import {
+  BUNDLE_REDACT_WORKER,
+  BUNDLE_RENDER_WORKER,
+  BUNDLE_WORKER,
+  ENGINES,
+} from "../generated/engines.js";
 ---
 
 <BaseLayout
@@ -46,7 +51,12 @@ import { BUNDLE_RENDER_WORKER, BUNDLE_WORKER, ENGINES } from "../generated/engin
   <div
     id="engines"
     data-engines={JSON.stringify(ENGINES)}
-    data-bundles={JSON.stringify({ worker: BUNDLE_WORKER, renderWorker: BUNDLE_RENDER_WORKER })}
+    data-bundles={JSON.stringify({
+      worker: BUNDLE_WORKER,
+      renderWorker: BUNDLE_RENDER_WORKER,
+      // #137: staged into harness builds only, so `null` anywhere else.
+      ...(BUNDLE_REDACT_WORKER ? { redactWorker: BUNDLE_REDACT_WORKER } : {}),
+    })}
   >
   </div>
   <p id="status">idle</p>

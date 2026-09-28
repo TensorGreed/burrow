@@ -1022,8 +1022,10 @@ jobs:
 
       # Its counterpart for redaction (ADR 0029, 2026-09-21 amendment): the base module and the
       # base bundle carry none of redaction's error spellings. Here for the same reason -- it
-      # reads the production `dist/` this job built. Until #191 builds a redaction module it has
-      # no real positive, which it prints; the self-test beside it is what plants one.
+      # reads the production `dist/` this job built. Since #137 it has a real positive:
+      # redaction's own module (`pkg-redact/`, built by `build-web-payload` above) must carry
+      # every needle. And while #125 holds `/redact-pdf`, it refuses a production build that
+      # carries redaction's bundle at all.
       - name: Redaction reaches no part of the base payload
         run: |
           tools/check-redaction-not-in-base.sh

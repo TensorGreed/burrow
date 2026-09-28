@@ -46,10 +46,25 @@ WORKER = REPO / "apps" / "web" / "src" / "worker"
 PAIRS = [
     (
         REPO / "bindings" / "burrow-wasm" / "pkg" / "burrow_wasm.d.ts",
-        WORKER / "globals-qpdf.d.ts",
+        # The base bundle's own half since #137 split it out of `globals-qpdf.d.ts`, which now
+        # declares only the qpdf engine both qpdf bundles share.
+        WORKER / "globals-documents.d.ts",
         # Nothing today: the base artifact's only class, `SplitSession`, is declared in the
         # shared `globals.d.ts` below. Listed so a class added here is covered on arrival.
         ["SplitSession"],
+    ),
+    (
+        # #137: redaction's own artifact. `WebRegion` is its one class.
+        REPO / "bindings" / "burrow-wasm" / "pkg-redact" / "burrow_wasm.d.ts",
+        WORKER / "globals-redact.d.ts",
+        ["WebRegion"],
+    ),
+    (
+        # And the shared classes against the redaction artifact too: `Reply` gained the report's
+        # getters for it, and the worker that reads them is this bundle's.
+        REPO / "bindings" / "burrow-wasm" / "pkg-redact" / "burrow_wasm.d.ts",
+        WORKER / "globals.d.ts",
+        ["Reply", "WebLimits"],
     ),
     (
         REPO / "bindings" / "burrow-wasm" / "pkg-render" / "burrow_wasm.d.ts",

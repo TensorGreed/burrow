@@ -38,6 +38,11 @@
 // |-------------|-------------------------------|--------|----------------------------|
 // | `documents` | `burrow_wasm_bg.wasm`         | qpdf   | `burrow-worker.js`         |
 // | `render`    | `burrow_wasm_render_bg.wasm`  | PDFium | `burrow-render-worker.js`  |
+// | `redact`    | `burrow_wasm_redact_bg.wasm`  | qpdf   | `burrow-redact-worker.js`  |
+//
+// THE THIRD ROW IS #137's, and it is the same argument one engine over: redaction's Rust
+// reached from the base module would land on the module every tool page fetches. `redact`
+// links qpdf through the same bridge as `documents` and carries only `redaction.rs`.
 //
 // The exclusivity below is the mechanism behind the base payload's claim that a person who
 // lands on `/merge-pdf` and merges two files downloads no PDFium at all. It is not a
@@ -53,11 +58,19 @@
 // native target both bridges are unreachable (the tests drive `web/fake.rs`), so an
 // unscoped refusal would mean deleting a CI gate to protect a property native builds cannot
 // violate. `Cargo.toml`'s `[features]` comment carries the same reasoning.
-#[cfg(all(target_arch = "wasm32", feature = "documents", feature = "render"))]
+#[cfg(all(
+    target_arch = "wasm32",
+    any(
+        all(feature = "documents", feature = "render"),
+        all(feature = "documents", feature = "redact"),
+        all(feature = "render", feature = "redact"),
+    )
+))]
 compile_error!(
-    "burrow-wasm ships ONE engine per wasm artifact: `documents` or `render`, never both. \
-     Build the base with default features and the renderer with `--no-default-features \
-     --features render`. ADR 0026."
+    "burrow-wasm ships ONE artifact per build: `documents`, `render` or `redact`, never two. \
+     Build the base with default features, the renderer with `--no-default-features \
+     --features render`, and redaction with `--no-default-features --features redact`. \
+     ADR 0026; ADR 0029's 2026-09-21 amendment."
 );
 // THE *NEITHER* REFUSAL IS NOT SCOPED, AND THAT ASYMMETRY IS DELIBERATE. The `wasm32` scoping
 // above exists for one reason: `cargo test --workspace --all-features` is a CI gate and it
@@ -65,17 +78,22 @@ compile_error!(
 // here — and `--no-default-features` without a replacement failed with
 // `E0425: cannot find function engine_heap_bytes`, which tells a reader nothing. Raised by
 // code review; ADR 0026's "the refusal is scoped to wasm32" is right about one of the two.
-#[cfg(not(any(feature = "documents", feature = "render")))]
+#[cfg(not(any(feature = "documents", feature = "render", feature = "redact")))]
 compile_error!(
-    "burrow-wasm needs an engine: enable `documents` (qpdf) or `render` (PDFium). ADR 0026."
+    "burrow-wasm needs an artifact: enable `documents` (qpdf), `render` (PDFium) or `redact` \
+     (qpdf, redaction only). ADR 0026."
 );
 
 #[cfg(feature = "render")]
 mod bridge_pdfium;
-#[cfg(feature = "documents")]
+#[cfg(any(feature = "documents", feature = "redact"))]
 mod bridge_qpdf;
 #[cfg(feature = "documents")]
 mod documents;
+#[cfg(any(feature = "documents", feature = "redact"))]
+mod qpdf_engine;
+#[cfg(feature = "redact")]
+mod redaction;
 #[cfg(feature = "render")]
 mod render;
 
@@ -146,7 +164,7 @@ pub fn __burrow_redaction_probe(input: Box<[u8]>) -> u32 {
         );
         refused += u32::from(
             burrow_core::ops::redact::page(
-                &documents::qpdf(),
+                &qpdf_engine::qpdf(),
                 &input,
                 0,
                 &std::collections::BTreeSet::from([0]),
@@ -221,12 +239,15 @@ fn pages_to_bytes(pages: u32) -> u64 {
 /// The `not(feature = "documents")` on the second arm is for the native `--all-features`
 /// build, where both features are on and neither bridge is reachable: it picks one so the
 /// crate still compiles, and which one it picks cannot matter.
-#[cfg(feature = "documents")]
+#[cfg(any(feature = "documents", feature = "redact"))]
 fn engine_heap_bytes() -> u64 {
-    documents::qpdf().heap_bytes()
+    qpdf_engine::qpdf().heap_bytes()
 }
 
-#[cfg(all(feature = "render", not(feature = "documents")))]
+#[cfg(all(
+    feature = "render",
+    not(any(feature = "documents", feature = "redact"))
+))]
 fn engine_heap_bytes() -> u64 {
     render::pdfium().heap_bytes()
 }
@@ -315,6 +336,22 @@ pub struct Reply {
     /// **The first thing a `Reply` carries that is not a scalar.** Held as `Vec<u8>` and
     /// handed over by the getter below, which MOVES it: see `take_output`.
     output: Vec<u8>,
+    /// What a redaction did beyond the bytes, in the form the native golden file pins, or empty.
+    ///
+    /// **The `Debug` rendering of `burrow_ops`' `Report`, and that is deliberate rather than
+    /// lazy.** `tests/redaction/outcomes.tsv` records every redaction outcome as the digest of
+    /// exactly this text, and #137's browser differential holds the web outcome to it: a
+    /// structured copy re-rendered in JavaScript would be a second formatter that could agree
+    /// with itself while disagreeing with the pin. It is not for display — it names fonts by
+    /// object number — and a page reads [`Reply::retained_fonts`] instead. It carries no file
+    /// content: object numbers, booleans and counts.
+    report: String,
+    /// Fonts a redaction left intact because pages it does not cover use them — the number
+    /// ADR 0029 §7's disclosure is about. Zero for every other operation.
+    retained_fonts: u32,
+    /// Marked-content property lists whose carried text a redaction dropped. Zero for every
+    /// other operation.
+    dropped_carried_text: u32,
 }
 
 #[wasm_bindgen]
@@ -582,7 +619,24 @@ impl Reply {
             rotations: Vec::new(),
             original_bytes: 0,
             produced_bytes: 0,
+            report: String::new(),
+            retained_fonts: 0,
+            dropped_carried_text: 0,
         }
+    }
+
+    /// A verified redaction: the document, and what was done beyond it.
+    ///
+    /// The two counts saturate rather than fail: a count past `u32::MAX` is not a real
+    /// document, and a disclosure that under-reports by saturating still says "some".
+    #[cfg(feature = "redact")]
+    fn redacted(output: Vec<u8>, report: &burrow_core::engines::redact::Report) -> Self {
+        let mut reply = Self::success(0);
+        reply.output = output;
+        reply.report = format!("{report:?}");
+        reply.retained_fonts = u32::try_from(report.retained().count()).unwrap_or(u32::MAX);
+        reply.dropped_carried_text = u32::try_from(report.dropped_carried_text).unwrap_or(u32::MAX);
+        reply
     }
 
     // DOCUMENTS ONLY, for the three below. Each builds a reply carrying bytes, two byte
@@ -692,6 +746,9 @@ impl Reply {
             rotations: Vec::new(),
             original_bytes: 0,
             produced_bytes: 0,
+            report: String::new(),
+            retained_fonts: 0,
+            dropped_carried_text: 0,
         }
     }
 }
@@ -713,6 +770,27 @@ impl Reply {
     #[must_use]
     pub fn take_output(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.output)
+    }
+
+    /// What a redaction did beyond the bytes, as the golden file pins it; empty otherwise.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn report(&self) -> String {
+        self.report.clone()
+    }
+
+    /// Fonts a redaction left intact because uncovered pages use them; zero otherwise.
+    #[wasm_bindgen(getter, js_name = retainedFonts)]
+    #[must_use]
+    pub fn retained_fonts(&self) -> u32 {
+        self.retained_fonts
+    }
+
+    /// Marked-content property lists whose carried text a redaction dropped; zero otherwise.
+    #[wasm_bindgen(getter, js_name = droppedCarriedText)]
+    #[must_use]
+    pub fn dropped_carried_text(&self) -> u32 {
+        self.dropped_carried_text
     }
 
     /// Every page's effective rotation, in page order.
@@ -1033,6 +1111,47 @@ pub fn available_operations() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE TWO DISCLOSURE COUNTS, pinned against a report whose every field is non-trivial.
+    ///
+    /// Nothing read them before this: the browser smoke compared the report's digest, and a
+    /// reply that zeroed `retained_fonts` or swapped the two counts passed it. They are what a
+    /// page shows — ADR 0029 §7's "this font still carries what you removed" keys on the first —
+    /// so a silent zero is a disclosure that never appears. Found by both reviews of #137.
+    #[cfg(feature = "redact")]
+    #[test]
+    fn a_redaction_reply_carries_the_report_and_both_disclosure_counts() {
+        use burrow_core::engines::redact::{FontOutcome, Report};
+
+        let report = Report {
+            fonts: vec![
+                FontOutcome {
+                    font: 1,
+                    cut: true,
+                    also_used_by: 0,
+                },
+                FontOutcome {
+                    font: 2,
+                    cut: false,
+                    also_used_by: 3,
+                },
+                FontOutcome {
+                    font: 3,
+                    cut: false,
+                    also_used_by: 1,
+                },
+            ],
+            dropped_carried_text: 5,
+        };
+        let mut reply = Reply::redacted(vec![7, 8, 9], &report);
+
+        assert!(reply.ok());
+        // DIFFERENT NUMBERS, so a swap of the two cannot pass.
+        assert_eq!(reply.retained_fonts(), 2);
+        assert_eq!(reply.dropped_carried_text(), 5);
+        assert_eq!(reply.report(), format!("{report:?}"));
+        assert_eq!(reply.take_output(), vec![7, 8, 9]);
+    }
 
     // Only the tests name a `Stage` directly: `Reply::failure` reads one off an error rather
     // than choosing one, which is the whole point -- the binding classifies nothing.

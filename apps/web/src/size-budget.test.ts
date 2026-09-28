@@ -36,6 +36,7 @@ import {
   engineClosures,
   heaviestFirstLoad,
   normaliseEngineHashes,
+  redactPayload,
   renderFirstLoad,
 } from "../../../tools/first-load.mjs";
 import {
@@ -45,7 +46,7 @@ import {
   driftFindings,
   explain,
 } from "./size-budget-drift.js";
-import { PRODUCTION_DIR } from "./build-output.js";
+import { HARNESS_DIR, PRODUCTION_DIR } from "./build-output.js";
 
 const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -66,6 +67,11 @@ const budget: {
   render: {
     artifacts: Record<string, Line>;
     total: Line;
+    not_byte_reproducible: Record<string, string>;
+  };
+  redact: {
+    $comment: string;
+    artifacts: Record<string, Line>;
     not_byte_reproducible: Record<string, string>;
   };
   not_byte_reproducible: Record<string, string>;
@@ -112,6 +118,23 @@ const renderLive: Record<string, Live> = Object.fromEntries(
       brotli: group.brotli,
       sha256: renderDigests[key].raw,
       sha256Normalised: renderDigests[key].normalised,
+    },
+  ]),
+);
+
+// THE THIRD PAYLOAD (#137): redaction's bundle, what a redacting page pays on top of the base.
+// Measured from the HARNESS build, the only one that stages it -- `/redact-pdf` is held -- and
+// budgeted OFF the base total, so the five shipped tools do not pay for it.
+const redactGroups = byBudgetKey(redactPayload(HARNESS_DIR));
+const redactDigests = digestsByBudgetKey(HARNESS_DIR, redactGroups);
+const redactLive: Record<string, Live> = Object.fromEntries(
+  Object.entries(redactGroups).map(([key, group]) => [
+    key,
+    {
+      raw: group.raw,
+      brotli: group.brotli,
+      sha256: redactDigests[key].raw,
+      sha256Normalised: redactDigests[key].normalised,
     },
   ]),
 );
@@ -477,6 +500,19 @@ describe("the first-load size budget", () => {
     ).toBe(budget.total.measured_brotli);
   });
 
+  it("has render measurements that add up to the recorded render total", () => {
+    // THE SAME RULE FOR THE SECOND PAYLOAD, which had none: #205 re-recorded the base total and
+    // left the render total 2,600 bytes behind its own lines, and nothing noticed until code
+    // review of #137 did the sum by hand. The render total is what a rendering page pays
+    // altogether -- the base total plus the render lines -- so it is derivable, and checked.
+    const lines = Object.values(budget.render.artifacts).reduce((n, a) => n + a.measured_brotli, 0);
+    expect(
+      budget.total.measured_brotli + lines,
+      "size-budget.json's render total is not the base total plus its render lines; one was " +
+        "re-recorded and the other was not",
+    ).toBe(budget.render.total.measured_brotli);
+  });
+
   it("records the measurement each budget was set from", () => {
     // `measured_brotli` is what makes a budget auditable: a reviewer can see how much slack a
     // line has without rebuilding. A budget below its own measurement is a typo that would
@@ -625,6 +661,65 @@ describe("the recording describes the build it claims to", () => {
       ).toBeGreaterThan(40);
       expect(budget.artifacts, `${key} is exempt but is not an artifact`).toHaveProperty(key);
     }
+  });
+});
+
+describe("redaction's payload, off the base (#137)", () => {
+  it("is in the harness build and nowhere in the production one", () => {
+    // BOTH HALVES. Absent from production is what the hold means; present in the harness is
+    // what stops the absence being a build that never staged it at all.
+    expect(Object.keys(redactGroups).sort()).toEqual([
+      "engines/burrow-redact-worker.js",
+      "engines/burrow_wasm_redact_bg.wasm",
+    ]);
+    expect(engineClosures(PRODUCTION_DIR).redact, "redaction reached a production build").toEqual(
+      [],
+    );
+  });
+
+  it("stays within every redaction budget", () => {
+    for (const [key, line] of Object.entries(budget.redact.artifacts)) {
+      const actual = redactGroups[key];
+      if (!actual) continue; // covered by the coverage assertion below
+      expect(
+        actual.brotli,
+        `${key}: ${kb(actual.brotli)} > ${kb(line.budget_brotli)}`,
+      ).toBeLessThanOrEqual(line.budget_brotli);
+    }
+  });
+
+  it("budgets every redaction artifact, and none that no longer ships", () => {
+    const unbudgeted = Object.keys(redactGroups).filter((key) => !(key in budget.redact.artifacts));
+    expect(unbudgeted, `redaction artifacts with no budget: ${unbudgeted.join(", ")}`).toEqual([]);
+    const stale = Object.keys(budget.redact.artifacts).filter((key) => !(key in redactGroups));
+    expect(stale, `redaction budgets for files that do not ship: ${stale.join(", ")}`).toEqual([]);
+  });
+
+  it("keeps redaction's payload out of the render payload in a build that has both", () => {
+    // `engineClosures` named render's payload as "every bundle but the base" while there were
+    // two, and the third would have been counted as render's -- 160 KB of redaction in the
+    // picture strip's cost, with nothing saying why. Only a HARNESS build has all three, so this
+    // is the one place the fix is observable; code review found it unwitnessed.
+    const closures = engineClosures(HARNESS_DIR);
+    const redactFiles = closures.redact;
+    expect(redactFiles.length, "the harness build staged no redaction payload").toBe(2);
+    for (const path of redactFiles) {
+      expect(closures.render, `${path} is counted as render's`).not.toContain(path);
+    }
+    expect(
+      closures.render.some((path) => path.includes("pdfium")),
+      "render lost PDFium",
+    ).toBe(true);
+  });
+
+  it("finds no drift in the redaction lines", () => {
+    const findings = driftFindings({
+      recorded: budget.redact.artifacts,
+      live: redactLive,
+      notByteReproducible: budget.redact.not_byte_reproducible,
+      tolerance: budget.drift_tolerance,
+    });
+    expect(findings.map(explain)).toEqual([]);
   });
 });
 

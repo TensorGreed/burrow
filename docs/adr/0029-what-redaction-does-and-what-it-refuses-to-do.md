@@ -791,6 +791,27 @@ its own manifest slice into it.
 a tool that redacts nothing must not download a redaction engine, and raising the ceiling instead
 would have spent the margin on exactly that.
 
+### Landed, 2026-09-26 (#137), and one thing the decision did not say
+
+The third feature, module and bundle exist, and a redaction through the real worker produces the
+natively pinned document byte for byte — report included — in Chromium, Firefox and WebKit
+(`apps/web/e2e/redaction-worker.spec.ts`; the full-corpus differential follows it). Measured:
+**`burrow_wasm_redact_bg.wasm` is 164,616 brotli**, nearly three times the base module, and
+`burrow-redact-worker.js` 33,425. The base total moved 476,342 → 476,734 (+392), all of it the
+reply's three new report fields and none of it redaction. The split is what this amendment said
+it would be.
+
+**The bundle is staged into HARNESS builds only, and that is a decision this amendment did not
+make.** `/redact-pdf` is held under #125 and #180–#183, and `apps/web/src/production-build.test.ts`
+holds the op name `redact` out of every shipped script. A production build that staged this bundle
+would ship a way to ask for a held operation whatever the page was called — so
+`tools/stage-web-engines.mjs` stages it only under `BURROW_HARNESS=1`, and a production build's
+manifest, CSP and generated exports never mention it (`BUNDLE_REDACT_WORKER` is `null` there). Its
+`size-budget.json` lines are measured from the harness build and gated **off** the base total. The
+flag comes off in the change that ships the page, deliberately, not when the page is written.
+
+**`qpdf.wasm` is staged once** and named by both qpdf bundles' manifests: one URL, one CSP entry.
+
 ### What it does not cover, stated because the split reads as bigger than it is
 
 `qpdf.wasm` is one artifact shared by every tool and no feature flag divides it, so the qpdf C

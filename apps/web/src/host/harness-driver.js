@@ -182,11 +182,12 @@ const host = createWorkerHost({
 });
 
 /**
- * The render bundle's host, built on first use and never before.
+ * The render bundle's host, and redaction's, each built on first use and never before.
  *
  * NOT BUILT AT LOAD TIME, and that is the property under test as much as any assertion: a
- * harness that spawned it eagerly would be measuring a page that downloads PDFium on arrival,
- * which is exactly what ADR 0026 exists to prevent. `null` until something asks.
+ * harness that spawned the render host eagerly would be measuring a page that downloads PDFium
+ * on arrival, which is exactly what ADR 0026 exists to prevent. The same holds for redaction's
+ * bundle (#137): nothing fetches it until something asks.
  *
  * MEMOISED AS A PROMISE, NOT A RESULT, which is the same fix `tool-host.ts` carries and for
  * the same reason: a guard read after an `await` lets two concurrent callers each build a host,
@@ -195,46 +196,61 @@ const host = createWorkerHost({
  * here, and written the right way anyway: a rig that models the production wiring wrongly is a
  * rig whose green says nothing. Raised by security review.
  *
- * @type {Promise<ReturnType<typeof createWorkerHost>> | null}
+ * ONE BUILDER, KEYED BY BUNDLE, since the third bundle arrived: two copies of this were the
+ * two-places-to-go-wrong shape.
+ *
+ * @type {Record<string, Promise<ReturnType<typeof createWorkerHost>>>}
  */
-let renderHost = null;
-/** @type {string | null} */
-let renderUrl = null;
+const lazyHosts = {};
+/** @type {Record<string, string | null>} */
+const lazyUrls = {};
 
-function renderBundle() {
-  renderHost ??= buildRenderHost();
-  return renderHost;
+/** @param {"renderWorker" | "redactWorker"} id */
+function bundleHost(id) {
+  lazyHosts[id] ??= buildBundleHost(id);
+  return lazyHosts[id];
 }
 
-async function buildRenderHost() {
-  {
-    const entry = BUNDLES.renderWorker.worker;
-    const response = await fetch(entry.url, { integrity: entry.integrity });
-    if (!response.ok) {
-      throw new Error("render worker fetch failed");
-    }
-    const source = await response.text();
-    return createWorkerHost({
-      spawn: () => {
-        if (renderUrl) URL.revokeObjectURL(renderUrl);
-        renderUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-        return new Worker(renderUrl);
-      },
-      release: () => {
-        if (renderUrl) {
-          URL.revokeObjectURL(renderUrl);
-          renderUrl = null;
-        }
-      },
-      now: () => performance.now(),
-      setTimer: (fn, ms) => setTimeout(fn, ms),
-      clearTimer: (handle) => clearTimeout(/** @type {number} */ (handle)),
-      maxDurationMs: DEFAULT_LIMITS.maxDurationMs,
-      // PER BUNDLE. Both are 2 today; see `EXPECTED_ENGINE_MODULES` for why that coincidence
-      // is the reason this is passed rather than assumed.
-      expectedEngineModules: BUNDLES.renderWorker.modules,
-    });
+function renderBundle() {
+  return bundleHost("renderWorker");
+}
+
+/** @param {"renderWorker" | "redactWorker"} id */
+async function buildBundleHost(id) {
+  const bundle = BUNDLES[id];
+  if (!bundle) {
+    // Redaction's bundle is staged into harness builds only (#137); a harness page served from
+    // anything else has no entry for it, and says so rather than failing inside `fetch`.
+    throw new Error(`no ${id} bundle in this build`);
   }
+  const entry = bundle.worker;
+  const response = await fetch(entry.url, { integrity: entry.integrity });
+  if (!response.ok) {
+    throw new Error(`${id} fetch failed`);
+  }
+  const source = await response.text();
+  return createWorkerHost({
+    spawn: () => {
+      const previous = lazyUrls[id];
+      if (previous) URL.revokeObjectURL(previous);
+      const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      lazyUrls[id] = url;
+      return new Worker(url);
+    },
+    release: () => {
+      const previous = lazyUrls[id];
+      if (previous) {
+        URL.revokeObjectURL(previous);
+        lazyUrls[id] = null;
+      }
+    },
+    now: () => performance.now(),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (handle) => clearTimeout(/** @type {number} */ (handle)),
+    maxDurationMs: DEFAULT_LIMITS.maxDurationMs,
+    // PER BUNDLE. See `EXPECTED_ENGINE_MODULES` for why the count is passed rather than assumed.
+    expectedEngineModules: bundle.modules,
+  });
 }
 
 /**
@@ -751,6 +767,46 @@ const harness = {
     return harness.ready();
   },
 
+  /**
+   * Redact one region on one page through redaction's own worker (#137), and report what came
+   * back: the reply's fields, and the output's sha256 -- never the bytes, which stay in the
+   * page. `tests/redaction/outcomes.tsv` pins digests, so a digest is what a test compares.
+   *
+   * `page` and `covered` are 1-based, as the worker protocol is.
+   *
+   * @param {string} name
+   * @param {Uint8Array} bytes
+   * @param {number} page
+   * @param {number[]} covered
+   * @param {{ left: number, top: number, width: number, height: number }} region
+   * @param {{ limits?: Record<string, number> }} options
+   */
+  async redactDocument(name, bytes, page, covered, region, options = {}) {
+    const worker = await bundleHost("redactWorker");
+    const reply = await worker.run(
+      {
+        op: "redact",
+        blob: new File([/** @type {Uint8Array<ArrayBuffer>} */ (bytes)], name, {
+          type: "application/pdf",
+        }),
+        page,
+        covered,
+        region,
+        limits: { ...DEFAULT_LIMITS, ...(options.limits ?? {}) },
+      },
+      { maxDurationMs: DEFAULT_LIMITS.maxDurationMs },
+    );
+    const { output, ...fields } = reply;
+    let outputSha256 = null;
+    if (output instanceof Blob) {
+      const digest = await crypto.subtle.digest("SHA-256", await output.arrayBuffer());
+      outputSha256 = Array.from(new Uint8Array(digest), (b) =>
+        b.toString(16).padStart(2, "0"),
+      ).join("");
+    }
+    return { ...fields, outputSha256 };
+  },
+
   // --- the render bundle ----------------------------------------------------------------
   //
   // ADR 0026 ships a SECOND worker bundle: PDFium, fetched only when a page needs a picture
@@ -761,7 +817,7 @@ const harness = {
   // thing that goes wrong quietly.
   //
   // ONE LIFECYCLE, TWO INSTANCES, which is the claim this exercises as much as the loading.
-  // `renderHost` is `createWorkerHost` again, with the bundle and its module count as
+  // The render host is `createWorkerHost` again, with the bundle and its module count as
   // arguments; there is no second state machine, no second watchdog and no second breaker
   // implementation. The breaker STATE is independent because the instances are, and that is
   // deliberate: a document that kills the renderer must not take merging offline.
@@ -875,7 +931,7 @@ const harness = {
     // "unbuilt" is the property under test: nothing may build this host until something asks
     // for a render. `built` rather than the host's own state once it exists, because the
     // promise may still be in flight and a state read is not worth awaiting for.
-    return renderHost === null ? "unbuilt" : "built";
+    return lazyHosts.renderWorker === undefined ? "unbuilt" : "built";
   },
 };
 

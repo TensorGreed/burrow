@@ -167,6 +167,23 @@ ARTIFACTS: dict[str, dict] = {
         ],
         "rebuild": "tools/ci-local.py --only wasm-pack",
     },
+    # #137: redaction's own module, qpdf through the same bridge, nothing else in it.
+    "pkg-redact": {
+        "output": "bindings/burrow-wasm/pkg-redact",
+        "crate": "bindings/burrow-wasm",
+        "files": ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"],
+        "command": [
+            *_WASM_PACK,
+            "--out-dir",
+            "pkg-redact",
+            "--release",
+            "--",
+            "--no-default-features",
+            "--features",
+            "redact",
+        ],
+        "rebuild": "tools/ci-local.py --only wasm-pack",
+    },
 }
 
 

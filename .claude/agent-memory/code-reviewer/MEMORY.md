@@ -29,3 +29,4 @@
 - [Stamp survives an unwrapped writer](feedback_stamp_survives_unwrapped_writer.md) — wasm-pack never clears pkg/; a stamp beside output must be bound to the bytes. Plant "stamp A, bytes B".
 - [Cited test name must exist](feedback_cited_test_name_must_exist.md) — rg every test title a touched comment names as a witness; #107's cited one never existed.
 - [Differential probe bypasses harness](feedback_differential_probe_bypasses_harness.md) — an "engine B is really asked" probe that calls B alone passes when B delegates to A; count calls on B's own seam.
+- [Harness-only artifact vs exact lists](feedback_harness_only_artifact_exact_lists.md) — run the whole e2e suite and pnpm lint; #137 broke integrity.spec exact id list.

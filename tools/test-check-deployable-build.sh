@@ -66,6 +66,9 @@ fixture() {
   # checker rather than as "your dist is the wrong variant". The harness rule has its own two
   # cases below, which plant these directories deliberately.
   rm -rf "$work/harness" "$work/host"
+  # And redaction's bundle, which a harness build also carries since #137 -- for the same reason;
+  # the hold has its own cases below, which plant these files deliberately.
+  rm -f "$work"/engines/burrow-redact-worker.* "$work"/engines/burrow_wasm_redact_*
   grep -rlF "$built_for" "$work" 2>/dev/null | while IFS= read -r file; do
     sed -i "s|${built_for//|/\\|}|$DEPLOY_ORIGIN|g" "$file"
   done
@@ -339,6 +342,15 @@ for variant in harness host; do
     "$checker" "$DEPLOY_ORIGIN" "$work"
 done
 
+# --- Rule: redaction's bundle must not reach a deploy while it is held (#137) -------------------
+for planted in burrow_wasm_redact_bg.0000000000000000.wasm burrow-redact-worker.0000000000000000.js; do
+  fixture
+  printf 'held\n' >"$work/engines/$planted"
+  expect_refusal "a held redaction artifact is refused before upload ($planted)" \
+    "redaction's bundle is in this build" \
+    "$checker" "$DEPLOY_ORIGIN" "$work"
+done
+
 # --- The shapes an absence-style checker is worst at ------------------------------------------
 fixture
 rm -rf "${work:?}/"*
@@ -400,6 +412,10 @@ probe_gate "the canonical rule" \
 probe_gate "the _headers extra-origin rule" \
   's|^\[ -z "\$stray" \]|[ -n "${stray:-x}" ]|' \
   'sed -i "s|; style-src| https://extra.test/x.wasm; style-src|" "$work/_headers"'
+
+probe_gate "the redaction hold" \
+  's%^\[ "\${#held\[@\]}" -eq 0 \] ||%true ||%' \
+  'printf "held\\n" >"$work/engines/burrow_wasm_redact_bg.0000000000000000.wasm"'
 
 probe_gate "the harness rule" \
   's|^for forbidden in harness host; do|for forbidden in zzz-no-such-dir; do|' \

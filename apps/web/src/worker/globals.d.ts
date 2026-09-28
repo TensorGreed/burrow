@@ -165,15 +165,11 @@ interface BurrowWasm {
    * `burrow_core::ops::check_total_input_bytes`, the same function `merge` calls.
    */
   check_input_budget(sizes: Float64Array, limits: WebLimits): Reply;
-  /**
-   * Open a document and report its page count.
-   *
-   * IN BOTH ARTIFACTS, answered by a different engine in each — qpdf in the base one, PDFium
-   * in the render one. That is why it is declared here rather than twice: the signature is
-   * the same, the engine is the artifact's business, and ADR 0009 §2 keeps engine choice out
-   * of the protocol.
-   */
-  page_count(bytes: Uint8Array, password: Uint8Array | undefined, limits: WebLimits): Reply;
+  // `page_count` IS NOT HERE ANY MORE (#137). It was declared once for "both artifacts", and a
+  // third one -- redaction's -- does not export it: a shared declaration would type-check a
+  // call that fails at run time in that bundle. It is in `globals-documents.d.ts` (qpdf's) and
+  // `globals-render.d.ts` (PDFium's), with the same signature, and ADR 0009 §2 still keeps the
+  // engine out of the protocol.
 }
 
 declare const wasm_bindgen: BurrowWasm;
@@ -228,6 +224,16 @@ interface Reply {
    * output to measure, and this is the only record of what it weighed.
    */
   readonly producedBytes: bigint;
+  /**
+   * What a redaction did beyond the bytes, as `tests/redaction/outcomes.tsv` pins it (the Rust
+   * `Debug` form, so the browser differential compares against the pin rather than against a
+   * second formatter). Empty for every other operation. Not for display.
+   */
+  readonly report: string;
+  /** Fonts a redaction left intact because uncovered pages use them. Zero otherwise. */
+  readonly retainedFonts: number;
+  /** Marked-content property lists whose carried text a redaction dropped. Zero otherwise. */
+  readonly droppedCarriedText: number;
   /** Bytes in the produced document, without taking it. Zero if there is none. */
   readonly outputLength: number;
   /**

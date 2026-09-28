@@ -37,6 +37,10 @@ documents = []
 # needs a thumbnail, so nobody who merges two files ever downloads it. Built with
 # `--no-default-features --features render`.
 render = []
+# qpdf again, for redaction and nothing else (#137, ADR 0029's 2026-09-21 amendment). Its own
+# artifact so the rewriter, the geometry walk and the font surgery never land on the module
+# every tool page fetches. Built with `--no-default-features --features redact`.
+redact = []
 
 [dependencies]
 burrow-core.workspace = true

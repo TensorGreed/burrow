@@ -17,7 +17,7 @@
 // "the harness was never built". Without it, an integration that deleted the route
 // unconditionally would pass every exclusion assertion.
 //
-// Both go through `pnpm run prebuild` first, which is the real staging path -- engines
+// Each goes through `pnpm run prebuild` first, which is the real staging path -- engines
 // staged and content-hashed, the CSP generated from them, and the credits data generated
 // from `engines/licenses.toml`. A test that skipped it would be checking a build no deploy
 // produces.
@@ -50,12 +50,15 @@ export default function setup() {
   const clean: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "production" };
   delete clean.BURROW_HARNESS;
 
-  execFileSync("pnpm", ["run", "prebuild"], { cwd: webApp, env: clean, stdio: "pipe" });
-
+  // STAGED PER BUILD, NOT ONCE FOR BOTH (#137). Staging depends on which build it is: a harness
+  // build stages redaction's bundle, which is held off every shipped page, and a production
+  // build must not. One staging shared by both would make one of them a build nobody runs.
+  // Production last, so what is left in `public/` afterwards is what a deploy would stage.
   for (const [dir, env] of [
-    [PRODUCTION_DIR, clean],
     [HARNESS_DIR, { ...clean, BURROW_HARNESS: "1" }],
+    [PRODUCTION_DIR, clean],
   ] as const) {
+    execFileSync("pnpm", ["run", "prebuild"], { cwd: webApp, env, stdio: "pipe" });
     rmSync(dir, { recursive: true, force: true });
     execFileSync("pnpm", ["exec", "astro", "build", "--outDir", dir], {
       cwd: webApp,

@@ -182,6 +182,15 @@ runs:
         python3 tools/build-stamp.py wrap pkg-render -- \
           wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render --release \
           -- --no-default-features --features render
+    # THE THIRD BINDING, redaction's own module (#137, ADR 0029's 2026-09-21 amendment). Built
+    # on every run so the size budget and the absence checks see it, and staged only into
+    # HARNESS builds: `/redact-pdf` is held (#125, #180-#183), so no shipped bundle may carry it.
+    - name: Build the redaction wasm binding
+      shell: bash
+      run: |
+        python3 tools/build-stamp.py wrap pkg-redact -- \
+          wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-redact --release \
+          -- --no-default-features --features redact
 
     # THE WORKER IS TYPE-CHECKED AGAINST HAND-WRITTEN DECLARATIONS, NOT AGAINST THE BINDING.
     #

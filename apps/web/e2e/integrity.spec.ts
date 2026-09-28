@@ -50,12 +50,18 @@ test("the manifest pins every engine artifact by digest", async ({ page }) => {
   // the page-side map, and every artifact in it is integrity-pinned whichever bundle asks for
   // it. What the base bundle may fetch is decided by the manifest generated INTO it, which
   // `tools/check-pdfium-is-render-only.sh` asserts and the size budget measures.
+  //
+  // `burrowRedactWasm` AND `redactWorker` ARE HARNESS-ONLY (#137). This page is the harness, so
+  // it sees them; a production build does not stage them while `/redact-pdf` is held (#125,
+  // #180-#183), which `src/production-build.test.ts` and `src/size-budget.test.ts` assert.
   expect(ids).toEqual([
+    "burrowRedactWasm",
     "burrowRenderWasm",
     "burrowWasm",
     "control",
     "pdfiumWasm",
     "qpdfWasm",
+    "redactWorker",
     "renderWorker",
     "worker",
   ]);
@@ -141,6 +147,25 @@ test("the worker bundle contains all worker code, so one digest covers it", asyn
     '"/__csp-probe"',
   ]) {
     expect(renderSource, `the render bundle is missing ${marker}`).toContain(marker);
+  }
+
+  // AND REDACTION'S (#137), the third file fetched with `integrity` and wrapped in a Blob. It
+  // carries qpdf's glue again, so it is the base bundle's markers with its own dispatch.
+  const redactSource = await page.evaluate(async (url) => {
+    const response = await fetch(url);
+    return response.text();
+  }, engines.redactWorker.url);
+
+  for (const marker of [
+    "BURROW_ENGINES", // the generated manifest
+    "__burrow_qpdf_copy_in", // the bridge
+    "createQpdfModule(", // the qpdf glue
+    "wasm_bindgen", // the Rust glue
+    "wasm_bindgen.redact(", // its one dispatch
+    "const POLICED",
+    '"/__csp-probe"',
+  ]) {
+    expect(redactSource, `the redaction bundle is missing ${marker}`).toContain(marker);
   }
 });
 

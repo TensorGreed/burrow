@@ -57,6 +57,11 @@ fresh() {
   rm -rf "$work"
   cp -r "$real" "$work"
   rm -rf "$work/harness" "$work/host"
+  # AND REDACTION'S BUNDLE, which a harness build carries since #137. The header accepts a
+  # harness build as the SOURCE of this copy, and the hold rule would otherwise refuse every case
+  # below for a reason none of them is about -- which is what happened after the first local
+  # `pnpm e2e` (code review). The hold itself has its own cases, which plant these files back.
+  rm -f "$work"/engines/burrow-redact-worker.* "$work"/engines/burrow_wasm_redact_*
   base="$(find "$work/engines" -maxdepth 1 -name 'burrow_wasm_bg.*.wasm' | head -1)"
   render="$(find "$work/engines" -maxdepth 1 -name 'burrow_wasm_render_bg.*.wasm' | head -1)"
 }
@@ -242,10 +247,29 @@ plant "$base" "__burrow_redaction_probe" &&
   expect_refusal "the probe export's name in a shipped module is refused" \
     "the redaction probe export shipped" "$checker" "$work"
 
-# A REDACTION MODULE IS NOT SCANNED, and must not be: it is the one place the needles belong.
+# THE HOLD (#137): a redaction module or bundle in a production build is refused by name. This case
+# expected a PASS until #137 -- a redaction module "beside the other two" was simply not scanned --
+# which is exactly the production build the hold forbids.
 fresh
 cp "$probe" "$work/engines/burrow_wasm_redact_bg.0000000000000000.wasm"
-expect_pass "a redaction module beside the other two is not scanned" "$checker" "$work"
+expect_refusal "a redaction module in a production build is refused while the hold stands" \
+  "redaction's bundle is in a production build" "$checker" "$work" "$probe"
+fresh
+printf '// a redaction bundle\n' >"$work/engines/burrow-redact-worker.0000000000000000.js"
+expect_refusal "a redaction bundle in a production build is refused while the hold stands" \
+  "redaction's bundle is in a production build" "$checker" "$work" "$probe"
+
+# THE POSITIVE (#137): every needle must be in redaction's own module. The probe module carries all
+# of them (REAL, above), so it passes as the positive; an empty one refuses, naming a needle.
+fresh
+expect_pass "a module carrying every needle is accepted as the positive" "$checker" "$work" "$probe"
+: >"$workroot/empty.wasm"
+fresh
+expect_refusal "a positive that lacks the needles is refused, naming one" \
+  "is not in redaction's own module" "$checker" "$work" "$workroot/empty.wasm"
+fresh
+expect_refusal "a missing positive is refused rather than skipped" \
+  "no redaction module at" "$checker" "$work" "$workroot/no-such-module.wasm"
 
 # --- the checker's own consistency, in copies beside the original ----------------------------------
 # BESIDE, per CLAUDE.md: a copy in a temp directory resolves its repository root wrongly and fails

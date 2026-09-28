@@ -23,25 +23,28 @@ pnpm e2e        # playwright, against a build with the harness route
 pnpm build:harness  # that build, by hand
 ```
 
-The wasm modules come from `bindings/burrow-wasm`, and there are **two**; rebuild both from
-the repository root:
+The wasm modules come from `bindings/burrow-wasm`, and there are **three**; rebuild all of them
+from the repository root:
 
 ```bash
 tools/ci-local.py --only wasm-pack
 ```
 
-That runs the two builds CI runs, each through `tools/build-stamp.py wrap`, which records what
+That runs the three builds CI runs — the base (`pkg/`), the renderer (`pkg-render/`) and
+redaction's (`pkg-redact/`, #137, staged into harness builds only while `/redact-pdf` is held) —
+each through `tools/build-stamp.py wrap`, which records what
 the build read in `pkg*/.build-stamp` (#149). **A bare `wasm-pack build` leaves no stamp, and
 staging refuses a binding without a current one** — that is what stops a `pkg/` left behind by
 another branch from being staged, shipped into `dist/` and measured as this branch's, which
 happened twice before the stamp existed. The same holds for the engines:
 `engines/build-wasm.sh` stamps `engines/vendor/wasm/`.
 
-**Two builds, two output directories, and the crate refuses to be both at once on `wasm32`.**
+**Three builds, three output directories, and the crate refuses to be two at once on `wasm32`.**
 [ADR 0026](../../docs/adr/0026-how-rendering-loads-without-returning-to-the-old-payload.md):
-the base bundle carries qpdf and the render bundle carries PDFium, and separate directories are
-not tidiness — both builds emit a file called `burrow_wasm_bg.wasm`, so one directory would mean
-whichever ran last silently supplying both bundles. That is the failure the whole split exists
+the base bundle carries qpdf and the render bundle carries PDFium; since #137 redaction's bundle
+carries qpdf again with only redaction's Rust (ADR 0029's 2026-09-21 amendment). Separate
+directories are not tidiness — every build emits a file called `burrow_wasm_bg.wasm`, so one
+directory would mean whichever ran last silently supplying every bundle. That is the failure the whole split exists
 to make impossible, arriving through the build rather than through the code.
 
 **`--target no-modules`, not `--target web`.** This file said `web` until M1 PR 4a-i, and
@@ -66,7 +69,7 @@ attribute and resolve from the worker's global scope, because that is the only s
 `no-modules` supports. That is also what makes a leftover import fail at _instantiation_ rather
 than silently — see `bindings/burrow-wasm/src/bridge_qpdf.rs` and `bridge_pdfium.rs`.
 
-After rebuilding **both**, restage — the engine URLs are content-hashed and the CSP is generated
+After rebuilding **all three**, restage — the engine URLs are content-hashed and the CSP is generated
 from them, so a stale manifest means the browser refuses the new module:
 
 ```bash
@@ -143,7 +146,11 @@ second exception without one.
 **Heavy work goes in a Web Worker.** A large PDF must not freeze the tab. Report progress
 and support cancellation.
 
-**There are TWO worker bundles, and one lifecycle.**
+**There are THREE worker bundles, and one lifecycle.** The third is redaction's
+(`burrow-redact-worker.js`, #137), and it is staged into **harness builds only** while
+`/redact-pdf` is held (#125, #180–#183): a production build's manifest, CSP and exports never
+name it, and `tools/check-redaction-not-in-base.sh` refuses one that does. What follows describes
+the two that ship.
 [ADR 0026](../../docs/adr/0026-how-rendering-loads-without-returning-to-the-old-payload.md).
 `burrow-worker.js` carries qpdf and every document operation; `burrow-render-worker.js` carries
 PDFium and is fetched only when a page needs a picture of a page. **A visitor who lands on
@@ -160,7 +167,7 @@ not by care:
   PDFium must be _present_ in the render bundle, or a build that staged none at all would
   satisfy every absence rule and serve a picture strip that cannot render.
 
-**`src/worker/worker-protocol.js` is byte-identical in both bundles**, and that is the point of
+**`src/worker/worker-protocol.js` is byte-identical in every bundle**, and that is the point of
 it: the fail-closed guard, the memoised init promise, the ack, the reply flattening and every
 refusal shape have one implementation. What a bundle supplies is `init`, `KNOWN_OPS` and
 `runOperation`. Adding a file to a bundle means adding it to that bundle's `order` in
@@ -182,7 +189,7 @@ test.
 It is **one implementation, used twice**. `createToolHost(deps, DOCUMENTS | RENDER)` builds a
 host per bundle, and the differences are arguments: which bundle, and how many `starting`
 messages its start-up may use. `EXPECTED_ENGINE_MODULES` stopped being a constant for that
-reason — both bundles fetch two modules today, and a coincidence that holds is one nobody
+reason — every bundle fetches two modules today, and a coincidence that holds is one nobody
 checks. The circuit breakers are independent because the instances are, deliberately: a document
 that kills the renderer must not take merging offline.
 

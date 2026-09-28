@@ -479,6 +479,9 @@ JOBS: list[dict] = [
             " && python3 tools/build-stamp.py wrap pkg-render --"
             " wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-render"
             " --release -- --no-default-features --features render"
+            " && python3 tools/build-stamp.py wrap pkg-redact --"
+            " wasm-pack build bindings/burrow-wasm --target no-modules --out-dir pkg-redact"
+            " --release -- --no-default-features --features redact"
             # IMMEDIATELY AFTER BOTH BUILDS, for the reason the workflow gives: this is the
             # only point at which both generated `.d.ts` files exist.
             " && python3 tools/check-wasm-binding-names.py"
@@ -487,6 +490,7 @@ JOBS: list[dict] = [
         "covers": [
             "wasm-pack:bindings/burrow-wasm:pkg",
             "wasm-pack:bindings/burrow-wasm:pkg-render",
+            "wasm-pack:bindings/burrow-wasm:pkg-redact",
             "tools/build-stamp.py",
             "tools/check-wasm-binding-names.py",
             "tools/test-check-wasm-binding-names.sh",

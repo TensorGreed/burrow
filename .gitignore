@@ -52,6 +52,8 @@ apps/web/.netlify/
 # it -- which is the moment it matters. `tools/check-no-generated-files.sh` is the backstop.
 bindings/burrow-wasm/pkg/
 bindings/burrow-wasm/pkg-render/
+# #137: redaction's own binding, the third artifact.
+bindings/burrow-wasm/pkg-redact/
 
 # --- Corpus: the manifest is tracked, the files are never committed ---
 # Test corpora can be large and can contain third-party or sensitive documents.

@@ -69,6 +69,8 @@ refuses "cargo target output"            "target/debug/burrow"
 refuses "a dist directory"               "apps/web/dist/index.html"
 refuses "a dist-* check directory"       "apps/web/dist-production-check/index.html"
 refuses "wasm-pack pkg output"           "bindings/burrow-wasm/pkg/burrow_wasm.js"
+refuses "the render binding's pkg"      "bindings/burrow-wasm/pkg-render/burrow_wasm.js"
+refuses "redaction's pkg (#137)"         "bindings/burrow-wasm/pkg-redact/burrow_wasm_bg.wasm.d.ts"
 refuses "a compiled wasm module"         "apps/web/public/engines/pdfium.abc123.wasm"
 refuses "an Emscripten .data file"       "spikes/x/engine.data"
 refuses "generated test data"            "corpus/files/big.generated.pdf"
@@ -87,6 +89,9 @@ accepts "a doc"                    "docs/adr/0006-wasm-linking-strategy.md"
 # SUBSTRINGS here, not as path components.
 accepts "a file whose name contains 'dist'" "core/burrow-ops/src/redistribute.rs"
 accepts "a file whose name contains 'results'" "apps/web/src/conformance/results-schema.ts"
+# And the widened wasm-pack pattern still wants a `pkg` or `pkg-<name>` DIRECTORY.
+accepts "a directory named pkgs" "core/burrow-ops/src/pkgs/list.rs"
+accepts "a file named pkg-notes" "docs/pkg-notes.md"
 
 echo
 echo "it refuses to pass while examining nothing"
