@@ -275,11 +275,13 @@ neither is stated in the paragraph above in those words:
 premise that the redaction page holds PDFium for page pictures. No redaction page exists yet
 (`/redact-pdf` is held under #125 and #180–#183), and #136 records the choice between thumbnails
 and page numbers there as **not taken**. If the page ships without page pictures, the runtime
-reading would be that page's only reason to fetch PDFium, and its cost -- the render bundle, about
-2 MB brotli -- has to be weighed again rather than assumed away. The artifacts are not new either
-way; the render bundle does GROW: the reading needs new `__burrow_pdfium_*` bridge functions and
-render-module exports beyond the seven ADR 0026 counts, which `tools/check-wasm-exports.sh`'s
-counterpart for PDFium and ADR 0026's measured table will have to record in #206's change.
+reading would be that page's only reason to fetch PDFium, and its cost -- the render payload,
+about 2.4 MB brotli, 1.9 MB of it `pdfium.wasm` (`apps/web/size-budget.json`'s `render.total`) --
+has to be weighed again rather than assumed away. The artifacts are not new either way; the
+render bundle does GROW: the reading needs new `__burrow_pdfium_*` bridge imports beyond the seven
+ADR 0026 counts, and the bridge glue behind them. ADR 0026's table and the render size budget
+record them in #206's change. Nothing today checks which PDFium exports the render bundle calls:
+`pdfium.wasm` is a prebuilt with 429 `FPDF_*` exports and no allowlist.
 
 **Geometry, never mapping.** The runtime reading asks PDFium where glyphs ARE -- boxes and
 origins computed from the text state and the font's metrics -- and never what they SAY. No
@@ -312,8 +314,9 @@ unavailable is a refusal, not a pass: an unanswered second opinion is not a clea
 **And the copy never touches the page.** Workers are created by the page, so the obvious route --
 redaction's worker posts the copy to the page, the page forwards it -- hands the page unverified
 bytes, which is exactly what R8 forbids. The copy travels over a `MessageChannel` port given to
-both workers, worker to worker. `redaction-emission.spec.ts` records what redaction's worker posts
-to the page; a `port.postMessage` would walk past it, so #206's change must extend that spec to
+both workers, worker to worker. `redaction-emission.spec.ts` -- R8's check, being written for
+#137 -- is specified to record what redaction's worker posts to the page; a `port.postMessage`
+would walk past it, so #206's change must extend that spec to
 the port, or route nothing else through it.
 
 **What this leaves as it was.** The test-time oracle stays, and is what the runtime rule is
@@ -732,7 +735,7 @@ rejection stands on it and on admissibility.) Cheap —
 R10 now states its property -- the bytes verified proven identical to the bytes emitted -- and a
 hash binding satisfies it (ADR 0006's 2026-09-27 amendment), so a PDFium geometry reading in the
 render worker is admitted as a second opinion by §6's 2026-09-27 amendment. The rejection stands
-for finding and verifying TEXT, on admissibility alone.)*
+for finding and verifying TEXT, on admissibility, the fatal ground.)*
 
 **Render every page and check the region is blank.** Rejected on cost and on meaning. Roughly
 3.8 s for 137 *empty* pages at 4×, against ADR 0027 §2a's measured 34 s and 819 MB for one
