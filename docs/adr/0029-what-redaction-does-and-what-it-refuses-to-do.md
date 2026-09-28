@@ -929,6 +929,85 @@ and WebKit: 107 documents and 463 cases, every one matching on the day it landed
   a refusal under another rule's name, and a ceiling at another stage;
 - by hand-written replies, one per compared field.
 
+**The count is gated, and so is each verdict.** Each document test records, for every case it
+ran, what the web was *observed* to reply: the kind, the rule name, the ceiling's fields and both
+digests. It records no prose and no bytes. The ledger judges each observation itself, against the
+outcome the golden file records under that case's name. The golden file is read a second time for
+this, independently of the parse the tests iterate. A case fails by name if it was not compared, or
+was compared and diverged, unless it is declared skipped in `DECLARED_SKIPS` with a reason.
+`DECLARED_SKIPS` is empty: kind-only is a weaker comparison, not a skip. The report, in all three
+browsers, reads *"463 cases in the golden file: 463 compared (212 by document, 215 by rule, 12 by
+limit, 24 by kind only), 0 diverged, 0 skipped"*.
+
+The judgement runs twice over the same records: in the spec's last test, and after the run in
+`tools/check-redaction-differential-ledger.sh`, a CI step. The second exists because anything
+inside the spec can be parked. A review showed this three times, each defect getting a divergence
+to green:
+1. The first version recorded before the verdict, so a divergent document test parked with
+   `test.fail()` or a runtime `test.skip` passed while the ledger said "0 diverged".
+2. The second recorded the document test's own `agreed` flag, so a verdict computed against the
+   wrong case was trusted.
+3. With both fixed, parking the ledger test as well still turned the run green.
+
+A fourth defect was in the checker itself. It read the list of browsers from the config with a
+regex, and both reviews added a project the regex missed. The code review showed the undercount:
+Playwright listed five projects and the checker named three. The security review showed what that
+costs: a hyphenated project whose ledger held 107 parked divergences, and the checker printing OK
+over the other three. The list now comes from Playwright (`playwright test --list --reporter=json`), and the
+ledgers on disk must be exactly that set. A browser with no ledger is refused by name, and so is a
+ledger from a browser the list does not name.
+
+The checker imports the spec's own `reconcile` through Node's type stripping, so there is one
+judgement, not two copies of it.
+
+**What it trusts:** that an observation came from the worker. A document test that fabricated
+observations to match the golden file would pass, and nothing here can tell.
+
+Why this was needed: before the ledger existed, a status note recorded this differential as
+*"372/372"*. That was the test count of an earlier revision, and it read as a case count 91 short
+of 463. Nothing in the spec could have told the two apart.
+
+**How the ledger is shown to fail.** `tools/test-redaction-differential-ledger.sh` runs seven
+copies of the spec, in an output directory apart from the real run's:
+- three silent drops, in the test body, the plan and the parser;
+- a divergence the document tests park;
+- the same, with the ledger test parked too, where Playwright passes and only the checker can
+  refuse;
+- a verdict bound to the wrong case, where every document test passes;
+- a declared skip, which must pass and be named with its reason.
+
+Each defect must be refused by name, by the ledger test where it is live and by the checker in
+every case. Four probes then run the checker with Playwright's project list and the real spec's
+ledger names, over ledgers copied from the near-miss run:
+- every browser present, which must pass;
+- a browser missing;
+- a ledger from a browser the config does not run;
+- a copy of the config carrying the project the regex missed.
+
+**Four ablations, stated exactly.** The first two ran before the checker's probes existed, against
+the seven cases then in the script:
+- *The ledger stops judging* (`judge` replaced by `null` in `reconcile`). The three divergence
+  cases went red because neither the ledger nor the checker named them. The drops went red only
+  because the spec's hand-written probes of `reconcile` failed in every run, which says nothing
+  about the drops.
+- *The checker never refuses.* Six cases went red, including the parked-ledger case where nothing
+  else could refuse. The declared skip stayed green, which is correct.
+- *The regex project list restored.* Exactly one of eleven went red: the probe carrying the project
+  it cannot see.
+- *The extra-ledger rule removed.* Exactly one of eleven went red: the probe with an unconfigured
+  browser's ledger.
+
+**Residues:**
+- **Outside CI.** Playwright's UI mode keeps the output directory between runs, so re-running the
+  ledger test alone there reads the previous run's record. The command line, and so CI, empties it
+  on every run. The first test here removes it again.
+- **A project that excludes the spec.** A browser project added with a `testMatch` or `testIgnore`
+  that leaves this spec out would be refused as "no ledger". None exists today, and failing is the
+  safe direction. If one is ever wanted, the list should come from the listing's suites for this
+  spec rather than from `config.projects`.
+- **An edit to the checker alone.** Its `.sh` and `.mjs` sit under no job's derived paths, so
+  `--changed` runs every job for them. That rests on the orphan rule, not on a path claim.
+
 [#130]: https://github.com/TensorGreed/burrow/issues/130
 [#131]: https://github.com/TensorGreed/burrow/issues/131
 [#137]: https://github.com/TensorGreed/burrow/issues/137

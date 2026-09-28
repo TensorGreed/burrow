@@ -778,7 +778,10 @@ other.
 
 **The browser differential exists, since 2026-09-28 (#137).** Every case the native redaction
 golden file pins, 463 over 107 documents, is held to the web engines in all three browsers. It is
-compared by digest, typed kind and rule name. ADR 0029's #137 notes have the detail.
+compared by digest, typed kind and rule name. The count and each verdict are gated, inside the
+spec and again by `tools/check-redaction-differential-ledger.sh` from outside it. A case not
+compared, or compared and diverged, fails by name unless it is declared skipped with a reason.
+ADR 0029's #137 notes have the detail.
 
 **R8's and R9's checks exist, since 2026-09-27 (#137).** Both have been shown to fail, and both
 run in all three browsers.

@@ -1095,6 +1095,21 @@ jobs:
       - name: Engine end-to-end tests
         working-directory: apps/web
         run: pnpm exec playwright test
+      # THE DIFFERENTIAL'S LEDGER, FROM OUTSIDE THE SPEC (#137). The step above records what the
+      # web replied for every case in `tests/redaction/outcomes.tsv`, per browser, and its last test
+      # judges it -- but a test inside the spec can be parked with `test.fail()`, and a parked
+      # ledger test over a divergence is green. This judges the same records with the same
+      # `reconcile`, whatever any test was marked. IMMEDIATELY AFTER the run, because it reads that
+      # run's `test-results/`; the self-test below writes its own runs elsewhere.
+      - name: Every case in every browser was compared and agreed, or is declared skipped
+        run: tools/check-redaction-differential-ledger.sh
+
+      # AND BOTH ARE SHOWN TO REFUSE. Copies of the spec with a silent drop in the test body, the
+      # plan and the parser; a divergence the document tests park; the same with the ledger test
+      # parked too; a verdict bound to the wrong case. Each is refused by name, with a declared
+      # skip beside them that must pass. Chromium only: it tests the ledger, not the browsers.
+      - name: The redaction differential's ledger and its checker refuse every planted defect
+        run: tools/test-redaction-differential-ledger.sh
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

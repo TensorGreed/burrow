@@ -562,9 +562,24 @@ JOBS: list[dict] = [
         "why": "the deploy origin gate still refuses every mismatch it is supposed to",
     },
     {
+        # THE RUN AND THE CHECK THAT READS IT, as one job, because CI runs them as consecutive
+        # steps of one. As two jobs `--changed` could select the checker without the run and it
+        # judged a stale `test-results/` (#137). `paths_as` narrows it as `pnpm e2e` alone was.
         "name": "web-e2e",
-        "run": "cd apps/web && pnpm e2e",
-        "covers": ["pnpm:e2e"],
+        "run": "tools/run-web-e2e.sh",
+        "covers": ["pnpm:e2e", "tools/check-redaction-differential-ledger.sh"],
+        "paths_as": "cd apps/web && pnpm e2e",
+        "slow": True,
+    },
+    {
+        # #137. A Playwright run over copies of the differential's spec, so it narrows as
+        # `web-e2e` does: `paths_as` names the command it wraps, checked against the script. It
+        # writes its runs to a temporary directory, so it cannot empty `web-e2e`'s.
+        "name": "differential-ledger",
+        "run": "tools/test-redaction-differential-ledger.sh",
+        "covers": ["tools/test-redaction-differential-ledger.sh"],
+        "paths_as": "cd apps/web && pnpm exec playwright test",
+        "why": "the redaction differential's ledger and its checker refuse every planted defect",
         "slow": True,
     },
 ]
