@@ -476,15 +476,6 @@ pub(crate) fn poisoned(detail: &str) -> Error {
     Error::Malformed(format!("pdf redaction [document-poisoned]: {detail}"))
 }
 
-/// Clear a region on one page, verify the emitted bytes, and return them.
-///
-/// The body of [`crate::PageRedactor::redact_page`], for any engine that opens a document for
-/// redaction. Written once (#191): the read-back is the same engine's, through a fresh document,
-/// and the check it runs is the same on both platforms.
-///
-/// # Errors
-///
-/// As [`crate::PageRedactor::redact_page`].
 /// The refusal for an input the engine repaired while reading it (#224), on both engines alike.
 ///
 /// qpdf repairs some damage silently -- recovery is off, and it still does -- and a repair can
@@ -492,8 +483,11 @@ pub(crate) fn poisoned(detail: &str) -> Error {
 /// the pages, after which a page that overrode one with `null` looks as though it declared the
 /// ancestor's value, and `[page-attribute-inherited]` cannot fire. qpdf's warnings are the only
 /// channel that reports a repair, and only whether one happened is read: never its text, which
-/// can carry file-derived content. Refusing on any warning was the owner's rule for a measured
-/// cost under 2%; it was 4 of 224 local documents, every one a test fixture.
+/// can carry file-derived content. Refusing on any warning raised AT THE OPEN -- the read and the
+/// page count, where the page tree is rebuilt -- was the owner's rule for a measured cost under
+/// 2%; it was 4 of 224 local documents, every one a test fixture. A warning qpdf raises later,
+/// lazily during the walk, is not read: review found no leak through the one such shape it
+/// built, and a second check before the write is a decision not yet taken.
 pub(crate) fn repaired_by_the_engine() -> Error {
     Error::Unsupported(
         "pdf redaction [engine-repaired-input]: the PDF engine repaired this document while \
@@ -503,6 +497,15 @@ pub(crate) fn repaired_by_the_engine() -> Error {
     )
 }
 
+/// Clear a region on one page, verify the emitted bytes, and return them.
+///
+/// The body of [`crate::PageRedactor::redact_page`], for any engine that opens a document for
+/// redaction. Written once (#191): the read-back is the same engine's, through a fresh document,
+/// and the check it runs is the same on both platforms.
+///
+/// # Errors
+///
+/// As [`crate::PageRedactor::redact_page`].
 pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     engine: &E,
     bytes: &[u8],

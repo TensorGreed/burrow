@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 45] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 50] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2452,7 +2452,23 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 45] = [
         Some("page-frame-unreadable"),
     ),
     ("evade-user-unit-two.pdf", Some("user-unit-not-one")),
+    (
+        "evade-cropbox-with-five-items.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-cropbox-past-32-bits.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-mediabox-past-32-bits.pdf",
+        Some("page-frame-unreadable"),
+    ),
     ("nearmiss-page-frame-plainly-declared.pdf", None),
+    (
+        "evade-crop-wider-than-both-media-boxes.pdf",
+        Some("media-box-unverified"),
+    ),
     (
         "evade-junk-kid-over-a-null-rotate.pdf",
         Some("engine-repaired-input"),
@@ -2467,6 +2483,10 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 45] = [
     ),
     (
         "evade-junk-kid-over-null-resources.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-font-repaired-during-the-walk.pdf",
         Some("engine-repaired-input"),
     ),
     ("nearmiss-kids-all-pages.pdf", None),

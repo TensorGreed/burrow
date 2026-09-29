@@ -57,6 +57,7 @@ use super::WebQpdf;
 use super::bridge::QpdfPtr;
 use super::handle::WebHandle;
 use super::qpdf::Session;
+use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 
@@ -146,6 +147,10 @@ impl<'e> PdfDocument for WebRedactionDocument<'e> {
 
     fn page_count(&self) -> Result<u64> {
         self.session.page_count()
+    }
+
+    fn repaired(&self) -> bool {
+        self.session.repaired()
     }
 
     fn page(&self, index: usize) -> Result<Self::Object<'_>> {
@@ -244,7 +249,13 @@ impl PdfObject for WebObject<'_> {
         self.handle.type_code()
     }
 
+    // TYPE-CHECKED BEFORE THE CALL, as natively (#224): qpdf warns on a read of the wrong type
+    // or out of range, and a warning at the write is refused as a repair.
+
     fn key(&self, key: &Name) -> Self {
+        if self.handle.type_code() != object_type::DICTIONARY {
+            return self.null_beside();
+        }
         match self.document.key_ptr(key) {
             Some(ptr) => self.beside(self.handle.key(ptr)),
             None => self.nothing(),
@@ -252,8 +263,11 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn name(&self) -> Result<Name> {
-        // AS NATIVELY: the engine's answer, copied out, then read as a name. A non-name comes back
-        // as an empty string, which has no slash, so this is `Err` for it -- and it does not drain.
+        if self.handle.type_code() != object_type::NAME {
+            return Name::from_canonical(&[]);
+        }
+        // AS NATIVELY: the engine's answer, copied out, then read as a name. A non-name never
+        // reaches the engine, which would answer `/QPDFFakeName`; it is `Err` above. No drain.
         let ptr = self.handle.name();
         let text = if ptr.is_null() {
             Vec::new()
@@ -264,6 +278,9 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn integer_value(&self) -> i64 {
+        if self.handle.type_code() != object_type::INTEGER {
+            return 0;
+        }
         self.handle.int_value()
     }
 
@@ -277,10 +294,16 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn array_len(&self) -> c_int {
+        if self.handle.type_code() != object_type::ARRAY {
+            return 0;
+        }
         self.handle.array_len()
     }
 
     fn array_item(&self, at: c_int) -> Self {
+        if at < 0 || at >= self.array_len() {
+            return self.null_beside();
+        }
         self.beside(self.handle.array_item(at))
     }
 

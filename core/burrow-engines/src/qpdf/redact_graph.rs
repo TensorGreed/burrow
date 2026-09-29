@@ -15,6 +15,7 @@ use burrow_types::{Deadline, Error, Result};
 use super::extract::{self, ObjectStreams};
 use super::handle::ObjectHandle;
 use super::{Document, Qpdf};
+use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 
@@ -44,6 +45,10 @@ impl PdfDocument for Document {
         // The document is its own source: redaction edits in place.
         extract::write_out(self, self, ObjectStreams::Preserve)
     }
+
+    fn repaired(&self) -> bool {
+        Document::repaired(self)
+    }
 }
 
 /// Refuse a second handle from another document, before it reaches the C API.
@@ -66,15 +71,29 @@ impl PdfObject for ObjectHandle<'_> {
         Self::type_code(self)
     }
 
+    // TYPE-CHECKED BEFORE THE CALL, in the five readers below. qpdf answers a read of the wrong
+    // type -- or an array read out of range -- with a fallback *and a warning*, and a warning at
+    // the write is refused as a repair (#224). Without the check, burrow's own read of a `/Font`
+    // entry that is an integer was refused as a document the engine repaired.
+
     fn key(&self, key: &Name) -> Self {
+        if Self::type_code(self) != object_type::DICTIONARY {
+            return Self::null_beside(self);
+        }
         Self::key(self, key)
     }
 
     fn name(&self) -> Result<Name> {
+        if Self::type_code(self) != object_type::NAME {
+            return Name::from_canonical(&[]);
+        }
         Self::name(self)
     }
 
     fn integer_value(&self) -> i64 {
+        if Self::type_code(self) != object_type::INTEGER {
+            return 0;
+        }
         Self::integer_value(self)
     }
 
@@ -83,10 +102,16 @@ impl PdfObject for ObjectHandle<'_> {
     }
 
     fn array_len(&self) -> c_int {
+        if Self::type_code(self) != object_type::ARRAY {
+            return 0;
+        }
         Self::array_len(self)
     }
 
     fn array_item(&self, at: c_int) -> Self {
+        if at < 0 || at >= PdfObject::array_len(self) {
+            return Self::null_beside(self);
+        }
         Self::array_item(self, at)
     }
 
@@ -187,7 +212,6 @@ mod tests {
 
     use crate::codes::qpdf::object_type;
     use crate::minimal_pdf;
-    use crate::name::Name;
     use crate::redact::graph::{PdfDocument, PdfObject};
 
     /// The drain inside `PdfDocument::page` reports what the document latched before it.
@@ -218,11 +242,12 @@ mod tests {
                 .expect("opens");
         {
             let page = PdfDocument::page(&document, 0).expect("page 0");
-            // A NULL WITH NO OWNING DOCUMENT, which is what `qpdf_oh_new_null` makes. qpdf's
-            // `typeWarning` raises for such an object rather than warning, and the error latches.
+            // A STREAM'S DICTIONARY, ASKED OF A NULL: qpdf raises for it, and the error latches.
+            // Not a key of the null, which this used until #224: the reader no longer hands a
+            // key of a non-dictionary to the engine at all.
             let null = PdfObject::null_beside(&page);
             assert_eq!(PdfObject::type_code(&null), object_type::NULL);
-            let _ = PdfObject::key(&null, &Name::literal(b"/Anything\0"));
+            let _ = PdfObject::stream_dict(&null);
         }
 
         let latched = PdfDocument::page(&document, 0);
@@ -254,9 +279,9 @@ mod tests {
         let page = PdfDocument::page(&document, 0).expect("page 0");
         PdfObject::drained(&page).expect("nothing is latched before the planted error");
 
-        // Latched as in the page test above: a key of a null with no owning document.
+        // Latched as in the page test above: a stream's dictionary, asked of a null.
         let null = PdfObject::null_beside(&page);
-        let _ = PdfObject::key(&null, &Name::literal(b"/Anything\0"));
+        let _ = PdfObject::stream_dict(&null);
 
         assert!(
             PdfObject::drained(&page).is_err(),

@@ -1351,6 +1351,80 @@ mod wiring {
     }
 
     #[test]
+    fn a_crop_wider_than_both_media_boxes_is_refused() {
+        // #224, code review round 2: burrow clips the crop to the inherited box, PDFium to US
+        // Letter -- both 612 x 792, 100 points apart. The size agreed and the secret stayed.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(
+                    &format!("{RESOURCES} /MediaBox null /CropBox [0 0 812 792]"),
+                    "/MediaBox [100 0 712 792]",
+                ),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a crop wider than both media boxes",
+        );
+    }
+
+    #[test]
+    fn a_renderer_that_cannot_answer_is_this_rules_refusal_and_a_limit_stays_a_limit() {
+        // #224, code review round 2: the mapping of the renderer's errors had no witness -- no
+        // renderer in the suite ever failed. Asked directly, with each failure planted.
+        use crate::redact::graph::{OpensForRedaction, PdfDocument};
+        let bytes = page_under_a_tree(RESOURCES, BOX);
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let (document, _) = super::super::Qpdf
+            .open_for_redaction(&bytes, &options)
+            .expect("opens");
+        let page = document.page(0).expect("page 0");
+        let failing = crate::redact::frame::check_inherited_media_box(&page, || {
+            Err(burrow_types::Error::Malformed(
+                "a renderer that could not open it".to_owned(),
+            ))
+        });
+        assert!(
+            matches!(&failing, Err(burrow_types::Error::Unsupported(m)) if m.contains("[media-box-unverified]")),
+            "a renderer failure must refuse by this rule: {failing:?}"
+        );
+        let limited = crate::redact::frame::check_inherited_media_box(&page, || {
+            Err(burrow_types::Error::LimitExceeded {
+                limit: "max_duration_ms",
+                stage: burrow_types::Stage::Deadline,
+                requested: 2,
+                allowed: 1,
+            })
+        });
+        assert!(
+            matches!(limited, Err(burrow_types::Error::LimitExceeded { .. })),
+            "a limit the renderer hits is the operation's limit, not a verdict: {limited:?}"
+        );
+    }
+
+    #[test]
+    fn a_repair_during_the_walk_is_refused_before_the_write() {
+        // #224, security review round 2: qpdf reads a font lazily, so a stray `)` in its
+        // `/Widths` is repaired -- and warned about -- during the walk, after the open's check.
+        // PDFium ends the array at the `)` instead, and the two placed the glyphs differently.
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
+            stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+                 /FirstChar 31 /LastChar 94 /Widths [0 ) 9000 {}] >>",
+                "556 ".repeat(62)
+            ),
+        ]);
+        refused_by(
+            redact_in(&bytes, UPPER_BAND),
+            "engine-repaired-input",
+            "a font qpdf repaired while the walk read it",
+        );
+    }
+
+    #[test]
     fn the_renderer_is_asked_about_the_page_being_redacted() {
         // #224, round 2: page 0 declares 300 x 400; page 1 sets its /MediaBox to null over the
         // same box on /Pages, so PDFium shows page 1 at US Letter. A check that asked about page

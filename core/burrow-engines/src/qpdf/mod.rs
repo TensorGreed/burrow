@@ -142,12 +142,6 @@ impl Drop for Document {
 }
 
 impl Document {
-    /// Whether qpdf is holding an error, and what it is.
-    ///
-    /// Called after **every** FFI call, whatever that call returned. `qpdf-c.h:70-73`:
-    /// functions that do not return a code report errors only this way, and even those
-    /// that do are documented as safe to check like this. Trusting return values alone
-    /// would miss half the failure modes.
     /// Whether qpdf recorded any warning while this document was read and its pages counted --
     /// that is, whether it repaired anything on the way (#224). Consumes nothing a later call
     /// needs: redaction asks once, after the open, and refuses on `true`.
@@ -157,6 +151,12 @@ impl Document {
         unsafe { ffi::qpdf_more_warnings(self.data) != 0 }
     }
 
+    /// Whether qpdf is holding an error, and what it is.
+    ///
+    /// Called after **every** FFI call, whatever that call returned. `qpdf-c.h:70-73`:
+    /// functions that do not return a code report errors only this way, and even those
+    /// that do are documented as safe to check like this. Trusting return values alone
+    /// would miss half the failure modes.
     pub(super) fn take_error(&self) -> Option<Error> {
         // SAFETY: `self.data` is a live handle owned by this struct.
         unsafe { Self::take_error_on(self.data) }

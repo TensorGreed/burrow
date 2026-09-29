@@ -2159,3 +2159,98 @@ pages = 1
   notes = """
 qpdf pushes the ancestor's resources onto the page, hiding the null (#224).
 """
+
+[[fixture]]
+name = "evade-cropbox-with-five-items"
+file = "generated/evade-cropbox-with-five-items.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox of five items — evasion"
+  canary = "BURROW-EVADE-CROP-FIVE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads a five-item box as no box; burrow read the first four (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-crop-wider-than-both-media-boxes"
+file = "generated/evade-crop-wider-than-both-media-boxes.pdf"
+kind = "hand-built"
+probes_refusal = "media box unverified"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a crop wider than both media boxes, over a null /MediaBox — evasion"
+  canary = "BURROW-EVADE-CROP-WIDER"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Clipped to different boxes by the two readers, the same size 100 points apart (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-cropbox-past-32-bits"
+file = "generated/evade-cropbox-past-32-bits.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /CropBox edge past 32 bits — evasion"
+  canary = "BURROW-EVADE-CROP-32"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads the edge as 0; qpdf keeps it and warns about nothing (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-mediabox-past-32-bits"
+file = "generated/evade-mediabox-past-32-bits.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an own /MediaBox edge past 32 bits — evasion"
+  canary = "BURROW-EVADE-MEDIA-32"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+An empty box to PDFium, which shows US Letter; burrow read it as written (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-font-repaired-during-the-walk"
+file = "generated/evade-font-repaired-during-the-walk.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a font /Widths qpdf repairs lazily, during the walk — evasion"
+  canary = "BURROW-EVADE-FONT-REPAIRED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Repaired after the open's warning check; refused by the one before the write (#224, round 2).
+"""

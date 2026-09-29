@@ -784,6 +784,14 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
 
     fn write(&mut self) -> Result<Vec<u8>> {
         self.deadline.checkpoint(self.clock.as_ref())?;
+        // A REPAIR DURING THE WALK IS REFUSED TOO (#224, security review round 2). qpdf reads
+        // fonts, resources and forms lazily, after the open's check: a font whose `/Widths`
+        // held a stray `)` was repaired to a null there, PDFium ended the array at it, and the
+        // two placed the glyphs differently -- `Ok` with the secret kept. Asked once more here,
+        // after every read and before any byte leaves.
+        if self.document.repaired() {
+            return Err(super::repaired_by_the_engine());
+        }
         self.document.write()
     }
 }

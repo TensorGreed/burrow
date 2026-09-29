@@ -135,8 +135,9 @@ pub(crate) fn of<O: PdfObject>(page: &O) -> Result<PageFrame> {
 enum Found {
     /// On the page itself.
     Page,
-    /// On an ancestor, because the page's own value is absent -- or null, or not a value this
-    /// reads, which the engine cannot tell apart from absent (#224).
+    /// On an ancestor, because the page's own value is absent -- or null, which the engine cannot
+    /// tell apart from absent (#224). A present value the reader does not take is refused where
+    /// it is, not climbed past, so it never lands here.
     Ancestor,
     /// Nowhere up the tree.
     Nowhere,
@@ -230,6 +231,16 @@ pub(crate) fn check_inherited_media_box<O: PdfObject>(
         ((a.right - a.left) - (b.right - b.left)).abs() < SIZE_TOLERANCE
             && ((a.top - a.bottom) - (b.top - b.bottom)).abs() < SIZE_TOLERANCE
     };
+    // THE PAGE'S OWN CROP DECIDES ONLY IF BURROW SHOWS ALL OF IT. With the crop clipped to the
+    // media box, a crop wider than both boxes showed [100 0 712 792] here and [0 0 612 792] in
+    // PDFium -- the same size, 100 points apart -- and `Ok` kept the secret (#224, code review
+    // round 2). If burrow shows the whole crop C, PDFium shows C clipped to its own box, which
+    // lies inside C, so an equal size is an equal box; otherwise a size cannot decide.
+    if let Some(crop) = own_crop
+        && frame.display_box != crop
+    {
+        return Err(unverified());
+    }
     if own_crop.is_none()
         && inherited_box != RENDERER_NULL_MEDIA_BOX
         && same_size(&inherited_box, &RENDERER_NULL_MEDIA_BOX)
@@ -315,8 +326,7 @@ fn read_box<O: PdfObject>(node: &O, key: &Name, label: &str) -> Result<Option<Re
     }
     let mut corners = [0.0_f64; 4];
     for (at, corner) in (0..4).zip(corners.iter_mut()) {
-        *corner = one_number(&value.array_item(at))
-            .ok_or_else(|| unreadable(&format!("a {label} that is not four numbers")))?;
+        *corner = one_number(&value.array_item(at), label, "that is not four numbers")?;
     }
     let [left, bottom, right, top] = corners;
     Ok(Some(Rect {
@@ -333,20 +343,38 @@ fn read_number<O: PdfObject>(node: &O, key: &Name, label: &str) -> Result<Option
     if value.type_code() == object_type::NULL {
         return Ok(None);
     }
-    one_number(&value)
-        .map(Some)
-        .ok_or_else(|| unreadable(&format!("a {label} that is not a number")))
+    one_number(&value, label, "that is not a number").map(Some)
 }
 
-/// The one finite number an integer or real handle holds, through its text: there is no trapped
-/// accessor for a real, and `unparse` resolves an indirect reference to the value it names.
-fn one_number<O: PdfObject>(handle: &O) -> Option<f64> {
+/// The largest magnitude a frame value may have: past 2^24 a 32-bit float -- PDFium's -- no
+/// longer holds every whole number, so the two readers stop agreeing on the box (#224, round 2).
+const MAX_FRAME_MAGNITUDE: f64 = 16_777_216.0;
+
+/// The one number an integer or real handle holds, through its text -- there is no trapped
+/// accessor for a real, and `unparse` resolves an indirect reference to the value it names --
+/// and only if both readers read it as that number.
+///
+/// # Within 32 bits and float precision (#224, round 2)
+///
+/// PDFium reads a whole number below -2^31 or above 2^32 - 1 as 0 (measured to the edge), and
+/// keeps coordinates as 32-bit floats. qpdf keeps the full value and raises no warning. So a box
+/// of `[100 0 4294967596 400]` was a 100-wide page to PDFium and a clipped, much wider one here,
+/// and a region drawn around the visible secret returned `Ok` with it kept, natively and on the
+/// web. A value past either bound is not read, and is refused as out of range rather than as
+/// not a number: it is one, and the message says what was wrong with it.
+fn one_number<O: PdfObject>(handle: &O, label: &str, not_a_number: &str) -> Result<f64> {
+    let not_a_number = || unreadable(&format!("a {label} {not_a_number}"));
     let code = handle.type_code();
     if code != object_type::INTEGER && code != object_type::REAL {
-        return None;
+        return Err(not_a_number());
     }
-    match crate::pdfsyntax::ops::numbers_in(&handle.unparse())[..] {
-        [number] if number.is_finite() => Some(number),
-        _ => None,
+    let [number] = crate::pdfsyntax::ops::numbers_in(&handle.unparse())[..] else {
+        return Err(not_a_number());
+    };
+    if !number.is_finite() || number.abs() > MAX_FRAME_MAGNITUDE {
+        return Err(unreadable(&format!(
+            "a {label} larger than any reader agrees on"
+        )));
     }
+    Ok(number)
 }

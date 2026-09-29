@@ -116,8 +116,8 @@ impl<O: PdfObject> PageResources<O> {
     /// This section claimed `Error::Malformed` for that case and the function does not raise
     /// one: the climb falls out of its bounded loop and returns the empty dictionary. The
     /// direction is safe today — the resolver then refuses `font-missing` on the first glyph —
-    /// but `frame::inherited_numbers` *does* refuse in the same situation, so the two
-    /// differ and only one of them said so.
+    /// but `frame::inherited` *does* refuse in the same situation, so the two differ and only
+    /// one of them said so.
     ///
     /// Corrected rather than changed: making this refuse would change what a document with a
     /// long `/Parent` chain does, which is a behaviour question rather than a doc one.

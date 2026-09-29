@@ -1776,6 +1776,46 @@ def evade_user_unit_two() -> bytes:
     return _frame_page(b" /UserUnit 2", "USER-UNIT")
 
 
+def evade_cropbox_with_five_items() -> bytes:
+    """`/CropBox [0 0 w h/2 9]`: PDFium reads a box of five items as no box (#224, round 2)."""
+    return _frame_page(
+        b" /CropBox [0 0 " + f"{PAGE_W} {PAGE_H // 2}".encode() + b" 9]", "CROP-FIVE"
+    )
+
+
+def evade_cropbox_past_32_bits() -> bytes:
+    """`/CropBox [100 0 4294967596 h]`: PDFium reads the right edge as 0, a 100-wide page (#224)."""
+    return _frame_page(b" /CropBox [100 0 4294967596 " + str(PAGE_H).encode() + b"]", "CROP-32")
+
+
+def evade_mediabox_past_32_bits() -> bytes:
+    """An own `/MediaBox [0 0 4294967596 h]`: an empty box to PDFium, which shows US Letter."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("MEDIA-32") + keep_line_ops(),
+        b" /MediaBox [0 0 4294967596 " + str(PAGE_H).encode() + b"]" + _own_resources(helv),
+        b"",
+    )
+
+
+def evade_crop_wider_than_both_media_boxes() -> bytes:
+    """A null `/MediaBox` over an offset Letter-wide box, and a crop wider than both (#224).
+
+    burrow clips the crop to the inherited box, PDFium to US Letter: both 612 wide, 100 points
+    apart, so a size agreed while the frames did not -- `Ok` with the canary kept.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("CROP-WIDER") + keep_line_ops(),
+        b" /MediaBox null /CropBox [0 0 812 792]" + _own_resources(helv),
+        b" /MediaBox [100 0 712 792]",
+    )
+
+
 def nearmiss_page_frame_plainly_declared() -> bytes:
     """A crop inside the media box, `/Rotate 0` and `/UserUnit 1`, all on the page. MUST redact.
 
@@ -1839,6 +1879,26 @@ def evade_junk_kid_over_null_resources() -> bytes:
         b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /Resources null",
         b" /Resources << /Font << /Helv " + str(zero).encode() + b" 0 R >> >>",
         junk_kid=b" 7",
+    )
+
+
+def evade_font_repaired_during_the_walk() -> bytes:
+    """A font whose `/Widths` holds a stray `)`, which qpdf repairs only when the walk reads it.
+
+    The repair comes after the open's warning check, so it needs the second one, just before the
+    write (#224, round 2). PDFium ends the array at the `)` and places the glyphs otherwise.
+    """
+    pdf = Pdf()
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv /FirstChar 31"
+        b" /LastChar 126 /Widths [0 ) 9000 " + b"556 " * 94 + b"] >>"
+    )
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("FONT-REPAIRED") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H)
+        + b" /Resources << /Font << /Helv " + str(font).encode() + b" 0 R >> >>",
+        b"",
     )
 
 
@@ -2074,11 +2134,16 @@ CASES: list[tuple[str, str]] = [
     ("evade-cropbox-as-dictionary", "page frame read"),
     ("evade-rotate-past-the-integer-range", "page frame read"),
     ("evade-user-unit-two", "page frame read"),
+    ("evade-cropbox-with-five-items", "page frame read"),
+    ("evade-cropbox-past-32-bits", "page frame read"),
+    ("evade-mediabox-past-32-bits", "page frame read"),
     ("nearmiss-page-frame-plainly-declared", "page frame read"),
+    ("evade-crop-wider-than-both-media-boxes", "media box unverified"),
     ("evade-junk-kid-over-a-null-rotate", "engine repaired"),
     ("evade-junk-kid-over-a-null-mediabox", "engine repaired"),
     ("evade-junk-kid-over-a-null-cropbox", "engine repaired"),
     ("evade-junk-kid-over-null-resources", "engine repaired"),
+    ("evade-font-repaired-during-the-walk", "engine repaired"),
     ("nearmiss-kids-all-pages", "engine repaired"),
 ]
 
@@ -2151,11 +2216,16 @@ BUILDERS = {
     "evade-rotate-past-the-integer-range": evade_rotate_past_the_integer_range,
     "evade-user-unit-two": evade_user_unit_two,
     "nearmiss-page-frame-plainly-declared": nearmiss_page_frame_plainly_declared,
+    "evade-cropbox-with-five-items": evade_cropbox_with_five_items,
+    "evade-crop-wider-than-both-media-boxes": evade_crop_wider_than_both_media_boxes,
+    "evade-cropbox-past-32-bits": evade_cropbox_past_32_bits,
+    "evade-mediabox-past-32-bits": evade_mediabox_past_32_bits,
     "evade-junk-kid-over-a-null-rotate": evade_junk_kid_over_a_null_rotate,
     "evade-junk-kid-over-a-null-mediabox": evade_junk_kid_over_a_null_mediabox,
     "evade-junk-kid-over-a-null-cropbox": evade_junk_kid_over_a_null_cropbox,
     "evade-junk-kid-over-null-resources": evade_junk_kid_over_null_resources,
     "nearmiss-kids-all-pages": nearmiss_kids_all_pages,
+    "evade-font-repaired-during-the-walk": evade_font_repaired_during_the_walk,
 }
 
 

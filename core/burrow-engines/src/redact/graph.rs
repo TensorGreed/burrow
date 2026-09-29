@@ -126,6 +126,13 @@ pub(crate) trait PdfDocument {
     ///
     /// Whatever the engine reports.
     fn write(&self) -> Result<Vec<u8>>;
+
+    /// Whether the engine has recorded a warning -- a repair -- it has not yet handed out (#224).
+    ///
+    /// Asked at the open and again just before the write: qpdf parses fonts, resources and
+    /// forms lazily, so a repair can happen during the walk, after the open's check. Only
+    /// whether, never what: see `redact::repaired_by_the_engine`.
+    fn repaired(&self) -> bool;
 }
 
 /// A handle to one object, bound to the document that issued it.
@@ -146,16 +153,19 @@ pub(crate) trait PdfObject: Sized {
     /// `codes::qpdf::object_type` names them. Asked before any value is read.
     fn type_code(&self) -> c_int;
 
-    /// The value at `key`. A null object when the key is absent or this is not a dictionary;
-    /// qpdf raises for neither, though it may latch.
+    /// The value at `key`. A null object when the key is absent or this is not a dictionary.
+    ///
+    /// **Every reader here asks the type before it asks the engine** (#224): qpdf answers a read
+    /// of the wrong type, or an array read out of range, with a fallback and a *warning*, and a
+    /// warning at the write is refused as a repair.
     fn key(&self, key: &Name) -> Self;
 
     /// This name object's value, **with** its leading `/`.
     ///
     /// # Errors
     ///
-    /// For anything that is not a name, whose value the engine gives as an empty string. Does
-    /// not drain.
+    /// For anything that is not a name, which is never handed to the engine: qpdf would answer
+    /// `/QPDFFakeName` and warn. Does not drain.
     fn name(&self) -> Result<Name>;
 
     /// This integer object's value. Meaningful only once [`Self::type_code`] has said it is an

@@ -436,8 +436,10 @@ impl<'a> ObjectHandle<'a> {
 
     /// This name object's value, canonicalised and including its leading `/`.
     ///
-    /// Empty for anything that is not a name, which qpdf returns rather than raising -- so the
-    /// caller checks [`Self::type_code`] first, as everywhere else here.
+    /// **Not empty for anything that is not a name**: qpdf answers with the name
+    /// `/QPDFFakeName` and a warning (`QPDFObjectHandle::getName`, qpdf 12.4.1), so the caller
+    /// checks [`Self::type_code`] first, as everywhere else here. Redaction's reader does it for
+    /// its callers (#224).
     pub(super) fn name(&self) -> Result<Name> {
         // SAFETY: as `unparse`.
         let text = unsafe { ffi::qpdf_oh_get_name(self.data, self.handle) };
