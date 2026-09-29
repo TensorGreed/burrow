@@ -488,7 +488,8 @@ pub(crate) fn poisoned(detail: &str) -> Error {
 /// 2%; it was 4 of 224 local documents, every one a test fixture. qpdf also repairs lazily --
 /// during the walk, and during the write for what the walk never read -- so the warnings are
 /// asked once more, after the write and before any byte leaves (rounds 2 to 4 of #224's
-/// reviews), and a warning there refuses with this. None of the 224 raised one before the write; the check after it is unmeasured.
+/// reviews), and a warning there refuses with this. Measured while a check stood before the
+/// write, none of the 224 raised one there; the check after the write is unmeasured.
 pub(crate) fn repaired_by_the_engine() -> Error {
     Error::Unsupported(
         "pdf redaction [engine-repaired-input]: the PDF engine repaired this document while \

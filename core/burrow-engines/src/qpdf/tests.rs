@@ -1427,8 +1427,8 @@ mod wiring {
         // #224, security reviews rounds 3 and 4: PDFium reads a whole number outside 32 bits as
         // 0, so a `/Rect` of `[20 4294967296 120 380]` is 0..380 to a viewer that draws
         // annotations -- over the secret at 350 -- and 380 upwards here, clear of the band: the
-        // annotation was kept, `Ok` (measured with the bound removed, round 4). The next two
-        // shapes are refused by the same bound without being leaks themselves.
+        // annotation was kept, `Ok` (measured with the bound removed, round 4). Refused as out of
+        // range, not as a malformed `/Rect`: the kind and the message say which.
         let page = |rect: &str| {
             pdf(&[
                 "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
@@ -1442,21 +1442,33 @@ mod wiring {
                     .to_owned(),
             ])
         };
-        refused_by(
-            redact_in(&page("[20 4294967296 120 380]"), UPPER_BAND),
-            "annotation-rect",
-            "a /Rect edge PDFium reads as 0, over the secret",
-        );
+        match redact_in(&page("[20 4294967296 120 380]"), UPPER_BAND) {
+            Err(burrow_types::Error::Unsupported(message)) => assert!(
+                message.contains("[annotation-rect]")
+                    && message.contains("larger than any reader agrees on"),
+                "a /Rect edge PDFium reads as 0: refused, but not as out of range: {message}"
+            ),
+            other => panic!("a /Rect edge PDFium reads as 0, over the secret: {other:?}"),
+        }
         // A CONTAINER AMONG THE ITEMS (round 4): four numbers to a scan of the text -- 200 0 400
         // 120, clear of the band -- and `[0 400 120 0]` to PDFium, which reads an item that is
         // not a number as 0: over the secret. Measured `Ok` with the appearance drawn there.
-        for nested in ["[[200 0] 400 120 []]", "[<< /A 200 /B 0 >> 400 120 << >>]"] {
+        // AND EXACTLY FOUR (round 5): PDFium reads any other length as `[0 0 0 0]`, and an
+        // appearance with no `/BBox` (#229) then draws from the page's origin -- measured over
+        // the secret with the length check loosened to `< 4`.
+        for nested in [
+            "[[200 0] 400 120 []]",
+            "[<< /A 200 /B 0 >> 400 120 << >>]",
+            "[20 380 220 400 7]",
+            "[20 380 220]",
+        ] {
             refused_by(
                 redact_in(&page(nested), UPPER_BAND),
                 "annotation-rect",
                 &format!("a /Rect of {nested}"),
             );
         }
+        // THE LAST TWO are refused by the same bound without being leaks themselves.
         refused_by(
             redact_in(&page("[4294967316 330 120 350]"), UPPER_BAND),
             "annotation-rect",

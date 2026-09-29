@@ -142,8 +142,9 @@ impl Drop for Document {
 }
 
 impl Document {
-    /// Whether qpdf recorded any warning while this document was read and its pages counted --
-    /// that is, whether it repaired anything on the way (#224). Consumes nothing a later call
+    /// Whether qpdf has recorded any warning since this document was opened -- while it was
+    /// read, its pages counted, the walk read it and the write wrote it -- that is, whether it
+    /// repaired anything on the way (#224). Consumes nothing a later call
     /// needs: redaction asks twice -- after the open, and after the write, before any byte
     /// leaves -- and refuses on `true` at each.
     pub(super) fn repaired(&self) -> bool {

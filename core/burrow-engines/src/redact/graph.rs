@@ -129,9 +129,9 @@ pub(crate) trait PdfDocument {
 
     /// Whether the engine has recorded a warning -- a repair -- it has not yet handed out (#224).
     ///
-    /// Asked at the open and again just before the write: qpdf parses fonts, resources and
-    /// forms lazily, so a repair can happen during the walk, after the open's check. Only
-    /// whether, never what: see `redact::repaired_by_the_engine`.
+    /// Asked at the open and again after the write, before any byte leaves: qpdf parses fonts,
+    /// resources and forms lazily, so a repair can happen during the walk or the write, after
+    /// the open's check. Only whether, never what: see `redact::repaired_by_the_engine`.
     fn repaired(&self) -> bool;
 }
 
@@ -170,7 +170,9 @@ pub(crate) trait PdfObject: Sized {
 
     /// This integer object's value. **Ask [`Self::type_code`] first**: every caller does, so this
     /// is not guarded, and for any other type qpdf answers `0` *with a warning* -- which the
-    /// write's repair check refuses as `[engine-repaired-input]`. Fail-closed, not silent.
+    /// write's repair check refuses as `[engine-repaired-input]` -- or, for a null, latches an
+    /// error. Fail-closed either way **in the redaction walk only**: the read-back in `witness.rs`
+    /// has no repair check after it, so there the type check is what holds.
     fn integer_value(&self) -> i64;
 
     /// This object's own syntax, children left as `N G R`: the route to a dictionary's keys,
@@ -179,7 +181,8 @@ pub(crate) trait PdfObject: Sized {
     fn unparse(&self) -> Vec<u8>;
 
     /// How many items this array has. **Ask [`Self::type_code`] first**, as every caller does:
-    /// for anything else qpdf answers 0 with a warning, refused at the write as above.
+    /// for anything else qpdf answers 0 with a warning, refused at the write, or with an error
+    /// for a null -- fail-closed in the walk, and not in the read-back, as above.
     fn array_len(&self) -> c_int;
 
     /// The item at `at`. Out of range is a null object, not an error.

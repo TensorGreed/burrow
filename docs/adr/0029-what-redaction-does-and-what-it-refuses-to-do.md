@@ -3976,7 +3976,8 @@ the walk -- after the open's check. PDFium ends the array at the `)`, and the tw
 differently. Round 2 recorded this as a second check not yet decided. It is the owner's rule on the
 same channel at a second point, so it is held to the same bar: the warnings are asked once more
 after every read and before any byte leaves, and a warning there refuses as
-`[engine-repaired-input]`. A fixture and an engine test hold it.
+`[engine-repaired-input]`. A fixture and an engine test hold it. (*Superseded in round 4: that
+check now stands after the write, which sees the walk's warnings too.*)
 
 **The check found burrow's own reads first.** qpdf answers a read of the wrong type -- a key of an
 integer, the name of a dictionary -- or an array read out of range with a fallback **and a
@@ -4041,7 +4042,8 @@ to burrow and present to the viewer, `Ok` with the secret drawn, on both engines
 **Owner's decision: land this, and take [#227] next, before #206 -- unless the warning channel
 already sees it.** It does not. Measured with a page whose `/Rotate 6 1 R` points at a `6 0` of
 `90`: `qpdf --check` and a full rewrite both exit 0 with no warning; burrow's redaction returns
-`Ok` through all three warning checks -- at the open, before the write and after it; PDFium follows
+`Ok` through all three warning checks as they then stood -- at the open, before the write and after
+it (*round 4 removed the one before the write, which this one subsumes*); PDFium follows
 the reference and reports the page 400 by 300, turned. The same page with `6 0 R` is turned by both.
 So this is the third of qpdf's silent changes to a document with no signal at all, after #61's
 lost pages and a rebuilt page tree's warnings before #224 read them -- and the one the warning
@@ -4079,7 +4081,8 @@ check after the write on the web engine too, where deleting it returned the same
 
 **Two more guards were unreachable.** Every caller asks `type_code` before `array_len`, as before
 `integer_value`, so both `array_len` guards are removed on the same reasoning; a caller that did not
-would read qpdf's fallback with a warning, and be refused at the write. Fail-closed, and the trait's
+would read qpdf's fallback with a warning and be refused at the write, or, for a null, meet an error
+qpdf latches (measured in the round-5 security review). Fail-closed either way, and the trait's
 rustdoc now says so.
 
 **Shown to fail (round 4).** Three mutations, each asserted to apply, each on a fresh build, the
