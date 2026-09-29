@@ -109,9 +109,10 @@ mod tests {
             .orphaned_codes(&read, 0, &cut, &std::collections::BTreeMap::new())
             .expect("reads the fonts");
         assert_eq!(
-            orphaned, 4,
+            orphaned.orphaned, 4,
             "0x41, 0x42 and 0x141 from /ToUnicode, 0x43 from /Differences, each counted once"
         );
+        assert_eq!(orphaned.examined, 1, "one cut font, examined once");
         // EVERYTHING DRAWN, under the font's own output identity: nothing is orphaned. The near-
         // miss that shows the count is of codes, not of fonts.
         let drawn = witness.drawn_codes(&read, 0).expect("reads what is drawn");
@@ -123,7 +124,8 @@ mod tests {
         assert_eq!(
             witness
                 .orphaned_codes(&read, 0, &cut, &all)
-                .expect("reads the fonts"),
+                .expect("reads the fonts")
+                .orphaned,
             0,
             "every mapped code drawn, so nothing is orphaned"
         );
@@ -161,7 +163,7 @@ mod tests {
         }])
     }
 
-    fn refused(outcome: burrow_types::Result<usize>, why: &str) {
+    fn refused(outcome: burrow_types::Result<crate::redact_verify::CutFontsRead>, why: &str) {
         match outcome {
             Err(burrow_types::Error::OutputRejected(message)) => {
                 assert!(
@@ -260,9 +262,10 @@ mod tests {
             .orphaned_codes(&read, 0, &cut, &std::collections::BTreeMap::new())
             .expect("reads both fonts");
         assert_eq!(
-            orphaned, 6,
+            orphaned.orphaned, 6,
             "three codes for each of two fonts sharing one map"
         );
+        assert_eq!(orphaned.examined, 2, "two cut fonts, each examined");
     }
 
     #[test]

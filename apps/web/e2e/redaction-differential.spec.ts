@@ -201,8 +201,8 @@ for (const document of PLAN) {
 // and only the digest comparison here sees it. Measured over the corpus on 2026-09-28: 113 cases
 // in 56 documents. Dropping 20 bytes instead is refused on read-back, as it should be.
 //
-// A THIRD, with #218: `oh_set_array_item` doing nothing, which is the `/Differences` narrowing
-// turned off. Verification must refuse it; against the core before #218 it was silent too.
+// A THIRD, with #218: `oh_set_array_item` doing nothing, which turns off the `/Differences` and
+// `/Widths` narrowing. Verification must refuse it; against the core before #218 it was silent too.
 
 const WRITER = DOCUMENTS.find((d) => d.name === "tests/redaction/fixtures/producer-writer.pdf");
 const BOMB = DOCUMENTS.find((d) => d.cases.some((c) => classOf(c.outcome) === "limit"));

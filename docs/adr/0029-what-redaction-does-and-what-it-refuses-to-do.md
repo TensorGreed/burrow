@@ -212,10 +212,16 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > mapped codes are counted against the codes the page still draws with it, font by font and
   > never collected. A font with no identity cannot be checked this way, and the operation
   > refuses it first, as `[direct-font]` in §3's table.
-  > **Coverage is enforced, not gated.** The note above asked for "cut fonts examined against
-  > cut fonts" to be gated in the golden run. Instead every redaction checks it: a font reported
-  > cut with no path handed to the check refuses as `Internal` before anything is written, so
-  > the check cannot be told about fewer fonts than were cut.
+  > **Coverage is checked on every redaction, not gated in the golden run.** The unbacked note
+  > this replaces ([#222], `2178c9b`) listed among #218's closing criteria "coverage (cut fonts
+  > examined against cut fonts) gated in the golden-outcomes run". Instead the check itself counts
+  > the distinct fonts its read-back examined and refuses unless that equals the number the
+  > report says were cut -- counted where the fonts are examined, because the paths become a set
+  > on the way and are deduped again by output identity, and a review showed a count taken one
+  > step earlier passing a hand-off that kept only the last path. The operation also refuses, as
+  > `Internal`, a font reported cut with no path recorded beside it. What neither sees is a
+  > regression that stops cutting at all: zero examined against zero cut passes, and that is the
+  > "retained / actually cut" row of the circularity table below.
   >
   > *Shown to fail:* with the narrowing switched off over a font qpdf renumbers, verification
   > itself refuses; with the old id-matching reinstated, the same test returns `Ok`. The golden
@@ -244,8 +250,8 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > in a form with a font selected outside it is refused as `[font-selected-in-another-scope]`
   > (§3), because the two scopes can name different fonts and a reader uses the `Tf`'s.
   > The web half of "refuses with the narrowing off" is held by the browser differential, which
-  > plants it in `bridge-qpdf.js`: `oh_set_array_item` made a no-op, so no `/Differences` name is
-  > overwritten. On `04-differences-encoding.pdf` the web then refuses with `OutputRejected`,
+  > plants it in `bridge-qpdf.js`: `oh_set_array_item` made a no-op, so no `/Differences` name
+  > is overwritten and no `/Widths` entry zeroed. On `04-differences-encoding.pdf` the web then refuses with `OutputRejected`,
   > "still maps N code(s)", where native redacted. Measured against the pre-fix core, the same plant
   > was **silent**, "a different document": the web's verification passed it.
 
@@ -991,7 +997,7 @@ and WebKit: 107 documents and 463 cases, every one matching on the day it landed
     sees it. Measured across the corpus: 113 cases in 56 documents, every one "a different
     document". The lost byte was whitespace in every stream logged, so the output means the same
     and verification is right to accept it; dropping 20 bytes instead is refused on read-back.
-  - `oh_set_array_item` made a no-op, which is the `/Differences` narrowing turned off. On
+  - `oh_set_array_item` made a no-op, which turns off the `/Differences` and `/Widths` narrowing. On
     `04-differences-encoding.pdf` it must arrive as an `OutputRejected` refusal naming the
     orphaned codes, and the page-out-of-range case must still agree with native. Against the
     core before [#218] the same plant was silent, "a different document".
@@ -1081,6 +1087,7 @@ the seven cases then in the script:
 [#137]: https://github.com/TensorGreed/burrow/issues/137
 [#218]: https://github.com/TensorGreed/burrow/issues/218
 [#221]: https://github.com/TensorGreed/burrow/issues/221
+[#222]: https://github.com/TensorGreed/burrow/pull/222
 
 ## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
 

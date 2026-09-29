@@ -179,7 +179,7 @@ impl<O: PdfObject> PageResources<O> {
     ///
     /// # Errors
     ///
-    /// [`Error::Internal`] when the name resolves in neither. The walk already placed a glyph
+    /// [`Error::Internal`] when the route does not resolve to it. The walk already placed a glyph
     /// through it, so this is burrow disagreeing with itself rather than the document being
     /// wrong — and a silent `None` would be the narrowing every leak here has been.
     pub(crate) fn font_in_scope(&self, font: &ScopedFont) -> Result<O> {

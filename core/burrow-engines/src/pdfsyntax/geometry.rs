@@ -759,10 +759,6 @@ pub struct Glyph {
 /// down -- and resolution follows exactly that route.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScopedFont {
-    /// The Form XObject whose stream named it, or `None` for the page's own content.
-    ///
-    /// **Not the resolving scope by itself.** See [`Self::route`].
-    drawn_in: Option<u64>,
     /// The `Do` names the walk followed from the page's content to the stream that named it,
     /// outermost first; empty for the page's own content. Each is looked up in the scope in
     /// force where it was drawn -- the form's own `/Resources`, or the enclosing ones where it
@@ -773,14 +769,13 @@ pub struct ScopedFont {
 }
 
 impl ScopedFont {
-    /// A name read in `drawn_in`'s stream, reached from the page through `route`.
+    /// A name read in the stream the walk reached from the page through `route`.
+    ///
+    /// Which form that is travels on the glyph as `GlyphSource::form`; it resolves nothing, so it
+    /// is not carried here (#218 removed it with the search that used it).
     #[must_use]
-    pub fn new(drawn_in: Option<u64>, route: Arc<[Vec<u8>]>, name: Vec<u8>) -> Self {
-        Self {
-            drawn_in,
-            route,
-            name,
-        }
+    pub fn new(route: Arc<[Vec<u8>]>, name: Vec<u8>) -> Self {
+        Self { route, name }
     }
 
     /// A name read in the page's own content stream, or otherwise known to be a page resource.
@@ -790,16 +785,9 @@ impl ScopedFont {
     #[must_use]
     pub fn on_page(name: Vec<u8>) -> Self {
         Self {
-            drawn_in: None,
             route: Arc::from(Vec::new()),
             name,
         }
-    }
-
-    /// The form whose stream named it, or `None` for the page's own content.
-    #[must_use]
-    pub const fn drawn_in(&self) -> Option<u64> {
-        self.drawn_in
     }
 
     /// The `Do` names from the page's content to the stream that named it, outermost first.
@@ -3131,6 +3119,10 @@ fn show(
     // character credited to the form's font, so the font that drew it kept mapping it. Refused
     // rather than resolved through the `Tf`'s scope, which is the smaller change and fails closed.
     //
+    // WHAT THE COMPARISON MEANS: state only flows from a stream to the forms it draws -- each gets
+    // a clone, and the enclosing route is restored after -- so the `Tf`'s route is always a
+    // prefix of the showing one, and "equal" is exactly "the `Tf` ran in this stream".
+    //
     // It over-refuses one safe shape, stated rather than implied: a child form with no
     // `/Resources` of its own inherits the scope that ran the `Tf`, so it draws with the same
     // font, and its longer route is refused anyway. A review found neither shape on 1,918 pages
@@ -3240,7 +3232,7 @@ fn show(
             scaled_font_size: state.text.font_size * scale,
             displacement,
             source: GlyphSource {
-                font: ScopedFont::new(shown.form, Arc::clone(shown.route), font.clone()),
+                font: ScopedFont::new(Arc::clone(shown.route), font.clone()),
                 code,
                 form: shown.form,
                 operation: at.0,

@@ -692,12 +692,13 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
             self.deadline.checkpoint(self.clock.as_ref())?;
             let (font, path) = match resources.font_path_in_scope(scoped_font) {
                 Ok(found) => found,
+                // DEFENSIVE, AND UNWITNESSED: the walk placed the glyph along this route through
+                // the same scoping, and nothing between the walk and here edits `/Resources`, so
+                // no document reaches this arm. It fails closed rather than skip a cut font.
                 Err(error) if *drew => return Err(error),
                 Err(_) => continue,
             };
-            if font.type_code() != object_type::DICTIONARY {
-                continue;
-            }
+            // A DICTIONARY BY CONSTRUCTION: `font_path_in_scope` resolves only to one.
             let identity = font.object()?;
             // A DIRECT FONT HAS NO IDENTITY (#218, owner's decision 2026-09-28). qpdf reports
             // `(0, 0)` for every font dictionary written inline, so two of them are one font to

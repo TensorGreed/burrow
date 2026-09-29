@@ -110,6 +110,25 @@ pub struct Cleared {
     /// - A path that no longer resolves to a font dictionary in the output: **refused**, never
     ///   skipped. A check that cannot find its subject does not pass.
     pub cut_fonts: BTreeSet<FontPath>,
+    /// How many fonts the operation's report says it cut: what [`Self::cut_fonts`] must cover.
+    ///
+    /// # Coverage is checked where the fonts are examined (#218)
+    ///
+    /// The check refuses unless the read-back examined exactly this many distinct fonts. A
+    /// count taken where the operation hands over its paths is one step early: the paths
+    /// become a set here, and the read-back dedupes again by output identity, so a path dropped
+    /// or duplicated after that count is a font never examined. A review planted "keep only the
+    /// last path" there and the whole suite passed.
+    pub cut: usize,
+}
+
+/// What the read-back found among the fonts the operation cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CutFontsRead {
+    /// How many distinct fonts, by output identity, the paths reached.
+    pub examined: usize,
+    /// How many codes those fonts still map that the page no longer draws with them.
+    pub orphaned: usize,
 }
 
 /// Where a font the operation cut is found from the verified page, by names the writer keeps.
@@ -183,6 +202,9 @@ pub trait ClearedWitness {
     /// `/ToUnicode` can name 65,536 codes, and holding that per font ran to 3.3 GB on a 470 kB
     /// file (review, measured).
     ///
+    /// Returns how many distinct fonts the paths reached as well, so the check can refuse a
+    /// read-back that examined fewer fonts than were cut.
+    ///
     /// # Errors
     ///
     /// [`Error::OutputRejected`] for a path that does not resolve to a font dictionary in the
@@ -194,7 +216,7 @@ pub trait ClearedWitness {
         page: usize,
         cut: &BTreeSet<FontPath>,
         drawn: &BTreeMap<u64, BTreeSet<u32>>,
-    ) -> Result<usize>;
+    ) -> Result<CutFontsRead>;
 
     /// For each font on `page`, its packed identity and the codes the page still **draws** with
     /// it.
@@ -270,13 +292,21 @@ pub fn region_is_cleared<W: ClearedWitness>(
     let drawn = fresh
         .drawn_codes(&read, expected.page)
         .map_err(|error| wrapped("its drawn codes cannot be read", error))?;
-    let orphaned = fresh
+    let found = fresh
         .orphaned_codes(&read, expected.page, &expected.cut_fonts, &drawn)
         .map_err(|error| wrapped("its cut fonts cannot be read", error))?;
-    if orphaned > 0 {
+    // EVERY FONT THE OPERATION CUT, EXAMINED -- counted here, where they are, and not where the
+    // operation handed over its paths. See `Cleared::cut`.
+    if found.examined != expected.cut {
         return Err(rejected(format!(
-            "a font on page {} still maps {orphaned} code(s) the page no longer draws",
-            expected.page
+            "the check examined {} of the {} font(s) the operation cut on page {}",
+            found.examined, expected.cut, expected.page
+        )));
+    }
+    if found.orphaned > 0 {
+        return Err(rejected(format!(
+            "a font on page {} still maps {} code(s) the page no longer draws",
+            expected.page, found.orphaned
         )));
     }
 
@@ -322,7 +352,7 @@ fn wrapped(what: &str, error: Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cleared, ClearedWitness, FontPath, region_is_cleared};
+    use super::{Cleared, ClearedWitness, CutFontsRead, FontPath, region_is_cleared};
     use crate::pdfsyntax::geometry::{Glyph, GlyphSource, Matrix, Rect};
     use crate::pdfsyntax::region::{PageFrame, Region};
     use burrow_types::Error;
@@ -399,11 +429,12 @@ mod tests {
             page: usize,
             cut: &BTreeSet<FontPath>,
             drawn: &BTreeMap<u64, BTreeSet<u32>>,
-        ) -> crate::Result<usize> {
+        ) -> crate::Result<CutFontsRead> {
             self.asked.borrow_mut().push(("orphaned_codes", page));
             // A PATH RESOLVES TO THE FONT NAMED BY ITS NUMBER, in this fake: `mapped` is the
             // output, and a cut path the output lacks is refused, as the real witness does.
             let mut orphaned = 0;
+            let mut examined = BTreeSet::new();
             for path in cut {
                 let found = self
                     .mapped
@@ -414,10 +445,16 @@ mod tests {
                         "a font the operation cut is not in the output".to_owned(),
                     ));
                 };
+                if !examined.insert(*id) {
+                    continue;
+                }
                 let still = drawn.get(id).cloned().unwrap_or_default();
                 orphaned += codes.difference(&still).count();
             }
-            Ok(orphaned)
+            Ok(CutFontsRead {
+                examined: examined.len(),
+                orphaned,
+            })
         }
 
         fn drawn_codes(
@@ -474,6 +511,7 @@ mod tests {
         Cleared {
             page,
             region: band(),
+            cut: cut_fonts.len(),
             cut_fonts: cut_fonts
                 .into_iter()
                 .map(|id| FontPath {
@@ -537,6 +575,37 @@ mod tests {
         };
         region_is_cleared(&liar, b"%PDF", &expect(0, BTreeSet::new()))
             .expect("font 7 was retained, so its mappings are disclosed rather than checked");
+    }
+
+    #[test]
+    fn a_read_back_that_examined_other_than_the_fonts_cut_is_refused() {
+        // #218: two fonts cut, one path handed over -- a path lost on the way to the check,
+        // after any count the operation could take. The check counts what it examined.
+        let liar = Liar {
+            mapped: [(7, BTreeSet::new()), (8, BTreeSet::new())]
+                .into_iter()
+                .collect(),
+            ..Liar::default()
+        };
+        let mut expected = expect(0, [7].into_iter().collect());
+        expected.cut = 2;
+        let error = region_is_cleared(&liar, b"%PDF", &expected).expect_err("one of two");
+        assert!(
+            matches!(&error, Error::OutputRejected(message) if message.contains("examined 1 of the 2")),
+            "refused, but not for coverage: {error:?}"
+        );
+        // THE NEAR-MISS: both paths, both examined.
+        let both = expect(0, [7, 8].into_iter().collect());
+        region_is_cleared(&liar, b"%PDF", &both).expect("both cut fonts examined");
+        // AND THE OTHER DIRECTION: a path handed over for a font that was not cut is a check
+        // told something the operation did not do. `!=`, not `<`.
+        let mut extra = expect(0, [7, 8].into_iter().collect());
+        extra.cut = 1;
+        let error = region_is_cleared(&liar, b"%PDF", &extra).expect_err("two of one");
+        assert!(
+            matches!(&error, Error::OutputRejected(message) if message.contains("examined 2 of the 1")),
+            "refused, but not for coverage: {error:?}"
+        );
     }
 
     #[test]
@@ -652,7 +721,7 @@ mod tests {
 
 #[cfg(test)]
 mod limit_tests {
-    use super::{Cleared, ClearedWitness, FontPath, region_is_cleared};
+    use super::{Cleared, ClearedWitness, CutFontsRead, FontPath, region_is_cleared};
     use crate::pdfsyntax::geometry::Glyph;
     use crate::pdfsyntax::region::{PageFrame, Region};
     use burrow_types::{Error, Result};
@@ -700,8 +769,11 @@ mod limit_tests {
             _page: usize,
             _cut: &BTreeSet<FontPath>,
             _drawn: &BTreeMap<u64, BTreeSet<u32>>,
-        ) -> Result<usize> {
-            Ok(0)
+        ) -> Result<CutFontsRead> {
+            Ok(CutFontsRead {
+                examined: 0,
+                orphaned: 0,
+            })
         }
 
         fn drawn_codes(
@@ -731,6 +803,7 @@ mod limit_tests {
                 height: 10.0,
             },
             cut_fonts: BTreeSet::new(),
+            cut: 0,
         };
         let error = region_is_cleared(&OutOfTime, b"%PDF", &expected).expect_err("the limit");
         assert!(

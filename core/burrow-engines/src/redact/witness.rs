@@ -143,7 +143,7 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         page: usize,
         cut: &BTreeSet<crate::redact_verify::FontPath>,
         drawn: &BTreeMap<u64, BTreeSet<u32>>,
-    ) -> Result<usize> {
+    ) -> Result<crate::redact_verify::CutFontsRead> {
         read.deadline.checkpoint(self.clock.as_ref())?;
         let handle = read.page(page)?;
         let resources = PageResources::of(&handle)?;
@@ -174,7 +174,10 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
             let still = drawn.get(&key).unwrap_or(&nothing);
             orphaned += orphans_of(&font, still, &mut parsed)?;
         }
-        Ok(orphaned)
+        Ok(crate::redact_verify::CutFontsRead {
+            examined: examined.len(),
+            orphaned,
+        })
     }
 
     fn drawn_codes(&self, read: &Self::Read, page: usize) -> Result<BTreeMap<u64, BTreeSet<u32>>> {

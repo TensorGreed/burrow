@@ -332,11 +332,11 @@ impl<S: Steps> ContentEdited<S> {
         // fact about the finished content rather than about a snapshot taken part-way.
         let still_drawn = self.steps.codes_still_drawn(&self.redacted)?;
         let (fonts, cut_paths) = self.steps.cut_fonts(&still_drawn, &self.redacted)?;
-        // EVERY FONT REPORTED CUT ARRIVES AT THE CHECK, or nothing is emitted (#218). The check
-        // examines the paths it is handed and no others, so a font counted as cut with no path
-        // beside it is a font §6 never looks at -- the shape of #218 itself, a check examining
-        // almost nothing and saying `Ok`. The earlier note asked for this coverage to be gated in
-        // the golden run; it is enforced here instead, on every redaction.
+        // A PATH FOR EVERY FONT REPORTED CUT, or nothing is emitted (#218) -- the operation's own
+        // bookkeeping, and only that. It is not the coverage gate: the paths become a set before
+        // the check and the read-back dedupes them again, so a count here cannot see a path
+        // lost after it. The gate is in the check, which counts the fonts it examined against
+        // `Cleared::cut`; this catches the step that failed to record one, earlier and by name.
         let cut = fonts.iter().filter(|font| font.cut).count();
         if cut != cut_paths.len() {
             return Err(Error::Internal(format!(
@@ -525,12 +525,15 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // rather than closing over a value that does not exist yet.
     let cut_fonts: std::cell::RefCell<std::collections::BTreeSet<crate::redact_verify::FontPath>> =
         std::cell::RefCell::new(std::collections::BTreeSet::new());
+    // AND HOW MANY THE REPORT SAYS WERE CUT, which the check holds its read-back to.
+    let cut = std::cell::Cell::new(0_usize);
     let witness = witness::Witness::over(engine.clone(), limits, clock, deadline);
     let verify = |emitted: &[u8]| {
         let expected = crate::redact_verify::Cleared {
             page,
             region,
             cut_fonts: cut_fonts.borrow().clone(),
+            cut: cut.get(),
         };
         // WHAT THE CHECK WAS TOLD, recorded so a test can read it back.
         //
@@ -543,8 +546,9 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
         hooks::record_expectation(&expected);
         crate::redact_verify::region_is_cleared(&witness, emitted, &expected)
     };
-    run_reporting(steps, redacted.clone(), &verify, &|_report, paths| {
+    run_reporting(steps, redacted.clone(), &verify, &|report, paths| {
         *cut_fonts.borrow_mut() = paths.iter().cloned().collect();
+        cut.set(report.fonts.iter().filter(|font| font.cut).count());
     })
 }
 
