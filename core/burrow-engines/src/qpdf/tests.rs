@@ -348,6 +348,32 @@ mod wiring {
         out.into_bytes()
     }
 
+    #[test]
+    fn the_renumbered_fixture_is_renumbered() {
+        // THE PREMISE, asserted rather than assumed: the tests below say the old id-matching
+        // returned `Ok` because qpdf renumbered the font. A writer that kept object 3 would turn
+        // them into tests over a font nothing renumbered, and they would still pass.
+        use crate::redact::graph::{OpensForRedaction, PdfDocument};
+        let output = redact_output(&renumbered_document(), &[0]).expect("redacts");
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let (document, _) = super::super::Qpdf
+            .open_for_redaction(&output, &options)
+            .expect("the output opens");
+        let page = document.page(0).expect("page 0");
+        let resources = crate::redact::resources::PageResources::of(&page).expect("resources");
+        let font = resources
+            .font_at(&crate::redact_verify::FontPath {
+                form: Vec::new(),
+                name: b"F1".to_vec(),
+            })
+            .expect("the font is in the output");
+        let (number, _) = font.object().expect("an indirect font");
+        assert_ne!(
+            number, 3,
+            "qpdf kept the font's number; nothing was renumbered"
+        );
+    }
+
     fn redact_renumbered(skip_narrowing: bool) -> burrow_types::Result<()> {
         use crate::redact::hooks::{NARROWINGS_SKIPPED, SKIP_NARROWING};
         LAST_EXPECTATION.with(|slot| *slot.borrow_mut() = None);

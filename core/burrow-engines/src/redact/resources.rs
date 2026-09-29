@@ -647,7 +647,21 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
 ///
 /// A handle that is not a name is not the name asked about, which is `false` rather than an
 /// error: the callers are all "is this a Type 3 font" questions where absent means no.
+fn names<O: PdfObject>(handle: &O, want: &Name) -> bool {
+    handle.name().is_ok_and(|found| found == *want)
+}
+
 /// [`PageResources::resolve`]'s walk from one scope along `steps`.
+///
+/// Each step is looked up in the `/XObject` of the scope in force, and the next scope is that
+/// form's own `/Resources` when it is a dictionary and the enclosing one otherwise -- the rule
+/// `Resources::within` applies, so a route the walk recorded resolves as the walk resolved it.
+///
+/// # Errors
+///
+/// Only what reading a name from the document can raise. A step or a font that is not there is
+/// `Ok(None)`, and each caller decides what that means: `Internal` for a route the walk drew
+/// along, `OutputRejected` for a cut font the read-back cannot find.
 fn resolve_from<O: PdfObject>(scope: &O, steps: &[Vec<u8>], name: &[u8]) -> Result<Option<O>> {
     const RESOURCES: Name = Name::literal(b"/Resources\0");
     let Some((step, rest)) = steps.split_first() else {
@@ -664,10 +678,6 @@ fn resolve_from<O: PdfObject>(scope: &O, steps: &[Vec<u8>], name: &[u8]) -> Resu
     } else {
         resolve_from(scope, rest, name)
     }
-}
-
-fn names<O: PdfObject>(handle: &O, want: &Name) -> bool {
-    handle.name().is_ok_and(|found| found == *want)
 }
 
 /// A `f64` that is exactly a whole number, as an `i64`.

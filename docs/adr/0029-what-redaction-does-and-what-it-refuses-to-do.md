@@ -212,6 +212,10 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > mapped codes are counted against the codes the page still draws with it, font by font and
   > never collected. A font with no identity cannot be checked this way, and the operation
   > refuses it first, as `[direct-font]` in §3's table.
+  > **Coverage is enforced, not gated.** The note above asked for "cut fonts examined against
+  > cut fonts" to be gated in the golden run. Instead every redaction checks it: a font reported
+  > cut with no path handed to the check refuses as `Internal` before anything is written, so
+  > the check cannot be told about fewer fonts than were cut.
   >
   > *Shown to fail:* with the narrowing switched off over a font qpdf renumbers, verification
   > itself refuses; with the old id-matching reinstated, the same test returns `Ok`. The golden
@@ -1823,7 +1827,7 @@ down rather than implied:
 | the operation claims | reality | caught? |
 |---|---|---|
 | cut | not cut | orphaned mappings remain — **yes**, each cut font found by its resource path rather than the input's ids ([#218]); until 2026-09-28 this row returned `Ok` |
-| cut a font | the glyph was drawn by a different one | **yes, as of 2026-09-28** ([#221]): the font is resolved along the route of `Do` names the walk recorded on the glyph, never searched for; before it, a glyph in a nested form narrowed the page's decoy, and a form drawn from two scopes was credited to whichever came first, each returning `Ok` |
+| cut a font | the glyph was drawn by a different one | **no — not by the read-back.** The check finds each cut font by the path the operation recorded, with the resolver the operation used, so a wrong resolution is agreed with rather than caught: that is #111's circularity, and a review planted the old resolution and got `Ok` from verification. What stops it is **prevention**, upstream ([#221], 2026-09-28): the font is resolved along the route of `Do` names the walk recorded on the glyph, never searched for, and text shown in a form with a font selected outside it is refused (`[font-selected-in-another-scope]`, §3). Before that, a glyph in a nested form narrowed the page's decoy, and a form drawn from two scopes was credited to whichever came first, each returning `Ok`. The tests that hold it assert the path the operation recorded, and read the output back by paths the test names |
 | retained | actually cut | **no** — but the failure is another page's text reflowing, which no read-back of *this* page could see anyway |
 
 ### The frame is read from the output

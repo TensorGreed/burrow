@@ -332,6 +332,18 @@ impl<S: Steps> ContentEdited<S> {
         // fact about the finished content rather than about a snapshot taken part-way.
         let still_drawn = self.steps.codes_still_drawn(&self.redacted)?;
         let (fonts, cut_paths) = self.steps.cut_fonts(&still_drawn, &self.redacted)?;
+        // EVERY FONT REPORTED CUT ARRIVES AT THE CHECK, or nothing is emitted (#218). The check
+        // examines the paths it is handed and no others, so a font counted as cut with no path
+        // beside it is a font §6 never looks at -- the shape of #218 itself, a check examining
+        // almost nothing and saying `Ok`. The earlier note asked for this coverage to be gated in
+        // the golden run; it is enforced here instead, on every redaction.
+        let cut = fonts.iter().filter(|font| font.cut).count();
+        if cut != cut_paths.len() {
+            return Err(Error::Internal(format!(
+                "pdf redaction: {cut} font(s) reported cut but {} handed to the check",
+                cut_paths.len()
+            )));
+        }
         let dropped_carried_text = self.steps.dropped_carried_text();
         Ok(FontsCut {
             steps: self.steps,
@@ -570,6 +582,8 @@ mod tests {
         mutate_before_failing: bool,
         /// Fonts to report, as `(identity, pages outside the operation)`.
         fonts: Vec<(u64, usize)>,
+        /// Report the cut fonts without the paths the check finds them by.
+        lose_paths: bool,
         rewrites: usize,
         streams: Vec<StreamId>,
     }
@@ -584,6 +598,7 @@ mod tests {
                     fail_codes: false,
                     mutate_before_failing: false,
                     fonts: Vec::new(),
+                    lose_paths: false,
                     rewrites: 0,
                     streams: core::iter::once(StreamId::Page)
                         .chain((1..count).map(StreamId::Object))
@@ -643,7 +658,7 @@ mod tests {
                 still_drawn.len(),
                 redacted.len()
             ));
-            let outcomes = self
+            let outcomes: Vec<FontOutcome> = self
                 .fonts
                 .iter()
                 .map(|(font, outside)| FontOutcome {
@@ -652,8 +667,21 @@ mod tests {
                     also_used_by: *outside,
                 })
                 .collect();
-            // NO PATHS: this fake never writes a document the read-back could resolve them in.
-            Ok((outcomes, Vec::new()))
+            // A PATH PER CUT FONT, named after it: this fake never writes a document the
+            // read-back could resolve them in, but the operation requires one each.
+            let paths = if self.lose_paths {
+                Vec::new()
+            } else {
+                outcomes
+                    .iter()
+                    .filter(|outcome| outcome.cut)
+                    .map(|outcome| crate::redact_verify::FontPath {
+                        form: Vec::new(),
+                        name: format!("F{}", outcome.font).into_bytes(),
+                    })
+                    .collect()
+            };
+            Ok((outcomes, paths))
         }
 
         fn strip_page_keys(&mut self) -> Result<()> {
@@ -790,6 +818,30 @@ mod tests {
                  describes: {log:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_font_reported_cut_without_its_path_emits_nothing() {
+        // #218: the check examines the paths it is handed, so a cut font with none is a font
+        // it never looks at. Refused, and nothing written.
+        let (mut fake, log) = Fake::with_streams(2);
+        fake.fonts = vec![(7, 0)];
+        fake.lose_paths = true;
+        let error = run(fake, page_zero(), &|_| Ok(()))
+            .expect_err("a cut font the check is not told about must refuse");
+        assert!(
+            matches!(&error, Error::Internal(message) if message.contains("reported cut but 0")),
+            "refused, but not for the missing path: {error:?}"
+        );
+        assert!(
+            !log.borrow().iter().any(|entry| entry == "write"),
+            "nothing may be emitted: {:?}",
+            log.borrow()
+        );
+        // THE NEAR-MISS: the same cut font with its path goes through.
+        let (mut fake, _) = Fake::with_streams(2);
+        fake.fonts = vec![(7, 0)];
+        run(fake, page_zero(), &|_| Ok(())).expect("a cut font with its path redacts");
     }
 
     #[test]
