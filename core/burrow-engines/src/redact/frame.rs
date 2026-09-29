@@ -25,32 +25,73 @@ const PARENT: Name = Name::literal(b"/Parent\0");
 /// How far up the page tree an inheritable key is looked for, matching `rotate`'s ceiling.
 const MAX_PAGE_TREE_DEPTH: u32 = 64;
 
-/// Read `page`'s display frame.
+/// Read `page`'s display frame, the way the renderer a person sees it through reads it.
+///
+/// # Read as PDFium reads, or refused (#224)
+///
+/// Every value is read by its type, one reader per kind, and a value present in a shape the
+/// reader does not take is **refused rather than climbed past or picked apart**. This read
+/// boxes and `/Rotate` by pulling the numbers out of their text, so `/Rotate [90]` rotated,
+/// `/CropBox [[0 0 300 200]]` cropped and a dictionary of four numbers cropped -- while PDFium,
+/// which reads by type, ignored all three; each measured `Ok` with the secret left where PDFium
+/// drew it. And the display box is the crop clipped to the media box, as PDFium clips it: a
+/// `/CropBox` larger than the `/MediaBox` was measured the same way.
 ///
 /// # Errors
 ///
-/// [`Error::Malformed`] when no box can be found, which leaves nothing to measure a region
-/// against — refused rather than defaulted to a letter page, because a default frame converts
-/// every region to the wrong place silently.
+/// - [`Error::Malformed`] `[no-display-box]` when no `/MediaBox` can be found, which leaves
+///   nothing to measure a region against -- refused rather than defaulted to a letter page,
+///   because a default frame converts every region to the wrong place silently.
+/// - [`Error::Unsupported`] `[page-attribute-inherited]` for a `/CropBox` or `/Rotate` from the
+///   page tree; `[page-frame-unreadable]` for a box, `/Rotate` or `/UserUnit` in a shape the
+///   renderer does not read as burrow would, or a crop box that shares no area with the media
+///   box; `[user-unit-not-one]` for a `/UserUnit` other than 1.
+/// - [`Error::Malformed`] `[rotate-not-whole]` and `[page-tree-depth]`, as before.
 pub(crate) fn of<O: PdfObject>(page: &O) -> Result<PageFrame> {
-    let (crop, crop_from) = inherited_rect(page, &CROP_BOX)?;
+    let (crop, crop_from) = inherited(page, &CROP_BOX, "/CropBox", read_box)?;
     if crop_from == Found::Ancestor {
-        return Err(inherited("/CropBox"));
+        return Err(inherited_refusal("/CropBox"));
     }
-    let (media, _) = inherited_rect(page, &MEDIA_BOX)?;
-    let display_box = crop.or(media).ok_or_else(|| {
-        Error::Malformed(
-            "pdf redaction [no-display-box]: a page with neither /CropBox nor /MediaBox, \
-                 anywhere up its tree, so there is nothing to measure a region against"
+    let (media, _) = inherited(page, &MEDIA_BOX, "/MediaBox", read_box)?;
+    let Some(media) = media else {
+        return Err(Error::Malformed(
+            "pdf redaction [no-display-box]: a page with no /MediaBox anywhere up its tree, so \
+             there is nothing to measure a region against"
                 .to_owned(),
-        )
-    })?;
+        ));
+    };
+    // CLIPPED, AS THE RENDERER CLIPS IT. PDFium shows the crop box's overlap with the media
+    // box; this used the crop box as written, and a crop larger than the media box put the
+    // region against a page taller than the one shown (#224's review, measured).
+    let display_box = match crop {
+        None => media,
+        Some(crop) => {
+            let clipped = Rect {
+                left: crop.left.max(media.left),
+                bottom: crop.bottom.max(media.bottom),
+                right: crop.right.min(media.right),
+                top: crop.top.min(media.top),
+            };
+            if clipped.right <= clipped.left || clipped.top <= clipped.bottom {
+                return Err(unreadable(
+                    "a /CropBox that shares no area with the /MediaBox",
+                ));
+            }
+            clipped
+        }
+    };
 
-    let (rotate, rotate_from) = inherited_numbers(page, &ROTATE)?;
+    let (rotate, rotate_from) = inherited(page, &ROTATE, "/Rotate", read_number)?;
     if rotate_from == Found::Ancestor {
-        return Err(inherited("/Rotate"));
+        return Err(inherited_refusal("/Rotate"));
     }
-    let rotate = rotate.first().copied().unwrap_or(0.0);
+    let rotate = rotate.unwrap_or(0.0);
+    // A BOUNDED ANGLE. PDFium parses an integer that does not fit its own as 0, and a `/Rotate`
+    // of 4294967490 is 90 to a reader that keeps the digits (measured, #224's review). A page
+    // turned by more than ten full turns says nothing a person would write, so it is refused.
+    if rotate.abs() > MAX_ROTATE {
+        return Err(unreadable("a /Rotate larger than any reader agrees on"));
+    }
     // NORMALISED, INCLUDING NEGATIVES. `/Rotate -90` is legal and means 270; `%` on a negative
     // yields a negative in Rust, which `Region::to_content_space` would refuse as not a right
     // angle — a refusal for a document every viewer displays.
@@ -69,10 +110,18 @@ pub(crate) fn of<O: PdfObject>(page: &O) -> Result<PageFrame> {
     let normalised = ((exact % 360) + 360) % 360;
     let rotate = u16::try_from(normalised).unwrap_or(0);
 
-    let user_unit = numbers(&page.key(&USER_UNIT))
-        .first()
-        .copied()
-        .unwrap_or(1.0);
+    // /UserUnit OTHER THAN 1 IS REFUSED until what it means across readers is settled: PDFium's
+    // page size and its render both ignore it, measured, and the region conversion divides by
+    // it, so the two disagree by that factor wherever the caller's units are the renderer's.
+    let user_unit = read_number(page, &USER_UNIT, "/UserUnit")?.unwrap_or(1.0);
+    if (user_unit - 1.0).abs() > f64::EPSILON {
+        return Err(Error::Unsupported(
+            "pdf redaction [user-unit-not-one]: a page whose /UserUnit is not 1, which the \
+             renderer a person sees it through ignores, so the region and the page would be \
+             measured in different units"
+                .to_owned(),
+        ));
+    }
 
     Ok(PageFrame {
         display_box,
@@ -106,7 +155,7 @@ enum Found {
 /// is not available; refusing every inherited value is. For `/CropBox` and `/Rotate` it cost
 /// nothing on the 200 documents measured, which is one person's collection rather than the
 /// world's, so the message says why a document was refused rather than only that it was.
-fn inherited(key: &str) -> Error {
+fn inherited_refusal(key: &str) -> Error {
     Error::Unsupported(format!(
         "pdf redaction [page-attribute-inherited]: a page that takes its {key} from the page tree \
          instead of declaring it. A page that overrides it with null is shown without it, but \
@@ -146,17 +195,34 @@ const RENDERER_NULL_MEDIA_BOX: Rect = Rect {
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] naming `media-box-unverified`, for each of the three.
+/// [`Error::Unsupported`] naming `media-box-unverified`, for each of the three, and for a
+/// renderer that fails to answer; a limit the renderer hits passes through as that limit; and
+/// whatever [`of`] raises for the page.
 pub(crate) fn check_inherited_media_box<O: PdfObject>(
     page: &O,
     renderer_size: impl FnOnce() -> Result<Option<(f64, f64)>>,
 ) -> Result<()> {
-    let (Some(inherited_box), Found::Ancestor) = inherited_rect(page, &MEDIA_BOX)? else {
+    // `of` FIRST: it refuses every shape the typed readers do not take, so a box found on an
+    // ancestor below is always a box. The first version matched `(Some(box), Ancestor)` and let
+    // an ancestor value that did not read as a box skip the check entirely (#224's review).
+    let frame = of(page)?;
+    let (inherited_box, Found::Ancestor) = inherited(page, &MEDIA_BOX, "/MediaBox", read_box)?
+    else {
         return Ok(());
     };
-    let frame = of(page)?;
-    let (own_crop, _) = inherited_rect(page, &CROP_BOX)?;
-    let Some((width, height)) = renderer_size()? else {
+    let Some(inherited_box) = inherited_box else {
+        return Err(unverified());
+    };
+    let own_crop = read_box(page, &CROP_BOX, "/CropBox")?;
+    // A RENDERER THAT CANNOT ANSWER IS NOT AN ANSWER: its failure (a page it numbers otherwise,
+    // a document it will not open) is this rule's refusal, so both engines say the same thing.
+    // A limit stays a limit: running out of budget is the operation's outcome, not a verdict.
+    let answer = match renderer_size() {
+        Ok(answer) => answer,
+        Err(limit @ Error::LimitExceeded { .. }) => return Err(limit),
+        Err(_) => return Err(unverified()),
+    };
+    let Some((width, height)) = answer else {
         // NO SECOND READING: the web engine, until the renderer reaches redaction (#206).
         return Err(unverified());
     };
@@ -196,37 +262,39 @@ fn unverified() -> Error {
     )
 }
 
-/// An inheritable rectangle-valued key, and where it was found.
-fn inherited_rect<O: PdfObject>(page: &O, key: &Name) -> Result<(Option<Rect>, Found)> {
-    let (found, from) = inherited_numbers(page, key)?;
-    let rect = match found.as_slice() {
-        [left, bottom, right, top] => Some(Rect {
-            left: left.min(*right),
-            bottom: bottom.min(*top),
-            right: left.max(*right),
-            top: bottom.max(*top),
-        }),
-        _ => None,
-    };
-    Ok((rect, from))
+/// The largest `/Rotate` read: ten full turns either way. See `of`.
+const MAX_ROTATE: f64 = 3600.0;
+
+/// A value in a shape the renderer does not read as this would (#224).
+fn unreadable(what: &str) -> Error {
+    Error::Unsupported(format!(
+        "pdf redaction [page-frame-unreadable]: {what}. The renderer a person sees the page \
+         through reads such a value differently, so the region would be measured against a \
+         different page than the one shown"
+    ))
 }
 
-/// An inheritable key's numbers, climbing `/Parent` when the page declares none, and where
-/// they were found.
-fn inherited_numbers<O: PdfObject>(page: &O, key: &Name) -> Result<(Vec<f64>, Found)> {
-    let direct = numbers(&page.key(key));
-    if !direct.is_empty() {
-        return Ok((direct, Found::Page));
+/// An inheritable key, read by `read` on the page and then up the tree, and where it was found.
+///
+/// Absent -- or null, which qpdf reads the same -- climbs. A value `read` does not take is
+/// refused where it is, never climbed past: PDFium stops at any present value (#224).
+fn inherited<O: PdfObject, T>(
+    page: &O,
+    key: &Name,
+    label: &str,
+    read: fn(&O, &Name, &str) -> Result<Option<T>>,
+) -> Result<(Option<T>, Found)> {
+    if let Some(value) = read(page, key, label)? {
+        return Ok((Some(value), Found::Page));
     }
     let mut current = page.key(&PARENT);
     for _ in 0..MAX_PAGE_TREE_DEPTH {
         if current.type_code() != object_type::DICTIONARY {
-            return Ok((Vec::new(), Found::Nowhere));
+            return Ok((None, Found::Nowhere));
         }
         current.drained()?;
-        let found = numbers(&current.key(key));
-        if !found.is_empty() {
-            return Ok((found, Found::Ancestor));
+        if let Some(value) = read(&current, key, label)? {
+            return Ok((Some(value), Found::Ancestor));
         }
         current = current.key(&PARENT);
     }
@@ -235,9 +303,50 @@ fn inherited_numbers<O: PdfObject>(page: &O, key: &Name) -> Result<(Vec<f64>, Fo
     ))
 }
 
-fn numbers<O: PdfObject>(handle: &O) -> Vec<f64> {
-    if handle.type_code() == object_type::NULL {
-        return Vec::new();
+/// `node`'s `key` as a box: absent, or an array of exactly four numbers, one per item.
+fn read_box<O: PdfObject>(node: &O, key: &Name, label: &str) -> Result<Option<Rect>> {
+    let value = node.key(key);
+    let code = value.type_code();
+    if code == object_type::NULL {
+        return Ok(None);
     }
-    crate::pdfsyntax::ops::numbers_in(&handle.unparse())
+    if code != object_type::ARRAY || value.array_len() != 4 {
+        return Err(unreadable(&format!("a {label} that is not four numbers")));
+    }
+    let mut corners = [0.0_f64; 4];
+    for (at, corner) in (0..4).zip(corners.iter_mut()) {
+        *corner = one_number(&value.array_item(at))
+            .ok_or_else(|| unreadable(&format!("a {label} that is not four numbers")))?;
+    }
+    let [left, bottom, right, top] = corners;
+    Ok(Some(Rect {
+        left: left.min(right),
+        bottom: bottom.min(top),
+        right: left.max(right),
+        top: bottom.max(top),
+    }))
+}
+
+/// `node`'s `key` as a number: absent, or one integer or real.
+fn read_number<O: PdfObject>(node: &O, key: &Name, label: &str) -> Result<Option<f64>> {
+    let value = node.key(key);
+    if value.type_code() == object_type::NULL {
+        return Ok(None);
+    }
+    one_number(&value)
+        .map(Some)
+        .ok_or_else(|| unreadable(&format!("a {label} that is not a number")))
+}
+
+/// The one finite number an integer or real handle holds, through its text: there is no trapped
+/// accessor for a real, and `unparse` resolves an indirect reference to the value it names.
+fn one_number<O: PdfObject>(handle: &O) -> Option<f64> {
+    let code = handle.type_code();
+    if code != object_type::INTEGER && code != object_type::REAL {
+        return None;
+    }
+    match crate::pdfsyntax::ops::numbers_in(&handle.unparse())[..] {
+        [number] if number.is_finite() => Some(number),
+        _ => None,
+    }
 }

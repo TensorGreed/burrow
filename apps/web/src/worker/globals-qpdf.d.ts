@@ -136,6 +136,7 @@ interface WorkerGlobalScope {
     password: number,
   ): number;
   __burrow_qpdf_has_error(data: number): number;
+  __burrow_qpdf_more_warnings(data: number): number;
   __burrow_qpdf_get_error(data: number): number;
   __burrow_qpdf_get_error_code(data: number, error: number): number;
   __burrow_qpdf_get_num_pages(data: number): number;

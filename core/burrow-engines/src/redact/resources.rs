@@ -107,9 +107,9 @@ impl<O: PdfObject> PageResources<O> {
     /// puts them on a `/Pages` node — which is how a word processor writes a shared letterhead.
     ///
     /// Note what the committed corpus does **not** exercise: `mixed-rotation-4page.pdf` and
-    /// `inherited-rotation-6page.pdf` carry an **empty** `/Resources`, not an absent one, so
-    /// they refuse with `font-missing` either way. Absent and empty are different, and only one
-    /// of them inherits.
+    /// `inherited-rotation-6page.pdf` carry an **empty** `/Resources`, not an absent one. They
+    /// refused with `font-missing` before #224, and are refused first now, for the `/Rotate` they
+    /// inherit. Absent and empty are different, and only one of them inherits.
     ///
     /// # A `/Parent` chain that does not terminate yields empty resources, not an error
     ///
@@ -124,7 +124,8 @@ impl<O: PdfObject> PageResources<O> {
     ///
     /// # Errors
     ///
-    /// Whatever qpdf latched while reading the page or an ancestor.
+    /// `Unsupported` `[page-attribute-inherited]` when the page takes its `/Resources` from an
+    /// ancestor (#224); whatever qpdf latched while reading the page or an ancestor.
     pub(crate) fn of(owner: &O) -> Result<Self> {
         let direct = owner.key(&RESOURCES);
         if direct.type_code() == object_type::DICTIONARY {

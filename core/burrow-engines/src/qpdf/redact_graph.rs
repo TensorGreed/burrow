@@ -149,11 +149,20 @@ impl OpensForRedaction for Qpdf {
     ) -> Result<(Self::Document, Deadline)> {
         let (document, _, _, deadline) =
             super::open_document(bytes.to_vec().into_boxed_slice(), options)?;
+        // A REPAIRED INPUT IS REFUSED (#224): see `repaired_by_the_engine`. After the page count
+        // `open_document` takes, which is when qpdf flattens -- and repairs -- the page tree.
+        if document.repaired() {
+            return Err(crate::redact::repaired_by_the_engine());
+        }
         Ok((document, deadline))
     }
 
     /// PDFium's size for the page, read without loading its content: `page_size` goes by index
     /// precisely so that no display list is built (#103).
+    ///
+    /// THE RENDERER'S OPEN STARTS ITS OWN DEADLINE from `options`, as the read-back's does
+    /// (`witness.rs`): the redaction checkpoints just before this call, so the overshoot past the
+    /// operation's budget is this open and one size read, and every ceiling applies to it.
     fn renderer_page_size(
         &self,
         bytes: &[u8],

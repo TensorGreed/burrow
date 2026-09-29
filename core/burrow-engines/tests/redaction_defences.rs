@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 34] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 45] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2438,15 +2438,49 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 34] = [
         Some("media-box-unverified"),
     ),
     ("nearmiss-mediabox-declared-over-the-tree.pdf", None),
+    ("evade-cropbox-larger-than-mediabox.pdf", None),
+    (
+        "evade-cropbox-as-nested-array.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-cropbox-as-dictionary.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-rotate-past-the-integer-range.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    ("evade-user-unit-two.pdf", Some("user-unit-not-one")),
+    ("nearmiss-page-frame-plainly-declared.pdf", None),
+    (
+        "evade-junk-kid-over-a-null-rotate.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-junk-kid-over-a-null-mediabox.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-junk-kid-over-a-null-cropbox.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-junk-kid-over-null-resources.pdf",
+        Some("engine-repaired-input"),
+    ),
+    ("nearmiss-kids-all-pages.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 5] = [
+const RESOLVED_GROUPS: [&str; 7] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
     "page attribute inherited",
     "media box unverified",
+    "page frame read",
+    "engine repaired",
 ];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.
@@ -2976,14 +3010,25 @@ fn a_do_naming_nothing_the_resources_hold_is_refused() {
             String::new(),
         )
     });
-    for (what, pdf) in [
-        ("a Do the qpdf repair left naming nothing", repaired),
-        ("a Do PDFium resolves by falling back to the page", fallback),
+    // THE REPAIR IS REFUSED EARLIER SINCE #224: qpdf reports repairing the stream-valued
+    // `/Resources`, and the open refuses on that before any walk can meet the empty dictionary.
+    // The walk's `[xobject-missing]` still holds the fallback, which involves no repair.
+    for (what, pdf, rule) in [
+        (
+            "a Do the qpdf repair left naming nothing",
+            repaired,
+            "[engine-repaired-input]",
+        ),
+        (
+            "a Do PDFium resolves by falling back to the page",
+            fallback,
+            "[xobject-missing]",
+        ),
     ] {
         let refused = refusal(&pdf, what);
         assert!(
-            refused.contains("[xobject-missing]"),
-            "{what}: refused, but not because the name resolves to nothing: {refused}"
+            refused.contains(rule),
+            "{what}: refused, but not by {rule}: {refused}"
         );
     }
 }

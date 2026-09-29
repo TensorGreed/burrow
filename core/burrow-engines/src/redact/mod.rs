@@ -485,6 +485,24 @@ pub(crate) fn poisoned(detail: &str) -> Error {
 /// # Errors
 ///
 /// As [`crate::PageRedactor::redact_page`].
+/// The refusal for an input the engine repaired while reading it (#224), on both engines alike.
+///
+/// qpdf repairs some damage silently -- recovery is off, and it still does -- and a repair can
+/// change what a page is: a junk entry in `/Kids` makes it push every inherited attribute onto
+/// the pages, after which a page that overrode one with `null` looks as though it declared the
+/// ancestor's value, and `[page-attribute-inherited]` cannot fire. qpdf's warnings are the only
+/// channel that reports a repair, and only whether one happened is read: never its text, which
+/// can carry file-derived content. Refusing on any warning was the owner's rule for a measured
+/// cost under 2%; it was 4 of 224 local documents, every one a test fixture.
+pub(crate) fn repaired_by_the_engine() -> Error {
+    Error::Unsupported(
+        "pdf redaction [engine-repaired-input]: the PDF engine repaired this document while \
+         reading it, and a repaired document may not be the one other readers show, so which \
+         page the region was drawn on cannot be known"
+            .to_owned(),
+    )
+}
+
 pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     engine: &E,
     bytes: &[u8],

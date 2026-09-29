@@ -266,6 +266,12 @@ impl Session {
     /// functions that do not return a code report errors only this way. Only the *code* is
     /// read — never text, filename or byte offset, none of which the bridge can even
     /// obtain, because the module's `EXPORTED_FUNCTIONS` allowlist does not include them.
+    /// Whether qpdf repaired anything while reading this document (#224); see
+    /// `redact::repaired_by_the_engine`.
+    pub(super) fn repaired(&self) -> bool {
+        self.bridge.more_warnings(self.data)
+    }
+
     pub(super) fn take_error(&self) -> Option<Error> {
         if !self.bridge.has_error(self.data) {
             return None;

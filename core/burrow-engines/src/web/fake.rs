@@ -1195,6 +1195,11 @@ impl QpdfBridge for FakeQpdf {
         self.pending.lock().expect("not poisoned").is_some()
     }
 
+    fn more_warnings(&self, _data: QpdfPtr) -> bool {
+        // THE FAKE REPAIRS NOTHING: it holds no document for qpdf to warn about.
+        false
+    }
+
     fn get_error(&self, _data: QpdfPtr) -> QpdfPtr {
         // Consumes the slot, exactly as qpdf's does. If it did not, the drain loop in
         // `Session::drop` would spin forever -- which is a property worth having the fake

@@ -287,7 +287,7 @@ say "qpdf $QPDF_VERSION for wasm: the shipping engine module"
 qpdf_exports='"_malloc","_free",
   "_qpdf_init","_qpdf_cleanup","_qpdf_silence_errors","_qpdf_set_suppress_warnings",
   "_qpdf_set_logger","_qpdf_set_attempt_recovery","_qpdf_read_memory",
-  "_qpdf_has_error","_qpdf_get_error","_qpdf_get_error_code","_qpdf_get_num_pages",
+  "_qpdf_has_error","_qpdf_more_warnings","_qpdf_get_error","_qpdf_get_error_code","_qpdf_get_num_pages",
   "_qpdf_global_set_uint32","_qpdf_get_qpdf_version",
   "_qpdf_get_page_n","_qpdf_add_page","_qpdf_init_write_memory",
   "_qpdf_remove_page","_qpdf_add_page_at",

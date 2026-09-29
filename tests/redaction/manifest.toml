@@ -1950,3 +1950,212 @@ pages = 1
 The entry, not the category. Read as absent it refuses as unresolved; the rule this pins is the
 stream one, which a mutation dropping the entry check survived until this fixture existed.
 """
+
+[[fixture]]
+name = "evade-cropbox-larger-than-mediabox"
+file = "generated/evade-cropbox-larger-than-mediabox.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /CropBox five times taller than the /MediaBox — handled by clipping"
+  canary = "BURROW-EVADE-CROP-TOO-TALL"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+Clipped to the media box as PDFium clips it (#224). Unclipped, the region was measured against a page five times taller and the canary kept.
+"""
+
+[[fixture]]
+name = "evade-cropbox-as-nested-array"
+file = "generated/evade-cropbox-as-nested-array.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox [[...]] — evasion"
+  canary = "BURROW-EVADE-CROP-NESTED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+burrow picked four numbers out of it; PDFium ignores it (#224).
+"""
+
+[[fixture]]
+name = "evade-cropbox-as-dictionary"
+file = "generated/evade-cropbox-as-dictionary.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox as a dictionary of four numbers — evasion"
+  canary = "BURROW-EVADE-CROP-DICT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+burrow read the numbers as a box; PDFium does not (#224).
+"""
+
+[[fixture]]
+name = "evade-rotate-past-the-integer-range"
+file = "generated/evade-rotate-past-the-integer-range.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate beyond the integer range — evasion"
+  canary = "BURROW-EVADE-ROTATE-HUGE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+90 to a reader that keeps the digits, 0 to PDFium (#224).
+"""
+
+[[fixture]]
+name = "evade-user-unit-two"
+file = "generated/evade-user-unit-two.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/UserUnit 2 — evasion"
+  canary = "BURROW-EVADE-USER-UNIT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The region conversion divided by it; the renderer ignores it (#224).
+"""
+
+[[fixture]]
+name = "nearmiss-page-frame-plainly-declared"
+file = "generated/nearmiss-page-frame-plainly-declared.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "crop inside the media box, /Rotate 0, /UserUnit 1 — near-miss twin"
+  canary = "BURROW-EVADE-FRAME-PLAIN"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused: every value present, in the shape both readers take.
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-a-null-rotate"
+file = "generated/evade-junk-kid-over-a-null-rotate.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate null over /Pages /Rotate 90, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-ROTATE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf rebuilds the tree and pushes /Rotate 90 onto the page; only its warning says so (#224).
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-a-null-mediabox"
+file = "generated/evade-junk-kid-over-a-null-mediabox.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/MediaBox null over /Pages' box, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-MEDIABOX"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf pushes the ancestor's box onto the page, hiding the null from the check (#224).
+"""
+
+[[fixture]]
+name = "nearmiss-kids-all-pages"
+file = "generated/nearmiss-kids-all-pages.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "every /Kids entry a page — near-miss twin"
+  canary = "BURROW-EVADE-KIDS-CLEAN"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused: nothing for qpdf to repair.
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-a-null-cropbox"
+file = "generated/evade-junk-kid-over-a-null-cropbox.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox null over a /Pages crop, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-CROPBOX"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf pushes the ancestor's crop onto the page, hiding the null (#224).
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-null-resources"
+file = "generated/evade-junk-kid-over-null-resources.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Resources null over a zero-width /Pages font, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-RESOURCES"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf pushes the ancestor's resources onto the page, hiding the null (#224).
+"""

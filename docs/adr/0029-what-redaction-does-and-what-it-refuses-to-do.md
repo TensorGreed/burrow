@@ -133,6 +133,9 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | text shown inside a **Form XObject with a font `Tf` selected outside it** | **refuse**, `[font-selected-in-another-scope]` — added 2026-09-28 ([#218], round 4). A reader binds the font where `Tf` runs; the walk carried only its name and resolved it again in the form's own `/Resources`. A review got two `Ok`s from that: a secret measured with a zero-width form font, placed outside the region and left in plain text (older than [#218]); and a removed character credited to the form's font, so the font that drew it kept mapping it. Refused rather than resolved through the `Tf`'s scope. None of the 463 golden cases has the shape, and a review walking 1,918 pages from 224 local PDFs found it on none. **It over-refuses one safe shape**: a child form with no `/Resources` of its own inherits the scope that ran the `Tf`, so it draws with the same font, and is refused anyway because its route is longer |
 | a page that **takes `/Resources`, `/CropBox` or `/Rotate` from the page tree** rather than declaring it, whether its own entry is absent, null or unreadable | **refuse**, `[page-attribute-inherited]` — added 2026-09-29 ([#224]), superseding [#183]'s pre-scan. PDFium stops at a page's null and qpdf cannot see it, so an absent entry and a null one are refused alike. The `/Resources` half is a **stopgap** until #206's placement comparison; see the [2026-09-29 amendment](#amendment-2026-09-29--224-supersedes-183-inherited-page-attributes-are-refused-and-a-mediabox-is-asked-of-pdfium) |
 | a page that **takes `/MediaBox` from the page tree** and nothing confirms it is the box the viewer shows | **refuse**, `[media-box-unverified]` — added 2026-09-29 ([#224]). Natively where PDFium's page size disagrees with burrow's, or where a size cannot decide; on the web always, until #206 brings the renderer to redaction |
+| a document **the PDF engine repaired while reading it** -- any qpdf warning at the open | **refuse**, `[engine-repaired-input]` — added 2026-09-29 ([#224], round 2). A repair can change what a page is: a junk `/Kids` entry makes qpdf push every inherited attribute onto the pages, after which a null-overridden page looks declared. Only whether a warning was raised is read, never its code or text. 4 of 224 local documents, all test fixtures |
+| a page box, `/Rotate` or `/UserUnit` in a **shape the renderer does not read as burrow would** -- a box that is not four numbers, a `/Rotate` that is not a number or is beyond ten turns, a crop sharing no area with the media box | **refuse**, `[page-frame-unreadable]` — added 2026-09-29 ([#224], round 2). The crop is clipped to the media box, as PDFium clips it. 0 of 224 local documents |
+| a page whose **`/UserUnit` is not 1** | **refuse**, `[user-unit-not-one]` — added 2026-09-29 ([#224], round 2). PDFium's size and its render ignore it and the region conversion divides by it. 0 of 224 local documents |
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
@@ -3805,12 +3808,14 @@ secret still in the output, measured through `Qpdf.redact_page` over the band PD
   word for word alike: the native-backed web differential compares whole outcomes.
 
 **Why a size is enough.** Inherited `/CropBox` and `/Rotate` are refused, and the page's own are
-read alike by both readers, so PDFium's `/MediaBox` is either the inherited box or US Letter at the
-origin. Where those differ in size, PDFium's size says which it used. Where they do not -- an
+read alike by both readers -- a premise the first version of this paragraph stated and review
+proved false, and which round 2 below makes true and measures -- so PDFium's `/MediaBox` is either
+the inherited box or US Letter at the origin. Where those differ in size, PDFium's size says which it used. Where they do not -- an
 inherited Letter-sized box away from the origin, and no `/CropBox` of the page's own -- a size
 cannot decide and the page is refused. With the page's own `/CropBox`, both readers show at most
 that box, and PDFium shows exactly it only if its size is that box's. `/UserUnit` is outside the
-comparison, which reads sizes in default units on both sides.
+comparison, which reads sizes in default units on both sides, and a `/UserUnit` other than 1 is
+refused since round 2.
 
 **What it cost, measured on one person's collection.** 200 documents and 2,708 pages: TeX Live
 documentation, the burrow corpus and the test fixtures, with personal documents left out.
@@ -3860,7 +3865,75 @@ a value on `/Pages`, one per key, and are refused by name on both engines. Two t
 key on the page under an ancestor that carries different values, and redact on both. 491 golden
 cases over 114 documents.
 
-**Shown to fail.** Each of eight mutations is killed by name, each on a fresh build: each of the
+**Shown to fail (round 1).** Each of eight mutations is killed by name, each on a fresh build: each of the
 three inheritance refusals switched off; the Letter-sized-offset rule; the size comparison; "no
 second reading" passing; the check never called; and a native engine reporting no reading.
+
+### Round 2: the repair that hides a null, and a premise made true by measuring it
+
+Both reviewers ran on the first commit, and the security review blocked it.
+
+**A junk entry in `/Kids` got past all four refusals.** qpdf meets a non-dictionary kid while it
+reads the page tree, rebuilds the tree, and pushes every inherited attribute -- `/Resources`,
+`/MediaBox`, `/CropBox`, `/Rotate` -- onto the pages that lack one. A null counts as lacking,
+because qpdf dropped it when it parsed. Afterwards the page appears to declare its ancestor's value,
+and neither the refusals nor the `/MediaBox` check fire: measured, `Ok` with the secret kept, for
+each key. qpdf's own graph cannot tell a pushed value from a declared one. Only its warnings say a
+repair happened, and burrow read none.
+
+**Owner's decision.** Bind `qpdf_more_warnings`, natively and as a bridge export. Read only
+**whether** a warning was raised, never its code or text, which can carry file-derived content --
+the rule that already governs error mapping. The rule was set before measuring: if refusing on any
+warning costs under 2% of real documents, refuse on any warning, with no matching to maintain;
+otherwise match the page-tree repair by code. Measured by opening each of 224 local documents the
+way redaction opens them: 212 opened, 4 raised any warning -- `five-pages-or-six.pdf`,
+`layered.pdf`, `objstm-bomb.pdf` and `page-loss-on-write.pdf`, every one a test fixture, none a real
+document. So redaction refuses on any warning, `[engine-repaired-input]`, on both engines. Golden:
+`five-pages-or-six.pdf` and `objstm-bomb.pdf` redacted before and are refused now;
+`layered.pdf` and `page-loss-on-write.pdf` were already refused and refuse earlier.
+
+**qpdf's silent repairs are a mechanism, not an incident.** [#61](https://github.com/TensorGreed/burrow/issues/61)
+was a damaged file that opened and silently lost pages on write. Recovery is off
+(`qpdf::open_document`; ADR 0022) because a reconstructed input's relationship to what a person
+handed over is unclear. And now a rebuilt page tree carried an ancestor's value onto a page that had
+overridden it. Each is qpdf changing the document while reading it and saying so only in a warning.
+The warning channel is how burrow finds out, and until #224 it read nothing from it.
+
+**The size argument's premise was false.** "The page's own are read alike by both readers" did not
+hold. burrow read boxes and `/Rotate` by pulling numbers out of their text; PDFium reads by type.
+So `/Rotate [90]`, a `/CropBox` of `[[...]]`, a dictionary of four numbers and a `/Rotate` beyond
+the integer range were each read one way here and another there. PDFium also clips the crop box to
+the media box, and burrow did not. Each was measured returning `Ok` with the secret where PDFium
+drew it. **Owner's decision, scoped to the frame reader, with a cost bar set before measuring**:
+more than 1% of the 200 local documents for any one refusal comes back before landing. The frame
+reader now reads a box only as an array of exactly four numbers, one per item. It reads `/Rotate`
+only as a number within ten turns, clips the crop to the media box, and refuses a `/UserUnit` other
+than 1. A value present in any other shape is refused, never climbed past. Measured over 224
+documents, 208 opened for redaction, 2,871 pages:
+
+| rule | documents |
+|---|--:|
+| `page-frame-unreadable` | 0 |
+| `user-unit-not-one` | 0 |
+| `media-box-unverified`, natively with PDFium | 0 |
+| `page-attribute-inherited` | 2, the conformance rotation fixtures above |
+
+The premise now reads as true because it is measured, not because the exceptions were taken out of
+the sentence. One fixture per shape: an oversized crop, which is handled by the clipping (unclipped,
+the region lands off the page); a crop written as a nested array and as a dictionary; a `/Rotate`
+beyond the integer range; `/UserUnit 2`. `/Rotate [90]` is refused on `burrow_ops`' path by the
+rotation reader first, so it is pinned at the engine by a test rather than in the golden corpus,
+where the two differentials, which enter at different layers, would disagree about it. The junk
+`/Kids` entry has one fixture per key.
+
+**Smaller.** An ancestor `/MediaBox` that did not read as a box skipped the PDFium check. A failure
+from the renderer now refuses as `[media-box-unverified]`, and a limit passes through as a limit.
+Four lines of the size check had no test behind them, and each now has one: each axis alone, the
+rotation, the page PDFium is asked about, the box shown rather than the box inherited, the
+tolerance, and Letter at the origin redacting. 535 golden cases over 125 documents.
+
+**Shown to fail (round 2).** Fourteen mutations, each asserted to apply and each on a fresh build,
+each killed by name. One of them was first planted wrong. The unclipped crop went in as a match arm
+guarded `if false`, which never runs, so it survived. Its apply-check had confirmed only that the
+text changed. Planted as `if true`, it fails four tests.
 

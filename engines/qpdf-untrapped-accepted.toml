@@ -120,6 +120,14 @@ the exception was caught and stored by `trap_errors` before this is reachable. D
 slot is also what keeps `qpdf_cleanup`'s default-logger branch unreachable."""
 
 [[function]]
+name = "qpdf_more_warnings"
+reason = """Moves the `QPDFExc`s qpdf already stored (`QPDF::getWarnings`, a vector move) into the C \
+handle's list and reports whether it is empty. No parsing, no object resolved, no \
+file-derived number converted; the warnings were caught and stored when they were raised. \
+Redaction calls it once after the open to learn whether qpdf repaired the input (#224). \
+`qpdf_next_warning` is deliberately not declared: only whether is read, never what."""
+
+[[function]]
 name = "qpdf_get_error_code"
 reason = """\
 Reads the integer code off a stored error. `qpdf_error_code_e`'s numbering is guaranteed \

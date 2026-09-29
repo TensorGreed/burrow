@@ -252,6 +252,11 @@ impl QpdfBridge for NativeBridge {
         unsafe { ffi::qpdf_has_error(self.data(data)) != ffi::QPDF_FALSE }
     }
 
+    fn more_warnings(&self, data: QpdfPtr) -> bool {
+        // SAFETY: see the block comment above the impl.
+        unsafe { ffi::qpdf_more_warnings(self.data(data)) != ffi::QPDF_FALSE }
+    }
+
     fn get_error(&self, data: QpdfPtr) -> QpdfPtr {
         // SAFETY: see the block comment above the impl.
         let error = unsafe { ffi::qpdf_get_error(self.data(data)) };
@@ -987,6 +992,9 @@ impl QpdfBridge for RefusingHeap {
     }
     fn has_error(&self, data: QpdfPtr) -> bool {
         self.inner.has_error(data)
+    }
+    fn more_warnings(&self, data: QpdfPtr) -> bool {
+        self.inner.more_warnings(data)
     }
     fn get_error(&self, data: QpdfPtr) -> QpdfPtr {
         self.inner.get_error(data)

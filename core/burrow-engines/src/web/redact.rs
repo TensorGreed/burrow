@@ -400,6 +400,10 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
         if let Some(error) = session.take_error() {
             return Err(error);
         }
+        // A REPAIRED INPUT IS REFUSED, as natively (#224), after the page count that repairs it.
+        if session.repaired() {
+            return Err(crate::redact::repaired_by_the_engine());
+        }
         crate::estimate::check_measured_memory(
             Some(heap_before),
             Some(engine.bridge().heap_bytes()),

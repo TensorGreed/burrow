@@ -1274,6 +1274,109 @@ mod wiring {
     }
 
     #[test]
+    fn a_media_box_check_compares_each_axis_the_rotation_and_the_shown_box() {
+        // #224, round 2: each case is one the first tests could not tell from a mutation of the
+        // check -- every earlier fixture was one unrotated 300 x 400 box whose crop was itself,
+        // so both axes always differed together and the shown box was the inherited one.
+        //
+        // ONE AXIS AT A TIME: a null over a box that differs from US Letter in width only, then
+        // in height only. A check that compared one axis would pass one of them.
+        for (parent, which) in [
+            ("/MediaBox [50 0 562 792]", "width only"),
+            ("/MediaBox [0 0 612 700]", "height only"),
+        ] {
+            refused_by(
+                redact_in(
+                    &page_under_a_tree(&format!("{RESOURCES} /MediaBox null"), parent),
+                    UPPER_BAND,
+                ),
+                "media-box-unverified",
+                &format!("a null over a box differing from Letter in {which}"),
+            );
+        }
+        // ROTATED: burrow shows the inherited 792 x 612 turned to 612 x 792; PDFium shows Letter
+        // turned to 792 x 612. Compared unrotated, the two sizes are equal.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(
+                    &format!("{RESOURCES} /MediaBox null /Rotate 90"),
+                    "/MediaBox [0 0 792 612]",
+                ),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a null under a rotated page",
+        );
+        // THE SHOWN BOX, not the inherited one: the page's own crop is half the inherited box,
+        // and both readers show the crop. Compared against the inherited box, this refuses.
+        redact_in(
+            &page_under_a_tree(&format!("{RESOURCES} /CropBox [0 0 300 200]"), BOX),
+            UPPER_BAND,
+        )
+        .expect("both readers show the page's own crop");
+        // THE TOLERANCE: 38 points apart -- PDFium clips the crop to Letter, burrow to the
+        // inherited box. A tolerance of tens of points passes it.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(
+                    &format!("{RESOURCES} /MediaBox null /CropBox [0 0 612 830]"),
+                    "/MediaBox [0 0 612 830]",
+                ),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a crop clipped to Letter by one reader and not the other",
+        );
+        // AND LETTER AT THE ORIGIN, INHERITED, redacts: a null there gives the same box.
+        redact_in(
+            &page_under_a_tree(RESOURCES, "/MediaBox [0 0 612 792]"),
+            UPPER_BAND,
+        )
+        .expect("an inherited Letter box at the origin is the box a null would give");
+    }
+
+    #[test]
+    fn a_rotate_that_is_not_a_number_is_refused_by_the_frame_reader() {
+        // #224: `/Rotate [90]` -- burrow's reader pulled 90 out of the text, and PDFium, which
+        // reads by type, shows the page upright. On `burrow_ops`' path the rotation reader refuses
+        // it first; this is the engine's own reader, which a direct caller meets.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(&format!("{BOX} {RESOURCES} /Rotate [90]"), ""),
+                UPPER_BAND,
+            ),
+            "page-frame-unreadable",
+            "/Rotate [90]",
+        );
+    }
+
+    #[test]
+    fn the_renderer_is_asked_about_the_page_being_redacted() {
+        // #224, round 2: page 0 declares 300 x 400; page 1 sets its /MediaBox to null over the
+        // same box on /Pages, so PDFium shows page 1 at US Letter. A check that asked about page
+        // 0 would hear 300 x 400 and pass.
+        let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n";
+        let resources = "/Resources << /Font << /F1 6 0 R >> >>";
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] /MediaBox [0 0 300 400] >>".to_owned(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 5 0 R {BOX} {resources} >>"),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 5 0 R /MediaBox null {resources} >>"),
+            stream(content),
+            helvetica("/Encoding /WinAnsiEncoding"),
+        ]);
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let outcome = super::super::Qpdf
+            .redact_page(&bytes, 1, &BTreeSet::from([1]), UPPER_BAND, &options)
+            .map(|(output, _)| output);
+        refused_by(
+            outcome,
+            "media-box-unverified",
+            "page 1's null, asked about page 1",
+        );
+    }
+
+    #[test]
     fn the_check_is_told_the_page_that_was_redacted() {
         // KILLS: `Cleared { page: 0 }` instead of `page`. Every end-to-end test redacts page 0,
         // so a verification that always checked page 0 would ship.
