@@ -1098,6 +1098,7 @@ the seven cases then in the script:
 [#183]: https://github.com/TensorGreed/burrow/issues/183
 [#224]: https://github.com/TensorGreed/burrow/issues/224
 [#226]: https://github.com/TensorGreed/burrow/issues/226
+[#227]: https://github.com/TensorGreed/burrow/issues/227
 
 ## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
 
@@ -4034,7 +4035,15 @@ after the write, and the `/Rect` bound. Each fails by name. 563 golden cases ove
 of this change and of #152, found it independently. qpdf resolves `6 1 R` to null when the file
 has only `6 0`, drops the key, and warns about nothing; PDFium finds object 6 by number. So a
 `/Rotate`, `/CropBox`, form `/Matrix`, `/Widths` or `/ExtGState` entry written that way is absent
-to burrow and present to the viewer, `Ok` with the secret drawn, on both engines. It is not
-visible through qpdf at all, so it is not a frame-reader fix; it is recorded as its own issue and
-decision.
+to burrow and present to the viewer, `Ok` with the secret drawn, on both engines.
+
+**Owner's decision: land this, and take [#227] next, before #206 -- unless the warning channel
+already sees it.** It does not. Measured with a page whose `/Rotate 6 1 R` points at a `6 0` of
+`90`: `qpdf --check` and a full rewrite both exit 0 with no warning; burrow's redaction returns
+`Ok` through all three warning checks -- at the open, before the write and after it; PDFium follows
+the reference and reports the page 400 by 300, turned. The same page with `6 0 R` is turned by both.
+So this is the third of qpdf's silent changes to a document with no signal at all, after #61's
+lost pages and a rebuilt page tree's warnings before #224 read them -- and the one the warning
+channel cannot report, because qpdf does not think it repaired anything. It remains an open bypass
+of this amendment's refusals, and of #152's, until #227.
 
