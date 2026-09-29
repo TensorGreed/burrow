@@ -277,12 +277,12 @@
         "why": "Redaction's worker bundle: the shared prelude, bridge and protocol, qpdf's glue, the wasm-bindgen glue for the redaction module and `redact-main.js`. Mostly the same files as the base bundle, which is why it is about the base worker's size; the difference is the dispatch and the generated binding."
       },
       "engines/burrow_wasm_redact_bg.wasm": {
-        "measured_raw": 519901,
-        "measured_brotli": 164616,
+        "measured_raw": 542029,
+        "measured_brotli": 169359,
         "budget_brotli": 205770,
-        "measured_sha256": "b9dc830dc64ab0291d5d55022716b5381d9d9ed8e086d28b13f341cb965d860e",
-        "measured_sha256_normalised": "b9dc830dc64ab0291d5d55022716b5381d9d9ed8e086d28b13f341cb965d860e",
-        "why": "Redaction's own Rust module: the content-stream rewriter, the geometry walk, the font surgery and the read-back, over qpdf through the base bundle's bridge. 164,616 brotli at the first measurement (#137), which is the number that forced the split."
+        "measured_sha256": "72304430b69af16a1cf4a8adf0b7300ff538036027e40d4a70a87b505234f0f4",
+        "measured_sha256_normalised": "72304430b69af16a1cf4a8adf0b7300ff538036027e40d4a70a87b505234f0f4",
+        "why": "Redaction's own Rust module: the content-stream rewriter, the geometry walk, the font surgery and the read-back, over qpdf through the base bundle's bridge. 164,616 brotli at the first measurement (#137), which is the number that forced the split. #218 TOOK IT +4,743 (164,616 -> 169,359; 519,901 -> 542,029 raw), the budget unchanged: the growth is what the headroom is for. Measured per commit on one machine, where main rebuilds to the recorded bytes exactly: the check finding each cut font by path and refusing direct fonts +3,999; the walk recording each glyph's route and the per-page resolution caches +3,045; [font-selected-in-another-scope] +331; the operation's path invariant +225; and the coverage gate moving into the check, with drawn_in removed, -2,857."
       }
     },
     "not_byte_reproducible": {
