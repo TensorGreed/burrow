@@ -1424,9 +1424,11 @@ mod wiring {
 
     #[test]
     fn an_annotation_rect_past_what_readers_agree_on_is_refused() {
-        // #224, security review round 3: PDFium reads a whole number outside 32 bits as 0, so a
-        // `/Rect` corner at 2^32 + 20 is at 20 to a viewer that draws annotations, over the
-        // secret, and far off the page here -- the annotation was kept, `Ok`.
+        // #224, security reviews rounds 3 and 4: PDFium reads a whole number outside 32 bits as
+        // 0, so a `/Rect` of `[20 4294967296 120 380]` is 0..380 to a viewer that draws
+        // annotations -- over the secret at 350 -- and 380 upwards here, clear of the band: the
+        // annotation was kept, `Ok` (measured with the bound removed, round 4). The next two
+        // shapes are refused by the same bound without being leaks themselves.
         let page = |rect: &str| {
             pdf(&[
                 "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
@@ -1440,6 +1442,21 @@ mod wiring {
                     .to_owned(),
             ])
         };
+        refused_by(
+            redact_in(&page("[20 4294967296 120 380]"), UPPER_BAND),
+            "annotation-rect",
+            "a /Rect edge PDFium reads as 0, over the secret",
+        );
+        // A CONTAINER AMONG THE ITEMS (round 4): four numbers to a scan of the text -- 200 0 400
+        // 120, clear of the band -- and `[0 400 120 0]` to PDFium, which reads an item that is
+        // not a number as 0: over the secret. Measured `Ok` with the appearance drawn there.
+        for nested in ["[[200 0] 400 120 []]", "[<< /A 200 /B 0 >> 400 120 << >>]"] {
+            refused_by(
+                redact_in(&page(nested), UPPER_BAND),
+                "annotation-rect",
+                &format!("a /Rect of {nested}"),
+            );
+        }
         refused_by(
             redact_in(&page("[4294967316 330 120 350]"), UPPER_BAND),
             "annotation-rect",
@@ -1471,9 +1488,10 @@ mod wiring {
     }
 
     #[test]
-    fn a_repair_during_the_walk_is_refused_before_the_write() {
+    fn a_repair_during_the_walk_is_refused() {
         // #224, security review round 2: qpdf reads a font lazily, so a stray `)` in its
-        // `/Widths` is repaired -- and warned about -- during the walk, after the open's check.
+        // `/Widths` is repaired -- and warned about -- during the walk, after the open's check;
+        // the check after the write sees the warning, which persists.
         // PDFium ends the array at the `)` instead, and the two placed the glyphs differently.
         let bytes = pdf(&[
             "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),

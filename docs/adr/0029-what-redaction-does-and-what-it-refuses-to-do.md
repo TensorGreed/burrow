@@ -4012,7 +4012,8 @@ warnings. Four things were fixed:
   `[annotation-rect]`, with an engine test and its near-miss.
 - **qpdf repairs during the write too.** A stream reached only from the catalog, with a wrong
   `/Length`, is not read by the walk and was repaired while writing, after the check before it.
-  The warnings are now asked a third time, after the write, and the bytes are dropped on `true`.
+  The warnings are now asked a third time, after the write, and the bytes are dropped on `true`
+  (*round 4 removed the check before the write, which this one made redundant*).
   No leak was built through it; it was a channel no check observed. That check is not measured
   against the 224 documents, whose list did not survive a reboot.
 - **Two guards changed outcomes and nothing tested them.** Deleting the `name` guard refused an
@@ -4046,4 +4047,45 @@ So this is the third of qpdf's silent changes to a document with no signal at al
 lost pages and a rebuilt page tree's warnings before #224 read them -- and the one the warning
 channel cannot report, because qpdf does not think it repaired anything. It remains an open bypass
 of this amendment's refusals, and of #152's, until #227.
+
+### Round 4: a `/Rect` read as PDFium reads it, and one check where there were two
+
+Both reviewers ran on the round-3 fixes. The code review found no leak and three claims to
+correct; the security review blocked on the `/Rect` read, and found two older ways an annotation
+draws outside it.
+
+**The `/Rect` bound could be stepped around.** The numbers were still scanned out of the `/Rect`'s
+text, so `[[200 0] 400 120 []]` was four numbers here -- 200 0 400 120, clear of the region --
+while PDFium reads it item by item, an item that is not a number as 0: `[0 400 120 0]`, over the
+secret. Measured `Ok` on both engines with the appearance drawn in the region. `/Rect` is now read
+as a page box is: an array of exactly four items, each one number within the 2^24 bound, refused
+`[annotation-rect]` otherwise. The round-3 story was also wrong in its own terms: PDFium reads a
+corner past 32 bits as 0, not as its low bits, and the fixture's two cases were not leaks. The test
+now leads with one that is -- `[20 4294967296 120 380]`, 380 upwards here and 0..380 to PDFium,
+measured kept with the bound removed -- and the two nested shapes.
+
+**Two older ways an annotation draws outside its `/Rect`**, filed as
+[#229](https://github.com/TensorGreed/burrow/issues/229) and not fixed here: an appearance stream
+with no `/BBox`, which PDFium moves to the `/Rect`'s corner without fitting or clipping; and a
+NoRotate annotation on a turned page, which PDFium turns about the `/Rect`'s corner. Each was
+measured `Ok` with ink in the region. The table's premise that an annotation draws inside its
+`/Rect` is false for both until #229.
+
+**One repair check at the write, not two.** qpdf's warnings persist, so the check after the write
+refuses everything the check before it did, and deleting the earlier one failed nothing -- a check
+no test could pin. It is removed: the warnings are asked at the open and once after the write,
+before any byte leaves (*superseding round 3's "asked a third time"*). A web twin now pins the
+check after the write on the web engine too, where deleting it returned the same `Ok` as natively.
+
+**Two more guards were unreachable.** Every caller asks `type_code` before `array_len`, as before
+`integer_value`, so both `array_len` guards are removed on the same reasoning; a caller that did not
+would read qpdf's fallback with a warning, and be refused at the write. Fail-closed, and the trait's
+rustdoc now says so.
+
+**Shown to fail (round 4).** Three mutations, each asserted to apply, each on a fresh build, the
+workspace run without stopping at the first failing binary: a `/Rect` item that is not a number
+read as 0, a `/Rect` item out of range read as 0, and the check after the write removed. Each fails
+by name; the last fails seven tests, the web twin among them. One was first planted as a guarded
+match arm that did not compile, so it measured nothing, and was re-planted. The golden file is
+unchanged at 563 cases over 132 documents.
 

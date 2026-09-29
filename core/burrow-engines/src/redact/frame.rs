@@ -348,7 +348,7 @@ fn read_number<O: PdfObject>(node: &O, key: &Name, label: &str) -> Result<Option
 
 /// The largest magnitude a frame value may have: past 2^24 a 32-bit float -- PDFium's -- no
 /// longer holds every whole number, so the two readers stop agreeing on the box (#224, round 2).
-pub(super) const MAX_FRAME_MAGNITUDE: f64 = 16_777_216.0;
+const MAX_FRAME_MAGNITUDE: f64 = 16_777_216.0;
 
 /// The one number an integer or real handle holds, through its text -- there is no trapped
 /// accessor for a real, and `unparse` resolves an indirect reference to the value it names --
@@ -363,18 +363,34 @@ pub(super) const MAX_FRAME_MAGNITUDE: f64 = 16_777_216.0;
 /// web. A value past either bound is not read, and is refused as out of range rather than as
 /// not a number: it is one, and the message says what was wrong with it.
 fn one_number<O: PdfObject>(handle: &O, label: &str, not_a_number: &str) -> Result<f64> {
-    let not_a_number = || unreadable(&format!("a {label} {not_a_number}"));
+    match reading_of(handle) {
+        Reading::Number(number) => Ok(number),
+        Reading::NotANumber => Err(unreadable(&format!("a {label} {not_a_number}"))),
+        Reading::OutOfRange => Err(unreadable(&format!(
+            "a {label} larger than any reader agrees on"
+        ))),
+    }
+}
+
+/// What [`reading_of`] made of one item: a number both readers agree on, or why not.
+pub(super) enum Reading {
+    Number(f64),
+    NotANumber,
+    OutOfRange,
+}
+
+/// One integer or real, read as [`one_number`] reads it, with the refusal left to the caller --
+/// an annotation's `/Rect` is read this way too, and refuses under its own code (#224, round 4).
+pub(super) fn reading_of<O: PdfObject>(handle: &O) -> Reading {
     let code = handle.type_code();
     if code != object_type::INTEGER && code != object_type::REAL {
-        return Err(not_a_number());
+        return Reading::NotANumber;
     }
     let [number] = crate::pdfsyntax::ops::numbers_in(&handle.unparse())[..] else {
-        return Err(not_a_number());
+        return Reading::NotANumber;
     };
     if !number.is_finite() || number.abs() > MAX_FRAME_MAGNITUDE {
-        return Err(unreadable(&format!(
-            "a {label} larger than any reader agrees on"
-        )));
+        return Reading::OutOfRange;
     }
-    Ok(number)
+    Reading::Number(number)
 }

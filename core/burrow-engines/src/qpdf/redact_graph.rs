@@ -71,8 +71,7 @@ impl PdfObject for ObjectHandle<'_> {
         Self::type_code(self)
     }
 
-    // TYPE-CHECKED BEFORE THE CALL, in `key`, `name` and `array_item` below, and in `array_len`
-    // because `array_item`'s range check asks it of anything. qpdf answers a read of the wrong
+    // TYPE-CHECKED BEFORE THE CALL, in `key`, `name` and `array_item` below. qpdf answers a read of the wrong
     // type -- or an array read out of range -- with a fallback *and a warning*, and a warning at
     // the write is refused as a repair (#224). Each guard has a document that redacts with it and
     // is refused without it: an integer `/Font` entry, an XObject whose `/Subtype` is a number,
@@ -102,9 +101,8 @@ impl PdfObject for ObjectHandle<'_> {
     }
 
     fn array_len(&self) -> c_int {
-        if Self::type_code(self) != object_type::ARRAY {
-            return 0;
-        }
+        // UNGUARDED, because unreachable: every caller -- `array_item`'s range check included --
+        // asks it only of an array.
         Self::array_len(self)
     }
 

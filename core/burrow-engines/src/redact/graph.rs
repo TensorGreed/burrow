@@ -168,8 +168,9 @@ pub(crate) trait PdfObject: Sized {
     /// `/QPDFFakeName` and warn. Does not drain.
     fn name(&self) -> Result<Name>;
 
-    /// This integer object's value. Meaningful only once [`Self::type_code`] has said it is an
-    /// integer; every other type reads as `0`.
+    /// This integer object's value. **Ask [`Self::type_code`] first**: every caller does, so this
+    /// is not guarded, and for any other type qpdf answers `0` *with a warning* -- which the
+    /// write's repair check refuses as `[engine-repaired-input]`. Fail-closed, not silent.
     fn integer_value(&self) -> i64;
 
     /// This object's own syntax, children left as `N G R`: the route to a dictionary's keys,
@@ -177,7 +178,8 @@ pub(crate) trait PdfObject: Sized {
     /// no trapped accessor reads one.
     fn unparse(&self) -> Vec<u8>;
 
-    /// How many items this array has, or 0 for anything that is not an array.
+    /// How many items this array has. **Ask [`Self::type_code`] first**, as every caller does:
+    /// for anything else qpdf answers 0 with a warning, refused at the write as above.
     fn array_len(&self) -> c_int;
 
     /// The item at `at`. Out of range is a null object, not an error.

@@ -999,6 +999,57 @@ fn a_cid_width_array_that_ends_mid_range_redacts_on_both_engines() {
     redacts_alike(&bytes, "a /W that ends mid-range reads the widths it has");
 }
 
+/// A repair qpdf makes while writing is refused on both engines (#224, round 4).
+///
+/// A stream reached only from the catalog is not read by the walk; its wrong `/Length` is repaired
+/// during the write. The check after the write lives in the policy both engines share, so deleting
+/// it returns the same `Ok` from each; this pins it on the web as the engine test pins it natively.
+#[test]
+fn a_repair_the_write_makes_is_refused_on_both_engines() {
+    let options = OpenOptions::new(
+        Limits::default(),
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+    );
+    let region = Region {
+        left: 0.0,
+        top: 30.0,
+        width: 300.0,
+        height: 40.0,
+    };
+    let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n";
+    let bytes = pdf_of(&[
+        "<< /Type /Catalog /Pages 2 0 R /X 6 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /MediaBox [0 0 300 400] \
+         /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_owned(),
+        format!(
+            "<< /Length {} >>\nstream\n{content}endstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+        "<< /Length 3 >>\nstream\nsomething longer than three\nendstream".to_owned(),
+    ]);
+    let covered = std::collections::BTreeSet::from([0]);
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    for (engine, result) in [
+        (
+            "natively",
+            outcome(&super::Qpdf.redact_page(&bytes, 0, &covered, region, &options)),
+        ),
+        (
+            "on the web",
+            outcome(&web.redact_page(&bytes, 0, &covered, region, &options)),
+        ),
+    ] {
+        assert!(
+            result.contains("[engine-repaired-input]"),
+            "a repair during the write, {engine}: {result}"
+        );
+    }
+}
+
 /// A `/MediaBox` from the page tree is refused on the web, and redacts natively (#224).
 ///
 /// The web redaction worker has no renderer to say which box the viewer shows -- a page that sets

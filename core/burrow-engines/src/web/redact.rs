@@ -292,9 +292,7 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn array_len(&self) -> c_int {
-        if self.handle.type_code() != object_type::ARRAY {
-            return 0;
-        }
+        // UNGUARDED, as natively: asked only of an array.
         self.handle.array_len()
     }
 
