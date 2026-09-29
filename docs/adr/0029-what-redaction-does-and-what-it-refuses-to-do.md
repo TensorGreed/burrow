@@ -131,6 +131,8 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
 | an **inline image** whose extent the page cannot derive | **refuse** — added by the [2026-09-21 amendment](#amendment-2026-09-21--the-channel-the-spike-missed-inline-image-extent). Spike 0006 did not measure this channel |
 | text shown inside a **Form XObject with a font `Tf` selected outside it** | **refuse**, `[font-selected-in-another-scope]` — added 2026-09-28 ([#218], round 4). A reader binds the font where `Tf` runs; the walk carried only its name and resolved it again in the form's own `/Resources`. A review got two `Ok`s from that: a secret measured with a zero-width form font, placed outside the region and left in plain text (older than [#218]); and a removed character credited to the form's font, so the font that drew it kept mapping it. Refused rather than resolved through the `Tf`'s scope. None of the 463 golden cases has the shape, and a review walking 1,918 pages from 224 local PDFs found it on none. **It over-refuses one safe shape**: a child form with no `/Resources` of its own inherits the scope that ran the `Tf`, so it draws with the same font, and is refused anyway because its route is longer |
+| a page that **takes `/Resources`, `/CropBox` or `/Rotate` from the page tree** rather than declaring it, whether its own entry is absent, null or unreadable | **refuse**, `[page-attribute-inherited]` — added 2026-09-29 ([#224]), superseding [#183]'s pre-scan. PDFium stops at a page's null and qpdf cannot see it, so an absent entry and a null one are refused alike. The `/Resources` half is a **stopgap** until #206's placement comparison; see the [2026-09-29 amendment](#amendment-2026-09-29--224-supersedes-183-inherited-page-attributes-are-refused-and-a-mediabox-is-asked-of-pdfium) |
+| a page that **takes `/MediaBox` from the page tree** and nothing confirms it is the box the viewer shows | **refuse**, `[media-box-unverified]` — added 2026-09-29 ([#224]). Natively where PDFium's page size disagrees with burrow's, or where a size cannot decide; on the web always, until #206 brings the renderer to redaction |
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
@@ -1090,6 +1092,8 @@ the seven cases then in the script:
 [#218]: https://github.com/TensorGreed/burrow/issues/218
 [#221]: https://github.com/TensorGreed/burrow/issues/221
 [#222]: https://github.com/TensorGreed/burrow/pull/222
+[#183]: https://github.com/TensorGreed/burrow/issues/183
+[#224]: https://github.com/TensorGreed/burrow/issues/224
 
 ## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
 
@@ -3132,6 +3136,10 @@ The third pass reviewed only round two. Every earlier repro refused, and it foun
       and `/CropBox null` measured clean.
     #180–#183 are ship blockers for the redaction page, not for the binding. The rustdoc now
     says what is true.
+    **Superseded 2026-09-29 by [#224].** The pre-scan above was never built. Inherited
+    `/Resources`, `/CropBox` and `/Rotate` are refused, and an inherited `/MediaBox` is asked of
+    PDFium; the [2026-09-29 amendment](#amendment-2026-09-29--224-supersedes-183-inherited-page-attributes-are-refused-and-a-mediabox-is-asked-of-pdfium)
+    records why.
 - **A `BDC`'s tag is its second-last operand.** Both mark checks read the first, so
   `/Pad /OC /OC1 BDC` hid a layer that PDFium and poppler both hide. `BDC`, `BMC`, `DP` and `MP`
   now have operand counts in the geometry walk, so a padded run is refused as
@@ -3766,3 +3774,93 @@ join the differential, or the corpus, before the drain moves, so the shape that 
 is asked of the web too.
 
 [#191]: https://github.com/TensorGreed/burrow/issues/191
+
+## Amendment, 2026-09-29 — #224 supersedes #183: inherited page attributes are refused, and a `/MediaBox` is asked of PDFium
+
+**What was measured.** [#183] found that a page's `/Resources null` or `/Rotate null` is shown by
+PDFium without its ancestor's value while qpdf reads the null as an absent key. [#224] found the
+same through `/MediaBox` and `/CropBox`, and measured the whole class with PDFium's own API:
+
+| a page whose own entry is | PDFium | qpdf, so burrow |
+|---|---|---|
+| a direct `null` | stops at it: default resources, US Letter, the `/MediaBox`, no rotation | climbs to the ancestor |
+| a wrong type (`/Foo`, `[ ]`, a short box) | stops at it, the same | climbs where the value does not read |
+| a dangling reference | climbs | climbs |
+| absent | climbs | climbs |
+
+qpdf drops a null-valued key when it parses, and a dangling reference with it, so no check made
+through qpdf can tell a null from an absent key. Each of the four keys returned `Ok` with the
+secret still in the output, measured through `Qpdf.redact_page` over the band PDFium drew it in.
+
+**The decision (owner, 2026-09-29).**
+
+- A page that takes `/Resources`, `/CropBox` or `/Rotate` from the page tree is refused,
+  `[page-attribute-inherited]`, whether its own entry is absent, null or unreadable. The refusal
+  sits where the climb is (`frame::of`, `PageResources::of`), so nothing climbs silently.
+- A page that takes `/MediaBox` from the page tree is checked against PDFium's size for the page,
+  read by index without loading its content. `[media-box-unverified]` when nothing vouches for it:
+  natively where the size disagrees or cannot decide, and on the web always. The web redaction
+  worker has no renderer yet; #206 brings one.
+- One message for the three `/MediaBox` reasons, so the two engines refuse a null `/MediaBox`
+  word for word alike: the native-backed web differential compares whole outcomes.
+
+**Why a size is enough.** Inherited `/CropBox` and `/Rotate` are refused, and the page's own are
+read alike by both readers, so PDFium's `/MediaBox` is either the inherited box or US Letter at the
+origin. Where those differ in size, PDFium's size says which it used. Where they do not -- an
+inherited Letter-sized box away from the origin, and no `/CropBox` of the page's own -- a size
+cannot decide and the page is refused. With the page's own `/CropBox`, both readers show at most
+that box, and PDFium shows exactly it only if its size is that box's. `/UserUnit` is outside the
+comparison, which reads sizes in default units on both sides.
+
+**What it cost, measured on one person's collection.** 200 documents and 2,708 pages: TeX Live
+documentation, the burrow corpus and the test fixtures, with personal documents left out.
+
+| key | pages inheriting it | documents |
+|---|--:|--:|
+| `/Resources` | 1 | 1 -- the golden near-miss, below |
+| `/CropBox` | 0 | 0 |
+| `/Rotate` | 0 | 0 |
+| `/MediaBox` | 639 | 20, fourteen of them A4 |
+
+The census did not read `tests/conformance/fixtures`, where `inherited-rotation-6page.pdf` and
+`mixed-rotation-4page.pdf` inherit `/Rotate`. Both were refused before, as `font-missing`; they
+are now refused first, by name. **The sample is not the world.** A producer that always puts
+`/Resources` on a `/Pages` node would see every document it writes refused, which is why the
+refusal says why rather than only that it refused. On the web, inherited `/MediaBox` is refused
+until #206: in the sample that is one document in ten.
+
+**The `/Resources` refusal is a stopgap.** Its condition for relaxing is #206's placement
+comparison: a page drawn with a font other than the one burrow measured puts its glyphs somewhere
+else, and that comparison sees where they land. When it runs on both engines, an inherited
+`/Resources` can be allowed where the placements agree.
+
+**Why #183's decision is superseded, not only that it is -- the owner's three reasons.**
+
+1. **Its no-PDFium premise fell with #107.** #183 declined PDFium in the operation on §6's
+   test-only ruling. #107 turned out to be a Linux WebKit race, not two engines in a tab (ADR 0027's
+   2026-09-26 correction), and §6 is already amended for #206 to run PDFium at runtime, for
+   geometry only. A page size is geometry, read without loading the page.
+2. **Its pre-scan was never buildable.** #183's decision itself says the scan must read inside
+   compressed object streams. That needs an inflater. The workspace has none, and adding one is the
+   dependency decision #24 carries and has not taken (ADR 0022's route table; ADR 0027).
+3. **Its absent-key rule was an over-refusal concern, and measurement settles it for three keys
+   of four.** "A key genuinely absent must not refuse" protected documents that inherit. The census
+   above finds 1, 0 and 0 of them for `/Resources`, `/CropBox` and `/Rotate`, and 20 for `/MediaBox`
+   -- which is why `/MediaBox` alone is asked of PDFium rather than refused.
+
+#183 is closed as superseded by #224.
+
+**The corpus.** `nearmiss-resources-inherited-from-pages` was the not-a-dictionary rule's twin:
+an ordinary `/Resources` on `/Pages`, which had to redact. It is re-recorded deliberately as a
+refusal, because it now proves the refusal rather than the inheritance. It is renamed
+`evade-resources-inherited-from-pages`, the same bytes, because the fixture generator counts a
+group's twins by the `nearmiss-` prefix and a refused twin would be counted as one.
+`nearmiss-resources-on-the-page` takes its place as that rule's twin. Four evasions put a null over
+a value on `/Pages`, one per key, and are refused by name on both engines. Two twins declare every
+key on the page under an ancestor that carries different values, and redact on both. 491 golden
+cases over 114 documents.
+
+**Shown to fail.** Each of eight mutations is killed by name, each on a fresh build: each of the
+three inheritance refusals switched off; the Letter-sized-offset rule; the size comparison; "no
+second reading" passing; the check never called; and a native engine reporting no reading.
+

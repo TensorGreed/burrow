@@ -259,6 +259,25 @@ pub(crate) trait OpensForRedaction {
         bytes: &[u8],
         options: &crate::OpenOptions<'_>,
     ) -> Result<(Self::Document, Deadline)>;
+
+    /// A second reading of page `page`'s displayed size -- its box, rotated -- from the renderer
+    /// a person sees the page through, or `None` where this engine has no renderer (#224).
+    ///
+    /// Asked only of a page whose `/MediaBox` comes from the page tree, which qpdf reads the
+    /// same whether the page's own is absent or null and the renderer does not; see
+    /// `frame::check_inherited_media_box`. Native redaction has PDFium beside qpdf. The web
+    /// redaction worker does not (ADR 0026), so it answers `None` and such a page is refused
+    /// there until the renderer reaches redaction (#206).
+    ///
+    /// # Errors
+    ///
+    /// Whatever opening the document in the renderer, or reading the size, reports.
+    fn renderer_page_size(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<Option<(f64, f64)>>;
 }
 
 #[cfg(test)]

@@ -151,6 +151,23 @@ impl OpensForRedaction for Qpdf {
             super::open_document(bytes.to_vec().into_boxed_slice(), options)?;
         Ok((document, deadline))
     }
+
+    /// PDFium's size for the page, read without loading its content: `page_size` goes by index
+    /// precisely so that no display list is built (#103).
+    fn renderer_page_size(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<Option<(f64, f64)>> {
+        use crate::{DocumentEngine, PageRenderer};
+        let renderer = crate::pdfium::Pdfium;
+        let document = renderer.open(bytes.to_vec().into_boxed_slice(), options)?;
+        let index = u64::try_from(page)
+            .map_err(|_| Error::Internal("a page index that does not fit in u64".to_owned()))?;
+        let (width, height) = renderer.page_size(&document, index)?;
+        Ok(Some((f64::from(width), f64::from(height))))
+    }
 }
 
 #[cfg(all(test, feature = "native-engines", burrow_native_engines))]

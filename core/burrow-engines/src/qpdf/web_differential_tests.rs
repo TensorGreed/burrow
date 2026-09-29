@@ -841,6 +841,83 @@ fn the_web_engine_is_really_asked() {
     );
 }
 
+/// A `/MediaBox` from the page tree is refused on the web, and redacts natively (#224).
+///
+/// The web redaction worker has no renderer to say which box the viewer shows -- a page that sets
+/// its own `/MediaBox` to null is shown at US Letter, and qpdf cannot see the null -- so the web
+/// engine refuses what the native one checks against PDFium. This is the one place the two are
+/// meant to differ, until #206 brings the renderer to the web redaction; no golden document has
+/// the shape, so the differential above does not meet it and this test does.
+#[test]
+fn a_media_box_the_tree_supplies_is_refused_on_the_web_until_it_has_a_renderer() {
+    let tree = |page_extra: &str, parent_extra: &str| {
+        let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            format!("<< /Type /Pages /Count 1 /Kids [3 0 R] {parent_extra} >>"),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /Contents 4 0 R \
+                 /Resources << /Font << /F1 5 0 R >> >> {page_extra} >>"
+            ),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_owned(),
+        ];
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    };
+    let options = OpenOptions::new(
+        Limits::default(),
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+    );
+    let region = Region {
+        left: 0.0,
+        top: 30.0,
+        width: 300.0,
+        height: 40.0,
+    };
+    let covered = std::collections::BTreeSet::from([0]);
+    let inherited = tree("", "/MediaBox [0 0 300 400]");
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    let on_the_web = outcome(&web.redact_page(&inherited, 0, &covered, region, &options));
+    assert!(
+        on_the_web.contains("[media-box-unverified]"),
+        "the web engine has no renderer to vouch for an inherited /MediaBox: {on_the_web}"
+    );
+    let natively = outcome(&super::Qpdf.redact_page(&inherited, 0, &covered, region, &options));
+    assert!(
+        natively.starts_with("OK "),
+        "natively PDFium vouches for it: {natively}"
+    );
+    // THE NEAR-MISS: the same box on the page itself redacts on the web too.
+    let declared = tree("/MediaBox [0 0 300 400]", "");
+    let declared_on_the_web = outcome(&web.redact_page(&declared, 0, &covered, region, &options));
+    assert!(
+        declared_on_the_web.starts_with("OK "),
+        "a /MediaBox on the page needs no renderer: {declared_on_the_web}"
+    );
+}
+
 /// A [`NativeBridge`] with two knobs the native engine has no counterpart for.
 ///
 /// - `refuse`: the engine heap refuses every `copy_in` once armed -- what a browser tab near its

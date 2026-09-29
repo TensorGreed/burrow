@@ -187,6 +187,20 @@ impl<D: PdfDocument> PageRedaction<D> {
         self.document.page(self.page)
     }
 
+    /// Refuse the page if its `/MediaBox` comes from the page tree and `renderer_size` does not
+    /// vouch for it; see `frame::check_inherited_media_box` (#224).
+    ///
+    /// # Errors
+    ///
+    /// `[media-box-unverified]`, and whatever reading the page raises.
+    pub(crate) fn check_inherited_media_box(
+        &self,
+        renderer_size: impl FnOnce() -> Result<Option<(f64, f64)>>,
+    ) -> Result<()> {
+        self.deadline.checkpoint(self.clock.as_ref())?;
+        super::frame::check_inherited_media_box(&self.page_handle()?, renderer_size)
+    }
+
     /// The page's frame, for converting the region into content space.
     fn frame<O: PdfObject>(page: &O) -> Result<PageFrame> {
         super::frame::of(page)

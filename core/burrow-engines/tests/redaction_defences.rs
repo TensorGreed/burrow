@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 27] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 34] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2415,11 +2415,39 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 27] = [
         "evade-property-list-as-a-stream.pdf",
         Some("not-a-dictionary-where-one-belongs"),
     ),
-    ("nearmiss-resources-inherited-from-pages.pdf", None),
+    ("nearmiss-resources-on-the-page.pdf", None),
+    (
+        "evade-resources-inherited-from-pages.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    (
+        "evade-resources-null-over-the-tree.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    (
+        "evade-cropbox-null-over-the-tree.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    (
+        "evade-rotate-null-over-the-tree.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    ("nearmiss-page-attributes-declared-over-the-tree.pdf", None),
+    (
+        "evade-mediabox-null-over-the-tree.pdf",
+        Some("media-box-unverified"),
+    ),
+    ("nearmiss-mediabox-declared-over-the-tree.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 3] = ["named /Properties", "optional content", "not a dictionary"];
+const RESOLVED_GROUPS: [&str; 5] = [
+    "named /Properties",
+    "optional content",
+    "not a dictionary",
+    "page attribute inherited",
+    "media box unverified",
+];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.
 fn manifest() -> serde_json::Value {
@@ -2892,12 +2920,13 @@ fn anything_but_a_dictionary_where_one_belongs_is_refused_on_every_route() {
         );
         refused += 1;
     }
-    // THE NEAR-MISS: the same page, every key the type it should be, including an inherited
-    // `/Resources` and a `null` where a dictionary is optional.
+    // THE NEAR-MISS: the same page, every key the type it should be, including a `null` where a
+    // dictionary is optional. ON THE PAGE, not inherited: this control inherited `/Resources` until
+    // #224 made an inherited `/Resources` a refusal of its own, for a reason that is not the type.
     let control = page_shaped(move |_, f| {
         (
+            format!("<< /Font << /F1 {f} 0 R >> /XObject null >>"),
             String::new(),
-            format!(" /Resources << /Font << /F1 {f} 0 R >> /XObject null >>"),
             String::new(),
         )
     });

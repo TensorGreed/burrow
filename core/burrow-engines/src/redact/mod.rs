@@ -515,6 +515,10 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // defence with no test standing behind an `unsafe` block.
     let steps =
         steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
+    // A `/MediaBox` FROM THE PAGE TREE, vouched for by a second reading or refused (#224). After
+    // the constructor, so `[page-out-of-range]` still names an index past the end; and the
+    // renderer is opened only for the page that needs it.
+    steps.check_inherited_media_box(|| engine.renderer_page_size(bytes, page, options))?;
 
     // #134. The bytes reach a caller only through this closure, because `emit_verified` takes
     // it and there is no other way to a `Vec<u8>` from the finished state. A fresh document of

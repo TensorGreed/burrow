@@ -367,6 +367,17 @@ pub(crate) struct WebRedactor<'e>(pub(crate) &'e WebQpdf);
 impl<'e> OpensForRedaction for WebRedactor<'e> {
     type Document = WebRedactionDocument<'e>;
 
+    /// None: the redaction worker has no renderer (ADR 0026), so a page whose `/MediaBox` comes
+    /// from the page tree is refused here until #206 brings one (#224).
+    fn renderer_page_size(
+        &self,
+        _bytes: &[u8],
+        _page: usize,
+        _options: &crate::OpenOptions<'_>,
+    ) -> Result<Option<(f64, f64)>> {
+        Ok(None)
+    }
+
     fn open_for_redaction(
         &self,
         bytes: &[u8],

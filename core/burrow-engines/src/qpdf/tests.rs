@@ -1137,6 +1137,142 @@ mod wiring {
         );
     }
 
+    /// A one-page document: the page carries `page_extra`, its `/Pages` parent `parent_extra`.
+    /// `SECRET` sits at (20, 350) and `KEEP` at (20, 50), both in object 5's Helvetica (#224).
+    fn page_under_a_tree(page_extra: &str, parent_extra: &str) -> Vec<u8> {
+        let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\nBT /F1 12 Tf 20 50 Td (KEEP) Tj ET\n";
+        pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            format!("<< /Type /Pages /Count 1 /Kids [3 0 R] {parent_extra} >>"),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {page_extra} >>"),
+            stream(content),
+            helvetica("/Encoding /WinAnsiEncoding"),
+        ])
+    }
+
+    /// The band `SECRET` sits in on a 300 x 400 page, measured from the top.
+    const UPPER_BAND: Region = Region {
+        left: 0.0,
+        top: 30.0,
+        width: 300.0,
+        height: 40.0,
+    };
+
+    fn redact_in(bytes: &[u8], region: Region) -> burrow_types::Result<Vec<u8>> {
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        super::super::Qpdf
+            .redact_page(bytes, 0, &BTreeSet::from([0]), region, &options)
+            .map(|(output, _)| output)
+    }
+
+    fn refused_by(outcome: burrow_types::Result<Vec<u8>>, rule: &str, what: &str) {
+        match outcome {
+            Err(error) => assert!(
+                format!("{error:?}").contains(&format!("[{rule}]")),
+                "{what}: refused, but not by [{rule}]: {error:?}"
+            ),
+            Ok(_) => panic!("{what}: redacted, where [{rule}] must refuse"),
+        }
+    }
+
+    const RESOURCES: &str = "/Resources << /Font << /F1 5 0 R >> >>";
+    const BOX: &str = "/MediaBox [0 0 300 400]";
+
+    #[test]
+    fn a_page_attribute_the_tree_supplies_is_refused_whether_the_page_is_null_or_silent() {
+        // #224: a page that sets /Resources, /CropBox or /Rotate to null is shown by PDFium
+        // WITHOUT its ancestor's, and qpdf reads that null as an absent key -- so burrow took the
+        // ancestor's, measured against a page the viewer did not show, and returned Ok with the
+        // secret intact. The null cannot be seen, so the inherited value is refused either way;
+        // and the same value on the page itself -- the near-miss -- redacts.
+        let cases: [(&str, String, String, String); 3] = [
+            (
+                "/Resources",
+                BOX.to_owned(),
+                RESOURCES.to_owned(),
+                format!("{BOX} {RESOURCES}"),
+            ),
+            (
+                "/CropBox",
+                format!("{BOX} {RESOURCES}"),
+                "/CropBox [0 0 300 400]".to_owned(),
+                format!("{BOX} {RESOURCES} /CropBox [0 0 300 400]"),
+            ),
+            (
+                "/Rotate",
+                format!("{BOX} {RESOURCES}"),
+                "/Rotate 90".to_owned(),
+                format!("{BOX} {RESOURCES} /Rotate 90"),
+            ),
+        ];
+        for (key, page, parent, declared) in cases {
+            refused_by(
+                redact_in(
+                    &page_under_a_tree(&format!("{page} {key} null"), &parent),
+                    UPPER_BAND,
+                ),
+                "page-attribute-inherited",
+                &format!("{key} null over the tree"),
+            );
+            refused_by(
+                redact_in(&page_under_a_tree(&page, &parent), UPPER_BAND),
+                "page-attribute-inherited",
+                &format!("{key} absent over the tree"),
+            );
+            redact_in(&page_under_a_tree(&declared, ""), UPPER_BAND).unwrap_or_else(|error| {
+                panic!("{key} declared on the page must redact: {error:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn a_media_box_the_tree_supplies_redacts_only_where_the_renderer_agrees() {
+        // #224, /MediaBox: inherited in 20 of 200 documents measured, so refusing it was not
+        // affordable. PDFium's size decides instead -- a null there gives US Letter.
+        //
+        // INHERITED AND AGREED: redacts, and the secret really goes.
+        let inherited = page_under_a_tree(RESOURCES, BOX);
+        let output = redact_in(&inherited, UPPER_BAND).expect("the renderer shows this box");
+        let expanded = crate::pdf_reading::expanded(&output);
+        assert!(
+            !expanded.windows(6).any(|window| window == b"SECRET"),
+            "redacted, but SECRET is still in the output"
+        );
+        assert!(
+            expanded.windows(4).any(|window| window == b"KEEP"),
+            "KEEP, below the region, was removed: the region was not where it was drawn"
+        );
+        // NULL: PDFium shows Letter, burrow read 300 x 400.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(&format!("{RESOURCES} /MediaBox null"), BOX),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "/MediaBox null over the tree",
+        );
+        // A LETTER-SIZED BOX AWAY FROM THE ORIGIN: the renderer's size is the same whether it
+        // used this box or its null fallback, so the size cannot decide, absent or not.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(RESOURCES, "/MediaBox [100 100 712 892]"),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a Letter-sized box away from the origin",
+        );
+        // THE PAGE'S OWN /CropBox DECIDES: both readers show at most that box, so a null
+        // /MediaBox under it changes nothing either can see.
+        redact_in(
+            &page_under_a_tree(
+                &format!("{RESOURCES} /MediaBox null /CropBox [0 0 300 400]"),
+                BOX,
+            ),
+            UPPER_BAND,
+        )
+        .expect("the page's own crop box is what both show");
+    }
+
     #[test]
     fn the_check_is_told_the_page_that_was_redacted() {
         // KILLS: `Cleared { page: 0 }` instead of `page`. Every end-to-end test redacts page 0,

@@ -1763,22 +1763,151 @@ The optional-content walk read it as absent.
 """
 
 [[fixture]]
-name = "nearmiss-resources-inherited-from-pages"
-file = "generated/nearmiss-resources-inherited-from-pages.pdf"
+name = "nearmiss-resources-on-the-page"
+file = "generated/nearmiss-resources-on-the-page.pdf"
 kind = "hand-built"
 probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
-  channel = "ordinary /Resources inherited from /Pages — near-miss twin"
-  canary = "BURROW-EVADE-INHERITED"
+  channel = "an ordinary /Resources dictionary on the page — near-miss twin"
+  canary = "BURROW-EVADE-ON-THE-PAGE"
   verdict = "handle"
   adr = "§3, §5"
   witness_before = "raw-file"
   witness_observes = "canary"
   expect_after = "gone"
   notes = """
-MUST NOT be refused. The refusal is about a stream in a dictionary's place, not about inheriting.
+MUST NOT be refused. The not-a-dictionary twin since #224, when the inherited one it replaced became a refusal.
+"""
+[[fixture]]
+name = "evade-resources-inherited-from-pages"
+file = "generated/evade-resources-inherited-from-pages.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Resources inherited from /Pages, with none on the page — refused since #224"
+  canary = "BURROW-EVADE-INHERITED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Was nearmiss-resources-inherited-from-pages, and MUST NOT be refused until #224. Re-recorded deliberately: a page that
+sets /Resources to null is shown without its ancestor's, qpdf cannot see the null, so an absent
+key and a null one are refused alike. It proves the refusal now, not the inheritance.
+"""
+[[fixture]]
+name = "evade-resources-null-over-the-tree"
+file = "generated/evade-resources-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Resources null on the page over a zero-width /Pages font — evasion"
+  canary = "BURROW-EVADE-RESOURCES-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium stops at the null; qpdf climbed to the zero-width font and the canary was measured outside the region. Ok with the canary, until #224.
+"""
+[[fixture]]
+name = "evade-cropbox-null-over-the-tree"
+file = "generated/evade-cropbox-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox null on the page over a /Pages crop — evasion"
+  canary = "BURROW-EVADE-CROPBOX-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium shows the /MediaBox; burrow measured the region against the ancestor's crop, until #224.
+"""
+[[fixture]]
+name = "evade-rotate-null-over-the-tree"
+file = "generated/evade-rotate-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate null on the page over a /Pages /Rotate 90 — evasion"
+  canary = "BURROW-EVADE-ROTATE-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium shows the page unrotated; burrow unwound the region by 90 degrees, until #224.
+"""
+[[fixture]]
+name = "nearmiss-page-attributes-declared-over-the-tree"
+file = "generated/nearmiss-page-attributes-declared-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "every inheritable key on /Pages and the page's own on the page — near-miss twin"
+  canary = "BURROW-EVADE-DECLARED-TREE"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. An ancestor having the keys is not the shape; a page taking them from it is.
+"""
+[[fixture]]
+name = "evade-mediabox-null-over-the-tree"
+file = "generated/evade-mediabox-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "media box unverified"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/MediaBox null on the page over the fixture size on /Pages — evasion"
+  canary = "BURROW-EVADE-MEDIABOX-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium shows US Letter; burrow measured against the ancestor's box. Refused natively because PDFium's size
+disagrees, and on the web because there is no renderer to ask -- one rule on both.
+"""
+[[fixture]]
+name = "nearmiss-mediabox-declared-over-the-tree"
+file = "generated/nearmiss-mediabox-declared-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "media box unverified"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Letter /MediaBox on /Pages and the fixture size on the page — near-miss twin"
+  canary = "BURROW-EVADE-MEDIABOX-DECLARED"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused, on either engine: nothing is inherited, so no renderer is needed.
 """
 
 [[fixture]]
