@@ -792,7 +792,14 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         if self.document.repaired() {
             return Err(super::repaired_by_the_engine());
         }
-        self.document.write()
+        let bytes = self.document.write()?;
+        // AND ONCE AFTER (#224, security review round 3): the write reads every object the
+        // walk did not, and a stream reached only from the catalog, with a wrong `/Length`, was
+        // repaired there -- after the check above, with nothing asking. The bytes are dropped.
+        if self.document.repaired() {
+            return Err(super::repaired_by_the_engine());
+        }
+        Ok(bytes)
     }
 }
 
@@ -872,6 +879,20 @@ fn remove_annotations_in<O: PdfObject>(
         if !box_of.is_finite() {
             return Err(Error::Malformed(
                 "pdf redaction [annotation-rect]: an annotation whose /Rect is not finite"
+                    .to_owned(),
+            ));
+        }
+        // BOUNDED AS THE PAGE FRAME IS (#224, security review round 3). PDFium reads a whole
+        // number outside 32 bits as 0 and keeps a `/Rect` as 32-bit floats, so a corner at
+        // 2^32 + 20 is at 20 to a viewer that draws annotations and far off the page here: the
+        // annotation was kept, `Ok`, with its appearance over the secret.
+        if [left, bottom, right, top]
+            .iter()
+            .any(|corner| corner.abs() > super::frame::MAX_FRAME_MAGNITUDE)
+        {
+            return Err(Error::Unsupported(
+                "pdf redaction [annotation-rect]: an annotation whose /Rect is larger than any \
+                 reader agrees on, so where it draws is unknown"
                     .to_owned(),
             ));
         }

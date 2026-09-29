@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 50] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 52] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2484,6 +2484,14 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 50] = [
     (
         "evade-junk-kid-over-null-resources.pdf",
         Some("engine-repaired-input"),
+    ),
+    (
+        "evade-mediabox-past-float-precision.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-mediabox-negative-past-32-bits.pdf",
+        Some("page-frame-unreadable"),
     ),
     (
         "evade-font-repaired-during-the-walk.pdf",

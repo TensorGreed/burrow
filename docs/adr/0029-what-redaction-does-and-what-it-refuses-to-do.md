@@ -3892,7 +3892,8 @@ way redaction opens them: 212 opened, 4 raised any warning -- `five-pages-or-six
 document. So redaction refuses on any warning raised at the open -- the read and the page count,
 where the page tree is rebuilt -- `[engine-repaired-input]`, on both engines. A warning qpdf
 raises later, lazily during the walk, is not read; review found no leak through the one such
-shape it built, and a second check before the write is the owner's decision, not yet taken. Golden:
+shape it built, and a second check before the write is the owner's decision, not yet taken
+(*superseded in round 3, below: it is taken, and a third check follows the write*). Golden:
 `five-pages-or-six.pdf` and `objstm-bomb.pdf` redacted before and are refused now;
 `layered.pdf` and `page-loss-on-write.pdf` were already refused and refuse earlier.
 
@@ -3998,4 +3999,42 @@ the engine test, the corpus, both differentials and the golden file; the native 
 fails the non-dictionary `/Font` test; the web key guard off survived at first, because nothing
 redacted that page on the web, and fails the web twin written for it. 555 golden cases over 130
 documents.
+
+**The round-3 reviews.** Neither found a way past the 2^24 bound -- leading zeros, a `+`, an
+indirect value, `16777216.4` and every just-over value refuse, and malformed numbers are qpdf
+warnings. Four things were fixed:
+
+- **An annotation's `/Rect` had the frame's problem.** Read through `numbers_in` without a bound,
+  a corner at 2^32 + 20 was at 20 to a viewer that draws annotations -- over the secret -- and far
+  off the page here, so the annotation was kept and the result was `Ok`. burrow's own renderer
+  does not draw annotations, which is why nothing saw it. A corner past 2^24 now refuses
+  `[annotation-rect]`, with an engine test and its near-miss.
+- **qpdf repairs during the write too.** A stream reached only from the catalog, with a wrong
+  `/Length`, is not read by the walk and was repaired while writing, after the check before it.
+  The warnings are now asked a third time, after the write, and the bytes are dropped on `true`.
+  No leak was built through it; it was a channel no check observed. That check is not measured
+  against the 224 documents, whose list did not survive a reboot.
+- **Two guards changed outcomes and nothing tested them.** Deleting the `name` guard refused an
+  XObject whose `/Subtype` is a number; deleting the array range guard refused a CID font whose
+  `/W` ends mid-range. Both redact on both engines, and a test for each now requires the two
+  engines' outputs to be identical. The `integer_value` guard was unreachable -- every caller asks
+  the type first -- and is removed rather than left as an untested claim.
+- **The bound had one witnessed half.** Both fixtures were past 2^32, PDFium's "reads it as 0"
+  half. A box at 2^31, whose 300 points 32-bit floats collapse, and a left edge below -2^31 now
+  have one each. The review measured each shape `Ok` with the canary drawn under the mutation
+  that fixture now kills: the bound raised to 2^32, and its `abs()` dropped. The bound is load-bearing for boxes and `/Rect`; for `/Rotate` it
+  repeats the ten-turn rule, and a `/UserUnit` other than 1 is refused already.
+
+**Shown to fail (round-3 reviews).** Eight mutations, each asserted to apply, each on a fresh
+build, the whole workspace run without stopping at the first failing binary: the bound at 2^32,
+the bound without `abs()`, the `name` guard and the range guard natively and on the web, the check
+after the write, and the `/Rect` bound. Each fails by name. 563 golden cases over 132 documents.
+
+**Found and not fixed here: a reference to the wrong generation.** Both round-3 security reviews,
+of this change and of #152, found it independently. qpdf resolves `6 1 R` to null when the file
+has only `6 0`, drops the key, and warns about nothing; PDFium finds object 6 by number. So a
+`/Rotate`, `/CropBox`, form `/Matrix`, `/Widths` or `/ExtGState` entry written that way is absent
+to burrow and present to the viewer, `Ok` with the secret drawn, on both engines. It is not
+visible through qpdf at all, so it is not a frame-reader fix; it is recorded as its own issue and
+decision.
 

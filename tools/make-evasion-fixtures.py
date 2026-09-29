@@ -1800,6 +1800,36 @@ def evade_mediabox_past_32_bits() -> bytes:
     )
 
 
+def evade_mediabox_past_float_precision() -> bytes:
+    """A `/MediaBox` at 2^31, within 32 bits but past a 32-bit float's whole numbers (#224).
+
+    PDFium keeps the box as floats, which collapse its 300 points; burrow read it exactly, and
+    with the canary drawn inside it the redaction was `Ok` with the canary still drawn (round 3).
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf 2147483748 350 Td "
+        + literal(secret("MEDIA-FLOAT")) + b" Tj ET\n",
+        b" /MediaBox [2147483648 0 2147483948 400]" + _own_resources(helv),
+        b"",
+    )
+
+
+def evade_mediabox_negative_past_32_bits() -> bytes:
+    """A `/MediaBox` whose left edge is below -2^31: 0 to PDFium, a huge box here (#224)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("MEDIA-NEG") + keep_line_ops(),
+        b" /MediaBox [-2147483649 0 " + str(PAGE_W).encode() + b" "
+        + str(PAGE_H).encode() + b"]" + _own_resources(helv),
+        b"",
+    )
+
+
 def evade_crop_wider_than_both_media_boxes() -> bytes:
     """A null `/MediaBox` over an offset Letter-wide box, and a crop wider than both (#224).
 
@@ -2137,6 +2167,8 @@ CASES: list[tuple[str, str]] = [
     ("evade-cropbox-with-five-items", "page frame read"),
     ("evade-cropbox-past-32-bits", "page frame read"),
     ("evade-mediabox-past-32-bits", "page frame read"),
+    ("evade-mediabox-past-float-precision", "page frame read"),
+    ("evade-mediabox-negative-past-32-bits", "page frame read"),
     ("nearmiss-page-frame-plainly-declared", "page frame read"),
     ("evade-crop-wider-than-both-media-boxes", "media box unverified"),
     ("evade-junk-kid-over-a-null-rotate", "engine repaired"),
@@ -2220,6 +2252,8 @@ BUILDERS = {
     "evade-crop-wider-than-both-media-boxes": evade_crop_wider_than_both_media_boxes,
     "evade-cropbox-past-32-bits": evade_cropbox_past_32_bits,
     "evade-mediabox-past-32-bits": evade_mediabox_past_32_bits,
+    "evade-mediabox-past-float-precision": evade_mediabox_past_float_precision,
+    "evade-mediabox-negative-past-32-bits": evade_mediabox_negative_past_32_bits,
     "evade-junk-kid-over-a-null-rotate": evade_junk_kid_over_a_null_rotate,
     "evade-junk-kid-over-a-null-mediabox": evade_junk_kid_over_a_null_mediabox,
     "evade-junk-kid-over-a-null-cropbox": evade_junk_kid_over_a_null_cropbox,

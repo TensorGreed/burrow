@@ -1402,6 +1402,75 @@ mod wiring {
     }
 
     #[test]
+    fn a_repair_the_write_makes_is_refused_after_it() {
+        // #224, security review round 3: a stream reached only from the catalog is not read by
+        // the walk, so qpdf repairs its wrong `/Length` while writing -- after the check before
+        // the write. The bytes are dropped.
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R /X 6 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
+            stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_owned(),
+            "<< /Length 3 >>\nstream\nsomething longer than three\nendstream".to_owned(),
+        ]);
+        refused_by(
+            redact_in(&bytes, UPPER_BAND),
+            "engine-repaired-input",
+            "a stream qpdf repaired while writing",
+        );
+    }
+
+    #[test]
+    fn an_annotation_rect_past_what_readers_agree_on_is_refused() {
+        // #224, security review round 3: PDFium reads a whole number outside 32 bits as 0, so a
+        // `/Rect` corner at 2^32 + 20 is at 20 to a viewer that draws annotations, over the
+        // secret, and far off the page here -- the annotation was kept, `Ok`.
+        let page = |rect: &str| {
+            pdf(&[
+                "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} \
+                     /Annots [<< /Type /Annot /Subtype /Square /Rect {rect} >>] >>"
+                ),
+                stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                    .to_owned(),
+            ])
+        };
+        refused_by(
+            redact_in(&page("[4294967316 330 120 350]"), UPPER_BAND),
+            "annotation-rect",
+            "a /Rect corner past 32 bits",
+        );
+        refused_by(
+            redact_in(&page("[20 330 120 -16777217]"), UPPER_BAND),
+            "annotation-rect",
+            "a /Rect corner below -2^24",
+        );
+        // THE NEAR-MISS: the same annotation where both readers put it is removed, and redacts.
+        let output = redact_in(&page("[20 330 120 350]"), UPPER_BAND).expect("redacts");
+        assert!(
+            !String::from_utf8_lossy(&output).contains("/Square"),
+            "the annotation over the region was removed"
+        );
+        // AND THE SEARCH CAN SEE IT: a region away from it keeps the annotation, readable.
+        let away = Region {
+            left: 0.0,
+            top: 300.0,
+            width: 300.0,
+            height: 40.0,
+        };
+        let kept = redact_in(&page("[20 330 120 350]"), away).expect("redacts");
+        assert!(
+            String::from_utf8_lossy(&kept).contains("/Square"),
+            "an annotation away from the region is kept, where this search would find it"
+        );
+    }
+
+    #[test]
     fn a_repair_during_the_walk_is_refused_before_the_write() {
         // #224, security review round 2: qpdf reads a font lazily, so a stray `)` in its
         // `/Widths` is repaired -- and warned about -- during the walk, after the open's check.

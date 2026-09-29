@@ -278,9 +278,7 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn integer_value(&self) -> i64 {
-        if self.handle.type_code() != object_type::INTEGER {
-            return 0;
-        }
+        // UNGUARDED, as natively: every caller has asked `type_code` for an integer.
         self.handle.int_value()
     }
 

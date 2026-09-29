@@ -850,7 +850,7 @@ fn the_web_engine_is_really_asked() {
 /// `/Font`, and `page_extra` and `parent_extra` spliced into the page and its parent.
 fn one_page_under_a_tree(page_extra: &str, parent_extra: &str, fonts: &str) -> Vec<u8> {
     let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n";
-    let objects = [
+    pdf_of(&[
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         format!("<< /Type /Pages /Count 1 /Kids [3 0 R] {parent_extra} >>"),
         format!(
@@ -863,7 +863,11 @@ fn one_page_under_a_tree(page_extra: &str, parent_extra: &str, fonts: &str) -> V
         ),
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
             .to_owned(),
-    ];
+    ])
+}
+
+/// A document of `objects`, numbered from 1, with a correct cross-reference table.
+fn pdf_of(objects: &[String]) -> Vec<u8> {
     let mut out = String::from("%PDF-1.7\n");
     let mut offsets = Vec::new();
     for (index, body) in objects.iter().enumerate() {
@@ -912,6 +916,87 @@ fn a_font_entry_that_is_not_a_dictionary_redacts_on_the_web_as_natively() {
     );
     let natively = outcome(&super::Qpdf.redact_page(&bytes, 0, &covered, region, &options));
     assert_eq!(on_the_web, natively, "the two engines agree");
+}
+
+/// Redact the top band of page 0 on both engines, and require the same `Ok` from each.
+fn redacts_alike(bytes: &[u8], why: &str) {
+    let options = OpenOptions::new(
+        Limits::default(),
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+    );
+    let region = Region {
+        left: 0.0,
+        top: 30.0,
+        width: 300.0,
+        height: 40.0,
+    };
+    let covered = std::collections::BTreeSet::from([0]);
+    let natively = outcome(&super::Qpdf.redact_page(bytes, 0, &covered, region, &options));
+    assert!(natively.starts_with("OK "), "{why}, natively: {natively}");
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    let on_the_web = outcome(&web.redact_page(bytes, 0, &covered, region, &options));
+    assert_eq!(on_the_web, natively, "{why}: the two engines disagree");
+}
+
+/// The page, font and content of the two tests below: `SECRET` in the region with Helvetica,
+/// and `more` drawn below it, with `fonts` beside `/F1`, `extra_resources` beside `/Font`, and
+/// `objects` from object 6 onwards.
+fn a_page_drawing(more: &str, fonts: &str, extra_resources: &str, objects: &[&str]) -> Vec<u8> {
+    let content = format!("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n{more}\n");
+    let mut all = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /Contents 4 0 R /MediaBox [0 0 300 400] \
+             /Resources << /Font << /F1 5 0 R {fonts} >> {extra_resources} >> >>"
+        ),
+        format!(
+            "<< /Length {} >>\nstream\n{content}endstream",
+            content.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+    ];
+    all.extend(objects.iter().map(|o| (*o).to_owned()));
+    pdf_of(&all)
+}
+
+/// An XObject whose `/Subtype` is a number redacts on both engines (#224, round 3).
+///
+/// Nobody draws it, and nothing asks its type before reading its `/Subtype` as a name -- so the
+/// reader must, or qpdf answers `/QPDFFakeName` with a warning and the write refuses the page as
+/// one the engine repaired. Deleting the `name` guard, natively or on the web, fails this.
+#[test]
+fn an_xobject_whose_subtype_is_a_number_redacts_on_both_engines() {
+    let bytes = a_page_drawing(
+        "q /X1 Do Q",
+        "",
+        "/XObject << /X1 6 0 R >>",
+        &["<< /Subtype 7 /Length 0 >>\nstream\nendstream"],
+    );
+    redacts_alike(&bytes, "a /Subtype that is not a name is not a form");
+}
+
+/// A CID font whose `/W` ends mid-range redacts on both engines (#224, round 3).
+///
+/// `/W [1 [500] 3]`: the widths reader looks for the range's end and width past the array's
+/// end. qpdf answers an out-of-range read with a null and a warning, so the reader checks the
+/// range first. Deleting that check, natively or on the web, fails this.
+#[test]
+fn a_cid_width_array_that_ends_mid_range_redacts_on_both_engines() {
+    let bytes = a_page_drawing(
+        "BT /F2 12 Tf 20 100 Td <00010002> Tj ET",
+        "/F2 6 0 R",
+        "",
+        &[
+            "<< /Type /Font /Subtype /Type0 /BaseFont /Burrow /Encoding /Identity-H \
+             /DescendantFonts [7 0 R] >>",
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Burrow /CIDSystemInfo \
+             << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 600 \
+             /W [1 [500] 3] >>",
+        ],
+    );
+    redacts_alike(&bytes, "a /W that ends mid-range reads the widths it has");
 }
 
 /// A `/MediaBox` from the page tree is refused on the web, and redacts natively (#224).

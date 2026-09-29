@@ -2254,3 +2254,41 @@ pages = 1
   notes = """
 Repaired after the open's warning check; refused by the one before the write (#224, round 2).
 """
+
+[[fixture]]
+name = "evade-mediabox-past-float-precision"
+file = "generated/evade-mediabox-past-float-precision.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /MediaBox at 2^31, past a float's whole numbers — evasion"
+  canary = "BURROW-EVADE-MEDIA-FLOAT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium's floats collapse the box; burrow read it exactly (#224, round 3).
+"""
+
+[[fixture]]
+name = "evade-mediabox-negative-past-32-bits"
+file = "generated/evade-mediabox-negative-past-32-bits.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /MediaBox left edge below -2^31 — evasion"
+  canary = "BURROW-EVADE-MEDIA-NEG"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+0 to PDFium, a huge box to burrow (#224, round 3).
+"""

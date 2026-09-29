@@ -348,7 +348,7 @@ fn read_number<O: PdfObject>(node: &O, key: &Name, label: &str) -> Result<Option
 
 /// The largest magnitude a frame value may have: past 2^24 a 32-bit float -- PDFium's -- no
 /// longer holds every whole number, so the two readers stop agreeing on the box (#224, round 2).
-const MAX_FRAME_MAGNITUDE: f64 = 16_777_216.0;
+pub(super) const MAX_FRAME_MAGNITUDE: f64 = 16_777_216.0;
 
 /// The one number an integer or real handle holds, through its text -- there is no trapped
 /// accessor for a real, and `unparse` resolves an indirect reference to the value it names --

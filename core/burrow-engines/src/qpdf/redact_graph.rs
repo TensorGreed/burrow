@@ -71,10 +71,12 @@ impl PdfObject for ObjectHandle<'_> {
         Self::type_code(self)
     }
 
-    // TYPE-CHECKED BEFORE THE CALL, in the five readers below. qpdf answers a read of the wrong
+    // TYPE-CHECKED BEFORE THE CALL, in `key`, `name` and `array_item` below, and in `array_len`
+    // because `array_item`'s range check asks it of anything. qpdf answers a read of the wrong
     // type -- or an array read out of range -- with a fallback *and a warning*, and a warning at
-    // the write is refused as a repair (#224). Without the check, burrow's own read of a `/Font`
-    // entry that is an integer was refused as a document the engine repaired.
+    // the write is refused as a repair (#224). Each guard has a document that redacts with it and
+    // is refused without it: an integer `/Font` entry, an XObject whose `/Subtype` is a number,
+    // and a `/W` array that ends mid-range.
 
     fn key(&self, key: &Name) -> Self {
         if Self::type_code(self) != object_type::DICTIONARY {
@@ -91,9 +93,7 @@ impl PdfObject for ObjectHandle<'_> {
     }
 
     fn integer_value(&self) -> i64 {
-        if Self::type_code(self) != object_type::INTEGER {
-            return 0;
-        }
+        // UNGUARDED, because unreachable: every caller has asked `type_code` for an integer.
         Self::integer_value(self)
     }
 
@@ -225,12 +225,11 @@ mod tests {
     ///
     /// # The latch is a real one
     ///
-    /// qpdf's `getKey` on an object with **no owning document** raises instead of warning, and
-    /// the error latches: `QPDFObjectHandle::warn` throws when it has no `QPDF` to warn through.
-    /// A free-standing null is such an object, so no hook is needed to make the document hold an
-    /// error. It is the same class as the `/XObject` lookup that kept #191's drain out of the
-    /// accessors (ADR 0029's 2026-09-25 amendment). **Not every null does it**, measured: one from
-    /// an absent key, or from keying an array, carries its owner, and only warns.
+    /// qpdf's `getDict` on anything that is not a stream throws -- `as_stream` asserts the type
+    /// -- and the error latches, owner or no owner. So a stream's dictionary asked of a null makes
+    /// the document hold an error with no hook. Until #224 this used a key of a free-standing
+    /// null, which raises only for a null with no owner; the reader no longer hands the engine a
+    /// key of a non-dictionary at all, so that route is closed.
     #[test]
     fn a_page_lookup_drains_what_the_document_latched_before_it() {
         let options = crate::OpenOptions::new(

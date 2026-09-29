@@ -485,9 +485,10 @@ pub(crate) fn poisoned(detail: &str) -> Error {
 /// channel that reports a repair, and only whether one happened is read: never its text, which
 /// can carry file-derived content. Refusing on any warning raised AT THE OPEN -- the read and the
 /// page count, where the page tree is rebuilt -- was the owner's rule for a measured cost under
-/// 2%; it was 4 of 224 local documents, every one a test fixture. A warning qpdf raises later,
-/// lazily during the walk, is not read: review found no leak through the one such shape it
-/// built, and a second check before the write is a decision not yet taken.
+/// 2%; it was 4 of 224 local documents, every one a test fixture. qpdf also repairs lazily --
+/// during the walk, and during the write for what the walk never read -- so the warnings are
+/// asked twice more: before the write and after it (rounds 3 of #224's reviews), each refusing
+/// with this. None of the 224 raised one before the write; the check after it is unmeasured.
 pub(crate) fn repaired_by_the_engine() -> Error {
     Error::Unsupported(
         "pdf redaction [engine-repaired-input]: the PDF engine repaired this document while \

@@ -144,7 +144,8 @@ impl Drop for Document {
 impl Document {
     /// Whether qpdf recorded any warning while this document was read and its pages counted --
     /// that is, whether it repaired anything on the way (#224). Consumes nothing a later call
-    /// needs: redaction asks once, after the open, and refuses on `true`.
+    /// needs: redaction asks three times -- after the open, before the write and after it --
+    /// and refuses on `true` at each.
     pub(super) fn repaired(&self) -> bool {
         // SAFETY: `self.data` is a live handle owned by this struct; `qpdf_more_warnings` reads
         // only what qpdf stored (see `engines/qpdf-untrapped-accepted.toml`).
