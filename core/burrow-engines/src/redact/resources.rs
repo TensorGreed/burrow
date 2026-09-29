@@ -172,53 +172,78 @@ impl<O: PdfObject> PageResources<O> {
 
     /// The font dictionary a glyph's [`ScopedFont`] selects, **in the stream that named it**.
     ///
-    /// Its own form's `/Resources` first, then the page's — the inheritance `Resources::within`
-    /// applies, so this resolves a name the way the walk that read it did. Anything that does
-    /// not is a bypass by construction; [`ScopedFont`] carries the five times that mattered.
+    /// Along the glyph's route, each form's own `/Resources` or the enclosing ones where it
+    /// declares none -- the inheritance `Resources::within` applies, so this resolves a name the
+    /// way the walk that read it did. Anything that does not is a bypass by construction;
+    /// [`ScopedFont`] carries the five times that mattered, and the sixth (#221).
     ///
     /// # Errors
     ///
-    /// [`Error::Internal`] when the name resolves in neither. The walk already placed a glyph
+    /// [`Error::Internal`] when the route does not resolve to it. The walk already placed a glyph
     /// through it, so this is burrow disagreeing with itself rather than the document being
     /// wrong — and a silent `None` would be the narrowing every leak here has been.
     pub(crate) fn font_in_scope(&self, font: &ScopedFont) -> Result<O> {
-        const RESOURCES: Name = Name::literal(b"/Resources\0");
-        const XOBJECT: Name = Name::literal(b"/XObject\0");
-        let key = Name::from_stripped(font.name())?;
-        if let Some(id) = font.drawn_in() {
-            // BY IDENTITY, not by name: the form is known by the object it is, and its entry in
-            // the page's `/XObject` is where its own `/Resources` hang.
-            let xobjects = self.category(&XOBJECT);
-            for entry_key in crate::pdfsyntax::dict::top_level_keys(&xobjects.unparse())? {
-                let entry = xobjects.key(&Name::from_stripped(&entry_key)?);
-                if entry.type_code() != object_type::STREAM {
-                    continue;
-                }
-                let (number, generation) = entry.object()?;
-                let packed = (u64::from(number.unsigned_abs()) << 16)
-                    | u64::from(generation.unsigned_abs() & 0xffff);
-                if packed != id {
-                    continue;
-                }
-                let own = entry.stream_dict().key(&RESOURCES);
-                if own.type_code() == object_type::DICTIONARY {
-                    let found = own.key(&FONT).key(&key);
-                    if found.type_code() == object_type::DICTIONARY {
-                        return Ok(found);
-                    }
-                }
-                break;
-            }
-        }
-        let found = self.category(&FONT).key(&key);
-        if found.type_code() == object_type::DICTIONARY {
-            return Ok(found);
-        }
-        Err(Error::Internal(
-            "pdf resources: a font the walk drew a glyph with resolves in neither the form's \
-             own resources nor the page's"
-                .to_owned(),
-        ))
+        self.font_path_in_scope(font).map(|(found, _)| found)
+    }
+
+    /// [`Self::font_in_scope`], and the path it was found by (#218, #221): the route of `Do`
+    /// names the walk followed from the page to the stream that named the font, and the font's
+    /// name.
+    ///
+    /// # The walk's route, followed -- never searched for
+    ///
+    /// The path is the route the geometry walk recorded on the glyph ([`ScopedFont::route`]),
+    /// resolved step by step through the scope in force at each `Do`. Two earlier versions
+    /// reconstructed it instead, and both credited a glyph to a font it was not drawn with: the
+    /// first looked for the form among the page's top-level `/XObject` only and fell back to the
+    /// page's font of the same name (#221); the second searched for the form by id and took the
+    /// first route found, which is wrong for a form drawn from two scopes, and whose answer
+    /// depended on how qpdf sorted the names. Each returned `Ok` with a removed code still
+    /// mapped. A route recorded by the walk cannot disagree with the walk.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Internal`] when the route does not resolve to a font dictionary in these
+    /// resources. The walk drew a glyph along it, so that is burrow disagreeing with itself.
+    pub(crate) fn font_path_in_scope(
+        &self,
+        font: &ScopedFont,
+    ) -> Result<(O, crate::redact_verify::FontPath)> {
+        let path = crate::redact_verify::FontPath {
+            form: font.route().to_vec(),
+            name: font.name().to_vec(),
+        };
+        let found = self.resolve(&path)?.ok_or_else(|| {
+            Error::Internal(
+                "pdf resources: a font the walk drew a glyph with does not resolve along the \
+                 route the walk took"
+                    .to_owned(),
+            )
+        })?;
+        Ok((found, path))
+    }
+
+    /// The font dictionary `path` names, or `None`: each chain entry through the `/XObject` of
+    /// the scope in force, stepping into a form's own `/Resources` where it declares them.
+    fn resolve(&self, path: &crate::redact_verify::FontPath) -> Result<Option<O>> {
+        resolve_from(&self.dictionary, &path.form, &path.name)
+    }
+
+    /// The font dictionary a [`crate::redact_verify::FontPath`] names, for the read-back (#218).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::OutputRejected`] when the path does not reach a font dictionary: a font the
+    /// operation cut that the output does not have where it was cut is a check that cannot find
+    /// its subject, and that refuses.
+    pub(crate) fn font_at(&self, path: &crate::redact_verify::FontPath) -> Result<O> {
+        self.resolve(path)?.ok_or_else(|| {
+            Error::OutputRejected(
+                "redact: the region is not cleared -- a font the operation cut is not where it \
+                 was cut in the output"
+                    .to_owned(),
+            )
+        })
     }
 
     fn font_facts(&self, name: &[u8]) -> Result<FontFacts> {
@@ -624,6 +649,35 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
 /// error: the callers are all "is this a Type 3 font" questions where absent means no.
 fn names<O: PdfObject>(handle: &O, want: &Name) -> bool {
     handle.name().is_ok_and(|found| found == *want)
+}
+
+/// [`PageResources::resolve`]'s walk from one scope along `steps`.
+///
+/// Each step is looked up in the `/XObject` of the scope in force, and the next scope is that
+/// form's own `/Resources` when it is a dictionary and the enclosing one otherwise -- the rule
+/// `Resources::within` applies, so a route the walk recorded resolves as the walk resolved it.
+///
+/// # Errors
+///
+/// Only what reading a name from the document can raise. A step or a font that is not there is
+/// `Ok(None)`, and each caller decides what that means: `Internal` for a route the walk drew
+/// along, `OutputRejected` for a cut font the read-back cannot find.
+fn resolve_from<O: PdfObject>(scope: &O, steps: &[Vec<u8>], name: &[u8]) -> Result<Option<O>> {
+    const RESOURCES: Name = Name::literal(b"/Resources\0");
+    let Some((step, rest)) = steps.split_first() else {
+        let found = scope.key(&FONT).key(&Name::from_stripped(name)?);
+        return Ok((found.type_code() == object_type::DICTIONARY).then_some(found));
+    };
+    let entry = scope.key(&XOBJECT).key(&Name::from_stripped(step)?);
+    if entry.type_code() != object_type::STREAM {
+        return Ok(None);
+    }
+    let own = entry.stream_dict().key(&RESOURCES);
+    if own.type_code() == object_type::DICTIONARY {
+        resolve_from(&own, rest, name)
+    } else {
+        resolve_from(scope, rest, name)
+    }
 }
 
 /// A `f64` that is exactly a whole number, as an `i64`.

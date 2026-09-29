@@ -130,6 +130,8 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | **`/EmbeddedFiles`** attachments | **disclose** |
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
 | an **inline image** whose extent the page cannot derive | **refuse** — added by the [2026-09-21 amendment](#amendment-2026-09-21--the-channel-the-spike-missed-inline-image-extent). Spike 0006 did not measure this channel |
+| text shown inside a **Form XObject with a font `Tf` selected outside it** | **refuse**, `[font-selected-in-another-scope]` — added 2026-09-28 ([#218], round 4). A reader binds the font where `Tf` runs; the walk carried only its name and resolved it again in the form's own `/Resources`. A review got two `Ok`s from that: a secret measured with a zero-width form font, placed outside the region and left in plain text (older than [#218]); and a removed character credited to the form's font, so the font that drew it kept mapping it. Refused rather than resolved through the `Tf`'s scope. None of the 463 golden cases has the shape, and a review walking 1,918 pages from 224 local PDFs found it on none. **It over-refuses one safe shape**: a child form with no `/Resources` of its own inherits the scope that ran the `Tf`, so it draws with the same font, and is refused anyway because its route is longer |
+| a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -195,49 +197,65 @@ back through a fresh engine. What redaction adds is the content predicate that r
 - the output is a document, with the input's page count and `/Rotate` vector — 0022 unchanged;
 - **no text-showing operator remains whose glyphs fall inside the region**, re-derived from the
   emitted bytes through a fresh parse;
-- **no `/ToUnicode` or `/Differences` entry remains for a code the output no longer draws**
-  *(unbacked by its check until #218; see the note below)*;
+- **no `/ToUnicode` or `/Differences` entry remains for a code the output no longer draws**;
 
-  > **UNBACKED BY ITS CHECK, 2026-09-28 ([#218]).** The verification does not hold this
-  > assertion today, and until #218 closes it must not be read as a guarantee the verification
-  > makes.
+  > **Backed again, 2026-09-28 ([#218]).** Until this date the check did not hold this. It
+  > matched the report's cut fonts by **input** object id against fonts read back by **output**
+  > id, which qpdf renumbers, and so examined at most 14 of the 213 cut fonts in the golden
+  > corpus, some of them a different font reusing the number. With the narrowing disabled, a
+  > redaction returned `Ok` with a removed character's glyph name still in the output.
   >
-  > *What the assertion requires:* the bullet above, which covers every cut font the verified page
-  > reaches.
+  > *What it examines now:* exactly the fonts the operation cut, each found in the output by
+  > **path** -- the `Do` names the geometry walk followed from the page's content to the form
+  > whose stream named it, and the font's name in the `/Font` dictionary in force there. A resource name is a dictionary key and survives the
+  > write. A path that does not resolve to a font dictionary is refused, never skipped. Each font's
+  > mapped codes are counted against the codes the page still draws with it, font by font and
+  > never collected. A font with no identity cannot be checked this way, and the operation
+  > refuses it first, as `[direct-font]` in §3's table.
+  > **Coverage is checked on every redaction, not gated in the golden run.** The unbacked note
+  > this replaces ([#222], `2178c9b`) listed among #218's closing criteria "coverage (cut fonts
+  > examined against cut fonts) gated in the golden-outcomes run". Instead the check itself counts
+  > the distinct fonts its read-back examined and refuses unless that equals the number the
+  > report says were cut -- counted where the fonts are examined, because the paths become a set
+  > on the way and are deduped again by output identity, and a review showed a count taken one
+  > step earlier passing a hand-off that kept only the last path. The operation also refuses, as
+  > `Internal`, a font reported cut with no path recorded beside it. What neither sees is zero
+  > against zero: a regression that stops cutting at all, or one that zeroes the report's count
+  > and the paths together, passes -- the first is the "retained / actually cut" row of the
+  > circularity table below, and the second is held by tests rather than by the gate. The count
+  > the gate expects is pinned to the report's by a test with two fonts cut.
   >
-  > *What the check examines:* only fonts whose object id in the **output** equals an id in the
-  > report's cut set (`redact_verify.rs`, check 2:
-  > `if !expected.cut_fonts.contains(font) { continue; }`). That set holds **input** object ids,
-  > and qpdf renumbers objects when it writes. So a font is examined only by id coincidence, and
-  > the coincidence is often a **different font**. And `mapped_codes` lists only the page's own
-  > `/Font` dictionary, so a cut font that lives only in a form's resources is never examined,
-  > whatever its id.
+  > *Shown to fail:* with the narrowing switched off over a font qpdf renumbers, verification
+  > itself refuses; with the old id-matching reinstated, the same test returns `Ok`. The golden
+  > outcomes are unchanged. A first version examined every unshared font the page reached, which
+  > is more than the operation narrows, and a review showed it refusing correct redactions (a
+  > form's own font nothing was cut from, an annotation's appearance font, a malformed font on
+  > another page, a non-dictionary `/Font` entry) and holding 3.3 GB on a 470 kB file; each of
+  > those is now a regression test that must redact.
   >
-  > *Measured over the native golden corpus, 212 verifications*, with temporary instrumentation
-  > in check 2 that was never committed, and reproduced by review:
-  >
-  > | | |
-  > |---|--:|
-  > | verifications with at least one cut font | 170 |
-  > | cut fonts | 213 |
-  > | output fonts whose id equalled a cut input id | 27 |
-  > | of those, a **different** font by `/BaseFont` | at least 13 |
-  > | cut fonts actually checked | **at most 14 (6.6%)** |
-  > | verifications where no id matched at all | 151 |
-  >
-  > *What holds instead, today:* no page-level font read back carried an orphaned code in that
-  > corpus. Form-local fonts were not observed. `redaction_defences.rs` byte-checks the narrowing
-  > on its own fixtures. Both are properties of today's corpus and today's narrowing, held by
-  > tests, and not properties the operation verifies on a document nobody tested. With the
-  > narrowing disabled, a review got a redaction to return `Ok` with a removed character's glyph
-  > name still in the output, natively and on the web.
-  >
-  > *This note is removed by the change that closes #218, which must show:*
-  > - fonts identified by what survives the write, not by object id;
-  > - form-local fonts included;
-  > - a cut font the read-back cannot find refused, not skipped;
-  > - verification itself returning `Err` with the narrowing disabled, natively and on the web;
-  > - the coverage (cut fonts examined against cut fonts) gated in the golden-outcomes run.
+  > *What it cannot see:* a font the operation **retained** that it should have cut is not
+  > examined -- the sharing rule decides that upstream, and a retained font is §7's disclosure.
+  > And the check inherits the operation's scope resolution, so that resolution has to be
+  > right, and twice it was not. A glyph in a nested form was resolved among the page's
+  > top-level `/XObject` only, then against the page's font of the same name, so a decoy was
+  > narrowed and `Ok` returned with the real font still mapping the removed code ([#221]). The
+  > first fix searched for the drawing form by object id and took the first route it found,
+  > which is wrong for a form drawn from two scopes -- listed on the page and inside another
+  > form, with no `/Resources` of its own -- and which route came first depended on how qpdf
+  > sorted two names; a review got `Ok` with the page's font still mapping a removed code, and,
+  > mirrored, a retained character's mapping and widths cut. Nothing searches now: the walk
+  > records on each glyph the route of `Do` names it took, and resolution follows that route
+  > through the scope in force at each step. A route the walk recorded cannot disagree with the
+  > walk. The same review measured the search at 58 s for 100 glyphs on a 178 kB file; the route
+  > costs what the base did, 0.7 s. The golden outcomes are unchanged by either.
+  > A route is the scope of the *stream*, and a font is bound in the scope of its `Tf`: text shown
+  > in a form with a font selected outside it is refused as `[font-selected-in-another-scope]`
+  > (§3), because the two scopes can name different fonts and a reader uses the `Tf`'s.
+  > The web half of "refuses with the narrowing off" is held by the browser differential, which
+  > plants it in `bridge-qpdf.js`: `oh_set_array_item` made a no-op, so no `/Differences` name
+  > is overwritten and no `/Widths` entry zeroed. On `04-differences-encoding.pdf` the web then refuses with `OutputRejected`,
+  > "still maps N code(s)", where native redacted. Measured against the pre-fix core, the same plant
+  > was **silent**, "a different document": the web's verification passed it.
 
 - **the named page carriers are absent**: `/Thumb`, every annotation whose `/Rect` intersects the
   region, and every page key outside the allowlist;
@@ -970,8 +988,9 @@ and WebKit: 107 documents and 463 cases, every one matching on the day it landed
 **How it is shown to fail:**
 - by copies of the worker with three planted divergences: a region's sides swapped in the glue,
   a refusal under another rule's name, and a ceiling at another stage;
-- by two more in `bridge-qpdf.js`, the JavaScript between the Rust policy and `qpdf.wasm`, which
-  #200's native-backed differential cannot see (added 2026-09-28, #137's last item):
+- by three more in `bridge-qpdf.js`, the JavaScript between the Rust policy and `qpdf.wasm`,
+  which #200's native-backed differential cannot see (the first two added 2026-09-28, #137's last
+  item; the third with [#218]):
   - `oh_set_array_item` with its index and item swapped, #137's own example. qpdf refuses it,
     so it arrives as a web refusal where native redacted. Measured across the corpus: 8
     documents.
@@ -980,6 +999,10 @@ and WebKit: 107 documents and 463 cases, every one matching on the day it landed
     sees it. Measured across the corpus: 113 cases in 56 documents, every one "a different
     document". The lost byte was whitespace in every stream logged, so the output means the same
     and verification is right to accept it; dropping 20 bytes instead is refused on read-back.
+  - `oh_set_array_item` made a no-op, which turns off the `/Differences` and `/Widths` narrowing. On
+    `04-differences-encoding.pdf` it must arrive as an `OutputRejected` refusal naming the
+    orphaned codes, and the page-out-of-range case must still agree with native. Against the
+    core before [#218] the same plant was silent, "a different document".
 - by hand-written replies, one per compared field.
 
 **The count is gated, and so is each verdict.** Each document test records, for every case it
@@ -1065,6 +1088,8 @@ the seven cases then in the script:
 [#131]: https://github.com/TensorGreed/burrow/issues/131
 [#137]: https://github.com/TensorGreed/burrow/issues/137
 [#218]: https://github.com/TensorGreed/burrow/issues/218
+[#221]: https://github.com/TensorGreed/burrow/issues/221
+[#222]: https://github.com/TensorGreed/burrow/pull/222
 
 ## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
 
@@ -1791,9 +1816,8 @@ the region was cleared, which is a smaller sentence and a true one.
 
 1. **No glyph inside the region is still drawn.** The walk runs again over the output.
 2. **No `/ToUnicode` or `/Differences` entry remains for a code the output no longer draws** —
-   for the fonts the operation **cut**; see below. **Unbacked by its check until [#218]:** the
-   check matches cut fonts by input object id against the output's renumbered ids, and at most 14
-   of 213 cut fonts in the golden corpus were actually examined. See §6's note.
+   for every font the operation cut, each found in the output by the resource path it was cut
+   by ([#218]); see below.
 3. **No page key outside §2's allowlist.**
 4. **The same pages came out, displaying the same way** — `verify::output`'s half, shared with
    every other operation.
@@ -1811,7 +1835,8 @@ down rather than implied:
 
 | the operation claims | reality | caught? |
 |---|---|---|
-| cut | not cut | orphaned mappings remain — **yes, as designed; not today** ([#218]): the cut font is found by input object id in a renumbered output, and a review got exactly this row to return `Ok` |
+| cut | not cut | orphaned mappings remain — **yes**, each cut font found by its resource path rather than the input's ids ([#218]); until 2026-09-28 this row returned `Ok` |
+| cut a font | the glyph was drawn by a different one | **no — not by the read-back.** The check finds each cut font by the path the operation recorded, with the resolver the operation used, so a wrong resolution is agreed with rather than caught: that is #111's circularity, and a review planted the old resolution and got `Ok` from verification. What stops it is **prevention**, upstream ([#221], 2026-09-28): the font is resolved along the route of `Do` names the walk recorded on the glyph, never searched for, and text shown in a form with a font selected outside it is refused (`[font-selected-in-another-scope]`, §3). Before that, a glyph in a nested form narrowed the page's decoy, and a form drawn from two scopes was credited to whichever came first, each returning `Ok`. The tests that hold it assert the path the operation recorded, and read the output back by paths the test names |
 | retained | actually cut | **no** — but the failure is another page's text reflowing, which no read-back of *this* page could see anyway |
 
 ### The frame is read from the output

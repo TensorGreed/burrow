@@ -100,24 +100,196 @@ mod tests {
         let witness = witness();
         let bytes = document();
         let read = witness.open_output(&bytes).expect("opens");
-        let mapped = witness.mapped_codes(&read, 0).expect("reads the fonts");
-
-        assert_eq!(mapped.len(), 1, "one font on the page: {mapped:?}");
-        let codes = mapped.values().next().expect("the font");
+        let cut = std::collections::BTreeSet::from([crate::redact_verify::FontPath {
+            form: Vec::new(),
+            name: b"F1".to_vec(),
+        }]);
+        // NOTHING DRAWN: every mapped code is orphaned, so the count is the whole domain.
+        let orphaned = witness
+            .orphaned_codes(&read, 0, &cut, &std::collections::BTreeMap::new())
+            .expect("reads the fonts");
         assert_eq!(
-            codes.len(),
-            4,
-            "0x41, 0x42 and 0x141 from /ToUnicode, 0x43 from /Differences: {codes:?}"
+            orphaned.orphaned, 4,
+            "0x41, 0x42 and 0x141 from /ToUnicode, 0x43 from /Differences, each counted once"
         );
-        assert!(codes.contains(&0x41) && codes.contains(&0x42) && codes.contains(&0x43));
-        // A CODE ABOVE 0x00FF, which is the whole two-byte half of the domain. A mutation
-        // narrowing the scan to `0..=255` survived the suite because no fixture had one -- so
-        // the Identity-H shape ADR 0029 calls legible-and-invisible was not covered by the
-        // mapping read-back's own tests.
-        assert!(
-            codes.contains(&0x0141),
-            "a two-byte code must be reported: {codes:?}"
+        assert_eq!(orphaned.examined, 1, "one cut font, examined once");
+        // EVERYTHING DRAWN, under the font's own output identity: nothing is orphaned. The near-
+        // miss that shows the count is of codes, not of fonts.
+        let drawn = witness.drawn_codes(&read, 0).expect("reads what is drawn");
+        let key = *drawn.keys().next().expect("the page draws with its font");
+        let all: std::collections::BTreeMap<u64, std::collections::BTreeSet<u32>> =
+            [(key, [0x41, 0x42, 0x43, 0x141].into_iter().collect())]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            witness
+                .orphaned_codes(&read, 0, &cut, &all)
+                .expect("reads the fonts")
+                .orphaned,
+            0,
+            "every mapped code drawn, so nothing is orphaned"
         );
+    }
+
+    fn pdf(objects: &[String]) -> Vec<u8> {
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    fn path(
+        form: Option<&[u8]>,
+        name: &[u8],
+    ) -> std::collections::BTreeSet<crate::redact_verify::FontPath> {
+        std::collections::BTreeSet::from([crate::redact_verify::FontPath {
+            form: form.map(|step| vec![step.to_vec()]).unwrap_or_default(),
+            name: name.to_vec(),
+        }])
+    }
+
+    fn refused(outcome: burrow_types::Result<crate::redact_verify::CutFontsRead>, why: &str) {
+        match outcome {
+            Err(burrow_types::Error::OutputRejected(message)) => {
+                assert!(
+                    message.contains(why),
+                    "refused, but not because {why}: {message}"
+                );
+            }
+            other => panic!("expected a refusal because {why}, got {other:?}"),
+        }
+    }
+
+    // FAIL-CLOSED, ON THE REAL WITNESS (#218). The old check skipped a cut font it could not
+    // match, which is how it examined almost nothing; these hold the refusal where it lives rather
+    // than in a fake that re-implements it.
+
+    #[test]
+    fn a_cut_path_the_output_does_not_have_is_refused_not_skipped() {
+        let witness = witness();
+        let read = witness.open_output(&document()).expect("opens");
+        let outcome = witness.orphaned_codes(
+            &read,
+            0,
+            &path(None, b"F9"),
+            &std::collections::BTreeMap::new(),
+        );
+        refused(outcome, "not where it was cut");
+    }
+
+    #[test]
+    fn a_cut_path_through_a_form_the_page_does_not_have_is_refused() {
+        let witness = witness();
+        let read = witness.open_output(&document()).expect("opens");
+        let outcome = witness.orphaned_codes(
+            &read,
+            0,
+            &path(Some(b"Fm9"), b"F1"),
+            &std::collections::BTreeMap::new(),
+        );
+        refused(outcome, "not where it was cut");
+    }
+
+    #[test]
+    fn a_cut_font_written_inline_in_the_output_is_refused() {
+        // THE SECOND LINE BEHIND `[direct-font]`, which the operation's refusal otherwise keeps
+        // unreachable, so a review deleted it and the suite stayed green (#218, round 3). An
+        // output whose cut font is inline has no identity to key it by.
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 \
+             << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>"
+                .to_owned(),
+        ]);
+        let witness = witness();
+        let read = witness.open_output(&bytes).expect("opens");
+        let outcome = witness.orphaned_codes(
+            &read,
+            0,
+            &path(None, b"F1"),
+            &std::collections::BTreeMap::new(),
+        );
+        refused(outcome, "no identity");
+    }
+
+    #[test]
+    fn two_cut_fonts_sharing_one_to_unicode_are_each_counted() {
+        // THE MEMO: the second font reads the first's parsed map, and must still count it. The
+        // shared `/ToUnicode` maps three codes and nothing is drawn, so each font orphans three.
+        let to_unicode = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+                          1 begincodespacerange\n<00> <FF>\nendcodespacerange\n\
+                          3 beginbfchar\n<41> <0041>\n<42> <0042>\n<43> <0043>\n\
+                          endbfchar\nendcmap\nend\nend\n";
+        let font = |to_unicode: &str| {
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode {to_unicode} >>"
+            )
+        };
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> >>"
+                .to_owned(),
+            font("6 0 R"),
+            font("6 0 R"),
+            format!(
+                "<< /Length {} >>\nstream\n{to_unicode}endstream",
+                to_unicode.len()
+            ),
+        ]);
+        let witness = witness();
+        let read = witness.open_output(&bytes).expect("opens");
+        let mut cut = path(None, b"F1");
+        cut.extend(path(None, b"F2"));
+        let orphaned = witness
+            .orphaned_codes(&read, 0, &cut, &std::collections::BTreeMap::new())
+            .expect("reads both fonts");
+        assert_eq!(
+            orphaned.orphaned, 6,
+            "three codes for each of two fonts sharing one map"
+        );
+        assert_eq!(orphaned.examined, 2, "two cut fonts, each examined");
+    }
+
+    #[test]
+    fn a_cut_fonts_to_unicode_that_cannot_be_decoded_is_refused_not_skipped() {
+        // A stream under a filter no engine here decodes: its domain cannot be established, so a
+        // check over it cannot pass.
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 4 0 R >> >> >>"
+                .to_owned(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 5 0 R >>".to_owned(),
+            "<< /Length 4 /Filter /NoSuchDecode >>\nstream\nabcd\nendstream".to_owned(),
+        ]);
+        let witness = witness();
+        let read = witness.open_output(&bytes).expect("opens");
+        let outcome = witness.orphaned_codes(
+            &read,
+            0,
+            &path(None, b"F1"),
+            &std::collections::BTreeMap::new(),
+        );
+        refused(outcome, "cannot be read back");
     }
 
     #[test]

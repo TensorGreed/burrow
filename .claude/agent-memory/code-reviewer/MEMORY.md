@@ -36,5 +36,10 @@
 - [Harness-own prefix exemption](feedback_harness_own_prefix_exemption.md) — `startsWith("__burrow")` skip let `{__burrowChunk: bytes}` pass R8; disable each `found.push` and list survivors.
 - [All went red includes a near-miss](feedback_all_went_red_includes_near_miss.md) — neutering a rule leaves the must-pass near-miss green; "all N went red" is suspect, re-run it.
 - [Regex-parsed config list](feedback_regex_parsed_config_list.md) — expected set by regex over a config undercounts; plant a hyphenated/wrapped entry, diff vs the tool's own list.
+- [Widened examined set, false refusals](feedback_widened_examined_set_false_refusals.md) — check examining "all the page reaches": probe scopes the op never edits (#218: /AP, form fonts).
+- [Examined set vs operation reach](feedback_examined_set_vs_operation_reach.md) — too wide over-refuses; "what the op touched" inherits its misresolution (#218 nested-form decoy).
 - [Exemption list postable first](feedback_exemption_list_postable_first.md) — "trusted if message 0" is forgeable when the harness posts nothing; revert tightenings, not just rules.
 - [Hyphenated job-name match](feedback_hyphenated_job_name_match.md) — scenario() `\bweb\b` hits web-e2e, `\bwasm\b` hits wasm-pack; force-skip the short name.
+- [Depth-capped DFS padding](feedback_depth_capped_dfs_padding.md) — undrawn padding forms exhaust a DFS cap into a false "unreachable"; time per-glyph resolvers; "caught?" vs prevented.
+- [Removed note leaves dangling refs](feedback_removed_note_leaves_dangling_refs.md) — a self-deleting ADR note leaves "the note above" pointing nowhere; downward-only state makes route compare = prefix.
+- [Cited SHA pre-squash](feedback_cited_sha_pre_squash.md) — a SHA in a doc must be an ancestor of origin/main; #218 cited a branch commit. Mutate `!=` gates one-sided.

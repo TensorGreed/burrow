@@ -53,3 +53,5 @@
 - [Web differential + ledger (#137)](m2_web_differential_137.md) — leak-tight compare; r2: parking fixed; ledger test itself parkable, misbound verdict green (measured).
 - [Verify cut_fonts vs renumbering](m2_verify_cut_fonts_renumbering.md) — read-back check #2 examined no cut font in 151 of 170 verifications (input ids vs output ids); plus the #137 bridge-plant notes.
 - [Redaction binding (#137)](m2_redaction_binding_137.md) — the harness-only hold is caught on deploy only by a module count; report counts untested; e2e port collisions.
+- [#218 cut-font identity](m2_218_cut_font_identity.md) — 13 of the 27 "examined" fonts are a different font; mapped_codes misses form-local fonts; unqualified claim sites.
+- [#218 fix review (7 rounds, to b3e2423)](m2_218_fix_review.md) — r4 inherited-Tf leak; r5 gs /Font (#152); r6 invariant inert; r7 gate sound, reference count unpinned.

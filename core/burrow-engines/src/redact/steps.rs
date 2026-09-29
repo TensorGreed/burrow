@@ -611,6 +611,11 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         // special case; it is the same question asked of each page in turn.
         let mut drawn: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
         for at in self.pages_in_scope(redacted)? {
+            // ONCE PER FONT AND ROUTE ON A PAGE, not once per glyph. A route is at most
+            // `MAX_FORM_DEPTH` lookups, but a page may draw 200,000 glyphs, and a per-glyph
+            // resolution is the shape a review measured at 58 s for 100 glyphs when resolution
+            // was a search (#218, round 3). Per page, because resources are.
+            let mut resolved: BTreeMap<ScopedFont, u64> = BTreeMap::new();
             self.deadline.checkpoint(self.clock.as_ref())?;
             // `pages_in_scope` yields only indices below the document's page count, which it
             // reads from the document itself. `page` checks again, and drains as this did.
@@ -625,7 +630,14 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
                 // IN THE SCOPE THAT DREW IT. `font_object` searches the page's `/Font`
                 // only, so an ordinary document whose form carries its own failed with
                 // `font-missing` -- blaming the file for a one-scope lookup.
-                let font = pack(resources.font_in_scope(&glyph.source.font)?.object()?);
+                let font = match resolved.get(&glyph.source.font) {
+                    Some(&font) => font,
+                    None => {
+                        let font = pack(resources.font_in_scope(&glyph.source.font)?.object()?);
+                        resolved.insert(glyph.source.font.clone(), font);
+                        font
+                    }
+                };
                 drawn.entry(font).or_default().insert(glyph.source.code);
             }
         }
@@ -639,12 +651,13 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         &mut self,
         still_drawn: &[(u64, Vec<u32>)],
         redacted: &BTreeSet<usize>,
-    ) -> Result<Vec<FontOutcome>> {
+    ) -> Result<(Vec<FontOutcome>, Vec<crate::redact_verify::FontPath>)> {
         self.deadline.checkpoint(self.clock.as_ref())?;
         let page = self.page_handle()?;
         let resources = PageResources::of(&page)?;
 
         let mut outcomes = Vec::new();
+        let mut cut_paths = Vec::new();
 
         // EVERY FONT THE OPERATION DREW WITH, in whatever scope named it. This iterated the
         // page's `/Font` keys, so a font named only by a form's own `/Resources` was never
@@ -656,33 +669,51 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         // mean different objects in different scopes -- which is what name-based enumeration was
         // quietly assuming away.
         let mut seen: BTreeSet<u64> = BTreeSet::new();
-        let mut scoped: Vec<ScopedFont> = self
-            .cut
-            .iter()
-            .map(|glyph| glyph.source.font.clone())
-            .collect();
-        for name in font_names(&resources)? {
-            scoped.push(ScopedFont::on_page(name.plain().to_vec()));
+        // WHETHER A GLYPH DREW WITH IT, beside each font: a glyph's font resolved once for the
+        // walk to place it, so failing to resolve it now is burrow disagreeing with itself and
+        // propagates. A page `/Font` key is only a candidate -- one naming something that is not
+        // a font dictionary is not a font to cut, and refusing it refused documents burrow
+        // handles (#218's first design).
+        let mut scoped: BTreeMap<ScopedFont, bool> = BTreeMap::new();
+        for glyph in &self.cut {
+            scoped.insert(glyph.source.font.clone(), true);
         }
-        scoped.sort();
-        scoped.dedup();
+        for name in font_names(&resources)? {
+            scoped
+                .entry(ScopedFont::on_page(name.plain().to_vec()))
+                .or_insert(false);
+        }
 
-        for scoped_font in &scoped {
+        for (scoped_font, drew) in &scoped {
             // PER FONT: a page may name 4,096, and narrowing one parses its `/ToUnicode` (up to
             // 65,536 entries) and rewrites its `/Widths`. Checked only on entry, 4,000 fonts
             // sharing one full-range `/ToUnicode` ran **36 s** against a 100 ms budget, from a
             // 500 KB file.
             self.deadline.checkpoint(self.clock.as_ref())?;
-            let Ok(font) = resources.font_in_scope(scoped_font) else {
-                // A name that resolves nowhere is not a font to cut. `font_names` yields the
-                // page's own keys, which always resolve, and a glyph's name resolved once for
-                // the walk to place it; this arm is for neither.
-                continue;
+            let (font, path) = match resources.font_path_in_scope(scoped_font) {
+                Ok(found) => found,
+                // DEFENSIVE, AND UNWITNESSED: the walk placed the glyph along this route through
+                // the same scoping, and nothing between the walk and here edits `/Resources`, so
+                // no document reaches this arm. It fails closed rather than skip a cut font.
+                Err(error) if *drew => return Err(error),
+                Err(_) => continue,
             };
-            if font.type_code() != object_type::DICTIONARY {
-                continue;
-            }
+            // A DICTIONARY BY CONSTRUCTION: `font_path_in_scope` resolves only to one.
             let identity = font.object()?;
+            // A DIRECT FONT HAS NO IDENTITY (#218, owner's decision 2026-09-28). qpdf reports
+            // `(0, 0)` for every font dictionary written inline, so two of them are one font to
+            // the dedupe below -- the first was narrowed and the second never touched, and the
+            // sharing rule cannot say whether an object with no identity is shared. A security
+            // review got that to return `Ok` with a removed character still mapped. Refused by
+            // name: none of the golden corpus's documents has one.
+            if identity == (0, 0) {
+                return Err(Error::Unsupported(
+                    "pdf redaction [direct-font]: a font dictionary written inline, which has no \
+                     identity to tell it from another, so whether it is shared and whether it was \
+                     narrowed cannot be established"
+                        .to_owned(),
+                ));
+            }
             let packed = pack(identity);
             if !seen.insert(packed) {
                 continue;
@@ -716,8 +747,10 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
                 cut: true,
                 also_used_by: outside,
             });
+            // WHERE IT WAS CUT, by names the writer keeps, for the read-back (#218).
+            cut_paths.push(path);
         }
-        Ok(outcomes)
+        Ok((outcomes, cut_paths))
     }
 
     fn strip_page_keys(&mut self) -> Result<()> {
@@ -1529,8 +1562,14 @@ fn form_handle<O: PdfObject>(resources: &PageResources<O>, id: u64) -> Result<O>
 /// `U+0001` at the origin where readable text had been. `/Differences` was not measured; it is
 /// the same shape, found by looking again at the other half of the same function.
 fn narrow_font<O: PdfObject>(font: &O, keeps: &BTreeSet<u32>) -> Result<()> {
-    narrow_to_unicode(font, keeps)?;
-    narrow_differences(font, keeps)?;
+    #[cfg(test)]
+    let skip = super::hooks::narrowing_skipped();
+    #[cfg(not(test))]
+    let skip = false;
+    if !skip {
+        narrow_to_unicode(font, keeps)?;
+        narrow_differences(font, keeps)?;
+    }
 
     // `/Widths` is positional, so an entry cannot be removed without moving every later code.
     // Zeroing the removed ones keeps the array's shape and says nothing about what was there.

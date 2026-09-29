@@ -200,9 +200,15 @@ for (const document of PLAN) {
 // means the same and nothing SHOULD reject it -- the web redaction passes its own verification,
 // and only the digest comparison here sees it. Measured over the corpus on 2026-09-28: 113 cases
 // in 56 documents. Dropping 20 bytes instead is refused on read-back, as it should be.
+//
+// A THIRD, with #218: `oh_set_array_item` doing nothing, which turns off the `/Differences` and
+// `/Widths` narrowing. Verification must refuse it; against the core before #218 it was silent too.
 
 const WRITER = DOCUMENTS.find((d) => d.name === "tests/redaction/fixtures/producer-writer.pdf");
 const BOMB = DOCUMENTS.find((d) => d.cases.some((c) => classOf(c.outcome) === "limit"));
+const DIFFERENCES = DOCUMENTS.find((d) =>
+  d.name.endsWith("/generated/04-differences-encoding.pdf"),
+);
 
 for (const planted of [
   {
@@ -245,6 +251,20 @@ for (const planted of [
     from: "module._qpdf_oh_replace_stream_data(data, stream, buf, bytes.length, filter, decodeParms);",
     to: "module._qpdf_oh_replace_stream_data(data, stream, buf, Math.max(0, bytes.length - 1), filter, decodeParms);",
     finding: /a different document/,
+  },
+  {
+    // #218: THE NARROWING OFF, where the web does it. `oh_set_array_item` is how a cut
+    // `/Differences` name is overwritten, so a bridge that drops the call leaves the removed
+    // character's glyph name in the output. Verification must refuse it on the web as it does
+    // natively -- before #218 it matched cut fonts by input id against renumbered output ids and
+    // returned the document.
+    name: "the bridge's `oh_set_array_item` doing nothing, so no `/Differences` name is narrowed",
+    document: DIFFERENCES,
+    from: "qpdf()._qpdf_oh_set_array_item(data, oh, at, item);",
+    to: "void [data, oh, at, item];",
+    finding: /native redacted it; the web refused, OutputRejected/,
+    message: /still maps \d+ code\(s\) the page no longer draws/,
+    unaffected: /\[page-out-of-range\]/,
   },
 ]) {
   test(`SHOWN TO FAIL: a copy of the worker with ${planted.name} diverges`, async ({ page }) => {
