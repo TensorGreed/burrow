@@ -219,9 +219,11 @@ back through a fresh engine. What redaction adds is the content predicate that r
   > report says were cut -- counted where the fonts are examined, because the paths become a set
   > on the way and are deduped again by output identity, and a review showed a count taken one
   > step earlier passing a hand-off that kept only the last path. The operation also refuses, as
-  > `Internal`, a font reported cut with no path recorded beside it. What neither sees is a
-  > regression that stops cutting at all: zero examined against zero cut passes, and that is the
-  > "retained / actually cut" row of the circularity table below.
+  > `Internal`, a font reported cut with no path recorded beside it. What neither sees is zero
+  > against zero: a regression that stops cutting at all, or one that zeroes the report's count
+  > and the paths together, passes -- the first is the "retained / actually cut" row of the
+  > circularity table below, and the second is held by tests rather than by the gate. The count
+  > the gate expects is pinned to the report's by a test with two fonts cut.
   >
   > *Shown to fail:* with the narrowing switched off over a font qpdf renumbers, verification
   > itself refuses; with the old id-matching reinstated, the same test returns `Ok`. The golden

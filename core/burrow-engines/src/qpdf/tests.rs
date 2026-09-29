@@ -1098,6 +1098,46 @@ mod wiring {
     }
 
     #[test]
+    fn the_check_holds_its_read_back_to_the_reports_own_cut_count() {
+        // #218 round 7: the gate compares the fonts examined with `Cleared::cut`. Were `cut`
+        // filled from the paths handed over rather than from the report, a hand-off that lost a
+        // path would lower both sides together -- and the suite stayed green with exactly that
+        // planted. Two fonts cut, and the check must be told two, from the report.
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        LAST_EXPECTATION.with(|slot| *slot.borrow_mut() = None);
+        let two_fonts = two_pages(
+            "<< /Font << /F1 6 0 R /F2 7 0 R >> >>",
+            "BT /F1 24 Tf 72 700 Td (S) Tj /F2 24 Tf 72 0 Td (K) Tj ET\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                helvetica("/Encoding /WinAnsiEncoding"),
+            ],
+        );
+        let (_, report) = super::super::Qpdf
+            .redact_page(&two_fonts, 0, &BTreeSet::from([0]), region, &options)
+            .expect("redacts");
+        let reported = report.fonts.iter().filter(|font| font.cut).count();
+        assert_eq!(reported, 2, "the fixture cuts both of the page's fonts");
+        let expected = last_expectation().expect("the check was called");
+        assert_eq!(
+            expected.cut, reported,
+            "the check's count is not the report's"
+        );
+        assert_eq!(
+            expected.cut_fonts.len(),
+            reported,
+            "the check was handed fewer paths than the report cut"
+        );
+    }
+
+    #[test]
     fn the_check_is_told_the_page_that_was_redacted() {
         // KILLS: `Cleared { page: 0 }` instead of `page`. Every end-to-end test redacts page 0,
         // so a verification that always checked page 0 would ship.
