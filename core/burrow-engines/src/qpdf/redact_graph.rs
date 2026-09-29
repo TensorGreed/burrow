@@ -72,10 +72,10 @@ impl PdfObject for ObjectHandle<'_> {
     }
 
     // TYPE-CHECKED BEFORE THE CALL, in `key`, `name` and `array_item` below. qpdf answers a
-    // read of the wrong type -- or an array read out of range -- with a fallback *and a warning*, and a warning at
-    // the write is refused as a repair (#224). Each guard has a document that redacts with it and
-    // is refused without it: an integer `/Font` entry, an XObject whose `/Subtype` is a number,
-    // and a `/W` array that ends mid-range.
+    // read of the wrong type -- or an array read out of range -- with a fallback *and a
+    // warning*, and a warning at the write is refused as a repair (#224). Each guard has a
+    // document that redacts with it and is refused without it: an integer `/Font` entry, an
+    // XObject whose `/Subtype` is a number, and a `/W` array that ends mid-range.
 
     fn key(&self, key: &Name) -> Self {
         if Self::type_code(self) != object_type::DICTIONARY {

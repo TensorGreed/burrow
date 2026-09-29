@@ -1455,7 +1455,8 @@ mod wiring {
         // not a number as 0: over the secret. Measured `Ok` with the appearance drawn there.
         // AND EXACTLY FOUR (round 5): PDFium reads any other length as `[0 0 0 0]`, and an
         // appearance with no `/BBox` (#229) then draws from the page's origin -- measured over
-        // the secret with the length check loosened to `< 4`.
+        // the secret with the length check loosened to `< 4`. Only the five-item case pins the
+        // length: the three-item one is also refused through its missing fourth item.
         for nested in [
             "[[200 0] 400 120 []]",
             "[<< /A 200 /B 0 >> 400 120 << >>]",
@@ -1468,7 +1469,7 @@ mod wiring {
                 &format!("a /Rect of {nested}"),
             );
         }
-        // THE LAST TWO are refused by the same bound without being leaks themselves.
+        // THESE TWO, BELOW, are refused by the out-of-range bound without being leaks themselves.
         refused_by(
             redact_in(&page("[4294967316 330 120 350]"), UPPER_BAND),
             "annotation-rect",

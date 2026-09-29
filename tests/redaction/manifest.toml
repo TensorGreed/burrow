@@ -2252,7 +2252,8 @@ pages = 1
   witness_observes = "canary"
   expect_after = "refused"
   notes = """
-Repaired after the open's warning check; refused by the one before the write (#224, round 2).
+Repaired after the open's warning check; refused by the check after the write (#224; before the
+write in round 2, moved in round 4).
 """
 
 [[fixture]]
