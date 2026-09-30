@@ -1952,6 +1952,44 @@ stream one, which a mutation dropping the entry check survived until this fixtur
 """
 
 [[fixture]]
+name = "evade-extgstate-sets-the-font"
+file = "generated/evade-extgstate-sets-the-font.pdf"
+kind = "hand-built"
+probes_refusal = "graphics state font"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a gs whose ExtGState names a /Font, after a zero-width Tf font — evasion"
+  canary = "BURROW-EVADE-GS-FONT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium draws with its own metrics for any ExtGState /Font; the walk measured the zero widths. Ok with the canary, until #152.
+"""
+
+[[fixture]]
+name = "nearmiss-extgstate-for-transparency"
+file = "generated/nearmiss-extgstate-for-transparency.pdf"
+kind = "hand-built"
+probes_refusal = "graphics state font"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a gs for transparency only — near-miss twin"
+  canary = "BURROW-EVADE-GS-ALPHA"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A graphics state is ordinary; only one that sets the font is the shape.
+"""
+
+[[fixture]]
 name = "evade-cropbox-larger-than-mediabox"
 file = "generated/evade-cropbox-larger-than-mediabox.pdf"
 kind = "hand-built"

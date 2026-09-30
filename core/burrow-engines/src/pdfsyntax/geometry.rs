@@ -60,11 +60,12 @@
 //! too. An `Ok` over text nothing observed is the exact shape §8 forbids.
 //!
 //! So a pattern fill is now refused ([`Refusal::PatternMayDrawText`]) rather than walked past.
-//! The residue, stated rather than implied: an ExtGState naming a `/Font` sets the size and
-//! face without a `Tf`, and this walk does not resolve `gs`. Refusing every `gs` would refuse
-//! most real documents, and resolving it needs a seam [`Resources`] does not have yet. That is
-//! #152, and until it is closed the walk's completeness claim is "every operator it models,
-//! plus patterns refused".
+//! And a `gs` whose ExtGState names a `/Font` is refused ([`Refusal::ExtGStateSetsFont`], #152):
+//! it sets the face and size without a `Tf`, and PDFium then draws with its own metrics even
+//! where the `/Font` names the `Tf`'s object, so the walk's placement and the page's differ.
+//! Every other `gs` is walked past, as before: most real documents carry one for alpha or blend
+//! mode, and none of those moves a glyph. The walk's completeness claim is "every operator it
+//! models, plus patterns and font-setting ExtGStates refused".
 //!
 //! # And a vertical document need not say any of that
 //!
@@ -154,6 +155,10 @@ pub enum Refusal {
     TypeThreeProcedureShowsText,
     /// Text shown inside a Form XObject with a font `Tf` selected in another scope.
     FontSelectedInAnotherScope,
+    /// A `gs` whose ExtGState names a `/Font`, which sets the text font without a `Tf`.
+    ExtGStateSetsFont,
+    /// A `gs` whose operand is not a name.
+    GraphicsStateOperandNotAName,
     /// A shown string that does not divide into whole codes.
     StringNotWholeCodes,
     /// Glyphs cut from one string disagreeing on the font's code width.
@@ -283,6 +288,8 @@ impl Refusal {
         Self::SharedFormWouldChangeElsewhere,
         Self::TypeThreeProcedureShowsText,
         Self::FontSelectedInAnotherScope,
+        Self::ExtGStateSetsFont,
+        Self::GraphicsStateOperandNotAName,
         Self::StringNotWholeCodes,
         Self::MixedCodeWidths,
         Self::FormCycle,
@@ -328,6 +335,8 @@ impl Refusal {
             Self::SharedFormWouldChangeElsewhere => "shared-form-would-change-elsewhere",
             Self::TypeThreeProcedureShowsText => "type-three-procedure-shows-text",
             Self::FontSelectedInAnotherScope => "font-selected-in-another-scope",
+            Self::ExtGStateSetsFont => "ext-gstate-sets-font",
+            Self::GraphicsStateOperandNotAName => "gs-operand-not-a-name",
             Self::StringNotWholeCodes => "string-not-whole-codes",
             Self::MixedCodeWidths => "mixed-code-widths",
             Self::FormCycle => "form-cycle",
@@ -365,6 +374,7 @@ impl Refusal {
                 | Self::SharedFormWouldChangeElsewhere
                 | Self::TypeThreeProcedureShowsText
                 | Self::FontSelectedInAnotherScope
+                | Self::ExtGStateSetsFont
         )
     }
 
@@ -2413,7 +2423,10 @@ pub const MAX_GLYPHS: usize = 200_000;
 const fn arity(operator: &[u8]) -> Option<usize> {
     Some(match operator {
         b"q" | b"Q" | b"BT" | b"ET" | b"T*" => 0,
-        b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" | b"Do" | b"Tj" | b"TJ" | b"'" | b"BMC" | b"MP" => 1,
+        // `gs` COUNTED WITH THEM (#152): its one operand names the ExtGState whose `/Font` the
+        // walk now refuses, and a padded run would hide the name the way it hid a `BDC`'s tag.
+        b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" | b"Do" | b"Tj" | b"TJ" | b"'" | b"BMC" | b"MP"
+        | b"gs" => 1,
         // THE MARKED-CONTENT OPERATORS, which had no count. A reader takes a `BDC`'s tag and
         // property list from its LAST TWO operands; this walk read the tag from the FIRST, so
         // `/Pad /OC /OC1 BDC` hid a layer from the `/OC` mark refusal -- measured by the #166
@@ -2626,6 +2639,23 @@ pub trait Resources {
     ///
     /// As [`Self::glyph`].
     fn bytes_per_code(&self, name: &[u8]) -> Result<u8>;
+
+    /// Whether the ExtGState named `name` carries a `/Font` entry **in this scope** (#152).
+    ///
+    /// `gs` with such an ExtGState sets the text font without a `Tf`, which the walk refuses;
+    /// see the `gs` arm of the walk. `false` for a name this scope does not hold, or an ENTRY
+    /// that is not a dictionary -- PDFium ignores an entry written as a stream, measured. A
+    /// CATEGORY that is not a dictionary answers `false` too, which is safe only because the
+    /// sharing walk refuses such a category before any walk runs.
+    /// **Not the whole answer inside a form:** PDFium looks a name up in the PAGE's `/ExtGState`
+    /// when the form's own resources have none, so the walk asks every enclosing scope as well,
+    /// through `ScopeChain`. No default, like [`Self::within`]: an implementor that forgot it
+    /// would answer "no font" for every document, which is the evasion.
+    ///
+    /// # Errors
+    ///
+    /// Whatever resolving the object failed with.
+    fn ext_gstate_sets_font(&self, name: &[u8]) -> Result<bool>;
 
     /// The resources the Form XObject named `name` draws against, or `None` when it declares
     /// none and inherits the enclosing ones.
@@ -2863,6 +2893,28 @@ fn walk(
                 };
                 draw_form(value, resources, &state, budget, out)?;
             }
+            // AN EXTGSTATE THAT SETS THE FONT (#152). It changes the face and size with no `Tf`,
+            // and PDFium, measured, then draws with its own metrics even where the `/Font` names
+            // the `Tf`'s object -- so a zero-width `Tf` font put every glyph at one point here and
+            // across the region there, and the redaction returned `Ok` with the secret intact.
+            // Refused rather than modelled: none of 224 local documents, 56 of them with
+            // ExtGStates, had a `/Font` array. A `gs` naming a state without a `/Font` is walked
+            // past, as before.
+            b"gs" => {
+                // A STRING IS NOT IGNORED: PDFium resolves a string operand's bytes as the name,
+                // measured by the review of #152 -- `(GS0) gs` drew with the state's font. Refused
+                // as `Do`'s operand is, rather than resolved one reader's way.
+                let Some(Operand::Name { value, .. }) = operation.operands.first() else {
+                    return Refusal::GraphicsStateOperandNotAName
+                        .refuse("a 'gs' whose operand is not a name");
+                };
+                if resources.ext_gstate_sets_font(value)? {
+                    return Refusal::ExtGStateSetsFont.refuse(
+                        "a 'gs' whose graphics state sets the text font, which readers draw with \
+                         their own metrics rather than the ones this walk measured",
+                    );
+                }
+            }
             // The text-placing and text-showing operators, which need a text object.
             b"Tm" | b"Td" | b"TD" | b"T*" | b"Tj" | b"TJ" | b"'" | b"\"" => {
                 let Some(place) = position.as_mut() else {
@@ -2936,7 +2988,18 @@ fn draw_form(
     // THE FORM'S OWN RESOURCES, falling back to the enclosing ones where it declares none.
     // Recursing with the caller's was a leak; see `Resources::within` for the measurement.
     let scoped = resources.within(name)?;
-    let inner: &dyn Resources = scoped.as_deref().unwrap_or(resources);
+    // AND THE ENCLOSING SCOPES, for whether a `gs` sets the font (#152): see `ScopeChain`. PDFium
+    // falls back to the page for every category a form lacks, but `gs` is the one lookup this
+    // walk steps past on a missing name rather than refusing (`font-missing`, `xobject-missing`),
+    // so it is the one that needs the chain. The next lookup that steps past a miss needs it too.
+    let chained = scoped.as_deref().map(|own| ScopeChain {
+        own,
+        outer: resources,
+    });
+    let inner: &dyn Resources = match &chained {
+        Some(chain) => chain,
+        None => resources,
+    };
     let result = walk(
         &form.content,
         inner,
@@ -2951,6 +3014,44 @@ fn draw_form(
     budget.route = enclosing_route;
     budget.open_forms.pop();
     result
+}
+
+/// A form's own resources, with the scopes that enclose it behind them (#152).
+///
+/// Every lookup is the form's own, as [`Resources::within`] makes it -- except whether an
+/// ExtGState sets the font, which asks the enclosing scopes too. PDFium resolves `gs` in the
+/// PAGE's `/ExtGState` when the form's own resources have none: a review measured a form whose
+/// resources held only a `/Font`, drawing `/GS0 gs` against a page `/GS0` that set one, return
+/// `Ok` with the secret inked across the region. Asking every enclosing scope is the
+/// conservative reading of "which one PDFium falls back to": it also refuses an inner `/GS0`
+/// with no font that shadows an outer one with a font -- an outer `/Font` of any value, bare
+/// references included. None of 224 local documents had an ExtGState with a `/Font` array; bare
+/// references were not counted, so that over-refusal's cost for them is unmeasured.
+struct ScopeChain<'a> {
+    own: &'a dyn Resources,
+    outer: &'a dyn Resources,
+}
+
+impl Resources for ScopeChain<'_> {
+    fn form(&self, name: &[u8]) -> Result<Option<Form>> {
+        self.own.form(name)
+    }
+
+    fn glyph(&self, name: &[u8], code: u32) -> Result<GlyphMetrics> {
+        self.own.glyph(name, code)
+    }
+
+    fn bytes_per_code(&self, name: &[u8]) -> Result<u8> {
+        self.own.bytes_per_code(name)
+    }
+
+    fn ext_gstate_sets_font(&self, name: &[u8]) -> Result<bool> {
+        Ok(self.own.ext_gstate_sets_font(name)? || self.outer.ext_gstate_sets_font(name)?)
+    }
+
+    fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
+        self.own.within(name)
+    }
 }
 
 /// One text-placing or text-showing operator.
@@ -3295,6 +3396,8 @@ mod tests {
     /// their head, which is what makes a failure message useful rather than a pair of decimals.
     struct Fake {
         forms: Vec<(Vec<u8>, Form)>,
+        /// ExtGState names that carry a `/Font` (#152).
+        font_states: Vec<Vec<u8>>,
         encoding: Encoding,
         bytes_per_code: u8,
         width: f64,
@@ -3305,6 +3408,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 forms: Vec::new(),
+                font_states: Vec::new(),
                 encoding: Encoding::Simple,
                 bytes_per_code: 1,
                 width: 500.0,
@@ -3326,6 +3430,10 @@ mod tests {
     }
 
     impl Resources for Fake {
+        fn ext_gstate_sets_font(&self, name: &[u8]) -> Result<bool> {
+            Ok(self.font_states.iter().any(|state| state == name))
+        }
+
         fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
             // ONE FLAT RESOURCE SET; see the fakes in `tests/glyph_geometry.rs` for why this
             // is stated rather than defaulted.
@@ -3401,7 +3509,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 39,
+            total, 41,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -3873,12 +3981,7 @@ mod tests {
                     )
                 }),
             ],
-            Refusal::TooManyGlyphs => vec![(Content, || {
-                walk(&format!(
-                    "/F1 1 Tf BT ({}) Tj ET",
-                    "A".repeat(MAX_GLYPHS + 1)
-                ))
-            })],
+            Refusal::TooManyGlyphs => vec![(Content, || walk(&past_the_glyph_ceiling()))],
             Refusal::TooManyFormDraws => vec![(Content, || {
                 let mut resources = Fake::new();
                 for level in 0..6_u64 {
@@ -3974,6 +4077,14 @@ mod tests {
                     )
                 }),
             ],
+            Refusal::GraphicsStateOperandNotAName => {
+                vec![(Content, || walk("/F1 10 Tf (GS0) gs BT 0 0 Td (A) Tj ET"))]
+            }
+            Refusal::ExtGStateSetsFont => vec![(Content, || {
+                let mut resources = Fake::new();
+                resources.font_states.push(b"GS1".to_vec());
+                walk_with("/F1 10 Tf /GS1 gs BT 0 0 Td (A) Tj ET", &resources)
+            })],
             Refusal::FontSelectedInAnotherScope => vec![(Content, || {
                 // `Tf` on the page, the text shown in a form: PDFium draws it with the page's
                 // font, and this walk would have resolved the name in the form's.
@@ -4579,6 +4690,46 @@ mod tests {
     }
 
     #[test]
+    fn a_gs_that_sets_the_font_is_refused_and_one_that_does_not_is_walked() {
+        // #152: an ExtGState with a `/Font` sets the face without a `Tf`, and PDFium then draws
+        // with its own metrics. The near-miss is the common case -- a `gs` for alpha or blend
+        // mode -- which must walk, or every real document with transparency is refused.
+        let mut sets_font = Fake::new();
+        sets_font.font_states.push(b"GS1".to_vec());
+        match glyphs_in(
+            b"/F1 10 Tf /GS1 gs BT 0 0 Td (A) Tj ET",
+            &sets_font,
+            &unwatched(),
+        ) {
+            Err(error) => assert!(
+                Refusal::ExtGStateSetsFont.caught(&error),
+                "refused, but not by this rule: {error:?}"
+            ),
+            Ok(glyphs) => panic!("walked {} glyphs past a font-setting gs", glyphs.len()),
+        }
+        let glyphs = glyphs_in(
+            b"/F1 10 Tf /GS2 gs BT 0 0 Td (A) Tj ET",
+            &sets_font,
+            &unwatched(),
+        )
+        .expect("a gs that sets no font walks");
+        assert_eq!(glyphs.len(), 1);
+        // AND COUNTED: a padded `gs` would hide the name the refusal reads, as a padded `BDC` hid
+        // its tag.
+        match glyphs_in(
+            b"/Pad /GS1 gs /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            &sets_font,
+            &unwatched(),
+        ) {
+            Err(error) => assert!(
+                Refusal::OperandCountMismatch.caught(&error),
+                "a padded gs refused, but not for its operands: {error:?}"
+            ),
+            Ok(_) => panic!("a padded gs was walked"),
+        }
+    }
+
+    #[test]
     fn a_font_selected_outside_a_form_and_shown_inside_it_is_refused() {
         // #218 round 4: PDFium binds the font where `Tf` ran; this walk would resolve the name
         // again in the form's own resources. And the near-miss beside it: the same `Tf` inside
@@ -4711,7 +4862,7 @@ mod tests {
         // An infinity composes to a NaN, and `Rect::transformed` folding NaN corners with
         // min/max leaves its own +inf/-inf initialisers -- an inverted rectangle that
         // intersects nothing. A box that intersects nothing is a glyph a redaction skips.
-        // Each `cm` on its own is finite -- 1e300 is a perfectly good f64. It is the
+        // Each `cm` on its own is finite -- 1e200 is a perfectly good f64. It is the
         // COMPOSITION that overflows, which is why the check cannot live on the operands only.
         // AND THROUGH THE FONT METRICS, which come out of the file just as the operands do.
         // This is the fuzzer's own finding, reproduced: a `/W` of `f64::MAX` against a large
@@ -4735,9 +4886,12 @@ mod tests {
             1
         );
 
-        let huge = "9".repeat(300);
+        // 1e200, NOT 1e300: a 300-digit number is a token past the 255 raw bytes both readers
+        // read alike, and the lexer refuses it before the walk sees it (#152). Two of these
+        // still compose to 1e400, which is the overflow this asserts.
+        let huge = "9".repeat(200);
         let one = format!("{huge} 0 0 {huge} 0 0 cm");
-        assert_eq!(placed(&one).len(), 0, "one `cm` of 1e300 is still finite");
+        assert_eq!(placed(&one).len(), 0, "one `cm` of 1e200 is still finite");
         refusing(&format!("{one} {one}"), Refusal::NonFiniteGeometry);
     }
 
@@ -4777,13 +4931,28 @@ mod tests {
     fn more_glyphs_than_burrow_will_place_is_a_refusal() {
         // The other half of the same bound: `out` had no ceiling, so a page that stayed inside
         // the draw budget could still ask for an unbounded `Vec<Glyph>`.
-        let mut body = String::from("/F1 1 Tf BT ");
-        // One `Tj` of many bytes is far cheaper to build than many operations.
-        body.push_str(&format!("({}) Tj ET", "A".repeat(MAX_GLYPHS + 1)));
         assert_refused(
-            glyphs_in(body.as_bytes(), &Fake::new(), &unwatched()),
+            glyphs_in(
+                past_the_glyph_ceiling().as_bytes(),
+                &Fake::new(),
+                &unwatched(),
+            ),
             Refusal::TooManyGlyphs,
         );
+    }
+
+    /// More glyphs than [`MAX_GLYPHS`], in strings each within what both readers read whole.
+    ///
+    /// Seven `Tj`s of 30,000 bytes: one `Tj` of 200,001 bytes was cheaper to build, and since
+    /// #152 it is a string past `strings::MAX_STRING_BYTES`, refused before any glyph is placed.
+    fn past_the_glyph_ceiling() -> String {
+        let run = format!("({}) Tj ", "A".repeat(30_000));
+        let body = format!("/F1 1 Tf BT {}ET", run.repeat(MAX_GLYPHS / 30_000 + 1));
+        assert!(
+            body.matches(" Tj ").count() * 30_000 > MAX_GLYPHS,
+            "the fixture must place more glyphs than the ceiling"
+        );
+        body
     }
 
     #[test]

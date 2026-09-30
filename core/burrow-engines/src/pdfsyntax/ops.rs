@@ -176,11 +176,23 @@ pub const MAX_OPERATIONS: usize = 1_048_576;
 /// missing, and it is the one the 7.16 GiB measurement went through.
 pub const MAX_TOTAL_OPERANDS: usize = 1_048_576;
 
-/// The longest name or bare keyword an operand may carry.
+/// The longest token -- name, number or bare keyword -- an operand may be, in RAW bytes.
 ///
-/// Mirrors [`super::names::MAX_NAME_LENGTH`] and for the same reason: PDF 32000-1 §7.3.5 sets an
-/// implementation limit of 127 bytes, so anything past this is generated rather than written. It
-/// is also what stops a single 256 MiB run of name characters being copied into a `Vec` verbatim.
+/// PDF 32000-1 §7.3.5 sets an implementation limit of 127 bytes, so anything past this is
+/// generated rather than written. [`super::names::MAX_NAME_LENGTH`] measures DECODED names, and
+/// the two now differ on purpose: `names` is a keep-filter, where a mismatch drops a resource
+/// rather than leaking one, and this one decides what a reader draws. It bounds what the
+/// operation list KEEPS; the lexer has already read the token by the time this is checked, so the
+/// token's own copy is bounded by the stream's decode ceiling, not by this.
+///
+/// # Raw, counting the `/` or the sign, and before any `#xx` is decoded (#152)
+///
+/// PDFium's content-stream lexer keeps the first 255 raw bytes of a token and drops the rest,
+/// and only then decodes a name's escapes -- measured to the byte by #152's security review. This
+/// capped the DECODED name and did not cap numbers at all, so the two readers read one token two
+/// ways: `/G{200}#47{20} gs` named a different graphics state to each, and `-0{300}700 Td` was
+/// -700 here and 0 to PDFium, which drew the text inside a region this walk placed it outside of.
+/// Both returned `Ok` with the secret visible. A token past the length both read alike is refused.
 pub const MAX_OPERAND_BYTES: usize = 255;
 
 /// The most items one array or dictionary operand may hold.
@@ -420,11 +432,14 @@ fn push_checked(into: &mut Vec<Operand>, seen: &mut usize, operand: Operand) -> 
             "a content stream holds more operands than burrow will read".to_owned(),
         ));
     }
-    if let Operand::Name { ref value, .. } | Operand::Keyword { ref value, .. } = operand
-        && value.len() > MAX_OPERAND_BYTES
+    // THE RAW TOKEN, not its decoded value: see `MAX_OPERAND_BYTES`. A decoded name is never
+    // longer than its token, so this also holds the copy it bounded before.
+    if let Operand::Name { span, .. } | Operand::Number { span, .. } | Operand::Keyword { span, .. } =
+        operand
+        && span.1.saturating_sub(span.0) > MAX_OPERAND_BYTES
     {
         return Err(Error::Unsupported(
-            "a content stream holds a name longer than burrow will record".to_owned(),
+            "a content stream holds a token longer than readers agree on how to read".to_owned(),
         ));
     }
     *seen += 1;
@@ -715,17 +730,83 @@ mod tests {
     }
 
     #[test]
-    fn a_name_longer_than_the_cap_is_refused_rather_than_copied() {
+    fn a_token_longer_than_the_cap_is_refused() {
+        // RAW BYTES, THE `/` INCLUDED (#152): a 256-byte name token is one PDFium cuts to 255.
         let mut content = b"/".to_vec();
-        content.extend(std::iter::repeat_n(b'a', super::MAX_OPERAND_BYTES + 1));
+        content.extend(std::iter::repeat_n(b'a', super::MAX_OPERAND_BYTES));
         content.extend_from_slice(b" Do");
         assert!(operations(&content).is_err());
         // And the boundary is accepted, so the refusal is a ceiling rather than a wall one byte
         // lower than it says.
         let mut content = b"/".to_vec();
-        content.extend(std::iter::repeat_n(b'a', super::MAX_OPERAND_BYTES));
+        content.extend(std::iter::repeat_n(b'a', super::MAX_OPERAND_BYTES - 1));
         content.extend_from_slice(b" Do");
         assert_eq!(ops(&content).len(), 1);
+    }
+
+    #[test]
+    fn the_cap_is_where_pdfium_cuts_not_where_the_constant_says() {
+        // LITERAL BYTES, not the constant: every other boundary test is written in terms of
+        // `MAX_OPERAND_BYTES`, so raising it to 256 moved them all with it and passed -- the
+        // one-byte gap PDFium's cut leaves (#152's security review, round 3). 255 raw bytes read
+        // whole in both readers; 256 do not.
+        let token = |n: usize| {
+            let mut t = b"/".to_vec();
+            t.extend(std::iter::repeat_n(b'a', n - 1));
+            t.extend_from_slice(b" Do");
+            t
+        };
+        assert_eq!(
+            ops(&token(255)).len(),
+            1,
+            "a 255-byte token is read whole by PDFium"
+        );
+        assert!(
+            operations(&token(256)).is_err(),
+            "a 256-byte token is one PDFium cuts"
+        );
+    }
+
+    #[test]
+    fn an_escaped_name_is_measured_before_it_is_decoded() {
+        // `/G{200}#47{20}` decodes to 220 bytes and is 261 raw: PDFium cuts the raw token and
+        // reads `G`x218, a different name. Measured on the decoded value, this passed (#152).
+        let mut content = b"/".to_vec();
+        content.extend(std::iter::repeat_n(b'G', 200));
+        content.extend(b"#47".repeat(20));
+        content.extend_from_slice(b" gs");
+        assert!(content.len() > super::MAX_OPERAND_BYTES);
+        assert!(
+            operations(&content).is_err(),
+            "an escape-inflated name was read"
+        );
+    }
+
+    #[test]
+    fn a_bare_word_longer_than_the_cap_is_refused_inside_a_composite() {
+        // THE KEYWORD ARM: a bare word inside an array is a `Keyword` operand, measured like the
+        // rest. 256 bytes is refused; 255 lexes.
+        let word = |n: usize| format!("[(A) {}] TJ", "a".repeat(n)).into_bytes();
+        assert!(operations(&word(super::MAX_OPERAND_BYTES + 1)).is_err());
+        assert_eq!(ops(&word(super::MAX_OPERAND_BYTES)).len(), 1);
+    }
+
+    #[test]
+    fn a_number_longer_than_the_cap_is_refused() {
+        // `-0{300}700` is -700 read whole and 0 to PDFium, which keeps its first 255 bytes: text
+        // moved into a region the walk placed it outside of (#152). The boundary number reads.
+        let mut content = b"0 -".to_vec();
+        content.extend(std::iter::repeat_n(b'0', 300));
+        content.extend_from_slice(b"700 Td");
+        assert!(operations(&content).is_err(), "a 304-byte number was read");
+        let mut content = b"0 -".to_vec();
+        content.extend(std::iter::repeat_n(b'0', super::MAX_OPERAND_BYTES - 4));
+        content.extend_from_slice(b"700 Td");
+        assert_eq!(
+            ops(&content).len(),
+            1,
+            "a 255-byte number is one both readers read whole"
+        );
     }
 
     #[test]

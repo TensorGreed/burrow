@@ -1550,6 +1550,242 @@ mod wiring {
         );
     }
 
+    /// #152's measured shape: the page's `/F1` is zero wide, and `/GS0` names a `/Font`.
+    /// `state` is the ExtGState's body; the secret sits in the band `redact_bytes` clears.
+    fn behind_a_graphics_state(state: &str) -> Vec<u8> {
+        let zero = format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+             /FirstChar 32 /LastChar 94 /Widths [{}] >>",
+            "0 ".repeat(63)
+        );
+        two_pages(
+            "<< /Font << /F1 6 0 R >> /ExtGState << /GS0 7 0 R >> >>",
+            "BT /F1 24 Tf /GS0 gs 72 700 Td (AAASECRET) Tj ET\n",
+            "<< >>",
+            &[zero, state.to_owned()],
+        )
+    }
+
+    #[test]
+    fn a_graphics_state_that_sets_the_font_is_refused_end_to_end() {
+        // #152, measured by the #218 review: PDFium drew SECRET across the region and the walk put
+        // every glyph at x = 72, so the redaction returned `Ok` with it intact. The control is a
+        // graphics state for transparency, which every real document with a shadow carries.
+        match redact_bytes(
+            &behind_a_graphics_state("<< /Type /ExtGState /Font [6 0 R 24] >>"),
+            &[0],
+        ) {
+            Err(error) => assert!(
+                format!("{error:?}").contains("[ext-gstate-sets-font]"),
+                "refused, but not by [ext-gstate-sets-font]: {error:?}"
+            ),
+            Ok(()) => panic!("a font-setting graphics state was redacted"),
+        }
+        redact_bytes(
+            &behind_a_graphics_state("<< /Type /ExtGState /CA 0.5 /ca 0.5 >>"),
+            &[0],
+        )
+        .expect("a graphics state for transparency must redact");
+    }
+
+    /// The secret drawn inside form `/X`, whose own resources hold only the zero-width `/F1`;
+    /// `/GS0`, with body `state`, lives in the PAGE's `/ExtGState` (#152, code review).
+    fn graphics_state_on_the_page_used_in_a_form(state: &str) -> Vec<u8> {
+        let zero = format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+             /FirstChar 32 /LastChar 94 /Widths [{}] >>",
+            "0 ".repeat(63)
+        );
+        let body = "BT /F1 24 Tf /GS0 gs 72 700 Td (AAASECRET) Tj ET\n";
+        two_pages(
+            "<< /XObject << /X 8 0 R >> /ExtGState << /GS0 7 0 R >> >>",
+            "q /X Do Q\n",
+            "<< >>",
+            &[
+                zero,
+                state.to_owned(),
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font \
+                     << /F1 6 0 R >> >> /Length {} >>\nstream\n{body}endstream",
+                    body.len()
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_form_without_graphics_states_is_held_to_the_pages() {
+        // PDFium resolves the form's `/GS0` in the page's `/ExtGState`, since the form has none.
+        // The first version asked only the form's own scope and returned `Ok` with the secret
+        // inked across the region (#152's code review, measured).
+        match redact_bytes(
+            &graphics_state_on_the_page_used_in_a_form("<< /Type /ExtGState /Font [6 0 R 24] >>"),
+            &[0],
+        ) {
+            Err(error) => assert!(
+                format!("{error:?}").contains("[ext-gstate-sets-font]"),
+                "refused, but not by [ext-gstate-sets-font]: {error:?}"
+            ),
+            Ok(()) => panic!("a form's gs resolved in the page's graphics states was redacted"),
+        }
+        redact_bytes(
+            &graphics_state_on_the_page_used_in_a_form("<< /Type /ExtGState /CA 0.5 >>"),
+            &[0],
+        )
+        .expect("the same form under a transparency state must redact");
+    }
+
+    #[test]
+    fn a_graphics_state_category_written_as_a_stream_is_refused() {
+        // PDFium reads a stream-valued `/ExtGState`'s own dictionary as the category; qpdf's
+        // lookup on a stream finds nothing, so the font-setting `/GS0` was walked past -- `Ok`
+        // with the secret intact (#152's security review). The #166 type gate now covers it.
+        let body = "";
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R >> /ExtGState 7 0 R >>",
+            "BT /F1 24 Tf /GS0 gs 72 700 Td (AAASECRET) Tj ET\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                format!(
+                    "<< /GS0 << /Type /ExtGState /Font [6 0 R 24] >> /Length {} >>\nstream\n\
+                     {body}endstream",
+                    body.len()
+                ),
+            ],
+        );
+        match redact_bytes(&bytes, &[0]) {
+            Err(error) => assert!(
+                format!("{error:?}").contains("[not-a-dictionary-where-one-belongs]"),
+                "refused, but not by the type gate: {error:?}"
+            ),
+            Ok(()) => panic!("a stream-valued /ExtGState was redacted"),
+        }
+    }
+
+    #[test]
+    fn a_form_whose_own_graphics_state_sets_the_font_is_refused() {
+        // THE CHAIN'S OTHER HALF (#152 round 2): the form's OWN `/ExtGState` sets the font, and
+        // the page has none. A chain that asked only the enclosing scopes survived the suite.
+        let zero = format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+             /FirstChar 32 /LastChar 94 /Widths [{}] >>",
+            "0 ".repeat(63)
+        );
+        let body = "BT /F1 24 Tf /GS0 gs 72 700 Td (AAASECRET) Tj ET\n";
+        let bytes = two_pages(
+            "<< /XObject << /X 8 0 R >> >>",
+            "q /X Do Q\n",
+            "<< >>",
+            &[
+                zero,
+                "<< /Type /ExtGState /Font [6 0 R 24] >>".to_owned(),
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font \
+                     << /F1 6 0 R >> /ExtGState << /GS0 7 0 R >> >> /Length {} >>\nstream\n\
+                     {body}endstream",
+                    body.len()
+                ),
+            ],
+        );
+        match redact_bytes(&bytes, &[0]) {
+            Err(error) => assert!(
+                format!("{error:?}").contains("[ext-gstate-sets-font]"),
+                "refused, but not by [ext-gstate-sets-font]: {error:?}"
+            ),
+            Ok(()) => panic!("a form's own font-setting graphics state was redacted"),
+        }
+    }
+
+    #[test]
+    fn a_token_readers_cut_differently_is_refused_end_to_end() {
+        // #152 round 2: PDFium keeps a token's first 255 raw bytes and decodes escapes after.
+        // An escape-inflated name reaches a font-setting state PDFium sees and this walk did not;
+        // a padded number moves text into the region PDFium draws it in. Each was `Ok` with the
+        // secret visible.
+        let long = format!("{}{}", "G".repeat(200), "#47".repeat(20));
+        let state_name = "G".repeat(218);
+        let escaped = two_pages(
+            &format!("<< /Font << /F1 6 0 R >> /ExtGState << /{state_name} 7 0 R >> >>"),
+            &format!("BT /F1 24 Tf /{long} gs 72 700 Td (AAASECRET) Tj ET\n"),
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                "<< /Type /ExtGState /Font [6 0 R 24] >>".to_owned(),
+            ],
+        );
+        let padded = two_pages(
+            "<< /Font << /F1 6 0 R >> >>",
+            &format!(
+                "BT /F1 24 Tf 60 700 Td 0 -{}700 Td (AAASECRET) Tj ET\n",
+                "0".repeat(300)
+            ),
+            "<< >>",
+            &[helvetica("/Encoding /WinAnsiEncoding")],
+        );
+        for (what, bytes) in [
+            ("an escape-inflated gs name", escaped),
+            ("a padded number", padded),
+        ] {
+            match redact_bytes(&bytes, &[0]) {
+                Err(error) => assert!(
+                    format!("{error:?}").contains("token longer than readers agree"),
+                    "{what}: refused, but not for the token's length: {error:?}"
+                ),
+                Ok(()) => panic!("{what} was redacted"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_string_readers_cut_differently_is_refused_end_to_end() {
+        // #152 round 3: PDFium keeps a string's first 32767 decoded bytes. A 40,000-byte run
+        // at a tiny size, then `SECRET` risen onto the region: PDFium placed it inside the
+        // region, this walk after 40,000 advances, outside it -- `Ok` over the secret. In `Tj`
+        // and in `TJ`.
+        let run = "A".repeat(40_000);
+        for content in [
+            format!("BT /F1 0.02 Tf 100 400 Td ({run}) Tj /F1 24 Tf 300 Ts (SECRET) Tj ET\n"),
+            format!("BT /F1 0.02 Tf 100 400 Td [({run})] TJ /F1 24 Tf 300 Ts (SECRET) Tj ET\n"),
+        ] {
+            let bytes = two_pages(
+                "<< /Font << /F1 6 0 R >> >>",
+                &content,
+                "<< >>",
+                &[helvetica("/Encoding /WinAnsiEncoding")],
+            );
+            match redact_bytes(&bytes, &[0]) {
+                Err(error) => assert!(
+                    format!("{error:?}").contains("string longer than readers agree"),
+                    "refused, but not for the string's length: {error:?}"
+                ),
+                Ok(()) => panic!("a string PDFium cuts short was redacted"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_gs_whose_operand_is_a_string_is_refused() {
+        // PDFium resolves `(GS0) gs` as `/GS0 gs`; walking past it was an `Ok` over the secret
+        // (#152's code review). Refused whatever the state holds.
+        let bytes = two_pages(
+            "<< /Font << /F1 6 0 R >> /ExtGState << /GS0 7 0 R >> >>",
+            "BT /F1 24 Tf (GS0) gs 72 700 Td (AAASECRET) Tj ET\n",
+            "<< >>",
+            &[
+                helvetica("/Encoding /WinAnsiEncoding"),
+                "<< /Type /ExtGState /CA 0.5 >>".to_owned(),
+            ],
+        );
+        match redact_bytes(&bytes, &[0]) {
+            Err(error) => assert!(
+                format!("{error:?}").contains("[gs-operand-not-a-name]"),
+                "refused, but not by [gs-operand-not-a-name]: {error:?}"
+            ),
+            Ok(()) => panic!("a gs with a string operand was redacted"),
+        }
+    }
+
     #[test]
     fn the_check_is_told_the_page_that_was_redacted() {
         // KILLS: `Cleared { page: 0 }` instead of `page`. Every end-to-end test redacts page 0,

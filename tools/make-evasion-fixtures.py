@@ -1944,6 +1944,56 @@ def nearmiss_kids_all_pages() -> bytes:
     )
 
 
+def _graphics_state_page(pdf: Pdf, tag: str, state: bytes, tf_font: int) -> bytes:
+    """The canary drawn after `/GS0 gs`, in the `Tf` font `tf_font`, with `/GS0` as `state` (#152)."""
+    gs0 = pdf.add(state)
+    content = (
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf /GS0 gs "
+        + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal(secret(tag)) + b" Tj ET\n" + keep_line_ops()
+    )
+    return _page_with_resources(
+        pdf,
+        content,
+        b" /Resources << /Font << /Helv " + str(tf_font).encode() + b" 0 R >>"
+        b" /ExtGState << /GS0 " + str(gs0).encode() + b" 0 R >> >>",
+        b"",
+    )
+
+
+def evade_extgstate_sets_the_font() -> bytes:
+    """`/GS0 gs` whose ExtGState names a `/Font`, after a zero-width `Tf` font (#152).
+
+    PDFium drops the `Tf` font for any ExtGState `/Font` and draws the canary with its own
+    metrics, across the region; the walk measured the zero widths, put every glyph at one point
+    and removed nothing. `Ok` with the canary, until #152.
+    """
+    pdf = Pdf()
+    zero = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv /FirstChar 32"
+        b" /LastChar 126 /Widths [" + b"0 " * 95 + b"] >>"
+    )
+    return _graphics_state_page(
+        pdf,
+        "GS-FONT",
+        b"<< /Type /ExtGState /Font [" + str(zero).encode() + b" 0 R 20] >>",
+        zero,
+    )
+
+
+def nearmiss_extgstate_for_transparency() -> bytes:
+    """`/GS0 gs` for transparency only. MUST redact.
+
+    The twin for #152: a graphics state is ordinary -- every document with a shadow or a
+    watermark carries one -- and only one that sets the font is the shape.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _graphics_state_page(
+        pdf, "GS-ALPHA", b"<< /Type /ExtGState /CA 0.5 /ca 0.5 >>", helv
+    )
+
+
 def evade_resources_stream_on_the_page() -> bytes:
     """The page's `/Resources` is a STREAM holding the carrying `/MC0`; `/Pages` holds a plain one."""
     pdf = Pdf()
@@ -2177,6 +2227,8 @@ CASES: list[tuple[str, str]] = [
     ("evade-junk-kid-over-null-resources", "engine repaired"),
     ("evade-font-repaired-during-the-walk", "engine repaired"),
     ("nearmiss-kids-all-pages", "engine repaired"),
+    ("evade-extgstate-sets-the-font", "graphics state font"),
+    ("nearmiss-extgstate-for-transparency", "graphics state font"),
 ]
 
 BUILDERS = {
@@ -2260,6 +2312,8 @@ BUILDERS = {
     "evade-junk-kid-over-null-resources": evade_junk_kid_over_null_resources,
     "nearmiss-kids-all-pages": nearmiss_kids_all_pages,
     "evade-font-repaired-during-the-walk": evade_font_repaired_during_the_walk,
+    "evade-extgstate-sets-the-font": evade_extgstate_sets_the_font,
+    "nearmiss-extgstate-for-transparency": nearmiss_extgstate_for_transparency,
 }
 
 

@@ -27,7 +27,9 @@
 //!
 //! 1. **No panic, hang, or unbounded allocation.** `MAX_OPERANDS` and `MAX_OPERATIONS` are
 //!    refusals rather than truncations, so an `Ok` past either is the bug.
-//! 2. **Only two error kinds escape**, so no failure mode reaches a caller unclassified.
+//! 2. **Only two error kinds escape**, so no failure mode reaches a caller unclassified -- from
+//!    `decode_string` as from `operations`: `Malformed` for what cannot be read, `Unsupported`
+//!    for what two readers read two ways (a string past the length PDFium keeps, a raw CR).
 //! 3. **The spans tile the input, and the gaps hold nothing drawable.** Ascending,
 //!    non-overlapping, inside the stream, each operand's span inside its operation's — and every
 //!    byte *between* two operations is white space or a comment. Non-overlap alone was what an
@@ -96,7 +98,7 @@ fn check_operand(operand: &Operand, outer: (usize, usize), content: &[u8]) {
                     Err(e) => panic!("encode_literal produced something undecodable: {e:?}"),
                 }
             }
-            Err(Error::Malformed(_)) => {}
+            Err(Error::Malformed(_) | Error::Unsupported(_)) => {}
             Err(other) => panic!("decoding a string produced an unexpected error: {other:?}"),
         }
     }

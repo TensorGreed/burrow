@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 52] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 54] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2498,10 +2498,15 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 52] = [
         Some("engine-repaired-input"),
     ),
     ("nearmiss-kids-all-pages.pdf", None),
+    (
+        "evade-extgstate-sets-the-font.pdf",
+        Some("ext-gstate-sets-font"),
+    ),
+    ("nearmiss-extgstate-for-transparency.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 7] = [
+const RESOLVED_GROUPS: [&str; 8] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
@@ -2509,6 +2514,7 @@ const RESOLVED_GROUPS: [&str; 7] = [
     "media box unverified",
     "page frame read",
     "engine repaired",
+    "graphics state font",
 ];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.

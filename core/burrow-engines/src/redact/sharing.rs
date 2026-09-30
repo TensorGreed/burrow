@@ -97,6 +97,7 @@ const PATTERN: Name = Name::literal(b"/Pattern\0");
 /// `/Font`.
 const FONT: Name = Name::literal(b"/Font\0");
 const PROPERTIES: Name = Name::literal(b"/Properties\0");
+const EXT_G_STATE: Name = Name::literal(b"/ExtGState\0");
 /// `/CharProcs`.
 const CHARPROCS: Name = Name::literal(b"/CharProcs\0");
 /// `/Annots`.
@@ -739,6 +740,12 @@ impl Walk<'_> {
         }
         self.type_three_fonts(resources, depth)?;
         self.properties(resources)?;
+        // `/ExtGState` TOO (#152). PDFium reads a stream-valued category's own dictionary as the
+        // category, and qpdf's lookup on a stream answers nothing, so a font-setting `gs` behind
+        // one walked to `Ok` with the secret intact -- measured by #152's security review. The
+        // value is not needed here; the type is the check. A stream-valued ENTRY is ignored by
+        // both readers alike, measured, so only the category is gated.
+        self.dictionary_key(resources, &EXT_G_STATE)?;
         Ok(())
     }
 
