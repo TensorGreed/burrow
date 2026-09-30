@@ -39,6 +39,7 @@ const XOBJECT: Name = Name::literal(b"/XObject\0");
 const SUBTYPE: Name = Name::literal(b"/Subtype\0");
 const MATRIX: Name = Name::literal(b"/Matrix\0");
 const FONT: Name = Name::literal(b"/Font\0");
+const EXT_G_STATE: Name = Name::literal(b"/ExtGState\0");
 const FIRST_CHAR: Name = Name::literal(b"/FirstChar\0");
 const WIDTHS: Name = Name::literal(b"/Widths\0");
 const FONT_MATRIX: Name = Name::literal(b"/FontMatrix\0");
@@ -286,6 +287,30 @@ impl<O: PdfObject> PageResources<O> {
 }
 
 impl<O: PdfObject> Resources for PageResources<O> {
+    fn ext_gstate_sets_font(&self, name: &[u8]) -> Result<bool> {
+        let key = Name::from_stripped(name)?;
+        // THE CATEGORY'S TYPE FIRST: `key` on anything but a dictionary makes qpdf retain a
+        // warning per call, and a page of a million `gs` reached 2.2 GB that way (#152's
+        // security review). The sharing walk refuses such a category before this runs; this
+        // keeps the cost off even where it did not.
+        let category = self.category(&EXT_G_STATE);
+        if category.type_code() != object_type::DICTIONARY {
+            return Ok(false);
+        }
+        let state = category.key(&key);
+        if state.type_code() != object_type::DICTIONARY {
+            return Ok(false);
+        }
+        // PRESENT, WHATEVER ITS VALUE, and that is the conservative reading rather than the
+        // measured one: PDFium drops the `Tf` font for a `/Font [font size]` array, measured even
+        // where it names the `Tf`'s own object (#152), and ignores a bare font reference there.
+        // Refusing both is the safe direction; the census found no `/Font` array in 224 local
+        // documents, and did not count bare references, so their cost is unmeasured. This scope only: the walk asks the enclosing
+        // scopes too, because PDFium falls back to the page's `/ExtGState` when a form has none
+        // (`geometry::ScopeChain`).
+        Ok(state.key(&FONT).type_code() != object_type::NULL)
+    }
+
     fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         let key = Name::from_stripped(name)?;
         let entry = self.category(&XOBJECT).key(&key);

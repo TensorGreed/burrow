@@ -131,6 +131,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | the embedded font program's own **`cmap`** | **disclose** — see §7 |
 | an **inline image** whose extent the page cannot derive | **refuse** — added by the [2026-09-21 amendment](#amendment-2026-09-21--the-channel-the-spike-missed-inline-image-extent). Spike 0006 did not measure this channel |
 | text shown inside a **Form XObject with a font `Tf` selected outside it** | **refuse**, `[font-selected-in-another-scope]` — added 2026-09-28 ([#218], round 4). A reader binds the font where `Tf` runs; the walk carried only its name and resolved it again in the form's own `/Resources`. A review got two `Ok`s from that: a secret measured with a zero-width form font, placed outside the region and left in plain text (older than [#218]); and a removed character credited to the form's font, so the font that drew it kept mapping it. Refused rather than resolved through the `Tf`'s scope. None of the 463 golden cases has the shape, and a review walking 1,918 pages from 224 local PDFs found it on none. **It over-refuses one safe shape**: a child form with no `/Resources` of its own inherits the scope that ran the `Tf`, so it draws with the same font, and is refused anyway because its route is longer |
+| a `gs` whose **ExtGState names a `/Font`** | **refuse**, `[ext-gstate-sets-font]` — added 2026-09-29 ([#152]). It sets the text font without a `Tf`, and PDFium then draws with its own metrics even where the `/Font` is the `Tf`'s object. A `gs` for transparency or blending is walked past, as before |
 | a page that **takes `/Resources`, `/CropBox` or `/Rotate` from the page tree** rather than declaring it, whether its own entry is absent, null or unreadable | **refuse**, `[page-attribute-inherited]` — added 2026-09-29 ([#224]), superseding [#183]'s pre-scan. PDFium stops at a page's null and qpdf cannot see it, so an absent entry and a null one are refused alike. The `/Resources` half is a **stopgap** until #206's placement comparison; see the [2026-09-29 amendment](#amendment-2026-09-29--224-supersedes-183-inherited-page-attributes-are-refused-and-a-mediabox-is-asked-of-pdfium) |
 | a page that **takes `/MediaBox` from the page tree** and nothing confirms it is the box the viewer shows | **refuse**, `[media-box-unverified]` — added 2026-09-29 ([#224]). Natively where PDFium's page size disagrees with burrow's, or where a size cannot decide; on the web always, until #206 brings the renderer to redaction |
 | a document **the PDF engine repaired while reading it** -- any qpdf warning at the open, or by the write | **refuse**, `[engine-repaired-input]` — added 2026-09-29 ([#224], rounds 2 and 3). A repair can change what a page is: a junk `/Kids` entry makes qpdf push every inherited attribute onto the pages, after which a null-overridden page looks declared. Only whether a warning was raised is read, never its code or text. 4 of 224 local documents, all test fixtures, at either point |
@@ -667,11 +668,64 @@ walk and **zero characters** from `FPDFText_*`, while PDFium's renderer inked 74
 word. Neither the operation nor its verification saw it. §8's rule -- a removal nothing observed
 is not a measured removal -- applies to a *presence* nothing observed just as squarely.
 
-The pattern case is closed by refusal. The one left open is an **ExtGState naming a `/Font`**,
-which sets face and size with no `Tf`: refusing every `gs` would refuse most real documents, and
-resolving it needs a seam the resources trait does not have. That is
-[#152](https://github.com/TensorGreed/burrow/issues/152), and until it closes, §6's assertions
-are bounded by "every operator the walk models, plus patterns refused" rather than by "the page".
+The pattern case is closed by refusal. So, since 2026-09-29, is an **ExtGState naming a
+`/Font`** ([#152](https://github.com/TensorGreed/burrow/issues/152)), which sets face and size
+with no `Tf`. It was worse than that sentence said: for a `/Font [font size]` array, PDFium drops
+the `Tf` font -- measured even where the array names the `Tf`'s own object -- and draws with its
+own metrics, so a zero-width `Tf` font put every glyph at one point for the walk and across the
+region for the viewer, and the redaction returned `Ok` with the secret intact (#218's review).
+Refusing every `gs` would refuse most real documents, so the resources trait now answers whether
+a named ExtGState carries a `/Font`, and only that `gs` is refused, `[ext-gstate-sets-font]`. It
+refuses any `/Font` value, conservatively: a bare font reference there is ignored by PDFium. None
+of 224 local documents, 56 of them with ExtGStates, had a `/Font` array; bare references were not
+counted, so refusing them has an unmeasured cost. A `gs` is counted like the other one-operand
+operators, so a padded run cannot hide the name.
+
+Reviews found five shapes the rule walked past, each measured returning `Ok`:
+
+- a `gs` inside a form whose own resources have no `/ExtGState`, which PDFium resolves in the
+  page's -- the walk now asks every enclosing scope;
+- `(GS0) gs`, a string operand PDFium resolves as the name -- refused, `[gs-operand-not-a-name]`;
+- an `/ExtGState` category written as a stream, whose own dictionary PDFium reads and qpdf does
+  not -- refused by the #166 type gate like `/XObject` and `/Properties`, and the resolver checks
+  the category's type before any lookup, which a million-`gs` page had turned into 2.2 GB of
+  retained qpdf warnings;
+- **a token the two readers cut differently**, below the rule and older than it. PDFium's lexer
+  keeps a name's or number's first 255 raw bytes and decodes a name's escapes afterwards, while
+  burrow capped the decoded name and did not cap numbers: `/G{200}#47{20} gs` named a different
+  graphics state to each, and `-0{300}700 Td` was -700 here and 0 there, which needs no `gs` at
+  all. The lexer now refuses a name, number or bare keyword past 255 raw bytes;
+- **a string the two readers cut differently**, the same class measured the other way: PDFium
+  keeps a string's first 32767 DECODED bytes, literal, escaped or hex, in `Tj` or `TJ`, and burrow
+  read it whole, so the text after a long string landed somewhere else -- and with `Tc` the jump is
+  the attacker's to choose. `decode_string` now refuses a string past 32767 decoded bytes, and a
+  raw carriage return in a literal string, which PDFium keeps as 13 (and a CR+LF as two bytes)
+  where burrow read one line feed: that let a string at the cut by burrow's count run past
+  PDFium's, and it is #226's (d), closed here. Both rules live in `decode_string`, so they also
+  refuse such a string inside a `/ToUnicode` CMap, which the redaction and its witness both parse;
+  that scope is wider than #226 asked and was not counted in the census below. Refusing is the
+  conservative direction.
+
+None of the page content streams of the 224 local documents -- 2,884 of them, measured by a
+throwaway census; form, pattern and Type 3 streams were not counted -- has a token or string near
+either cut: the longest decoded string is 160 bytes. **Within the cuts, tokens are not yet shown
+to be read alike**: a number glued to a keyword, a whole number past 32 bits, and a text position
+past 32-bit float precision are each read differently by the two, each measured `Ok` over the
+secret, and each open as [#226](https://github.com/TensorGreed/burrow/issues/226). §6's
+assertions are bounded by "every operator the walk models, plus patterns and font-setting
+ExtGStates refused, and every token and string within what both readers read whole, less #226's
+shapes" rather than by "the page".
+
+**An open bypass, found by the final security review: a reference to the wrong generation**
+([#227](https://github.com/TensorGreed/burrow/issues/227)). qpdf resolves `7 1 R` to null when the
+file holds only `7 0`, drops the key and warns about nothing; PDFium finds object 7 by number. So a
+font-setting state written as `/GS0 7 1 R` -- or the `/ExtGState` category, or the state's `/Font`,
+written that way -- is absent to the rule and present to the viewer: measured `Ok` with the secret
+drawn, on both engines. It is not visible through qpdf's graph and raises no warning (measured
+under #224), so no rule in this reader can see it. Owner's decision: this lands with the bypass
+recorded, and #227 is next, before #206. The review also found an inline image whose `/L`
+overrides its dictionary, older than this change:
+[#228](https://github.com/TensorGreed/burrow/issues/228).
 
 **The standard-14 metrics, for the font that carries none.** A font with no `/Widths` array
 has **no advances in the document at all**: the standard 14 — Helvetica, Times, Courier,
@@ -1099,6 +1153,7 @@ the seven cases then in the script:
 [#224]: https://github.com/TensorGreed/burrow/issues/224
 [#226]: https://github.com/TensorGreed/burrow/issues/226
 [#227]: https://github.com/TensorGreed/burrow/issues/227
+[#152]: https://github.com/TensorGreed/burrow/issues/152
 
 ## Amendment, 2026-09-22 — a shared Form XObject is refused, not edited
 

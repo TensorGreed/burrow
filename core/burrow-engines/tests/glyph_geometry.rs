@@ -494,6 +494,11 @@ fn a_vertical_run_laid_out_by_positioning_is_not_a_vertical_writing_mode() {
 struct Helvetica;
 
 impl Resources for Helvetica {
+    fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
+        // No ExtGStates: this fake's pages draw with `Tf` alone (#152).
+        Ok(false)
+    }
+
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
         // of their own, so every name resolves outwards -- which is what `None` means. It is
@@ -715,6 +720,11 @@ struct CidFont {
 }
 
 impl Resources for CidFont {
+    fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
+        // No ExtGStates: this fake's pages draw with `Tf` alone (#152).
+        Ok(false)
+    }
+
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
         // of their own, so every name resolves outwards -- which is what `None` means. It is
@@ -982,6 +992,11 @@ fn page_with_declared_widths(body: &str) -> Vec<u8> {
 struct DeclaredWidths;
 
 impl Resources for DeclaredWidths {
+    fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
+        // No ExtGStates: this fake's pages draw with `Tf` alone (#152).
+        Ok(false)
+    }
+
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
         // of their own, so every name resolves outwards -- which is what `None` means. It is
@@ -1366,6 +1381,11 @@ impl TestResources {
 }
 
 impl Resources for TestResources {
+    fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
+        // No ExtGStates: this fake's pages draw with `Tf` alone (#152).
+        Ok(false)
+    }
+
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
         // of their own, so every name resolves outwards -- which is what `None` means. It is

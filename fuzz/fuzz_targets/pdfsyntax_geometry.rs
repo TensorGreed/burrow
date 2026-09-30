@@ -47,13 +47,32 @@ struct Hostile {
     bbox: Option<Rect>,
     encoding: Encoding,
     forms: Vec<(Vec<u8>, Form)>,
+    /// Whether every ExtGState the body names sets the font (#152), so the walk's `gs` refusal
+    /// is a bit away rather than unreachable.
+    font_states: bool,
+    /// Whether a form gets its own copy of these resources rather than inheriting them, so the
+    /// walk's `ScopeChain` is a bit away too.
+    own_scopes: bool,
 }
 
 impl Resources for Hostile {
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         // THE HOSTILE RESOLVER IS ONE FLAT SET, so a form inherits it. Stated rather than
         // defaulted: a trait default of `Ok(None)` would let a real resolver inherit silently,
-        // which is the defect `within` exists to fix.
+        // which is the defect `within` exists to fix. With `own_scopes`, a form gets its own
+        // copy instead, so the walk builds a `ScopeChain` and the fuzzer reaches it (#152).
+        if self.own_scopes {
+            return Ok(Some(Box::new(Self {
+                width: self.width,
+                font_matrix_scale: self.font_matrix_scale,
+                bytes_per_code: self.bytes_per_code,
+                bbox: self.bbox,
+                encoding: self.encoding.clone(),
+                forms: self.forms.clone(),
+                font_states: self.font_states,
+                own_scopes: self.own_scopes,
+            })));
+        }
         Ok(None)
     }
 
@@ -77,6 +96,10 @@ impl Resources for Hostile {
 
     fn bytes_per_code(&self, _name: &[u8]) -> Result<u8> {
         Ok(self.bytes_per_code)
+    }
+
+    fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
+        Ok(self.font_states)
     }
 }
 
@@ -139,6 +162,10 @@ fuzz_target!(|data: &[u8]| {
                 )
             })
             .collect(),
+        // THE HIGH BIT OF THE FIRST CONTROL BYTE, which `pick` reads only modulo 8.
+        font_states: control[0] & 0x80 != 0,
+        // THE HIGH BIT OF THE SECOND, which `pick` also reads only modulo 8.
+        own_scopes: control[1] & 0x80 != 0,
     };
 
     match glyphs_in(body, &resources, &unwatched()) {
