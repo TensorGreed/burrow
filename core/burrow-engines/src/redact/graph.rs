@@ -126,6 +126,13 @@ pub(crate) trait PdfDocument {
     ///
     /// Whatever the engine reports.
     fn write(&self) -> Result<Vec<u8>>;
+
+    /// Whether the engine has recorded a warning -- a repair -- it has not yet handed out (#224).
+    ///
+    /// Asked at the open and again after the write, before any byte leaves: qpdf parses fonts,
+    /// resources and forms lazily, so a repair can happen during the walk or the write, after
+    /// the open's check. Only whether, never what: see `redact::repaired_by_the_engine`.
+    fn repaired(&self) -> bool;
 }
 
 /// A handle to one object, bound to the document that issued it.
@@ -146,20 +153,26 @@ pub(crate) trait PdfObject: Sized {
     /// `codes::qpdf::object_type` names them. Asked before any value is read.
     fn type_code(&self) -> c_int;
 
-    /// The value at `key`. A null object when the key is absent or this is not a dictionary;
-    /// qpdf raises for neither, though it may latch.
+    /// The value at `key`. A null object when the key is absent or this is not a dictionary.
+    ///
+    /// **Every reader here asks the type before it asks the engine** (#224): qpdf answers a read
+    /// of the wrong type, or an array read out of range, with a fallback and a *warning*, and a
+    /// warning at the write is refused as a repair.
     fn key(&self, key: &Name) -> Self;
 
     /// This name object's value, **with** its leading `/`.
     ///
     /// # Errors
     ///
-    /// For anything that is not a name, whose value the engine gives as an empty string. Does
-    /// not drain.
+    /// For anything that is not a name, which is never handed to the engine: qpdf would answer
+    /// `/QPDFFakeName` and warn. Does not drain.
     fn name(&self) -> Result<Name>;
 
-    /// This integer object's value. Meaningful only once [`Self::type_code`] has said it is an
-    /// integer; every other type reads as `0`.
+    /// This integer object's value. **Ask [`Self::type_code`] first**: every caller does, so this
+    /// is not guarded, and for any other type qpdf answers `0` *with a warning* -- which the
+    /// write's repair check refuses as `[engine-repaired-input]` -- or, for a null, latches an
+    /// error. Fail-closed either way **in the redaction walk only**: the read-back in `witness.rs`
+    /// has no repair check after it, so there the type check is what holds.
     fn integer_value(&self) -> i64;
 
     /// This object's own syntax, children left as `N G R`: the route to a dictionary's keys,
@@ -167,7 +180,9 @@ pub(crate) trait PdfObject: Sized {
     /// no trapped accessor reads one.
     fn unparse(&self) -> Vec<u8>;
 
-    /// How many items this array has, or 0 for anything that is not an array.
+    /// How many items this array has. **Ask [`Self::type_code`] first**, as every caller does:
+    /// for anything else qpdf answers 0 with a warning, refused at the write, or with an error
+    /// for a null -- fail-closed in the walk, and not in the read-back, as above.
     fn array_len(&self) -> c_int;
 
     /// The item at `at`. Out of range is a null object, not an error.
@@ -259,6 +274,25 @@ pub(crate) trait OpensForRedaction {
         bytes: &[u8],
         options: &crate::OpenOptions<'_>,
     ) -> Result<(Self::Document, Deadline)>;
+
+    /// A second reading of page `page`'s displayed size -- its box, rotated -- from the renderer
+    /// a person sees the page through, or `None` where this engine has no renderer (#224).
+    ///
+    /// Asked only of a page whose `/MediaBox` comes from the page tree, which qpdf reads the
+    /// same whether the page's own is absent or null and the renderer does not; see
+    /// `frame::check_inherited_media_box`. Native redaction has PDFium beside qpdf. The web
+    /// redaction worker does not (ADR 0026), so it answers `None` and such a page is refused
+    /// there until the renderer reaches redaction (#206).
+    ///
+    /// # Errors
+    ///
+    /// Whatever opening the document in the renderer, or reading the size, reports.
+    fn renderer_page_size(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<Option<(f64, f64)>>;
 }
 
 #[cfg(test)]

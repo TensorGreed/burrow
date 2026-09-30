@@ -476,6 +476,29 @@ pub(crate) fn poisoned(detail: &str) -> Error {
     Error::Malformed(format!("pdf redaction [document-poisoned]: {detail}"))
 }
 
+/// The refusal for an input the engine repaired while reading it (#224), on both engines alike.
+///
+/// qpdf repairs some damage silently -- recovery is off, and it still does -- and a repair can
+/// change what a page is: a junk entry in `/Kids` makes it push every inherited attribute onto
+/// the pages, after which a page that overrode one with `null` looks as though it declared the
+/// ancestor's value, and `[page-attribute-inherited]` cannot fire. qpdf's warnings are the only
+/// channel that reports a repair, and only whether one happened is read: never its text, which
+/// can carry file-derived content. Refusing on any warning raised AT THE OPEN -- the read and the
+/// page count, where the page tree is rebuilt -- was the owner's rule for a measured cost under
+/// 2%; it was 4 of 224 local documents, every one a test fixture. qpdf also repairs lazily --
+/// during the walk, and during the write for what the walk never read -- so the warnings are
+/// asked once more, after the write and before any byte leaves (rounds 2 to 4 of #224's
+/// reviews), and a warning there refuses with this. Measured while a check stood before the
+/// write, none of the 224 raised one there; the check after the write is unmeasured.
+pub(crate) fn repaired_by_the_engine() -> Error {
+    Error::Unsupported(
+        "pdf redaction [engine-repaired-input]: the PDF engine repaired this document while \
+         reading it, and a repaired document may not be the one other readers show, so which \
+         page the region was drawn on cannot be known"
+            .to_owned(),
+    )
+}
+
 /// Clear a region on one page, verify the emitted bytes, and return them.
 ///
 /// The body of [`crate::PageRedactor::redact_page`], for any engine that opens a document for
@@ -515,6 +538,10 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // defence with no test standing behind an `unsafe` block.
     let steps =
         steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
+    // A `/MediaBox` FROM THE PAGE TREE, vouched for by a second reading or refused (#224). After
+    // the constructor, so `[page-out-of-range]` still names an index past the end; and the
+    // renderer is opened only for the page that needs it.
+    steps.check_inherited_media_box(|| engine.renderer_page_size(bytes, page, options))?;
 
     // #134. The bytes reach a caller only through this closure, because `emit_verified` takes
     // it and there is no other way to a `Vec<u8>` from the finished state. A fresh document of

@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 27] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 52] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2415,11 +2415,101 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 27] = [
         "evade-property-list-as-a-stream.pdf",
         Some("not-a-dictionary-where-one-belongs"),
     ),
-    ("nearmiss-resources-inherited-from-pages.pdf", None),
+    ("nearmiss-resources-on-the-page.pdf", None),
+    (
+        "evade-resources-inherited-from-pages.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    (
+        "evade-resources-null-over-the-tree.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    (
+        "evade-cropbox-null-over-the-tree.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    (
+        "evade-rotate-null-over-the-tree.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    ("nearmiss-page-attributes-declared-over-the-tree.pdf", None),
+    (
+        "evade-mediabox-null-over-the-tree.pdf",
+        Some("media-box-unverified"),
+    ),
+    ("nearmiss-mediabox-declared-over-the-tree.pdf", None),
+    ("evade-cropbox-larger-than-mediabox.pdf", None),
+    (
+        "evade-cropbox-as-nested-array.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-cropbox-as-dictionary.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-rotate-past-the-integer-range.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    ("evade-user-unit-two.pdf", Some("user-unit-not-one")),
+    (
+        "evade-cropbox-with-five-items.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-cropbox-past-32-bits.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-mediabox-past-32-bits.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    ("nearmiss-page-frame-plainly-declared.pdf", None),
+    (
+        "evade-crop-wider-than-both-media-boxes.pdf",
+        Some("media-box-unverified"),
+    ),
+    (
+        "evade-junk-kid-over-a-null-rotate.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-junk-kid-over-a-null-mediabox.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-junk-kid-over-a-null-cropbox.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-junk-kid-over-null-resources.pdf",
+        Some("engine-repaired-input"),
+    ),
+    (
+        "evade-mediabox-past-float-precision.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-mediabox-negative-past-32-bits.pdf",
+        Some("page-frame-unreadable"),
+    ),
+    (
+        "evade-font-repaired-during-the-walk.pdf",
+        Some("engine-repaired-input"),
+    ),
+    ("nearmiss-kids-all-pages.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 3] = ["named /Properties", "optional content", "not a dictionary"];
+const RESOLVED_GROUPS: [&str; 7] = [
+    "named /Properties",
+    "optional content",
+    "not a dictionary",
+    "page attribute inherited",
+    "media box unverified",
+    "page frame read",
+    "engine repaired",
+];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.
 fn manifest() -> serde_json::Value {
@@ -2892,12 +2982,13 @@ fn anything_but_a_dictionary_where_one_belongs_is_refused_on_every_route() {
         );
         refused += 1;
     }
-    // THE NEAR-MISS: the same page, every key the type it should be, including an inherited
-    // `/Resources` and a `null` where a dictionary is optional.
+    // THE NEAR-MISS: the same page, every key the type it should be, including a `null` where a
+    // dictionary is optional. ON THE PAGE, not inherited: this control inherited `/Resources` until
+    // #224 made an inherited `/Resources` a refusal of its own, for a reason that is not the type.
     let control = page_shaped(move |_, f| {
         (
+            format!("<< /Font << /F1 {f} 0 R >> /XObject null >>"),
             String::new(),
-            format!(" /Resources << /Font << /F1 {f} 0 R >> /XObject null >>"),
             String::new(),
         )
     });
@@ -2947,14 +3038,25 @@ fn a_do_naming_nothing_the_resources_hold_is_refused() {
             String::new(),
         )
     });
-    for (what, pdf) in [
-        ("a Do the qpdf repair left naming nothing", repaired),
-        ("a Do PDFium resolves by falling back to the page", fallback),
+    // THE REPAIR IS REFUSED EARLIER SINCE #224: qpdf reports repairing the stream-valued
+    // `/Resources`, and the open refuses on that before any walk can meet the empty dictionary.
+    // The walk's `[xobject-missing]` still holds the fallback, which involves no repair.
+    for (what, pdf, rule) in [
+        (
+            "a Do the qpdf repair left naming nothing",
+            repaired,
+            "[engine-repaired-input]",
+        ),
+        (
+            "a Do PDFium resolves by falling back to the page",
+            fallback,
+            "[xobject-missing]",
+        ),
     ] {
         let refused = refusal(&pdf, what);
         assert!(
-            refused.contains("[xobject-missing]"),
-            "{what}: refused, but not because the name resolves to nothing: {refused}"
+            refused.contains(rule),
+            "{what}: refused, but not by {rule}: {refused}"
         );
     }
 }

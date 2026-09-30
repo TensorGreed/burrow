@@ -15,6 +15,7 @@ use burrow_types::{Deadline, Error, Result};
 use super::extract::{self, ObjectStreams};
 use super::handle::ObjectHandle;
 use super::{Document, Qpdf};
+use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 
@@ -44,6 +45,10 @@ impl PdfDocument for Document {
         // The document is its own source: redaction edits in place.
         extract::write_out(self, self, ObjectStreams::Preserve)
     }
+
+    fn repaired(&self) -> bool {
+        Document::repaired(self)
+    }
 }
 
 /// Refuse a second handle from another document, before it reaches the C API.
@@ -66,15 +71,28 @@ impl PdfObject for ObjectHandle<'_> {
         Self::type_code(self)
     }
 
+    // TYPE-CHECKED BEFORE THE CALL, in `key`, `name` and `array_item` below. qpdf answers a
+    // read of the wrong type -- or an array read out of range -- with a fallback *and a
+    // warning*, and a warning at the write is refused as a repair (#224). Each guard has a
+    // document that redacts with it and is refused without it: an integer `/Font` entry, an
+    // XObject whose `/Subtype` is a number, and a `/W` array that ends mid-range.
+
     fn key(&self, key: &Name) -> Self {
+        if Self::type_code(self) != object_type::DICTIONARY {
+            return Self::null_beside(self);
+        }
         Self::key(self, key)
     }
 
     fn name(&self) -> Result<Name> {
+        if Self::type_code(self) != object_type::NAME {
+            return Name::from_canonical(&[]);
+        }
         Self::name(self)
     }
 
     fn integer_value(&self) -> i64 {
+        // UNGUARDED, because unreachable: every caller has asked `type_code` for an integer.
         Self::integer_value(self)
     }
 
@@ -83,10 +101,15 @@ impl PdfObject for ObjectHandle<'_> {
     }
 
     fn array_len(&self) -> c_int {
+        // UNGUARDED, because unreachable: every caller -- `array_item`'s range check included --
+        // asks it only of an array.
         Self::array_len(self)
     }
 
     fn array_item(&self, at: c_int) -> Self {
+        if at < 0 || at >= PdfObject::array_len(self) {
+            return Self::null_beside(self);
+        }
         Self::array_item(self, at)
     }
 
@@ -149,7 +172,33 @@ impl OpensForRedaction for Qpdf {
     ) -> Result<(Self::Document, Deadline)> {
         let (document, _, _, deadline) =
             super::open_document(bytes.to_vec().into_boxed_slice(), options)?;
+        // A REPAIRED INPUT IS REFUSED (#224): see `repaired_by_the_engine`. After the page count
+        // `open_document` takes, which is when qpdf flattens -- and repairs -- the page tree.
+        if document.repaired() {
+            return Err(crate::redact::repaired_by_the_engine());
+        }
         Ok((document, deadline))
+    }
+
+    /// PDFium's size for the page, read without loading its content: `page_size` goes by index
+    /// precisely so that no display list is built (#103).
+    ///
+    /// THE RENDERER'S OPEN STARTS ITS OWN DEADLINE from `options`, as the read-back's does
+    /// (`witness.rs`): the redaction checkpoints just before this call, so the overshoot past the
+    /// operation's budget is this open and one size read, and every ceiling applies to it.
+    fn renderer_page_size(
+        &self,
+        bytes: &[u8],
+        page: usize,
+        options: &crate::OpenOptions<'_>,
+    ) -> Result<Option<(f64, f64)>> {
+        use crate::{DocumentEngine, PageRenderer};
+        let renderer = crate::pdfium::Pdfium;
+        let document = renderer.open(bytes.to_vec().into_boxed_slice(), options)?;
+        let index = u64::try_from(page)
+            .map_err(|_| Error::Internal("a page index that does not fit in u64".to_owned()))?;
+        let (width, height) = renderer.page_size(&document, index)?;
+        Ok(Some((f64::from(width), f64::from(height))))
     }
 }
 
@@ -161,7 +210,6 @@ mod tests {
 
     use crate::codes::qpdf::object_type;
     use crate::minimal_pdf;
-    use crate::name::Name;
     use crate::redact::graph::{PdfDocument, PdfObject};
 
     /// The drain inside `PdfDocument::page` reports what the document latched before it.
@@ -175,12 +223,11 @@ mod tests {
     ///
     /// # The latch is a real one
     ///
-    /// qpdf's `getKey` on an object with **no owning document** raises instead of warning, and
-    /// the error latches: `QPDFObjectHandle::warn` throws when it has no `QPDF` to warn through.
-    /// A free-standing null is such an object, so no hook is needed to make the document hold an
-    /// error. It is the same class as the `/XObject` lookup that kept #191's drain out of the
-    /// accessors (ADR 0029's 2026-09-25 amendment). **Not every null does it**, measured: one from
-    /// an absent key, or from keying an array, carries its owner, and only warns.
+    /// qpdf's `getDict` on anything that is not a stream throws -- `as_stream` asserts the type
+    /// -- and the error latches, owner or no owner. So a stream's dictionary asked of a null makes
+    /// the document hold an error with no hook. Until #224 this used a key of a free-standing
+    /// null, which raises only for a null with no owner; the reader no longer hands the engine a
+    /// key of a non-dictionary at all, so that route is closed.
     #[test]
     fn a_page_lookup_drains_what_the_document_latched_before_it() {
         let options = crate::OpenOptions::new(
@@ -192,11 +239,12 @@ mod tests {
                 .expect("opens");
         {
             let page = PdfDocument::page(&document, 0).expect("page 0");
-            // A NULL WITH NO OWNING DOCUMENT, which is what `qpdf_oh_new_null` makes. qpdf's
-            // `typeWarning` raises for such an object rather than warning, and the error latches.
+            // A STREAM'S DICTIONARY, ASKED OF A NULL: qpdf raises for it, and the error latches.
+            // Not a key of the null, which this used until #224: the reader no longer hands a
+            // key of a non-dictionary to the engine at all.
             let null = PdfObject::null_beside(&page);
             assert_eq!(PdfObject::type_code(&null), object_type::NULL);
-            let _ = PdfObject::key(&null, &Name::literal(b"/Anything\0"));
+            let _ = PdfObject::stream_dict(&null);
         }
 
         let latched = PdfDocument::page(&document, 0);
@@ -228,9 +276,9 @@ mod tests {
         let page = PdfDocument::page(&document, 0).expect("page 0");
         PdfObject::drained(&page).expect("nothing is latched before the planted error");
 
-        // Latched as in the page test above: a key of a null with no owning document.
+        // Latched as in the page test above: a stream's dictionary, asked of a null.
         let null = PdfObject::null_beside(&page);
-        let _ = PdfObject::key(&null, &Name::literal(b"/Anything\0"));
+        let _ = PdfObject::stream_dict(&null);
 
         assert!(
             PdfObject::drained(&page).is_err(),

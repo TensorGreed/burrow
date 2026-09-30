@@ -90,7 +90,14 @@ struct FontFacts {
 }
 
 impl<O: PdfObject> PageResources<O> {
-    /// Resolve a page's `/Resources`, climbing `/Parent` when the page declares none.
+    /// Resolve a page's `/Resources` -- and refuse, rather than climb to, an ancestor's (#224).
+    ///
+    /// # Inherited resources are refused, since #224
+    ///
+    /// A page that sets `/Resources` to null is shown without its ancestor's, and burrow cannot
+    /// tell that null from an absent key; see the refusal below. The sections that follow
+    /// describe the climb this made before, which still decides what "an ancestor's" means: the
+    /// nearest `/Pages` node that carries a dictionary.
     ///
     /// # `/Resources` is inheritable, like `/Rotate`
     ///
@@ -100,24 +107,25 @@ impl<O: PdfObject> PageResources<O> {
     /// puts them on a `/Pages` node — which is how a word processor writes a shared letterhead.
     ///
     /// Note what the committed corpus does **not** exercise: `mixed-rotation-4page.pdf` and
-    /// `inherited-rotation-6page.pdf` carry an **empty** `/Resources`, not an absent one, so
-    /// they refuse with `font-missing` either way. Absent and empty are different, and only one
-    /// of them inherits.
+    /// `inherited-rotation-6page.pdf` carry an **empty** `/Resources`, not an absent one. They
+    /// refused with `font-missing` before #224, and are refused first now, for the `/Rotate` they
+    /// inherit. Absent and empty are different, and only one of them inherits.
     ///
     /// # A `/Parent` chain that does not terminate yields empty resources, not an error
     ///
     /// This section claimed `Error::Malformed` for that case and the function does not raise
     /// one: the climb falls out of its bounded loop and returns the empty dictionary. The
     /// direction is safe today — the resolver then refuses `font-missing` on the first glyph —
-    /// but `frame::inherited_numbers` *does* refuse in the same situation, so the two
-    /// differ and only one of them said so.
+    /// but `frame::inherited` *does* refuse in the same situation, so the two differ and only
+    /// one of them said so.
     ///
     /// Corrected rather than changed: making this refuse would change what a document with a
     /// long `/Parent` chain does, which is a behaviour question rather than a doc one.
     ///
     /// # Errors
     ///
-    /// Whatever qpdf latched while reading the page or an ancestor.
+    /// `Unsupported` `[page-attribute-inherited]` when the page takes its `/Resources` from an
+    /// ancestor (#224); whatever qpdf latched while reading the page or an ancestor.
     pub(crate) fn of(owner: &O) -> Result<Self> {
         let direct = owner.key(&RESOURCES);
         if direct.type_code() == object_type::DICTIONARY {
@@ -136,10 +144,22 @@ impl<O: PdfObject> PageResources<O> {
             }
             let inherited = current.key(&RESOURCES);
             if inherited.type_code() == object_type::DICTIONARY {
-                return Ok(Self {
-                    dictionary: inherited,
-                    fonts: std::cell::RefCell::new(BTreeMap::new()),
-                });
+                // REFUSED, NOT TAKEN (#224). The page declares no `/Resources` it can read, and
+                // one that set it to null would be shown without its ancestor's -- PDFium stops at
+                // the null and draws with its own fonts, measured -- while qpdf reads a null as an
+                // absent key and climbs to here. burrow cannot see which, so it cannot know the
+                // font the text was drawn with, and a review got a zero-width ancestor font to
+                // `Ok` with the secret intact. A STOPGAP: #206's second, placement-only reading
+                // compares where the glyphs land and would see the difference; ADR 0029 makes it
+                // the condition for relaxing this. See `frame::inherited` for why the whole case
+                // is refused rather than only the null.
+                return Err(Error::Unsupported(
+                    "pdf redaction [page-attribute-inherited]: a page that takes its /Resources \
+                     from the page tree instead of declaring it. A page that overrides it with \
+                     null is shown without it, but burrow cannot tell a null from an absent \
+                     entry, so it cannot know which fonts drew the text"
+                        .to_owned(),
+                ));
             }
             current = current.key(&PARENT);
         }

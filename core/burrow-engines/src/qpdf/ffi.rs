@@ -204,6 +204,19 @@ unsafe extern "C" {
     /// `burrow::Error`. Not declaring them is the cheapest way to guarantee that.
     pub(super) fn qpdf_get_error_code(qpdf: QpdfData, error: QpdfError) -> c_int;
 
+    /// `QPDF_BOOL qpdf_more_warnings(qpdf_data)` — `qpdf-c.h:191`.
+    ///
+    /// Whether qpdf has recorded a warning not yet handed out (#224). qpdf records every warning
+    /// whatever `qpdf_set_suppress_warnings` says -- that flag stops only the printing -- so this
+    /// is the one place burrow can learn that qpdf repaired something silently. Non-parsing: it
+    /// moves stored `QPDFExc`s from the `QPDF` object into the C handle's list and tests it.
+    ///
+    /// **Only whether, never what.** `qpdf_next_warning` is not declared: redaction refuses on
+    /// any warning (the owner's rule, measured at 4 of 224 local documents, all of them test
+    /// fixtures), so no warning's code is needed and no warning's text -- which can carry
+    /// file-derived content -- can be reached.
+    pub(super) fn qpdf_more_warnings(qpdf: QpdfData) -> QpdfBool;
+
     // `qpdf_is_encrypted` (`qpdf-c.h:355`) and `qpdf_is_linearized` (`qpdf-c.h:351`) are
     // deliberately NOT declared. See "Which functions are safe to call" above: neither
     // goes through `trap_errors`, and `qpdf_is_linearized` demonstrably aborts the process

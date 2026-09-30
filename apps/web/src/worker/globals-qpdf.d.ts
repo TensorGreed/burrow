@@ -41,6 +41,8 @@ interface EmscriptenModule {
     password: number,
   ): number;
   _qpdf_has_error(data: number): number;
+  // Whether qpdf raised any warning -- a repair. Only whether, never its code or text (#224).
+  _qpdf_more_warnings(data: number): number;
   _qpdf_get_error(data: number): number;
   _qpdf_get_error_code(data: number, error: number): number;
   _qpdf_get_num_pages(data: number): number;
@@ -136,6 +138,7 @@ interface WorkerGlobalScope {
     password: number,
   ): number;
   __burrow_qpdf_has_error(data: number): number;
+  __burrow_qpdf_more_warnings(data: number): number;
   __burrow_qpdf_get_error(data: number): number;
   __burrow_qpdf_get_error_code(data: number, error: number): number;
   __burrow_qpdf_get_num_pages(data: number): number;

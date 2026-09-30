@@ -57,6 +57,7 @@ use super::WebQpdf;
 use super::bridge::QpdfPtr;
 use super::handle::WebHandle;
 use super::qpdf::Session;
+use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 
@@ -146,6 +147,10 @@ impl<'e> PdfDocument for WebRedactionDocument<'e> {
 
     fn page_count(&self) -> Result<u64> {
         self.session.page_count()
+    }
+
+    fn repaired(&self) -> bool {
+        self.session.repaired()
     }
 
     fn page(&self, index: usize) -> Result<Self::Object<'_>> {
@@ -244,7 +249,13 @@ impl PdfObject for WebObject<'_> {
         self.handle.type_code()
     }
 
+    // TYPE-CHECKED BEFORE THE CALL, as natively (#224): qpdf warns on a read of the wrong type
+    // or out of range, and a warning at the write is refused as a repair.
+
     fn key(&self, key: &Name) -> Self {
+        if self.handle.type_code() != object_type::DICTIONARY {
+            return self.null_beside();
+        }
         match self.document.key_ptr(key) {
             Some(ptr) => self.beside(self.handle.key(ptr)),
             None => self.nothing(),
@@ -252,8 +263,11 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn name(&self) -> Result<Name> {
-        // AS NATIVELY: the engine's answer, copied out, then read as a name. A non-name comes back
-        // as an empty string, which has no slash, so this is `Err` for it -- and it does not drain.
+        if self.handle.type_code() != object_type::NAME {
+            return Name::from_canonical(&[]);
+        }
+        // AS NATIVELY: the engine's answer, copied out, then read as a name. A non-name never
+        // reaches the engine, which would answer `/QPDFFakeName`; it is `Err` above. No drain.
         let ptr = self.handle.name();
         let text = if ptr.is_null() {
             Vec::new()
@@ -264,6 +278,7 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn integer_value(&self) -> i64 {
+        // UNGUARDED, as natively: every caller has asked `type_code` for an integer.
         self.handle.int_value()
     }
 
@@ -277,10 +292,14 @@ impl PdfObject for WebObject<'_> {
     }
 
     fn array_len(&self) -> c_int {
+        // UNGUARDED, as natively: asked only of an array.
         self.handle.array_len()
     }
 
     fn array_item(&self, at: c_int) -> Self {
+        if at < 0 || at >= self.array_len() {
+            return self.null_beside();
+        }
         self.beside(self.handle.array_item(at))
     }
 
@@ -367,6 +386,17 @@ pub(crate) struct WebRedactor<'e>(pub(crate) &'e WebQpdf);
 impl<'e> OpensForRedaction for WebRedactor<'e> {
     type Document = WebRedactionDocument<'e>;
 
+    /// None: the redaction worker has no renderer (ADR 0026), so a page whose `/MediaBox` comes
+    /// from the page tree is refused here until #206 brings one (#224).
+    fn renderer_page_size(
+        &self,
+        _bytes: &[u8],
+        _page: usize,
+        _options: &crate::OpenOptions<'_>,
+    ) -> Result<Option<(f64, f64)>> {
+        Ok(None)
+    }
+
     fn open_for_redaction(
         &self,
         bytes: &[u8],
@@ -388,6 +418,10 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
         Limits::check(Stage::PageCount, "max_pages", pages, limits.max_pages)?;
         if let Some(error) = session.take_error() {
             return Err(error);
+        }
+        // A REPAIRED INPUT IS REFUSED, as natively (#224), after the page count that repairs it.
+        if session.repaired() {
+            return Err(crate::redact::repaired_by_the_engine());
         }
         crate::estimate::check_measured_memory(
             Some(heap_before),

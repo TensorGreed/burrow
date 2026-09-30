@@ -368,4 +368,24 @@ describe("the redaction write path", () => {
     // bridge that answered something here would be inventing a result.
     expect(returned).toBeUndefined();
   });
+
+  it("the repair question reaches qpdf and its answer comes back unchanged", () => {
+    // `qpdf_more_warnings(data)`, #224: whether qpdf repaired the input while reading it, which
+    // redaction refuses. A bridge that answered 0 whatever qpdf said would let every repaired
+    // document through, so both answers are asked for, each against its own handle.
+    const fake = fakeQpdf();
+    const asked: number[] = [];
+    let answer = 1;
+    fake.module._qpdf_more_warnings = (data: number) => {
+      asked.push(data);
+      return answer;
+    };
+    const { scope, attach } = loadBridge();
+    attach(fake.module);
+
+    expect(scope.__burrow_qpdf_more_warnings(5 as never)).toBe(1);
+    answer = 0;
+    expect(scope.__burrow_qpdf_more_warnings(6 as never)).toBe(0);
+    expect(asked).toEqual([5, 6]);
+  });
 });

@@ -71,6 +71,8 @@ self.__burrow_qpdf_read_memory = (data, description, buffer, size, password) =>
   qpdf()._qpdf_read_memory(data, description, buffer, size, password);
 
 self.__burrow_qpdf_has_error = (data) => qpdf()._qpdf_has_error(data);
+// WHETHER qpdf repaired the input, never what: nothing here reads a warning's code or text (#224).
+self.__burrow_qpdf_more_warnings = (data) => qpdf()._qpdf_more_warnings(data);
 self.__burrow_qpdf_get_error = (data) => u32(qpdf()._qpdf_get_error(data));
 self.__burrow_qpdf_get_error_code = (data, error) => qpdf()._qpdf_get_error_code(data, error);
 self.__burrow_qpdf_get_num_pages = (data) => qpdf()._qpdf_get_num_pages(data);

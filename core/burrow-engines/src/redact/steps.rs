@@ -187,6 +187,20 @@ impl<D: PdfDocument> PageRedaction<D> {
         self.document.page(self.page)
     }
 
+    /// Refuse the page if its `/MediaBox` comes from the page tree and `renderer_size` does not
+    /// vouch for it; see `frame::check_inherited_media_box` (#224).
+    ///
+    /// # Errors
+    ///
+    /// `[media-box-unverified]`, and whatever reading the page raises.
+    pub(crate) fn check_inherited_media_box(
+        &self,
+        renderer_size: impl FnOnce() -> Result<Option<(f64, f64)>>,
+    ) -> Result<()> {
+        self.deadline.checkpoint(self.clock.as_ref())?;
+        super::frame::check_inherited_media_box(&self.page_handle()?, renderer_size)
+    }
+
     /// The page's frame, for converting the region into content space.
     fn frame<O: PdfObject>(page: &O) -> Result<PageFrame> {
         super::frame::of(page)
@@ -770,7 +784,18 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
 
     fn write(&mut self) -> Result<Vec<u8>> {
         self.deadline.checkpoint(self.clock.as_ref())?;
-        self.document.write()
+        let bytes = self.document.write()?;
+        // A REPAIR AFTER THE OPEN IS REFUSED TOO, asked once, after the write and before any
+        // byte leaves (#224, security reviews rounds 2 and 3). qpdf reads lazily: a font whose
+        // `/Widths` held a stray `)` was repaired during the walk, and PDFium ended the array at
+        // it and placed the glyphs otherwise -- `Ok` with the secret kept; a stream reached only
+        // from the catalog, with a wrong `/Length`, was repaired during the write itself. qpdf's
+        // warnings persist, so one check here sees both, and the bytes are dropped. (A second
+        // check before the write refused nothing this one does not, and no test could pin it.)
+        if self.document.repaired() {
+            return Err(super::repaired_by_the_engine());
+        }
+        Ok(bytes)
     }
 }
 
@@ -831,28 +856,45 @@ fn remove_annotations_in<O: PdfObject>(
         }
         let rect = annotation.key(&RECT);
         annotation.drained()?;
-        let numbers = crate::pdfsyntax::ops::numbers_in(&rect.unparse());
-        let [left, bottom, right, top] = numbers.as_slice() else {
-            return Err(Error::Malformed(
+        // READ AS PDFIUM READS IT, and as the page frame is (#224, security reviews rounds 3
+        // and 4): an array of exactly four items, each one number both readers agree on. The
+        // numbers used to be scanned out of the `/Rect`'s text, so `[[200 0] 400 120 []]` was
+        // 200 0 400 120 here -- clear of the region -- and 0 400 120 0 to PDFium, over it; and a
+        // top edge of 2^32 over a bottom of 380 was 380 upwards here and 0..380 to PDFium, which
+        // reads a whole number outside 32 bits as 0. Each kept the annotation, `Ok`.
+        let not_four = || {
+            Error::Malformed(
                 "pdf redaction [annotation-rect]: an annotation whose /Rect is not four \
                  numbers, so where it draws is unknown"
                     .to_owned(),
-            ));
+            )
         };
+        if rect.type_code() != object_type::ARRAY || rect.array_len() != 4 {
+            return Err(not_four());
+        }
+        let mut corners = [0.0_f64; 4];
+        for (at, corner) in (0..4).zip(corners.iter_mut()) {
+            *corner = match super::frame::reading_of(&rect.array_item(at)) {
+                super::frame::Reading::Number(number) => number,
+                super::frame::Reading::NotANumber => return Err(not_four()),
+                super::frame::Reading::OutOfRange => {
+                    return Err(Error::Unsupported(
+                        "pdf redaction [annotation-rect]: an annotation whose /Rect is larger \
+                         than any reader agrees on, so where it draws is unknown"
+                            .to_owned(),
+                    ));
+                }
+            };
+        }
+        let [left, bottom, right, top] = corners;
         // NORMALISED. `/Rect`'s corners are in either order per PDF 32000-1 §12.5.2, and an
         // un-normalised rectangle compares as empty against every region.
         let box_of = crate::pdfsyntax::geometry::Rect {
-            left: left.min(*right),
-            bottom: bottom.min(*top),
-            right: left.max(*right),
-            top: bottom.max(*top),
+            left: left.min(right),
+            bottom: bottom.min(top),
+            right: left.max(right),
+            top: bottom.max(top),
         };
-        if !box_of.is_finite() {
-            return Err(Error::Malformed(
-                "pdf redaction [annotation-rect]: an annotation whose /Rect is not finite"
-                    .to_owned(),
-            ));
-        }
         if box_of.intersects(region) {
             annots.erase_item(at);
             annots.drained()?;

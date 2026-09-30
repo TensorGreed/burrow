@@ -1581,6 +1581,369 @@ def _page_with_resources(pdf: Pdf, content: bytes, page_resources: bytes, pages_
     return pdf.build(root)
 
 
+def nearmiss_resources_on_the_page() -> bytes:
+    """An ordinary `/Resources` dictionary on the page itself, with the carrying `/MC0`. MUST redact.
+
+    The not-a-dictionary rule's twin since #224 refused the inherited one: the refusal is about a
+    stream in a dictionary's place, and a plain dictionary where one belongs is the shape it must
+    stay off.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_with_resources(
+        pdf,
+        b"/P /MC0 BDC\n" + _secret_run("ON-THE-PAGE") + b"EMC\n" + keep_line_ops(),
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >>"
+        b" /Properties << /MC0 << /MCID 0 >> >> >>",
+        b"",
+    )
+
+
+def _page_under_a_tree(
+    pdf: Pdf, content: bytes, page_extra: bytes, pages_extra: bytes, junk_kid: bytes = b""
+) -> bytes:
+    """A one-page document whose page and `/Pages` node carry exactly what they are given (#224).
+
+    Unlike `_page_with_resources`, the page gets no `/MediaBox` of its own unless `page_extra`
+    says so: the shapes here are about which node a page attribute comes from.
+    """
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", content)
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R"
+        + page_extra + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R" + junk_kid + b"]"
+        + pages_extra + b" >>",
+    )
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    return pdf.build(root)
+
+
+def _box(width: int, height: int) -> bytes:
+    return f"[0 0 {width} {height}]".encode()
+
+
+def _own_resources(helv: int) -> bytes:
+    return b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>"
+
+
+def evade_resources_null_over_the_tree() -> bytes:
+    """`/Resources null` on the page, over a `/Pages` font that draws nothing wide (#224).
+
+    PDFium stops at the null and draws the canary with its own font, inside the region; qpdf
+    reads the null as absent and burrow measured every glyph with the ancestor's zero widths, at
+    one point outside it. `Ok`, with the canary in the output, until #224.
+    """
+    pdf = Pdf()
+    zero = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv /FirstChar 32"
+        b" /LastChar 126 /Widths [" + b"0 " * 95 + b"] >>"
+    )
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("RESOURCES-NULL") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /Resources null",
+        b" /Resources << /Font << /Helv " + str(zero).encode() + b" 0 R >> >>",
+    )
+
+
+def evade_cropbox_null_over_the_tree() -> bytes:
+    """`/CropBox null` on the page, under a `/Pages` crop that moves the page's top (#224)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("CROPBOX-NULL") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /CropBox null" + _own_resources(helv),
+        b" /CropBox " + _box(PAGE_W, PAGE_H // 2),
+    )
+
+
+def evade_rotate_null_over_the_tree() -> bytes:
+    """`/Rotate null` on the page, under a `/Pages` `/Rotate 90` (#224)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("ROTATE-NULL") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /Rotate null" + _own_resources(helv),
+        b" /Rotate 90",
+    )
+
+
+def nearmiss_page_attributes_declared_over_the_tree() -> bytes:
+    """`/Pages` carries every inheritable key; the page declares its own of each. MUST redact.
+
+    The twin for the inherited-attribute refusal: an ancestor HAVING the keys is not the shape --
+    a page taking them from it is. The page's own `/Rotate 0` and full-page `/CropBox` differ
+    from the ancestor's, so a rule that looked at the tree rather than at where the page's
+    values came from would refuse this.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    other = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("DECLARED-TREE") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /CropBox " + _box(PAGE_W, PAGE_H)
+        + b" /Rotate 0" + _own_resources(helv),
+        b" /MediaBox " + _box(612, 792) + b" /CropBox " + _box(PAGE_W, PAGE_H // 2)
+        + b" /Rotate 90 /Resources << /Font << /Helv " + str(other).encode() + b" 0 R >> >>",
+    )
+
+
+def evade_mediabox_null_over_the_tree() -> bytes:
+    """`/MediaBox null` on the page, under the fixture page size on `/Pages` (#224).
+
+    PDFium shows a null `/MediaBox` as US Letter; qpdf reads the null as absent and burrow
+    measured the region against the ancestor's 400 x 200, so the canary PDFium draws inside the
+    region was outside burrow's. Refused: natively PDFium's size disagrees, and on the web there
+    is no renderer to ask -- both as `media-box-unverified`.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("MEDIABOX-NULL") + keep_line_ops(),
+        b" /MediaBox null" + _own_resources(helv),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H),
+    )
+
+
+def nearmiss_mediabox_declared_over_the_tree() -> bytes:
+    """`/Pages` has a Letter `/MediaBox`; the page declares the fixture size. MUST redact.
+
+    The twin for `media-box-unverified`, on both engines: nothing is inherited, so neither needs
+    a renderer to say which box is shown.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("MEDIABOX-DECLARED") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + _own_resources(helv),
+        b" /MediaBox " + _box(612, 792),
+    )
+
+
+def _frame_page(page_extra: bytes, tag: str) -> bytes:
+    """A page declaring `page_extra` over the fixture's own `/MediaBox`, nothing inherited (#224)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run(tag) + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + page_extra + _own_resources(helv),
+        b"",
+    )
+
+
+def evade_cropbox_larger_than_mediabox() -> bytes:
+    """A `/CropBox` far taller than the `/MediaBox`. Handled since #224: clipped, as PDFium clips.
+
+    PDFium shows the overlap, the fixture page; burrow measured the region against the crop as
+    written, a page five times taller, and the canary was outside it: `Ok` with the canary kept.
+    """
+    return _frame_page(b" /CropBox " + _box(PAGE_W, PAGE_H * 5), "CROP-TOO-TALL")
+
+
+def evade_cropbox_as_nested_array() -> bytes:
+    """`/CropBox [[0 0 w h/2]]`: burrow picked four numbers out of it, PDFium ignores it (#224)."""
+    return _frame_page(
+        b" /CropBox [" + _box(PAGE_W, PAGE_H // 2) + b"]", "CROP-NESTED"
+    )
+
+
+def evade_cropbox_as_dictionary() -> bytes:
+    """`/CropBox` as a dictionary of four numbers: burrow read them as a box, PDFium does not."""
+    return _frame_page(
+        f" /CropBox << /A 0 /B 0 /C {PAGE_W} /D {PAGE_H // 2} >>".encode(), "CROP-DICT"
+    )
+
+
+def evade_rotate_past_the_integer_range() -> bytes:
+    """`/Rotate 4294967490`: 90 to a reader that keeps the digits, 0 to PDFium's integer parse."""
+    return _frame_page(b" /Rotate 4294967490", "ROTATE-HUGE")
+
+
+def evade_user_unit_two() -> bytes:
+    """`/UserUnit 2`: the region conversion divided by it, and the renderer ignores it (#224)."""
+    return _frame_page(b" /UserUnit 2", "USER-UNIT")
+
+
+def evade_cropbox_with_five_items() -> bytes:
+    """`/CropBox [0 0 w h/2 9]`: PDFium reads a box of five items as no box (#224, round 2)."""
+    return _frame_page(
+        b" /CropBox [0 0 " + f"{PAGE_W} {PAGE_H // 2}".encode() + b" 9]", "CROP-FIVE"
+    )
+
+
+def evade_cropbox_past_32_bits() -> bytes:
+    """`/CropBox [100 0 4294967596 h]`: PDFium reads the right edge as 0, a 100-wide page (#224)."""
+    return _frame_page(b" /CropBox [100 0 4294967596 " + str(PAGE_H).encode() + b"]", "CROP-32")
+
+
+def evade_mediabox_past_32_bits() -> bytes:
+    """An own `/MediaBox [0 0 4294967596 h]`: an empty box to PDFium, which shows US Letter."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("MEDIA-32") + keep_line_ops(),
+        b" /MediaBox [0 0 4294967596 " + str(PAGE_H).encode() + b"]" + _own_resources(helv),
+        b"",
+    )
+
+
+def evade_mediabox_past_float_precision() -> bytes:
+    """A `/MediaBox` at 2^31, within 32 bits but past a 32-bit float's whole numbers (#224).
+
+    PDFium keeps the box as floats, which collapse its 300 points; burrow read it exactly, and
+    with the canary drawn inside it the redaction was `Ok` with the canary still drawn (round 3).
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        b"BT /Helv " + str(SECRET_SIZE).encode() + b" Tf 2147483748 350 Td "
+        + literal(secret("MEDIA-FLOAT")) + b" Tj ET\n",
+        b" /MediaBox [2147483648 0 2147483948 400]" + _own_resources(helv),
+        b"",
+    )
+
+
+def evade_mediabox_negative_past_32_bits() -> bytes:
+    """A `/MediaBox` whose left edge is below -2^31: 0 to PDFium, a huge box here (#224)."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("MEDIA-NEG") + keep_line_ops(),
+        b" /MediaBox [-2147483649 0 " + str(PAGE_W).encode() + b" "
+        + str(PAGE_H).encode() + b"]" + _own_resources(helv),
+        b"",
+    )
+
+
+def evade_crop_wider_than_both_media_boxes() -> bytes:
+    """A null `/MediaBox` over an offset Letter-wide box, and a crop wider than both (#224).
+
+    burrow clips the crop to the inherited box, PDFium to US Letter: both 612 wide, 100 points
+    apart, so a size agreed while the frames did not -- `Ok` with the canary kept.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("CROP-WIDER") + keep_line_ops(),
+        b" /MediaBox null /CropBox [0 0 812 792]" + _own_resources(helv),
+        b" /MediaBox [100 0 712 792]",
+    )
+
+
+def nearmiss_page_frame_plainly_declared() -> bytes:
+    """A crop inside the media box, `/Rotate 0` and `/UserUnit 1`, all on the page. MUST redact.
+
+    The twin for the frame reader: every value present, in the shape both readers take.
+    """
+    return _frame_page(
+        b" /CropBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode() + b"] /Rotate 0 /UserUnit 1",
+        "FRAME-PLAIN",
+    )
+
+
+def _junk_kid(page_extra: bytes, pages_extra: bytes, tag: str) -> bytes:
+    """A null on the page over a value on `/Pages`, and a junk `7` in `/Kids` (#224).
+
+    The junk makes qpdf rebuild the page tree and push every inherited attribute onto the page,
+    after which the null is gone and the ancestor's value looks declared. Only qpdf's warning
+    says it happened.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run(tag) + keep_line_ops(),
+        page_extra + _own_resources(helv),
+        pages_extra,
+        junk_kid=b" 7",
+    )
+
+
+def evade_junk_kid_over_a_null_rotate() -> bytes:
+    """`/Rotate null` under `/Pages /Rotate 90`, and a junk kid (#224)."""
+    return _junk_kid(
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /Rotate null", b" /Rotate 90", "KIDS-ROTATE"
+    )
+
+
+def evade_junk_kid_over_a_null_mediabox() -> bytes:
+    """`/MediaBox null` under the fixture box on `/Pages`, and a junk kid (#224)."""
+    return _junk_kid(b" /MediaBox null", b" /MediaBox " + _box(PAGE_W, PAGE_H), "KIDS-MEDIABOX")
+
+
+def evade_junk_kid_over_a_null_cropbox() -> bytes:
+    """`/CropBox null` under a `/Pages` crop, and a junk kid (#224)."""
+    return _junk_kid(
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /CropBox null",
+        b" /CropBox " + _box(PAGE_W, PAGE_H // 2),
+        "KIDS-CROPBOX",
+    )
+
+
+def evade_junk_kid_over_null_resources() -> bytes:
+    """`/Resources null` over a zero-width `/Pages` font, and a junk kid (#224)."""
+    pdf = Pdf()
+    zero = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv /FirstChar 32"
+        b" /LastChar 126 /Widths [" + b"0 " * 95 + b"] >>"
+    )
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("KIDS-RESOURCES") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + b" /Resources null",
+        b" /Resources << /Font << /Helv " + str(zero).encode() + b" 0 R >> >>",
+        junk_kid=b" 7",
+    )
+
+
+def evade_font_repaired_during_the_walk() -> bytes:
+    """A font whose `/Widths` holds a stray `)`, which qpdf repairs only when the walk reads it.
+
+    The repair comes after the open's warning check, so it needs the second one, just before the
+    write (#224, round 2). PDFium ends the array at the `)` and places the glyphs otherwise.
+    """
+    pdf = Pdf()
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv /FirstChar 31"
+        b" /LastChar 126 /Widths [0 ) 9000 " + b"556 " * 94 + b"] >>"
+    )
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("FONT-REPAIRED") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H)
+        + b" /Resources << /Font << /Helv " + str(font).encode() + b" 0 R >> >>",
+        b"",
+    )
+
+
+def nearmiss_kids_all_pages() -> bytes:
+    """The same tree with every `/Kids` entry a page. MUST redact: nothing for qpdf to repair."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    return _page_under_a_tree(
+        pdf,
+        _secret_run("KIDS-CLEAN") + keep_line_ops(),
+        b" /MediaBox " + _box(PAGE_W, PAGE_H) + _own_resources(helv),
+        b"",
+    )
+
+
 def evade_resources_stream_on_the_page() -> bytes:
     """The page's `/Resources` is a STREAM holding the carrying `/MC0`; `/Pages` holds a plain one."""
     pdf = Pdf()
@@ -1703,11 +2066,15 @@ def evade_property_list_as_a_stream() -> bytes:
     return simple_page(pdf, content, res)
 
 
-def nearmiss_resources_inherited_from_pages() -> bytes:
-    """The page declares no `/Resources` and `/Pages` holds an ordinary dictionary. MUST redact.
+def evade_resources_inherited_from_pages() -> bytes:
+    """The page declares no `/Resources` and `/Pages` holds an ordinary dictionary. REFUSED since #224.
 
-    Inheritance is how a word processor writes a shared letterhead. The refusal is about a stream
-    in a dictionary's place, not about inheriting.
+    This was `nearmiss-resources-inherited-from-pages`, the twin that kept the not-a-dictionary
+    rule off an ordinary inherited `/Resources`. #224 made it a refusal on purpose: a page that
+    sets `/Resources` to null is shown without its ancestor's, qpdf reads that null as absent, so
+    burrow cannot tell this document from `evade-resources-null-over-the-tree` and refuses both.
+    It now proves the refusal rather than the inheritance; `nearmiss-resources-on-the-page` took
+    over as the not-a-dictionary twin.
     """
     pdf = Pdf()
     helv = helvetica(pdf)
@@ -1784,7 +2151,32 @@ CASES: list[tuple[str, str]] = [
     ("evade-xobject-category-as-a-stream", "not a dictionary"),
     ("evade-properties-as-a-stream-holding-a-layer", "not a dictionary"),
     ("evade-property-list-as-a-stream", "not a dictionary"),
-    ("nearmiss-resources-inherited-from-pages", "not a dictionary"),
+    ("nearmiss-resources-on-the-page", "not a dictionary"),
+    ("evade-resources-inherited-from-pages", "page attribute inherited"),
+    ("evade-resources-null-over-the-tree", "page attribute inherited"),
+    ("evade-cropbox-null-over-the-tree", "page attribute inherited"),
+    ("evade-rotate-null-over-the-tree", "page attribute inherited"),
+    ("nearmiss-page-attributes-declared-over-the-tree", "page attribute inherited"),
+    ("evade-mediabox-null-over-the-tree", "media box unverified"),
+    ("nearmiss-mediabox-declared-over-the-tree", "media box unverified"),
+    ("evade-cropbox-larger-than-mediabox", "page frame read"),
+    ("evade-cropbox-as-nested-array", "page frame read"),
+    ("evade-cropbox-as-dictionary", "page frame read"),
+    ("evade-rotate-past-the-integer-range", "page frame read"),
+    ("evade-user-unit-two", "page frame read"),
+    ("evade-cropbox-with-five-items", "page frame read"),
+    ("evade-cropbox-past-32-bits", "page frame read"),
+    ("evade-mediabox-past-32-bits", "page frame read"),
+    ("evade-mediabox-past-float-precision", "page frame read"),
+    ("evade-mediabox-negative-past-32-bits", "page frame read"),
+    ("nearmiss-page-frame-plainly-declared", "page frame read"),
+    ("evade-crop-wider-than-both-media-boxes", "media box unverified"),
+    ("evade-junk-kid-over-a-null-rotate", "engine repaired"),
+    ("evade-junk-kid-over-a-null-mediabox", "engine repaired"),
+    ("evade-junk-kid-over-a-null-cropbox", "engine repaired"),
+    ("evade-junk-kid-over-null-resources", "engine repaired"),
+    ("evade-font-repaired-during-the-walk", "engine repaired"),
+    ("nearmiss-kids-all-pages", "engine repaired"),
 ]
 
 BUILDERS = {
@@ -1842,7 +2234,32 @@ BUILDERS = {
     "evade-xobject-category-as-a-stream": evade_xobject_category_as_a_stream,
     "evade-properties-as-a-stream-holding-a-layer": evade_properties_as_a_stream_holding_a_layer,
     "evade-property-list-as-a-stream": evade_property_list_as_a_stream,
-    "nearmiss-resources-inherited-from-pages": nearmiss_resources_inherited_from_pages,
+    "evade-resources-inherited-from-pages": evade_resources_inherited_from_pages,
+    "nearmiss-resources-on-the-page": nearmiss_resources_on_the_page,
+    "evade-resources-null-over-the-tree": evade_resources_null_over_the_tree,
+    "evade-cropbox-null-over-the-tree": evade_cropbox_null_over_the_tree,
+    "evade-rotate-null-over-the-tree": evade_rotate_null_over_the_tree,
+    "nearmiss-page-attributes-declared-over-the-tree": nearmiss_page_attributes_declared_over_the_tree,
+    "evade-mediabox-null-over-the-tree": evade_mediabox_null_over_the_tree,
+    "nearmiss-mediabox-declared-over-the-tree": nearmiss_mediabox_declared_over_the_tree,
+    "evade-cropbox-larger-than-mediabox": evade_cropbox_larger_than_mediabox,
+    "evade-cropbox-as-nested-array": evade_cropbox_as_nested_array,
+    "evade-cropbox-as-dictionary": evade_cropbox_as_dictionary,
+    "evade-rotate-past-the-integer-range": evade_rotate_past_the_integer_range,
+    "evade-user-unit-two": evade_user_unit_two,
+    "nearmiss-page-frame-plainly-declared": nearmiss_page_frame_plainly_declared,
+    "evade-cropbox-with-five-items": evade_cropbox_with_five_items,
+    "evade-crop-wider-than-both-media-boxes": evade_crop_wider_than_both_media_boxes,
+    "evade-cropbox-past-32-bits": evade_cropbox_past_32_bits,
+    "evade-mediabox-past-32-bits": evade_mediabox_past_32_bits,
+    "evade-mediabox-past-float-precision": evade_mediabox_past_float_precision,
+    "evade-mediabox-negative-past-32-bits": evade_mediabox_negative_past_32_bits,
+    "evade-junk-kid-over-a-null-rotate": evade_junk_kid_over_a_null_rotate,
+    "evade-junk-kid-over-a-null-mediabox": evade_junk_kid_over_a_null_mediabox,
+    "evade-junk-kid-over-a-null-cropbox": evade_junk_kid_over_a_null_cropbox,
+    "evade-junk-kid-over-null-resources": evade_junk_kid_over_null_resources,
+    "nearmiss-kids-all-pages": nearmiss_kids_all_pages,
+    "evade-font-repaired-during-the-walk": evade_font_repaired_during_the_walk,
 }
 
 

@@ -66,6 +66,8 @@ extern "C" {
     fn qpdf_read_memory(data: u32, description: u32, buffer: u32, size: u64, password: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_has_error)]
     fn qpdf_has_error(data: u32) -> i32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_more_warnings)]
+    fn qpdf_more_warnings(data: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_get_error)]
     fn qpdf_get_error(data: u32) -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdf_get_error_code)]
@@ -236,6 +238,11 @@ impl QpdfBridge for JsQpdf {
         // qpdf's QPDF_BOOL is an int. Anything non-zero is true; deciding that here rather
         // than in JS keeps the comparison on the Rust side even though it is trivial.
         qpdf_has_error(data.0) != 0
+    }
+
+    fn more_warnings(&self, data: QpdfPtr) -> bool {
+        // As `has_error`: the int is compared here, not in JS (#224).
+        qpdf_more_warnings(data.0) != 0
     }
 
     fn get_error(&self, data: QpdfPtr) -> QpdfPtr {

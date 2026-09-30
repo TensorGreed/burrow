@@ -1137,6 +1137,419 @@ mod wiring {
         );
     }
 
+    /// A one-page document: the page carries `page_extra`, its `/Pages` parent `parent_extra`.
+    /// `SECRET` sits at (20, 350) and `KEEP` at (20, 50), both in object 5's Helvetica (#224).
+    fn page_under_a_tree(page_extra: &str, parent_extra: &str) -> Vec<u8> {
+        let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\nBT /F1 12 Tf 20 50 Td (KEEP) Tj ET\n";
+        pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            format!("<< /Type /Pages /Count 1 /Kids [3 0 R] {parent_extra} >>"),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {page_extra} >>"),
+            stream(content),
+            helvetica("/Encoding /WinAnsiEncoding"),
+        ])
+    }
+
+    /// The band `SECRET` sits in on a 300 x 400 page, measured from the top.
+    const UPPER_BAND: Region = Region {
+        left: 0.0,
+        top: 30.0,
+        width: 300.0,
+        height: 40.0,
+    };
+
+    fn redact_in(bytes: &[u8], region: Region) -> burrow_types::Result<Vec<u8>> {
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        super::super::Qpdf
+            .redact_page(bytes, 0, &BTreeSet::from([0]), region, &options)
+            .map(|(output, _)| output)
+    }
+
+    fn refused_by(outcome: burrow_types::Result<Vec<u8>>, rule: &str, what: &str) {
+        match outcome {
+            Err(error) => assert!(
+                format!("{error:?}").contains(&format!("[{rule}]")),
+                "{what}: refused, but not by [{rule}]: {error:?}"
+            ),
+            Ok(_) => panic!("{what}: redacted, where [{rule}] must refuse"),
+        }
+    }
+
+    const RESOURCES: &str = "/Resources << /Font << /F1 5 0 R >> >>";
+    const BOX: &str = "/MediaBox [0 0 300 400]";
+
+    #[test]
+    fn a_page_attribute_the_tree_supplies_is_refused_whether_the_page_is_null_or_silent() {
+        // #224: a page that sets /Resources, /CropBox or /Rotate to null is shown by PDFium
+        // WITHOUT its ancestor's, and qpdf reads that null as an absent key -- so burrow took the
+        // ancestor's, measured against a page the viewer did not show, and returned Ok with the
+        // secret intact. The null cannot be seen, so the inherited value is refused either way;
+        // and the same value on the page itself -- the near-miss -- redacts.
+        let cases: [(&str, String, String, String); 3] = [
+            (
+                "/Resources",
+                BOX.to_owned(),
+                RESOURCES.to_owned(),
+                format!("{BOX} {RESOURCES}"),
+            ),
+            (
+                "/CropBox",
+                format!("{BOX} {RESOURCES}"),
+                "/CropBox [0 0 300 400]".to_owned(),
+                format!("{BOX} {RESOURCES} /CropBox [0 0 300 400]"),
+            ),
+            (
+                "/Rotate",
+                format!("{BOX} {RESOURCES}"),
+                "/Rotate 90".to_owned(),
+                format!("{BOX} {RESOURCES} /Rotate 90"),
+            ),
+        ];
+        for (key, page, parent, declared) in cases {
+            refused_by(
+                redact_in(
+                    &page_under_a_tree(&format!("{page} {key} null"), &parent),
+                    UPPER_BAND,
+                ),
+                "page-attribute-inherited",
+                &format!("{key} null over the tree"),
+            );
+            refused_by(
+                redact_in(&page_under_a_tree(&page, &parent), UPPER_BAND),
+                "page-attribute-inherited",
+                &format!("{key} absent over the tree"),
+            );
+            redact_in(&page_under_a_tree(&declared, ""), UPPER_BAND).unwrap_or_else(|error| {
+                panic!("{key} declared on the page must redact: {error:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn a_media_box_the_tree_supplies_redacts_only_where_the_renderer_agrees() {
+        // #224, /MediaBox: inherited in 20 of 200 documents measured, so refusing it was not
+        // affordable. PDFium's size decides instead -- a null there gives US Letter.
+        //
+        // INHERITED AND AGREED: redacts, and the secret really goes.
+        let inherited = page_under_a_tree(RESOURCES, BOX);
+        let output = redact_in(&inherited, UPPER_BAND).expect("the renderer shows this box");
+        let expanded = crate::pdf_reading::expanded(&output);
+        assert!(
+            !expanded.windows(6).any(|window| window == b"SECRET"),
+            "redacted, but SECRET is still in the output"
+        );
+        assert!(
+            expanded.windows(4).any(|window| window == b"KEEP"),
+            "KEEP, below the region, was removed: the region was not where it was drawn"
+        );
+        // NULL: PDFium shows Letter, burrow read 300 x 400.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(&format!("{RESOURCES} /MediaBox null"), BOX),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "/MediaBox null over the tree",
+        );
+        // A LETTER-SIZED BOX AWAY FROM THE ORIGIN: the renderer's size is the same whether it
+        // used this box or its null fallback, so the size cannot decide, absent or not.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(RESOURCES, "/MediaBox [100 100 712 892]"),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a Letter-sized box away from the origin",
+        );
+        // THE PAGE'S OWN /CropBox DECIDES: both readers show at most that box, so a null
+        // /MediaBox under it changes nothing either can see.
+        redact_in(
+            &page_under_a_tree(
+                &format!("{RESOURCES} /MediaBox null /CropBox [0 0 300 400]"),
+                BOX,
+            ),
+            UPPER_BAND,
+        )
+        .expect("the page's own crop box is what both show");
+    }
+
+    #[test]
+    fn a_media_box_check_compares_each_axis_the_rotation_and_the_shown_box() {
+        // #224, round 2: each case is one the first tests could not tell from a mutation of the
+        // check -- every earlier fixture was one unrotated 300 x 400 box whose crop was itself,
+        // so both axes always differed together and the shown box was the inherited one.
+        //
+        // ONE AXIS AT A TIME: a null over a box that differs from US Letter in width only, then
+        // in height only. A check that compared one axis would pass one of them.
+        for (parent, which) in [
+            ("/MediaBox [50 0 562 792]", "width only"),
+            ("/MediaBox [0 0 612 700]", "height only"),
+        ] {
+            refused_by(
+                redact_in(
+                    &page_under_a_tree(&format!("{RESOURCES} /MediaBox null"), parent),
+                    UPPER_BAND,
+                ),
+                "media-box-unverified",
+                &format!("a null over a box differing from Letter in {which}"),
+            );
+        }
+        // ROTATED: burrow shows the inherited 792 x 612 turned to 612 x 792; PDFium shows Letter
+        // turned to 792 x 612. Compared unrotated, the two sizes are equal.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(
+                    &format!("{RESOURCES} /MediaBox null /Rotate 90"),
+                    "/MediaBox [0 0 792 612]",
+                ),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a null under a rotated page",
+        );
+        // THE SHOWN BOX, not the inherited one: the page's own crop is half the inherited box,
+        // and both readers show the crop. Compared against the inherited box, this refuses.
+        redact_in(
+            &page_under_a_tree(&format!("{RESOURCES} /CropBox [0 0 300 200]"), BOX),
+            UPPER_BAND,
+        )
+        .expect("both readers show the page's own crop");
+        // THE TOLERANCE: 38 points apart -- PDFium clips the crop to Letter, burrow to the
+        // inherited box. A tolerance of tens of points passes it.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(
+                    &format!("{RESOURCES} /MediaBox null /CropBox [0 0 612 830]"),
+                    "/MediaBox [0 0 612 830]",
+                ),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a crop clipped to Letter by one reader and not the other",
+        );
+        // AND LETTER AT THE ORIGIN, INHERITED, redacts: a null there gives the same box.
+        redact_in(
+            &page_under_a_tree(RESOURCES, "/MediaBox [0 0 612 792]"),
+            UPPER_BAND,
+        )
+        .expect("an inherited Letter box at the origin is the box a null would give");
+    }
+
+    #[test]
+    fn a_rotate_that_is_not_a_number_is_refused_by_the_frame_reader() {
+        // #224: `/Rotate [90]` -- burrow's reader pulled 90 out of the text, and PDFium, which
+        // reads by type, shows the page upright. On `burrow_ops`' path the rotation reader refuses
+        // it first; this is the engine's own reader, which a direct caller meets.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(&format!("{BOX} {RESOURCES} /Rotate [90]"), ""),
+                UPPER_BAND,
+            ),
+            "page-frame-unreadable",
+            "/Rotate [90]",
+        );
+    }
+
+    #[test]
+    fn a_crop_wider_than_both_media_boxes_is_refused() {
+        // #224, code review round 2: burrow clips the crop to the inherited box, PDFium to US
+        // Letter -- both 612 x 792, 100 points apart. The size agreed and the secret stayed.
+        refused_by(
+            redact_in(
+                &page_under_a_tree(
+                    &format!("{RESOURCES} /MediaBox null /CropBox [0 0 812 792]"),
+                    "/MediaBox [100 0 712 792]",
+                ),
+                UPPER_BAND,
+            ),
+            "media-box-unverified",
+            "a crop wider than both media boxes",
+        );
+    }
+
+    #[test]
+    fn a_renderer_that_cannot_answer_is_this_rules_refusal_and_a_limit_stays_a_limit() {
+        // #224, code review round 2: the mapping of the renderer's errors had no witness -- no
+        // renderer in the suite ever failed. Asked directly, with each failure planted.
+        use crate::redact::graph::{OpensForRedaction, PdfDocument};
+        let bytes = page_under_a_tree(RESOURCES, BOX);
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let (document, _) = super::super::Qpdf
+            .open_for_redaction(&bytes, &options)
+            .expect("opens");
+        let page = document.page(0).expect("page 0");
+        let failing = crate::redact::frame::check_inherited_media_box(&page, || {
+            Err(burrow_types::Error::Malformed(
+                "a renderer that could not open it".to_owned(),
+            ))
+        });
+        assert!(
+            matches!(&failing, Err(burrow_types::Error::Unsupported(m)) if m.contains("[media-box-unverified]")),
+            "a renderer failure must refuse by this rule: {failing:?}"
+        );
+        let limited = crate::redact::frame::check_inherited_media_box(&page, || {
+            Err(burrow_types::Error::LimitExceeded {
+                limit: "max_duration_ms",
+                stage: burrow_types::Stage::Deadline,
+                requested: 2,
+                allowed: 1,
+            })
+        });
+        assert!(
+            matches!(limited, Err(burrow_types::Error::LimitExceeded { .. })),
+            "a limit the renderer hits is the operation's limit, not a verdict: {limited:?}"
+        );
+    }
+
+    #[test]
+    fn a_repair_the_write_makes_is_refused_after_it() {
+        // #224, security review round 3: a stream reached only from the catalog is not read by
+        // the walk, so qpdf repairs its wrong `/Length` while writing -- after the check before
+        // the write. The bytes are dropped.
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R /X 6 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
+            stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_owned(),
+            "<< /Length 3 >>\nstream\nsomething longer than three\nendstream".to_owned(),
+        ]);
+        refused_by(
+            redact_in(&bytes, UPPER_BAND),
+            "engine-repaired-input",
+            "a stream qpdf repaired while writing",
+        );
+    }
+
+    #[test]
+    fn an_annotation_rect_past_what_readers_agree_on_is_refused() {
+        // #224, security reviews rounds 3 and 4: PDFium reads a whole number outside 32 bits as
+        // 0, so a `/Rect` of `[20 4294967296 120 380]` is 0..380 to a viewer that draws
+        // annotations -- over the secret at 350 -- and 380 upwards here, clear of the band: the
+        // annotation was kept, `Ok` (measured with the bound removed, round 4). Refused as out of
+        // range, not as a malformed `/Rect`: the kind and the message say which.
+        let page = |rect: &str| {
+            pdf(&[
+                "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} \
+                     /Annots [<< /Type /Annot /Subtype /Square /Rect {rect} >>] >>"
+                ),
+                stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                    .to_owned(),
+            ])
+        };
+        match redact_in(&page("[20 4294967296 120 380]"), UPPER_BAND) {
+            Err(burrow_types::Error::Unsupported(message)) => assert!(
+                message.contains("[annotation-rect]")
+                    && message.contains("larger than any reader agrees on"),
+                "a /Rect edge PDFium reads as 0: refused, but not as out of range: {message}"
+            ),
+            other => panic!("a /Rect edge PDFium reads as 0, over the secret: {other:?}"),
+        }
+        // A CONTAINER AMONG THE ITEMS (round 4): four numbers to a scan of the text -- 200 0 400
+        // 120, clear of the band -- and `[0 400 120 0]` to PDFium, which reads an item that is
+        // not a number as 0: over the secret. Measured `Ok` with the appearance drawn there.
+        // AND EXACTLY FOUR (round 5): PDFium reads any other length as `[0 0 0 0]`, and an
+        // appearance with no `/BBox` (#229) then draws from the page's origin -- measured over
+        // the secret with the length check loosened to `< 4`. Only the five-item case pins the
+        // length: the three-item one is also refused through its missing fourth item.
+        for nested in [
+            "[[200 0] 400 120 []]",
+            "[<< /A 200 /B 0 >> 400 120 << >>]",
+            "[20 380 220 400 7]",
+            "[20 380 220]",
+        ] {
+            refused_by(
+                redact_in(&page(nested), UPPER_BAND),
+                "annotation-rect",
+                &format!("a /Rect of {nested}"),
+            );
+        }
+        // THESE TWO, BELOW, are refused by the out-of-range bound without being leaks themselves.
+        refused_by(
+            redact_in(&page("[4294967316 330 120 350]"), UPPER_BAND),
+            "annotation-rect",
+            "a /Rect corner past 32 bits",
+        );
+        refused_by(
+            redact_in(&page("[20 330 120 -16777217]"), UPPER_BAND),
+            "annotation-rect",
+            "a /Rect corner below -2^24",
+        );
+        // THE NEAR-MISS: the same annotation where both readers put it is removed, and redacts.
+        let output = redact_in(&page("[20 330 120 350]"), UPPER_BAND).expect("redacts");
+        assert!(
+            !String::from_utf8_lossy(&output).contains("/Square"),
+            "the annotation over the region was removed"
+        );
+        // AND THE SEARCH CAN SEE IT: a region away from it keeps the annotation, readable.
+        let away = Region {
+            left: 0.0,
+            top: 300.0,
+            width: 300.0,
+            height: 40.0,
+        };
+        let kept = redact_in(&page("[20 330 120 350]"), away).expect("redacts");
+        assert!(
+            String::from_utf8_lossy(&kept).contains("/Square"),
+            "an annotation away from the region is kept, where this search would find it"
+        );
+    }
+
+    #[test]
+    fn a_repair_during_the_walk_is_refused() {
+        // #224, security review round 2: qpdf reads a font lazily, so a stray `)` in its
+        // `/Widths` is repaired -- and warned about -- during the walk, after the open's check;
+        // the check after the write sees the warning, which persists.
+        // PDFium ends the array at the `)` instead, and the two placed the glyphs differently.
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
+            stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+                 /FirstChar 31 /LastChar 94 /Widths [0 ) 9000 {}] >>",
+                "556 ".repeat(62)
+            ),
+        ]);
+        refused_by(
+            redact_in(&bytes, UPPER_BAND),
+            "engine-repaired-input",
+            "a font qpdf repaired while the walk read it",
+        );
+    }
+
+    #[test]
+    fn the_renderer_is_asked_about_the_page_being_redacted() {
+        // #224, round 2: page 0 declares 300 x 400; page 1 sets its /MediaBox to null over the
+        // same box on /Pages, so PDFium shows page 1 at US Letter. A check that asked about page
+        // 0 would hear 300 x 400 and pass.
+        let content = "BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n";
+        let resources = "/Resources << /Font << /F1 6 0 R >> >>";
+        let bytes = pdf(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] /MediaBox [0 0 300 400] >>".to_owned(),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 5 0 R {BOX} {resources} >>"),
+            format!("<< /Type /Page /Parent 2 0 R /Contents 5 0 R /MediaBox null {resources} >>"),
+            stream(content),
+            helvetica("/Encoding /WinAnsiEncoding"),
+        ]);
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let outcome = super::super::Qpdf
+            .redact_page(&bytes, 1, &BTreeSet::from([1]), UPPER_BAND, &options)
+            .map(|(output, _)| output);
+        refused_by(
+            outcome,
+            "media-box-unverified",
+            "page 1's null, asked about page 1",
+        );
+    }
+
     #[test]
     fn the_check_is_told_the_page_that_was_redacted() {
         // KILLS: `Cleared { page: 0 }` instead of `page`. Every end-to-end test redacts page 0,

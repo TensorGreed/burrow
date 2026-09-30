@@ -384,6 +384,10 @@ pub trait QpdfBridge: Send + Sync {
     /// `qpdf_has_error`.
     fn has_error(&self, data: QpdfPtr) -> bool;
 
+    /// `qpdf_more_warnings`: whether qpdf recorded a warning -- a repair -- not yet handed out
+    /// (#224). Only whether: nothing that reads a warning's code or text crosses this bridge.
+    fn more_warnings(&self, data: QpdfPtr) -> bool;
+
     /// `qpdf_get_error`, which *consumes* the error slot.
     fn get_error(&self, data: QpdfPtr) -> QpdfPtr;
 

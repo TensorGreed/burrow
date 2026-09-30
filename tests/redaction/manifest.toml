@@ -1763,22 +1763,151 @@ The optional-content walk read it as absent.
 """
 
 [[fixture]]
-name = "nearmiss-resources-inherited-from-pages"
-file = "generated/nearmiss-resources-inherited-from-pages.pdf"
+name = "nearmiss-resources-on-the-page"
+file = "generated/nearmiss-resources-on-the-page.pdf"
 kind = "hand-built"
 probes_refusal = "not a dictionary"
 pages = 1
 
   [[fixture.placement]]
-  channel = "ordinary /Resources inherited from /Pages — near-miss twin"
-  canary = "BURROW-EVADE-INHERITED"
+  channel = "an ordinary /Resources dictionary on the page — near-miss twin"
+  canary = "BURROW-EVADE-ON-THE-PAGE"
   verdict = "handle"
   adr = "§3, §5"
   witness_before = "raw-file"
   witness_observes = "canary"
   expect_after = "gone"
   notes = """
-MUST NOT be refused. The refusal is about a stream in a dictionary's place, not about inheriting.
+MUST NOT be refused. The not-a-dictionary twin since #224, when the inherited one it replaced became a refusal.
+"""
+[[fixture]]
+name = "evade-resources-inherited-from-pages"
+file = "generated/evade-resources-inherited-from-pages.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Resources inherited from /Pages, with none on the page — refused since #224"
+  canary = "BURROW-EVADE-INHERITED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Was nearmiss-resources-inherited-from-pages, and MUST NOT be refused until #224. Re-recorded deliberately: a page that
+sets /Resources to null is shown without its ancestor's, qpdf cannot see the null, so an absent
+key and a null one are refused alike. It proves the refusal now, not the inheritance.
+"""
+[[fixture]]
+name = "evade-resources-null-over-the-tree"
+file = "generated/evade-resources-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Resources null on the page over a zero-width /Pages font — evasion"
+  canary = "BURROW-EVADE-RESOURCES-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium stops at the null; qpdf climbed to the zero-width font and the canary was measured outside the region. Ok with the canary, until #224.
+"""
+[[fixture]]
+name = "evade-cropbox-null-over-the-tree"
+file = "generated/evade-cropbox-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox null on the page over a /Pages crop — evasion"
+  canary = "BURROW-EVADE-CROPBOX-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium shows the /MediaBox; burrow measured the region against the ancestor's crop, until #224.
+"""
+[[fixture]]
+name = "evade-rotate-null-over-the-tree"
+file = "generated/evade-rotate-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate null on the page over a /Pages /Rotate 90 — evasion"
+  canary = "BURROW-EVADE-ROTATE-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium shows the page unrotated; burrow unwound the region by 90 degrees, until #224.
+"""
+[[fixture]]
+name = "nearmiss-page-attributes-declared-over-the-tree"
+file = "generated/nearmiss-page-attributes-declared-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "page attribute inherited"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "every inheritable key on /Pages and the page's own on the page — near-miss twin"
+  canary = "BURROW-EVADE-DECLARED-TREE"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. An ancestor having the keys is not the shape; a page taking them from it is.
+"""
+[[fixture]]
+name = "evade-mediabox-null-over-the-tree"
+file = "generated/evade-mediabox-null-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "media box unverified"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/MediaBox null on the page over the fixture size on /Pages — evasion"
+  canary = "BURROW-EVADE-MEDIABOX-NULL"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium shows US Letter; burrow measured against the ancestor's box. Refused natively because PDFium's size
+disagrees, and on the web because there is no renderer to ask -- one rule on both.
+"""
+[[fixture]]
+name = "nearmiss-mediabox-declared-over-the-tree"
+file = "generated/nearmiss-mediabox-declared-over-the-tree.pdf"
+kind = "hand-built"
+probes_refusal = "media box unverified"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Letter /MediaBox on /Pages and the fixture size on the page — near-miss twin"
+  canary = "BURROW-EVADE-MEDIABOX-DECLARED"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused, on either engine: nothing is inherited, so no renderer is needed.
 """
 
 [[fixture]]
@@ -1820,4 +1949,347 @@ pages = 1
   notes = """
 The entry, not the category. Read as absent it refuses as unresolved; the rule this pins is the
 stream one, which a mutation dropping the entry check survived until this fixture existed.
+"""
+
+[[fixture]]
+name = "evade-cropbox-larger-than-mediabox"
+file = "generated/evade-cropbox-larger-than-mediabox.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /CropBox five times taller than the /MediaBox — handled by clipping"
+  canary = "BURROW-EVADE-CROP-TOO-TALL"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+Clipped to the media box as PDFium clips it (#224). Unclipped, the region was measured against a page five times taller and the canary kept.
+"""
+
+[[fixture]]
+name = "evade-cropbox-as-nested-array"
+file = "generated/evade-cropbox-as-nested-array.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox [[...]] — evasion"
+  canary = "BURROW-EVADE-CROP-NESTED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+burrow picked four numbers out of it; PDFium ignores it (#224).
+"""
+
+[[fixture]]
+name = "evade-cropbox-as-dictionary"
+file = "generated/evade-cropbox-as-dictionary.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox as a dictionary of four numbers — evasion"
+  canary = "BURROW-EVADE-CROP-DICT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+burrow read the numbers as a box; PDFium does not (#224).
+"""
+
+[[fixture]]
+name = "evade-rotate-past-the-integer-range"
+file = "generated/evade-rotate-past-the-integer-range.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate beyond the integer range — evasion"
+  canary = "BURROW-EVADE-ROTATE-HUGE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+90 to a reader that keeps the digits, 0 to PDFium (#224).
+"""
+
+[[fixture]]
+name = "evade-user-unit-two"
+file = "generated/evade-user-unit-two.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/UserUnit 2 — evasion"
+  canary = "BURROW-EVADE-USER-UNIT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The region conversion divided by it; the renderer ignores it (#224).
+"""
+
+[[fixture]]
+name = "nearmiss-page-frame-plainly-declared"
+file = "generated/nearmiss-page-frame-plainly-declared.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "crop inside the media box, /Rotate 0, /UserUnit 1 — near-miss twin"
+  canary = "BURROW-EVADE-FRAME-PLAIN"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused: every value present, in the shape both readers take.
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-a-null-rotate"
+file = "generated/evade-junk-kid-over-a-null-rotate.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate null over /Pages /Rotate 90, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-ROTATE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf rebuilds the tree and pushes /Rotate 90 onto the page; only its warning says so (#224).
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-a-null-mediabox"
+file = "generated/evade-junk-kid-over-a-null-mediabox.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/MediaBox null over /Pages' box, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-MEDIABOX"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf pushes the ancestor's box onto the page, hiding the null from the check (#224).
+"""
+
+[[fixture]]
+name = "nearmiss-kids-all-pages"
+file = "generated/nearmiss-kids-all-pages.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "every /Kids entry a page — near-miss twin"
+  canary = "BURROW-EVADE-KIDS-CLEAN"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused: nothing for qpdf to repair.
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-a-null-cropbox"
+file = "generated/evade-junk-kid-over-a-null-cropbox.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox null over a /Pages crop, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-CROPBOX"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf pushes the ancestor's crop onto the page, hiding the null (#224).
+"""
+
+[[fixture]]
+name = "evade-junk-kid-over-null-resources"
+file = "generated/evade-junk-kid-over-null-resources.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Resources null over a zero-width /Pages font, with a junk /Kids entry — evasion"
+  canary = "BURROW-EVADE-KIDS-RESOURCES"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf pushes the ancestor's resources onto the page, hiding the null (#224).
+"""
+
+[[fixture]]
+name = "evade-cropbox-with-five-items"
+file = "generated/evade-cropbox-with-five-items.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/CropBox of five items — evasion"
+  canary = "BURROW-EVADE-CROP-FIVE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads a five-item box as no box; burrow read the first four (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-crop-wider-than-both-media-boxes"
+file = "generated/evade-crop-wider-than-both-media-boxes.pdf"
+kind = "hand-built"
+probes_refusal = "media box unverified"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a crop wider than both media boxes, over a null /MediaBox — evasion"
+  canary = "BURROW-EVADE-CROP-WIDER"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Clipped to different boxes by the two readers, the same size 100 points apart (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-cropbox-past-32-bits"
+file = "generated/evade-cropbox-past-32-bits.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /CropBox edge past 32 bits — evasion"
+  canary = "BURROW-EVADE-CROP-32"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads the edge as 0; qpdf keeps it and warns about nothing (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-mediabox-past-32-bits"
+file = "generated/evade-mediabox-past-32-bits.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an own /MediaBox edge past 32 bits — evasion"
+  canary = "BURROW-EVADE-MEDIA-32"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+An empty box to PDFium, which shows US Letter; burrow read it as written (#224, round 2).
+"""
+
+[[fixture]]
+name = "evade-font-repaired-during-the-walk"
+file = "generated/evade-font-repaired-during-the-walk.pdf"
+kind = "hand-built"
+probes_refusal = "engine repaired"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a font /Widths qpdf repairs lazily, during the walk — evasion"
+  canary = "BURROW-EVADE-FONT-REPAIRED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Repaired after the open's warning check; refused by the check after the write (#224; before the
+write in round 2, moved in round 4).
+"""
+
+[[fixture]]
+name = "evade-mediabox-past-float-precision"
+file = "generated/evade-mediabox-past-float-precision.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /MediaBox at 2^31, past a float's whole numbers — evasion"
+  canary = "BURROW-EVADE-MEDIA-FLOAT"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium's floats collapse the box; burrow read it exactly (#224, round 3).
+"""
+
+[[fixture]]
+name = "evade-mediabox-negative-past-32-bits"
+file = "generated/evade-mediabox-negative-past-32-bits.pdf"
+kind = "hand-built"
+probes_refusal = "page frame read"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /MediaBox left edge below -2^31 — evasion"
+  canary = "BURROW-EVADE-MEDIA-NEG"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+0 to PDFium, a huge box to burrow (#224, round 3).
 """

@@ -260,6 +260,12 @@ impl Session {
         }
     }
 
+    /// Whether qpdf repaired anything while reading this document (#224); see
+    /// `redact::repaired_by_the_engine`.
+    pub(super) fn repaired(&self) -> bool {
+        self.bridge.more_warnings(self.data)
+    }
+
     /// Whether qpdf is holding an error, and what it is.
     ///
     /// Called after **every** bridge call, whatever that call returned. `qpdf-c.h:70-73`:
