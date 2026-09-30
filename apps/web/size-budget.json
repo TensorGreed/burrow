@@ -277,12 +277,12 @@
         "why": "Redaction's worker bundle: the shared prelude, bridge and protocol, qpdf's glue, the wasm-bindgen glue for the redaction module and `redact-main.js`. Mostly the same files as the base bundle, which is why it is about the base worker's size; the difference is the dispatch and the generated binding."
       },
       "engines/burrow_wasm_redact_bg.wasm": {
-        "measured_raw": 542029,
-        "measured_brotli": 169359,
+        "measured_raw": 561600,
+        "measured_brotli": 173409,
         "budget_brotli": 205770,
-        "measured_sha256": "72304430b69af16a1cf4a8adf0b7300ff538036027e40d4a70a87b505234f0f4",
-        "measured_sha256_normalised": "72304430b69af16a1cf4a8adf0b7300ff538036027e40d4a70a87b505234f0f4",
-        "why": "Redaction's own Rust module: the content-stream rewriter, the geometry walk, the font surgery and the read-back, over qpdf through the base bundle's bridge. 164,616 brotli at the first measurement (#137), which is the number that forced the split. #218 TOOK IT +4,743 (164,616 -> 169,359; 519,901 -> 542,029 raw), the budget unchanged: the growth is what the headroom is for. Measured per commit on one machine, where main rebuilds to the recorded bytes exactly: the check finding each cut font by path and refusing direct fonts +3,999; the walk recording each glyph's route and the per-page resolution caches +3,045; [font-selected-in-another-scope] +331; the operation's path invariant +225; and the coverage gate moving into the check, with drawn_in removed, -2,857."
+        "measured_sha256": "7b53143da75e01711b42e66be42c02f019881e1c1a1708e07377495dd80d7bd5",
+        "measured_sha256_normalised": "7b53143da75e01711b42e66be42c02f019881e1c1a1708e07377495dd80d7bd5",
+        "why": "Redaction's own Rust module: the content-stream rewriter, the geometry walk, the font surgery and the read-back, over qpdf through the base bundle's bridge. 164,616 brotli at the first measurement (#137), which is the number that forced the split. #218 TOOK IT +4,743 (164,616 -> 169,359; 519,901 -> 542,029 raw), the budget unchanged: the growth is what the headroom is for. Measured per commit on one machine, where main rebuilds to the recorded bytes exactly: the check finding each cut font by path and refusing direct fonts +3,999; the walk recording each glyph's route and the per-page resolution caches +3,045; [font-selected-in-another-scope] +331; the operation's path invariant +225; and the coverage gate moving into the check, with drawn_in removed, -2,857. #224 AND #152 TOOK IT +4,050 (169,359 -> 173,409; 542,029 -> 561,600 raw), the budget unchanged. Measured on one machine from each branch's harness build: #224's frame reader, inherited-attribute refusals, repair checks and typed reads +3,267 (to 172,626; 559,071 raw), inside the 2% tolerance on its own and so not re-recorded when it merged; #152's graphics-state font rule, scope chain and token and string cuts +783 on top, which took the pair past it."
       }
     },
     "not_byte_reproducible": {
