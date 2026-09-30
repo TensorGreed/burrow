@@ -23,7 +23,7 @@
 //! # What this does not do
 //!
 //! It does not put redaction on the site. The bundle this module ships in is staged into
-//! harness builds only, and `/redact-pdf` is held under #125 and #180–#183
+//! harness builds only, and `/redact-pdf` is held under #125, #180–#182 and #227–#229
 //! (`src/production-build.test.ts` in `apps/web`). #136 is the page.
 
 use std::collections::BTreeSet;
