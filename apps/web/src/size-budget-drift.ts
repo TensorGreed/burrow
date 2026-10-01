@@ -31,7 +31,9 @@
 // nothing stable to compare against: its bytes legitimately differ per machine. That is
 // where the 236 bytes hid, and the honest answer is a bound rather than a claim — its size
 // must stay within `drift_tolerance` of the recording, so gross drift still fails and the
-// invisible window is a declared width rather than an open door. Shortening that list is
+// invisible window is a declared width rather than an open door. The width is around the
+// RECORDING, so changes that land unrecorded spend it between them: two that each pass can
+// fail together, and the second is the one that sees it. Shortening that list is
 // the real fix, and it means making `pkg/` reproducible, which is a build change and not
 // this one.
 //
@@ -240,7 +242,9 @@ export function explain(finding: Finding): string {
       return (
         `${finding.key}: declared not byte-reproducible, but its size moved from ` +
         `${finding.recorded} to ${finding.live} brotli, past the ` +
-        `${(finding.tolerance * 100).toFixed(0)}% tolerance. Re-record and say what grew.`
+        `${(finding.tolerance * 100).toFixed(0)}% tolerance. That is measured from the ` +
+        `recording, not from the last build, so it can be the sum of changes that each ` +
+        `passed. Re-record and say what grew.`
       );
   }
 }

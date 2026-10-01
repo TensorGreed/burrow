@@ -42,6 +42,7 @@ import {
 import {
   HASH_COUPLING_BYTES,
   type Live,
+  type Recorded,
   classify,
   driftFindings,
   explain,
@@ -910,6 +911,76 @@ describe("the drift probe itself", () => {
     });
     expect(findings.map((f) => f.kind)).toEqual(["drift"]);
     expect(explain(findings[0])).toContain("tolerance");
+  });
+
+  it("measures the tolerance from the recording, so two small changes that sum past it fail", () => {
+    // THE RULE: the tolerance is a width around the last RE-RECORDED value, not around the
+    // last measured one. The numbers are the incident's. #224 took redaction's module +3,267
+    // brotli over a recording of 169,359 and merged unrecorded; #152 added 783 and failed.
+    // Neither crosses the tolerance alone.
+    //
+    // WHAT THIS PINS. `driftFindings` is stateless, so there is no "last build" for it to
+    // compare with by mistake. What can go wrong is the bound: the probe above moves an
+    // artifact by 100%, which a tolerance loosened almost fiftyfold still catches. This one
+    // brackets it between 1.93% and 2.39%, in both directions, on the size the rule is about.
+    const recordedBrotli = 169_359;
+    const first = 3_267;
+    const second = 783;
+    // The file's own tolerance, so a change to it fails here by name rather than leaving
+    // `size-budget.json`'s account of the incident quietly untrue.
+    const tolerance = budget.drift_tolerance;
+
+    // THE PLANTS ARE WHAT THEY CLAIM TO BE, asserted before anything is concluded from them:
+    // each change is under the tolerance against the build before it, and the pair is over.
+    expect(first / recordedBrotli).toBeLessThan(tolerance);
+    expect(second / (recordedBrotli + first)).toBeLessThan(tolerance);
+    expect((first + second) / recordedBrotli).toBeGreaterThan(tolerance);
+
+    // `raw` does not move with `brotli`, so a comparison made on the wrong field sees no
+    // movement at all and the assertions below fail.
+    const raw = 542_029;
+    const recording = (brotli: number, digest: string): Recorded => ({
+      measured_raw: raw,
+      measured_brotli: brotli,
+      measured_sha256: digest,
+      measured_sha256_normalised: digest,
+    });
+    const build = (brotli: number, digest: string): Live => ({
+      raw,
+      brotli,
+      sha256: digest,
+      sha256Normalised: digest,
+    });
+    const compare = (recorded: Recorded, live: Live) =>
+      driftFindings({
+        recorded: { a: recorded },
+        live: { a: live },
+        notByteReproducible: { a: "because" },
+        tolerance,
+      });
+
+    const original = recording(recordedBrotli, "r0");
+    const afterFirst = build(recordedBrotli + first, "b1");
+    const afterBoth = build(recordedBrotli + first + second, "b2");
+
+    // The first change lands inside the tolerance, unrecorded.
+    expect(compare(original, afterFirst)).toEqual([]);
+
+    // The second is compared with the RECORDING, and the pair is past it.
+    const findings = compare(original, afterBoth);
+    expect(findings.map((f) => f.kind)).toEqual(["drift"]);
+    expect(findings[0]).toMatchObject({ recorded: recordedBrotli, live: afterBoth.brotli });
+    expect(explain(findings[0])).toContain("measured from the recording");
+
+    // THE SAME PAIR, SHRINKING. Every other tolerance plant in this block grows, so a
+    // comparison that lost its `Math.abs` would pass them all.
+    expect(compare(original, build(recordedBrotli - first, "s1"))).toEqual([]);
+    const shrunk = compare(original, build(recordedBrotli - first - second, "s2"));
+    expect(shrunk.map((f) => f.kind)).toEqual(["drift"]);
+
+    // A re-record is what moves the baseline: had the first change been recorded, the second
+    // is inside the tolerance of that recording.
+    expect(compare(recording(afterFirst.brotli, "b1"), afterBoth)).toEqual([]);
   });
 
   it("tolerates a size wobble when only the engine hashes differ", () => {
