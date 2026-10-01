@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 54] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 66] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2503,10 +2503,46 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 54] = [
         Some("ext-gstate-sets-font"),
     ),
     ("nearmiss-extgstate-for-transparency.pdf", None),
+    (
+        "evade-rotate-at-the-wrong-generation.pdf",
+        Some("reference-to-nothing"),
+    ),
+    (
+        "evade-rotate-at-generation-zero-over-one.pdf",
+        Some("reference-to-nothing"),
+    ),
+    (
+        "evade-wrong-generation-in-an-object-stream.pdf",
+        Some("reference-to-nothing"),
+    ),
+    ("nearmiss-rotate-at-the-right-generation.pdf", None),
+    ("nearmiss-right-generation-in-an-object-stream.pdf", None),
+    (
+        "evade-reference-with-a-sign.pdf",
+        Some("reference-unreadable"),
+    ),
+    (
+        "evade-generation-with-a-sign.pdf",
+        Some("reference-unreadable"),
+    ),
+    (
+        "evade-reference-with-leading-zeros.pdf",
+        Some("reference-unreadable"),
+    ),
+    (
+        "evade-reference-with-a-comment-inside.pdf",
+        Some("reference-unreadable"),
+    ),
+    ("nearmiss-reference-written-plainly.pdf", None),
+    ("nearmiss-literal-null-threads.pdf", None),
+    (
+        "evade-object-stream-qpdf-cannot-load.pdf",
+        Some("engine-repaired-input"),
+    ),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 8] = [
+const RESOLVED_GROUPS: [&str; 10] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
@@ -2515,6 +2551,8 @@ const RESOLVED_GROUPS: [&str; 8] = [
     "page frame read",
     "engine repaired",
     "graphics state font",
+    "reference to nothing",
+    "reference unreadable",
 ];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.

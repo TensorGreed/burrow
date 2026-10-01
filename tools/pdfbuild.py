@@ -43,6 +43,9 @@ ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- "
 class Pdf:
     def __init__(self) -> None:
         self.objects: dict[int, bytes] = {}
+        # A generation other than 0, for the few fixtures whose subject is one (#227). Absent
+        # means 0, and a document that sets none builds byte for byte as before.
+        self.generations: dict[int, int] = {}
         self._next = 1
         self.extra_trailer = b""
 
@@ -58,6 +61,11 @@ class Pdf:
     def add(self, body: bytes) -> int:
         return self.put(self.reserve(), body)
 
+    def put_at_generation(self, num: int, generation: int, body: bytes) -> int:
+        """`num` written, headed and cross-referenced at `generation` rather than 0 (#227)."""
+        self.generations[num] = generation
+        return self.put(num, body)
+
     def stream(self, extra: bytes, data: bytes) -> int:
         body = b"<< " + extra + b" /Length " + str(len(data)).encode() + b" >>\nstream\n"
         body += data + b"\nendstream"
@@ -68,14 +76,16 @@ class Pdf:
         offsets: dict[int, int] = {}
         for num in sorted(self.objects):
             offsets[num] = len(out)
-            out += f"{num} 0 obj\n".encode() + self.objects[num] + b"\nendobj\n"
+            gen = self.generations.get(num, 0)
+            out += f"{num} {gen} obj\n".encode() + self.objects[num] + b"\nendobj\n"
         size = max(self.objects) + 1
         xref_at = len(out)
         out += f"xref\n0 {size}\n".encode()
         out += b"0000000000 65535 f \n"
         for num in range(1, size):
             if num in offsets:
-                out += f"{offsets[num]:010d} 00000 n \n".encode()
+                gen = self.generations.get(num, 0)
+                out += f"{offsets[num]:010d} {gen:05d} n \n".encode()
             else:
                 out += b"0000000000 65535 f \n"
         trailer = f"trailer\n<< /Size {size} /Root {root} 0 R".encode()
@@ -83,6 +93,53 @@ class Pdf:
             trailer += f" /Info {info} 0 R".encode()
         trailer += self.extra_trailer + b" >>\n"
         out += trailer + f"startxref\n{xref_at}\n%%EOF\n".encode()
+        return bytes(out)
+
+    def build_with_object_stream(
+        self, root: int, members: list[int], stream_generation: int = 0
+    ) -> bytes:
+        """The document with `members` inside one object stream, cross-referenced by a stream (#227).
+
+        Both streams are written UNCOMPRESSED -- legal, and readable by eye -- so a fixture whose
+        subject is a reference inside an object stream needs no deflater. Members are generation 0,
+        as the specification requires of an object stream's members. The stream itself is written,
+        headed and cross-referenced at `stream_generation`, which qpdf will not read members from.
+        """
+        out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        # (type, field 2, field 3) per object number, as a cross-reference stream records them.
+        entries: dict[int, tuple[int, int, int]] = {0: (0, 0, 65535)}
+        for num in sorted(self.objects):
+            if num in members:
+                continue
+            gen = self.generations.get(num, 0)
+            entries[num] = (1, len(out), gen)
+            out += f"{num} {gen} obj\n".encode() + self.objects[num] + b"\nendobj\n"
+        objstm = max(self.objects) + 1
+        header = b""
+        body = b""
+        for index, num in enumerate(members):
+            header += f"{num} {len(body)} ".encode()
+            body += self.objects[num] + b"\n"
+            entries[num] = (2, objstm, index)
+        data = header + body
+        entries[objstm] = (1, len(out), stream_generation)
+        out += (
+            f"{objstm} {stream_generation} obj\n<< /Type /ObjStm /N {len(members)} /First {len(header)}"
+            f" /Length {len(data)} >>\nstream\n"
+        ).encode() + data + b"\nendstream\nendobj\n"
+        xref = objstm + 1
+        xref_at = len(out)
+        entries[xref] = (1, xref_at, 0)
+        size = xref + 1
+        table = b"".join(
+            bytes([kind]) + two.to_bytes(4, "big") + three.to_bytes(2, "big")
+            for kind, two, three in (entries.get(n, (0, 0, 0)) for n in range(size))
+        )
+        out += (
+            f"{xref} 0 obj\n<< /Type /XRef /Size {size} /W [1 4 2] /Root {root} 0 R"
+            f" /Length {len(table)} >>\nstream\n"
+        ).encode() + table + b"\nendstream\nendobj\n"
+        out += f"startxref\n{xref_at}\n%%EOF\n".encode()
         return bytes(out)
 
 

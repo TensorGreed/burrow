@@ -187,6 +187,23 @@ impl<D: PdfDocument> PageRedaction<D> {
         self.document.page(self.page)
     }
 
+    /// Refuse the document if any reference it writes resolves to null, or cannot be read as qpdf
+    /// reads it; see `references::refuse_references_to_nothing` (#227). `bytes` is the input the
+    /// document was opened from.
+    ///
+    /// # Errors
+    ///
+    /// `[reference-to-nothing]`, `[reference-unreadable]`, the deadline, and whatever the engine
+    /// reports.
+    pub(crate) fn refuse_references_to_nothing(&self, bytes: &[u8]) -> Result<()> {
+        super::references::refuse_references_to_nothing(
+            &self.document,
+            bytes,
+            &self.deadline,
+            self.clock.as_ref(),
+        )
+    }
+
     /// Refuse the page if its `/MediaBox` comes from the page tree and `renderer_size` does not
     /// vouch for it; see `frame::check_inherited_media_box` (#224).
     ///

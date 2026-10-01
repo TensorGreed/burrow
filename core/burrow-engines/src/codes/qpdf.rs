@@ -121,6 +121,14 @@ pub(crate) mod policy {
 pub(crate) mod object_type {
     use core::ffi::c_int;
 
+    /// `ot_uninitialized` — the first member, internal to qpdf: a handle to nothing, which a
+    /// trapped accessor's fallback can hand back.
+    pub(crate) const UNINITIALIZED: c_int = 0;
+
+    /// `ot_reserved` — the second member, internal to qpdf: a placeholder for an object not yet
+    /// supplied, which no document read from bytes should leave behind.
+    pub(crate) const RESERVED: c_int = 1;
+
     /// `ot_null` — the third member, and what an absent dictionary key reads as.
     pub(crate) const NULL: c_int = 2;
 

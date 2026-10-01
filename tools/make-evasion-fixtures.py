@@ -1994,6 +1994,158 @@ def nearmiss_extgstate_for_transparency() -> bytes:
     )
 
 
+
+# ===========================================================================================
+# A reference qpdf resolves to null (#227). qpdf resolves `N G R` to null when its
+# cross-reference has no object N at generation G, drops the key, and warns about nothing;
+# PDFium finds object N by number. Every rule that reads an absent entry as "nothing there" was
+# reading what the viewer does not show. Refused, any reference qpdf resolves to null, and any
+# reference not written in plain digits.
+# ===========================================================================================
+
+
+def _rotated_by_reference(
+    tag: str, reference: str, generation: int, value: bytes, in_object_stream: bool = False
+) -> bytes:
+    """The canary page, its `/Rotate` written as `reference` -- `{n}` is the target's number --
+    to an object holding `value` at `generation`. In an object stream, the page is the member."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    target = pdf.reserve()
+    pdf.put_at_generation(target, generation, value)
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", _secret_run(tag) + keep_line_ops())
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R /MediaBox "
+        + _box(PAGE_W, PAGE_H) + _own_resources(helv)
+        + b" /Rotate " + reference.format(n=target).encode()
+        + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(pages, b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R] >>")
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    if in_object_stream:
+        return pdf.build_with_object_stream(root, [page])
+    return pdf.build(root)
+
+
+def evade_rotate_at_the_wrong_generation() -> bytes:
+    """`/Rotate N 1 R` over a file holding only `N 0`, which is `90` (#227, the reviewers' shape).
+
+    qpdf resolves the reference to null and drops `/Rotate`, warning about nothing; PDFium follows
+    it and turns the page, so the canary is not where burrow measured it. `Ok` with the canary in
+    the output, on both engines, until #227.
+    """
+    return _rotated_by_reference("WRONG-GENERATION", "{n} 1 R", 0, b"90")
+
+
+def evade_rotate_at_generation_zero_over_one() -> bytes:
+    """`/Rotate N 0 R` where `N` is declared and headed at generation 1 (#227, the second shape)."""
+    return _rotated_by_reference("GEN-ZERO-OVER-ONE", "{n} 0 R", 1, b"90")
+
+
+def nearmiss_rotate_at_the_right_generation() -> bytes:
+    """`/Rotate N 1 R` over `N 1`, holding `0`. MUST redact.
+
+    The twin: an indirect value at a generation other than 0 is ordinary in a document edited
+    incrementally. Only a generation the cross-reference does not have is the shape.
+    """
+    return _rotated_by_reference("RIGHT-GENERATION", "{n} 1 R", 1, b"0")
+
+
+def evade_wrong_generation_in_an_object_stream() -> bytes:
+    """The page is an object stream's member, and its `/Rotate N 1 R` is over `N 0`, `90` (#227).
+
+    The file body names generation 1 nowhere: the reference is inside the compressed-object
+    container qpdf decodes, so a check of the raw bytes alone passes it.
+    """
+    return _rotated_by_reference("OBJSTM-WRONG-GEN", "{n} 1 R", 0, b"90", True)
+
+
+def nearmiss_right_generation_in_an_object_stream() -> bytes:
+    """The same object stream, its member's `/Rotate N 0 R` over `N 0`, holding `0`. MUST redact."""
+    return _rotated_by_reference("OBJSTM-RIGHT-GEN", "{n} 0 R", 0, b"0", True)
+
+
+def evade_reference_with_a_sign() -> bytes:
+    """`/Rotate +N 0 R`, which qpdf reads as `N 0 R` (#227). Refused for its shape."""
+    return _rotated_by_reference("SIGNED-NUMBER", "+{n} 0 R", 0, b"90")
+
+
+def evade_generation_with_a_sign() -> bytes:
+    """`/Rotate N +0 R`, which qpdf reads as `N 0 R` (#227). Refused for its shape."""
+    return _rotated_by_reference("SIGNED-GENERATION", "{n} +0 R", 0, b"90")
+
+
+def evade_reference_with_leading_zeros() -> bytes:
+    """`/Rotate 0N 00 R`, which qpdf reads as `N 0 R` (#227). Refused for its shape."""
+    return _rotated_by_reference("LEADING-ZEROS", "0{n} 00 R", 0, b"90")
+
+
+def evade_reference_with_a_comment_inside() -> bytes:
+    """`/Rotate N %...` newline `0 R`, which qpdf reads through (#227). Refused for its shape."""
+    return _rotated_by_reference("COMMENT-INSIDE", "{n} %between\n0 R", 0, b"90")
+
+
+def evade_object_stream_qpdf_cannot_load() -> bytes:
+    """`/Rotate N 0 R` to a member of an object stream headed and cross-referenced at generation 1.
+
+    qpdf reads members only through `(S, 0)`, cannot load this stream, warns, and stores the member
+    as a null that still carries its identity -- so the reference check, which refuses a null only
+    when qpdf does not declare it at the pair written, passes it (#227). PDFium follows the member
+    and turns the page (measured). Refused by `[engine-repaired-input]`, the warnings after the
+    write; not by the reference rule.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    member = pdf.add(b"90")
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", _secret_run("OBJSTM-UNLOADABLE") + keep_line_ops())
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R /MediaBox "
+        + _box(PAGE_W, PAGE_H) + _own_resources(helv)
+        + b" /Rotate " + str(member).encode() + b" 0 R"
+        + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(pages, b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R] >>")
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    return pdf.build_with_object_stream(root, [member], stream_generation=1)
+
+
+def nearmiss_literal_null_threads() -> bytes:
+    """The catalog's `/Threads N 0 R` to an object whose whole value is `null`. MUST redact.
+
+    dvipdfm writes this, and the first #227 rule -- refuse every null -- refused 2 of 99 real
+    documents for it, against a 1% bar. Both readers read the null; qpdf declares it at the pair
+    written. This twin keeps the narrowing from silently widening back.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    threads = pdf.add(b"null")
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", _secret_run("NULL-THREADS") + keep_line_ops())
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R /MediaBox "
+        + _box(PAGE_W, PAGE_H) + _own_resources(helv)
+        + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(pages, b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R] >>")
+    root = pdf.add(
+        b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R /Threads "
+        + str(threads).encode() + b" 0 R >>"
+    )
+    return pdf.build(root)
+
+
+def nearmiss_reference_written_plainly() -> bytes:
+    """`/Rotate %...` newline `N 0 R`: a comment BESIDE a plain reference. MUST redact."""
+    return _rotated_by_reference("WRITTEN-PLAINLY", "%before\n{n} 0 R", 0, b"0")
+
 def evade_resources_stream_on_the_page() -> bytes:
     """The page's `/Resources` is a STREAM holding the carrying `/MC0`; `/Pages` holds a plain one."""
     pdf = Pdf()
@@ -2229,6 +2381,18 @@ CASES: list[tuple[str, str]] = [
     ("nearmiss-kids-all-pages", "engine repaired"),
     ("evade-extgstate-sets-the-font", "graphics state font"),
     ("nearmiss-extgstate-for-transparency", "graphics state font"),
+    ("evade-rotate-at-the-wrong-generation", "reference to nothing"),
+    ("evade-rotate-at-generation-zero-over-one", "reference to nothing"),
+    ("evade-wrong-generation-in-an-object-stream", "reference to nothing"),
+    ("nearmiss-rotate-at-the-right-generation", "reference to nothing"),
+    ("nearmiss-right-generation-in-an-object-stream", "reference to nothing"),
+    ("evade-reference-with-a-sign", "reference unreadable"),
+    ("evade-generation-with-a-sign", "reference unreadable"),
+    ("evade-reference-with-leading-zeros", "reference unreadable"),
+    ("evade-reference-with-a-comment-inside", "reference unreadable"),
+    ("nearmiss-reference-written-plainly", "reference unreadable"),
+    ("nearmiss-literal-null-threads", "reference to nothing"),
+    ("evade-object-stream-qpdf-cannot-load", "engine repaired"),
 ]
 
 BUILDERS = {
@@ -2314,6 +2478,18 @@ BUILDERS = {
     "evade-font-repaired-during-the-walk": evade_font_repaired_during_the_walk,
     "evade-extgstate-sets-the-font": evade_extgstate_sets_the_font,
     "nearmiss-extgstate-for-transparency": nearmiss_extgstate_for_transparency,
+    "evade-rotate-at-the-wrong-generation": evade_rotate_at_the_wrong_generation,
+    "evade-rotate-at-generation-zero-over-one": evade_rotate_at_generation_zero_over_one,
+    "evade-wrong-generation-in-an-object-stream": evade_wrong_generation_in_an_object_stream,
+    "nearmiss-rotate-at-the-right-generation": nearmiss_rotate_at_the_right_generation,
+    "nearmiss-right-generation-in-an-object-stream": nearmiss_right_generation_in_an_object_stream,
+    "evade-reference-with-a-sign": evade_reference_with_a_sign,
+    "evade-generation-with-a-sign": evade_generation_with_a_sign,
+    "evade-reference-with-leading-zeros": evade_reference_with_leading_zeros,
+    "evade-reference-with-a-comment-inside": evade_reference_with_a_comment_inside,
+    "nearmiss-reference-written-plainly": nearmiss_reference_written_plainly,
+    "nearmiss-literal-null-threads": nearmiss_literal_null_threads,
+    "evade-object-stream-qpdf-cannot-load": evade_object_stream_qpdf_cannot_load,
 }
 
 

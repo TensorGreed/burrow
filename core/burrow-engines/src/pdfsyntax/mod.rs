@@ -63,6 +63,7 @@ pub mod dict;
 pub mod geometry;
 pub mod names;
 pub mod ops;
+pub mod references;
 pub mod region;
 pub mod standard14;
 pub mod strings;

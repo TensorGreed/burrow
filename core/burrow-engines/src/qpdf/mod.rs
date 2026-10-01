@@ -43,6 +43,9 @@ mod prune;
 mod redact_graph;
 #[cfg(test)]
 mod redact_witness_tests;
+// A reference qpdf resolves to null, on both engines (#227).
+#[cfg(test)]
+mod references_tests;
 mod reorder;
 #[cfg(test)]
 mod resources_tests;

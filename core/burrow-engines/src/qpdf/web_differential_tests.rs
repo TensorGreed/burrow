@@ -302,6 +302,12 @@ impl QpdfBridge for NativeBridge {
         unsafe { ffi::qpdf_get_page_n(self.data(data), usize::try_from(n).unwrap()) }
     }
 
+    fn get_object_by_id(&self, data: QpdfPtr, number: i32, generation: i32) -> u32 {
+        // SAFETY: see the block comment above the impl. Untrapped and argued in
+        // `engines/qpdf-untrapped-accepted.toml`: a cache lookup or a placeholder, no parse.
+        unsafe { ffi::qpdf_get_object_by_id(self.data(data), number, generation) }
+    }
+
     fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32 {
         // SAFETY: see the block comment above the impl.
         unsafe { ffi::qpdf_add_page(self.data(data), self.data(source), page, qpdf_bool(first)) }
@@ -999,11 +1005,13 @@ fn a_cid_width_array_that_ends_mid_range_redacts_on_both_engines() {
     redacts_alike(&bytes, "a /W that ends mid-range reads the widths it has");
 }
 
-/// A repair qpdf makes while writing is refused on both engines (#224, round 4).
+/// A repair qpdf makes outside the walk is refused on both engines (#224, round 4; #227).
 ///
-/// A stream reached only from the catalog is not read by the walk; its wrong `/Length` is repaired
-/// during the write. The check after the write lives in the policy both engines share, so deleting
-/// it returns the same `Ok` from each; this pins it on the web as the engine test pins it natively.
+/// An object reached only from the catalog is not read by the walk. Since #227 the reference check
+/// resolves it, and qpdf repairs its stray `)` there, with a warning and without making it null --
+/// so only the check after the write refuses it. That check lives in the policy both engines share,
+/// so deleting it returns the same `Ok` from each; this pins it on the web as the engine test pins
+/// it natively.
 #[test]
 fn a_repair_the_write_makes_is_refused_on_both_engines() {
     let options = OpenOptions::new(
@@ -1029,7 +1037,7 @@ fn a_repair_the_write_makes_is_refused_on_both_engines() {
         ),
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
             .to_owned(),
-        "<< /Length 3 >>\nstream\nsomething longer than three\nendstream".to_owned(),
+        "<< /A [1 2 ) 3] >>".to_owned(),
     ]);
     let covered = std::collections::BTreeSet::from([0]);
     let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
@@ -1184,6 +1192,9 @@ impl QpdfBridge for RefusingHeap {
     }
     fn get_page_n(&self, data: QpdfPtr, n: u32) -> u32 {
         self.inner.get_page_n(data, n)
+    }
+    fn get_object_by_id(&self, data: QpdfPtr, number: i32, generation: i32) -> u32 {
+        self.inner.get_object_by_id(data, number, generation)
     }
     fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32 {
         self.inner.add_page(data, source, page, first)
@@ -1497,7 +1508,8 @@ fn the_web_open_measures_the_engine_heap() {
     );
 }
 
-/// The four web accessors that drain do drain: `page`, `page_content`, `stream_data`, `object`.
+/// The web accessors that drain do drain: `page`, `page_content`, `stream_data`, `object`, and
+/// the lookup by number and generation (#227).
 ///
 /// The native twins are `qpdf::redact_graph::tests`. The security review of #191 deleted each of
 /// these four drains in `web::redact` and the whole suite stayed green, because no corpus document
@@ -1546,7 +1558,14 @@ fn the_web_accessors_that_drain_report_what_the_document_latched() {
         "`object` returned over a latched error"
     );
 
-    // THE NEAR-MISS: with nothing latched, all four answer.
+    latch();
+    assert!(
+        document.object(1, 0).is_err(),
+        "`object` by number returned over a latched error"
+    );
+
+    // THE NEAR-MISS: with nothing latched, every one answers.
+    assert!(document.object(1, 0).is_ok());
     assert!(document.page(0).is_ok());
     assert!(page.page_content().is_ok());
     assert!(matches!(contents.stream_data(), Ok(Some(_))));

@@ -343,3 +343,25 @@ top-level statement, which is what keeps it (and `qpdf_get_root`, and every `qpd
 predicate) off the generated list under ADR 0013's caller rule. That rule is about reachable \
 code outside a trap; here there is no trap to be outside of and nothing that could throw \
 into it."""
+
+[[function]]
+name = "qpdf_get_object_by_id"
+reason = """\
+`new_object(qpdf, qpdf->qpdf->getObject(objid, generation))` (qpdf-c.cc:901-905), and \
+`QPDF::getObject` (QPDF_objects.cc:1950-1962) DOES NOT RESOLVE: it returns the cached object \
+for that number and generation if there is one; a new `QPDF_Null` if the file is parsed and \
+the cross-reference has no such pair; and otherwise a new `QPDF_Unresolved` placeholder, \
+inserted into the object cache with `try_emplace`. Two map lookups, at most one map insert, \
+one `make_shared`, then the handle-cache insert `new_object` always does -- no parser, no \
+stream, no byte of the input read, no `QTC::TC`, no `QIntC` conversion. The two ints are \
+stored into a `QPDFObjGen` and compared as a map key, so although redaction lexes them out \
+of the file (#227), nothing converts them and no value of them can throw. It can fail only by \
+allocation, the defined-abort case in the preamble. \
+WHERE THE PARSER RUNS INSTEAD: on the first accessor that reads the object, which is \
+`qpdf_oh_get_type_code` -- trapped, via `do_with_oh` -> `trap_oh_errors` -- so a hostile \
+object is parsed behind the trap, exactly as one reached through `qpdf_oh_get_key` is. The \
+placeholder is what makes this exemptible: were `getObject` to resolve eagerly, this entry \
+would be refused on this file's own bar, and the answer would be to stop calling it. A pin \
+bump re-reads `getObject` for that reason. \
+Used by redaction alone, to ask whether each reference the file writes resolves to null \
+(#227, ADR 0029)."""

@@ -436,6 +436,12 @@ pub trait QpdfBridge: Send + Sync {
     /// `qpdf_get_page_n`. The handle belongs to **this** `data`, not to any other.
     fn get_page_n(&self, data: QpdfPtr, n: u32) -> u32;
 
+    /// `qpdf_get_object_by_id`. The object at exactly `number` and `generation`, unresolved until
+    /// an accessor reads it, and a null where the cross-reference has no such pair (#227). The
+    /// handle belongs to **this** `data`. Untrapped and argued in
+    /// `engines/qpdf-untrapped-accepted.toml`: it does not parse.
+    fn get_object_by_id(&self, data: QpdfPtr, number: i32, generation: i32) -> u32;
+
     /// `qpdf_add_page`. Returns the raw `QPDF_ERROR_CODE`, which is a **bitmask**.
     ///
     /// Passed through unexamined, like [`read_memory`](QpdfBridge::read_memory), and for

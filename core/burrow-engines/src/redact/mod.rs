@@ -80,6 +80,7 @@ pub(crate) mod graph;
 #[cfg(test)]
 pub(crate) mod hooks;
 pub(crate) mod optional_content;
+pub(crate) mod references;
 pub(crate) mod resources;
 pub(crate) mod sharing;
 pub(crate) mod steps;
@@ -538,6 +539,11 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // defence with no test standing behind an `unsafe` block.
     let steps =
         steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
+    // A REFERENCE QPDF RESOLVES TO NULL, refused before anything reads the page (#227): qpdf drops
+    // the key that held it and PDFium follows it, so every refusal below that reads an absent
+    // entry as "nothing there" would be reading what the viewer does not show. After the
+    // constructor, so `[page-out-of-range]` still names an index past the end.
+    steps.refuse_references_to_nothing(bytes)?;
     // A `/MediaBox` FROM THE PAGE TREE, vouched for by a second reading or refused (#224). After
     // the constructor, so `[page-out-of-range]` still names an index past the end; and the
     // renderer is opened only for the page that needs it.

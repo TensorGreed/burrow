@@ -49,6 +49,8 @@ interface EmscriptenModule {
   // The write path, M1 PR B2. Every one matches an entry in `build-wasm.sh`'s
   // EXPORTED_FUNCTIONS allowlist -- a symbol not on that list is not in the module at all.
   _qpdf_get_page_n(data: number, n: number): number;
+  // The object at exactly this number and generation; not resolved until read (#227).
+  _qpdf_get_object_by_id(data: number, number: number, generation: number): number;
   _qpdf_add_page(data: number, source: number, page: number, first: number): number;
   _qpdf_remove_page(data: number, page: number): number;
   _qpdf_add_page_at(
@@ -143,6 +145,7 @@ interface WorkerGlobalScope {
   __burrow_qpdf_get_error_code(data: number, error: number): number;
   __burrow_qpdf_get_num_pages(data: number): number;
   __burrow_qpdf_get_page_n(data: number, n: number): number;
+  __burrow_qpdf_get_object_by_id(data: number, number: number, generation: number): number;
   __burrow_qpdf_add_page(data: number, source: number, page: number, first: number): number;
   __burrow_qpdf_init_write_memory(data: number): number;
   __burrow_qpdf_set_deterministic_id(data: number, value: number): void;

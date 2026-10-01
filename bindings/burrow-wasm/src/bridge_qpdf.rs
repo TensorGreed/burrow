@@ -80,6 +80,8 @@ extern "C" {
     // first import that carries bytes back out of an engine heap.
     #[wasm_bindgen(js_name = __burrow_qpdf_get_page_n)]
     fn qpdf_get_page_n(data: u32, n: u32) -> u32;
+    #[wasm_bindgen(js_name = __burrow_qpdf_get_object_by_id)]
+    fn qpdf_get_object_by_id(data: u32, number: i32, generation: i32) -> u32;
     #[wasm_bindgen(js_name = __burrow_qpdf_add_page)]
     fn qpdf_add_page(data: u32, source: u32, page: u32, first: u32) -> i32;
     #[wasm_bindgen(js_name = __burrow_qpdf_init_write_memory)]
@@ -271,6 +273,10 @@ impl QpdfBridge for JsQpdf {
 
     fn get_page_n(&self, data: QpdfPtr, n: u32) -> u32 {
         qpdf_get_page_n(data.0, n)
+    }
+
+    fn get_object_by_id(&self, data: QpdfPtr, number: i32, generation: i32) -> u32 {
+        qpdf_get_object_by_id(data.0, number, generation)
     }
 
     fn remove_page(&self, data: QpdfPtr, page: u32) -> i32 {

@@ -41,6 +41,12 @@ impl PdfDocument for Document {
         Ok(page)
     }
 
+    fn object(&self, number: c_int, generation: c_int) -> Result<Self::Object<'_>> {
+        let object = ObjectHandle::by_id(self, number, generation);
+        object.drained()?;
+        Ok(object)
+    }
+
     fn write(&self) -> Result<Vec<u8>> {
         // The document is its own source: redaction edits in place.
         extract::write_out(self, self, ObjectStreams::Preserve)
@@ -256,6 +262,33 @@ mod tests {
         // THE NEAR-MISS: the drain consumed the error, so the next lookup is clean. Without it
         // this passes for a lookup that refuses everything.
         PdfDocument::page(&document, 0).expect("nothing is latched any more");
+    }
+
+    /// The lookup by number and generation drains too (#227), as the page lookup does.
+    ///
+    /// The reference check asks it once per reference and reads the type straight after, so an
+    /// error left latched before it would be reported against a reference that has nothing to do
+    /// with it -- or, were neither to drain, by nothing at all.
+    #[test]
+    fn an_object_lookup_drains_what_the_document_latched_before_it() {
+        let options = crate::OpenOptions::new(
+            Limits::default(),
+            Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+        );
+        let (document, _, _, _) =
+            super::super::open_document(minimal_pdf::pdf_with_ink().into(), &options)
+                .expect("opens");
+        {
+            let page = PdfDocument::page(&document, 0).expect("page 0");
+            let _ = PdfObject::stream_dict(&PdfObject::null_beside(&page));
+        }
+        assert!(
+            PdfDocument::object(&document, 1, 0).is_err(),
+            "the object lookup returned a handle over an error the document was holding"
+        );
+        // THE NEAR-MISS, and the lookup's own answer: object 1 is the catalog.
+        let catalog = PdfDocument::object(&document, 1, 0).expect("nothing is latched any more");
+        assert_eq!(PdfObject::type_code(&catalog), object_type::DICTIONARY);
     }
 
     /// `PdfObject::drained` reports what the handle's document latched, and consumes it.

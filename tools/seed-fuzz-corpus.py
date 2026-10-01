@@ -86,6 +86,8 @@ PREFIXES = {
     # is steered by the input on purpose -- `max_pixels` is the newest code on that path, and
     # a target that always asked for a thumbnail would never reach the refusal.
     "render": 3,
+    # #227's reference lexer reads a whole file, from every `obj` and `trailer` in it.
+    "redact_references": 0,
 }
 
 # THE PREFIX BYTE EVERY SEED CARRIES. Named rather than written twice: `LIVE_REQUESTS` below

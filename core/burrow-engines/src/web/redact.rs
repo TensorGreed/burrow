@@ -174,6 +174,19 @@ impl<'e> PdfDocument for WebRedactionDocument<'e> {
         Ok(self.wrap(page))
     }
 
+    fn object(&self, number: c_int, generation: c_int) -> Result<Self::Object<'_>> {
+        // OWNED BEFORE THE DRAIN, as `page`. The generation goes to qpdf as written (#227).
+        let object = WebHandle::owned(
+            self.engine,
+            &self.session,
+            self.engine
+                .bridge()
+                .get_object_by_id(self.session.data(), number, generation),
+        );
+        self.drained()?;
+        Ok(self.wrap(object))
+    }
+
     fn write(&self) -> Result<Vec<u8>> {
         // THE NATIVE `extract::write_out`, CALL FOR CALL AND MESSAGE FOR MESSAGE. The
         // differential test compares refusals by their text, so a different message here would be

@@ -88,6 +88,10 @@ self.__burrow_qpdf_global_set_uint32 = (param, value) =>
 // Rust (`codes::qpdf::has_errors`). ADR 0009 §2.
 
 self.__burrow_qpdf_get_page_n = (data, n) => u32(qpdf()._qpdf_get_page_n(data, n));
+// The object at exactly this number AND generation, for redaction's reference check (#227). The
+// generation is passed through as written, never 0 in its place.
+self.__burrow_qpdf_get_object_by_id = (data, number, generation) =>
+  u32(qpdf()._qpdf_get_object_by_id(data, number, generation));
 
 self.__burrow_qpdf_add_page = (data, source, page, first) =>
   qpdf()._qpdf_add_page(data, source, page, first);

@@ -427,7 +427,7 @@ JOBS: list[dict] = [
             "for t in document_open render prescan pdfsyntax_names pdfsyntax_dict_keys "
             "pdfsyntax_operations pdfsyntax_contents "
             "pdfsyntax_geometry pdfsyntax_cmap_wmode pdfsyntax_tounicode "
-            "redact_shared_contents redact_verified_output "
+            "redact_shared_contents redact_verified_output redact_references "
             "qpdf_check rotate reorder merge split compress; do "
             # UNSEEDED, matching CI, and `rm -rf` is what makes it so: the corpus persists
             # between runs, so a local sweep would otherwise be seeded from whatever the last
@@ -462,6 +462,7 @@ JOBS: list[dict] = [
             # caller's only real degree of freedom, and where every geometry defect on this
             # milestone showed up.
             "fuzz:redact_verified_output",
+            "fuzz:redact_references",
             "fuzz:qpdf_check",
             "fuzz:rotate",
             "fuzz:reorder",
