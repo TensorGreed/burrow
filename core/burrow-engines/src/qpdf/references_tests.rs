@@ -710,3 +710,163 @@ fn a_decoy_declaration_leaves_the_object_stream_hole_to_the_warning_check() {
         "a member qpdf cannot load, its number declared null by a decoy",
     );
 }
+
+/// The two engines' outcomes for `bytes`, and whether PDFium shows the 300 x 400 page turned.
+///
+/// THE ORACLE for the round-2 specification review's probes: an `Ok` is acceptable only where
+/// PDFium shows the page as burrow measured it, upright -- the readers agree. An `Ok` over a
+/// turned page is the leak.
+fn no_ok_over_a_turned_page(bytes: &[u8], what: &str) -> Vec<String> {
+    let turned = matches!(
+        super::Qpdf.renderer_page_size(bytes, 0, &options()),
+        Ok(Some((w, h))) if (w, h) == (400.0, 300.0)
+    );
+    on_both(bytes)
+        .into_iter()
+        .map(|(engine, outcome)| {
+            assert!(
+                !(outcome.is_ok() && turned),
+                "{what}, {engine}: Ok, and PDFium shows the page turned"
+            );
+            match outcome {
+                Ok(_) => format!("{engine}: Ok, PDFium agrees"),
+                Err(error) => {
+                    let text = format!("{error:?}");
+                    let rule = text
+                        .find('[')
+                        .zip(text.find(']'))
+                        .map_or(text.clone(), |(a, b)| text[a..=b].to_owned());
+                    format!("{engine}: {rule}")
+                }
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn an_object_stream_missing_first_is_refused_with_or_without_a_decoy() {
+    // PROBE A of the round-2 specification review: `/N` present, `/First` absent, so the policy
+    // skips the stream and lists none of its members, and qpdf's handling decides. Expected: qpdf
+    // throws "incorrect keys", warns, and the member is a null -- refused by the rule without a
+    // decoy, and by the warning check with one.
+    let base = with_object_stream(
+        &page_objects("/Rotate 6 0 R"),
+        7,
+        0,
+        &[(6, "90".to_owned())],
+    );
+    let at = base
+        .windows(b"/First".len())
+        .position(|w| w == b"/First")
+        .unwrap();
+    let mut bytes = base.clone();
+    bytes[at + 1..at + 6].copy_from_slice(b"Xirst");
+    assert!(
+        !bytes.windows(b"/First".len()).any(|w| w == b"/First"),
+        "the mutation applied"
+    );
+    let plain = no_ok_over_a_turned_page(&bytes, "no /First");
+    bytes.extend_from_slice(b"6 0 obj null endobj\n");
+    let decoyed = no_ok_over_a_turned_page(&bytes, "no /First, and a decoy");
+    eprintln!("probe A: {plain:?} / with decoy {decoyed:?}");
+    assert!(
+        plain.iter().all(|o| o.ends_with("[reference-to-nothing]")),
+        "{plain:?}"
+    );
+    assert!(
+        decoyed
+            .iter()
+            .all(|o| o.ends_with("[engine-repaired-input]")),
+        "{decoyed:?}"
+    );
+}
+
+#[test]
+fn a_member_past_the_streams_count_with_a_decoy_is_not_an_ok_over_a_turned_page() {
+    // PROBE B: the cross-reference assigns object 6 to stream 7 at index 1, past its `/N` of 1;
+    // a decoy `6 0 obj null` after `%%EOF`. The policy lists only member 8, the decoy declares 6
+    // null, and qpdf hands back a null for 6 -- silently, round 1 measured. Whether that is a leak
+    // turns on PDFium, which round 1 measured reading null too. Measured again here.
+    let mut bytes = with_object_stream(
+        &page_objects("/Rotate 6 0 R"),
+        7,
+        0,
+        &[(8, "90".to_owned())],
+    );
+    let marker = b"/W [1 4 2]";
+    let dict = bytes
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .unwrap();
+    let table = dict
+        + bytes[dict..]
+            .windows(7)
+            .position(|w| w == b"stream\n")
+            .unwrap()
+        + 7;
+    let entry = table + 6 * 7;
+    assert_eq!(
+        bytes[entry], 0,
+        "object 6 is free in the cross-reference before the probe"
+    );
+    bytes[entry..entry + 7].copy_from_slice(&[2, 0, 0, 0, 7, 0, 1]);
+    bytes.extend_from_slice(b"6 0 obj null endobj\n");
+    // MEASURED: `Ok` on both engines, with PDFium upright -- the readers agree, so this is not a
+    // leak, and the assertion inside the oracle is what would say otherwise. Recorded as an `Ok`
+    // so that a change in either reader shows here rather than passing silently.
+    let outcomes = no_ok_over_a_turned_page(&bytes, "a member past /N, with a decoy");
+    assert_eq!(
+        outcomes,
+        [
+            "natively: Ok, PDFium agrees",
+            "on the web: Ok, PDFium agrees"
+        ]
+    );
+}
+
+#[test]
+fn no_separator_byte_turns_a_page_burrow_measures_upright() {
+    // PROBE C: every byte qpdf might read as a separator where the lexer does not, or the
+    // reverse, placed (1) inside the reference `/Rotate 6<b>1 R` with a decoy `6 1 obj null` after
+    // `%%EOF`, (2) inside the header `6<b>0 obj` of the object PDFium would follow, and (3)
+    // between an object stream's header pairs. The oracle is the same for each: never an `Ok`
+    // over a page PDFium shows turned.
+    let mut bytes_swept = 0;
+    for b in (0x00_u8..=0x20).chain([0x7f, 0x80, 0xa0, 0xff]) {
+        if b == b' ' {
+            continue;
+        }
+        let byte = char::from(b);
+        // (1) the reference.
+        let mut objects = page_objects(&format!("/Rotate 6{byte}1 R"));
+        objects.push((6, 0, "90".to_owned()));
+        let mut bytes = classic(&objects);
+        bytes.extend_from_slice(b"6 1 obj null endobj\n");
+        no_ok_over_a_turned_page(&bytes, &format!("reference split by {b:#04x}"));
+        // (2) the header of the object PDFium follows.
+        let mut objects = page_objects("/Rotate 6 1 R");
+        objects.push((6, 0, "90".to_owned()));
+        let mut bytes = classic(&objects);
+        let header = b"6 0 obj\n90";
+        let at = bytes
+            .windows(header.len())
+            .position(|w| w == header)
+            .unwrap();
+        bytes[at + 1] = b;
+        bytes.extend_from_slice(b"6 1 obj null endobj\n");
+        no_ok_over_a_turned_page(&bytes, &format!("header split by {b:#04x}"));
+        // (3) an object stream's header pairs.
+        let mut bytes = with_object_stream(
+            &page_objects("/Rotate 6 1 R"),
+            7,
+            0,
+            &[(6, "90".to_owned())],
+        );
+        let pairs = b"stream\n6 0 ";
+        let at = bytes.windows(pairs.len()).position(|w| w == pairs).unwrap() + b"stream\n6".len();
+        bytes[at] = b;
+        no_ok_over_a_turned_page(&bytes, &format!("object stream pair split by {b:#04x}"));
+        bytes_swept += 1;
+    }
+    assert_eq!(bytes_swept, 36, "every byte in the sweep was tried");
+}

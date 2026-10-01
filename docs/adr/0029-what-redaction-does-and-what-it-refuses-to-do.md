@@ -4306,6 +4306,26 @@ every mutation "killed" a test already failing; the second time a new witness fa
 search window -- and both were re-run. Two mutations first survived, identity dropped and members
 ignored: both conditions only over-refuse, and each now has a test that pins the over-refusal.
 
+### The reviews
+
+Round 1, both reviewers on the first commit: the security review blocked it with the caching
+carriers, and the code review found the same independently; both are above. Round 2: the code review
+measured the uncharged keyword search and the decoy, both fixed and recorded above. **Two security
+attempts on the declaration rule stopped before running anything** -- a safety check cut off each
+while it probed for bypasses -- and are recorded as no review, not as a pass. The third, at the owner's
+direction, was a specification review: from the code and this record, which inputs does the rule
+accept that §3 says must refuse? It found none beyond the decoy's one-layer case and [#237], and named
+three probes resting on qpdf behaviour it could not verify, each built here as an engine test and run
+on both engines:
+
+| probe | measured |
+|---|---|
+| an object stream with `/N` and no `/First` | `[reference-to-nothing]`; with a decoy, `[engine-repaired-input]` -- qpdf warns |
+| a member the cross-reference places past the stream's `/N`, with a decoy | `Ok` on both engines, and PDFium shows the page upright: the readers agree, so not a leak; pinned so that a change in either reader shows |
+| every byte 0x00-0x1f, 0x7f, 0x80, 0xa0, 0xff as a separator in a reference, an object header and an object stream's header pairs | no `Ok` over a page PDFium shows turned, in any of 108 cases |
+
+[#237]: https://github.com/TensorGreed/burrow/issues/237
+
 ### What it does not reach
 
 - **Two objects that resolve to different non-null values in the two readers** -- duplicate object
