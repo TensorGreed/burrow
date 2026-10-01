@@ -12,29 +12,36 @@
 //! found, and the only one of the three the warning channel cannot report: qpdf does not think it
 //! repaired anything.
 //!
-//! # The rule: a null qpdf does not declare at that pair
+//! # The rule: a null the file itself declares, and nothing else
 //!
-//! **A reference qpdf resolves to null is refused unless qpdf declares an object at exactly that
-//! number and generation** -- a `null` written as an object's whole value, which both readers read
-//! alike. The owner's first rule refused every null; measured, it refused 2 of 99 real documents
-//! against a 1% bar set before measuring, and both were a catalog's `/Threads` pointing at a
-//! declared `null` -- dvipdfm writes it. Refusing an agreement buys nothing, so the rule narrows by
-//! **identity**: qpdf hands back a pair the cross-reference does not have as a fresh null with no
-//! identity, `(0, 0)`, and a declared null as the object at `(number, generation)`, through the
-//! trapped accessor on both engines. Measured, not read.
+//! **A reference qpdf resolves to null is refused unless the file declares that object as `null`,
+//! and as nothing else**: qpdf's identity for it is the pair written; every `N … obj` header the
+//! lexer reads for that number holds exactly `null`, one of them at the generation written; no
+//! header failed to read; and no object stream lists the number as a member. A declared `null` is
+//! read alike by both readers -- dvipdfm writes one under every catalog's `/Threads`.
 //!
-//! What it still refuses: a reference to a generation the cross-reference does not have; one to a
-//! number it does not have at all; one to an object present in the file body and missing from a
-//! valid cross-reference -- dangling to qpdf and findable by PDFium's reconstruction. It
-//! **over-refuses one safe shape on purpose**: a reference to an object genuinely absent from both
-//! readers, which leaks nothing and is refused anyway.
+//! **Three rules were tried, and the record of why matters.** The owner's first refused every
+//! null; measured, it refused 2 of 99 real documents against a 1% bar set before measuring, both
+//! that dvipdfm `/Threads`. The second accepted a null qpdf hands back **with an identity**, on the
+//! measurement that an absent pair comes back as `(0, 0)`. Both round-1 reviews broke it: qpdf
+//! caches every pair it parses while it reads the cross-reference -- the trailer, a `/Prev`
+//! trailer, a cross-reference stream's dictionary -- and later fills that entry with a null that
+//! carries the pair, silently. One `/X 6 1 R` in the trailer, and `/Rotate 6 1 R` over a `6 0` of
+//! `90` returned `Ok` with the secret drawn, on both engines. **qpdf's identity says what qpdf
+//! cached, not what the file wrote**; the evidence has to be read from the file. Identity is kept
+//! as a condition: it rules out a pair qpdf never cached at all.
 //!
-//! **What it no longer refuses by itself**, and what does: a member of an object stream whose
-//! cross-reference generation disagrees with its header. qpdf reads members through `(S, 0)`,
-//! cannot load that stream, warns, and stores each member as a null **with** its identity -- so this
-//! rule passes it, and `[engine-repaired-input]` after the write refuses it. PDFium follows the
-//! member (measured). ADR 0029's #227 amendment names the fixture that pins it, and the mutation
-//! that removes the warning check and turns it red.
+//! What it refuses: a reference to a generation the cross-reference does not have, however it got
+//! into qpdf's cache; one to a number it does not have at all; one to an object in the file body
+//! and missing from a valid cross-reference; one to an object stream member qpdf did not list. It
+//! **over-refuses on purpose**: a reference to an object absent from both readers, which leaks
+//! nothing; and a `null` member of an object stream, which has no header to read.
+//!
+//! **What it does not refuse by itself**, and what does: a member of an object stream qpdf cannot
+//! load -- headed at a generation qpdf will not read members from, or missing `/N` or `/First`.
+//! qpdf warns and stores the member as a null; this rule refuses it only if no header for the
+//! number declares it otherwise, and `[engine-repaired-input]` after the write refuses it whatever
+//! this rule does, because qpdf warned. ADR 0029's #227 amendment names the fixtures.
 //!
 //! # How
 //!
@@ -54,6 +61,9 @@
 //! the check after the write refuses the document as `[engine-repaired-input]`. A repaired object
 //! the walk never read used to reach the output without anything having looked at it; it is now
 //! refused. ADR 0029's #227 amendment records the measured count.
+
+use core::ffi::c_int;
+use std::collections::BTreeSet;
 
 use burrow_types::{Clock, Deadline, Error, Result};
 
@@ -122,6 +132,8 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
 ) -> Result<()> {
     let mut checkpoint = || deadline.checkpoint(clock);
     let mut wanted = accepted(references::in_file(bytes, &mut checkpoint)?)?;
+    // The numbers object streams list as members: no header in the file speaks for them.
+    let mut listed: BTreeSet<c_int> = BTreeSet::new();
 
     // THE OBJECT STREAMS, from every stream object's header. qpdf reads an object stream's
     // members through `getObject(number, 0)` whatever generation the stream was written with
@@ -139,9 +151,9 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
             integer_at(&dictionary, &COUNT),
             integer_at(&dictionary, &FIRST),
         ) else {
-            // NOT AN OBJECT STREAM qpdf can read: it throws on a stream without both, and a
-            // member it cannot reach is a member it cannot resolve to anything but null --
-            // which the lookups below refuse wherever a reference names one.
+            // NOT AN OBJECT STREAM qpdf can read: it throws on a stream without both, warns, and
+            // stores each member as a null. The lookups below refuse one unless a header
+            // declares it null; the warning refuses the document after the write regardless.
             stream.drained()?;
             continue;
         };
@@ -158,6 +170,7 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
             &mut checkpoint,
         )?)?;
         wanted.references.extend(members.references);
+        listed.extend(members.members);
         if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
             return Err(reference_unreadable(Irregular::BeyondCaps));
         }
@@ -171,18 +184,19 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
         let object = document.object(*number, *generation)?;
         let resolved_to = object.type_code();
         object.drained()?;
-        // THE TWO TYPES INTERNAL TO QPDF BELOW NULL: a handle to nothing, or a placeholder
-        // nothing supplied. Neither is an object a reader draws with.
-        if matches!(
+        // NULL, AND THE TWO TYPES INTERNAL TO QPDF BELOW IT: a handle to nothing, or a placeholder
+        // nothing supplied. None of them is an object a reader draws with.
+        let nothing = matches!(
             resolved_to,
-            object_type::UNINITIALIZED | object_type::RESERVED
-        ) {
-            return Err(reference_to_nothing());
-        }
-        // A NULL IS REFUSED UNLESS QPDF DECLARES IT AT EXACTLY THIS PAIR. See the module header:
-        // an absent pair is a fresh null with no identity, `(0, 0)`, and a declared null is the
-        // object at `(number, generation)`.
-        if resolved_to == object_type::NULL && object.object()? != (*number, *generation) {
+            object_type::NULL | object_type::UNINITIALIZED | object_type::RESERVED
+        );
+        // UNLESS THE FILE DECLARES THIS NULL, and qpdf holds it at this pair. See the module
+        // header for why qpdf's identity alone is not a declaration.
+        let declared = resolved_to == object_type::NULL
+            && wanted.declares_only_null(*number, *generation)
+            && !listed.contains(number)
+            && object.object()? == (*number, *generation);
+        if nothing && !declared {
             return Err(reference_to_nothing());
         }
     }

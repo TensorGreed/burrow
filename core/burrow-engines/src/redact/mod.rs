@@ -539,7 +539,7 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // defence with no test standing behind an `unsafe` block.
     let steps =
         steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
-    // A REFERENCE QPDF RESOLVES TO NULL, refused before anything reads the page (#227): qpdf drops
+    // A REFERENCE QPDF RESOLVES TO NULL, refused before the walk reads the page (#227): qpdf drops
     // the key that held it and PDFium follows it, so every refusal below that reads an absent
     // entry as "nothing there" would be reading what the viewer does not show. After the
     // constructor, so `[page-out-of-range]` still names an index past the end.

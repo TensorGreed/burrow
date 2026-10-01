@@ -96,7 +96,11 @@ class Pdf:
         return bytes(out)
 
     def build_with_object_stream(
-        self, root: int, members: list[int], stream_generation: int = 0
+        self,
+        root: int,
+        members: list[int],
+        stream_generation: int = 0,
+        extra_xref_dict: bytes = b"",
     ) -> bytes:
         """The document with `members` inside one object stream, cross-referenced by a stream (#227).
 
@@ -137,8 +141,8 @@ class Pdf:
         )
         out += (
             f"{xref} 0 obj\n<< /Type /XRef /Size {size} /W [1 4 2] /Root {root} 0 R"
-            f" /Length {len(table)} >>\nstream\n"
-        ).encode() + table + b"\nendstream\nendobj\n"
+            f" /Length {len(table)}"
+        ).encode() + extra_xref_dict + b" >>\nstream\n" + table + b"\nendstream\nendobj\n"
         out += f"startxref\n{xref_at}\n%%EOF\n".encode()
         return bytes(out)
 

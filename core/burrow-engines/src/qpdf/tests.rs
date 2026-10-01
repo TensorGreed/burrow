@@ -1402,7 +1402,7 @@ mod wiring {
     }
 
     #[test]
-    fn a_repair_the_write_makes_is_refused_after_it() {
+    fn a_repair_after_the_open_is_refused_after_the_write() {
         // #224, security review round 3: an object reached only from the catalog is not read by
         // the walk, so qpdf repaired it later, after the open's check. The warnings are asked
         // again after the write and the bytes are dropped.
@@ -1428,15 +1428,15 @@ mod wiring {
             "an object qpdf repaired outside the walk",
         );
         // THE ROUND-3 FIXTURE: a stream whose `/Length` is wrong. With recovery off qpdf cannot
-        // read it, warns, and stores it as a null that still carries its identity -- declared at
-        // the pair the catalog names -- so the reference check passes it and the warnings after
-        // the write refuse it, here as before #227.
+        // read it, warns, and hands back a null where the file declares a stream -- so the
+        // reference check refuses it first, as the disagreement it is (#227). The warning would
+        // refuse it after the write too; the stray `)` above is what pins that check alone.
         refused_by(
             redact_in(
                 &with_object_six("<< /Length 3 >>\nstream\nsomething longer than three\nendstream"),
                 UPPER_BAND,
             ),
-            "engine-repaired-input",
+            "reference-to-nothing",
             "a stream qpdf cannot read, referred to from the catalog",
         );
     }

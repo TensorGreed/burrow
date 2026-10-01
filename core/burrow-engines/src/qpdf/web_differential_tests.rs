@@ -1013,7 +1013,7 @@ fn a_cid_width_array_that_ends_mid_range_redacts_on_both_engines() {
 /// so deleting it returns the same `Ok` from each; this pins it on the web as the engine test pins
 /// it natively.
 #[test]
-fn a_repair_the_write_makes_is_refused_on_both_engines() {
+fn a_repair_after_the_open_is_refused_after_the_write_on_both_engines() {
     let options = OpenOptions::new(
         Limits::default(),
         Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,

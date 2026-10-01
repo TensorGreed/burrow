@@ -2545,7 +2545,7 @@ MUST NOT be refused. dvipdfm writes /Threads to a declared null; the first #227 
 name = "evade-object-stream-qpdf-cannot-load"
 file = "generated/evade-object-stream-qpdf-cannot-load.pdf"
 kind = "hand-built"
-probes_refusal = "engine repaired"
+probes_refusal = "reference to nothing"
 pages = 1
 
   [[fixture.placement]]
@@ -2557,5 +2557,63 @@ pages = 1
   witness_observes = "canary"
   expect_after = "refused"
   notes = """
-qpdf reads members only through (S, 0), cannot load the stream, warns, and stores the member as a null carrying its identity, so the #227 reference rule passes it. PDFium follows the member and turns the page (measured): the readers disagree. Refused by [engine-repaired-input], the warnings after the write, not by the reference rule.
+qpdf reads members only through (S, 0), cannot load the stream, warns, and stores the member as a null carrying its identity. PDFium follows the member and turns the page (measured): the readers disagree. Refused by [reference-to-nothing], because no header declares the member null, and independently by [engine-repaired-input] after the write; the engine test asks each layer alone.
 """
+
+[[fixture]]
+name = "evade-missing-pair-named-in-the-trailer"
+file = "generated/evade-missing-pair-named-in-the-trailer.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over N 0, the missing pair also named in the trailer — evasion"
+  canary = "BURROW-EVADE-PRIMED-TRAILER"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf caches a pair it parses while reading the cross-reference and later fills it with a null carrying that pair, silently. The identity rule took that for a declared null: Ok with the canary drawn, on both engines, measured by both #227 round-1 reviews. Refused because no header in the file declares the pair null.
+"""
+
+[[fixture]]
+name = "evade-missing-pair-named-in-an-xref-stream"
+file = "generated/evade-missing-pair-named-in-an-xref-stream.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over N 0, the missing pair also named in a cross-reference stream's dictionary — evasion"
+  canary = "BURROW-EVADE-PRIMED-XREF-STREAM"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf caches a pair it parses while reading the cross-reference and later fills it with a null carrying that pair, silently. The identity rule took that for a declared null: Ok with the canary drawn, on both engines, measured by both #227 round-1 reviews. Refused because no header in the file declares the pair null.
+"""
+
+[[fixture]]
+name = "evade-missing-pair-named-in-a-prev-trailer"
+file = "generated/evade-missing-pair-named-in-a-prev-trailer.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over N 0, the missing pair also named in an older trailer read through /Prev — evasion"
+  canary = "BURROW-EVADE-PRIMED-PREV"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf caches a pair it parses while reading the cross-reference and later fills it with a null carrying that pair, silently. The identity rule took that for a declared null: Ok with the canary drawn, on both engines, measured by both #227 round-1 reviews. Refused because no header in the file declares the pair null.
+"""
+

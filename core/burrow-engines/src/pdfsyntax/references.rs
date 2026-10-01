@@ -31,7 +31,11 @@
 //! So this lexes **one value from every such place**, with qpdf's tokenising rules, and from
 //! nowhere else. Every `obj` and `trailer` keyword in the file starts a scan -- a superset of the
 //! ones qpdf uses, because which offsets the cross-reference names is a question for the
-//! cross-reference, and a scan from a place qpdf never starts only finds references to ask about.
+//! cross-reference. A scan from a place qpdf never starts is **not free**: it finds more
+//! references to ask about, and it can refuse -- an unreadable header or a reference not written
+//! plainly inside an `obj` that is really text, or a reference that resolves to nothing in this
+//! document because it belongs to an uncompressed PDF embedded in this one. That is over-refusal,
+//! the safe direction, and it is a cost rather than nothing.
 //! Each scan begins where qpdf's does, with the same tokeniser, so the two are in step by
 //! construction rather than by luck, and stream data is never lexed: a value ends before
 //! `stream`.
@@ -39,7 +43,11 @@
 //! **Where this tokeniser and qpdf's may still differ** is on input qpdf itself complains about --
 //! an unterminated string, a stray `)`, an unknown keyword inside a value. qpdf warns on each, and
 //! redaction refuses any document qpdf warned about by the write (`[engine-repaired-input]`). So
-//! this module needs to agree with qpdf where qpdf is silent, and it is written to.
+//! this module needs to agree with qpdf where qpdf is silent. **The first version did not**: it
+//! left vertical tab out of white space, which qpdf's `util::is_space` includes, and an object
+//! stream headed `7 0\vobj` was a header it never read while qpdf read it silently (security review
+//! of #227, round 1). That is fixed, and named here because "written to agree" was the sentence
+//! the reviewer disproved.
 //!
 //! # A reference this cannot read plainly is reported, not guessed at
 //!
@@ -58,7 +66,7 @@
 //! Exceeding either is [`Irregular::BeyondCaps`], a refusal, never a shorter answer -- a reference
 //! not reported is a reference nobody asks qpdf about.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use burrow_types::Result;
 
@@ -67,6 +75,10 @@ pub const MAX_DISTINCT_REFERENCES: usize = 1 << 20;
 
 /// The most stream objects whose headers this reports, each a candidate object stream.
 pub const MAX_STREAM_OBJECTS: usize = 1 << 20;
+
+/// The most object numbers whose headers this records, and the most members one object stream
+/// may list.
+pub const MAX_DECLARATIONS: usize = 1 << 20;
 
 /// How many times its own length the lexing of one input may cost, across every scan.
 pub const WORK_FACTOR: usize = 4;
@@ -105,9 +117,52 @@ pub struct Found {
     /// The object number of every stream object, from its header: the candidates for object
     /// streams. Empty from [`in_object_stream`], because a stream cannot be a member of one.
     pub stream_objects: BTreeSet<i32>,
+    /// Every object header in the file, by object number: what was declared at each generation.
+    ///
+    /// The evidence that a null qpdf hands back was written by the file rather than made by qpdf.
+    /// qpdf's identity is not that evidence: it caches a pair it parses in a trailer before it
+    /// knows whether the cross-reference has it, and later fills that entry with a null carrying
+    /// the pair (#227, both round-1 reviews). Empty from [`in_object_stream`].
+    pub declarations: BTreeMap<i32, Declared>,
+    /// Whether some `obj` keyword's header did not read as two numbers. A declaration that
+    /// could not be attributed to a number may be any number's, so no null is then taken as
+    /// declared.
+    pub unreadable_header: bool,
+    /// The object numbers an object stream's header lists. Empty from [`in_file`]. A member has
+    /// no header in the file, so its declaration cannot be read here.
+    pub members: BTreeSet<i32>,
     /// Set when something could not be read as qpdf reads it, and the scan stopped there. The
     /// other fields are then incomplete and must not be used as an answer.
     pub irregular: Option<Irregular>,
+}
+
+/// What the headers for one object number declared.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Declared {
+    /// The generations at which a header's whole value is `null`.
+    pub null_at: BTreeSet<i32>,
+    /// Whether some header for this number holds anything else, at any generation.
+    pub something_else: bool,
+}
+
+impl Found {
+    /// Whether the file declares `number` only ever as `null`, and at `generation` among them.
+    pub fn declares_only_null(&self, number: i32, generation: i32) -> bool {
+        !self.unreadable_header
+            && self
+                .declarations
+                .get(&number)
+                .is_some_and(|d| !d.something_else && d.null_at.contains(&generation))
+    }
+}
+
+/// How a value read by [`Scan::one_value`] ended.
+#[derive(Clone, Copy)]
+struct ValueEnd {
+    /// The next token after the value is `stream`.
+    stream: bool,
+    /// The value is exactly the keyword `null`, and nothing else.
+    only_null: bool,
 }
 
 /// Every reference in a whole file, from each `obj` and `trailer` keyword, and the object number
@@ -139,12 +194,16 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
         } else {
             continue;
         };
-        let ends_in_stream = scan.one_value(bytes, start + keyword.len())?;
+        let end = scan.one_value(bytes, start + keyword.len())?;
         if scan.found.irregular.is_some() {
             break;
         }
-        if ends_in_stream && keyword == b"obj" {
-            let Some(number) = header_number(bytes, start) else {
+        if keyword != b"obj" {
+            continue;
+        }
+        let header = header(bytes, start);
+        if end.stream {
+            let Some((number, _)) = header else {
                 scan.found.irregular = Some(Irregular::StreamHeaderUnreadable);
                 break;
             };
@@ -153,6 +212,22 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
                 scan.found.irregular = Some(Irregular::BeyondCaps);
                 break;
             }
+        }
+        // WHAT THIS HEADER DECLARED. A header that does not read is any number's, as far as
+        // anything here can tell, so it withdraws every declaration rather than none.
+        let Some((number, generation)) = header else {
+            scan.found.unreadable_header = true;
+            continue;
+        };
+        let declared = scan.found.declarations.entry(number).or_default();
+        if end.only_null && !end.stream {
+            declared.null_at.insert(generation);
+        } else {
+            declared.something_else = true;
+        }
+        if scan.found.declarations.len() > MAX_DECLARATIONS {
+            scan.found.irregular = Some(Irregular::BeyondCaps);
+            break;
         }
     }
     Ok(scan.found)
@@ -175,10 +250,13 @@ pub fn in_object_stream(
     checkpoint: &mut dyn FnMut() -> Result<()>,
 ) -> Result<Found> {
     let mut scan = Scan::new(decoded.len(), checkpoint);
-    let Some(starts) = member_starts(decoded, count, first) else {
+    let Some(starts) = scan.member_starts(decoded, count, first)? else {
         scan.found.irregular = Some(Irregular::ObjectStreamHeaderUnreadable);
         return Ok(scan.found);
     };
+    if scan.found.irregular.is_some() {
+        return Ok(scan.found);
+    }
     for start in starts {
         scan.one_value(decoded, start)?;
         if scan.found.irregular.is_some() {
@@ -186,51 +264,6 @@ pub fn in_object_stream(
         }
     }
     Ok(scan.found)
-}
-
-/// Where each member of an object stream begins, as offsets into `decoded`, or `None` when the
-/// header does not read as `count` pairs of integers or `first` lies outside the data.
-///
-/// Every pair is kept, including ones qpdf skips: a skipped member is one more place a value is
-/// read from, and qpdf warns about the skips that matter (`QPDF_objects.cc`,
-/// `resolveObjectsInStream`). The one it skips silently -- a number above the cross-reference's
-/// largest -- is still lexed here, which can only find more.
-fn member_starts(decoded: &[u8], count: i64, first: i64) -> Option<BTreeSet<usize>> {
-    let first = usize::try_from(first).ok()?;
-    if first >= decoded.len() {
-        return None;
-    }
-    let count = usize::try_from(count).ok()?;
-    // Two tokens a pair and at least one byte a token, so a count past the data cannot be met.
-    if count.saturating_mul(2) > decoded.len().saturating_add(1) {
-        return None;
-    }
-    let mut lexer = Lexer::new(decoded, 0);
-    let mut starts = BTreeSet::new();
-    for _ in 0..count {
-        let _number = integer(&mut lexer)?;
-        let offset = integer(&mut lexer)?;
-        let Ok(offset) = usize::try_from(offset) else {
-            continue;
-        };
-        if let Some(start) = first.checked_add(offset)
-            && start < decoded.len()
-        {
-            starts.insert(start);
-        }
-    }
-    Some(starts)
-}
-
-/// The next token that is not a comment, if it is an integer qpdf would read, as its value.
-fn integer(lexer: &mut Lexer<'_>) -> Option<i64> {
-    loop {
-        match lexer.next()? {
-            Token::Comment => {}
-            Token::Integer(text) => return value_of(text),
-            _ => return None,
-        }
-    }
 }
 
 /// An integer token's value, sign and leading zeros allowed, or `None` past `i64`.
@@ -286,26 +319,26 @@ fn keyword_at(bytes: &[u8], at: usize, keyword: &[u8]) -> bool {
     before && after
 }
 
-/// The object number of the header ending in the `obj` at `obj_at`: `N G obj`, read backwards
-/// over white space only.
+/// The number and generation of the header ending in the `obj` at `obj_at`: `N G obj`, read
+/// backwards over white space only.
 ///
 /// `None` when the two tokens before `obj` are not integers separated by white space, which
-/// includes a header with a comment in it. Called only for a stream object, where `None` refuses:
-/// whether that stream is an object stream cannot then be asked.
-fn header_number(bytes: &[u8], obj_at: usize) -> Option<i32> {
+/// includes a header with a comment in it. For a stream object `None` refuses: whether that stream
+/// is an object stream cannot then be asked. For any other it withdraws every declaration.
+fn header(bytes: &[u8], obj_at: usize) -> Option<(i32, i32)> {
     let before_generation = skip_whitespace_back(bytes, obj_at)?;
     let generation_start = regular_run_back(bytes, before_generation);
     if generation_start == before_generation {
         return None;
     }
-    value_of(bytes.get(generation_start..before_generation)?)?;
+    let generation = value_of(bytes.get(generation_start..before_generation)?)?;
     let before_number = skip_whitespace_back(bytes, generation_start)?;
     let number_start = regular_run_back(bytes, before_number);
     if number_start == before_number {
         return None;
     }
     let number = value_of(bytes.get(number_start..before_number)?)?;
-    i32::try_from(number).ok()
+    Some((i32::try_from(number).ok()?, i32::try_from(generation).ok()?))
 }
 
 /// The position before the white space that ends at `at`, or `None` if there is none.
@@ -372,8 +405,15 @@ impl<'c> Scan<'c> {
     /// inside a value qpdf reads without warning (`obj`, `endobj`, `stream`, `endstream`, `xref`,
     /// `trailer`, `startxref`), and at the end of the input. Lexing past the value qpdf would read
     /// can only find more, so the rule leans long.
-    fn one_value(&mut self, bytes: &[u8], start: usize) -> Result<bool> {
+    fn one_value(&mut self, bytes: &[u8], start: usize) -> Result<ValueEnd> {
         let mut lexer = Lexer::new(bytes, start);
+        // Whether every significant token so far is one `null`: the value of a declared null.
+        let mut significant_tokens = 0_usize;
+        let mut first_is_null = false;
+        let end = |stream: bool, significant_tokens: usize, first_is_null: bool| ValueEnd {
+            stream,
+            only_null: significant_tokens == 1 && first_is_null,
+        };
         let mut depth: usize = 0;
         // The two significant tokens before this one, the newer first, and whether a comment
         // came between each and the one after it.
@@ -385,17 +425,19 @@ impl<'c> Scan<'c> {
         loop {
             let before = lexer.at;
             let Some(token) = lexer.next() else {
-                return Ok(false);
+                return Ok(end(false, significant_tokens, first_is_null));
             };
             if !self.spend(lexer.at.saturating_sub(before))? {
-                return Ok(false);
+                return Ok(end(false, 0, false));
             }
             if complete {
                 // ONE MORE SIGNIFICANT TOKEN, to see whether a stream follows the value.
                 match token {
                     Token::Comment => continue,
-                    Token::Word(word) => return Ok(word == b"stream"),
-                    _ => return Ok(false),
+                    Token::Word(word) => {
+                        return Ok(end(word == b"stream", significant_tokens, first_is_null));
+                    }
+                    _ => return Ok(end(false, 0, false)),
                 }
             }
             let significant = match token {
@@ -416,16 +458,24 @@ impl<'c> Scan<'c> {
                             comment_before_generation || comment_since_newer,
                         );
                         if self.found.irregular.is_some() {
-                            return Ok(false);
+                            return Ok(end(false, 0, false));
                         }
                     }
                     Significant::Other
                 }
                 Token::Word(word) if is_stop_word(word) => {
-                    return Ok(word == b"stream" && depth == 0);
+                    return Ok(end(
+                        word == b"stream" && depth == 0,
+                        significant_tokens,
+                        first_is_null,
+                    ));
                 }
                 _ => Significant::Other,
             };
+            significant_tokens = significant_tokens.saturating_add(1);
+            if significant_tokens == 1 {
+                first_is_null = token == Token::Word(b"null");
+            }
             older = newer;
             newer = Some((significant, comment_since_newer));
             comment_since_newer = false;
@@ -441,6 +491,80 @@ impl<'c> Scan<'c> {
                 }
                 _ if depth == 0 => complete = true,
                 _ => {}
+            }
+        }
+    }
+
+    /// Where each member of an object stream begins, as offsets into `decoded`, recording each
+    /// member's number in [`Found::members`]; `None` when the header does not read as `count`
+    /// pairs of integers or `first` lies outside the data.
+    ///
+    /// Every pair is kept, including ones qpdf skips: a skipped member is one more place a value
+    /// is read from, and qpdf warns about the skips that matter (`QPDF_objects.cc`,
+    /// `resolveObjectsInStream`). The one it skips silently -- a number above the
+    /// cross-reference's largest -- is still lexed here, which can only find more.
+    ///
+    /// **Charged to the budget and the deadline, and capped**, as the values are: the security
+    /// review of #227's first round measured 1.41 s and 639 MB on a 229 MB header before the first
+    /// checkpoint, when this loop was outside both.
+    fn member_starts(
+        &mut self,
+        decoded: &[u8],
+        count: i64,
+        first: i64,
+    ) -> Result<Option<BTreeSet<usize>>> {
+        let (Ok(first), Ok(count)) = (usize::try_from(first), usize::try_from(count)) else {
+            return Ok(None);
+        };
+        if first >= decoded.len() {
+            return Ok(None);
+        }
+        // Two tokens a pair and at least one byte a token, so a count past the data cannot be met.
+        if count.saturating_mul(2) > decoded.len().saturating_add(1) {
+            return Ok(None);
+        }
+        if count > MAX_DECLARATIONS {
+            self.found.irregular = Some(Irregular::BeyondCaps);
+            return Ok(Some(BTreeSet::new()));
+        }
+        let mut lexer = Lexer::new(decoded, 0);
+        let mut starts = BTreeSet::new();
+        for _ in 0..count {
+            let Some(number) = self.integer(&mut lexer)? else {
+                return Ok(self.found.irregular.map(|_| BTreeSet::new()));
+            };
+            let Some(offset) = self.integer(&mut lexer)? else {
+                return Ok(self.found.irregular.map(|_| BTreeSet::new()));
+            };
+            if let Ok(number) = i32::try_from(number) {
+                self.found.members.insert(number);
+            }
+            let Ok(offset) = usize::try_from(offset) else {
+                continue;
+            };
+            if let Some(start) = first.checked_add(offset)
+                && start < decoded.len()
+            {
+                starts.insert(start);
+            }
+        }
+        Ok(Some(starts))
+    }
+
+    /// The next token that is not a comment, if it is an integer qpdf would read, as its value,
+    /// charged to the budget. `None` for anything else, and when the budget is spent -- with
+    /// [`Irregular::BeyondCaps`] recorded, which the caller tells apart.
+    fn integer(&mut self, lexer: &mut Lexer<'_>) -> Result<Option<i64>> {
+        loop {
+            let before = lexer.at;
+            let token = lexer.next();
+            if !self.spend(lexer.at.saturating_sub(before))? {
+                return Ok(None);
+            }
+            match token {
+                Some(Token::Comment) => {}
+                Some(Token::Integer(text)) => return Ok(value_of(text)),
+                _ => return Ok(None),
             }
         }
     }
@@ -617,9 +741,15 @@ fn is_integer(text: &[u8]) -> bool {
     !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
 }
 
-/// PDF's six white-space characters, NUL among them, as qpdf's `QPDFTokenizer::is_space`.
+/// White space as qpdf's tokeniser reads it: PDF's six, NUL among them, **and vertical tab**.
+///
+/// qpdf's `util::is_space` (`qpdf/Util.hh`) includes `\v`, which PDF does not list. The first
+/// version of this omitted it, so `7 0\vobj` heading an object stream was a header this lexer
+/// never read and every member went unchecked, with qpdf silent (security review of #227, round
+/// 1). Only `\v` is added: PDFium's own extra white space would end a scan at bytes qpdf reads
+/// as part of a token.
 const fn is_whitespace(byte: u8) -> bool {
-    matches!(byte, b'\0' | b'\t' | b'\n' | 0x0c | b'\r' | b' ')
+    matches!(byte, b'\0' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ')
 }
 
 /// PDF's delimiters, as qpdf's `QPDFTokenizer::is_delimiter`.
@@ -632,9 +762,7 @@ const fn is_delimiter(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Found, Irregular, MAX_DISTINCT_REFERENCES, in_file, in_object_stream, member_starts,
-    };
+    use super::{Found, Irregular, MAX_DISTINCT_REFERENCES, in_file, in_object_stream};
     use burrow_types::{Error, Result};
     use proptest::prelude::*;
 
@@ -842,11 +970,11 @@ mod tests {
                 String::from_utf8_lossy(decoded)
             );
         }
-        // THE NEAR-MISS: a comment in the header is skipped, as qpdf's tokeniser skips it.
-        assert_eq!(
-            member_starts(b"10 %c\n 0 [6 0 R]", 1, 11).map(|s| s.into_iter().collect::<Vec<_>>()),
-            Some(vec![11])
-        );
+        // THE NEAR-MISS: a comment in the header is skipped, as qpdf's tokeniser skips it, and the
+        // member it lists is read and recorded.
+        let found = object_stream(b"10 %c\n 0 [6 0 R]", 1, 9);
+        assert_eq!(refs(&found), [(6, 0)]);
+        assert_eq!(found.members.iter().copied().collect::<Vec<_>>(), [10]);
     }
 
     #[test]
@@ -910,6 +1038,104 @@ mod tests {
             called,
             "the object stream's lexing never asked the deadline"
         );
+    }
+
+    #[test]
+    fn a_number_is_declared_null_only_if_every_header_for_it_holds_null() {
+        // THE EVIDENCE A NULL WAS WRITTEN (#227, round 2). qpdf's identity is not it: qpdf caches
+        // a pair a trailer names and later fills it with a null carrying that pair.
+        let found = file(
+            b"6 0 obj null endobj\n6 1 obj 90 endobj\n7 0 obj null %c\nendobj\n\
+              8 0 obj << >> stream\nxx\nendstream endobj\n9 0 obj [null] endobj\n",
+        );
+        assert!(
+            found.declares_only_null(7, 0),
+            "a header holding only null declares it"
+        );
+        assert!(
+            !found.declares_only_null(7, 1),
+            "at that generation, not another"
+        );
+        assert!(
+            !found.declares_only_null(6, 0),
+            "not where another header for 6 holds 90"
+        );
+        assert!(!found.declares_only_null(8, 0), "a stream is not null");
+        assert!(
+            !found.declares_only_null(9, 0),
+            "an array holding null is not null"
+        );
+        assert!(
+            !found.declares_only_null(99, 0),
+            "and nothing is declared without a header"
+        );
+    }
+
+    #[test]
+    fn a_header_that_does_not_read_withdraws_every_declaration() {
+        // A value under a header nothing can attribute may be any number's -- `7 1 obj 90` written
+        // with a comment in its header, say -- so no null is taken as declared.
+        let found = file(b"7 %c\n1 obj 90 endobj\n7 0 obj null endobj\n");
+        assert!(found.unreadable_header);
+        assert!(!found.declares_only_null(7, 0));
+        // THE NEAR-MISS: the same file with a plain header declares 7 at 1 as something else, and
+        // still nothing withdraws the rest.
+        let found = file(b"8 1 obj 90 endobj\n7 0 obj null endobj\n");
+        assert!(!found.unreadable_header);
+        assert!(found.declares_only_null(7, 0));
+    }
+
+    #[test]
+    fn vertical_tab_is_white_space_as_qpdf_reads_it() {
+        // qpdf's `util::is_space` includes `\v`. Without it, `7 0\vobj` was a header this never
+        // read, and an object stream headed that way had its members unchecked, qpdf silent.
+        let found =
+            file(b"7 0\x0bobj << /Type /ObjStm /N 1 /First 4 >> stream\nxx\nendstream endobj");
+        assert_eq!(
+            found.stream_objects.iter().copied().collect::<Vec<_>>(),
+            [7]
+        );
+        assert_eq!(refs(&file(b"1 0 obj [6\x0b1\x0bR] endobj")), [(6, 1)]);
+        // And NUL and form feed, which the security review showed are load-bearing: a reference
+        // split by either is a reference to qpdf, and PDFium turns the page through it.
+        assert_eq!(
+            refs(&file(b"1 0 obj [6\x001 R 7 1\x0cR] endobj")),
+            [(6, 1), (7, 1)]
+        );
+    }
+
+    #[test]
+    fn an_object_stream_header_is_charged_to_the_budget_and_the_deadline() {
+        // MEASURED UNBOUNDED BEFORE: 229 MB of header pairs ran 1.41 s with no checkpoint.
+        let header = b"1 0 ".repeat(100_000);
+        let mut decoded = header.clone();
+        decoded.extend_from_slice(b"null");
+        let mut called = 0;
+        let found = in_object_stream(
+            &decoded,
+            100_000,
+            i64::try_from(header.len()).unwrap(),
+            &mut || {
+                called += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(called > 0, "the header's lexing never read the deadline");
+        assert_eq!(found.irregular, None);
+        assert_eq!(found.members.iter().copied().collect::<Vec<_>>(), [1]);
+        // And a count past the cap refuses rather than reading on.
+        let found = object_stream(
+            &b"1 0 "
+                .repeat(1 << 20)
+                .iter()
+                .chain(b"null x")
+                .copied()
+                .collect::<Vec<_>>(),
+            (1 << 20) + 1,
+            8,
+        );
+        assert_eq!(found.irregular, Some(Irregular::BeyondCaps));
     }
 
     /// A reference as written, plain or not.

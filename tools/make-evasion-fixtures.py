@@ -2092,10 +2092,10 @@ def evade_object_stream_qpdf_cannot_load() -> bytes:
     """`/Rotate N 0 R` to a member of an object stream headed and cross-referenced at generation 1.
 
     qpdf reads members only through `(S, 0)`, cannot load this stream, warns, and stores the member
-    as a null that still carries its identity -- so the reference check, which refuses a null only
-    when qpdf does not declare it at the pair written, passes it (#227). PDFium follows the member
-    and turns the page (measured). Refused by `[engine-repaired-input]`, the warnings after the
-    write; not by the reference rule.
+    as a null that still carries its identity. PDFium follows the member and turns the page
+    (measured). Refused twice over: by `[reference-to-nothing]`, because no header in the file
+    declares the member null, and by `[engine-repaired-input]` after the write, because qpdf
+    warned. The engine test asks each layer alone (#227).
     """
     pdf = Pdf()
     helv = helvetica(pdf)
@@ -2113,6 +2113,69 @@ def evade_object_stream_qpdf_cannot_load() -> bytes:
     pdf.put(pages, b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R] >>")
     root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
     return pdf.build_with_object_stream(root, [member], stream_generation=1)
+
+
+def _rotated_with_the_pair_primed(tag: str, carrier: str) -> bytes:
+    """`/Rotate N 1 R` over `N 0` = `90`, with `N 1 R` also named where qpdf reads it while parsing
+    the cross-reference -- `carrier` is `trailer`, `xref-stream` or `prev-trailer` (#227, round 2).
+
+    qpdf caches the pair it parses there, and later fills it with a null that CARRIES the pair, with
+    no warning. The identity rule took that for a declared null: `Ok` with the canary drawn, on both
+    engines, measured by both round-1 reviews. Refused by the rule that reads the file's own headers.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    target = pdf.add(b"90")
+    primed = f" /X {target} 1 R".encode()
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", _secret_run(tag) + keep_line_ops())
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R /MediaBox "
+        + _box(PAGE_W, PAGE_H) + _own_resources(helv)
+        + b" /Rotate " + str(target).encode() + b" 1 R"
+        + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(pages, b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R] >>")
+    catalog = b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>"
+    root = pdf.add(catalog)
+    if carrier == "xref-stream":
+        spare = pdf.add(b"<< /Spare true >>")
+        return pdf.build_with_object_stream(root, [spare], extra_xref_dict=primed)
+    pdf.extra_trailer = primed
+    data = pdf.build(root)
+    if carrier == "trailer":
+        return data
+    # AN INCREMENTAL UPDATE whose own trailer is plain: the pair is named only by the older one,
+    # which qpdf reads through `/Prev`.
+    assert carrier == "prev-trailer"
+    previous = data.rindex(b"startxref\n") + len(b"startxref\n")
+    prev_at = int(data[previous:data.index(b"\n", previous)])
+    out = bytearray(data)
+    at = len(out)
+    out += f"{root} 0 obj\n".encode() + catalog + b"\nendobj\n"
+    xref_at = len(out)
+    size = max(pdf.objects) + 1
+    out += f"xref\n{root} 1\n{at:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {size} /Root {root} 0 R /Prev {prev_at} >>\n".encode()
+    out += f"startxref\n{xref_at}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def evade_missing_pair_named_in_the_trailer() -> bytes:
+    """See `_rotated_with_the_pair_primed`: the trailer names `N 1 R`."""
+    return _rotated_with_the_pair_primed("PRIMED-TRAILER", "trailer")
+
+
+def evade_missing_pair_named_in_an_xref_stream() -> bytes:
+    """See `_rotated_with_the_pair_primed`: a cross-reference stream's dictionary names `N 1 R`."""
+    return _rotated_with_the_pair_primed("PRIMED-XREF-STREAM", "xref-stream")
+
+
+def evade_missing_pair_named_in_a_prev_trailer() -> bytes:
+    """See `_rotated_with_the_pair_primed`: only the older trailer, read through `/Prev`, names it."""
+    return _rotated_with_the_pair_primed("PRIMED-PREV", "prev-trailer")
 
 
 def nearmiss_literal_null_threads() -> bytes:
@@ -2392,7 +2455,10 @@ CASES: list[tuple[str, str]] = [
     ("evade-reference-with-a-comment-inside", "reference unreadable"),
     ("nearmiss-reference-written-plainly", "reference unreadable"),
     ("nearmiss-literal-null-threads", "reference to nothing"),
-    ("evade-object-stream-qpdf-cannot-load", "engine repaired"),
+    ("evade-object-stream-qpdf-cannot-load", "reference to nothing"),
+    ("evade-missing-pair-named-in-the-trailer", "reference to nothing"),
+    ("evade-missing-pair-named-in-an-xref-stream", "reference to nothing"),
+    ("evade-missing-pair-named-in-a-prev-trailer", "reference to nothing"),
 ]
 
 BUILDERS = {
@@ -2490,6 +2556,9 @@ BUILDERS = {
     "nearmiss-reference-written-plainly": nearmiss_reference_written_plainly,
     "nearmiss-literal-null-threads": nearmiss_literal_null_threads,
     "evade-object-stream-qpdf-cannot-load": evade_object_stream_qpdf_cannot_load,
+    "evade-missing-pair-named-in-the-trailer": evade_missing_pair_named_in_the_trailer,
+    "evade-missing-pair-named-in-an-xref-stream": evade_missing_pair_named_in_an_xref_stream,
+    "evade-missing-pair-named-in-a-prev-trailer": evade_missing_pair_named_in_a_prev_trailer,
 }
 
 

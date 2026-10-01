@@ -59,6 +59,17 @@ fn with_object_stream(
     stream_generation: u16,
     members: &[(u32, String)],
 ) -> Vec<u8> {
+    with_object_stream_carrying(direct, stream, stream_generation, "", members)
+}
+
+/// [`with_object_stream`], with `extra` written into the object stream's dictionary.
+fn with_object_stream_carrying(
+    direct: &[Written],
+    stream: u32,
+    stream_generation: u16,
+    extra: &str,
+    members: &[(u32, String)],
+) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
     // (type, field 2, field 3) per object number, as a cross-reference stream records them.
     let mut entries: std::collections::BTreeMap<u32, (u8, u32, u16)> =
@@ -82,7 +93,7 @@ fn with_object_stream(
     );
     out.extend_from_slice(
         format!(
-            "{stream} {stream_generation} obj\n<< /Type /ObjStm /N {} /First {} /Length {} >>\nstream\n{data}\nendstream\nendobj\n",
+            "{stream} {stream_generation} obj\n<< /Type /ObjStm {extra} /N {} /First {} /Length {} >>\nstream\n{data}\nendstream\nendobj\n",
             members.len(),
             header.len(),
             data.len() + 1
@@ -363,6 +374,21 @@ fn a_reference_to_an_absent_object_is_refused_which_over_refuses_on_purpose() {
         "reference-to-nothing",
         "a reference to an absent object",
     );
+    // `0 0 R` too: object 0 is the free list's head, never an object, and a fresh null's identity
+    // is `(0, 0)` -- which the identity rule passed by coincidence. qpdf warns about it at the
+    // open, so the operation refuses earlier; the rule is asked alone, and refuses it as well.
+    let bytes = classic(&page_objects("/Thing 0 0 R"));
+    let clock = ManualClock::new(0);
+    // THE PLAIN OPEN, not redaction's, which refuses at the warning before the rule is reached.
+    let (document, _, _, deadline) =
+        super::open_document(bytes.clone().into_boxed_slice(), &options()).unwrap();
+    let refused = crate::redact::references::refuse_references_to_nothing(
+        &document, &bytes, &deadline, &clock,
+    );
+    assert!(
+        matches!(&refused, Err(error) if format!("{error:?}").contains("[reference-to-nothing]")),
+        "`0 0 R`: {refused:?}"
+    );
 }
 
 #[test]
@@ -409,12 +435,15 @@ fn a_null_declared_at_the_pair_written_redacts() {
 }
 
 #[test]
-fn an_object_stream_qpdf_cannot_load_is_refused_by_the_warning_check_not_this_rule() {
-    // THE HOLE THE NARROWING MOVED, pinned where it is now caught. The object stream is headed and
-    // cross-referenced at generation 1; qpdf reads members through `(7, 0)`, cannot load the
-    // stream, warns, and stores member 6 as a null WITH its identity -- so the reference check
-    // passes `/Rotate 6 0 R`, and only the warnings after the write refuse it. PDFium follows the
-    // member and turns the page: the two readers do not agree, which is why this must refuse.
+fn an_object_stream_qpdf_cannot_load_is_refused_by_both_layers_each_on_its_own() {
+    // THE HOLE THE IDENTITY RULE MOVED, and the declaration rule moved back. The object stream is
+    // headed and cross-referenced at generation 1; qpdf reads members through `(7, 0)`, cannot
+    // load the stream, warns, and stores member 6 as a null carrying its identity. PDFium follows
+    // the member and turns the page: the readers disagree, so this must refuse.
+    //
+    // Two things refuse it, and each is asked here ALONE, so a mutation of either fails this:
+    // the reference rule, because no header in the file declares 6 as null; and qpdf's warning,
+    // which the check after the write reads.
     let bytes = with_object_stream(
         &page_objects("/Rotate 6 0 R"),
         7,
@@ -427,34 +456,224 @@ fn an_object_stream_qpdf_cannot_load_is_refused_by_the_warning_check_not_this_ru
         "PDFium no longer follows a member of a generation-1 object stream, so this case needs \
          re-measuring"
     );
+    let clock = ManualClock::new(0);
     let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
     let redactor = crate::web::redact_testing::redactor(&web);
-    let native = super::Qpdf
-        .open_for_redaction(&bytes, &options())
-        .unwrap()
-        .0;
-    let on_the_web = redactor.open_for_redaction(&bytes, &options()).unwrap().0;
-    // The type first, as the policy reads it: resolving the member is what makes qpdf warn.
-    let natively = native.object(6, 0).unwrap();
-    let web_member = on_the_web.object(6, 0).unwrap();
-    for (engine, type_code, identity) in [
-        ("natively", natively.type_code(), natively.object().unwrap()),
+    let (native, native_deadline) = super::Qpdf.open_for_redaction(&bytes, &options()).unwrap();
+    let (on_the_web, web_deadline) = redactor.open_for_redaction(&bytes, &options()).unwrap();
+    for (engine, refused, repaired) in [
+        (
+            "natively",
+            crate::redact::references::refuse_references_to_nothing(
+                &native,
+                &bytes,
+                &native_deadline,
+                &clock,
+            ),
+            native.repaired(),
+        ),
         (
             "on the web",
-            web_member.type_code(),
-            web_member.object().unwrap(),
+            crate::redact::references::refuse_references_to_nothing(
+                &on_the_web,
+                &bytes,
+                &web_deadline,
+                &clock,
+            ),
+            on_the_web.repaired(),
         ),
     ] {
-        assert_eq!(type_code, object_type::NULL, "{engine}");
-        assert_eq!(
-            identity,
-            (6, 0),
-            "the member qpdf could not load carries its identity, so this rule passes it, {engine}"
+        assert!(
+            matches!(&refused, Err(error) if format!("{error:?}").contains("[reference-to-nothing]")),
+            "the reference rule alone, {engine}: {refused:?}"
         );
+        assert!(repaired, "qpdf warned resolving the member, {engine}");
     }
+    // And the operation refuses it, by the rule that runs first.
     refused_on_both(
         &bytes,
-        "engine-repaired-input",
+        "reference-to-nothing",
         "a member of an object stream qpdf cannot load",
+    );
+}
+
+/// One trailer key naming the missing pair: qpdf caches `(6, 1)` while it reads the
+/// cross-reference, and later fills it with a null that carries `(6, 1)` -- silently.
+fn rotated_with_the_pair_primed(where_: &str) -> Vec<u8> {
+    let mut objects = page_objects("/Rotate 6 1 R");
+    objects.push((6, 0, "90".to_owned()));
+    let bytes = classic(&objects);
+    let at = bytes
+        .windows(b"/Root 1 0 R >>".len())
+        .position(|w| w == b"/Root 1 0 R >>")
+        .unwrap();
+    let mut primed = bytes[..at].to_vec();
+    primed.extend_from_slice(format!("/Root 1 0 R {where_} >>").as_bytes());
+    primed.extend_from_slice(&bytes[at + b"/Root 1 0 R >>".len()..]);
+    primed
+}
+
+#[test]
+fn a_missing_pair_qpdf_cached_from_the_trailer_is_still_refused() {
+    // BOTH ROUND-1 REVIEWS: `/X 6 1 R` in the trailer made the missing `(6, 1)` come back as a
+    // null WITH identity `(6, 1)`, and the identity rule took that for a declaration -- `Ok` with
+    // the secret drawn, on both engines. Measured here: the identity is what the reviews said, and
+    // the rule that reads the file's own headers refuses it anyway.
+    let bytes = rotated_with_the_pair_primed("/X 6 1 R");
+    assert_eq!(
+        pdfium_size(&bytes),
+        (400.0, 300.0),
+        "PDFium follows `6 1 R` to `6 0`"
+    );
+    let (native, _) = super::Qpdf.open_for_redaction(&bytes, &options()).unwrap();
+    let primed = native.object(6, 1).unwrap();
+    assert_eq!(primed.type_code(), object_type::NULL);
+    assert_eq!(
+        primed.object().unwrap(),
+        (6, 1),
+        "qpdf no longer gives a trailer-cached missing pair an identity; the reviews' premise \
+         changed, and this test with it"
+    );
+    refused_on_both(
+        &bytes,
+        "reference-to-nothing",
+        "a missing pair the trailer named",
+    );
+}
+
+#[test]
+fn a_reference_split_by_nul_form_feed_or_vertical_tab_is_still_read() {
+    // qpdf reads each of these bytes as white space, so `6<b>1 R` and `6 1<b>R` are `6 1 R` to it
+    // -- over a `6 0`, null -- and PDFium turns the page through NUL and form feed. The security
+    // review of #227 showed those two load-bearing (removing either from the lexer's white space
+    // returned `Ok`); vertical tab was missing outright.
+    for byte in ['\0', '\x0c', '\x0b'] {
+        for shape in [format!("6{byte}1 R"), format!("6 1{byte}R")] {
+            let mut objects = page_objects(&format!("/Rotate {shape}"));
+            objects.push((6, 0, "90".to_owned()));
+            let bytes = classic(&objects);
+            if byte != '\x0b' {
+                assert_eq!(
+                    pdfium_size(&bytes),
+                    (400.0, 300.0),
+                    "{shape:?}: PDFium turns the page"
+                );
+            }
+            refused_on_both(
+                &bytes,
+                "reference-to-nothing",
+                &format!("/Rotate {shape:?}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn an_object_stream_headed_with_a_vertical_tab_is_still_read() {
+    // `7 0\vobj`: qpdf reads the header, and the first lexer never did, so the member's
+    // `/Rotate 6 1 R` was never asked about (security review of #227, round 1).
+    let direct: Vec<Written> = page_objects("")
+        .into_iter()
+        .filter(|(number, _, _)| *number != 3)
+        .chain([(6, 0, "90".to_owned())])
+        .collect();
+    let mut bytes = with_object_stream(&direct, 7, 0, &[(3, page("/Rotate 6 1 R"))]);
+    let header = b"7 0 obj\n<< /Type /ObjStm";
+    let at = bytes
+        .windows(header.len())
+        .position(|w| w == header)
+        .unwrap();
+    bytes[at + 3] = 0x0b;
+    assert!(
+        bytes.windows(4).any(|w| w == b"0\x0bob"),
+        "the mutation applied"
+    );
+    refused_on_both(
+        &bytes,
+        "reference-to-nothing",
+        "an object stream headed `7 0\\vobj`",
+    );
+}
+
+#[test]
+fn an_object_stream_the_engine_cannot_decode_is_refused() {
+    // Members of an object stream qpdf will not decode at its own level cannot be read, so their
+    // references cannot be asked about. `/DCTDecode` is not decoded at `specialized`.
+    // The member is the page's `/Rotate` value, not the page: qpdf needs the page to open the
+    // document at all, and would refuse it as damaged first.
+    let bytes = with_object_stream_carrying(
+        &page_objects("/Rotate 6 0 R"),
+        7,
+        0,
+        "/Filter /DCTDecode",
+        &[(6, "90".to_owned())],
+    );
+    let undecodable = "an object stream the PDF engine could not decode";
+    for (engine, outcome) in on_both(&bytes) {
+        let text = format!("{:?}", outcome.expect_err("refused"));
+        assert!(
+            text.contains("[reference-unreadable]") && text.contains(undecodable),
+            "{engine}: {text}"
+        );
+    }
+}
+
+#[test]
+fn a_null_the_body_declares_and_the_cross_reference_does_not_is_refused() {
+    // THE IDENTITY CONDITION, witnessed. `6 0 obj null` is in the file body and the
+    // cross-reference has 6 as a free entry: qpdf hands back a null with no identity, so the rule
+    // refuses it although every header for 6 says null. Both readers read null here -- this pins
+    // a deliberate over-refusal, so that dropping the condition is a decision rather than a drift.
+    let mut objects = page_objects("/Thing 6 0 R");
+    objects.push((6, 0, "null".to_owned()));
+    let mut bytes = classic(&objects);
+    let xref = bytes.windows(5).position(|w| w == b"xref\n").unwrap();
+    let first_entry = xref
+        + bytes[xref..]
+            .windows(20)
+            .position(|w| w == b"0000000000 65535 f \n")
+            .unwrap();
+    let entry = first_entry + 6 * 20;
+    bytes.splice(entry..entry + 20, b"0000000000 00001 f \n".iter().copied());
+    assert!(
+        bytes
+            .windows(b"6 0 obj\nnull".len())
+            .any(|w| w == b"6 0 obj\nnull"),
+        "the body still declares 6"
+    );
+    refused_on_both(
+        &bytes,
+        "reference-to-nothing",
+        "a declared null the cross-reference frees",
+    );
+}
+
+#[test]
+fn a_number_an_object_stream_lists_is_not_declared_by_a_body_null() {
+    // THE MEMBERS CONDITION, witnessed. The body declares `6 0 obj null` and the cross-reference
+    // points at it, so qpdf's null for `6 0 R` carries `(6, 0)`; but an object stream's header also
+    // lists 6, holding `90`. A member has no header to read, so the declaration does not speak for
+    // number 6, and the rule refuses. Both readers follow the cross-reference to the null here: a
+    // deliberate over-refusal, pinned for the reason the test above is.
+    let mut objects = page_objects("/Thing 6 0 R");
+    objects.push((6, 0, "null".to_owned()));
+    let mut bytes = with_object_stream(&objects, 7, 0, &[(8, "90".to_owned())]);
+    let listed = b"stream\n8 0 ";
+    let at = bytes
+        .windows(listed.len())
+        .position(|w| w == listed)
+        .unwrap()
+        + b"stream\n".len();
+    bytes[at] = b'6';
+    assert!(
+        bytes
+            .windows(b"stream\n6 0 ".len())
+            .any(|w| w == b"stream\n6 0 "),
+        "the header lists 6"
+    );
+    refused_on_both(
+        &bytes,
+        "reference-to-nothing",
+        "a body null whose number a stream lists",
     );
 }

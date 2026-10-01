@@ -159,6 +159,18 @@ CARVED_TARGETS = (
 # here, one per case the derivation has to get right, and each is a program a real font could
 # carry. The first byte is the target's dictionary-`WMode` parameter.
 SYNTHETIC_SEEDS: dict[str, tuple[bytes, ...]] = {
+    # `redact_references` reads its input twice: as a whole file, which the fixtures seed, and as a
+    # DECODED OBJECT STREAM, whose `/N` and `/First` the target derives from the leading integer
+    # pairs. A PDF file rarely begins with those, so these are object-stream bodies, one per shape
+    # the member reading has to get right: plain members, a reference inside one, a member whose
+    # value runs past the next offset with a comment inside a reference, and a comment in the header.
+    "redact_references": (
+        b"3 0 << /Type /Page /Rotate 6 1 R >>\n",
+        b"10 0 11 20 << /Rotate 6 1 R >> [7 0 R]",
+        b"10 0 999999 7 [ 6 %\n 1 R ]",
+        b"10 %c\n 0 [6 0 R]",
+        b"4 0 5 5 null [4 0 R 5 0 R]",
+    ),
     "pdfsyntax_cmap_wmode": (
         b"\x00/CIDInit /ProcSet findresource begin\n/CMapName /Identity-H def\n/WMode 0 def\n",
         b"\x00/CMapName /Identity-H def /WMode 1 def",
@@ -785,7 +797,8 @@ def main(argv: list[str]) -> int:
         for index, seed in enumerate(seeds):
             if not check_only:
                 (directory / f"seed-synthetic-{index}").write_bytes(seed)
-        written[target] = len(seeds)
+        # ADDED, not assigned: a target may be seeded with whole fixtures too (`redact_references`).
+        written[target] = written.get(target, 0) + len(seeds)
         print(f"  {target}: {len(seeds)} synthetic seed(s), hand-written (see SYNTHETIC_SEEDS)")
 
     for target in sorted(written):
