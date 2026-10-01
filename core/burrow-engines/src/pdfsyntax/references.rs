@@ -90,6 +90,14 @@ pub const WORK_SLACK: usize = 1 << 20;
 /// How many bytes are lexed between two calls of the caller's checkpoint.
 const CHECKPOINT_BYTES: usize = 1 << 16;
 
+/// The furthest a header is read backwards over one run of white space or one token.
+///
+/// A header further spread than this reads as unreadable, which fails closed -- a stream object's
+/// refuses, and any other withdraws every declaration -- so that no walk backwards is longer than
+/// this between two reads of the deadline. A run of digits cut at this length is past `i64` and
+/// cannot be misread as a shorter number.
+const MAX_HEADER_WALK: usize = 1 << 12;
+
 /// Why the references could not be read the way qpdf reads them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -165,8 +173,14 @@ struct ValueEnd {
     only_null: bool,
 }
 
-/// Every reference in a whole file, from each `obj` and `trailer` keyword, and the object number
-/// of every stream object.
+/// Every reference in a whole file, from each `obj` and `trailer` keyword; the object number of
+/// every stream object; and what every object header declares ([`Found::declarations`],
+/// [`Found::unreadable_header`]).
+///
+/// **All of it is charged to the budget and the deadline**, the search for the next keyword
+/// included, and a header is read backwards at most [`MAX_HEADER_WALK`] bytes over bytes the search
+/// has charged. Neither was so at first: 512 MiB of `o` ran 2.35 s with no checkpoint, against an
+/// amendment that said only one token's lex could pass unread (code review of #227, round 2).
 ///
 /// `checkpoint` is called as the lexing goes, so the caller's deadline is read during it.
 ///
@@ -178,13 +192,21 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
     let mut at = 0;
     while at < bytes.len() {
         // `obj` and `trailer` start with these two bytes and nothing else is looked for, so the
-        // walk is one comparison per byte.
-        let Some(found) = bytes
-            .get(at..)
-            .and_then(|rest| rest.iter().position(|b| *b == b'o' || *b == b't'))
-        else {
-            break;
+        // walk is one comparison per byte -- searched a window at a time, each window charged, so
+        // a long stretch with neither byte still reads the deadline.
+        let window = bytes
+            .get(at..at.saturating_add(CHECKPOINT_BYTES).min(bytes.len()))
+            .unwrap_or_default();
+        let Some(found) = window.iter().position(|b| *b == b'o' || *b == b't') else {
+            if !scan.spend(window.len())? {
+                break;
+            }
+            at = at.saturating_add(window.len());
+            continue;
         };
+        if !scan.spend(found.saturating_add(1))? {
+            break;
+        }
         let start = at + found;
         at = start + 1;
         let keyword = if keyword_at(bytes, start, b"obj") {
@@ -201,6 +223,9 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
         if keyword != b"obj" {
             continue;
         }
+        // NOT CHARGED AGAIN: a header is read backwards over bytes the search above has already
+        // charged, and at most `MAX_HEADER_WALK` of them. A second charge was tried and no test
+        // could tell it was there (round-2 mutation sweep), so it is not claimed.
         let header = header(bytes, start);
         if end.stream {
             let Some((number, _)) = header else {
@@ -220,6 +245,8 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
             continue;
         };
         let declared = scan.found.declarations.entry(number).or_default();
+        // `!end.stream` is defence in depth, unwitnessed: `null` followed by `stream` is an object
+        // qpdf warns about, which refuses after the write.
         if end.only_null && !end.stream {
             declared.null_at.insert(generation);
         } else {
@@ -341,21 +368,27 @@ fn header(bytes: &[u8], obj_at: usize) -> Option<(i32, i32)> {
     Some((i32::try_from(number).ok()?, i32::try_from(generation).ok()?))
 }
 
-/// The position before the white space that ends at `at`, or `None` if there is none.
+/// The position before the white space that ends at `at`, or `None` if there is none or it runs
+/// further back than [`MAX_HEADER_WALK`].
 fn skip_whitespace_back(bytes: &[u8], at: usize) -> Option<usize> {
     let mut i = at;
     while let Some(previous) = i.checked_sub(1)
         && bytes.get(previous).is_some_and(|b| is_whitespace(*b))
     {
+        if at - previous > MAX_HEADER_WALK {
+            return None;
+        }
         i = previous;
     }
     (i < at).then_some(i)
 }
 
-/// Where the run of regular characters ending at `at` begins.
+/// Where the run of regular characters ending at `at` begins, read back at most
+/// [`MAX_HEADER_WALK`] bytes.
 fn regular_run_back(bytes: &[u8], at: usize) -> usize {
     let mut i = at;
     while let Some(previous) = i.checked_sub(1)
+        && at - previous <= MAX_HEADER_WALK
         && bytes
             .get(previous)
             .is_some_and(|b| !is_whitespace(*b) && !is_delimiter(*b))
@@ -1136,6 +1169,63 @@ mod tests {
             8,
         );
         assert_eq!(found.irregular, Some(Irregular::BeyondCaps));
+    }
+
+    #[test]
+    fn the_keyword_search_and_the_header_walk_read_the_deadline() {
+        // MEASURED UNCHARGED BEFORE (code review of #227, round 2): 512 MiB of `o` ran 2.35 s, and
+        // `t ` repeated 1.25 s, with no checkpoint -- neither is a value, so no value's lexing
+        // charged them. One MiB of each must ask the deadline at least once.
+        for input in [
+            vec![b'o'; 1 << 20],
+            b"t ".repeat(1 << 19),
+            vec![b'x'; 1 << 20],
+        ] {
+            let mut called = 0;
+            let _ = in_file(&input, &mut || {
+                called += 1;
+                Ok(())
+            });
+            assert!(
+                called > 0,
+                "1 MiB of {:?} never read the deadline",
+                &input[..2]
+            );
+        }
+    }
+
+    #[test]
+    fn a_header_spread_past_the_walk_bound_reads_as_unreadable() {
+        // `1`, a MiB of spaces, `0 obj null`: qpdf may read that header; a walk back over the
+        // whole run would be a long stretch with no deadline read, so it is not taken, and the
+        // header withdraws every declaration -- the fail-closed direction.
+        let mut bytes = b"1".to_vec();
+        bytes.extend(std::iter::repeat_n(b' ', 1 << 20));
+        bytes.extend_from_slice(b"0 obj null endobj");
+        let found = file(&bytes);
+        assert!(found.unreadable_header);
+        assert!(!found.declares_only_null(1, 0));
+        // THE NEAR-MISS: the same header within the bound reads.
+        let found = file(b"1        0 obj null endobj");
+        assert!(found.declares_only_null(1, 0));
+    }
+
+    #[test]
+    fn more_declared_numbers_than_the_cap_are_refused() {
+        let mut bytes = Vec::new();
+        for n in 1..=super::MAX_DECLARATIONS + 1 {
+            bytes.extend_from_slice(format!("{n} 0 obj null endobj\n").as_bytes());
+        }
+        assert_eq!(file(&bytes).irregular, Some(Irregular::BeyondCaps));
+        // THE NEAR-MISS: exactly the cap is read.
+        let last = format!("{} 0 obj", super::MAX_DECLARATIONS + 1);
+        let at = bytes
+            .windows(last.len())
+            .position(|w| w == last.as_bytes())
+            .expect("the last header is there");
+        let found = file(&bytes[..at]);
+        assert_eq!(found.irregular, None);
+        assert_eq!(found.declarations.len(), super::MAX_DECLARATIONS);
     }
 
     /// A reference as written, plain or not.

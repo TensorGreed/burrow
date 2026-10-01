@@ -134,7 +134,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a `gs` whose **ExtGState names a `/Font`** | **refuse**, `[ext-gstate-sets-font]` — added 2026-09-29 ([#152]). It sets the text font without a `Tf`, and PDFium then draws with its own metrics even where the `/Font` is the `Tf`'s object. A `gs` for transparency or blending is walked past, as before |
 | a page that **takes `/Resources`, `/CropBox` or `/Rotate` from the page tree** rather than declaring it, whether its own entry is absent, null or unreadable | **refuse**, `[page-attribute-inherited]` — added 2026-09-29 ([#224]), superseding [#183]'s pre-scan. PDFium stops at a page's null and qpdf cannot see it, so an absent entry and a null one are refused alike. The `/Resources` half is a **stopgap** until #206's placement comparison; see the [2026-09-29 amendment](#amendment-2026-09-29--224-supersedes-183-inherited-page-attributes-are-refused-and-a-mediabox-is-asked-of-pdfium) |
 | a page that **takes `/MediaBox` from the page tree** and nothing confirms it is the box the viewer shows | **refuse**, `[media-box-unverified]` — added 2026-09-29 ([#224]). Natively where PDFium's page size disagrees with burrow's, or where a size cannot decide; on the web always, until #206 brings the renderer to redaction |
-| a document **the PDF engine repaired while reading it** -- any qpdf warning at the open, or by the write | **refuse**, `[engine-repaired-input]` — added 2026-09-29 ([#224], rounds 2 and 3). A repair can change what a page is: a junk `/Kids` entry makes qpdf push every inherited attribute onto the pages, after which a null-overridden page looks declared. Only whether a warning was raised is read, never its code or text. 4 of 224 local documents, all test fixtures, at either point. **Since [#227] it is also the second refusal of a member of an object stream qpdf cannot load** -- one headed at a generation qpdf will not read members from -- which the reference rule below refuses first; see the [2026-10-01 amendment](#amendment-2026-10-01--227-a-reference-qpdf-resolves-to-null-is-refused-unless-the-file-declares-that-null) |
+| a document **the PDF engine repaired while reading it** -- any qpdf warning at the open, or by the write | **refuse**, `[engine-repaired-input]` — added 2026-09-29 ([#224], rounds 2 and 3). A repair can change what a page is: a junk `/Kids` entry makes qpdf push every inherited attribute onto the pages, after which a null-overridden page looks declared. Only whether a warning was raised is read, never its code or text. 4 of 224 local documents, all test fixtures, at either point. **Since [#227] it is also a refusal of a member of an object stream qpdf cannot load** -- one headed at a generation qpdf will not read members from. The reference rule below refuses it first, unless a decoy header declares the member null, and then this is the only refusal; see the [2026-10-01 amendment](#amendment-2026-10-01--227-a-reference-qpdf-resolves-to-null-is-refused-unless-the-file-declares-that-null) |
 | a **reference qpdf resolves to null** that the file does not itself declare as `null` -- a generation the cross-reference does not have, however qpdf came to cache it; a number it does not have; an object in the file body and missing from a valid cross-reference; a member of an object stream qpdf cannot load | **refuse**, `[reference-to-nothing]` — added 2026-10-01 ([#227]). qpdf drops the key that held it and warns about nothing; PDFium finds the object by number. A null redacts only where every header for its number holds `null`, one at the pair written, qpdf holds it at that pair, and no object stream lists the number -- dvipdfm's `/Threads`. **It over-refuses** a reference to an object absent from both readers, and a declared null the cross-reference frees or an object stream also lists. 0 of 99 real documents and 0 of 100 fixtures |
 | a **reference not written in plain digits** -- a sign, a leading zero, a number past 32 bits, a comment inside it -- or a stream object or object stream whose header does not read, or more references than the check's caps | **refuse**, `[reference-unreadable]` — added 2026-10-01 ([#227]). qpdf reads `+6 0 R`, `6 +0 R`, `06 00 R` and a comment between the numbers as ordinary references; the rule refuses the shape rather than deciding what a reader meant. 0 of 99 real documents and 0 of 100 fixtures |
 | a page box, `/Rotate` or `/UserUnit` in a **shape the renderer does not read as burrow would** -- a box that is not four numbers, a `/Rotate` that is not a number or is beyond ten turns, a number of magnitude past 2^24, a crop sharing no area with the media box | **refuse**, `[page-frame-unreadable]` — added 2026-09-29 ([#224], round 2). The crop is clipped to the media box, as PDFium clips it. 0 of 224 local documents |
@@ -4194,11 +4194,17 @@ stream headed `7 0\vobj` was a header it never read while qpdf read it without a
 review, round 1). Fixed; NUL and form feed, which the same review showed load-bearing, now have
 tests. Every `obj` starts a scan, a superset of qpdf's starts, and that is **not free**: a scan from
 an `obj` that is really text, or from an uncompressed PDF embedded in this one, can refuse. No
-recursion; the work across overlapping scans, the object-stream headers included, is capped at four
-times the input plus 1 MiB and charged to the deadline, and the distinct references and declarations
-at 2^20 each -- beyond any is `[reference-unreadable]`, never a shorter answer. The deadline is read
-between tokens, so one token spanning the input -- an unclosed string -- is lexed whole before it is
-read: an overshoot of one token's lex, the same class as the content-stream overshoot above.
+recursion; the work across overlapping scans -- the object-stream headers and the search for the next
+keyword included -- is capped at four times the input plus 1 MiB and
+charged to the deadline, and the distinct references and declarations at 2^20 each; beyond any is
+`[reference-unreadable]`, never a shorter answer. **The first two drafts of this paragraph were
+wrong.** The keyword search and the backward header reads were charged to nothing, and 512 MiB of `o`
+ran 2.35 s with no deadline read while this said only one token's lex could pass unread (code
+review, round 2). The search is charged now, a backward read stops at 4 KiB over bytes the search
+has charged -- a header spread further reads as unreadable, which fails closed -- and the longest gap between two deadline reads, measured on
+512 MiB inputs in a release build over two runs, is under 1 ms for that input and **205-207 ms for
+one unclosed string spanning the whole file**: one token's lex, inside the 0.9 s this repository already allows for one
+content-stream decode plus lex.
 
 **The fuzz target**, `redact_references`, holds less than the first draft of this amendment said,
 and the code review said so: its oracle -- an object written after any input is still read, or the
@@ -4243,12 +4249,17 @@ a drift: a reference to an object absent from both readers; a `null` the body de
 cross-reference frees (identity, the condition kept from the second rule); a `null` the body
 declares at a number an object stream also lists.
 
-**The object-stream hole is refused twice again.** A member of an object stream qpdf cannot load --
-headed at generation 1 -- comes back as a null with its identity, so the second rule passed it to the
-warning check alone. No header declares the member, so the third rule refuses it, and qpdf's warning
-refuses it again after the write. `evade-object-stream-qpdf-cannot-load` pins the outcome, and the
-engine test `an_object_stream_qpdf_cannot_load_is_refused_by_both_layers_each_on_its_own` asks each
-layer alone, so removing either fails it. PDFium follows the member and turns the page (measured).
+**The object-stream hole is refused twice again -- unless a decoy strips the first refusal.** A member
+of an object stream qpdf cannot load -- headed at generation 1 -- comes back as a null with its
+identity, so the second rule passed it to the warning check alone. No header declares the member, so
+the third rule refuses it, and qpdf's warning refuses it again after the write; PDFium follows the
+member and turns the page (measured). `evade-object-stream-qpdf-cannot-load` pins the outcome. **But
+the first refusal is the attacker's to remove**: a `6 0 obj null` appended after `%%EOF`, where qpdf
+never reads, is a header declaring the member null, and the rule then passes the document (code
+review, round 2, measured). The warning check is then the only refusal, which the engine test
+`a_decoy_declaration_leaves_the_object_stream_hole_to_the_warning_check` pins: removing that check
+returns `Ok` there. So for this one shape the defence is one layer, the warning, and that is stated
+rather than counted twice.
 
 ### What resolving every reference costs
 
@@ -4279,14 +4290,18 @@ following each wrong-generation reference, so each refusal is tied to an observe
 golden cases over 149 documents (from 571 over 134 on `main`); every earlier line is unchanged, the
 fixtures' bytes included.
 
-Sixteen mutations on the landed rule, each asserted to apply and confirmed rebuilt, against a
+Nineteen mutations on the landed rule, each asserted to apply and confirmed rebuilt, against a
 baseline confirmed green first, each failing by name: the declaration check removed (identity alone,
 the second rule back); identity dropped; the members condition removed; every null refused (the first
 rule back); an unreadable header no longer withdrawing declarations; vertical tab, NUL and form feed
 each removed from white space; the object-stream header outside the budget; the check after the
 write removed; the policy asking generation 0; the native binding and the web binding each passing 0;
 the object-stream source removed; a comment inside a reference ignored; an unreadable stream header
-skipped. **Twice in this work a sweep ran over a baseline that was not green** -- the first time
+skipped; and, after the round-2 code review, the keyword search uncharged, the backward header walk
+unbounded, and the declarations cap removed. The check after the write, already in the list, is now
+killed by the decoy test too, which is its own witness. A twentieth, charging each backward read a
+second time, survived: those bytes are ones the search already charged, at most 4 KiB a header, so
+the charge was redundant and is removed rather than left as a claim no test can pin. **Twice in this work a sweep ran over a baseline that was not green** -- the first time
 every mutation "killed" a test already failing; the second time a new witness failed on its own
 search window -- and both were re-run. Two mutations first survived, identity dropped and members
 ignored: both conditions only over-refuse, and each now has a test that pins the over-refusal.

@@ -441,9 +441,9 @@ fn an_object_stream_qpdf_cannot_load_is_refused_by_both_layers_each_on_its_own()
     // load the stream, warns, and stores member 6 as a null carrying its identity. PDFium follows
     // the member and turns the page: the readers disagree, so this must refuse.
     //
-    // Two things refuse it, and each is asked here ALONE, so a mutation of either fails this:
-    // the reference rule, because no header in the file declares 6 as null; and qpdf's warning,
-    // which the check after the write reads.
+    // Two things refuse it. The reference rule is asked here alone, because no header declares 6
+    // as null; qpdf's warning is shown raised. The check after the write that READS the warning
+    // is witnessed by the decoy test below, where the rule is stripped and only it refuses.
     let bytes = with_object_stream(
         &page_objects("/Rotate 6 0 R"),
         7,
@@ -675,5 +675,38 @@ fn a_number_an_object_stream_lists_is_not_declared_by_a_body_null() {
         &bytes,
         "reference-to-nothing",
         "a body null whose number a stream lists",
+    );
+}
+
+#[test]
+fn a_decoy_declaration_leaves_the_object_stream_hole_to_the_warning_check() {
+    // THE CODE REVIEW OF #227'S ROUND 2: a header declaring `6 0 obj null`, appended after
+    // `%%EOF` where qpdf never reads it, satisfies the reference rule's declaration for the member
+    // qpdf could not load -- so the rule alone passes the document, while PDFium still follows the
+    // member and turns the page. The warnings after the write are then the only refusal, and this
+    // is their witness: removing that check returns `Ok` here.
+    let mut bytes = with_object_stream(
+        &page_objects("/Rotate 6 0 R"),
+        7,
+        1,
+        &[(6, "90".to_owned())],
+    );
+    bytes.extend_from_slice(b"6 0 obj null endobj\n");
+    assert_eq!(
+        pdfium_size(&bytes),
+        (400.0, 300.0),
+        "PDFium follows the member"
+    );
+    let clock = ManualClock::new(0);
+    let (native, deadline) = super::Qpdf.open_for_redaction(&bytes, &options()).unwrap();
+    assert!(
+        crate::redact::references::refuse_references_to_nothing(&native, &bytes, &deadline, &clock)
+            .is_ok(),
+        "the decoy no longer satisfies the reference rule, so this is not the warning's witness"
+    );
+    refused_on_both(
+        &bytes,
+        "engine-repaired-input",
+        "a member qpdf cannot load, its number declared null by a decoy",
     );
 }

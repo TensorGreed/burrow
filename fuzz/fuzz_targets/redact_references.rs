@@ -67,6 +67,10 @@ fuzz_target!(|data: &[u8]| {
         members.stream_objects.is_empty(),
         "an object stream reported a stream object, which cannot be a member"
     );
+    // WHAT EACH READING MAY REPORT. Declarations come from headers in the file, which an object
+    // stream's members do not have; members come only from an object stream's header.
+    assert!(members.declarations.is_empty() && !members.unreadable_header);
+    assert!(found.members.is_empty());
 });
 
 /// `/N` and `/First` as an object-stream body's own header implies them: the leading run of
@@ -76,8 +80,17 @@ fn header_shape(data: &[u8]) -> (i64, i64) {
     let mut at = 0;
     let mut integers = 0_i64;
     loop {
-        while data.get(at).is_some_and(space) {
-            at += 1;
+        // White space and comments, as the lexer and qpdf skip them in the header.
+        loop {
+            while data.get(at).is_some_and(space) {
+                at += 1;
+            }
+            if data.get(at) != Some(&b'%') {
+                break;
+            }
+            while data.get(at).is_some_and(|b| *b != b'\r' && *b != b'\n') {
+                at += 1;
+            }
         }
         let start = at;
         while data.get(at).is_some_and(u8::is_ascii_digit) {

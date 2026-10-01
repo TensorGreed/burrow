@@ -132,7 +132,9 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
 ) -> Result<()> {
     let mut checkpoint = || deadline.checkpoint(clock);
     let mut wanted = accepted(references::in_file(bytes, &mut checkpoint)?)?;
-    // The numbers object streams list as members: no header in the file speaks for them.
+    // The numbers object streams list as members: no header in the file speaks for them. Capped
+    // per stream at `MAX_DECLARATIONS`, not in total: memory here is detected, not bounded
+    // (ADR 0007), and every stream's decoded bytes are already held while it is read.
     let mut listed: BTreeSet<c_int> = BTreeSet::new();
 
     // THE OBJECT STREAMS, from every stream object's header. qpdf reads an object stream's
@@ -192,6 +194,9 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
         );
         // UNLESS THE FILE DECLARES THIS NULL, and qpdf holds it at this pair. See the module
         // header for why qpdf's identity alone is not a declaration.
+        // `resolved_to == NULL` is defence in depth, unwitnessed: a header declaring `null` whose
+        // object qpdf hands back as uninitialized or reserved is a state qpdf warns about, which
+        // refuses after the write; no test reaches it otherwise.
         let declared = resolved_to == object_type::NULL
             && wanted.declares_only_null(*number, *generation)
             && !listed.contains(number)
