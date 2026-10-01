@@ -178,7 +178,7 @@ struct ValueEnd {
 /// [`Found::unreadable_header`]).
 ///
 /// **All of it is charged to the budget and the deadline**, the search for the next keyword
-/// included, and a header is read backwards at most [`MAX_HEADER_WALK`] bytes over bytes the search
+/// included, and a header is read backwards at most 4 KiB over bytes the search
 /// has charged. Neither was so at first: 512 MiB of `o` ran 2.35 s with no checkpoint, against an
 /// amendment that said only one token's lex could pass unread (code review of #227, round 2).
 ///
