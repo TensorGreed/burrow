@@ -146,7 +146,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | an annotation that **depends on one the region removes** -- a Popup whose `/Parent` it is, a reply whose `/IRT` it is, the Popup it names as its `/Popup`, and so on to any depth -- on the same page | **handle** — added 2026-10-02 ([#239]). Removed with it: removing a dependent is part of removing what it depends on, which the disclosure that annotations over the region are removed already covers. Kept, it wrote the removed annotation -- `/Contents` and appearance -- into the output bytes, `Ok`, measured. A kept annotation whose `/Popup` the region removed keeps itself and loses the `/Popup` entry. 0 of 99 real documents and 0 of 99 fixtures carry `/Parent`, `/Popup` or `/IRT` on an annotation |
 | an annotation the region removes, or a Popup it names, that **anything the redaction keeps still names** -- another page's `/Annots` or annotations, a structure element's `/OBJR`, `/AcroForm /Fields`, an action on the catalogue, a resource dictionary, a trailer, classic or a cross-reference stream's -- and a kept annotation losing its `/Popup` that anything but this page's own listing names | **refuse**, `[annotation-dependent-kept]` — added 2026-10-02 ([#239]). A dependent kept for an independent reason: kept, it writes the removed annotation out again. Read from every object the file references, unparsed as qpdf holds it. Over the real documents' own annotations, a region over each of 107 refused 11 that main redacted -- 10 form widgets `/Fields` names and 1 link a structure element names, each written out by main after its `Ok`; both are #125's classes. A page sharing this page's `/Annots` array is refused by the row below ([#240]) |
 | an annotation the region removes whose **`/Popup` cannot be followed** -- anything but a dictionary or nothing, whether written inline or as its own object (an array, say, or a stream), anywhere along its chain of Popups, or more than 32 Popups written inline one inside another | **refuse**, `[annotation-popup-unreadable]` — added 2026-10-02 ([#239], fourth review). What it names cannot be read, so whether anything kept names it cannot be known: `/Popup [7 0 R]` wrote the Popup out after an `Ok`, measured, and so did `/Popup 8 0 R` over an `8 0 obj [7 0 R]` (fifth review). A kept annotation's `/Popup` is its own business and refuses nothing |
-| an annotation the region removes from an **`/Annots` array something else also names** -- another page sharing it, the catalogue, a field, another annotation, the trailer | **refuse**, `[annotation-dependent-kept]` — added 2026-10-02 ([#240]). Erasing from a shared array changed the other page too: `Ok`, the annotation gone from a page nobody asked about, measured. A per-page copy was the first direction and measurement disproved it: every entry of a shared array is the same object on every page, so a copy left the removed annotation on the other page and in the bytes, whether written indirectly or inline. A shared array the region takes nothing from is left exactly as it was. 0 of 99 real documents and 0 of 99 fixtures share an `/Annots` array |
+| an annotation the region removes from an **`/Annots` array something else also names** -- another page sharing it, the catalogue, a field, another annotation, the trailer | **refuse**, `[annotation-dependent-kept]` — added 2026-10-02 ([#240]). Erasing from a shared array changed the other page too: `Ok`, the annotation gone from a page nobody asked about, measured. A per-page copy was the first direction and measurement disproved it: every entry of a shared array is the same object on every page, so a copy left the removed annotation on the other page and in the bytes, whether written indirectly or inline. A shared array the region takes nothing from is left as it was: still shared, holding the same annotations in the same order. 0 of 99 real documents and 0 of 99 fixtures share an `/Annots` array between pages; how often something other than a page names one is unmeasured |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -4712,7 +4712,8 @@ page's own dictionary that names that array refuses `[annotation-dependent-kept]
 the catalogue, a field, an annotation, the trailer. Read by #239's walk -- every referenced object
 unparsed as qpdf holds it, and the trailer qpdf will write -- so the referrers are the real ones,
 not the other pages' `/Annots` alone. A shared array the region takes nothing from is not erased
-from, refuses nothing, and is read back from the output still shared, still holding both entries.
+from, refuses nothing, and is read back from the output still shared, holding the same annotations
+in the same order -- not byte for byte, since qpdf renumbers objects as it writes.
 
 **A correction to the premise.** The issue said §4 answers a shared `/Contents` by unsharing it. It
 does not: an element the cut lands in, shared with another page, is refused `[shared-contents]`
@@ -4720,7 +4721,13 @@ does not: an element the cut lands in, shared with another page, is refused `[sh
 different reasons.
 
 **Census.** 0 of 99 real documents and 0 of 99 fixtures share an `/Annots` array between pages
-(#227's lists, measured for #240's filing).
+(#227's lists, measured for #240's filing). How often something other than a page -- the catalogue, a
+field, an annotation, the trailer -- names one is **unmeasured**; the rule refuses those too.
+
+**One over-refusal, stated (specification review).** An object that only an orphan names, and
+that itself names the array, refuses, although qpdf would never write it: #239's walk reads every
+object the file references, and an orphan's reference counts. Walking from qpdf's trailer instead
+would close it; it is #239's behaviour, not new here, and is recorded rather than fixed.
 
 **Shown to fail.** Four mutations, each asserted to apply and confirmed rebuilt: the check reading
 only referrers that are pages -- the narrowing the owner named -- fails on the catalogue and the

@@ -485,22 +485,49 @@ fn a_removed_annotation_kept_by_another_page_is_refused() {
     );
 }
 
-/// Two pages naming one `/Annots` array, object 5, which holds `entries`; `catalogue` and
-/// `extra` (objects from 8) are added for other referrers.
-fn sharing(entries: &str, catalogue: &str, extra: &[String]) -> Vec<u8> {
+/// Page 1's `/Annots` array is object 5, holding `entries`; object 4 is `four`, an annotation over
+/// the region unless the caller moves it. Page 2 lists `page_two` (`5 0 R` to share page 1's
+/// array). `catalogue` and `trailer` are added to theirs, and `extra` are objects from 8.
+fn sharing(
+    entries: &str,
+    four: &str,
+    page_two: &str,
+    catalogue: &str,
+    extra: &[String],
+    trailer: &str,
+) -> Vec<u8> {
     let mut objects = vec![
         format!("<< /Type /Catalog /Pages 2 0 R {catalogue} >>"),
         "<< /Type /Pages /Count 2 /Kids [6 0 R 7 0 R] >>".to_owned(),
         WITNESS.to_owned(),
-        text(OVER, "/Contents (SHAREDSECRET)"),
+        four.to_owned(),
         format!("[{entries}]"),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots 5 0 R >>"
             .to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots 5 0 R >>"
-            .to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots {page_two} >>"
+        ),
     ];
     objects.extend(extra.iter().cloned());
-    raw(&objects, "")
+    raw(&objects, trailer)
+}
+
+/// The secret annotation over the region, as object 4.
+fn over() -> String {
+    text(OVER, "/Contents (SHAREDSECRET)")
+}
+
+/// #240's refusal, told apart from #239's, which carries the same tag.
+const SHARED: &str = "an /Annots array something else also names";
+
+fn refused_as_shared(bytes: &[u8], what: &str) {
+    for (engine, outcome) in on_both(bytes) {
+        let error = format!("{:?}", outcome.expect_err(what));
+        assert!(
+            error.contains("[annotation-dependent-kept]") && error.contains(SHARED),
+            "{what}, {engine}: refused, but not by #240's rule: {error}"
+        );
+    }
 }
 
 #[test]
@@ -508,17 +535,15 @@ fn an_annots_array_another_page_shares_is_refused_not_edited() {
     // #240: pages 1 and 2 name one `/Annots` array. Erasing from it took the annotation off page 2
     // too -- `Ok`, a silent edit to a page nobody asked about. A per-page copy was the first
     // direction, and measurement disproved it: every entry of a shared array is the same object on
-    // both pages, so a copy left the removed annotation on page 2 and in the bytes. Refused.
-    let rule = "annotation-dependent-kept";
-    refused_on_both(
-        &sharing("3 0 R 4 0 R", "", &[]),
-        rule,
+    // both pages, so a copy ended in #239's refusal or left the removed annotation on page 2 and
+    // in the bytes. Refused.
+    refused_as_shared(
+        &sharing("3 0 R 4 0 R", &over(), "5 0 R", "", &[], ""),
         "an indirect annotation in a shared array",
     );
     let direct = format!("<< /Type /Annot /Subtype /Text {OVER} /Contents (DIRECTSECRET) >>");
-    refused_on_both(
-        &sharing(&format!("3 0 R {direct}"), "", &[]),
-        rule,
+    refused_as_shared(
+        &sharing(&format!("3 0 R {direct}"), "null", "5 0 R", "", &[], ""),
         "a direct annotation in a shared array",
     );
 }
@@ -526,43 +551,31 @@ fn an_annots_array_another_page_shares_is_refused_not_edited() {
 #[test]
 fn an_annots_array_something_other_than_a_page_names_is_refused() {
     // NOT ONLY ANOTHER PAGE (owner, 2026-10-02): whatever else names the array is changed by the
-    // edit too. Page 2 here has an array of its own; the catalogue, or an annotation, names page
-    // 1's.
-    let rule = "annotation-dependent-kept";
-    let page_one_only = |catalogue: &str, extra: &[String]| {
-        let mut objects = vec![
-            format!("<< /Type /Catalog /Pages 2 0 R {catalogue} >>"),
-            "<< /Type /Pages /Count 2 /Kids [6 0 R 7 0 R] >>".to_owned(),
-            WITNESS.to_owned(),
-            text(OVER, "/Contents (SHAREDSECRET)"),
-            "[3 0 R 4 0 R]".to_owned(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots 5 0 R >>"
-                .to_owned(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots [3 0 R] >>"
-                .to_owned(),
-        ];
-        objects.extend(extra.iter().cloned());
-        raw(&objects, "")
-    };
-    refused_on_both(
-        &page_one_only("/Extra 5 0 R", &[]),
-        rule,
+    // edit too. Page 2 here has an array of its own; the catalogue, an annotation or the trailer
+    // names page 1's.
+    let own = "[3 0 R]";
+    refused_as_shared(
+        &sharing("3 0 R 4 0 R", &over(), own, "/Extra 5 0 R", &[], ""),
         "the catalogue naming page 1's array",
     );
-    refused_on_both(
-        &page_one_only("/Extra 8 0 R", &[text(MARGIN, "/IRT 5 0 R")]),
-        rule,
+    refused_as_shared(
+        &sharing(
+            "3 0 R 4 0 R",
+            &over(),
+            own,
+            "/Extra 8 0 R",
+            &[text(MARGIN, "/IRT 5 0 R")],
+            "",
+        ),
         "an annotation naming page 1's array",
     );
-    // AND THE TRAILER, which no object holds.
-    refused_on_both(
-        &raw_with_trailer_naming_annots(),
-        rule,
+    refused_as_shared(
+        &sharing("3 0 R 4 0 R", &over(), own, "", &[], "/Foo 5 0 R"),
         "the trailer naming page 1's array",
     );
     // THE NEAR-MISS: the same page 1, its array named by nothing else.
     removes_on_both(
-        &page_one_only("", &[]),
+        &sharing("3 0 R 4 0 R", &over(), own, "", &[], ""),
         &["SHAREDSECRET"],
         "page 1's own array, named by it alone",
     );
@@ -570,29 +583,13 @@ fn an_annots_array_something_other_than_a_page_names_is_refused() {
 
 #[test]
 fn a_shared_array_with_nothing_over_the_region_is_left_exactly_as_it_was() {
-    // THE TWIN: nothing on page 1 meets the region, so nothing is erased and nothing refuses; both
-    // pages still name one array holding both annotations, read back from the output.
+    // THE TWIN: nothing on page 1 meets the region, so nothing is erased and nothing refuses. Read
+    // back from the output: both pages still name one array, its own object, holding the same two
+    // annotations in the same order. (qpdf renumbers objects as it writes, so the array's bytes
+    // cannot be compared with the input's; its contents can.)
     let kept = text("/Rect [20 100 120 120]", "/Contents (KEPTSHARED)");
-    let bytes = sharing("3 0 R 4 0 R", "", &[]);
-    let bytes = String::from_utf8(bytes).expect("ASCII");
-    // THE SAME FILE with the annotation moved off the region: rewritten through `raw`, so the
-    // offsets stay right.
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Count 2 /Kids [6 0 R 7 0 R] >>".to_owned(),
-        WITNESS.to_owned(),
-        kept,
-        "[3 0 R 4 0 R]".to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots 5 0 R >>"
-            .to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots 5 0 R >>"
-            .to_owned(),
-    ];
-    assert!(
-        bytes.contains("SHAREDSECRET"),
-        "the shared fixture is the over-the-region one"
-    );
-    let [(_, natively), (_, on_the_web)] = on_both(&raw(&objects, ""));
+    let [(_, natively), (_, on_the_web)] =
+        on_both(&sharing("3 0 R 4 0 R", &kept, "5 0 R", "", &[], ""));
     let natively = natively.expect("nothing over the region: redacts");
     assert_eq!(
         natively,
@@ -604,6 +601,7 @@ fn a_shared_array_with_nothing_over_the_region_is_left_exactly_as_it_was() {
         .expect("the output opens");
     use crate::redact::graph::{OpensForRedaction, PdfDocument};
     let annots = crate::name::Name::literal(b"/Annots\0");
+    let contents = crate::name::Name::literal(b"/Contents\0");
     let first = document.page(0).expect("page 1").key(&annots);
     let second = document.page(1).expect("page 2").key(&annots);
     assert_eq!(
@@ -616,10 +614,14 @@ fn a_shared_array_with_nothing_over_the_region_is_left_exactly_as_it_was() {
         (0, 0),
         "and it is still its own object"
     );
-    assert_eq!(first.array_len(), 2, "holding both annotations");
-    assert!(
-        contains(&natively, "KEPTSHARED"),
-        "the kept annotation is in the output"
+    assert_eq!(first.array_len(), 2, "holding two entries");
+    let held: Vec<Vec<u8>> = (0..2)
+        .map(|at| first.array_item(at).key(&contents).unparse())
+        .collect();
+    assert_eq!(
+        held,
+        vec![b"(WITNESS)".to_vec(), b"(KEPTSHARED)".to_vec()],
+        "the same two annotations, in the same order"
     );
 }
 
@@ -1310,22 +1312,4 @@ fn a_popup_that_is_a_number_or_a_name_on_a_removed_annotation_is_refused() {
             &format!("a removed annotation whose /Popup is {popup}"),
         );
     }
-}
-
-/// Page 1's `/Annots` array, object 5, named by the trailer as well.
-fn raw_with_trailer_naming_annots() -> Vec<u8> {
-    raw(
-        &[
-            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-            "<< /Type /Pages /Count 2 /Kids [6 0 R 7 0 R] >>".to_owned(),
-            WITNESS.to_owned(),
-            text(OVER, "/Contents (SHAREDSECRET)"),
-            "[3 0 R 4 0 R]".to_owned(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots 5 0 R >>"
-                .to_owned(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots [3 0 R] >>"
-                .to_owned(),
-        ],
-        "/Foo 5 0 R",
-    )
 }

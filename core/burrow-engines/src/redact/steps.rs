@@ -249,6 +249,9 @@ impl<D: PdfDocument> PageRedaction<D> {
         let mut listing = BTreeSet::new();
         let this_page = identity_of(page)?;
         listing.extend(this_page);
+        // THIS PAGE'S `/Annots` COUNTS AS ITS OWN LISTING only because #240 refuses below when
+        // anything else names that array: a shared array exempted here would let an edited kept
+        // annotation change on the other page too. Keep the two together.
         listing.extend(identity_of(&page.key(&ANNOTS))?);
         page.drained()?;
         let refusal = || {
@@ -275,8 +278,8 @@ impl<D: PdfDocument> PageRedaction<D> {
             Error::Unsupported(
                 "pdf redaction [annotation-dependent-kept]: the region removes an annotation from \
                  an /Annots array something else also names, so the removal would change it there \
-                 too and the annotation would stay in the file"
-                    .to_owned(),
+                 too"
+                .to_owned(),
             )
         };
         if removed
