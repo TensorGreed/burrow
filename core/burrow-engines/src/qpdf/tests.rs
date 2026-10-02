@@ -1402,23 +1402,42 @@ mod wiring {
     }
 
     #[test]
-    fn a_repair_the_write_makes_is_refused_after_it() {
-        // #224, security review round 3: a stream reached only from the catalog is not read by
-        // the walk, so qpdf repairs its wrong `/Length` while writing -- after the check before
-        // the write. The bytes are dropped.
-        let bytes = pdf(&[
-            "<< /Type /Catalog /Pages 2 0 R /X 6 0 R >>".to_owned(),
-            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
-            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
-            stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
-                .to_owned(),
-            "<< /Length 3 >>\nstream\nsomething longer than three\nendstream".to_owned(),
-        ]);
+    fn a_repair_after_the_open_is_refused_after_the_write() {
+        // #224, security review round 3: an object reached only from the catalog is not read by
+        // the walk, so qpdf repaired it later, after the open's check. The warnings are asked
+        // again after the write and the bytes are dropped.
+        //
+        // #227 MOVED WHERE THE REPAIR HAPPENS, and this is the witness for that check now. The
+        // reference check resolves every object the file refers to, before the walk; a stray `)`
+        // is repaired there -- `[1 2 null 3]`, with a warning -- and the object is not null, so
+        // that check passes it and only the warnings after the write can refuse it.
+        let with_object_six = |six: &str| {
+            pdf(&[
+                "<< /Type /Catalog /Pages 2 0 R /X 6 0 R >>".to_owned(),
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+                format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
+                stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                    .to_owned(),
+                six.to_owned(),
+            ])
+        };
         refused_by(
-            redact_in(&bytes, UPPER_BAND),
+            redact_in(&with_object_six("<< /A [1 2 ) 3] >>"), UPPER_BAND),
             "engine-repaired-input",
-            "a stream qpdf repaired while writing",
+            "an object qpdf repaired outside the walk",
+        );
+        // THE ROUND-3 FIXTURE: a stream whose `/Length` is wrong. With recovery off qpdf cannot
+        // read it, warns, and hands back a null where the file declares a stream -- so the
+        // reference check refuses it first, as the disagreement it is (#227). The warning would
+        // refuse it after the write too; the stray `)` above is what pins that check alone.
+        refused_by(
+            redact_in(
+                &with_object_six("<< /Length 3 >>\nstream\nsomething longer than three\nendstream"),
+                UPPER_BAND,
+            ),
+            "reference-to-nothing",
+            "a stream qpdf cannot read, referred to from the catalog",
         );
     }
 

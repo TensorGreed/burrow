@@ -2331,3 +2331,289 @@ pages = 1
   notes = """
 0 to PDFium, a huge box to burrow (#224, round 3).
 """
+
+[[fixture]]
+name = "evade-rotate-at-the-wrong-generation"
+file = "generated/evade-rotate-at-the-wrong-generation.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over a file holding only N 0 — evasion"
+  canary = "BURROW-EVADE-WRONG-GENERATION"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf resolves the reference to null, drops /Rotate and warns about nothing; PDFium follows it and turns the page. Ok with the canary, on both engines, until #227.
+"""
+
+[[fixture]]
+name = "evade-rotate-at-generation-zero-over-one"
+file = "generated/evade-rotate-at-generation-zero-over-one.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 0 R where N is declared and headed at generation 1 — evasion"
+  canary = "BURROW-EVADE-GEN-ZERO-OVER-ONE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The second silent shape (#227): qpdf has no (N, 0) and drops the key; PDFium finds N by number.
+"""
+
+[[fixture]]
+name = "evade-wrong-generation-in-an-object-stream"
+file = "generated/evade-wrong-generation-in-an-object-stream.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an object stream member's /Rotate N 1 R over N 0 — evasion"
+  canary = "BURROW-EVADE-OBJSTM-WRONG-GEN"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The page is an object stream's member, so the file body names generation 1 nowhere: a check of the raw bytes alone passes it (#227).
+"""
+
+[[fixture]]
+name = "nearmiss-rotate-at-the-right-generation"
+file = "generated/nearmiss-rotate-at-the-right-generation.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over N 1 — near-miss twin"
+  canary = "BURROW-EVADE-RIGHT-GENERATION"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A generation other than 0 is ordinary after an incremental update; only one the cross-reference does not have is the shape.
+"""
+
+[[fixture]]
+name = "nearmiss-right-generation-in-an-object-stream"
+file = "generated/nearmiss-right-generation-in-an-object-stream.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "an object stream member's /Rotate N 0 R over N 0 — near-miss twin"
+  canary = "BURROW-EVADE-OBJSTM-RIGHT-GEN"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. The same object stream as the evasion, its reference at the right generation.
+"""
+
+[[fixture]]
+name = "evade-reference-with-a-sign"
+file = "generated/evade-reference-with-a-sign.pdf"
+kind = "hand-built"
+probes_refusal = "reference unreadable"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate +N 0 R — evasion"
+  canary = "BURROW-EVADE-SIGNED-NUMBER"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf reads it as N 0 R (#227). Refused for its shape, without deciding what a reader means by it.
+"""
+
+[[fixture]]
+name = "evade-generation-with-a-sign"
+file = "generated/evade-generation-with-a-sign.pdf"
+kind = "hand-built"
+probes_refusal = "reference unreadable"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N +0 R — evasion"
+  canary = "BURROW-EVADE-SIGNED-GENERATION"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf reads it as N 0 R (#227). Refused for its shape.
+"""
+
+[[fixture]]
+name = "evade-reference-with-leading-zeros"
+file = "generated/evade-reference-with-leading-zeros.pdf"
+kind = "hand-built"
+probes_refusal = "reference unreadable"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate 0N 00 R — evasion"
+  canary = "BURROW-EVADE-LEADING-ZEROS"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf reads it as N 0 R (#227). Refused for its shape.
+"""
+
+[[fixture]]
+name = "evade-reference-with-a-comment-inside"
+file = "generated/evade-reference-with-a-comment-inside.pdf"
+kind = "hand-built"
+probes_refusal = "reference unreadable"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N, a comment, then 0 R — evasion"
+  canary = "BURROW-EVADE-COMMENT-INSIDE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf reads through the comment (#227). Refused for its shape.
+"""
+
+[[fixture]]
+name = "nearmiss-reference-written-plainly"
+file = "generated/nearmiss-reference-written-plainly.pdf"
+kind = "hand-built"
+probes_refusal = "reference unreadable"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a comment beside a plain N 0 R — near-miss twin"
+  canary = "BURROW-EVADE-WRITTEN-PLAINLY"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A comment before a reference is not inside it.
+"""
+
+[[fixture]]
+name = "nearmiss-literal-null-threads"
+file = "generated/nearmiss-literal-null-threads.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the catalog's /Threads naming a declared null — near-miss twin"
+  canary = "BURROW-EVADE-NULL-THREADS"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. dvipdfm writes /Threads to a declared null; the first #227 rule refused 2 of 99 real documents for it against a 1% bar. qpdf declares the null at the pair written, and both readers read it alike. Keeps the identity narrowing from widening back.
+"""
+
+[[fixture]]
+name = "evade-object-stream-qpdf-cannot-load"
+file = "generated/evade-object-stream-qpdf-cannot-load.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate to a member of an object stream headed at generation 1 — evasion"
+  canary = "BURROW-EVADE-OBJSTM-UNLOADABLE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf reads members only through (S, 0), cannot load the stream, warns, and stores the member as a null carrying its identity. PDFium follows the member and turns the page (measured): the readers disagree. Refused by [reference-to-nothing], because no header declares the member null, and independently by [engine-repaired-input] after the write; the engine test asks each layer alone.
+"""
+
+[[fixture]]
+name = "evade-missing-pair-named-in-the-trailer"
+file = "generated/evade-missing-pair-named-in-the-trailer.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over N 0, the missing pair also named in the trailer — evasion"
+  canary = "BURROW-EVADE-PRIMED-TRAILER"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf caches a pair it parses while reading the cross-reference and later fills it with a null carrying that pair, silently. The identity rule took that for a declared null: Ok with the canary drawn, on both engines, measured by both #227 round-1 reviews. Refused because no header in the file declares the pair null.
+"""
+
+[[fixture]]
+name = "evade-missing-pair-named-in-an-xref-stream"
+file = "generated/evade-missing-pair-named-in-an-xref-stream.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over N 0, the missing pair also named in a cross-reference stream's dictionary — evasion"
+  canary = "BURROW-EVADE-PRIMED-XREF-STREAM"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf caches a pair it parses while reading the cross-reference and later fills it with a null carrying that pair, silently. The identity rule took that for a declared null: Ok with the canary drawn, on both engines, measured by both #227 round-1 reviews. Refused because no header in the file declares the pair null.
+"""
+
+[[fixture]]
+name = "evade-missing-pair-named-in-a-prev-trailer"
+file = "generated/evade-missing-pair-named-in-a-prev-trailer.pdf"
+kind = "hand-built"
+probes_refusal = "reference to nothing"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/Rotate N 1 R over N 0, the missing pair also named in an older trailer read through /Prev — evasion"
+  canary = "BURROW-EVADE-PRIMED-PREV"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+qpdf caches a pair it parses while reading the cross-reference and later fills it with a null carrying that pair, silently. The identity rule took that for a declared null: Ok with the canary drawn, on both engines, measured by both #227 round-1 reviews. Refused because no header in the file declares the pair null.
+"""
+

@@ -259,6 +259,25 @@ unsafe extern "C" {
     /// `qpdf_add_page` takes the source document alongside the handle.
     pub(super) fn qpdf_get_page_n(qpdf: QpdfData, n: usize) -> QpdfObjectHandle;
 
+    /// `qpdf_oh qpdf_get_object_by_id(qpdf_data qpdf, int objid, int generation)` —
+    /// `qpdf-c.h:646`.
+    ///
+    /// **Untrapped**, and argued in `engines/qpdf-untrapped-accepted.toml`. Its body is
+    /// `new_object(qpdf, qpdf->qpdf->getObject(objid, generation))`, and `QPDF::getObject`
+    /// (`QPDF_objects.cc:1951`) **does not resolve**: it returns the cached object for that
+    /// number and generation, a new null if the cross-reference has no such pair, or a new
+    /// *unresolved* placeholder that the next accessor resolves. Resolving -- the parser on
+    /// file-controlled bytes -- happens in that accessor, which is trapped. Redaction asks
+    /// [`qpdf_oh_get_type_code`] next, and a reference qpdf answers null for is refused (#227).
+    ///
+    /// **The generation is the one written**, never 0 in its place: a reference to `(6, 1)` in
+    /// a file holding only `(6, 0)` is the case this exists to find.
+    pub(super) fn qpdf_get_object_by_id(
+        qpdf: QpdfData,
+        objid: c_int,
+        generation: c_int,
+    ) -> QpdfObjectHandle;
+
     /// ```c
     /// QPDF_ERROR_CODE qpdf_add_page(qpdf_data qpdf, qpdf_data newpage_qpdf,
     ///     qpdf_oh newpage, QPDF_BOOL first);

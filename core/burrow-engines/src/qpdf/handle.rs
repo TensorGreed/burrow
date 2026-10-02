@@ -356,6 +356,22 @@ impl<'a> ObjectHandle<'a> {
         unsafe { Self::owned(document, handle) }
     }
 
+    /// The object `(number, generation)`, as an owned handle (#227).
+    ///
+    /// Here for the reason [`Self::page`] is: every route from qpdf to a handle produces an
+    /// `ObjectHandle`. The handle is to whatever qpdf holds at **exactly** that number and
+    /// generation -- a null when the cross-reference has no such pair -- and is not resolved
+    /// until an accessor asks; see `ffi::qpdf_get_object_by_id`.
+    pub(super) fn by_id(document: &'a Document, number: c_int, generation: c_int) -> Self {
+        // SAFETY: `document.data` is a live handle whose document read successfully. Untrapped
+        // and argued in `engines/qpdf-untrapped-accepted.toml`: a cache lookup, or a new null or
+        // unresolved placeholder, and one handle-cache insert. Any `c_int` pair is accepted --
+        // it is a map key, and no number is converted.
+        let handle = unsafe { ffi::qpdf_get_object_by_id(document.data, number, generation) };
+        // SAFETY: `handle` was just issued by `document.data`.
+        unsafe { Self::owned(document, handle) }
+    }
+
     /// The object this handle refers to, as `(number, generation)`.
     ///
     /// **A handle is not an identity.** `qpdf_get_page_n` issues a new one on every call, so

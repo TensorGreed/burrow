@@ -74,6 +74,8 @@ pub(super) enum Call {
     LoggerCreate,
     LoggerDiscardAll(i32),
     GetPageN(u32),
+    /// `qpdf_get_object_by_id`, with the number and generation asked for.
+    GetObjectById(i32, i32),
     AddPage {
         page: u32,
         first: bool,
@@ -1251,6 +1253,12 @@ impl QpdfBridge for FakeQpdf {
 
     fn logger_discard_all(&self, _logger: QpdfPtr, destination: i32) {
         self.state.record(Call::LoggerDiscardAll(destination));
+    }
+
+    fn get_object_by_id(&self, _data: QpdfPtr, number: i32, generation: i32) -> u32 {
+        self.state.record(Call::GetObjectById(number, generation));
+        // KEYED BY THE PAIR, so a script answers `oh_type_codes` per object as it does per key.
+        self.issue_handle(&format!("<object {number} {generation}>"))
     }
 
     fn get_page_n(&self, _data: QpdfPtr, n: u32) -> u32 {

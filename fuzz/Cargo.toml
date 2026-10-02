@@ -168,3 +168,12 @@ path = "fuzz_targets/redact_verified_output.rs"
 test = false
 doc = false
 bench = false
+
+# #227's reference lexer: every `N G R` qpdf parses, from every place qpdf starts parsing. Pure
+# Rust; its input is a whole file, so whole fixtures seed it.
+[[bin]]
+name = "redact_references"
+path = "fuzz_targets/redact_references.rs"
+test = false
+doc = false
+bench = false

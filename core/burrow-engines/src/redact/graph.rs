@@ -119,6 +119,17 @@ pub(crate) trait PdfDocument {
     /// whatever the engine reports.
     fn page(&self, index: usize) -> Result<Self::Object<'_>>;
 
+    /// The object at exactly `number` and `generation`, as qpdf holds it (#227).
+    ///
+    /// **Not resolved until an accessor asks**, and a pair the cross-reference does not have is a
+    /// null: asked with the generation a reference was written with, [`PdfObject::type_code`]
+    /// then says whether qpdf resolves that reference to nothing. Drains, as [`Self::page`] does.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the engine reports.
+    fn object(&self, number: c_int, generation: c_int) -> Result<Self::Object<'_>>;
+
     /// Write the document out: object streams preserved, a deterministic `/ID`, and nothing a
     /// caller can loosen.
     ///

@@ -388,4 +388,22 @@ describe("the redaction write path", () => {
     expect(scope.__burrow_qpdf_more_warnings(6 as never)).toBe(0);
     expect(asked).toEqual([5, 6]);
   });
+
+  it("a lookup by number reaches qpdf with the generation as written", () => {
+    // `qpdf_get_object_by_id(data, number, generation)`, #227. Redaction asks about each
+    // reference at the generation the file wrote, and refuses one qpdf resolves to null; a
+    // bridge that sent 0 in the generation's place would find `6 0` for every `6 1 R` and pass
+    // exactly the reference the check exists to refuse. So the two numbers must arrive apart.
+    const fake = fakeQpdf();
+    const asked: number[][] = [];
+    fake.module._qpdf_get_object_by_id = (data: number, number: number, generation: number) => {
+      asked.push([data, number, generation]);
+      return 0xfffffff0;
+    };
+    const { scope, attach } = loadBridge();
+    attach(fake.module);
+
+    expect(scope.__burrow_qpdf_get_object_by_id(5 as never, 6, 1)).toBe(0xfffffff0);
+    expect(asked).toEqual([[5, 6, 1]]);
+  });
 });
