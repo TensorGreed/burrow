@@ -130,6 +130,14 @@ pub(crate) trait PdfDocument {
     /// Whatever the engine reports.
     fn object(&self, number: c_int, generation: c_int) -> Result<Self::Object<'_>>;
 
+    /// The trailer the engine holds and will write: a classic trailer's dictionary or a
+    /// cross-reference stream's, however the file wrote it (#239). Drains, as [`Self::page`] does.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the engine reports.
+    fn trailer(&self) -> Result<Self::Object<'_>>;
+
     /// Write the document out: object streams preserved, a deterministic `/ID`, and nothing a
     /// caller can loosen.
     ///

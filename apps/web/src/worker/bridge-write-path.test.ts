@@ -406,4 +406,20 @@ describe("the redaction write path", () => {
     expect(scope.__burrow_qpdf_get_object_by_id(5 as never, 6, 1)).toBe(0xfffffff0);
     expect(asked).toEqual([[5, 6, 1]]);
   });
+
+  it("the trailer reaches qpdf for the document asked about, and its handle comes back unsigned", () => {
+    // `qpdf_get_trailer(data)`, #239. Redaction reads the trailer qpdf will write, because a byte
+    // scan for trailers missed trailers qpdf reads, each writing a removed annotation out.
+    const fake = fakeQpdf();
+    const asked: number[] = [];
+    fake.module._qpdf_get_trailer = (data: number) => {
+      asked.push(data);
+      return -16;
+    };
+    const { scope, attach } = loadBridge();
+    attach(fake.module);
+
+    expect(scope.__burrow_qpdf_get_trailer(5 as never)).toBe(0xfffffff0);
+    expect(asked).toEqual([5]);
+  });
 });

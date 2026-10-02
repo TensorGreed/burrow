@@ -143,6 +143,9 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a kept annotation whose **appearance has no bounding box** -- an `/N`, `/D` or `/R` stream, or any of their states, whose `/BBox` is not four numbers enclosing an area | **refuse**, `[annotation-appearance-unbounded]` — added 2026-10-01 ([#229]). PDFium fits an appearance to the `/Rect` through its `/BBox`, and with none only moves it to the `/Rect`'s corner, unclipped: 654 dark pixels of its ink in the region after an `Ok`, measured. Read by the page frame's box reader. 0 of 99 real documents (30 with annotations) and 0 of 99 fixtures; see the [2026-10-01 #229 amendment](#amendment-2026-10-01--229-an-annotation-the-redaction-keeps-must-draw-inside-its-rect) |
 | a kept **NoRotate annotation on a turned page** -- `/F` with bit 5 set, or not an integer, where the page's effective `/Rotate` is not 0 | **refuse**, `[annotation-no-rotate]` — added 2026-10-01 ([#229]). PDFium turns such an appearance about the `/Rect`'s corner, so it draws outside the `/Rect`: 1,800 dark pixels in a region beside the `/Rect` that the `/Rect` does not meet, after an `Ok`, measured. Refused rather than modelled. 0 of 99 real documents and 0 of 99 fixtures |
 | a kept **text-markup annotation whose `/QuadPoints` reach outside its `/Rect`** -- Highlight, Underline, Squiggly or StrikeOut, **or any `/Subtype` that is not a name** (PDFium reads it as a byte string, so `(Highlight)` is one), or a `/QuadPoints` that is not an array of numbers both readers agree on | **refuse**, `[annotation-quads-outside-rect]` — added 2026-10-01 ([#229]). PDFium can fit such an appearance to the quadrilaterals instead of the `/Rect`: with its private `/PDFIUM_HasGeneratedAP` key a file made it draw its own appearance there, 1,304 dark pixels in the region after an `Ok`, measured. Keyed on the declared shape, not the key. Compared exactly. **Its false-refusal rate is unmeasured** ([#242]): highlights made through PDFium's own annotation API carry no `/Rect` and are refused `[annotation-rect]` first, 96 of 96 documents; with a `/Rect` set to the same numbers as the quads, 0 of 1,621 are refused -- which shows the rule reaches real highlights, not a rate, since identical numbers cannot fail an exact comparison |
+| an annotation that **depends on one the region removes** -- a Popup whose `/Parent` it is, a reply whose `/IRT` it is, the Popup it names as its `/Popup`, and so on to any depth -- on the same page | **handle** — added 2026-10-02 ([#239]). Removed with it: removing a dependent is part of removing what it depends on, which the disclosure that annotations over the region are removed already covers. Kept, it wrote the removed annotation -- `/Contents` and appearance -- into the output bytes, `Ok`, measured. A kept annotation whose `/Popup` the region removed keeps itself and loses the `/Popup` entry. 0 of 99 real documents and 0 of 99 fixtures carry `/Parent`, `/Popup` or `/IRT` on an annotation |
+| an annotation the region removes, or a Popup it names, that **anything the redaction keeps still names** -- another page's `/Annots` or annotations, a structure element's `/OBJR`, `/AcroForm /Fields`, an action on the catalogue, a resource dictionary, a trailer, classic or a cross-reference stream's -- and a kept annotation losing its `/Popup` that anything but this page's own listing names | **refuse**, `[annotation-dependent-kept]` — added 2026-10-02 ([#239]). A dependent kept for an independent reason: kept, it writes the removed annotation out again. Read from every object the file references, unparsed as qpdf holds it. Over the real documents' own annotations, a region over each of 107 refused 11 that main redacted -- 10 form widgets `/Fields` names and 1 link a structure element names, each written out by main after its `Ok`; both are #125's classes. A page sharing this page's `/Annots` array is [#240]'s |
+| an annotation the region removes whose **`/Popup` cannot be followed** -- anything but a dictionary or nothing, whether written inline or as its own object (an array, say, or a stream), anywhere along its chain of Popups, or more than 32 Popups written inline one inside another | **refuse**, `[annotation-popup-unreadable]` — added 2026-10-02 ([#239], fourth review). What it names cannot be read, so whether anything kept names it cannot be known: `/Popup [7 0 R]` wrote the Popup out after an `Ok`, measured, and so did `/Popup 8 0 R` over an `8 0 obj [7 0 R]` (fifth review). A kept annotation's `/Popup` is its own business and refuses nothing |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -1159,6 +1162,8 @@ the seven cases then in the script:
 [#226]: https://github.com/TensorGreed/burrow/issues/226
 [#229]: https://github.com/TensorGreed/burrow/issues/229
 [#242]: https://github.com/TensorGreed/burrow/issues/242
+[#239]: https://github.com/TensorGreed/burrow/issues/239
+[#240]: https://github.com/TensorGreed/burrow/issues/240
 [#227]: https://github.com/TensorGreed/burrow/issues/227
 [#152]: https://github.com/TensorGreed/burrow/issues/152
 
@@ -4535,3 +4540,138 @@ Preview, iOS Markup, Chrome and Firefox are in the gitignored corpus, and is re-
 the same 1% bar. Whether a PDFium-based writer such as Chrome's saves highlights with no `/Rect` --
 in which case `[annotation-rect]` refuses every document it highlighted -- is a measurement of its own,
 [#244](https://github.com/TensorGreed/burrow/issues/244), not yet a decision.
+
+## Amendment, 2026-10-02 — #239: an annotation the region removes takes its dependents with it, and nothing kept may name it
+
+**The removal #229 relied on left the removed annotation in the file.** `remove_annotations_in`
+took an annotation over the region out of `/Annots`, and qpdf writes every object something still
+reaches. Found by #229's specification review and measured on main before anything changed -- each
+`Ok`, each with the removed annotation's `/Contents` in the decompressed output:
+
+| what still reached it | |
+|---|---|
+| a Popup in the margin whose `/Parent` it was (the issue's shape) | in the bytes |
+| a reply whose `/IRT` it was, and a reply to that reply | in the bytes |
+| a kept annotation whose `/Popup` sat over the region | in the bytes |
+| a reply on another page | in the bytes |
+| the same annotation listed on another page | in the bytes |
+| a `/Hide` action on the catalogue's `/OpenAction` | in the bytes |
+
+Nothing drew any of them -- PDFium skips Popups from the file -- so the leak was in the bytes a
+person shares, not on the page, and the read-back could not see it.
+
+**Owner's direction, 2026-10-01: remove the dependents; refuse only a dependent kept for an
+independent reason.** Two parts:
+
+- **Dependents go with what they depend on**, on the same page: a `/Parent`, an `/IRT`, and the
+  removed annotation's own `/Popup`, closed to a fixpoint over an index built once, so the closure is
+  linear in the page's annotations. A kept annotation whose `/Popup` the region removed loses that
+  entry and keeps itself.
+- **Anything kept that still names a removed annotation, or a Popup one names, is refused**,
+  `[annotation-dependent-kept]`. What names it is read from every object the file references, each
+  unparsed as qpdf now holds it and lexed by #227's reader, and from every trailer. A kept
+  annotation that loses its `/Popup` is held to the same rule, less this page's own listing of it --
+  so a reply naming it as `/IRT`, a structure element or an action refuses too, though nothing of
+  it leaks, since it is kept either way. That breadth is unmeasured: the census holds no
+  `/Popup`.
+  With nothing kept naming it, qpdf does not write a removed annotation, nor anything only it
+  reached, and nothing is edited to make that so.
+
+**The first version was different, and both reviews showed why it was wrong.** It refused only
+another page's listing or annotations, and **emptied every removed annotation in place** for the
+references it could not see -- the catalogue is outside what ADR 0013's bar lets this code read.
+The specification review measured what that did, each `Ok`: an object that was both a removed
+annotation and a page's graphics state, another page's font, a link's action or the trailer's
+`/Info` was emptied in all its roles -- kept text on page 1 went from 332 to 1,361 dark pixels as its
+transparency vanished -- and a Popup the page did not list, reached from the catalogue, kept its
+text in the bytes. The code review found the same emptying of a kept annotation's shared appearance
+(3,633 dark pixels to 101), and an annotation listed on two pages losing its `/Popup` on both. All of
+these are refused now, and nothing is emptied.
+
+**The trailer is asked of qpdf, after three rounds showed the bytes could not be trusted for it.**
+Nothing references a trailer, so the walk over referenced objects cannot reach one. Each attempt to
+find trailers in the bytes left a shape qpdf reads and the scan did not, and each was measured writing
+a removed annotation out after an `Ok`: a cross-reference stream's dictionary, which is the trailer
+since PDF 1.5 (both second-round reviews); and a `trailer` keyword written straight after a digit,
+`11 0trailer`, which qpdf reads without a warning (the third specification review). Reading every
+stream dictionary as a possible trailer closed the first and over-refused -- a hybrid file's
+`/XRefStm`, which qpdf ignores, an orphan stream -- and did not close the second. So the walk now reads
+the trailer qpdf holds and will write, through **`qpdf_get_trailer`**, bound natively and as a bridge
+export. It is trapped **in substance** -- `getTrailer` runs inside `trap_oh_errors` -- but not in
+shape: a `QTC::TC` coverage statement before the call keeps it off the generated trapped list, so it is
+argued in `engines/qpdf-untrapped-accepted.toml` as #227's binding is, on the ground that `QTC::TC`
+is compiled out of our builds (the fourth code review deleted the entry and the checker refused).
+Its references join the set the walk reads, so an object only that trailer names is read. **They do
+not close a #227 gap**, though an earlier draft of this paragraph said so: qpdf drops a trailer key
+whose reference is dangling before burrow sees it (measured by the fourth code review), so for the
+null check they are defence in depth, and labelled so in the code. The stream-dictionary superset is
+gone, and with it the over-refusals: the hybrid file redacts, as on main, and a test pins a
+superseded trailer naming a removed annotation as refusing nothing.
+
+**The other second- and third-round findings, all fixed.** A Popup named by a removed annotation
+written **directly** in `/Annots` was not followed, because ownership was seeded from identities
+alone -- `Ok`, its text in the bytes, when the catalogue, another page's `/Annots` or another page's
+annotation named it; every removed entry's Popup now seeds it. A Popup written inline ended a chain
+of Popups, and the indirect one past it was written out; the chain is now followed through inline
+ones. Re-run against the specification reviews' own inputs from the scratchpad -- not committed;
+the shapes that matter are, as tests -- every leaking shape is refused, every control redacts, and
+fourteen lexer shapes (escaped and nested strings, odd hex, names spelling `stream` and `endobj`)
+refuse. The 107-region census, re-run on the final code, is unchanged: 96 `Ok`, the same 11 refused.
+
+**Size.** The redaction module grew 7,554 brotli with this change, re-recorded with the budget
+unchanged; 14,877 of headroom remain.
+
+**What is followed, measured.** A version that took everything a removed annotation reaches as its
+own -- every key but `/P`, `/Parent`, `/IRT`, `/OC` and `/Resources` -- refused **49 of 107** regions
+over the real documents' own annotations that main redacted, because a link's `/Dest` reaches a page
+and the page tree names it. So only the annotations and their Popups must be named by nothing kept.
+**The residual, stated:** what a removed annotation reaches that something kept also names -- an
+appearance another annotation draws with, a string the catalogue names -- is kept with that thing, and
+stays in the output. It is that thing's content as much as the annotation's; a test pins it.
+
+**The census.** Over #227's real-document list, a region over each of up to five annotations per
+document on upright pages -- 107 regions over 25 documents -- main redacted all 107 `Ok`, and this
+redacts 96 and refuses 11: ten form widgets in `form_english.pdf` and `form_russian.pdf` that
+`/AcroForm /Fields` names, and one link in `NVIDIA_SLA.pdf` that a structure element's `/OBJR`
+names. **Each of the eleven was written out by main after its `Ok`.** Both are classes #125 already
+owes a refusal for. 0 of 99 real documents and 0 of 99 fixtures carry `/Parent`, `/Popup` or `/IRT`
+on an annotation, so the removal of dependents changes none of them.
+
+**#125, one placement.** `acroform-field`'s widget is over the region and is its own field, so
+`/Fields` names it and the redaction is refused `[annotation-dependent-kept]`: its owed marker is
+removed (#125's count 14 to 13), and it leaves the pinned set of owed leaks; the checker's self-test
+now plants its leak with another member. `evade-widget-on-another-page`, redacted on its widget's page,
+is refused the same way. Three golden lines change, each from `Ok` to that refusal.
+
+**Cost, release build, best of three against main.** A chain of 5,000 replies on one page, all
+removed: 0.052 s before, 0.050 s after. A 2,000-page document of 64,000 annotations with one removed
+on its first page, so the walk unparses every object it references: 0.465 s before, 0.525 s after. The
+walk runs only when something with an identity was removed. Every pass reads the deadline at each
+annotation and the reference walk at each object, and four tests count those reads: two directly,
+two as the difference between the same document with and without a removal, because the sharing walk
+reads at every annotation too and hides them end to end.
+
+**Shown to fail.** The first version's eighteen mutations failed sixteen at first; the two survivors
+were a test reaching a Popup by both edges (a Popup naming its parent, unnamed by it, now kills it) and
+a dead guard, removed. The second version's sweep, each mutation asserted to apply and confirmed
+rebuilt against a green baseline: the walk switched off; the trailer's names ignored; references from
+what the removal takes counted as outside; arrays,
+and separately stream dictionaries, not read; a reference to what is removed ignored; a reference to
+an edited kept annotation ignored, and separately this page's own listing of it refused; a removed
+annotation's Popup not followed; the edit not recorded; each dependent edge ignored in turn; the
+closure cut to one step; the kept annotation's `/Popup` left in place; and each deadline read. Twenty
+of twenty-two failed by name on the first run. **The two survivors:** the Popup walk's deadline read,
+which a chain of 200 unlisted Popups now witnesses as a difference in reads; and a refusal of an
+answer the lexer calls incomplete, which nothing qpdf unparses can produce -- kept as defence in
+depth, and labelled unwitnessed in the code. The later rounds' fixes each have one more, and each
+fails by name: qpdf's trailer not read; the objects only it names not walked; a direct entry's Popup
+not seeded, or ignored by the early return; this page's indirect `/Annots` not counted as its
+listing; and, one per place a Popup is read, the walk and the annotation pass each reading only an
+identity, the inline cap ending the chain short instead of refusing, and each place's unreadable
+`/Popup` let through. **The fourth code review found the first three Popup guards unwitnessed** --
+the one chain test reached both places at once, so either could be reverted with every suite green,
+and each alone leaked -- and each now has a shape of its own. Golden: 692 cases over 163 documents (from 668 over 158).
+
+**Not covered.** A page sharing this page's `/Annots` array is #240's. Several pages covered at once
+are redacted page by page: whether a reply on page 2 refuses page 1's redaction depends on which runs
+first (code review); refusing is the safe answer either way, and the order-independence is [#245](https://github.com/TensorGreed/burrow/issues/245).

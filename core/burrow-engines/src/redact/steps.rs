@@ -94,6 +94,9 @@ pub(crate) struct PageRedaction<D> {
     form_properties: BTreeMap<u64, NamedProperties>,
     /// How many property lists have had their carried text dropped, for §7's disclosure.
     dropped_carried_text: usize,
+    /// What the reference pass read (#227), kept for the walk that asks what still names an
+    /// annotation the region removed (#239). `None` until that pass has run.
+    referenced: Option<super::references::Referenced>,
 }
 
 impl<D: PdfDocument> PageRedaction<D> {
@@ -154,6 +157,7 @@ impl<D: PdfDocument> PageRedaction<D> {
             page_properties: NamedProperties::default(),
             form_properties: BTreeMap::new(),
             dropped_carried_text: 0,
+            referenced: None,
         })
     }
 
@@ -188,6 +192,144 @@ impl<D: PdfDocument> PageRedaction<D> {
         self.document.page(self.page)
     }
 
+    /// Refuse when anything the removal does not take still names what it takes (#239).
+    ///
+    /// **What the removal takes** is each annotation removed and each Popup one names (see
+    /// `owned_by`). **What names it** is read from every object the file references, each
+    /// unparsed as qpdf holds it now, and from the trailer qpdf holds and will write; so a page, an
+    /// action on the
+    /// catalogue, a resource dictionary, an annotation on another page, or the trailer's `/Info`.
+    ///
+    /// **Any such name is a dependent kept for an independent reason** (owner, 2026-10-01), and is
+    /// refused: kept, it writes the removed annotation out -- measured, its `/Contents` and its
+    /// appearance in the output after an `Ok`. With nothing naming it, qpdf does not write it, nor
+    /// anything only it reached, and nothing is edited to make that so. The first version of #239
+    /// emptied each removed annotation in place instead, and both reviews showed why that was
+    /// wrong: it emptied whatever else the object was -- a page's graphics state, another page's
+    /// font, the trailer's `/Info` -- without a word; and it left anything the annotation reached
+    /// that something else also named.
+    ///
+    /// A kept annotation that loses a `/Popup` entry (see `remove_annotations_in`) is held to the
+    /// same rule, less this page's own listing of it: named by another page, it would change there
+    /// too, and is refused.
+    ///
+    /// An object nothing references is neither read nor written, so an orphan naming a removed
+    /// annotation refuses nothing. The walk runs only when something with an identity was removed,
+    /// and reads the deadline at every object.
+    fn refuse_what_the_removal_leaves(
+        &self,
+        removed: &Removed,
+        page: &D::Object<'_>,
+    ) -> Result<()> {
+        const ANNOTS: Name = Name::literal(b"/Annots\0");
+        if removed.annotations.is_empty() && removed.popups.is_empty() && removed.edited.is_empty()
+        {
+            return Ok(());
+        }
+        // DEFENCE IN DEPTH, unwitnessed: `run` always calls the reference pass before the steps,
+        // so this cannot be `None`; refusing is the answer if a later order ever makes it so.
+        let Some(referenced) = &self.referenced else {
+            return Err(Error::Internal(
+                "pdf redaction: the reference pass did not run before the annotation walk"
+                    .to_owned(),
+            ));
+        };
+        let mut seeds = removed.annotations.clone();
+        seeds.extend(removed.popups.iter().copied());
+        let owned = self.owned_by(&seeds)?;
+        // THIS PAGE'S OWN LISTING of an annotation it keeps and edits.
+        let mut listing = BTreeSet::new();
+        listing.extend(identity_of(page)?);
+        listing.extend(identity_of(&page.key(&ANNOTS))?);
+        page.drained()?;
+        let refusal = || {
+            Error::Unsupported(
+                "pdf redaction [annotation-dependent-kept]: something the redaction keeps still \
+                 names an annotation the region removes, or what it owns, which would write it out \
+                 again"
+                    .to_owned(),
+            )
+        };
+        if referenced
+            .from_trailer
+            .iter()
+            .any(|named| owned.contains(named) || removed.edited.contains(named))
+        {
+            return Err(refusal());
+        }
+        for &(number, generation) in &referenced.objects {
+            self.deadline.checkpoint(self.clock.as_ref())?;
+            if owned.contains(&(number, generation)) {
+                continue;
+            }
+            let object = self.document.object(number, generation)?;
+            let text = match object.type_code() {
+                object_type::DICTIONARY | object_type::ARRAY => object.unparse(),
+                object_type::STREAM => object.stream_dict().unparse(),
+                _ => {
+                    object.drained()?;
+                    continue;
+                }
+            };
+            object.drained()?;
+            let mut checkpoint = || self.deadline.checkpoint(self.clock.as_ref());
+            let found = crate::pdfsyntax::references::in_value(&text, &mut checkpoint)?;
+            // DEFENCE IN DEPTH, unwitnessed: qpdf unparses every reference in plain digits, so
+            // nothing it writes reads as irregular, and the mutation that deletes this survives.
+            // Kept because an answer the lexer calls incomplete must not be taken as "nothing".
+            if found.irregular.is_some() {
+                return Err(refusal());
+            }
+            for named in &found.references {
+                if owned.contains(named) {
+                    return Err(refusal());
+                }
+                if removed.edited.contains(named) && !listing.contains(&(number, generation)) {
+                    return Err(refusal());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The removed annotations and every Popup one of them names, by identity: what must be named
+    /// by nothing the redaction keeps. A Popup is its annotation's own (owner, 2026-10-01), so one
+    /// the page does not list goes with it as one it lists does.
+    ///
+    /// **Nothing else a removed annotation reaches is followed**, and that was measured, not
+    /// assumed: a first version followed every key, and refused 49 of 107 regions over the real
+    /// documents' own annotations that main redacted -- a link's `/Dest` reaches a page, which the
+    /// page tree names. What a removed annotation alone reaches, nothing kept names once the
+    /// annotation is gone, so qpdf does not write it; what something kept names as well is kept for
+    /// that, and is that thing's.
+    fn owned_by(&self, removed: &BTreeSet<(c_int, c_int)>) -> Result<BTreeSet<(c_int, c_int)>> {
+        let mut owned = removed.clone();
+        let mut pending: Vec<(c_int, c_int)> = removed.iter().copied().collect();
+        while let Some((number, generation)) = pending.pop() {
+            self.deadline.checkpoint(self.clock.as_ref())?;
+            let object = self.document.object(number, generation)?;
+            match object.type_code() {
+                object_type::DICTIONARY => match popup_of(&object)? {
+                    Popup::At(popup) => {
+                        if owned.insert(popup) {
+                            pending.push(popup);
+                        }
+                    }
+                    Popup::Unreadable => return Err(popup_unreadable()),
+                    Popup::None => {}
+                },
+                object_type::NULL => {}
+                // A POPUP THAT IS ITS OWN OBJECT BUT NOT A DICTIONARY -- an indirect array, a
+                // stream -- names what the walk cannot follow, as one written inline does (#239's
+                // fifth specification review: `/Popup 8 0 R` over `8 0 obj [7 0 R]` wrote 7 out
+                // after an `Ok`).
+                _ => return Err(popup_unreadable()),
+            }
+            object.drained()?;
+        }
+        Ok(owned)
+    }
+
     /// Refuse the document if any reference it writes resolves to null, or cannot be read as qpdf
     /// reads it; see `references::refuse_references_to_nothing` (#227). `bytes` is the input the
     /// document was opened from.
@@ -196,13 +338,14 @@ impl<D: PdfDocument> PageRedaction<D> {
     ///
     /// `[reference-to-nothing]`, `[reference-unreadable]`, the deadline, and whatever the engine
     /// reports.
-    pub(crate) fn refuse_references_to_nothing(&self, bytes: &[u8]) -> Result<()> {
-        super::references::refuse_references_to_nothing(
+    pub(crate) fn refuse_references_to_nothing(&mut self, bytes: &[u8]) -> Result<()> {
+        self.referenced = Some(super::references::refuse_references_to_nothing(
             &self.document,
             bytes,
             &self.deadline,
             self.clock.as_ref(),
-        )
+        )?);
+        Ok(())
     }
 
     /// Refuse the page if its `/MediaBox` comes from the page tree and `renderer_size` does not
@@ -796,14 +939,14 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         }
         let frame = Self::frame(&page)?;
         let region = self.region.to_content_space(&frame)?;
-        remove_annotations_in(
+        let removed = remove_annotations_in(
             &page,
             &region,
             frame.rotate,
             &self.deadline,
             self.clock.as_ref(),
         )?;
-        Ok(())
+        self.refuse_what_the_removal_leaves(&removed, &page)
     }
 
     fn write(&mut self) -> Result<Vec<u8>> {
@@ -861,20 +1004,32 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
 /// and every appearance stream, and reads a shared `/AP` dictionary, state dictionary, stream or
 /// `/QuadPoints` array once **per role** it is reached in: the code review of #229 measured 182.6 s
 /// on a 616 KB file whose 5,000 annotations shared one `/AP`, when neither held.
+///
+/// # And what it removes leaves the file (#239)
+///
+/// An annotation taken out of `/Annots` was still written by qpdf when anything reached it -- a
+/// margin Popup's `/Parent`, a reply's `/IRT`, an action on the catalogue -- with its `/Contents`
+/// in the output bytes after an `Ok`. So its dependents on this page go with it (see
+/// [`with_dependents`]), and a kept annotation loses a `/Popup` entry naming one. Returns what was
+/// removed and what was edited, so the caller can refuse anything kept that still names either.
 fn remove_annotations_in<O: PdfObject>(
     page: &O,
     region: &crate::pdfsyntax::geometry::Rect,
     rotate: u16,
     deadline: &Deadline,
     clock: &dyn Clock,
-) -> Result<()> {
+) -> Result<Removed> {
     const ANNOTS: Name = Name::literal(b"/Annots\0");
     const RECT: Name = Name::literal(b"/Rect\0");
 
     let annots = page.key(&ANNOTS);
     page.drained()?;
     if annots.type_code() != object_type::ARRAY {
-        return Ok(());
+        return Ok(Removed {
+            annotations: BTreeSet::new(),
+            popups: BTreeSet::new(),
+            edited: BTreeSet::new(),
+        });
     }
     let length = annots.array_len();
     if length > DIFFERENCES_CEILING {
@@ -883,13 +1038,9 @@ fn remove_annotations_in<O: PdfObject>(
                 .to_owned(),
         ));
     }
-    let mut walk = AppearanceWalk {
-        deadline,
-        clock,
-        checked: Checked::default(),
-        quads: BTreeMap::new(),
-    };
-    for at in (0..length).rev() {
+    // ONE READ OF EACH ANNOTATION: where it sits, what it is, and what it names (#239).
+    let mut entries = Vec::new();
+    for at in 0..length {
         deadline.checkpoint(clock)?;
         let annotation = annots.array_item(at);
         if annotation.type_code() != object_type::DICTIONARY {
@@ -925,18 +1076,228 @@ fn remove_annotations_in<O: PdfObject>(
                 ));
             }
         };
-        if box_of.intersects(region) {
-            annots.erase_item(at);
+        entries.push(Entry {
+            at,
+            identity: identity_of(&annotation)?,
+            over: box_of.intersects(region),
+            rect: box_of,
+            parent: identity_of(&annotation.key(&PARENT))?,
+            in_reply_to: identity_of(&annotation.key(&IRT))?,
+            popup: popup_of(&annotation)?,
+        });
+        annotation.drained()?;
+    }
+
+    let removed = with_dependents(&entries, deadline, clock)?;
+    let gone: BTreeSet<(c_int, c_int)> = entries
+        .iter()
+        .zip(&removed)
+        .filter_map(|(entry, &out)| if out { entry.identity } else { None })
+        .collect();
+    // A REMOVED ANNOTATION'S `/Popup` MUST READ: one that is neither a dictionary nor absent
+    // names something the walk cannot follow (#239's fourth review -- `/Popup [7 0 R]` wrote the
+    // Popup out after an `Ok`). A kept one's is its own business.
+    if entries
+        .iter()
+        .zip(&removed)
+        .any(|(entry, &out)| out && entry.popup == Popup::Unreadable)
+    {
+        return Err(popup_unreadable());
+    }
+    let popups: BTreeSet<(c_int, c_int)> = entries
+        .iter()
+        .zip(&removed)
+        .filter_map(|(entry, &out)| if out { entry.popup.at() } else { None })
+        .collect();
+
+    let mut walk = AppearanceWalk {
+        deadline,
+        clock,
+        checked: Checked::default(),
+        quads: BTreeMap::new(),
+    };
+    let mut edited = BTreeSet::new();
+    for (entry, &out) in entries.iter().zip(&removed).rev() {
+        deadline.checkpoint(clock)?;
+        let annotation = annots.array_item(entry.at);
+        if out {
+            // AFTER THE READ, NOT DURING IT: `erase_item` renumbers, and walking backwards over
+            // the recorded positions erases each one where it was read.
+            annots.erase_item(entry.at);
             annots.drained()?;
             continue;
+        }
+        // A KEPT ANNOTATION WHOSE POPUP WAS REMOVED keeps itself and loses the popup: the popup
+        // sat over the region, which is the disclosure's own sentence, and a `/Popup` left naming
+        // it would write it out again (#239).
+        if entry.popup.at().is_some_and(|popup| gone.contains(&popup)) {
+            annotation.remove_key(&POPUP);
+            annotation.drained()?;
+            edited.extend(entry.identity);
         }
         // KEPT, SO WHERE IT DRAWS MUST BE ITS `/Rect` (#229). The test above assumes an
         // annotation draws only inside its `/Rect`, and PDFium does not always keep it there.
         refuse_no_rotate_on_a_turned_page(&annotation, rotate)?;
-        walk.refuse_quads_outside_the_rect(&annotation, &box_of)?;
+        walk.refuse_quads_outside_the_rect(&annotation, &entry.rect)?;
         walk.refuse_unbounded_appearances(&annotation)?;
     }
-    Ok(())
+    Ok(Removed {
+        annotations: gone,
+        popups,
+        edited,
+    })
+}
+
+/// One annotation of a page, as `remove_annotations_in` read it.
+struct Entry {
+    /// Its position in `/Annots` when read.
+    at: c_int,
+    /// Its object identity, or `None` for a direct dictionary, which nothing else can name.
+    identity: Option<(c_int, c_int)>,
+    /// Whether its `/Rect` meets the region.
+    over: bool,
+    rect: crate::pdfsyntax::geometry::Rect,
+    /// What its `/Parent` and `/IRT` name, where each is an indirect object.
+    parent: Option<(c_int, c_int)>,
+    in_reply_to: Option<(c_int, c_int)>,
+    /// What its `/Popup` names; see [`popup_of`].
+    popup: Popup,
+}
+
+/// What an annotation's `/Popup` names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Popup {
+    /// No `/Popup`, or a chain of inline ones that ends without naming an object.
+    None,
+    /// The first object with an identity along the chain.
+    At((c_int, c_int)),
+    /// A `/Popup` that is neither a dictionary, an object, nor absent -- an array, say -- or a chain
+    /// of inline ones past the cap. (A `/Popup` that is an object but not a dictionary is caught
+    /// where the walk reads that object.) Refused where the annotation is removed, as
+    /// `[annotation-popup-unreadable]`: what it names cannot be followed.
+    Unreadable,
+}
+
+impl Popup {
+    fn at(self) -> Option<(c_int, c_int)> {
+        match self {
+            Self::At(identity) => Some(identity),
+            Self::None | Self::Unreadable => None,
+        }
+    }
+}
+
+/// The refusal for a removed annotation whose `/Popup` names something the walk cannot follow --
+/// in a form that is not a dictionary, or past [`MAX_DIRECT_POPUPS`] Popups written inline.
+fn popup_unreadable() -> Error {
+    Error::Unsupported(
+        "pdf redaction [annotation-popup-unreadable]: an annotation the region removes names its \
+         Popup in a form burrow cannot follow, so whether anything kept still names it is unknown"
+            .to_owned(),
+    )
+}
+
+/// What a page's annotation pass did: every removed annotation that has an identity, and every
+/// kept one with an identity whose `/Popup` entry it removed.
+pub(super) struct Removed {
+    pub(super) annotations: BTreeSet<(c_int, c_int)>,
+    /// The Popup each removed annotation names -- **a direct one's too**, which has no identity of
+    /// its own but whose Popup does (#239's second specification review: seeded from identities
+    /// alone, a direct annotation's Popup was never followed, and was written out after an `Ok`
+    /// when the catalogue or another page named it).
+    pub(super) popups: BTreeSet<(c_int, c_int)>,
+    pub(super) edited: BTreeSet<(c_int, c_int)>,
+}
+
+const PARENT: Name = Name::literal(b"/Parent\0");
+const IRT: Name = Name::literal(b"/IRT\0");
+const POPUP: Name = Name::literal(b"/Popup\0");
+
+/// The Popup `annotation` names, as the first object with an identity along its `/Popup` chain:
+/// a Popup written directly is followed to its own `/Popup` (#239's third specification review --
+/// stopping at the direct one let the chain past it be written out after an `Ok`). `None` where
+/// the chain ends without one, and [`Popup::Unreadable`] where it reaches anything else -- or more
+/// than [`MAX_DIRECT_POPUPS`] Popups written inline, the annotation's own among them.
+fn popup_of<O: PdfObject>(annotation: &O) -> Result<Popup> {
+    let mut popup = annotation.key(&POPUP);
+    // `..=`: up to `MAX_DIRECT_POPUPS` inline Popups in all, the annotation's own among them, and
+    // one more slot for the reference that must close the chain.
+    for _ in 0..=MAX_DIRECT_POPUPS {
+        if let Some(identity) = identity_of(&popup)? {
+            return Ok(Popup::At(identity));
+        }
+        match popup.type_code() {
+            object_type::DICTIONARY => {}
+            object_type::NULL => return Ok(Popup::None),
+            _ => return Ok(Popup::Unreadable),
+        }
+        popup = popup.key(&POPUP);
+    }
+    // PAST THE CAP, UNREADABLE rather than an error of its own: a chain this deep is what the
+    // walk cannot follow, which refuses only where the annotation is removed.
+    Ok(Popup::Unreadable)
+}
+
+/// How many Popups written inline, the annotation's own `/Popup` among them, `popup_of` follows.
+const MAX_DIRECT_POPUPS: usize = 32;
+
+/// The identity of `object`, or `None` where it is direct and so has none.
+fn identity_of<O: PdfObject>(object: &O) -> Result<Option<(c_int, c_int)>> {
+    let identity = object.object()?;
+    Ok((identity != (0, 0)).then_some(identity))
+}
+
+/// Which of a page's annotations go: each whose `/Rect` meets the region, and then, until none is
+/// left, each that depends on one that goes (#239).
+///
+/// **A dependent goes with what it depends on** (owner, 2026-10-01): a Popup whose `/Parent` is
+/// removed, a reply whose `/IRT` is, and the Popup a removed annotation names as its `/Popup`.
+/// Removing it is part of removing its parent, so the disclosure that annotations over the region
+/// are removed covers it. Kept, it was worse than an orphan: qpdf writes every object something
+/// reaches, so a margin Popup's `/Parent` wrote the removed annotation -- its `/Contents` and its
+/// appearance -- into the output, measured `Ok` with both strings in the bytes. A reply to a reply
+/// goes too: the closure runs to a fixpoint, over an index built once, so it is linear in the
+/// page's annotations.
+fn with_dependents(entries: &[Entry], deadline: &Deadline, clock: &dyn Clock) -> Result<Vec<bool>> {
+    let mut by_identity: BTreeMap<(c_int, c_int), usize> = BTreeMap::new();
+    let mut dependents: BTreeMap<(c_int, c_int), Vec<usize>> = BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if let Some(identity) = entry.identity {
+            by_identity.insert(identity, index);
+        }
+        for named in [entry.parent, entry.in_reply_to].into_iter().flatten() {
+            dependents.entry(named).or_default().push(index);
+        }
+    }
+    let mut removed: Vec<bool> = entries.iter().map(|entry| entry.over).collect();
+    let mut queue: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.over.then_some(index))
+        .collect();
+    while let Some(index) = queue.pop() {
+        deadline.checkpoint(clock)?;
+        let Some(entry) = entries.get(index) else {
+            continue;
+        };
+        let mut next: Vec<usize> = entry
+            .identity
+            .and_then(|identity| dependents.get(&identity))
+            .cloned()
+            .unwrap_or_default();
+        if let Some(popup) = entry.popup.at().and_then(|popup| by_identity.get(&popup)) {
+            next.push(*popup);
+        }
+        for dependent in next {
+            if let Some(slot) = removed.get_mut(dependent)
+                && !*slot
+            {
+                *slot = true;
+                queue.push(dependent);
+            }
+        }
+    }
+    Ok(removed)
 }
 
 /// The annotation flag that keeps an annotation upright when the page is turned
@@ -2235,10 +2596,83 @@ mod annotation_walk_tests {
         };
         remove_annotations_in(&page, &region, 0, &deadline, &clock).expect("all kept, bounded");
         let reads = clock.0.load(Ordering::Relaxed) - before;
+        // THREE PER KEPT ANNOTATION since #239: the read of it, the decision on it, and its stream.
         assert!(
-            reads >= 2 * annotations,
-            "{reads} deadline reads over {annotations} annotations and as many streams: the walk \
-             must read it at each"
+            reads >= 3 * annotations,
+            "{reads} deadline reads over {annotations} kept annotations and as many streams: the \
+             walk must read it at each"
+        );
+    }
+
+    #[test]
+    fn the_annotation_walk_reads_the_deadline_through_every_dependent() {
+        // #239's PASSES: a reply chain of 40, the first over the region, so all 40 go -- each read,
+        // reached by the closure and erased, and the deadline read at each of the three.
+        let annotations: u64 = 40;
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots [{}] >>",
+                (0..annotations)
+                    .map(|i| format!("{} 0 R ", 4 + i))
+                    .collect::<String>()
+            ),
+            "<< /Type /Annot /Subtype /Text /Rect [20 340 120 360] /Contents (ROOT) >>".to_owned(),
+        ];
+        for i in 1..annotations {
+            objects.push(format!(
+                "<< /Type /Annot /Subtype /Text /Rect [200 50 280 90] /IRT {} 0 R >>",
+                3 + i
+            ));
+        }
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        let options = crate::OpenOptions::new(
+            Limits::default(),
+            std::sync::Arc::new(burrow_types::ManualClock::new(0)) as std::sync::Arc<dyn Clock>,
+        );
+        let (document, _) = crate::qpdf::Qpdf
+            .open_for_redaction(out.as_bytes(), &options)
+            .expect("opens");
+        let page = document.page(0).expect("page 0");
+        let clock = Counting(AtomicU64::new(0));
+        let deadline = Deadline::start(&clock, &Limits::default());
+        let before = clock.0.load(Ordering::Relaxed);
+        let region = Rect {
+            left: 0.0,
+            bottom: 330.0,
+            right: 300.0,
+            top: 370.0,
+        };
+        let removed =
+            remove_annotations_in(&page, &region, 0, &deadline, &clock).expect("all removed");
+        assert_eq!(
+            removed.annotations.len(),
+            40,
+            "the whole chain goes with its root"
+        );
+        let reads = clock.0.load(Ordering::Relaxed) - before;
+        assert!(
+            reads >= 3 * annotations,
+            "{reads} deadline reads over {annotations} removed annotations: the walk must read it \
+             at each in every pass"
         );
     }
 }

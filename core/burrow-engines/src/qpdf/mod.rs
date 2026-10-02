@@ -49,6 +49,9 @@ mod references_tests;
 // An annotation the redaction keeps draws inside its /Rect, on both engines (#229).
 #[cfg(test)]
 mod annotation_appearance_tests;
+// An annotation the region removes takes its dependents with it, on both engines (#239).
+#[cfg(test)]
+mod annotation_dependents_tests;
 mod reorder;
 #[cfg(test)]
 mod resources_tests;

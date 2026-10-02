@@ -260,6 +260,18 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
     Ok(scan.found)
 }
 
+/// Every reference in one value, lexed from its start as qpdf lexes it: the text qpdf unparses an
+/// object to, for the walk that asks what names a removed annotation (#239).
+///
+/// # Errors
+///
+/// Only whatever `checkpoint` returns. Something unreadable is [`Found::irregular`], not an error.
+pub fn in_value(text: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Result<Found> {
+    let mut scan = Scan::new(text.len(), checkpoint);
+    scan.one_value(text, 0)?;
+    Ok(scan.found)
+}
+
 /// Every reference in a decoded object stream, from `first` plus each member's offset, as qpdf
 /// reads the members.
 ///

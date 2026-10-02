@@ -372,6 +372,16 @@ impl<'a> ObjectHandle<'a> {
         unsafe { Self::owned(document, handle) }
     }
 
+    /// The trailer qpdf holds and will write (#239). Trapped; see `ffi::qpdf_get_trailer`.
+    pub(super) fn trailer(document: &'a Document) -> Self {
+        // SAFETY: `document.data` is a live handle whose document read successfully, and the
+        // call is trapped: an exception becomes an uninitialized handle and a recorded error,
+        // which the caller's drain reports.
+        let handle = unsafe { ffi::qpdf_get_trailer(document.data) };
+        // SAFETY: `handle` was just issued by `document.data`.
+        unsafe { Self::owned(document, handle) }
+    }
+
     /// The object this handle refers to, as `(number, generation)`.
     ///
     /// **A handle is not an identity.** `qpdf_get_page_n` issues a new one on every call, so

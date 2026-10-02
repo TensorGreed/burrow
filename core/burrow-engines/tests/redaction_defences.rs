@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 78] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 83] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2578,10 +2578,21 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 78] = [
         "evade-annotation-subtype-as-a-string.pdf",
         Some("annotation-quads-outside-rect"),
     ),
+    ("evade-annotation-popup-of-a-removed-parent.pdf", None),
+    ("evade-annotation-reply-to-a-removed-annotation.pdf", None),
+    (
+        "evade-annotation-named-from-the-catalogue.pdf",
+        Some("annotation-dependent-kept"),
+    ),
+    (
+        "evade-annotation-reply-on-another-page.pdf",
+        Some("annotation-dependent-kept"),
+    ),
+    ("nearmiss-annotation-popup-of-a-kept-parent.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 11] = [
+const RESOLVED_GROUPS: [&str; 12] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
@@ -2593,6 +2604,7 @@ const RESOLVED_GROUPS: [&str; 11] = [
     "reference to nothing",
     "reference unreadable",
     "annotation appearance",
+    "annotation dependents",
 ];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.

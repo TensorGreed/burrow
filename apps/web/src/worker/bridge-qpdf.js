@@ -93,6 +93,10 @@ self.__burrow_qpdf_get_page_n = (data, n) => u32(qpdf()._qpdf_get_page_n(data, n
 self.__burrow_qpdf_get_object_by_id = (data, number, generation) =>
   u32(qpdf()._qpdf_get_object_by_id(data, number, generation));
 
+// The trailer qpdf holds and will write, for redaction's walk over what names a removed
+// annotation (#239). Trapped.
+self.__burrow_qpdf_get_trailer = (data) => u32(qpdf()._qpdf_get_trailer(data));
+
 self.__burrow_qpdf_add_page = (data, source, page, first) =>
   qpdf()._qpdf_add_page(data, source, page, first);
 

@@ -537,7 +537,7 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // duplicated in this caller, deleting the constructor's changed nothing any test could
     // see — a mutation sweep planted exactly that and the suite stayed green, which is a
     // defence with no test standing behind an `unsafe` block.
-    let steps =
+    let mut steps =
         steps::PageRedaction::new(document, page, region, limits, deadline, Arc::clone(&clock))?;
     // A REFERENCE QPDF RESOLVES TO NULL, refused before the walk reads the page (#227): qpdf drops
     // the key that held it and PDFium follows it, so every refusal below that reads an absent

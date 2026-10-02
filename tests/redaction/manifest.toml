@@ -506,8 +506,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
-  notes = "The field /V is on the catalogue and unreachable. Page-side signal OWED — #125."
+  notes = "The field /V is on the catalogue and unreachable. Refused since #239 by [annotation-dependent-kept]: this widget is its own field, over the region, and /AcroForm /Fields still names it. #125 still owes the refusal for a field whose widget is not over the region."
 
 [[fixture]]
 name = "optional-content"
@@ -2787,4 +2786,99 @@ pages = 1
   expect_after = "refused"
   notes = """
 PDFium reads /Subtype as a byte string, so (Highlight) is a Highlight to it: 1,304 dark pixels in the region after an Ok when only a name was read, measured by #229's reviews. Refused [annotation-quads-outside-rect].
+"""
+
+[[fixture]]
+name = "evade-annotation-popup-of-a-removed-parent"
+file = "generated/evade-annotation-popup-of-a-removed-parent.pdf"
+kind = "hand-built"
+probes_refusal = "annotation dependents"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the /Contents of an annotation over the region, whose Popup in the margin names it as /Parent — evasion"
+  canary = "BURROW-EVADE-POPUP-OF-REMOVED"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+The Popup's /Parent wrote the removed annotation into the output: Ok with its /Contents in the bytes, measured. The Popup goes with its parent, and nothing kept names either, so neither is written (#239).
+"""
+
+[[fixture]]
+name = "evade-annotation-reply-to-a-removed-annotation"
+file = "generated/evade-annotation-reply-to-a-removed-annotation.pdf"
+kind = "hand-built"
+probes_refusal = "annotation dependents"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the /Contents of an annotation over the region, named by a reply's /IRT — evasion"
+  canary = "BURROW-EVADE-REPLY-TO-REMOVED"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+The reply's /IRT wrote the removed annotation into the output, measured. The reply goes with what it replies to (#239).
+"""
+
+[[fixture]]
+name = "evade-annotation-named-from-the-catalogue"
+file = "generated/evade-annotation-named-from-the-catalogue.pdf"
+kind = "hand-built"
+probes_refusal = "annotation dependents"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "the /Contents of an annotation over the region, named by a /Hide action on the catalogue — evasion"
+  canary = "BURROW-EVADE-UNSEEN-REFERENCE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+Kept, the action wrote the removed annotation out, measured. A name from anything the redaction keeps is a dependent kept for an independent reason: refused [annotation-dependent-kept] (#239).
+"""
+
+[[fixture]]
+name = "evade-annotation-reply-on-another-page"
+file = "generated/evade-annotation-reply-on-another-page.pdf"
+kind = "hand-built"
+probes_refusal = "annotation dependents"
+pages = 2
+
+  [[fixture.placement]]
+  channel = "an annotation over the region, named by a reply on another page — evasion"
+  canary = "BURROW-EVADE-REPLY-ON-ANOTHER-PAGE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+A dependent kept for an independent reason: page 2 is not being redacted. Refused [annotation-dependent-kept] (#239).
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-popup-of-a-kept-parent"
+file = "generated/nearmiss-annotation-popup-of-a-kept-parent.pdf"
+kind = "hand-built"
+probes_refusal = "annotation dependents"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Text annotation and its Popup, both in the margin — near-miss twin"
+  canary = "BURROW-EVADE-POPUP-OF-KEPT"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. Neither annotation meets the region, so both are kept; the canary is the page's own text.
 """

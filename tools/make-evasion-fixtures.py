@@ -2453,6 +2453,97 @@ def evade_annotation_subtype_as_a_string() -> bytes:
     )
 
 
+# Over pdfbuild.REGION ((30, 88)-(370, 132)), and in the margin clear of it.
+OVER_REGION = b"/Rect [40 95 200 125]"
+IN_MARGIN = b"/Rect [300 10 390 30]"
+
+
+def _dependents_page(tag: str, build) -> bytes:
+    """The canary page, whose annotations `build(pdf, ap, canary)` makes: it returns the
+    annotations of page 1, of a second page (or None for one page) and extra catalogue entries.
+    `canary` is the secret as a PDF string, for an annotation's `/Contents`."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    ap = pdf.stream(b"/Type /XObject /Subtype /Form " + BOUNDED, b"0 g 0 0 100 20 re f")
+    first, second, catalogue = build(pdf, ap, literal(secret(tag)))
+    pages = pdf.reserve()
+    kids = []
+    for annots, draws in ((first, True), (second, False)):
+        if annots is None:
+            continue
+        page = pdf.reserve()
+        content = _secret_run(tag) + keep_line_ops() if draws else keep_line_ops()
+        stream = pdf.stream(b"", content)
+        pdf.put(
+            page,
+            b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R /MediaBox "
+            + _box(PAGE_W, PAGE_H) + _own_resources(helv)
+            + b" /Annots [" + b" ".join(str(a).encode() + b" 0 R" for a in annots) + b"]"
+            + b" /Contents " + str(stream).encode() + b" 0 R >>",
+        )
+        kids.append(page)
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count " + str(len(kids)).encode() + b" /Kids ["
+        + b" ".join(str(k).encode() + b" 0 R" for k in kids) + b"] >>",
+    )
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R " + catalogue + b" >>")
+    return pdf.build(root)
+
+
+def _text(rect: bytes, ap: int, extra: bytes) -> bytes:
+    return b"<< /Type /Annot /Subtype /Text " + rect + b" /AP << /N " + str(ap).encode() + b" 0 R >> " + extra + b" >>"
+
+
+def evade_annotation_popup_of_a_removed_parent() -> bytes:
+    """A Text annotation over the region, carrying the canary in its `/Contents`, whose Popup sits in
+    the margin and names it as `/Parent`. Kept, the Popup wrote the removed annotation out (#239)."""
+    def build(pdf, ap, canary):
+        parent, popup = pdf.reserve(), pdf.reserve()
+        pdf.put(parent, _text(OVER_REGION, ap, b"/Contents " + canary + b" /Popup " + str(popup).encode() + b" 0 R"))
+        pdf.put(popup, b"<< /Type /Annot /Subtype /Popup " + IN_MARGIN + b" /Parent " + str(parent).encode() + b" 0 R >>")
+        return [parent, popup], None, b""
+    return _dependents_page("POPUP-OF-REMOVED", build)
+
+
+def evade_annotation_reply_to_a_removed_annotation() -> bytes:
+    """A reply in the margin whose `/IRT` is a removed annotation carrying the canary (#239)."""
+    def build(pdf, ap, canary):
+        removed = pdf.add(_text(OVER_REGION, ap, b"/Contents " + canary))
+        reply = pdf.add(_text(IN_MARGIN, ap, b"/Contents (a reply) /IRT " + str(removed).encode() + b" 0 R"))
+        return [removed, reply], None, b""
+    return _dependents_page("REPLY-TO-REMOVED", build)
+
+
+def evade_annotation_named_from_the_catalogue() -> bytes:
+    """A removed annotation named by a `/Hide` action on the catalogue's `/OpenAction`: kept, the
+    action writes it out. Refused [annotation-dependent-kept] (#239)."""
+    def build(pdf, ap, canary):
+        removed = pdf.add(_text(OVER_REGION, ap, b"/Contents " + canary))
+        return [removed], None, b"/OpenAction << /S /Hide /T " + str(removed).encode() + b" 0 R /H false >>"
+    return _dependents_page("UNSEEN-REFERENCE", build)
+
+
+def evade_annotation_reply_on_another_page() -> bytes:
+    """A reply on page 2 to an annotation page 1's region removes: a dependent kept for an
+    independent reason. Refused [annotation-dependent-kept] (#239)."""
+    def build(pdf, ap, canary):
+        removed = pdf.add(_text(OVER_REGION, ap, b"/Contents " + canary))
+        reply = pdf.add(_text(IN_MARGIN, ap, b"/Contents (a reply) /IRT " + str(removed).encode() + b" 0 R"))
+        return [removed], [reply], b""
+    return _dependents_page("REPLY-ON-ANOTHER-PAGE", build)
+
+
+def nearmiss_annotation_popup_of_a_kept_parent() -> bytes:
+    """A Text annotation and its Popup, both in the margin. MUST redact, keeping both."""
+    def build(pdf, ap, canary):
+        parent, popup = pdf.reserve(), pdf.reserve()
+        pdf.put(parent, _text(IN_MARGIN, ap, b"/Contents (a note) /Popup " + str(popup).encode() + b" 0 R"))
+        pdf.put(popup, b"<< /Type /Annot /Subtype /Popup /Rect [300 40 390 60] /Parent " + str(parent).encode() + b" 0 R >>")
+        return [parent, popup], None, b""
+    return _dependents_page("POPUP-OF-KEPT", build)
+
+
 def nearmiss_annotation_quads_inside_rect() -> bytes:
     """The same Highlight with its quadrilateral inside its `/Rect`. MUST redact."""
     return _annotated_page(
@@ -2589,6 +2680,11 @@ CASES: list[tuple[str, str]] = [
     ("evade-annotation-quads-outside-rect", "annotation appearance"),
     ("nearmiss-annotation-quads-inside-rect", "annotation appearance"),
     ("evade-annotation-subtype-as-a-string", "annotation appearance"),
+    ("evade-annotation-popup-of-a-removed-parent", "annotation dependents"),
+    ("evade-annotation-reply-to-a-removed-annotation", "annotation dependents"),
+    ("evade-annotation-named-from-the-catalogue", "annotation dependents"),
+    ("evade-annotation-reply-on-another-page", "annotation dependents"),
+    ("nearmiss-annotation-popup-of-a-kept-parent", "annotation dependents"),
 ]
 
 BUILDERS = {
@@ -2698,6 +2794,11 @@ BUILDERS = {
     "evade-annotation-quads-outside-rect": evade_annotation_quads_outside_rect,
     "nearmiss-annotation-quads-inside-rect": nearmiss_annotation_quads_inside_rect,
     "evade-annotation-subtype-as-a-string": evade_annotation_subtype_as_a_string,
+    "evade-annotation-popup-of-a-removed-parent": evade_annotation_popup_of_a_removed_parent,
+    "evade-annotation-reply-to-a-removed-annotation": evade_annotation_reply_to_a_removed_annotation,
+    "evade-annotation-named-from-the-catalogue": evade_annotation_named_from_the_catalogue,
+    "evade-annotation-reply-on-another-page": evade_annotation_reply_on_another_page,
+    "nearmiss-annotation-popup-of-a-kept-parent": nearmiss_annotation_popup_of_a_kept_parent,
 }
 
 
