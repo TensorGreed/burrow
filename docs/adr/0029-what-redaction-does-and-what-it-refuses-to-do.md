@@ -144,8 +144,9 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a kept **NoRotate annotation on a turned page** -- `/F` with bit 5 set, or not an integer, where the page's effective `/Rotate` is not 0 | **refuse**, `[annotation-no-rotate]` — added 2026-10-01 ([#229]). PDFium turns such an appearance about the `/Rect`'s corner, so it draws outside the `/Rect`: 1,800 dark pixels in a region beside the `/Rect` that the `/Rect` does not meet, after an `Ok`, measured. Refused rather than modelled. 0 of 99 real documents and 0 of 99 fixtures |
 | a kept **text-markup annotation whose `/QuadPoints` reach outside its `/Rect`** -- Highlight, Underline, Squiggly or StrikeOut, **or any `/Subtype` that is not a name** (PDFium reads it as a byte string, so `(Highlight)` is one), or a `/QuadPoints` that is not an array of numbers both readers agree on | **refuse**, `[annotation-quads-outside-rect]` — added 2026-10-01 ([#229]). PDFium can fit such an appearance to the quadrilaterals instead of the `/Rect`: with its private `/PDFIUM_HasGeneratedAP` key a file made it draw its own appearance there, 1,304 dark pixels in the region after an `Ok`, measured. Keyed on the declared shape, not the key. Compared exactly. **Its false-refusal rate is unmeasured** ([#242]): highlights made through PDFium's own annotation API carry no `/Rect` and are refused `[annotation-rect]` first, 96 of 96 documents; with a `/Rect` set to the same numbers as the quads, 0 of 1,621 are refused -- which shows the rule reaches real highlights, not a rate, since identical numbers cannot fail an exact comparison |
 | an annotation that **depends on one the region removes** -- a Popup whose `/Parent` it is, a reply whose `/IRT` it is, the Popup it names as its `/Popup`, and so on to any depth -- on the same page | **handle** — added 2026-10-02 ([#239]). Removed with it: removing a dependent is part of removing what it depends on, which the disclosure that annotations over the region are removed already covers. Kept, it wrote the removed annotation -- `/Contents` and appearance -- into the output bytes, `Ok`, measured. A kept annotation whose `/Popup` the region removed keeps itself and loses the `/Popup` entry. 0 of 99 real documents and 0 of 99 fixtures carry `/Parent`, `/Popup` or `/IRT` on an annotation |
-| an annotation the region removes, or a Popup it names, that **anything the redaction keeps still names** -- another page's `/Annots` or annotations, a structure element's `/OBJR`, `/AcroForm /Fields`, an action on the catalogue, a resource dictionary, a trailer, classic or a cross-reference stream's -- and a kept annotation losing its `/Popup` that anything but this page's own listing names | **refuse**, `[annotation-dependent-kept]` — added 2026-10-02 ([#239]). A dependent kept for an independent reason: kept, it writes the removed annotation out again. Read from every object the file references, unparsed as qpdf holds it. Over the real documents' own annotations, a region over each of 107 refused 11 that main redacted -- 10 form widgets `/Fields` names and 1 link a structure element names, each written out by main after its `Ok`; both are #125's classes. A page sharing this page's `/Annots` array is [#240]'s |
+| an annotation the region removes, or a Popup it names, that **anything the redaction keeps still names** -- another page's `/Annots` or annotations, a structure element's `/OBJR`, `/AcroForm /Fields`, an action on the catalogue, a resource dictionary, a trailer, classic or a cross-reference stream's -- and a kept annotation losing its `/Popup` that anything but this page's own listing names | **refuse**, `[annotation-dependent-kept]` — added 2026-10-02 ([#239]). A dependent kept for an independent reason: kept, it writes the removed annotation out again. Read from every object the file references, unparsed as qpdf holds it. Over the real documents' own annotations, a region over each of 107 refused 11 that main redacted -- 10 form widgets `/Fields` names and 1 link a structure element names, each written out by main after its `Ok`; both are #125's classes. A page sharing this page's `/Annots` array is refused by the row below ([#240]) |
 | an annotation the region removes whose **`/Popup` cannot be followed** -- anything but a dictionary or nothing, whether written inline or as its own object (an array, say, or a stream), anywhere along its chain of Popups, or more than 32 Popups written inline one inside another | **refuse**, `[annotation-popup-unreadable]` — added 2026-10-02 ([#239], fourth review). What it names cannot be read, so whether anything kept names it cannot be known: `/Popup [7 0 R]` wrote the Popup out after an `Ok`, measured, and so did `/Popup 8 0 R` over an `8 0 obj [7 0 R]` (fifth review). A kept annotation's `/Popup` is its own business and refuses nothing |
+| an annotation the region removes from an **`/Annots` array something else also names** -- another page sharing it, the catalogue, a field, another annotation, the trailer | **refuse**, `[annotation-dependent-kept]` — added 2026-10-02 ([#240]). Erasing from a shared array changed the other page too: `Ok`, the annotation gone from a page nobody asked about, measured. A per-page copy was the first direction and measurement disproved it: every entry of a shared array is the same object on every page, so a copy left the removed annotation on the other page and in the bytes, whether written indirectly or inline. A shared array the region takes nothing from is left exactly as it was. 0 of 99 real documents and 0 of 99 fixtures share an `/Annots` array |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -159,6 +160,14 @@ puts `BT` in one parse and `ET` in another and neither parse holds a complete te
 **Tokenise the concatenation, keep a span map back to (stream index, offset), write each stream
 from its own slice.** That is also what stops the operation silently collapsing a `/Contents`
 array into one stream, which the spike measured it doing.
+
+**A shared `/Contents` and a shared `/Annots` are refused for different reasons** (#240,
+2026-10-02). An element of `/Contents` the cut lands in, shared with another page, is refused
+`[shared-contents]` because a per-page copy needs a second stream object the engine seam cannot
+make -- the content would differ per page once edited, so a copy is the right answer in principle
+and blocked in practice. A shared `/Annots` array is refused because a copy is not the answer at
+all: its entries are the same annotation objects on every page that names it, so a per-page copy
+leaves the removed annotation on the other page and in the file.
 
 ### 5. Four of the five refusals have no adequate page-side signal yet, and that is work this record owes
 
@@ -4672,6 +4681,50 @@ identity, the inline cap ending the chain short instead of refusing, and each pl
 the one chain test reached both places at once, so either could be reverted with every suite green,
 and each alone leaked -- and each now has a shape of its own. Golden: 692 cases over 163 documents (from 668 over 158).
 
-**Not covered.** A page sharing this page's `/Annots` array is #240's. Several pages covered at once
+**Not covered here.** A page sharing this page's `/Annots` array was #240's, and is refused by its amendment below. Several pages covered at once
 are redacted page by page: whether a reply on page 2 refuses page 1's redaction depends on which runs
 first (code review); refusing is the safe answer either way, and the order-independence is [#245](https://github.com/TensorGreed/burrow/issues/245).
+
+## Amendment, 2026-10-02 — #240: an annotation in a shared `/Annots` array is refused, not copied
+
+**What happened.** Two pages naming one `/Annots` array: erasing an annotation the region met on
+page 1 erased it from the array page 2 names too. `Ok`, and page 2 -- not in the operation -- lost
+its annotation. Not a leak; a silent edit to a page the person never touched. Found by #229's
+specification review.
+
+**The first direction was a per-page copy (owner, 2026-10-01), by analogy with `/Contents`.
+Measured before building it, it cannot work.** Each shape was run through main and #239 as filed,
+and again in the state a copy would produce -- page 1 with its own array, page 2 keeping the shared
+one:
+
+| shape | as filed | after a per-page copy |
+|---|---|---|
+| an annotation written as its own object, in the shared array | `Ok`; page 2 loses it | refused by #239 -- page 2 still lists the removed annotation |
+| an annotation written inline, in the shared array | `Ok`; page 2 loses it | `Ok`; page 2 keeps it, and its text stays in the bytes |
+| the shared array, nothing over the region | `Ok`; both pages unchanged | -- |
+
+Every entry of a shared array is on both pages by construction, so a copy can only end in #239's
+refusal or in the removed annotation staying on the other page and in the file -- the outcome #239
+refuses where it can see it. **Owner's decision, 2026-10-02: refuse, no copy.**
+
+**The rule.** When the pass erases from an `/Annots` array that is its own object, anything but this
+page's own dictionary that names that array refuses `[annotation-dependent-kept]`: another page,
+the catalogue, a field, an annotation, the trailer. Read by #239's walk -- every referenced object
+unparsed as qpdf holds it, and the trailer qpdf will write -- so the referrers are the real ones,
+not the other pages' `/Annots` alone. A shared array the region takes nothing from is not erased
+from, refuses nothing, and is read back from the output still shared, still holding both entries.
+
+**A correction to the premise.** The issue said §4 answers a shared `/Contents` by unsharing it. It
+does not: an element the cut lands in, shared with another page, is refused `[shared-contents]`
+(the 2026-09-23 amendment), because the copy is blocked. §4 now says why the two are refused for
+different reasons.
+
+**Census.** 0 of 99 real documents and 0 of 99 fixtures share an `/Annots` array between pages
+(#227's lists, measured for #240's filing).
+
+**Shown to fail.** Four mutations, each asserted to apply and confirmed rebuilt: the check reading
+only referrers that are pages -- the narrowing the owner named -- fails on the catalogue and the
+annotation naming page 1's array; the check switched off fails both sharing shapes; the trailer's
+name ignored fails the trailer case; and this page's own dictionary refused fails the page whose
+`/Annots` is its own object.
+

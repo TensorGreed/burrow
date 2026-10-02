@@ -213,6 +213,11 @@ impl<D: PdfDocument> PageRedaction<D> {
     /// same rule, less this page's own listing of it: named by another page, it would change there
     /// too, and is refused.
     ///
+    /// **And the page's `/Annots` array, where the pass erased from it and it is its own object**
+    /// (#240): erasing changes it wherever else it is named, so anything but this page's own
+    /// dictionary naming it refuses. A per-page copy was measured not to help -- its entries are
+    /// the same objects on every page that names it.
+    ///
     /// An object nothing references is neither read nor written, so an orphan naming a removed
     /// annotation refuses nothing. The walk runs only when something with an identity was removed,
     /// and reads the deadline at every object.
@@ -222,7 +227,10 @@ impl<D: PdfDocument> PageRedaction<D> {
         page: &D::Object<'_>,
     ) -> Result<()> {
         const ANNOTS: Name = Name::literal(b"/Annots\0");
-        if removed.annotations.is_empty() && removed.popups.is_empty() && removed.edited.is_empty()
+        if removed.annotations.is_empty()
+            && removed.popups.is_empty()
+            && removed.edited.is_empty()
+            && removed.annots_erased.is_none()
         {
             return Ok(());
         }
@@ -239,7 +247,8 @@ impl<D: PdfDocument> PageRedaction<D> {
         let owned = self.owned_by(&seeds)?;
         // THIS PAGE'S OWN LISTING of an annotation it keeps and edits.
         let mut listing = BTreeSet::new();
-        listing.extend(identity_of(page)?);
+        let this_page = identity_of(page)?;
+        listing.extend(this_page);
         listing.extend(identity_of(&page.key(&ANNOTS))?);
         page.drained()?;
         let refusal = || {
@@ -256,6 +265,25 @@ impl<D: PdfDocument> PageRedaction<D> {
             .any(|named| owned.contains(named) || removed.edited.contains(named))
         {
             return Err(refusal());
+        }
+        // A SHARED `/Annots` ARRAY (#240): the edit erased from an array that is its own object, so
+        // it changes wherever else that array is named -- another page, the catalogue, a field, an
+        // annotation, the trailer. Refused rather than copied per page: every entry of a shared
+        // array is the same object on every page that names it, so a copy would leave the removed
+        // annotation on the other page and in the file (measured, owner's decision 2026-10-02).
+        let shared = || {
+            Error::Unsupported(
+                "pdf redaction [annotation-dependent-kept]: the region removes an annotation from \
+                 an /Annots array something else also names, so the removal would change it there \
+                 too and the annotation would stay in the file"
+                    .to_owned(),
+            )
+        };
+        if removed
+            .annots_erased
+            .is_some_and(|array| referenced.from_trailer.contains(&array))
+        {
+            return Err(shared());
         }
         for &(number, generation) in &referenced.objects {
             self.deadline.checkpoint(self.clock.as_ref())?;
@@ -283,6 +311,10 @@ impl<D: PdfDocument> PageRedaction<D> {
             for named in &found.references {
                 if owned.contains(named) {
                     return Err(refusal());
+                }
+                if removed.annots_erased == Some(*named) && this_page != Some((number, generation))
+                {
+                    return Err(shared());
                 }
                 if removed.edited.contains(named) && !listing.contains(&(number, generation)) {
                     return Err(refusal());
@@ -1029,6 +1061,7 @@ fn remove_annotations_in<O: PdfObject>(
             annotations: BTreeSet::new(),
             popups: BTreeSet::new(),
             edited: BTreeSet::new(),
+            annots_erased: None,
         });
     }
     let length = annots.array_len();
@@ -1141,10 +1174,17 @@ fn remove_annotations_in<O: PdfObject>(
         walk.refuse_quads_outside_the_rect(&annotation, &entry.rect)?;
         walk.refuse_unbounded_appearances(&annotation)?;
     }
+    // THE ARRAY ITSELF, where it is its own object and something was erased from it (#240).
+    let annots_erased = if removed.iter().any(|&out| out) {
+        identity_of(&annots)?
+    } else {
+        None
+    };
     Ok(Removed {
         annotations: gone,
         popups,
         edited,
+        annots_erased,
     })
 }
 
@@ -1207,6 +1247,9 @@ pub(super) struct Removed {
     /// when the catalogue or another page named it).
     pub(super) popups: BTreeSet<(c_int, c_int)>,
     pub(super) edited: BTreeSet<(c_int, c_int)>,
+    /// The page's `/Annots` array, where it is its own object and the pass erased from it (#240).
+    /// Erasing from it changes it wherever else it is named, so nothing but this page may name it.
+    pub(super) annots_erased: Option<(c_int, c_int)>,
 }
 
 const PARENT: Name = Name::literal(b"/Parent\0");
