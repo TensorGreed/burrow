@@ -1077,9 +1077,10 @@ impl AppearanceWalk<'_> {
     /// key, so a key PDFium adds later is covered too. A `/QuadPoints` that is not an array of
     /// numbers both readers agree on is refused the same way: where it sits is then unknown. So is
     /// a count that is not a multiple of eight whose numbers leave the `/Rect`, although PDFium
-    /// ignores an incomplete quadrilateral: a harmless over-refusal. Compared exactly, and
-    /// **unwitnessed**: the census lists hold no markup annotation at all, so how often a real
-    /// producer overhangs its `/Rect` is unknown (#242). An error there is a refusal, not a leak.
+    /// ignores an incomplete quadrilateral: a harmless over-refusal. Compared exactly, and its
+    /// false-refusal rate is **unmeasured** (#242): highlights from PDFium's own API carry no `/Rect`
+    /// and are refused before this rule, and with one set to the quads' own numbers none can fail.
+    /// An error there is a refusal, not a leak.
     ///
     /// **A `/Subtype` that is not a name is checked as markup.** PDFium reads the subtype as a byte
     /// string, so `(Highlight)` -- or the same in hex -- is a Highlight to it; reading names only
