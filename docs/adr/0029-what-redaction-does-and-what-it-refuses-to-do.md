@@ -142,7 +142,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
 | a kept annotation whose **appearance has no bounding box** -- an `/N`, `/D` or `/R` stream, or any of their states, whose `/BBox` is not four numbers enclosing an area | **refuse**, `[annotation-appearance-unbounded]` — added 2026-10-01 ([#229]). PDFium fits an appearance to the `/Rect` through its `/BBox`, and with none only moves it to the `/Rect`'s corner, unclipped: 654 dark pixels of its ink in the region after an `Ok`, measured. Read by the page frame's box reader. 0 of 99 real documents (30 with annotations) and 0 of 99 fixtures; see the [2026-10-01 #229 amendment](#amendment-2026-10-01--229-an-annotation-the-redaction-keeps-must-draw-inside-its-rect) |
 | a kept **NoRotate annotation on a turned page** -- `/F` with bit 5 set, or not an integer, where the page's effective `/Rotate` is not 0 | **refuse**, `[annotation-no-rotate]` — added 2026-10-01 ([#229]). PDFium turns such an appearance about the `/Rect`'s corner, so it draws outside the `/Rect`: 1,800 dark pixels in a region beside the `/Rect` that the `/Rect` does not meet, after an `Ok`, measured. Refused rather than modelled. 0 of 99 real documents and 0 of 99 fixtures |
-| a kept **text-markup annotation whose `/QuadPoints` reach outside its `/Rect`** -- Highlight, Underline, Squiggly or StrikeOut, **or any `/Subtype` that is not a name** (PDFium reads it as a byte string, so `(Highlight)` is one), or a `/QuadPoints` that is not an array of numbers both readers agree on | **refuse**, `[annotation-quads-outside-rect]` — added 2026-10-01 ([#229]). PDFium can fit such an appearance to the quadrilaterals instead of the `/Rect`: with its private `/PDFIUM_HasGeneratedAP` key a file made it draw its own appearance there, 1,304 dark pixels in the region after an `Ok`, measured. Keyed on the declared shape, not the key. Compared exactly. **Unwitnessed**: the census lists hold no markup annotation at all, so how often a real producer's quadrilaterals overhang its `/Rect` is unknown ([#242]) |
+| a kept **text-markup annotation whose `/QuadPoints` reach outside its `/Rect`** -- Highlight, Underline, Squiggly or StrikeOut, **or any `/Subtype` that is not a name** (PDFium reads it as a byte string, so `(Highlight)` is one), or a `/QuadPoints` that is not an array of numbers both readers agree on | **refuse**, `[annotation-quads-outside-rect]` — added 2026-10-01 ([#229]). PDFium can fit such an appearance to the quadrilaterals instead of the `/Rect`: with its private `/PDFIUM_HasGeneratedAP` key a file made it draw its own appearance there, 1,304 dark pixels in the region after an `Ok`, measured. Keyed on the declared shape, not the key. Compared exactly. **Its false-refusal rate is unmeasured** ([#242]): highlights made through PDFium's own annotation API carry no `/Rect` and are refused `[annotation-rect]` first, 96 of 96 documents; with a `/Rect` set to the same numbers as the quads, 0 of 1,621 are refused -- which shows the rule reaches real highlights, not a rate, since identical numbers cannot fail an exact comparison |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -4373,7 +4373,8 @@ every page's `/Rotate`, and found each shape on its reproduction before its zero
 **The quadrilateral rule's zero is not a measurement**: the lists hold **no markup annotation at
 all** -- the second census, which compared exactly as the code does, counted them -- so it witnessed
 nothing. An over-refusal there is fail-closed, and a tolerance would buy it back with a leak, so the
-comparison stays exact until real highlighted documents are measured ([#242]).
+comparison stays exact. #242's amendment below tried to measure it on PDFium-generated highlights and
+could not: what it shows is recorded there, and the rate is still unmeasured.
 
 **Owner's decision: refuse all three, for every annotation kept** -- checks on declared structure,
 not a model of PDFium's transforms (that would be a second geometry to keep in step with PDFium's,
@@ -4487,3 +4488,50 @@ second code review for Ink, Line, Polygon, Square and FreeText with geometry ove
 dark pixels in it; and PDFium's own popup for a markup annotation's `/Contents`, measured not to draw
 in a plain render. A hidden or `NoView` annotation, and a state `/AS` cannot select, are refused like
 any other: over-refusals the table does not except.
+
+## Amendment, 2026-10-02 — #242: the quadrilateral rule on PDFium-generated highlights -- not a rate
+
+**What was unwitnessed.** `[annotation-quads-outside-rect]` compares a markup annotation's
+`/QuadPoints` with its `/Rect` exactly, and #229's census could not say how often a real highlight
+would be refused: #227's lists hold no markup annotation at all.
+
+**Owner's choice, 2026-10-02: measure on PDFium-generated highlights only, and record that
+quadrilaterals other producers write are unmeasured.** A bar was registered on the issue before
+anything was measured: more than **1%** refused reopens the exact comparison with the owner.
+
+**The registered method could not reach the rule.** Over #227's real-document list -- 100 paths, of
+which PDFium loaded 99 and found a word of three or more characters, with a box, within the first 50
+pages in 97 (all on the first page) -- the pinned PDFium put up to 20 Highlight annotations over words
+through `FPDFPage_CreateAnnot` and `FPDFAnnot_AppendAttachmentPoints`, and saved a copy. Every one of
+the 1,641 came out an inline dictionary with `/QuadPoints` and **no `/Rect`**, and burrow, redacting a
+one-point region in a corner, refused **96 of 96** documents `[annotation-rect]` (the 97th
+`[no-widths]`, for its own reasons) -- before the quadrilateral rule was reached. A highlight with no
+`/Rect` is not a valid annotation (PDF 32000-1 §12.5.2 requires one); whether a producer built on
+PDFium sets it is not something this measured.
+
+**What was run after the registration, and what it shows.** The generator was changed, after the bar
+was registered, to set `/Rect` through `FPDFAnnot_SetRect` to the box around **the same four numbers**
+as each highlight's quad points. burrow then kept every highlight: **0 of 1,621** refused
+`[annotation-quads-outside-rect]` over 96 documents (1,641 counted in the files by qpdf, 20 of them in
+the document refused `[no-widths]`). **That zero follows from how the files were built, and is not a
+rate**: in all 1,641, every `/Rect` number is written byte for byte among its quad points, burrow reads
+both through the same reader, and identical numbers cannot fail an exact comparison. The risk the bar
+is for -- a producer computing its `/Rect` from another source, or rounding it otherwise -- is exactly
+what this removed. So the result shows only that the rule reaches real inline highlights over real
+text and accepts equal bounds; and, from a 0.001-point overhang planted in one file and refused while
+the untouched file redacted, that it can see an overhang that small. The harness that ran it was built
+from a tree holding #239's uncommitted work; the code review rebuilt it at this commit and got the same
+outcomes.
+
+**Unmeasured, then.** The rule's false-refusal rate on any highlight whose `/Rect` was computed
+independently of its quad points -- by PDFium or any producer; quadrilaterals written by Acrobat,
+Preview, pdf.js, Foxit, Okular or anyone but PDFium; Underline, Squiggly and StrikeOut; more than one
+quadrilateral to an annotation; quadrilaterals that are not axis-aligned, and rotated text; indirect
+annotations and indirect `/QuadPoints` (all 1,641 were inline, so the extent memo was not exercised);
+highlights carrying their own `/AP`; and the web engine. **The owner declined a stand-in** measured
+with a `/Rect` from a second PDFium source: two PDFium sources measure PDFium against itself, and would
+put a number here that reads as a producer rate. #242 stays open until highlighted documents from
+Preview, iOS Markup, Chrome and Firefox are in the gitignored corpus, and is re-run on those against
+the same 1% bar. Whether a PDFium-based writer such as Chrome's saves highlights with no `/Rect` --
+in which case `[annotation-rect]` refuses every document it highlighted -- is a measurement of its own,
+[#244](https://github.com/TensorGreed/burrow/issues/244), not yet a decision.
