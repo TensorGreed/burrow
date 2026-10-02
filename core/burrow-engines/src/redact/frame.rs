@@ -317,24 +317,53 @@ fn inherited<O: PdfObject, T>(
 /// `node`'s `key` as a box: absent, or an array of exactly four numbers, one per item.
 fn read_box<O: PdfObject>(node: &O, key: &Name, label: &str) -> Result<Option<Rect>> {
     let value = node.key(key);
-    let code = value.type_code();
-    if code == object_type::NULL {
+    if value.type_code() == object_type::NULL {
         return Ok(None);
     }
-    if code != object_type::ARRAY || value.array_len() != 4 {
-        return Err(unreadable(&format!("a {label} that is not four numbers")));
+    match four_numbers(&value) {
+        BoxReading::Box(rect) => Ok(Some(rect)),
+        BoxReading::NotFour => Err(unreadable(&format!("a {label} that is not four numbers"))),
+        BoxReading::OutOfRange => Err(unreadable(&format!(
+            "a {label} larger than any reader agrees on"
+        ))),
+    }
+}
+
+/// What [`four_numbers`] made of a box.
+pub(super) enum BoxReading {
+    /// Four numbers both readers agree on, normalised so that left <= right and bottom <= top.
+    Box(Rect),
+    /// Not an array of exactly four items, each a number.
+    NotFour,
+    /// Four numbers, one of them past what both readers agree on.
+    OutOfRange,
+}
+
+/// A box read as PDFium reads one: an array of exactly four items, each one number read as
+/// [`reading_of`] reads it, normalised. **The one reader for the page's boxes and an annotation's**
+/// -- a page's `/MediaBox` and `/CropBox`, an annotation's `/Rect` (#224) and an appearance
+/// stream's `/BBox` (#229) -- so those cannot drift apart; each caller refuses under its own code.
+/// Not every box redaction reads: a font's `/FontBBox` and a form's `/Matrix` are still read by
+/// scanning their text, as `/Rect` was before #224's round 4, which is #241.
+pub(super) fn four_numbers<O: PdfObject>(value: &O) -> BoxReading {
+    if value.type_code() != object_type::ARRAY || value.array_len() != 4 {
+        return BoxReading::NotFour;
     }
     let mut corners = [0.0_f64; 4];
     for (at, corner) in (0..4).zip(corners.iter_mut()) {
-        *corner = one_number(&value.array_item(at), label, "that is not four numbers")?;
+        *corner = match reading_of(&value.array_item(at)) {
+            Reading::Number(number) => number,
+            Reading::NotANumber => return BoxReading::NotFour,
+            Reading::OutOfRange => return BoxReading::OutOfRange,
+        };
     }
     let [left, bottom, right, top] = corners;
-    Ok(Some(Rect {
+    BoxReading::Box(Rect {
         left: left.min(right),
         bottom: bottom.min(top),
         right: left.max(right),
         top: bottom.max(top),
-    }))
+    })
 }
 
 /// `node`'s `key` as a number: absent, or one integer or real.

@@ -188,6 +188,43 @@ unsafe extern "C" {
     fn FPDF_ClosePage(page: *mut c_void);
     fn FPDF_GetPageWidthF(page: *mut c_void) -> f32;
     fn FPDF_GetPageHeightF(page: *mut c_void) -> f32;
+    fn FPDFPage_GetRotation(page: *mut c_void) -> c_int;
+    fn FPDFBitmap_Create(width: c_int, height: c_int, alpha: c_int) -> *mut c_void;
+    fn FPDFBitmap_FillRect(
+        bitmap: *mut c_void,
+        left: c_int,
+        top: c_int,
+        width: c_int,
+        height: c_int,
+        color: core::ffi::c_ulong,
+    ) -> c_int;
+    fn FPDFBitmap_GetBuffer(bitmap: *mut c_void) -> *mut c_void;
+    fn FPDFBitmap_GetStride(bitmap: *mut c_void) -> c_int;
+    fn FPDFBitmap_Destroy(bitmap: *mut c_void);
+    #[allow(clippy::too_many_arguments)]
+    fn FPDF_RenderPageBitmap(
+        bitmap: *mut c_void,
+        page: *mut c_void,
+        start_x: c_int,
+        start_y: c_int,
+        size_x: c_int,
+        size_y: c_int,
+        rotate: c_int,
+        flags: c_int,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn FPDF_PageToDevice(
+        page: *mut c_void,
+        start_x: c_int,
+        start_y: c_int,
+        size_x: c_int,
+        size_y: c_int,
+        rotate: c_int,
+        page_x: c_double,
+        page_y: c_double,
+        device_x: *mut c_int,
+        device_y: *mut c_int,
+    ) -> c_int;
     fn FPDFText_LoadPage(page: *mut c_void) -> *mut c_void;
     fn FPDFText_ClosePage(text_page: *mut c_void);
     fn FPDFText_CountChars(text_page: *mut c_void) -> c_int;
@@ -366,6 +403,195 @@ pub fn ink_overlaps(
         && ink.left < region_left + width
         && ink.top > bottom
         && ink.bottom < top
+}
+
+/// How many quarter turns PDFium shows page `index` at: its `/Rotate`, as PDFium reads it.
+///
+/// # Panics
+///
+/// If PDFium cannot open the document or the page.
+#[must_use]
+pub fn quarter_turns(bytes: &[u8], index: i32) -> i32 {
+    let owned = bytes.to_vec();
+    on_the_pdfium_thread(move || {
+        // SAFETY: PDFium does not copy the buffer, and `owned` outlives every call below.
+        let doc =
+            unsafe { FPDF_LoadMemDocument64(owned.as_ptr().cast(), owned.len(), std::ptr::null()) };
+        assert!(!doc.is_null(), "PDFium could not open the fixture");
+        // SAFETY: `doc` is live and `index` is a page in it.
+        let page = unsafe { FPDF_LoadPage(doc, index) };
+        assert!(!page.is_null(), "PDFium could not load page {index}");
+        // SAFETY: `page` is live.
+        let turns = unsafe { FPDFPage_GetRotation(page) };
+        // SAFETY: each handle is live and released once, innermost first.
+        unsafe {
+            FPDF_ClosePage(page);
+            FPDF_CloseDocument(doc);
+        }
+        turns
+    })
+}
+
+/// Each ink box as PDFium shows it: `(left, top, right, bottom)` in points from the top-left of
+/// the displayed page, through PDFium's own `FPDF_PageToDevice`, the page's `/Rotate` included.
+///
+/// For a TURNED page, where content space is not display space (#229 put the first one in the
+/// corpus that redacts). Mapped at a thousand device units a point, so the integer device
+/// coordinates lose under a hundredth of a point. Derived from the oracle, never from burrow's
+/// own frame: that would be the #111 circularity [`page_size`] avoids.
+///
+/// # Panics
+///
+/// If PDFium cannot open the document or the page.
+#[must_use]
+pub fn displayed(bytes: &[u8], index: i32, inks: &[Rect]) -> Vec<(f64, f64, f64, f64)> {
+    let owned = bytes.to_vec();
+    let inks = inks.to_vec();
+    on_the_pdfium_thread(move || {
+        const SCALE: f64 = 1000.0;
+        // SAFETY: PDFium does not copy the buffer, and `owned` outlives every call below.
+        let doc =
+            unsafe { FPDF_LoadMemDocument64(owned.as_ptr().cast(), owned.len(), std::ptr::null()) };
+        assert!(!doc.is_null(), "PDFium could not open the fixture");
+        // SAFETY: `doc` is live and `index` is a page in it.
+        let page = unsafe { FPDF_LoadPage(doc, index) };
+        assert!(!page.is_null(), "PDFium could not load page {index}");
+        // SAFETY: `page` is live.
+        let (width, height) = unsafe { (FPDF_GetPageWidthF(page), FPDF_GetPageHeightF(page)) };
+        let size = |points: f32| to_c_int(f64::from(points) * SCALE);
+        let to_device = |x: f64, y: f64| {
+            let (mut dx, mut dy) = (0, 0);
+            // SAFETY: `page` is live and both out-parameters point at live locals.
+            let ok = unsafe {
+                FPDF_PageToDevice(
+                    page,
+                    0,
+                    0,
+                    size(width),
+                    size(height),
+                    0,
+                    x,
+                    y,
+                    &mut dx,
+                    &mut dy,
+                )
+            };
+            assert!(ok != 0, "PDFium could not map a point to the device");
+            (f64::from(dx) / SCALE, f64::from(dy) / SCALE)
+        };
+        let boxes = inks
+            .iter()
+            .map(|ink| {
+                let corners = [
+                    to_device(ink.left, ink.bottom),
+                    to_device(ink.left, ink.top),
+                    to_device(ink.right, ink.bottom),
+                    to_device(ink.right, ink.top),
+                ];
+                let xs = corners.map(|c| c.0);
+                let ys = corners.map(|c| c.1);
+                (
+                    xs.iter().copied().fold(f64::INFINITY, f64::min),
+                    ys.iter().copied().fold(f64::INFINITY, f64::min),
+                    xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                    ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                )
+            })
+            .collect();
+        // SAFETY: each handle is live and released once, innermost first.
+        unsafe {
+            FPDF_ClosePage(page);
+            FPDF_CloseDocument(doc);
+        }
+        boxes
+    })
+}
+
+/// How many dark pixels PDFium draws inside a display-space region of page `index`, **with
+/// annotations drawn** (`FPDF_ANNOT`), at one pixel a point -- and how many on the whole page.
+///
+/// burrow's own renderer and its verification draw no annotations, so annotation ink is invisible
+/// to them; this is the instrument #229's fixtures are measured with. A pixel is dark when its
+/// blue channel is below half, the measure the #229 reproductions used.
+///
+/// # Panics
+///
+/// If PDFium cannot open the document, the page or a bitmap.
+#[must_use]
+pub fn dark_pixels_with_annotations(
+    bytes: &[u8],
+    index: i32,
+    region: (i32, i32, i32, i32),
+) -> (u64, u64) {
+    let owned = bytes.to_vec();
+    on_the_pdfium_thread(move || {
+        const FPDF_ANNOT: c_int = 0x01;
+        // SAFETY: PDFium does not copy the buffer, and `owned` outlives every call below.
+        let doc =
+            unsafe { FPDF_LoadMemDocument64(owned.as_ptr().cast(), owned.len(), std::ptr::null()) };
+        assert!(!doc.is_null(), "PDFium could not open the fixture");
+        // SAFETY: `doc` is live and `index` is a page in it.
+        let page = unsafe { FPDF_LoadPage(doc, index) };
+        assert!(!page.is_null(), "PDFium could not load page {index}");
+        // SAFETY: `page` is live.
+        let (width, height) = unsafe { (FPDF_GetPageWidthF(page), FPDF_GetPageHeightF(page)) };
+        let (width, height) = (to_c_int(f64::from(width)), to_c_int(f64::from(height)));
+        // SAFETY: plain allocation; checked below.
+        let bitmap = unsafe { FPDFBitmap_Create(width, height, 0) };
+        assert!(!bitmap.is_null(), "PDFium could not allocate the bitmap");
+        // SAFETY: `bitmap` and `page` are live; the fill and the render stay inside the bitmap.
+        unsafe {
+            FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0xFFFF_FFFF);
+            FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, FPDF_ANNOT);
+        }
+        // SAFETY: `bitmap` is live; its buffer is `stride * height` bytes of BGRx.
+        let (buffer, stride) =
+            unsafe { (FPDFBitmap_GetBuffer(bitmap), FPDFBitmap_GetStride(bitmap)) };
+        let stride = usize::try_from(stride).expect("a stride");
+        let rows = usize::try_from(height).expect("a height");
+        // SAFETY: as above; read whole before the bitmap is destroyed.
+        let pixels =
+            unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), stride * rows) }.to_vec();
+        // SAFETY: each handle is live and released once, innermost first.
+        unsafe {
+            FPDFBitmap_Destroy(bitmap);
+            FPDF_ClosePage(page);
+            FPDF_CloseDocument(doc);
+        }
+        let (left, top, w, h) = region;
+        let (mut inside, mut total) = (0, 0);
+        for y in 0..height {
+            for x in 0..width {
+                let at =
+                    usize::try_from(y).expect("y") * stride + usize::try_from(x).expect("x") * 4;
+                if *pixels.get(at).expect("a pixel inside the bitmap") < 128 {
+                    total += 1;
+                    if x >= left && x < left + w && y >= top && y < top + h {
+                        inside += 1;
+                    }
+                }
+            }
+        }
+        (inside, total)
+    })
+}
+
+/// `value` rounded to a `c_int`, **asserting** that it fits rather than letting the cast saturate.
+///
+/// A page box may reach 2^24 points, and the device mapping above scales by 1000, so a large page
+/// can overflow an `i32`; a test that met one would otherwise measure a different page silently.
+fn to_c_int(value: f64) -> c_int {
+    let rounded = value.round();
+    assert!(
+        rounded.is_finite() && rounded.abs() <= f64::from(c_int::MAX),
+        "a device size of {value} does not fit the renderer's integer coordinates"
+    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the range is asserted on the line above, so the cast cannot truncate"
+    )]
+    let fits = rounded as c_int;
+    fits
 }
 
 /// Two origins within the oracle's pre-registered tolerance.

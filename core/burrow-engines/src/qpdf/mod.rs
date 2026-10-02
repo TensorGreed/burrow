@@ -46,6 +46,9 @@ mod redact_witness_tests;
 // A reference qpdf resolves to null, on both engines (#227).
 #[cfg(test)]
 mod references_tests;
+// An annotation the redaction keeps draws inside its /Rect, on both engines (#229).
+#[cfg(test)]
+mod annotation_appearance_tests;
 mod reorder;
 #[cfg(test)]
 mod resources_tests;
