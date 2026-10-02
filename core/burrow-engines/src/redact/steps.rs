@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Deadline, Error, Result};
 
+use super::frame::Reading;
 use super::resources::PageResources;
 use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
@@ -795,7 +796,13 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         }
         let frame = Self::frame(&page)?;
         let region = self.region.to_content_space(&frame)?;
-        remove_annotations_in(&page, &region)?;
+        remove_annotations_in(
+            &page,
+            &region,
+            frame.rotate,
+            &self.deadline,
+            self.clock.as_ref(),
+        )?;
         Ok(())
     }
 
@@ -845,9 +852,21 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
 ///
 /// An annotation whose `/Rect` is absent or not four numbers is refused rather than kept: where
 /// it sits is then unknown, and unknown is not "outside the region".
+///
+/// # And an annotation it keeps must draw inside its `/Rect` (#229)
+///
+/// Three refusals for every annotation kept: a NoRotate one on a turned page, one with an appearance
+/// no `/BBox` bounds, and a text-markup one whose `/QuadPoints` reach outside its `/Rect`. Each is a
+/// way PDFium draws outside the `/Rect`, measured. The walk reads the deadline at every annotation
+/// and every appearance stream, and reads a shared `/AP` dictionary, state dictionary, stream or
+/// `/QuadPoints` array once **per role** it is reached in: the code review of #229 measured 182.6 s
+/// on a 616 KB file whose 5,000 annotations shared one `/AP`, when neither held.
 fn remove_annotations_in<O: PdfObject>(
     page: &O,
     region: &crate::pdfsyntax::geometry::Rect,
+    rotate: u16,
+    deadline: &Deadline,
+    clock: &dyn Clock,
 ) -> Result<()> {
     const ANNOTS: Name = Name::literal(b"/Annots\0");
     const RECT: Name = Name::literal(b"/Rect\0");
@@ -864,7 +883,14 @@ fn remove_annotations_in<O: PdfObject>(
                 .to_owned(),
         ));
     }
+    let mut walk = AppearanceWalk {
+        deadline,
+        clock,
+        checked: Checked::default(),
+        quads: BTreeMap::new(),
+    };
     for at in (0..length).rev() {
+        deadline.checkpoint(clock)?;
         let annotation = annots.array_item(at);
         if annotation.type_code() != object_type::DICTIONARY {
             // Not an annotation. `prune`'s walk found these too, and the container type check
@@ -874,50 +900,345 @@ fn remove_annotations_in<O: PdfObject>(
         let rect = annotation.key(&RECT);
         annotation.drained()?;
         // READ AS PDFIUM READS IT, and as the page frame is (#224, security reviews rounds 3
-        // and 4): an array of exactly four items, each one number both readers agree on. The
-        // numbers used to be scanned out of the `/Rect`'s text, so `[[200 0] 400 120 []]` was
-        // 200 0 400 120 here -- clear of the region -- and 0 400 120 0 to PDFium, over it; and a
-        // top edge of 2^32 over a bottom of 380 was 380 upwards here and 0..380 to PDFium, which
-        // reads a whole number outside 32 bits as 0. Each kept the annotation, `Ok`.
-        let not_four = || {
-            Error::Malformed(
-                "pdf redaction [annotation-rect]: an annotation whose /Rect is not four \
-                 numbers, so where it draws is unknown"
-                    .to_owned(),
-            )
-        };
-        if rect.type_code() != object_type::ARRAY || rect.array_len() != 4 {
-            return Err(not_four());
-        }
-        let mut corners = [0.0_f64; 4];
-        for (at, corner) in (0..4).zip(corners.iter_mut()) {
-            *corner = match super::frame::reading_of(&rect.array_item(at)) {
-                super::frame::Reading::Number(number) => number,
-                super::frame::Reading::NotANumber => return Err(not_four()),
-                super::frame::Reading::OutOfRange => {
-                    return Err(Error::Unsupported(
-                        "pdf redaction [annotation-rect]: an annotation whose /Rect is larger \
-                         than any reader agrees on, so where it draws is unknown"
-                            .to_owned(),
-                    ));
-                }
-            };
-        }
-        let [left, bottom, right, top] = corners;
-        // NORMALISED. `/Rect`'s corners are in either order per PDF 32000-1 §12.5.2, and an
-        // un-normalised rectangle compares as empty against every region.
-        let box_of = crate::pdfsyntax::geometry::Rect {
-            left: left.min(right),
-            bottom: bottom.min(top),
-            right: left.max(right),
-            top: bottom.max(top),
+        // and 4): an array of exactly four items, each one number both readers agree on -- by
+        // the one box reader the frame and an appearance's `/BBox` use too. The numbers used to
+        // be scanned out of the `/Rect`'s text, so `[[200 0] 400 120 []]` was 200 0 400 120 here
+        // -- clear of the region -- and 0 400 120 0 to PDFium, over it; and a top edge of 2^32
+        // over a bottom of 380 was 380 upwards here and 0..380 to PDFium, which reads a whole
+        // number outside 32 bits as 0. Each kept the annotation, `Ok`. Normalised, because a
+        // `/Rect`'s corners come in either order (PDF 32000-1 §12.5.2), and an un-normalised
+        // rectangle compares as empty against every region.
+        let box_of = match super::frame::four_numbers(&rect) {
+            super::frame::BoxReading::Box(box_of) => box_of,
+            super::frame::BoxReading::NotFour => {
+                return Err(Error::Malformed(
+                    "pdf redaction [annotation-rect]: an annotation whose /Rect is not four \
+                     numbers, so where it draws is unknown"
+                        .to_owned(),
+                ));
+            }
+            super::frame::BoxReading::OutOfRange => {
+                return Err(Error::Unsupported(
+                    "pdf redaction [annotation-rect]: an annotation whose /Rect is larger \
+                     than any reader agrees on, so where it draws is unknown"
+                        .to_owned(),
+                ));
+            }
         };
         if box_of.intersects(region) {
             annots.erase_item(at);
             annots.drained()?;
+            continue;
         }
+        // KEPT, SO WHERE IT DRAWS MUST BE ITS `/Rect` (#229). The test above assumes an
+        // annotation draws only inside its `/Rect`, and PDFium does not always keep it there.
+        refuse_no_rotate_on_a_turned_page(&annotation, rotate)?;
+        walk.refuse_quads_outside_the_rect(&annotation, &box_of)?;
+        walk.refuse_unbounded_appearances(&annotation)?;
     }
     Ok(())
+}
+
+/// The annotation flag that keeps an annotation upright when the page is turned
+/// (PDF 32000-1 §12.5.3, bit 5).
+const NO_ROTATE: i64 = 16;
+
+/// Refuse a NoRotate annotation on a page whose effective `/Rotate` -- the frame's, inherited and
+/// normalised -- is not 0 (#229).
+///
+/// PDFium turns such an appearance about the `/Rect`'s corner, so it draws outside the `/Rect`:
+/// measured `Ok` with 1,800 dark pixels of its ink in a region beside the `/Rect` that the
+/// `/Rect` does not meet. Refused rather than modelled, by the owner's decision: a second
+/// geometry to keep in step with PDFium's is the residue §6 already records for #111. 0 of 99
+/// real documents (30 with annotations) and 0 of 99 fixtures have the shape.
+///
+/// An `/F` that is not an integer is read as one with every flag set: what PDFium makes of it is
+/// unmeasured, so on a turned page it refuses.
+fn refuse_no_rotate_on_a_turned_page<O: PdfObject>(annotation: &O, rotate: u16) -> Result<()> {
+    const F: Name = Name::literal(b"/F\0");
+    if rotate == 0 {
+        return Ok(());
+    }
+    let flags = annotation.key(&F);
+    let no_rotate = match flags.type_code() {
+        object_type::NULL => false,
+        object_type::INTEGER => flags.integer_value() & NO_ROTATE != 0,
+        _ => true,
+    };
+    if no_rotate {
+        return Err(Error::Unsupported(
+            "pdf redaction [annotation-no-rotate]: an annotation kept upright on a turned page, \
+             which the renderer turns about a corner of its rectangle, so where it draws is not \
+             where its rectangle is"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// The appearance kinds an annotation can draw with: normal, down and rollover.
+const APPEARANCES: [Name; 3] = [
+    Name::literal(b"/N\0"),
+    Name::literal(b"/D\0"),
+    Name::literal(b"/R\0"),
+];
+
+/// The appearance walk over the annotations a page keeps: the deadline, and what it has checked.
+struct AppearanceWalk<'d> {
+    deadline: &'d Deadline,
+    clock: &'d dyn Clock,
+    /// What has already been checked, by object identity, **one set per role** -- so a shared
+    /// `/AP` is walked once however many annotations name it. A direct object has no identity,
+    /// `(0, 0)`, and is walked each time; its cost is its own bytes.
+    ///
+    /// Per role because the roles do not read the same keys: an `/AP` dictionary is read for
+    /// `/N`, `/D` and `/R`, a state dictionary for every key. One set for all three let an object
+    /// checked as an `/AP` be skipped when reached as a state dictionary, so its other states were
+    /// never read: an `/AP` naming itself as its `/N`, or one annotation's `/AP` that is another's
+    /// state dictionary, kept an unbounded appearance, `Ok`, with 654 dark pixels of its ink in the
+    /// region -- found by both reviews of #229's memo, which introduced it.
+    checked: Checked,
+    /// A shared `/QuadPoints` array's extent, read once: what it is compared with is each
+    /// annotation's own `/Rect`, so the extent is memoised and the verdict is not. `None` is an
+    /// array no reader agrees on, refused whatever the `/Rect`.
+    quads: BTreeMap<(c_int, c_int), Option<Extent>>,
+}
+
+/// One set of checked object identities per role an object can be reached in.
+#[derive(Default)]
+struct Checked {
+    appearances: BTreeSet<(c_int, c_int)>,
+    states: BTreeSet<(c_int, c_int)>,
+    streams: BTreeSet<(c_int, c_int)>,
+}
+
+/// The least and greatest x and y of a `/QuadPoints` array.
+#[derive(Clone, Copy)]
+struct Extent {
+    left: f64,
+    right: f64,
+    bottom: f64,
+    top: f64,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many appearance dictionaries, state dictionaries, streams and `/QuadPoints` arrays
+    /// were read rather than recognised as checked, in that order.
+    static WALKED: core::cell::Cell<[usize; 4]> = const { core::cell::Cell::new([0; 4]) };
+}
+
+/// How many appearance dictionaries, state dictionaries, streams and `/QuadPoints` arrays this
+/// thread has read: the witness that each memo holds.
+#[cfg(test)]
+pub(crate) fn appearance_objects_walked() -> [usize; 4] {
+    WALKED.with(core::cell::Cell::get)
+}
+
+/// Count one read of the role at `index`, under test.
+#[cfg_attr(
+    not(test),
+    expect(unused_variables, reason = "counted under test only")
+)]
+fn count_walked(index: usize) {
+    #[cfg(test)]
+    WALKED.with(|walked| {
+        let mut counts = walked.get();
+        if let Some(count) = counts.get_mut(index) {
+            *count += 1;
+        }
+        walked.set(counts);
+    });
+}
+
+/// Whether `object` was already checked in `set`; recorded as checked if not. A direct object
+/// never is.
+fn already_checked<O: PdfObject>(set: &mut BTreeSet<(c_int, c_int)>, object: &O) -> Result<bool> {
+    let identity = object.object()?;
+    if identity == (0, 0) {
+        return Ok(false);
+    }
+    Ok(!set.insert(identity))
+}
+
+/// The text-markup annotations PDFium draws from their `/QuadPoints` rather than their `/Rect`.
+const MARKUP: [&[u8]; 4] = [b"Highlight", b"Underline", b"Squiggly", b"StrikeOut"];
+
+impl AppearanceWalk<'_> {
+    /// Refuse a kept text-markup annotation whose `/QuadPoints` reach outside its `/Rect` (#229).
+    ///
+    /// PDFium fits such an annotation's appearance into the box around its `/QuadPoints` rather
+    /// than its `/Rect` in some cases -- one is a private `/PDFIUM_HasGeneratedAP` key a file can
+    /// carry, which makes PDFium draw the file's own appearance there; another is a markup
+    /// annotation with no `/AP`, whose appearance PDFium builds at the quadrilaterals. Measured: a
+    /// Highlight whose `/Rect` misses the region and whose `/QuadPoints` cover it, carrying that
+    /// key, left 1,304 dark pixels of its own appearance in the region after an `Ok`. Keyed on the
+    /// declared structure -- quadrilaterals outside the rectangle -- rather than on any one private
+    /// key, so a key PDFium adds later is covered too. A `/QuadPoints` that is not an array of
+    /// numbers both readers agree on is refused the same way: where it sits is then unknown. So is
+    /// a count that is not a multiple of eight whose numbers leave the `/Rect`, although PDFium
+    /// ignores an incomplete quadrilateral: a harmless over-refusal. Compared exactly, and
+    /// **unwitnessed**: the census lists hold no markup annotation at all, so how often a real
+    /// producer overhangs its `/Rect` is unknown (#242). An error there is a refusal, not a leak.
+    ///
+    /// **A `/Subtype` that is not a name is checked as markup.** PDFium reads the subtype as a byte
+    /// string, so `(Highlight)` -- or the same in hex -- is a Highlight to it; reading names only
+    /// kept one, `Ok`, with 1,304 dark pixels in the region (#229's reviews). Only an absent
+    /// `/Subtype` is not markup.
+    fn refuse_quads_outside_the_rect<O: PdfObject>(
+        &mut self,
+        annotation: &O,
+        rect: &crate::pdfsyntax::geometry::Rect,
+    ) -> Result<()> {
+        const SUBTYPE: Name = Name::literal(b"/Subtype\0");
+        const QUADPOINTS: Name = Name::literal(b"/QuadPoints\0");
+        let refusal = || {
+            Error::Unsupported(
+                "pdf redaction [annotation-quads-outside-rect]: a text-markup annotation whose \
+                 quadrilaterals reach outside its rectangle, where the renderer may draw it"
+                    .to_owned(),
+            )
+        };
+        let subtype = annotation.key(&SUBTYPE);
+        let markup = match subtype.type_code() {
+            object_type::NULL => false,
+            object_type::NAME => MARKUP.contains(&subtype.name()?.plain()),
+            _ => true,
+        };
+        if !markup {
+            return Ok(());
+        }
+        let quads = annotation.key(&QUADPOINTS);
+        match quads.type_code() {
+            object_type::NULL => return Ok(()),
+            object_type::ARRAY => {}
+            _ => return Err(refusal()),
+        }
+        // NO DEADLINE READ HERE: the loop over annotations reads it before each, and each reads at
+        // most one extent.
+        let identity = quads.object()?;
+        let extent = match self.quads.get(&identity) {
+            Some(extent) if identity != (0, 0) => *extent,
+            _ => {
+                let extent = extent_of(&quads)?;
+                if identity != (0, 0) {
+                    self.quads.insert(identity, extent);
+                }
+                extent
+            }
+        };
+        let Some(extent) = extent else {
+            return Err(refusal());
+        };
+        if extent.left < rect.left
+            || extent.right > rect.right
+            || extent.bottom < rect.bottom
+            || extent.top > rect.top
+        {
+            return Err(refusal());
+        }
+        Ok(())
+    }
+
+    /// Refuse an annotation any of whose appearance streams -- `/N`, `/D`, `/R`, and every state
+    /// under each -- has a `/BBox` that is not four numbers enclosing an area (#229).
+    ///
+    /// PDFium fits an appearance into the `/Rect` through its `/BBox`; with none it only moves the
+    /// appearance to the `/Rect`'s corner, and nothing clips it there. Measured: an appearance with
+    /// no `/BBox` drawing 290 points above its `/Rect` left 654 dark pixels of ink in the region
+    /// after an `Ok`; the same with `/BBox [0 0 100 20]`, 0. Read by the page frame's box reader,
+    /// plus an area: a degenerate `/BBox` gives the fit no scale. Every state is checked, not the
+    /// one `/AS` selects, because a viewer may draw any of them -- `/D` while pressed, `/R` under
+    /// the pointer.
+    fn refuse_unbounded_appearances<O: PdfObject>(&mut self, annotation: &O) -> Result<()> {
+        const AP: Name = Name::literal(b"/AP\0");
+        let appearances = annotation.key(&AP);
+        if appearances.type_code() != object_type::DICTIONARY {
+            return Ok(());
+        }
+        if already_checked(&mut self.checked.appearances, &appearances)? {
+            return Ok(());
+        }
+        count_walked(0);
+        for kind in &APPEARANCES {
+            let entry = appearances.key(kind);
+            match entry.type_code() {
+                object_type::STREAM => self.refuse_unbounded(&entry)?,
+                object_type::DICTIONARY => {
+                    if already_checked(&mut self.checked.states, &entry)? {
+                        continue;
+                    }
+                    count_walked(1);
+                    // CAPPED BY THE KEY READER, which refuses a dictionary past its own `MAX_KEYS`
+                    // rather than returning a short list.
+                    let states = crate::pdfsyntax::dict::top_level_keys(&entry.unparse())?;
+                    for state in states {
+                        let stream = entry.key(&Name::from_stripped(&state)?);
+                        if stream.type_code() == object_type::STREAM {
+                            self.refuse_unbounded(&stream)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        appearances.drained()
+    }
+
+    /// Refuse one appearance stream whose `/BBox` does not bound it, reading the deadline first.
+    fn refuse_unbounded<O: PdfObject>(&mut self, stream: &O) -> Result<()> {
+        const BBOX: Name = Name::literal(b"/BBox\0");
+        self.deadline.checkpoint(self.clock)?;
+        if already_checked(&mut self.checked.streams, stream)? {
+            return Ok(());
+        }
+        count_walked(2);
+        let bounded = match super::frame::four_numbers(&stream.stream_dict().key(&BBOX)) {
+            super::frame::BoxReading::Box(b) => b.right > b.left && b.top > b.bottom,
+            super::frame::BoxReading::NotFour | super::frame::BoxReading::OutOfRange => false,
+        };
+        if bounded {
+            return Ok(());
+        }
+        Err(Error::Unsupported(
+            "pdf redaction [annotation-appearance-unbounded]: an annotation whose appearance has \
+             no bounding box the renderer fits to its rectangle, so where it draws is not where \
+             its rectangle is"
+                .to_owned(),
+        ))
+    }
+}
+
+/// The extent of a `/QuadPoints` array: x at even indices, y at odd, as the eight numbers of each
+/// quadrilateral alternate. `None` for one no reader agrees on -- longer than the ceiling, or an
+/// item that is not one number both readers read alike. An empty array extends nowhere, and
+/// compares as inside every `/Rect`.
+fn extent_of<O: PdfObject>(quads: &O) -> Result<Option<Extent>> {
+    count_walked(3);
+    let count = quads.array_len();
+    if count > DIFFERENCES_CEILING {
+        return Ok(None);
+    }
+    let mut extent = Extent {
+        left: f64::INFINITY,
+        right: f64::NEG_INFINITY,
+        bottom: f64::INFINITY,
+        top: f64::NEG_INFINITY,
+    };
+    for at in 0..count {
+        let Reading::Number(value) = super::frame::reading_of(&quads.array_item(at)) else {
+            return Ok(None);
+        };
+        if at % 2 == 0 {
+            extent.left = extent.left.min(value);
+            extent.right = extent.right.max(value);
+        } else {
+            extent.bottom = extent.bottom.min(value);
+            extent.top = extent.top.max(value);
+        }
+    }
+    quads.drained()?;
+    Ok(Some(extent))
 }
 
 /// An object identity packed into the `u64` `Form::id` and `FontOutcome::font` use.
@@ -1830,4 +2151,93 @@ fn first_char<O: PdfObject>(font: &O) -> Result<u32> {
                 .to_owned(),
         )
     })
+}
+
+#[cfg(all(test, feature = "native-engines", burrow_native_engines))]
+mod annotation_walk_tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use burrow_types::{Clock, Deadline, Limits};
+
+    use super::remove_annotations_in;
+    use crate::pdfsyntax::geometry::Rect;
+    use crate::redact::graph::{OpensForRedaction, PdfDocument};
+
+    /// A clock that counts how often it is read and moves a millisecond each time.
+    struct Counting(AtomicU64);
+    impl Clock for Counting {
+        fn now_ms(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn the_annotation_walk_itself_reads_the_deadline_per_annotation_and_stream() {
+        // THE WALK'S OWN READS, which no end-to-end test can see: the sharing walk runs first and
+        // reads the deadline per annotation too, so a deadline passing mid-document stops there.
+        // Called directly here, over 40 kept annotations each with its own appearance stream.
+        let annotations = 40;
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots [{}] >>",
+                (0..annotations)
+                    .map(|i| format!("{} 0 R ", 4 + 2 * i))
+                    .collect::<String>()
+            ),
+        ];
+        for i in 0..annotations {
+            objects.push(format!(
+                "<< /Type /Annot /Subtype /Stamp /Rect [20 50 120 70] /AP << /N {} 0 R >> >>",
+                5 + 2 * i
+            ));
+            objects.push(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 100 20] /Length 0 >>\nstream\n\nendstream"
+                    .to_owned(),
+            );
+        }
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        let options = crate::OpenOptions::new(
+            Limits::default(),
+            std::sync::Arc::new(burrow_types::ManualClock::new(0)) as std::sync::Arc<dyn Clock>,
+        );
+        let (document, _) = crate::qpdf::Qpdf
+            .open_for_redaction(out.as_bytes(), &options)
+            .expect("opens");
+        let page = document.page(0).expect("page 0");
+        let clock = Counting(AtomicU64::new(0));
+        let deadline = Deadline::start(&clock, &Limits::default());
+        let before = clock.0.load(Ordering::Relaxed);
+        let region = Rect {
+            left: 0.0,
+            bottom: 330.0,
+            right: 300.0,
+            top: 370.0,
+        };
+        remove_annotations_in(&page, &region, 0, &deadline, &clock).expect("all kept, bounded");
+        let reads = clock.0.load(Ordering::Relaxed) - before;
+        assert!(
+            reads >= 2 * annotations,
+            "{reads} deadline reads over {annotations} annotations and as many streams: the walk \
+             must read it at each"
+        );
+    }
 }

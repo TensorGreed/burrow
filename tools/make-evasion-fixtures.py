@@ -2352,6 +2352,127 @@ def evade_resources_inherited_from_pages() -> bytes:
     )
 
 
+
+# ===========================================================================================
+# An annotation the redaction keeps must draw inside its /Rect (#229). PDFium fits an appearance
+# to the /Rect through its /BBox and with none only moves it there; and it turns a NoRotate
+# appearance about the /Rect's corner on a turned page. Each kept the annotation with its ink in
+# the region, `Ok`, before #229. Refused, both: the owner's decision, at a measured cost of 0 of
+# 99 real documents and 0 of 99 fixtures.
+# ===========================================================================================
+
+
+def _annotated_page(
+    tag: str, page_extra: bytes, pages_extra: bytes, annotation: bytes, bboxes: list[bytes],
+    ap: bytes, draws: bytes | list[bytes] = b"0 g 0 0 100 20 re f", subtype: bytes = b"/Stamp",
+) -> bytes:
+    """The canary page with one Stamp annotation at `[300 10 390 30]`, clear of the region, whose
+    `/AP` is `ap` with `{0}`, `{1}`... naming appearance streams with the given `/BBox` entries,
+    each drawing `draws` -- or its own entry of it, when it is a list."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    each = draws if isinstance(draws, list) else [draws] * len(bboxes)
+    streams = [
+        pdf.stream(b"/Type /XObject /Subtype /Form " + bbox, ink)
+        for bbox, ink in zip(bboxes, each, strict=True)
+    ]
+    annot = pdf.add(
+        b"<< /Type /Annot /Subtype " + subtype + b" /Rect [300 10 390 30] " + annotation
+        + b" /AP " + ap.decode().format(*streams).encode() + b" >>"
+    )
+    pages = pdf.reserve()
+    page = pdf.reserve()
+    stream = pdf.stream(b"", _secret_run(tag) + keep_line_ops())
+    pdf.put(
+        page,
+        b"<< /Type /Page /Parent " + str(pages).encode() + b" 0 R /MediaBox "
+        + _box(PAGE_W, PAGE_H) + _own_resources(helv) + page_extra
+        + b" /Annots [" + str(annot).encode() + b" 0 R]"
+        + b" /Contents " + str(stream).encode() + b" 0 R >>",
+    )
+    pdf.put(
+        pages,
+        b"<< /Type /Pages /Count 1 /Kids [" + str(page).encode() + b" 0 R]" + pages_extra + b" >>",
+    )
+    root = pdf.add(b"<< /Type /Catalog /Pages " + str(pages).encode() + b" 0 R >>")
+    return pdf.build(root)
+
+
+BOUNDED = b"/BBox [0 0 100 20]"
+
+
+def evade_annotation_appearance_without_bbox() -> bytes:
+    """A kept annotation whose normal appearance has no `/BBox`, so PDFium draws it unfitted --
+    here a block 90 points above the `/Rect`'s corner, inside the region the corpus redacts."""
+    return _annotated_page(
+        "AP-NO-BBOX", b"", b"", b"", [b""], b"<< /N {0} 0 R >>", draws=b"0 g 0 90 60 20 re f",
+    )
+
+
+def evade_annotation_down_state_without_bbox() -> bytes:
+    """`/N` bounded; the only unbounded appearance is the `/On` state of `/D`, drawn when pressed --
+    a block 90 points above the `/Rect`'s corner, inside the region, as the `/N` fixture draws."""
+    return _annotated_page(
+        "AP-DOWN-STATE", b"", b"", b"/AS /Off", [BOUNDED, b""],
+        b"<< /N {0} 0 R /D << /Off {0} 0 R /On {1} 0 R >> >>",
+        draws=[b"0 g 0 0 100 20 re f", b"0 g 0 90 60 20 re f"],
+    )
+
+
+def evade_annotation_no_rotate_on_a_turned_page() -> bytes:
+    """A NoRotate (`/F 16`) annotation on a page turned 90 degrees; PDFium turns it about a corner."""
+    return _annotated_page("NO-ROTATE", b" /Rotate 90", b"", b"/F 16", [BOUNDED], b"<< /N {0} 0 R >>")
+
+
+def evade_annotation_no_rotate_under_an_inherited_rotate() -> bytes:
+    """The same, with `/Rotate 90` on the `/Pages` node. Refused by `[page-attribute-inherited]`
+    before the annotation is read: the check takes the frame's `/Rotate`, which refuses this first."""
+    return _annotated_page(
+        "NO-ROTATE-INHERITED", b"", b" /Rotate 90", b"/F 16", [BOUNDED], b"<< /N {0} 0 R >>",
+    )
+
+
+def evade_annotation_quads_outside_rect() -> bytes:
+    """A Highlight whose `/Rect` misses the region and whose `/QuadPoints` cover it, carrying
+    PDFium's private `/PDFIUM_HasGeneratedAP`: PDFium fits the file's own appearance to the quads,
+    in the region. Refused by the declared shape -- quadrilaterals outside the `/Rect` (#229)."""
+    return _annotated_page(
+        "QUADS-OUTSIDE", b"", b"",
+        b"/QuadPoints [30 132 370 132 30 88 370 88] /PDFIUM_HasGeneratedAP true",
+        [BOUNDED], b"<< /N {0} 0 R >>", subtype=b"/Highlight",
+    )
+
+
+def evade_annotation_subtype_as_a_string() -> bytes:
+    """The quadrilaterals fixture with `/Subtype (Highlight)`: PDFium reads the subtype as a byte
+    string, so this is a Highlight to it. Refused [annotation-quads-outside-rect] (#229's reviews)."""
+    return _annotated_page(
+        "SUBTYPE-STRING", b"", b"",
+        b"/QuadPoints [30 132 370 132 30 88 370 88] /PDFIUM_HasGeneratedAP true",
+        [BOUNDED], b"<< /N {0} 0 R >>", subtype=b"(Highlight)",
+    )
+
+
+def nearmiss_annotation_quads_inside_rect() -> bytes:
+    """The same Highlight with its quadrilateral inside its `/Rect`. MUST redact."""
+    return _annotated_page(
+        "QUADS-INSIDE", b"", b"",
+        b"/QuadPoints [300 30 390 30 300 10 390 10] /PDFIUM_HasGeneratedAP true",
+        [BOUNDED], b"<< /N {0} 0 R >>", subtype=b"/Highlight",
+    )
+
+
+def nearmiss_annotation_no_rotate_on_an_upright_page() -> bytes:
+    """NoRotate on an upright page, bounded. MUST redact."""
+    return _annotated_page("NO-ROTATE-UPRIGHT", b"", b"", b"/F 16", [BOUNDED], b"<< /N {0} 0 R >>")
+
+
+def nearmiss_annotation_bounded_on_a_turned_page() -> bytes:
+    """A bounded appearance on a page turned 90 degrees, without NoRotate. MUST redact."""
+    return _annotated_page("BOUNDED-TURNED", b" /Rotate 90", b"", b"/F 4", [BOUNDED], b"<< /N {0} 0 R >>")
+
+
+
 CASES: list[tuple[str, str]] = [
     # (filename stem, refusal it probes)
     #
@@ -2459,6 +2580,15 @@ CASES: list[tuple[str, str]] = [
     ("evade-missing-pair-named-in-the-trailer", "reference to nothing"),
     ("evade-missing-pair-named-in-an-xref-stream", "reference to nothing"),
     ("evade-missing-pair-named-in-a-prev-trailer", "reference to nothing"),
+    ("evade-annotation-appearance-without-bbox", "annotation appearance"),
+    ("evade-annotation-down-state-without-bbox", "annotation appearance"),
+    ("evade-annotation-no-rotate-on-a-turned-page", "annotation appearance"),
+    ("evade-annotation-no-rotate-under-an-inherited-rotate", "annotation appearance"),
+    ("nearmiss-annotation-no-rotate-on-an-upright-page", "annotation appearance"),
+    ("nearmiss-annotation-bounded-on-a-turned-page", "annotation appearance"),
+    ("evade-annotation-quads-outside-rect", "annotation appearance"),
+    ("nearmiss-annotation-quads-inside-rect", "annotation appearance"),
+    ("evade-annotation-subtype-as-a-string", "annotation appearance"),
 ]
 
 BUILDERS = {
@@ -2559,6 +2689,15 @@ BUILDERS = {
     "evade-missing-pair-named-in-the-trailer": evade_missing_pair_named_in_the_trailer,
     "evade-missing-pair-named-in-an-xref-stream": evade_missing_pair_named_in_an_xref_stream,
     "evade-missing-pair-named-in-a-prev-trailer": evade_missing_pair_named_in_a_prev_trailer,
+    "evade-annotation-appearance-without-bbox": evade_annotation_appearance_without_bbox,
+    "evade-annotation-down-state-without-bbox": evade_annotation_down_state_without_bbox,
+    "evade-annotation-no-rotate-on-a-turned-page": evade_annotation_no_rotate_on_a_turned_page,
+    "evade-annotation-no-rotate-under-an-inherited-rotate": evade_annotation_no_rotate_under_an_inherited_rotate,
+    "nearmiss-annotation-no-rotate-on-an-upright-page": nearmiss_annotation_no_rotate_on_an_upright_page,
+    "nearmiss-annotation-bounded-on-a-turned-page": nearmiss_annotation_bounded_on_a_turned_page,
+    "evade-annotation-quads-outside-rect": evade_annotation_quads_outside_rect,
+    "nearmiss-annotation-quads-inside-rect": nearmiss_annotation_quads_inside_rect,
+    "evade-annotation-subtype-as-a-string": evade_annotation_subtype_as_a_string,
 }
 
 

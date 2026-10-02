@@ -980,3 +980,79 @@ fn one_shared_properties_dictionary_is_listed_once_however_many_forms_reach_it()
         "{forms} forms share one /Properties; it must be listed once"
     );
 }
+
+#[test]
+fn the_annotation_walk_reads_the_deadline_per_annotation_on_one_page() {
+    // #229's code review: the walk read the deadline once per page, and one page's annotations
+    // can be thousands. Forty annotations whose `/AP` is one stream -- no state dictionary, so the
+    // per-state reads never run -- on a single page: the walk must read the deadline at each.
+    struct Counting(std::sync::atomic::AtomicU64);
+    impl Clock for Counting {
+        fn now_ms(&self) -> u64 {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    let annotations = 40;
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots [{}] >>",
+            (0..annotations)
+                .map(|i| format!("{} 0 R ", 5 + i))
+                .collect::<String>()
+        ),
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 100 20] /Length 0 >>\nstream\n\nendstream"
+            .to_owned(),
+    ];
+    for _ in 0..annotations {
+        objects.push(
+            "<< /Type /Annot /Subtype /Stamp /Rect [20 50 120 70] /AP << /N 4 0 R >> >>".to_owned(),
+        );
+    }
+    let opened = open(document(&objects));
+    let clock = Arc::new(Counting(std::sync::atomic::AtomicU64::new(0)));
+    let shared: Arc<dyn Clock> = clock.clone();
+    count_form_uses(&opened.0, &opened.1, &shared).expect("walks");
+    let reads = clock.0.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        reads >= annotations,
+        "{reads} deadline reads over {annotations} annotations on one page: the walk must read \
+         it at each"
+    );
+}
+
+#[test]
+fn the_annotation_walk_reads_the_deadline_per_appearance_state() {
+    // THE OTHER READ, which the test above cannot reach: its `/AP` is a stream. One annotation
+    // whose `/N` is a dictionary of 40 states: the walk must read the deadline at each.
+    struct Counting(std::sync::atomic::AtomicU64);
+    impl Clock for Counting {
+        fn now_ms(&self) -> u64 {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    let states = 40;
+    let entries: String = (0..states).map(|i| format!("/S{i} 4 0 R ")).collect();
+    let objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Annots [5 0 R] >>"
+            .to_owned(),
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 100 20] /Length 0 >>\nstream\n\nendstream"
+            .to_owned(),
+        format!(
+            "<< /Type /Annot /Subtype /Stamp /Rect [20 50 120 70] /AP << /N << {entries}>> >> >>"
+        ),
+    ];
+    let opened = open(document(&objects));
+    let clock = Arc::new(Counting(std::sync::atomic::AtomicU64::new(0)));
+    let shared: Arc<dyn Clock> = clock.clone();
+    count_form_uses(&opened.0, &opened.1, &shared).expect("walks");
+    let reads = clock.0.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        reads >= states,
+        "{reads} deadline reads over {states} states of one annotation: the walk must read it \
+         at each"
+    );
+}

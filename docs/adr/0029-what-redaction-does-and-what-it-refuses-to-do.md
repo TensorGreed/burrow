@@ -140,6 +140,9 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a page box, `/Rotate` or `/UserUnit` in a **shape the renderer does not read as burrow would** -- a box that is not four numbers, a `/Rotate` that is not a number or is beyond ten turns, a number of magnitude past 2^24, a crop sharing no area with the media box | **refuse**, `[page-frame-unreadable]` — added 2026-09-29 ([#224], round 2). The crop is clipped to the media box, as PDFium clips it. 0 of 224 local documents |
 | a page whose **`/UserUnit` is not 1** | **refuse**, `[user-unit-not-one]` — added 2026-09-29 ([#224], round 2). PDFium's size and its render ignore it and the region conversion divides by it. 0 of 224 local documents |
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
+| a kept annotation whose **appearance has no bounding box** -- an `/N`, `/D` or `/R` stream, or any of their states, whose `/BBox` is not four numbers enclosing an area | **refuse**, `[annotation-appearance-unbounded]` — added 2026-10-01 ([#229]). PDFium fits an appearance to the `/Rect` through its `/BBox`, and with none only moves it to the `/Rect`'s corner, unclipped: 654 dark pixels of its ink in the region after an `Ok`, measured. Read by the page frame's box reader. 0 of 99 real documents (30 with annotations) and 0 of 99 fixtures; see the [2026-10-01 #229 amendment](#amendment-2026-10-01--229-an-annotation-the-redaction-keeps-must-draw-inside-its-rect) |
+| a kept **NoRotate annotation on a turned page** -- `/F` with bit 5 set, or not an integer, where the page's effective `/Rotate` is not 0 | **refuse**, `[annotation-no-rotate]` — added 2026-10-01 ([#229]). PDFium turns such an appearance about the `/Rect`'s corner, so it draws outside the `/Rect`: 1,800 dark pixels in a region beside the `/Rect` that the `/Rect` does not meet, after an `Ok`, measured. Refused rather than modelled. 0 of 99 real documents and 0 of 99 fixtures |
+| a kept **text-markup annotation whose `/QuadPoints` reach outside its `/Rect`** -- Highlight, Underline, Squiggly or StrikeOut, **or any `/Subtype` that is not a name** (PDFium reads it as a byte string, so `(Highlight)` is one), or a `/QuadPoints` that is not an array of numbers both readers agree on | **refuse**, `[annotation-quads-outside-rect]` — added 2026-10-01 ([#229]). PDFium can fit such an appearance to the quadrilaterals instead of the `/Rect`: with its private `/PDFIUM_HasGeneratedAP` key a file made it draw its own appearance there, 1,304 dark pixels in the region after an `Ok`, measured. Keyed on the declared shape, not the key. Compared exactly. **Unwitnessed**: the census lists hold no markup annotation at all, so how often a real producer's quadrilaterals overhang its `/Rect` is unknown ([#242]) |
 | **incremental-update history** | **nothing** — qpdf's writer emits only objects reachable from the current trailer, so the superseded object is gone. See *Consequences* for how narrow this claim is |
 
 ### 4. Reading `/Contents` per stream is wrong, and the fixture that proves it is committed
@@ -1154,6 +1157,8 @@ the seven cases then in the script:
 [#183]: https://github.com/TensorGreed/burrow/issues/183
 [#224]: https://github.com/TensorGreed/burrow/issues/224
 [#226]: https://github.com/TensorGreed/burrow/issues/226
+[#229]: https://github.com/TensorGreed/burrow/issues/229
+[#242]: https://github.com/TensorGreed/burrow/issues/242
 [#227]: https://github.com/TensorGreed/burrow/issues/227
 [#152]: https://github.com/TensorGreed/burrow/issues/152
 
@@ -4128,7 +4133,7 @@ measured kept with the bound removed -- and the two nested shapes.
 with no `/BBox`, which PDFium moves to the `/Rect`'s corner without fitting or clipping; and a
 NoRotate annotation on a turned page, which PDFium turns about the `/Rect`'s corner. Each was
 measured `Ok` with ink in the region. The table's premise that an annotation draws inside its
-`/Rect` is false for both until #229.
+`/Rect` is false for both until #229. (*Closed by the [2026-10-01 #229 amendment](#amendment-2026-10-01--229-an-annotation-the-redaction-keeps-must-draw-inside-its-rect).*)
 
 **One repair check at the write, not two.** qpdf's warnings persist, so the check after the write
 refuses everything the check before it did, and deleting the earlier one failed nothing -- a check
@@ -4341,3 +4346,144 @@ on both engines:
   them. The cap on references gathered from object streams has no test of its own.
 - **The census is of one person's machine**, mostly TeX output. A producer that writes non-zero
   generations routinely -- an incremental editor -- is the population this sample does not have.
+## Amendment, 2026-10-01 — #229: an annotation the redaction keeps must draw inside its `/Rect`
+
+**The premise this record's table rested on was false, three times.** `remove_annotations_in` removes
+an annotation whose `/Rect` meets the region and keeps the rest, on the assumption that an annotation
+draws only inside its `/Rect`. burrow's own renderer and its verification draw no annotations, so
+nothing that gates an output could see otherwise. Each way PDFium does draw outside was reproduced
+with PDFium rendering annotations, before anything was changed:
+
+- **An appearance with no `/BBox`.** PDFium fits an appearance to the `/Rect` through its `/BBox`;
+  with none it moves the appearance to the `/Rect`'s corner and neither fits nor clips it: **654 dark
+  pixels** in the region after an `Ok`; with `/BBox [0 0 100 20]`, 0. (#224's round-4 review.)
+- **A NoRotate annotation on a turned page.** PDFium turns it about the `/Rect`'s corner: **1,800 dark
+  pixels** in a region beside the `/Rect` that the `/Rect` does not meet, kept, `Ok`. (The same.)
+- **A text-markup annotation drawn at its `/QuadPoints`.** A Highlight whose `/Rect` missed the
+  region and whose quadrilaterals covered it, carrying PDFium's private `/PDFIUM_HasGeneratedAP`, had
+  its own appearance fitted to the quadrilaterals: **1,304 dark pixels** in the region after an `Ok`;
+  without the key, 0 -- for an annotation that brings its own `/AP`. One with **no** `/AP` is worse:
+  PDFium builds its appearance at the quadrilaterals, 12,000 dark pixels, measured by the second code
+  review; this rule refuses that too. (This change's specification review.)
+
+**The census.** Over #227's lists -- 99 real documents, 30 of them with annotations, and 99 fixtures
+-- **0 and 0** carry an unbounded appearance or a NoRotate annotation on a turned page. It read every
+appearance stream of every annotation (`/N`, `/D`, `/R` and each state), every annotation's `/F`, and
+every page's `/Rotate`, and found each shape on its reproduction before its zeros were believed.
+**The quadrilateral rule's zero is not a measurement**: the lists hold **no markup annotation at
+all** -- the second census, which compared exactly as the code does, counted them -- so it witnessed
+nothing. An over-refusal there is fail-closed, and a tolerance would buy it back with a leak, so the
+comparison stays exact until real highlighted documents are measured ([#242]).
+
+**Owner's decision: refuse all three, for every annotation kept** -- checks on declared structure,
+not a model of PDFium's transforms (that would be a second geometry to keep in step with PDFium's,
+the residue §6 records for #111), and not removal (a silent change §3 forbids without a disclosure
+worse than the refusal):
+
+- `[annotation-appearance-unbounded]`: any appearance stream it can draw -- `/N`, `/D`, `/R`, every
+  state under each, not only the one `/AS` selects -- whose `/BBox` is not four numbers enclosing an
+  area. The four numbers are read by `frame::four_numbers`, now shared by the page's boxes, an
+  annotation's `/Rect` and an appearance's `/BBox`; a font's `/FontBBox` and a form's `/Matrix` are
+  still read by scanning their text, which is #241.
+- `[annotation-no-rotate]`: the NoRotate flag -- or an `/F` that is not an integer, unmeasured and so
+  refused -- where the page's effective `/Rotate` is not 0. **Effective is the frame's**: inherited
+  and normalised. An inherited `/Rotate` is refused first, by `[page-attribute-inherited]` (#224); the
+  owner's fixture for it pins that order. The mutation the owner asked for, reading `/Rotate` from the
+  page dictionary: **a version that reads the raw number is killed** by a `/Rotate 360` near-miss,
+  which redacts; **a version that also normalises survives, and is equivalent by construction**, since
+  no input reaches this step with an inherited `/Rotate`. The first draft of this paragraph called the
+  whole mutation equivalent; the code review showed the raw version was not.
+- `[annotation-quads-outside-rect]`: a Highlight, Underline, Squiggly or StrikeOut -- or an
+  annotation whose `/Subtype` is anything but a name, absent or `null` (which both readers read as
+  absent) -- whose `/QuadPoints` reach outside its
+  `/Rect`, or are not an array of numbers both readers agree on. Keyed on the shape, so a private key
+  PDFium adds later is covered as well as this one.
+
+Two shapes of the same review were older than #229 and are **not decided here**, by the owner's
+choice: an annotation the region removes stays in the output **bytes** when a kept annotation's
+`/Parent`, `/Popup` or `/IRT` still reaches it ([#239](https://github.com/TensorGreed/burrow/issues/239)),
+and two pages sharing one `/Annots` array lose an annotation together
+([#240](https://github.com/TensorGreed/burrow/issues/240)). Both are in the ship-blocker table.
+
+### The walk's cost, found by the code review and measured
+
+The first version of the appearance walk read the deadline once, before it began, and walked a
+shared `/AP` again for every annotation naming it. The review measured **182.6 s** against a 60 s
+deadline on a 616 KB file of 5,000 annotations sharing one `/AP`; rebuilt here, the same shape took
+**57.95 s** to an `Ok` in a release build. The walk now reads the deadline at every annotation and
+every appearance stream, and visits a shared appearance dictionary, state dictionary or stream once
+per role, by object identity -- tests assert each is read once however many annotations share it. That left **an older step
+reading the deadline once per page**: the sharing walk, which counts every use of every appearance
+because the sharing rule turns on counts, so it cannot skip a repeat; it ran 9.3 s on that file before
+a 1 s deadline was read. It now reads the deadline per annotation and per appearance state. Measured
+in a release build on the 616 KB file: a 1 s deadline stops at **1.01 s**, a 5 s one at **5.01 s**, and
+with the default limits the redaction finishes in **19.25 s** (19.65 s after the second round), most of
+it the sharing walk's counting.
+A test holds the file to its deadline with a registered overshoot of 2 s, on a real clock, and three
+tests count the deadline reads of each walk directly -- the sharing walk's per annotation and per state
+separately -- because none is visible end to end while the others are there.
+
+### Fixtures that draw, and twins measured by pixels
+
+The engine tests and the first corpus fixtures pinned each refusal's shape without drawing into the
+region -- the code review's finding -- so deleting a refusal would have left no ink to see. An
+integration suite, `annotation_ink.rs`, renders with annotations through the test oracle
+(`dark_pixels_with_annotations`) and holds each shape to drawing into its region and being refused,
+and each twin to drawing nothing there and redacting with its annotation still drawn. The corpus's
+unbounded fixture now draws into the region too, and the quadrilateral pair is in the corpus. The
+first two twins, measured by hand before the suite existed: region ink 1,477 and 1,682 dark pixels
+before, 0 after.
+
+**Two tests had assumed every page upright**, and the first turned page in the corpus to redact
+showed it: `redaction_corpus.rs` built its region as though content space were display space, and
+`geometry_calibration.rs` paired glyphs by index while PDFium returns a turned page's text in reading
+order. Both now measure a turned page through PDFium's own mapping (`FPDF_PageToDevice`) and pair
+by position; upright pages take the exact code they took before.
+
+### Shown to fail
+
+Thirty-three mutations, each asserted to apply and confirmed rebuilt, against a baseline confirmed green
+first: the walk reduced to `/N`; each of the three refusals removed; a degenerate `/BBox` accepted,
+and separately its height check alone; an out-of-range `/BBox` read as bounded; an `/F` that is not
+an integer read as no flags, and a missing `/F` read as NoRotate; `/Rotate` read raw from the page;
+the box reader's normalisation removed, which a reversed-corner `/Rect` over the region catches; each
+of the four deadline reads removed (two per walk); the memo removed whole, each of its three roles
+removed, and the three roles merged into one set; the `/QuadPoints` memo removed, its direct-object guard removed, and the verdict memoised in place of the extent; a non-name
+`/Subtype` read as no markup, and an absent one read as markup; each of the four edges of the
+quadrilateral comparison removed alone; the quadrilateral ceiling removed; and an absent
+`/QuadPoints` refused. Each fails by name. One, `/Rotate` read normalised from the page,
+survives, as above. 608 golden cases over 143 documents (from 571 over 134); every earlier line is
+unchanged but two input digests -- the unbounded and down-state fixtures, which now draw into the
+region by design. The third round of code review added the last three, and a Highlight with **no**
+`/AP` -- the 12,000-pixel shape, which no fixture had, so a check folded into the appearance walk's
+early return would have passed every suite -- to `annotation_ink.rs`.
+
+### The second round of reviews, on b116a52
+
+Both reviewers, independently, found two inputs that returned `Ok` with a kept annotation's ink in the
+region, and the first was this change's own:
+
+- **The memo ignored the role an object was checked in.** One set held `/AP` dictionaries, state
+  dictionaries and streams, but an `/AP` is read for `/N`, `/D` and `/R` and a state dictionary for
+  every key. An `/AP` naming itself as its `/N`, or one annotation's `/AP` that was another's state
+  dictionary (in one `/Annots` order and not the other), left an unbounded state unread: **654 dark
+  pixels**, `Ok`. A regression of the memo the first round asked for. Now one set per role.
+- **A `/Subtype` that is not a name skipped the quadrilateral rule.** PDFium reads it as a byte
+  string, so `(Highlight)` is a Highlight: **1,304 dark pixels**, `Ok`. Now anything but a name or
+  nothing is checked as markup.
+
+And the code review measured three more things the suite could not see. Each half of the
+quadrilateral range check could be deleted unseen, because the one fixture left the `/Rect` on every
+side: four fixtures now each leave it on one side. A shared `/QuadPoints` was read again for every
+annotation -- 5,000 Highlights over one 65,536-number array ran to the 60 s deadline -- so its extent
+is now memoised by identity and compared with each annotation's own `/Rect`: **0.12 s**, release. And
+two of the three memos, and the sharing walk's per-state deadline read, had no test: each has one now.
+Two of the corpus's evasion fixtures drew no ink in the corpus region: the down-state one now draws
+there when pressed, and the NoRotate pair says in the manifest that it pins the shape while
+`annotation_ink.rs` measures the ink.
+
+**Not covered.** An annotation with no `/AP` of a subtype other than text markup -- measured by the
+second code review for Ink, Line, Polygon, Square and FreeText with geometry over the region, each 0
+dark pixels in it; and PDFium's own popup for a markup annotation's `/Contents`, measured not to draw
+in a plain render. A hidden or `NoView` annotation, and a state `/AS` cannot select, are refused like
+any other: over-refusals the table does not except.

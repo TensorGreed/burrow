@@ -36,7 +36,9 @@ mod support;
 use std::collections::BTreeSet;
 
 use burrow_engines::pdfsyntax::region::Region;
-use support::char_box_oracle::{OracleChar, chars_on_page, ink_overlaps, origins_close, page_size};
+use support::char_box_oracle::{
+    OracleChar, chars_on_page, displayed, ink_overlaps, origins_close, page_size, quarter_turns,
+};
 
 /// Where the corpus lives, relative to this crate.
 const CORPUS: &[&str] = &[
@@ -194,11 +196,36 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
     else {
         return Outcome::NothingToRemove;
     };
-    let region = Region {
-        left: target.ink.left - 1.0,
-        top: height - target.ink.top - 1.0,
-        width: (target.ink.right - target.ink.left) + 2.0,
-        height: (target.ink.top - target.ink.bottom) + 2.0,
+    // A TURNED PAGE IS MEASURED IN DISPLAY SPACE, through PDFium's own mapping. The formula below
+    // takes content space for display space, which holds only upright; #229's twin was the first
+    // turned page in the corpus to redact, and the region it built was not where the glyph is
+    // shown. Upright pages keep the formula exactly.
+    let turned = quarter_turns(pdf, 0) != 0;
+    let shown: Vec<(f64, f64, f64, f64)> = if turned {
+        let inks: Vec<_> = drawn_before.iter().map(|char| char.ink).collect();
+        displayed(pdf, 0, &inks)
+    } else {
+        Vec::new()
+    };
+    let region = if turned {
+        let index = drawn_before
+            .iter()
+            .position(|char| std::ptr::eq(*char, *target))
+            .expect("the target is one of the drawn glyphs");
+        let (left, top, right, bottom) = shown[index];
+        Region {
+            left: left - 1.0,
+            top: top - 1.0,
+            width: (right - left) + 2.0,
+            height: (bottom - top) + 2.0,
+        }
+    } else {
+        Region {
+            left: target.ink.left - 1.0,
+            top: height - target.ink.top - 1.0,
+            width: (target.ink.right - target.ink.left) + 2.0,
+            height: (target.ink.top - target.ink.bottom) + 2.0,
+        }
     };
 
     let redacted: BTreeSet<usize> = [0].into_iter().collect();
@@ -265,15 +292,24 @@ fn outcome_for(name: &str, pdf: &[u8]) -> Outcome {
     let drawn_after: Vec<&OracleChar> = after.iter().filter(|char| !char.generated).collect();
 
     let mut reached = 0usize;
-    for want in &drawn_before {
-        if !ink_overlaps(
-            &want.ink,
-            region.left,
-            region.top,
-            region.width,
-            region.height,
-            height,
-        ) {
+    for (at, want) in drawn_before.iter().enumerate() {
+        let inside = if turned {
+            let (left, top, right, bottom) = shown[at];
+            right > region.left
+                && left < region.left + region.width
+                && bottom > region.top
+                && top < region.top + region.height
+        } else {
+            ink_overlaps(
+                &want.ink,
+                region.left,
+                region.top,
+                region.width,
+                region.height,
+                height,
+            )
+        };
+        if !inside {
             continue;
         }
         reached += 1;

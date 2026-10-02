@@ -327,12 +327,23 @@ fn burrows_placement_agrees_with_pdfium_on_every_document_that_draws_a_form() {
             ));
             continue;
         }
-        for (at, (glyph, char)) in walked.iter().zip(&oracle).enumerate() {
-            let apart = (glyph.origin.0 - char.origin.0).hypot(glyph.origin.1 - char.origin.1);
+        // PAIRED BY POSITION ON A TURNED PAGE. PDFium returns a turned page's text in the order it
+        // is read once turned, and the walk in the order it is drawn; #229 put the first turned
+        // pages that redact into the corpus, and the two agreed on every origin in a different
+        // order. Upright pages are paired by index, exactly as before.
+        let mut burrow_origins: Vec<(f64, f64)> = walked.iter().map(|g| g.origin).collect();
+        let mut pdfium_origins: Vec<(f64, f64)> = oracle.iter().map(|c| c.origin).collect();
+        if support::char_box_oracle::quarter_turns(bytes, 0) != 0 {
+            let by_position =
+                |a: &(f64, f64), b: &(f64, f64)| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0));
+            burrow_origins.sort_by(by_position);
+            pdfium_origins.sort_by(by_position);
+        }
+        for (at, (placed, read)) in burrow_origins.iter().zip(&pdfium_origins).enumerate() {
+            let apart = (placed.0 - read.0).hypot(placed.1 - read.1);
             if apart >= TOLERANCE_PT {
                 disagreed.push(format!(
-                    "{name}: glyph {at} placed at {:?}, PDFium reads {:?} ({apart:.2} pt apart)",
-                    glyph.origin, char.origin
+                    "{name}: glyph {at} placed at {placed:?}, PDFium reads {read:?} ({apart:.2} pt apart)"
                 ));
                 break;
             }

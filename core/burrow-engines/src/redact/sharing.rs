@@ -931,6 +931,12 @@ impl Walk<'_> {
         let count = annots.array_len();
         annots.drained()?;
         for at in 0..count {
+            // THE DEADLINE, PER ANNOTATION AND PER APPEARANCE STATE (#229's code review). The page
+            // loop reads it once per page, and one page's annotations can share an `/AP` of
+            // thousands of states: 5,000 annotations over one `/AP` of 4,096 states ran 9.3 s
+            // here before a deadline of 1 s was read. Each state is still walked for each
+            // annotation, because the sharing rule counts every use; only the deadline is new.
+            self.deadline.checkpoint(self.clock.as_ref())?;
             let annotation = annots.array_item(at);
             annots.drained()?;
             // AN ANNOTATION IS A DICTIONARY, and anything else is refused, not skipped. The
@@ -955,6 +961,7 @@ impl Walk<'_> {
                 appearance.drained()?;
                 if kind == object_type::DICTIONARY {
                     for name in self.keys_of(&appearance)? {
+                        self.deadline.checkpoint(self.clock.as_ref())?;
                         let one = appearance.key(&name);
                         appearance.drained()?;
                         self.drawable(&one, true, 0)?;

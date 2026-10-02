@@ -2330,7 +2330,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 69] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 78] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2551,10 +2551,37 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 69] = [
         "evade-missing-pair-named-in-a-prev-trailer.pdf",
         Some("reference-to-nothing"),
     ),
+    (
+        "evade-annotation-appearance-without-bbox.pdf",
+        Some("annotation-appearance-unbounded"),
+    ),
+    (
+        "evade-annotation-down-state-without-bbox.pdf",
+        Some("annotation-appearance-unbounded"),
+    ),
+    (
+        "evade-annotation-no-rotate-on-a-turned-page.pdf",
+        Some("annotation-no-rotate"),
+    ),
+    (
+        "evade-annotation-no-rotate-under-an-inherited-rotate.pdf",
+        Some("page-attribute-inherited"),
+    ),
+    ("nearmiss-annotation-no-rotate-on-an-upright-page.pdf", None),
+    ("nearmiss-annotation-bounded-on-a-turned-page.pdf", None),
+    (
+        "evade-annotation-quads-outside-rect.pdf",
+        Some("annotation-quads-outside-rect"),
+    ),
+    ("nearmiss-annotation-quads-inside-rect.pdf", None),
+    (
+        "evade-annotation-subtype-as-a-string.pdf",
+        Some("annotation-quads-outside-rect"),
+    ),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 10] = [
+const RESOLVED_GROUPS: [&str; 11] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
@@ -2565,6 +2592,7 @@ const RESOLVED_GROUPS: [&str; 10] = [
     "graphics state font",
     "reference to nothing",
     "reference unreadable",
+    "annotation appearance",
 ];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.

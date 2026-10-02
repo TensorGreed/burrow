@@ -2617,3 +2617,174 @@ pages = 1
 qpdf caches a pair it parses while reading the cross-reference and later fills it with a null carrying that pair, silently. The identity rule took that for a declared null: Ok with the canary drawn, on both engines, measured by both #227 round-1 reviews. Refused because no header in the file declares the pair null.
 """
 
+[[fixture]]
+name = "evade-annotation-appearance-without-bbox"
+file = "generated/evade-annotation-appearance-without-bbox.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a kept annotation whose appearance has no /BBox — evasion"
+  canary = "BURROW-EVADE-AP-NO-BBOX"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium fits an appearance to the /Rect through its /BBox and with none only moves it there. This one draws a block 90 points above its corner, inside the region; the reproduction measured 654 dark pixels of such ink after an Ok. Refused [annotation-appearance-unbounded] (#229).
+"""
+
+[[fixture]]
+name = "evade-annotation-down-state-without-bbox"
+file = "generated/evade-annotation-down-state-without-bbox.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a kept annotation whose only unbounded appearance is a /D state — evasion"
+  canary = "BURROW-EVADE-AP-DOWN-STATE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+/N is bounded; the /On state of /D, drawn while pressed, is not, and draws a block 90 points above the /Rect's corner, inside the region. A plain render shows /N, so its ink there is the pressed state's and is not measured by the census; the shape is what this pins. Every state is checked (#229).
+"""
+
+[[fixture]]
+name = "evade-annotation-no-rotate-on-a-turned-page"
+file = "generated/evade-annotation-no-rotate-on-a-turned-page.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a NoRotate annotation on a page turned 90 degrees — evasion"
+  canary = "BURROW-EVADE-NO-ROTATE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium turns a NoRotate appearance about the /Rect's corner: 1,800 dark pixels in a region beside the /Rect that the /Rect does not meet, after an Ok, measured. This fixture pins the refusal's shape and draws no ink in the corpus region; the ink is measured by annotation_ink.rs, in a region chosen for it. Refused [annotation-no-rotate] (#229).
+"""
+
+[[fixture]]
+name = "evade-annotation-no-rotate-under-an-inherited-rotate"
+file = "generated/evade-annotation-no-rotate-under-an-inherited-rotate.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a NoRotate annotation under a /Rotate on the /Pages node — evasion"
+  canary = "BURROW-EVADE-NO-ROTATE-INHERITED"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+The case a check on the page dictionary alone would miss. Refused [page-attribute-inherited] before the annotation is read: the check takes the frame's /Rotate, which refuses this first (#224, #229).
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-no-rotate-on-an-upright-page"
+file = "generated/nearmiss-annotation-no-rotate-on-an-upright-page.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a NoRotate annotation on an upright page — near-miss twin"
+  canary = "BURROW-EVADE-NO-ROTATE-UPRIGHT"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. NoRotate changes nothing on a page that is not turned.
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-bounded-on-a-turned-page"
+region = [95, 30, 30, 370]
+file = "generated/nearmiss-annotation-bounded-on-a-turned-page.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a bounded appearance on a turned page, without NoRotate — near-miss twin"
+  canary = "BURROW-EVADE-BOUNDED-TURNED"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. A turned page and a bounded appearance are ordinary. The region runs down the column the canary displays in on the turned page.
+"""
+
+[[fixture]]
+name = "evade-annotation-quads-outside-rect"
+file = "generated/evade-annotation-quads-outside-rect.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Highlight whose /QuadPoints cover the region and whose /Rect does not — evasion"
+  canary = "BURROW-EVADE-QUADS-OUTSIDE"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+With /PDFIUM_HasGeneratedAP, PDFium fits the file's own appearance to the quadrilaterals: 1,304 dark pixels in the region after an Ok, measured. Refused [annotation-quads-outside-rect] on the declared shape (#229).
+"""
+
+[[fixture]]
+name = "nearmiss-annotation-quads-inside-rect"
+file = "generated/nearmiss-annotation-quads-inside-rect.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Highlight whose /QuadPoints lie inside its /Rect — near-miss twin"
+  canary = "BURROW-EVADE-QUADS-INSIDE"
+  verdict = "handle"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = """
+MUST NOT be refused. Quadrilaterals inside the rectangle are what every producer writes.
+"""
+
+[[fixture]]
+name = "evade-annotation-subtype-as-a-string"
+file = "generated/evade-annotation-subtype-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "annotation appearance"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a Highlight whose /Subtype is the string (Highlight), with /QuadPoints over the region — evasion"
+  canary = "BURROW-EVADE-SUBTYPE-STRING"
+  verdict = "refuse"
+  adr = "§3, §5"
+  witness_before = "raw-file"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = """
+PDFium reads /Subtype as a byte string, so (Highlight) is a Highlight to it: 1,304 dark pixels in the region after an Ok when only a name was read, measured by #229's reviews. Refused [annotation-quads-outside-rect].
+"""
