@@ -117,8 +117,17 @@ fn object_stream_undecodable() -> Error {
     )
 }
 
+/// What the reference pass read, kept for the walk that asks what names a removed annotation
+/// (#239): every reference in the file, its object streams and the trailer qpdf holds, at the
+/// generation written, and those of that trailer apart.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Referenced {
+    pub(crate) objects: BTreeSet<(c_int, c_int)>,
+    pub(crate) from_trailer: BTreeSet<(c_int, c_int)>,
+}
+
 /// Refuse the document if any reference it writes resolves to null in `document`, or cannot be
-/// read as qpdf reads it. `bytes` is the input `document` was opened from.
+/// read as qpdf reads it. `bytes` is the input `document` was opened from. Returns what it read.
 ///
 /// # Errors
 ///
@@ -129,7 +138,7 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
     bytes: &[u8],
     deadline: &Deadline,
     clock: &dyn Clock,
-) -> Result<()> {
+) -> Result<Referenced> {
     let mut checkpoint = || deadline.checkpoint(clock);
     let mut wanted = accepted(references::in_file(bytes, &mut checkpoint)?)?;
     // The numbers object streams list as members: no header in the file speaks for them. Capped
@@ -178,6 +187,24 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
         }
     }
 
+    // THE TRAILER QPDF HOLDS, and every reference in it (#239). The scan above finds trailers in
+    // the bytes, and qpdf's grammar has corners it does not share: a `trailer` keyword written
+    // straight after a digit (`11 0trailer`) is one qpdf reads without a word and the scan never
+    // saw -- a removed annotation that trailer named was written out after an `Ok`, measured.
+    // Asked of qpdf, it is the trailer qpdf will write, whatever section it came from. Its
+    // references join the set so that #239's walk reads the objects only it names. For the null
+    // check below they are **defence in depth, unwitnessed**: qpdf drops a trailer key whose
+    // reference is dangling before this sees it (measured by #239's fourth code review), so none of
+    // them can resolve to nothing here.
+    let trailer = document.trailer()?;
+    let text = zeroize::Zeroizing::new(trailer.unparse());
+    trailer.drained()?;
+    let from_trailer = accepted(references::in_value(&text, &mut checkpoint)?)?.references;
+    wanted.references.extend(from_trailer.iter().copied());
+    if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
+        return Err(reference_unreadable(Irregular::BeyondCaps));
+    }
+
     // EVERY REFERENCE, AT THE GENERATION WRITTEN.
     for (asked, (number, generation)) in wanted.references.iter().enumerate() {
         if asked % LOOKUPS_PER_CHECKPOINT == 0 {
@@ -205,7 +232,10 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
             return Err(reference_to_nothing());
         }
     }
-    Ok(())
+    Ok(Referenced {
+        objects: wanted.references,
+        from_trailer,
+    })
 }
 
 /// The scan's answer, or the refusal it calls for.

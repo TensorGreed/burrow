@@ -199,3 +199,19 @@ trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
 # That is 3.3x the write verb's +195 for one function against two, and it is the paragraph above
 # again: `setArrayItem`'s code was not already inside the members `qpdf_write` dragged in, so it
 # links something new. The range on record is now +195 to +53,456. Measure.
+
+# =================================================================================
+# TWO MORE POINTS: #227'S AND #239'S LOOKUPS
+# =================================================================================
+#
+# Recorded on the `qpdf.wasm` line of `apps/web/size-budget.json` when they landed, and missing
+# here until #239's code review noticed. Both measured as the others were, an A/B of the `em++`
+# link differing only in the one export:
+#
+#   #227 `qpdf_get_object_by_id`   +185 raw, -306 brotli   compression variance, not a saving
+#   #239 `qpdf_get_trailer`        +1,123 raw, +370 brotli  control byte-identical to the
+#                                                             previous recording (ecda23aa...)
+#
+# Neither links anything new: a map lookup and a trailer accessor, beside code already inside
+# the members `qpdf_write` dragged in. The range on record stays +195 to +53,456. Measure.
+

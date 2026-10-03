@@ -47,6 +47,12 @@ impl PdfDocument for Document {
         Ok(object)
     }
 
+    fn trailer(&self) -> Result<Self::Object<'_>> {
+        let trailer = ObjectHandle::trailer(self);
+        trailer.drained()?;
+        Ok(trailer)
+    }
+
     fn write(&self) -> Result<Vec<u8>> {
         // The document is its own source: redaction edits in place.
         extract::write_out(self, self, ObjectStreams::Preserve)

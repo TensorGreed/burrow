@@ -345,6 +345,30 @@ code outside a trap; here there is no trap to be outside of and nothing that cou
 into it."""
 
 [[function]]
+name = "qpdf_get_trailer"
+reason = """\
+TRAPPED IN SUBSTANCE, LISTED HERE FOR ITS SHAPE. The body (qpdf-c.cc:884-890) is \
+`QTC::TC(...)` and then `return trap_oh_errors<qpdf_oh>(qpdf, return_uninitialized(qpdf), \
+[](qpdf_data q) { return new_object(q, q->qpdf->getTrailer()); })`. The generated list \
+admits only a function whose sole top-level statement is the call to a proven helper, and the \
+`QTC::TC` statement before it keeps this one off -- the shape the `qpdf_oh_free_buffer` \
+entry above names as what keeps `qpdf_get_root` and the `qpdf_oh_is_*` predicates off too. `QTC::TC` is an empty inline here: it calls `TC_real` only #ifndef \
+QPDF_DISABLE_QTC (QTC.hh:35-39), and qpdf's CMakeLists.txt defines QPDF_DISABLE_QTC unless \
+ENABLE_QTC, which defaults OFF (CMakeLists.txt:44, 123-127) and which neither \
+engines/build-native.sh nor engines/build-wasm.sh sets. `getTrailer` itself runs inside \
+`trap_errors`, through `trap_oh_errors`, the wrapper the generated list already proves. What \
+runs outside the trap is the construction of the `return_uninitialized` std::function before \
+the call and, on the error path only, that fallback: `qpdf_oh_new_uninitialized`, which is \
+`new_object(qpdf, QPDFObjectHandle())` -- an empty handle and one handle-cache insert, no byte \
+of the input read. It can fail only by allocation, the defined-abort case in the preamble. \
+A pin bump re-reads both the QTC default and this body. \
+Used by redaction alone, to read the trailer qpdf will write and every reference in it (#239, \
+ADR 0029): finding trailers in the bytes missed trailers qpdf reads. ENABLE_QTC also \
+defaults ON under qpdf's MAINTAINER_MODE (CMakeLists.txt:43-45), which our builds do not set; \
+and `TC_real`, were it compiled in, reads environment variables and appends to the \
+`TC_FILENAME` file when coverage is active -- never a byte of the input."""
+
+[[function]]
 name = "qpdf_get_object_by_id"
 reason = """\
 `new_object(qpdf, qpdf->qpdf->getObject(objid, generation))` (qpdf-c.cc:901-905), and \

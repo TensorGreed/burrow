@@ -278,6 +278,12 @@ unsafe extern "C" {
         generation: c_int,
     ) -> QpdfObjectHandle;
 
+    /// `qpdf_oh qpdf_get_trailer(qpdf_data qpdf)` — `qpdf-c.cc:884`. **Trapped**
+    /// (`trap_oh_errors`): the trailer qpdf holds and will write, whatever kind of section it read
+    /// it from (#239). Redaction reads it rather than finding trailers in the bytes: trailers qpdf
+    /// reads that a byte scan missed were measured, each writing a removed annotation out.
+    pub(super) fn qpdf_get_trailer(qpdf: QpdfData) -> QpdfObjectHandle;
+
     /// ```c
     /// QPDF_ERROR_CODE qpdf_add_page(qpdf_data qpdf, qpdf_data newpage_qpdf,
     ///     qpdf_oh newpage, QPDF_BOOL first);

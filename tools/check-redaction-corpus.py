@@ -512,7 +512,7 @@ BYTE_WITNESSES = {
 # Both are floors rather than equalities: a new fixture adds assertions and must not fail the
 # gate. Raise them when the corpus grows -- the run prints the current counts, so the number to
 # raise them to is in the output.
-PLACEMENT_FLOOR = 141
+PLACEMENT_FLOOR = 146
 MAX_SILENT_FIXTURES = 2
 
 
@@ -1073,11 +1073,12 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
 
 
 # The owed markers per issue, committed. Changing a marker changes this, on purpose.
-OWED_EXPECTED = {125: 14, 131: 1}
+OWED_EXPECTED = {125: 13, 131: 1}
 # The fixtures whose owed placements still disclose their canary or carrier after a redaction
 # that returned Ok: ADR 0029 §5's four signals, not yet built (#125). A set, not a count.
+# `acroform-field` left it in #239: its widget, over the region, is its own field, and
+# `/AcroForm /Fields` still names it, so the redaction is refused `[annotation-dependent-kept]`.
 OWED_LEAKS_EXPECTED = {
-    "acroform-field",
     "evade-field-with-no-widget",
     "evade-image-in-form",
     "evade-inline-image",

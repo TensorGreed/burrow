@@ -308,6 +308,11 @@ impl QpdfBridge for NativeBridge {
         unsafe { ffi::qpdf_get_object_by_id(self.data(data), number, generation) }
     }
 
+    fn get_trailer(&self, data: QpdfPtr) -> u32 {
+        // SAFETY: see the block comment above the impl. Trapped.
+        unsafe { ffi::qpdf_get_trailer(self.data(data)) }
+    }
+
     fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32 {
         // SAFETY: see the block comment above the impl.
         unsafe { ffi::qpdf_add_page(self.data(data), self.data(source), page, qpdf_bool(first)) }
@@ -1195,6 +1200,9 @@ impl QpdfBridge for RefusingHeap {
     }
     fn get_object_by_id(&self, data: QpdfPtr, number: i32, generation: i32) -> u32 {
         self.inner.get_object_by_id(data, number, generation)
+    }
+    fn get_trailer(&self, data: QpdfPtr) -> u32 {
+        self.inner.get_trailer(data)
     }
     fn add_page(&self, data: QpdfPtr, source: QpdfPtr, page: u32, first: bool) -> i32 {
         self.inner.add_page(data, source, page, first)

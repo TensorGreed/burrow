@@ -76,6 +76,8 @@ pub(super) enum Call {
     GetPageN(u32),
     /// `qpdf_get_object_by_id`, with the number and generation asked for.
     GetObjectById(i32, i32),
+    /// `qpdf_get_trailer`.
+    GetTrailer,
     AddPage {
         page: u32,
         first: bool,
@@ -1259,6 +1261,11 @@ impl QpdfBridge for FakeQpdf {
         self.state.record(Call::GetObjectById(number, generation));
         // KEYED BY THE PAIR, so a script answers `oh_type_codes` per object as it does per key.
         self.issue_handle(&format!("<object {number} {generation}>"))
+    }
+
+    fn get_trailer(&self, _data: QpdfPtr) -> u32 {
+        self.state.record(Call::GetTrailer);
+        self.issue_handle("<trailer>")
     }
 
     fn get_page_n(&self, _data: QpdfPtr, n: u32) -> u32 {
