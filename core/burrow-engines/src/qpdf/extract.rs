@@ -70,6 +70,9 @@ pub struct QpdfSource {
     /// on the run is whether any of those sharers falls outside it, which `extract` works out
     /// per output.
     annots_shared: Vec<Vec<u64>>,
+    /// For each source page, the other source pages that reach its resources -- see
+    /// `prune::resources_sharing` (#228). Read here for the same reason as `annots_shared`.
+    resources_shared: Vec<Vec<u64>>,
     /// The deadline `open` started, so the pruning pass spends the same budget.
     ///
     /// **Not a fresh one.** `Deadline::start` resets the origin *and* the budget, so a pass that
@@ -99,12 +102,19 @@ impl PageExtractor for Qpdf {
             options,
             &deadline,
         )?;
+        let resources_shared = crate::prune::resources_sharing(
+            &super::prune::QpdfGraph::over(&document),
+            pages,
+            options,
+            &deadline,
+        )?;
         Ok(QpdfSource {
             document,
             pages,
             rss_before,
             limits: options.limits,
             annots_shared,
+            resources_shared,
             deadline,
         })
     }
@@ -256,6 +266,7 @@ impl PageExtractor for Qpdf {
         let kept = usize::try_from(count)
             .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
         let mut ambiguous = Vec::with_capacity(kept);
+        let mut resources_outside = Vec::with_capacity(kept);
         for at in 0..kept {
             // THE SOURCE PAGE'S sharing answer, not the destination page's: `at` is an index
             // into this output and `first + at` is the page it came from. Getting this wrong
@@ -274,10 +285,16 @@ impl PageExtractor for Qpdf {
             // which a one-way split, excluding nothing, measured as losing every annotation in
             // the document.
             ambiguous.push(sharers.iter().any(|page| *page < first || *page >= end));
+            // THE SAME QUESTION OF ITS RESOURCES (#228): reached by a page outside this output.
+            let reachers = source.resources_shared.get(source_index).ok_or_else(|| {
+                Error::Internal("a copied page has no recorded source page".to_owned())
+            })?;
+            resources_outside.push(reachers.iter().any(|page| *page < first || *page >= end));
         }
         crate::prune::prune_output(
             &super::prune::QpdfGraph::over(&dest),
             &ambiguous,
+            &resources_outside,
             options,
             &source.deadline,
         )?;

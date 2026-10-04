@@ -713,3 +713,54 @@ prunes, so the test passed under the over-correction it existed to catch.
 Running both fixtures through every operation turned up nothing else: `page_count`,
 `structure_check`, `rotate`, `reorder` and `compress` all accept them unchanged. Only `split`
 ever failed, because only `split` tokenises.
+
+## Amendment, 2026-10-04 — #228: what pruning does with a filtered inline image
+
+**Why it comes up.** `crate::pdfsyntax`'s lexer used to end an inline image at its `/L`. PDFium,
+measured for #228, never reads `/L`: it ends an unfiltered image after the bytes its `/W`, `/H`,
+`/BPC` and colour space imply, and a filtered one at its filter's own end of data. Redaction now
+follows PDFium -- computed extents, a disagreeing `/L` refused -- and refuses a filtered inline
+image outright, because burrow cannot decode to find its end. The lexer is shared, and `split`'s
+pruning reads every content stream through it, so the same question reached this ADR.
+
+**The unfiltered half applies to every caller**, `split` included: an extent computed as the
+renderer computes it is a better reading of the page for pruning too, and an `/L` that disagrees
+is refused by both.
+
+**The filtered half does not**, because what a wrong answer costs differs. For redaction, a
+misread extent is a page reported clean that is not. For pruning, it is a name the page draws
+with left unread -- and pruning by a partial set deletes a resource the page still uses. So the
+lexer takes a mode, `InlineImages::Prune`, under which a filtered inline image stops the read and
+says so, and pruning decides from there:
+
+| the page's `/Resources` -- and every category dictionary in it that is its own object -- | outcome |
+|---|---|
+| reached by no page outside this output (its own, or shared only among pages in the output) | **kept whole**: a kept resource costs bytes, not the page |
+| reached by a page this output excludes (inherited from a `/Pages` node that page also inherits, or a shared `/XObject`) | **the split is refused**, naming the sharing |
+| an unfiltered inline image, wherever | **pruned as before**, by a complete reading |
+
+**The refusal is the §2b-preserving answer.** Keeping a dictionary an excluded page shares would
+carry that page's resources through wholesale, which §2b forbids; pruning it by a partial reading
+could delete what the kept page draws with. The owner's first direction was "keep them all", and
+it was §2b that ruled the shared case out (owner, 2026-10-03). The refusal stands until #142
+derives filtered extents.
+
+**The sharing is read on the source, before the copy** (`prune::resources_sharing`), for the
+reason `annots_sharing` gives: in the destination a copy shared with an excluded page is
+indistinguishable from one shared with nobody. A `/Resources` written inline on a `/Pages` node is
+shared by every page beneath it although it has no object number of its own.
+
+**Measured.** Over the 163 documents of the redaction golden file and #227's 100 real documents,
+split with and without this change: **0 of 263 changed outcome or output size** -- none of them
+carries a filtered inline image. The office producers that do write `/Fl` inline images are not
+in that sample; the rate on them is unmeasured until the owner's producer set arrives, and #228 is
+re-measured there alongside #242.
+
+**Tested** in `split_no_leak.rs`, each asserted on the expanded output bytes:
+- kept whole with its own `/Resources`, and with `/Resources` shared only within the output;
+- refused under a `/Pages` node's `/Resources` an excluded page also inherits, and under a shared
+  `/XObject` -- each written so a regression shows as the excluded page's image in the output,
+  not as a missing refusal;
+- the unfiltered twin, pruned as before with the excluded image absent;
+- a font drawn after an image whose `/L` overstates it, kept;
+- one form read once and reused by two pages, partial for both.

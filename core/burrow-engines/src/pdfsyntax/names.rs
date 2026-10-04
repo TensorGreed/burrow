@@ -71,7 +71,19 @@ pub const MAX_NAMES: usize = 65_536;
 /// removed.
 pub const MAX_NAME_LENGTH: usize = 255;
 
-/// Every name mentioned anywhere in `content`.
+/// What a content stream names, and whether it was read to the end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentNames {
+    /// Every name the stream mentions, up to where it was read.
+    pub names: BTreeSet<Vec<u8>>,
+    /// False where lexing stopped at a filtered inline image, whose extent the renderer finds by
+    /// decoding and this module cannot (#228): the names past it are unread, so `names` is a
+    /// **partial** set, which the caller may not prune by. ADR 0019's #228 amendment says what
+    /// `split` does instead.
+    pub read_to_end: bool,
+}
+
+/// Every name mentioned anywhere in `content`, and whether all of it was read.
 ///
 /// # Errors
 ///
@@ -81,9 +93,9 @@ pub const MAX_NAME_LENGTH: usize = 255;
 ///   asymmetry in full.
 /// - [`Error::Unsupported`] — more than [`MAX_NAMES`] distinct names, or one longer than
 ///   [`MAX_NAME_LENGTH`]. Both are refusals rather than truncations.
-pub fn names_in_content(content: &[u8]) -> Result<BTreeSet<Vec<u8>>> {
+pub fn names_in_content(content: &[u8]) -> Result<ContentNames> {
     let mut found = BTreeSet::new();
-    let mut lexer = Lexer::new(content);
+    let mut lexer = Lexer::new(content, super::lexer::InlineImages::Prune);
     // Inline images need no handling here: `Lexer::next_token` skips an image's binary data
     // itself, so `ID` arrives as an ordinary keyword with the cursor already past `EI`. See its
     // comment for why that is not the caller's job.
@@ -103,7 +115,10 @@ pub fn names_in_content(content: &[u8]) -> Result<BTreeSet<Vec<u8>>> {
             }
         }
     }
-    Ok(found)
+    Ok(ContentNames {
+        names: found,
+        read_to_end: !lexer.extent_unknown(),
+    })
 }
 
 #[cfg(test)]
@@ -111,8 +126,9 @@ mod tests {
     use super::{MAX_NAME_LENGTH, MAX_NAMES, names_in_content};
 
     fn set(content: &[u8]) -> Vec<String> {
-        names_in_content(content)
-            .expect("collects")
+        let read = names_in_content(content).expect("collects");
+        assert!(read.read_to_end, "read to the end");
+        read.names
             .into_iter()
             .map(|n| String::from_utf8_lossy(&n).into_owned())
             .collect()
@@ -178,16 +194,42 @@ mod tests {
         // one byte lower than it says.
         let mut content = b"/".to_vec();
         content.extend(std::iter::repeat_n(b'a', MAX_NAME_LENGTH));
-        assert_eq!(names_in_content(&content).expect("at the ceiling").len(), 1);
+        assert_eq!(
+            names_in_content(&content)
+                .expect("at the ceiling")
+                .names
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn the_empty_stream_names_nothing_and_is_not_an_error() {
-        assert!(names_in_content(b"").expect("empty").is_empty());
+        assert!(names_in_content(b"").expect("empty").names.is_empty());
         assert!(
             names_in_content(b"   \n% only a comment\n")
                 .expect("trivia")
+                .names
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_filtered_inline_image_stops_the_read_and_says_so() {
+        // #228: PDFium ends a filtered inline image at its filter's own end of data, which this
+        // module cannot find. The names before it are read; the read is reported partial, so a
+        // caller cannot prune by it.
+        let read =
+            names_in_content(b"/F1 12 Tf BI /W 1 /H 1 /F /Fl /L 9 ID xxxxxxxxx EI /F2 12 Tf")
+                .expect("not an error under Prune");
+        assert!(!read.read_to_end, "a partial read must say it is partial");
+        assert!(
+            read.names.contains(b"F1".as_slice()),
+            "what came before is read"
+        );
+        assert!(
+            !read.names.contains(b"F2".as_slice()),
+            "nothing after it is claimed"
         );
     }
 }

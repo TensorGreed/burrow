@@ -1073,15 +1073,15 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
 
 
 # The owed markers per issue, committed. Changing a marker changes this, on purpose.
-OWED_EXPECTED = {125: 13, 131: 1}
+OWED_EXPECTED = {125: 12, 131: 1}
 # The fixtures whose owed placements still disclose their canary or carrier after a redaction
 # that returned Ok: ADR 0029 §5's four signals, not yet built (#125). A set, not a count.
 # `acroform-field` left it in #239: its widget, over the region, is its own field, and
 # `/AcroForm /Fields` still names it, so the redaction is refused `[annotation-dependent-kept]`.
+# `evade-inline-image` left it in #228: its inline image is filtered, which redaction now refuses.
 OWED_LEAKS_EXPECTED = {
     "evade-field-with-no-widget",
     "evade-image-in-form",
-    "evade-inline-image",
     "evade-paths-in-form",
     "evade-paths-in-type3-glyph",
     "evade-struct-without-structparents",

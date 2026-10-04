@@ -303,11 +303,139 @@ pub(crate) fn annots_sharing<G: ObjectGraph>(
     Ok(sharers)
 }
 
+/// For each source page, the other source pages that reach its resources (#228).
+///
+/// "Reach" is read the way pruning would carry them: the dictionary the page's `/Resources`
+/// resolves to -- its own, or the one a `/Pages` node above it carries, which every page beneath
+/// that node shares even when it is written inline there -- **and every category dictionary inside
+/// it that is its own object** (`/Font`, `/XObject` and the rest). A page whose `/Resources` is its
+/// own but whose `/XObject` is shared with an excluded page would otherwise be kept whole with the
+/// excluded page's images in it.
+///
+/// Read on the source, before the copy, for the reason `annots_sharing` gives. Only consulted for a
+/// page whose content could not be read to the end -- see `prune_output`.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] for a page tree deeper than burrow follows; whatever qpdf latched.
+pub(crate) fn resources_sharing<G: ObjectGraph>(
+    graph: &G,
+    pages: u64,
+    options: &crate::OpenOptions<'_>,
+    deadline: &Deadline,
+) -> Result<Vec<Vec<u64>>> {
+    let clock = std::sync::Arc::clone(&options.clock);
+    let count = usize::try_from(pages)
+        .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
+    // EACH PAGE'S KEYS, and the pages that hold each key.
+    let mut holders: BTreeMap<ResourceKey, Vec<usize>> = BTreeMap::new();
+    let mut keys_of: Vec<Vec<ResourceKey>> = Vec::with_capacity(count);
+    for index in 0..count {
+        deadline.checkpoint(clock.as_ref())?;
+        let page = graph.page(index)?;
+        let keys = resource_keys(graph, &page)?;
+        for key in &keys {
+            holders.entry(*key).or_default().push(index);
+        }
+        keys_of.push(keys);
+    }
+    let mut sharers = Vec::with_capacity(count);
+    for (at, keys) in keys_of.iter().enumerate() {
+        deadline.checkpoint(clock.as_ref())?;
+        let mut with: BTreeSet<u64> = BTreeSet::new();
+        for key in keys {
+            for other in holders.get(key).into_iter().flatten() {
+                if *other != at {
+                    with.insert(u64::try_from(*other).map_err(|_| {
+                        Error::Internal("page index does not fit in u64".to_owned())
+                    })?);
+                }
+            }
+        }
+        sharers.push(with.into_iter().collect());
+    }
+    Ok(sharers)
+}
+
+/// What a page's resources can be shared through.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ResourceKey {
+    /// A dictionary that is its own object: the `/Resources` itself, or a category inside it.
+    Object((i32, i32)),
+    /// A `/Resources` written inline on a `/Pages` node, which every page beneath shares.
+    InlineOnNode((i32, i32)),
+}
+
+/// The categories of a resource dictionary whose entries a page draws with.
+const RESOURCE_CATEGORIES: [&[u8]; 7] = [
+    b"/Font",
+    b"/XObject",
+    b"/ExtGState",
+    b"/ColorSpace",
+    b"/Pattern",
+    b"/Shading",
+    b"/Properties",
+];
+
+/// How deep `resource_keys` climbs the page tree.
+const MAX_TREE_DEPTH: usize = 64;
+
+/// A page's [`ResourceKey`]s: the `/Resources` it resolves to, and each category in it that is its
+/// own object. None for a page with no `/Resources` anywhere above it.
+fn resource_keys<G: ObjectGraph>(graph: &G, page: &G::Handle) -> Result<Vec<ResourceKey>> {
+    let mut node = graph.key(page, b"/Resources")?;
+    let mut holder: Option<(i32, i32)> = None;
+    let mut parent = graph.key(page, b"/Parent")?;
+    let mut depth = 0;
+    while graph.type_code(&node)? != object_type::DICTIONARY {
+        if graph.type_code(&parent)? != object_type::DICTIONARY {
+            return Ok(Vec::new());
+        }
+        depth += 1;
+        if depth > MAX_TREE_DEPTH {
+            return Err(Error::Unsupported(
+                "split: a page tree deeper than burrow follows to find a page's resources"
+                    .to_owned(),
+            ));
+        }
+        node = graph.key(&parent, b"/Resources")?;
+        holder = Some(graph.identity(&parent)?);
+        parent = graph.key(&parent, b"/Parent")?;
+    }
+    let mut keys = Vec::new();
+    let identity = graph.identity(&node)?;
+    if identity != (0, 0) {
+        keys.push(ResourceKey::Object(identity));
+    } else if let Some(holder) = holder {
+        keys.push(ResourceKey::InlineOnNode(holder));
+    }
+    for category in RESOURCE_CATEGORIES {
+        let entry = graph.key(&node, category)?;
+        if graph.type_code(&entry)? == object_type::DICTIONARY {
+            let identity = graph.identity(&entry)?;
+            if identity != (0, 0) {
+                keys.push(ResourceKey::Object(identity));
+            }
+        }
+    }
+    Ok(keys)
+}
+
 /// Remove everything from this output that belongs to content it does not contain.
 ///
 /// `ambiguous[i]` says whether page `i` of the output has an `/Annots` array shared with a source
 /// page the output does **not** contain — derived by the caller from [`annots_sharing`], which is
-/// read on the source before the copy.
+/// read on the source before the copy. `resources_shared[i]` says the same of page `i`'s
+/// `/Resources`, from [`resources_sharing`] (#228).
+///
+/// # A page whose names cannot all be read (#228)
+///
+/// A filtered inline image ends where its filter's data ends, which `crate::pdfsyntax` cannot
+/// find, so the names past it are unread and pruning by them would delete what the page draws
+/// with. Such a page's `/Resources` is **kept whole where nothing excluded reaches it** — a kept
+/// resource costs bytes — and the split is **refused where something does**, because carrying a
+/// dictionary an excluded page shares through wholesale is exactly what ADR 0019 §2b forbids
+/// (owner, 2026-10-03; ADR 0019's #228 amendment).
 ///
 /// # Why this takes the whole output rather than one page
 ///
@@ -339,6 +467,7 @@ pub(crate) fn annots_sharing<G: ObjectGraph>(
 pub(crate) fn prune_output<G: ObjectGraph>(
     graph: &G,
     ambiguous: &[bool],
+    resources_shared: &[bool],
     options: &crate::OpenOptions<'_>,
     deadline: &Deadline,
 ) -> Result<()> {
@@ -350,6 +479,7 @@ pub(crate) fn prune_output<G: ObjectGraph>(
     let clock = std::sync::Arc::clone(&options.clock);
     let mut walk = Walk {
         seen: BTreeMap::new(),
+        partial: false,
         budget: MAX_STREAMS_PER_OUTPUT,
         deadline,
         clock: clock.as_ref(),
@@ -371,7 +501,9 @@ pub(crate) fn prune_output<G: ObjectGraph>(
     // Pass one: annotations, the optional-content refusal, and the used-name set per page.
     // Resource dictionaries are collected rather than pruned, because a shared one's answer is
     // not known until every page that shares it has been read.
-    let mut resource_groups: Vec<(G::Handle, BTreeSet<Vec<u8>>)> = Vec::new();
+    // Each group's names, and whether any page in it was read only in part -- then it is kept
+    // whole rather than pruned.
+    let mut resource_groups: Vec<(G::Handle, BTreeSet<Vec<u8>>, bool)> = Vec::new();
     let mut group_of: BTreeMap<(i32, i32), usize> = BTreeMap::new();
     for (at, page) in pages.iter().enumerate() {
         walk.deadline.checkpoint(walk.clock)?;
@@ -392,32 +524,52 @@ pub(crate) fn prune_output<G: ObjectGraph>(
             // dictionary in the first place.
             continue;
         }
-        let used = used_names(graph, page, &resources, &mut walk)?;
+        let (used, partial) = used_names(graph, page, &resources, &mut walk)?;
+        if partial {
+            // NOT `unwrap_or(false)`, for the reason given for `ambiguous` above.
+            let shared_with_excluded = *resources_shared.get(at).ok_or_else(|| {
+                Error::Internal("a destination page has no recorded resource sharing".to_owned())
+            })?;
+            if shared_with_excluded {
+                return Err(Error::Unsupported(
+                    "split: this page's resources are shared with a page outside this output, \
+                     and an inline image on it hides which of them the page uses, so they can \
+                     neither be pruned nor carried whole (ADR 0019 §2b)"
+                        .to_owned(),
+                ));
+            }
+        }
         let identity = graph.identity(&resources)?;
         if identity == (0, 0) {
             // A DIRECT dictionary belongs to this page alone and cannot be shared, so it is
             // pruned here rather than grouped -- grouping by (0, 0) would merge every direct
             // dictionary in the output into one group and keep each page's names on all of
             // them, which is a leak rather than a loss.
-            prune_resource_dictionary(graph, &resources, &used)?;
+            if !partial {
+                prune_resource_dictionary(graph, &resources, &used)?;
+            }
             continue;
         }
         match group_of.get(&identity) {
             Some(index) => {
-                if let Some((_, names)) = resource_groups.get_mut(*index) {
+                if let Some((_, names, whole)) = resource_groups.get_mut(*index) {
                     names.extend(used);
+                    *whole |= partial;
                 }
             }
             None => {
                 group_of.insert(identity, resource_groups.len());
-                resource_groups.push((resources, used));
+                resource_groups.push((resources, used, partial));
             }
         }
     }
 
-    // Pass two: each shared resource dictionary, once, against the union.
-    for (resources, used) in &resource_groups {
-        prune_resource_dictionary(graph, resources, used)?;
+    // Pass two: each shared resource dictionary, once, against the union -- or kept whole, where
+    // a page sharing it could not be read to the end and nothing excluded reaches it.
+    for (resources, used, whole) in &resource_groups {
+        if !*whole {
+            prune_resource_dictionary(graph, resources, used)?;
+        }
     }
 
     // Pass three: the pages' own keys. LAST, because the passes above read `/Annots` and
@@ -821,9 +973,16 @@ impl ResourceCategory {
 ///
 /// Caching the name set per object removes the amplification rather than merely detecting it: a
 /// stream's names do not depend on which page reached it.
+/// A stream's names, and whether it was read to the end.
+type SeenNames = (BTreeSet<Vec<u8>>, bool);
+
 struct Walk<'a> {
-    /// Name sets already computed, by object identity.
-    seen: BTreeMap<(i32, i32), BTreeSet<Vec<u8>>>,
+    /// Name sets already computed, by object identity, each with whether its stream was read to
+    /// the end -- a partial set reused for another page must stay partial there (#228).
+    seen: BTreeMap<(i32, i32), SeenNames>,
+    /// Whether any stream the current page reaches was read only in part, at a filtered inline
+    /// image whose extent cannot be derived (#228). Reset per page by `used_names`.
+    partial: bool,
     /// How many more streams this output may decode.
     budget: usize,
     /// The operation's deadline, checkpointed per stream.
@@ -869,8 +1028,10 @@ fn used_names<G: ObjectGraph>(
     page: &G::Handle,
     resources: &G::Handle,
     walk: &mut Walk<'_>,
-) -> Result<BTreeSet<Vec<u8>>> {
-    let mut used = names_in_content(&graph.page_content(page)?)?;
+) -> Result<(BTreeSet<Vec<u8>>, bool)> {
+    let read = names_in_content(&graph.page_content(page)?)?;
+    walk.partial = !read.read_to_end;
+    let mut used = read.names;
 
     // Appearance streams of the annotations that SURVIVED the filter. `prune_annotations` has
     // already run, so a dropped annotation's appearance contributes nothing -- which is the whole
@@ -898,7 +1059,7 @@ fn used_names<G: ObjectGraph>(
         let selector = used.clone();
         follow_resources(graph, resources, &selector, &mut used, walk, 0)?;
         if used.len() == before {
-            return Ok(used);
+            return Ok((used, walk.partial));
         }
     }
 }
@@ -1008,9 +1169,10 @@ fn absorb<G: ObjectGraph>(
             // one; it is followed rather than deduplicated, because treating it as already seen
             // would silently skip its names.
             if identity != (0, 0)
-                && let Some(cached) = walk.seen.get(&identity)
+                && let Some((cached, read_to_end)) = walk.seen.get(&identity)
             {
-                let cached = cached.clone();
+                let (cached, read_to_end) = (cached.clone(), *read_to_end);
+                walk.partial |= !read_to_end;
                 absorb_into(used, cached)?;
                 return Ok(());
             }
@@ -1035,9 +1197,11 @@ fn absorb<G: ObjectGraph>(
                         .to_owned(),
                 ));
             };
-            let mine = names_in_content(&data)?;
+            let read = names_in_content(&data)?;
+            walk.partial |= !read.read_to_end;
+            let mine = read.names;
             if identity != (0, 0) {
-                walk.seen.insert(identity, mine.clone());
+                walk.seen.insert(identity, (mine.clone(), read.read_to_end));
             }
             absorb_into(used, mine.clone())?;
 

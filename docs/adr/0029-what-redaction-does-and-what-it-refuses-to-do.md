@@ -137,6 +137,9 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a document **the PDF engine repaired while reading it** -- any qpdf warning at the open, or by the write | **refuse**, `[engine-repaired-input]` — added 2026-09-29 ([#224], rounds 2 and 3). A repair can change what a page is: a junk `/Kids` entry makes qpdf push every inherited attribute onto the pages, after which a null-overridden page looks declared. Only whether a warning was raised is read, never its code or text. 4 of 224 local documents, all test fixtures, at either point. **Since [#227] it is also a refusal of a member of an object stream qpdf cannot load** -- one headed at a generation qpdf will not read members from. The reference rule below refuses it first, unless a decoy header declares the member null, and then this is the only refusal; see the [2026-10-01 amendment](#amendment-2026-10-01--227-a-reference-qpdf-resolves-to-null-is-refused-unless-the-file-declares-that-null) |
 | a **reference qpdf resolves to null** that the file does not itself declare as `null` -- a generation the cross-reference does not have, however qpdf came to cache it; a number it does not have; an object in the file body and missing from a valid cross-reference; a member of an object stream qpdf cannot load | **refuse**, `[reference-to-nothing]` — added 2026-10-01 ([#227]). qpdf drops the key that held it and warns about nothing; PDFium finds the object by number. A null redacts only where every header for its number holds `null`, one at the pair written, qpdf holds it at that pair, and no object stream lists the number -- dvipdfm's `/Threads`. **It over-refuses** a reference to an object absent from both readers, and a declared null the cross-reference frees or an object stream also lists. 0 of 99 real documents and 0 of 100 fixtures |
 | a **reference not written in plain digits** -- a sign, a leading zero, a number past 32 bits, a comment inside it -- or a stream object or object stream whose header does not read, or more references than the check's caps | **refuse**, `[reference-unreadable]` — added 2026-10-01 ([#227]). qpdf reads `+6 0 R`, `6 +0 R`, `06 00 R` and a comment between the numbers as ordinary references; the rule refuses the shape rather than deciding what a reader meant. 0 of 99 real documents and 0 of 100 fixtures |
+| an **unfiltered inline image whose `/L` disagrees** with the size its `/W`, `/H`, `/BPC` and colour space imply, or an **image mask whose `/BPC` is not 1** | **refuse**, `[inline-image-length-disagrees]` / `[inline-image-mask-bpc]` — added 2026-10-04 ([#228]). PDFium ends an unfiltered image at the computed size and never reads `/L`; an overstated `/L` hid the text after the image from burrow while PDFium drew it, `Ok` with 1,842 dark pixels in the region, measured. 0 of 100 real documents carry `/L` on an inline image, and every mask in them declares `/BPC 1` |
+| a **filtered inline image** | **refuse**, `[inline-image-filtered]` — added 2026-10-04 ([#228]). PDFium ends it at its first filter's own end of data, which burrow cannot decode to find. 0 of 100 real documents carry one; the TeX-heavy sample is why that is not a rate for office producers, which is unmeasured. `split` keeps or refuses instead of refusing outright: ADR 0019's #228 amendment |
+| an **inline image dictionary with a key it may not carry** | **refuse**, `[inline-image-unknown-key]` — added 2026-10-04 ([#228]). Both spellings of every key PDF 32000-1 Table 92 allows are read; real inline images here carry `/W /H /BPC /IM /D /I` |
 | a page box, `/Rotate` or `/UserUnit` in a **shape the renderer does not read as burrow would** -- a box that is not four numbers, a `/Rotate` that is not a number or is beyond ten turns, a number of magnitude past 2^24, a crop sharing no area with the media box | **refuse**, `[page-frame-unreadable]` — added 2026-09-29 ([#224], round 2). The crop is clipped to the media box, as PDFium clips it. 0 of 224 local documents |
 | a page whose **`/UserUnit` is not 1** | **refuse**, `[user-unit-not-one]` — added 2026-09-29 ([#224], round 2). PDFium's size and its render ignore it and the region conversion divides by it. 0 of 224 local documents |
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
@@ -1170,6 +1173,7 @@ the seven cases then in the script:
 [#224]: https://github.com/TensorGreed/burrow/issues/224
 [#226]: https://github.com/TensorGreed/burrow/issues/226
 [#229]: https://github.com/TensorGreed/burrow/issues/229
+[#228]: https://github.com/TensorGreed/burrow/issues/228
 [#242]: https://github.com/TensorGreed/burrow/issues/242
 [#239]: https://github.com/TensorGreed/burrow/issues/239
 [#240]: https://github.com/TensorGreed/burrow/issues/240
@@ -4735,3 +4739,49 @@ annotation naming page 1's array; the check switched off fails both sharing shap
 name ignored fails the trailer case; and this page's own dictionary refused fails the page whose
 `/Annots` is its own object.
 
+## Amendment, 2026-10-04 — #228: an inline image ends where the renderer ends it
+
+**What happened.** `pdfsyntax::lexer` took an inline image's `/L` as its data length. PDFium does
+not read `/L`. Measured with an `EI` placed straight after the true end and the region's text
+after it, then a second `EI` where an overstated `/L` would end: PDFium drew the text -- **1,842
+dark pixels in the region after an `Ok`** -- for an unfiltered image and for `/AHx`, `/A85`, `/Fl`,
+`/RL`, `/LZW`, a one-filter array and an `/AHx /Fl` chain. It ends an unfiltered image after the
+bytes its dictionary implies, and a filtered one at its first filter's own end of data.
+
+**Owner's decision, 2026-10-03.**
+- **Unfiltered: the extent is computed** from `/W`, `/H`, `/BPC` and the colour space, as PDFium
+  computes it, and a present `/L` that disagrees refuses `[inline-image-length-disagrees]`. Measured
+  exact at every boundary the arithmetic can miss by one -- a one-bit row padded to a byte, CMYK,
+  sixteen bits, a `/Decode`, an image mask -- with `EI` at the computed size drawing the text after
+  it and one byte earlier not. **An image mask is one bit whatever its `/BPC` says**: PDFium sized
+  `/IM true /BPC 8` at one bit, so a mask declaring anything else refuses `[inline-image-mask-bpc]`.
+- **Filtered: refused** `[inline-image-filtered]`, for redaction. burrow cannot decode to find the
+  end PDFium uses, and an extent it cannot derive is a page it cannot claim to have read.
+- **A key the inline image dictionary may not carry refuses** `[inline-image-unknown-key]`; both
+  spellings of every key it may carry -- `/W` and `/Width`, and the rest of PDF 32000-1 Table 92 --
+  are read.
+
+**`split` gets the unfiltered rule and not the filtered one**, because the costs differ: see ADR
+0019's #228 amendment. The lexer takes its answer as a mode every caller names
+(`InlineImages::Redaction` / `Prune`); redaction's refusal and pruning's keep-or-refuse are both
+written there.
+
+**The census, and its caveat (owner, 2026-10-03).** #227's 100 real documents hold 16 inline
+images, in 3 documents, every one unfiltered and without `/L`; #227's fixture list holds 56, one
+of them filtered -- this corpus's own `evade-inline-image`. So **0 of 100 real documents** are
+refused by any of the new rules. That sample is TeX-heavy, and the producers that write `/Fl`
+inline images -- Word, Ghostscript, print drivers -- are not in it. **The rate against them is
+unmeasured**; #228 joins #242 in being re-measured on the owner's producer set, against the same
+1% bar. Every mask in both lists declares `/BPC 1`; the keys they carry are `/W /H /BPC /IM /D /I`.
+
+**One corpus placement moves.** `evade-inline-image` (`/Fl /L 135`), an owed #125 leak until now,
+is refused `[inline-image-filtered]`: its owed marker is removed (#125's count 13 to 12) and it
+leaves the pinned set of owed leaks. Three golden lines change, each from `Ok` to that refusal.
+
+**Shown to fail.** Each mutation asserted to apply and confirmed rebuilt, against a green baseline:
+`/L` used where present instead of the computed size (the owner's), and row padding skipped (the
+owner's), each red on its boundary fixture; plus the mask's `/BPC` check, the unknown-key check, the
+pruning fallback's sharing check (red as the excluded image appearing in the output), the
+category dictionaries left out of the sharing, the cache losing a partial read, a `/Pages` node's
+inline `/Resources` left out, a partial group pruned anyway, a partial page's own dictionary pruned
+anyway, and pruning trusting `/L` (the owner's, red on a font drawn after the image).

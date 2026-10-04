@@ -645,3 +645,279 @@ fn the_scan_finds_a_canary_that_is_really_there() {
         );
     }
 }
+
+/// A document of `objects`, numbered from 1, object 1 the catalogue.
+fn raw_pdf(objects: &[String]) -> Vec<u8> {
+    let mut out = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+    }
+    let xref_at = out.len();
+    out.push_str(&format!(
+        "xref\n0 {}\n0000000000 65535 f \n",
+        objects.len() + 1
+    ));
+    for offset in &offsets {
+        out.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    out.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+        objects.len() + 1
+    ));
+    out.into_bytes()
+}
+
+fn content(data: &str) -> String {
+    format!("<< /Length {} >>\nstream\n{data}\nendstream", data.len())
+}
+
+/// Page 1 draws `/F1` after an inline image, filtered or not; `/F2` (Courier) is in its resources
+/// and drawn by nothing on it.
+fn page_one(filtered: bool) -> String {
+    let image = if filtered {
+        "BI /W 1 /H 1 /CS /G /F /AHx /L 3 ID 80> EI"
+    } else {
+        "BI /W 1 /H 1 /CS /G ID x EI"
+    };
+    content(&format!(
+        "q 10 0 0 10 50 50 cm {image} Q BT /F1 12 Tf 10 10 Td (ONE) Tj ET"
+    ))
+}
+
+const HELVETICA: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+const COURIER: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>";
+/// An image only the excluded page draws; its bytes are the canary.
+const EXCLUDED_IMAGE: &str = "<< /Type /XObject /Subtype /Image /Width 18 /Height 1 /ColorSpace \
+                              /DeviceGray /BitsPerComponent 8 /Length 18 >>\nstream\nEXCLUDEDIMAGEBYTES\nendstream";
+
+fn split_first(bytes: Vec<u8>, after: &[u64]) -> burrow_types::Result<Vec<Vec<u8>>> {
+    split(
+        &Qpdf::new(),
+        bytes.into_boxed_slice(),
+        Cuts::after_pages(after),
+        &options(),
+    )
+}
+
+#[test]
+fn a_filtered_inline_image_on_a_page_with_its_own_resources_keeps_them_whole() {
+    // (a) #228: a filtered inline image ends where its filter's data ends, which burrow cannot
+    // find, so the names after it are unread. This page's `/Resources` is its own, so nothing
+    // excluded reaches it: kept whole, the unused Courier with it.
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /Font << /F1 6 0 R /F2 7 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R \
+         /Resources << /Font << /F1 6 0 R >> >> >>"
+            .to_owned(),
+        page_one(true),
+        HELVETICA.to_owned(),
+        COURIER.to_owned(),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+    ]);
+    let outputs = split_first(bytes, &[1]).expect("its resources are its own: kept whole");
+    assert!(
+        contains(&expanded(&outputs[0]), "Courier"),
+        "the unused font is kept, not pruned"
+    );
+}
+
+#[test]
+fn a_filtered_inline_image_on_pages_that_share_resources_only_with_each_other_keeps_them_whole() {
+    // (b) Pages 1 and 2 share one `/Resources`, and both are in the first output; page 3 is not,
+    // and has its own. Nothing excluded reaches the shared dictionary: kept whole.
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R /Resources 9 0 R >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 7 0 R /Resources 9 0 R >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 7 0 R \
+         /Resources << /Font << /F1 10 0 R >> >> >>"
+            .to_owned(),
+        page_one(true),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+        "null".to_owned(),
+        "<< /Font << /F1 10 0 R /F2 11 0 R >> >>".to_owned(),
+        HELVETICA.to_owned(),
+        COURIER.to_owned(),
+    ]);
+    let outputs = split_first(bytes, &[2]).expect("shared only within the output: kept whole");
+    assert!(
+        contains(&expanded(&outputs[0]), "Courier"),
+        "the unused font is kept, not pruned"
+    );
+}
+
+/// Two pages under one `/Pages` node carrying `/Resources` with an image only page 2 draws; page
+/// 1's inline image filtered or not. The first output is page 1 alone.
+fn inherited(filtered: bool) -> Vec<u8> {
+    raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] \
+         /Resources << /Font << /F1 7 0 R >> /XObject << /ImX 8 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".to_owned(),
+        page_one(filtered),
+        content("q 100 0 0 10 10 10 cm /ImX Do Q"),
+        HELVETICA.to_owned(),
+        EXCLUDED_IMAGE.to_owned(),
+    ])
+}
+
+#[test]
+fn a_filtered_inline_image_under_resources_an_excluded_page_inherits_refuses() {
+    // (c) THE §2b CASE: page 1's names cannot all be read, and its `/Resources` -- inherited from
+    // the `/Pages` node -- is page 2's too, which this output excludes. Kept whole, page 2's image
+    // would travel with page 1; pruned, by a partial read, page 1 could lose what it draws. So
+    // the split is refused, and the reason names the sharing rather than the image.
+    match split_first(inherited(true), &[1]) {
+        Err(error) => {
+            let reason = format!("{error:?}");
+            assert!(
+                reason.contains("shared with a page outside this output"),
+                "refused, but not for the sharing: {reason}"
+            );
+        }
+        Ok(outputs) => {
+            // WHAT A REGRESSION LOOKS LIKE: not a missing refusal but the leak it prevented.
+            assert!(
+                !contains(&expanded(&outputs[0]), "EXCLUDEDIMAGEBYTES"),
+                "the excluded page's image reached page 1's output"
+            );
+            panic!("returned Ok without the excluded image, where the split must refuse");
+        }
+    }
+}
+
+#[test]
+fn the_same_inheritance_with_an_unfiltered_image_is_pruned_normally() {
+    // (d) THE TWIN: an unfiltered inline image's extent is computed, every name is read, and the
+    // inherited dictionary is pruned as before -- the excluded page's image does not travel.
+    let outputs = split_first(inherited(false), &[1]).expect("an unfiltered image splits");
+    let text = expanded(&outputs[0]);
+    assert!(
+        !contains(&text, "EXCLUDEDIMAGEBYTES"),
+        "the excluded page's image was pruned"
+    );
+    assert!(
+        contains(&text, "Helvetica"),
+        "the font page 1 draws with stays"
+    );
+}
+
+#[test]
+fn a_resource_named_after_a_filtered_inline_image_is_never_pruned() {
+    // THE OWNER'S MUTATION'S FIXTURE: a filtered image whose `/L` overstates its data, so an
+    // `/L`-trusting read would skip the `/F2 Tf` after it and prune Courier off a page that draws
+    // with it. The page's resources are its own, so the right answer keeps them whole.
+    let tail = " EI Q BT /F2 12 Tf 10 10 Td (AFTER) Tj ET";
+    let data = "80>";
+    // `/L` reaching to just before a second `EI`, so a reader that trusted it would end there.
+    let overstated = data.len() + tail.len();
+    let page = content(&format!(
+        "q 10 0 0 10 50 50 cm BI /W 1 /H 1 /CS /G /F /AHx /L {overstated} ID {data}{tail} EI Q"
+    ));
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /Font << /F1 6 0 R /F2 7 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R \
+         /Resources << /Font << /F1 6 0 R >> >> >>"
+            .to_owned(),
+        page,
+        HELVETICA.to_owned(),
+        COURIER.to_owned(),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+    ]);
+    let outputs = split_first(bytes, &[1]).expect("its resources are its own: kept whole");
+    assert!(
+        contains(&expanded(&outputs[0]), "Courier"),
+        "the font drawn after the image was pruned off the page"
+    );
+}
+
+#[test]
+fn a_category_dictionary_an_excluded_page_shares_refuses_too() {
+    // THE SHARING IS READ INSIDE THE DICTIONARY TOO: page 1's `/Resources` is its own, but its
+    // `/XObject` is the same object as page 2's, and page 2 is excluded. Kept whole, page 2's image
+    // would travel in it.
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /Font << /F1 7 0 R >> /XObject 9 0 R >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /XObject 9 0 R >> >>"
+            .to_owned(),
+        page_one(true),
+        content("q 100 0 0 10 10 10 cm /ImX Do Q"),
+        HELVETICA.to_owned(),
+        EXCLUDED_IMAGE.to_owned(),
+        "<< /ImX 8 0 R >>".to_owned(),
+    ]);
+    match split_first(bytes, &[1]) {
+        Err(error) => assert!(
+            format!("{error:?}").contains("shared with a page outside this output"),
+            "refused, but not for the sharing: {error:?}"
+        ),
+        Ok(outputs) => {
+            assert!(
+                !contains(&expanded(&outputs[0]), "EXCLUDEDIMAGEBYTES"),
+                "the excluded page's image reached page 1's output through a shared /XObject"
+            );
+            panic!("returned Ok without the excluded image, where the split must refuse");
+        }
+    }
+}
+
+#[test]
+fn a_partial_read_stays_partial_for_every_page_that_reaches_the_same_form() {
+    // THE CACHE: one form, drawn by pages 1 and 2, holds a filtered inline image and then
+    // `/F2 Tf`. Its names are read once and reused. Each page's `/F2` is a different font, so if
+    // page 2's reuse lost the "partial" mark it would be pruned by a partial read -- Times off page
+    // 2 while the form still asks for it.
+    let data = "BI /W 1 /H 1 /CS /G /F /AHx /L 3 ID 80> EI BT /F2 9 Tf (F) Tj ET";
+    let form = format!(
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Length {} >>\nstream\n{data}\nendstream",
+        data.len()
+    );
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /XObject << /Fm 7 0 R >> /Font << /F2 8 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /XObject << /Fm 7 0 R >> /Font << /F2 9 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 10 0 R \
+         /Resources << >> >>"
+            .to_owned(),
+        content("/Fm Do"),
+        form,
+        COURIER.to_owned(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>".to_owned(),
+        content(""),
+    ]);
+    let outputs = split_first(bytes, &[2]).expect("each page's resources are its own: kept whole");
+    let text = expanded(&outputs[0]);
+    assert!(
+        contains(&text, "Courier"),
+        "page 1's font, which the form draws with, is kept"
+    );
+    assert!(
+        contains(&text, "Times-Roman"),
+        "page 2's, reached through the cached read, is kept too"
+    );
+}

@@ -738,8 +738,7 @@ pages = 1
   witness_before = "inline-image"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
-  notes = "Not an XObject at all, so a signal enumerating `/XObject` finds nothing."
+  notes = "Not an XObject at all, so a signal enumerating `/XObject` finds nothing. Refused since #228: its /Fl filter is ended by the renderer at the zlib stream's end, not at its /L, and burrow cannot decode to find that. #125 still owes the image refusal for an unfiltered inline image."
 
 [[fixture]]
 name = "evade-image-as-pattern"

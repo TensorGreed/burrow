@@ -1106,7 +1106,7 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
     // TOKENISED, NOT SEARCHED. `/WMode` inside a string literal or after a `%` comment is not a
     // declaration, and a byte scan cannot tell the difference -- the lexer already can, and its
     // `a_string_hides_what_looks_like_a_name` test is exactly this case.
-    let mut lexer = super::lexer::Lexer::new(program);
+    let mut lexer = super::lexer::Lexer::new(program, super::lexer::InlineImages::Redaction);
     let mut previous_name: Option<Vec<u8>> = None;
     let mut wanted_number = false;
     let mut declared: Option<WritingMode> = None;
