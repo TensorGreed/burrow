@@ -542,3 +542,28 @@ pre-scan the new attack surface.
 **Running qpdf on PDFium's engine thread.** Simpler to reason about — one place all engine
 work happens. Rejected because qpdf does not require it and it would deepen ADR 0011's
 head-of-line blocking for work that is supposed to be the cheap parallel part.
+
+## Amendment, 2026-10-05 — the prescan refuses one damaged declaration
+
+**Decision (owner, 2026-10-05).** `prescan::check` refuses a classic cross-reference entry that
+places an in-use object at or past the end of the file, as `Malformed`: an impossible declaration,
+in the same class as the stream longer than the file this module already refused. It is read only
+from entries written exactly as the specification lays them out, stopping at the first that is
+not, and the white space a reader skips before `xref` is skipped here too. Cross-reference streams
+are not read: they are compressed, and this module inflates nothing.
+
+**What it partly decides.** This module's rustdoc held that refusing a corrupt cross-reference
+"would reject documents that work today", and #61's recovery posture -- which of an engine's
+readings of a damaged document is right -- is still open. This takes one narrow piece of that,
+on the owner's direction: an entry past the end is refused before any engine repairs around it.
+Everything else about damaged cross-references, and the rest of #61, stays as it was.
+
+**Cost, measured.** 0 of #227's 100 real documents are refused, and no golden-corpus input but
+the rule's own fixture, `tests/damaged/xref-entry-past-end.pdf`. Review ran 158 qpdf-written
+variants of every tracked fixture (linearized, object streams, CRLF entries, an appended
+incremental update): only that fixture was refused. Cost on a 500 MiB classic table: 313 ms
+against 190 ms before it.
+
+**What it does not read.** An entry that is not twenty bytes ending in one of the
+specification's three line endings, a cross-reference stream, or a file with no cross-reference at
+all.

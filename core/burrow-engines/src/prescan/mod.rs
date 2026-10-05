@@ -121,6 +121,25 @@ pub struct Declared {
     /// Kept because it is the evidence that the chain walk terminates: a file whose
     /// `/Prev` points at itself reports one section, not a hang.
     pub xref_sections: u32,
+    /// Whether a classic cross-reference table places an in-use object at or past the end of
+    /// the file.
+    ///
+    /// An impossible declaration, in the same sense as a stream longer than the file: no
+    /// object can begin where there are no bytes. Read only from entries written exactly as
+    /// the specification lays them out (`dddddddddd ddddd n`); a table in any other shape is
+    /// not judged, so a producer's odd line endings cannot be mistaken for a lie. **A
+    /// cross-reference stream is not read**: it is compressed, and this module never inflates
+    /// anything, so the same declaration there passes.
+    pub entry_past_end: bool,
+    /// How many classic cross-reference entries were read to answer
+    /// [`Declared::entry_past_end`], across the whole `/Prev` chain.
+    ///
+    /// Each well-formed entry is read once however many sections overlap it, and two can overlap
+    /// only at a shift of 18 or 19 bytes, so this is at most about one per 18 bytes of the file,
+    /// plus one misshapen entry per subsection read (a capped count): the evidence that the walk
+    /// is linear, reported rather than assumed. One case is pinned by a test
+    /// (`describe_shares_one_span_set_across_the_chain`); the bound itself is argued, not tested.
+    pub entries_judged: u64,
 }
 
 impl Declared {
@@ -142,13 +161,18 @@ impl Declared {
 /// - [`Error::LimitExceeded`] when a declared quantity exceeds what `limits` allows. The
 ///   limit named is the one the declaration would breach, so the caller sees the same
 ///   field they set.
-/// - [`Error::Malformed`] when the declarations are internally impossible — most usefully,
-///   a stream claiming more bytes than the whole file contains.
+/// - [`Error::Malformed`] when the declarations are internally impossible: a stream claiming
+///   more bytes than the whole file contains, or a classic cross-reference entry placing an
+///   in-use object at or past the end of the file.
 ///
 /// A file with no recognisable cross-reference is **not** an error here. PDFium
 /// reconstructs a missing or corrupt xref by itself (spike 0001, Finding 4), and refusing
 /// such files would reject documents that work today. There is simply nothing declared to
-/// check, so there is nothing to object to.
+/// check, so there is nothing to object to. The one corrupt declaration refused is the entry
+/// past the end, and only where it is written exactly as the specification lays an entry out
+/// (owner, 2026-10-05; ADR 0013's amendment of that date): measured on 0 of 100 real documents.
+/// A table whose entries are not twenty bytes ending in one of the specification's three line
+/// endings is not judged at all.
 pub fn check(bytes: &[u8], limits: &Limits) -> Result<Declared> {
     let declared = describe(bytes);
 
@@ -158,6 +182,14 @@ pub fn check(bytes: &[u8], limits: &Limits) -> Result<Declared> {
     if declared.largest_stream > file_len {
         return Err(Error::Malformed(
             "a stream declares more bytes than the file contains".to_owned(),
+        ));
+    }
+
+    // AN OBJECT PLACED WHERE THE FILE HAS NO BYTES: an impossible declaration, refused as the
+    // stream longer than the file is.
+    if declared.entry_past_end {
+        return Err(Error::Malformed(
+            "a cross-reference entry places an object past the end of the file".to_owned(),
         ));
     }
 

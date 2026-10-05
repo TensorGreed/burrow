@@ -52,6 +52,11 @@ const ALLOWED_MESSAGES: &[&str] = &[
     "password contains a NUL byte, which pdfium's C API cannot carry",
     "pdfium reported a page count that is not a count",
     "input length does not fit in u64",
+    // prescan/mod.rs: refused before the buffer reaches the engine, both fixed strings. The
+    // second was added 2026-10-05 and found missing here by this very property, on a mutation
+    // that pushed an entry's offset past the end; the first was always reachable and never drawn.
+    "a stream declares more bytes than the file contains",
+    "a cross-reference entry places an object past the end of the file",
     // thread.rs
     "pdfium document ids exhausted",
     "pdfium document handle is not open",
@@ -117,6 +122,50 @@ fn an_empty_input_is_refused_with_an_allowed_message() {
     assert!(result.is_err(), "empty input is not a document");
     if let Err(why) = check_outcome(&result) {
         panic!("{why}");
+    }
+}
+
+#[test]
+fn an_out_of_range_cross_reference_entry_is_refused_with_an_allowed_message() {
+    // NOT LEFT TO THE DRAW, for the reason the empty input is not: the mutation property found
+    // this message missing from the allowlist by chance, and chance is not coverage.
+    let mut bytes = minimal_pdf::pdf_with_pages(2);
+    let table = bytes
+        .windows(5)
+        .position(|w| w == b"xref\n")
+        .expect("the generated document has a classic table");
+    let after_header = table
+        + bytes[table..]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\n')
+            .nth(1)
+            .expect("an xref header line")
+            .0
+        + 1;
+    // The second entry, object 1, which is in use: its offset becomes ten nines.
+    let entry = after_header + 20;
+    assert_eq!(
+        bytes[entry + 17],
+        b'n',
+        "the planted entry is an in-use one"
+    );
+    bytes[entry..entry + 10].copy_from_slice(b"9999999999");
+    let result = open(bytes);
+    if let Err(why) = check_outcome(&result) {
+        panic!("{why}");
+    }
+    // AND IT IS THAT REFUSAL: `check_outcome` passes an `Ok` too, so without this the test
+    // would pass on a document that never reached the prescan's rule.
+    match result {
+        Err(Error::Malformed(why)) => assert_eq!(
+            why,
+            "a cross-reference entry places an object past the end of the file"
+        ),
+        other => panic!(
+            "expected the prescan's refusal, got {:?}",
+            other.map(|_| ())
+        ),
     }
 }
 

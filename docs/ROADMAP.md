@@ -39,7 +39,7 @@ and the table above is only honest if it says what left it and why.
 
 | | what | why it no longer blocks |
 |---|---|---|
-| **#61** | A damaged-but-openable document silently loses a page | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user. It reproduces through `rotate`, which is merged, and through `split`'s build route. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** **Characterised** (2026-09-14): not the write losing a page — qpdf reads the same document as 5 pages without reconstruction and 4 with it, and `open` reports the first while the writer emits the second. **DISCHARGED** (2026-09-14): ADR 0022's verification reads every operation's output back through a fresh engine, sees four pages where five were promised, and returns `OutputRejected`. `a_damaged_document_is_refused_rather_than_losing_a_page_silently` asserts it on every run; the engine-seam defect underneath stays pinned by an `#[ignore]`d reproduction. **The underlying disagreement is not fixed** — which of qpdf's two readings is right is a recovery-posture decision, still open on #61 and deliberately separate. |
+| **#61** | A damaged-but-openable document silently loses a page | **Silent data loss.** The output is a valid PDF that opens happily with a page missing, and nothing tells the user. It reproduces through `rotate`, which is merged, and through `split`'s build route. Pre-alpha does not make a silent wrong answer acceptable; it makes it harder to notice. **A refusal would not block. Losing the page quietly does.** **Characterised** (2026-09-14): not the write losing a page — qpdf reads the same document as 5 pages without reconstruction and 4 with it, and `open` reports the first while the writer emits the second. **DISCHARGED** (2026-09-14): ADR 0022's verification reads every operation's output back through a fresh engine, sees four pages where five were promised, and returns `OutputRejected`. Its real-engine tests and the `#[ignore]`d engine-seam pin went with a damaged-fixture test that was replaced (2026-10-05; see #259), so the refusal is covered by fake-engine tests only until #259 restores them — ADR 0022's 2026-10-05 amendment. **The underlying disagreement is not fixed** — which of qpdf's two readings is right is a recovery-posture decision, still open on #61 and deliberately separate. |
 
 **A discharge is a checkable thing, not a judgement call at deploy time.** #61's was #65 /
 [ADR 0022](adr/0022-every-operation-verifies-its-own-output.md) — every operation verifying its
@@ -514,9 +514,9 @@ nothing, and one seed failed on the first execution.
 - **#61 — a damaged-but-openable document silently loses a page on write.** Opens as 5, writes
   4, no error, valid output. Reproduces through `rotate` (shipped) and through a plain write,
   so it belongs to the write path rather than to any operation. **Detected and refused since
-  ADR 0022**: no caller receives the short document. The engine-seam defect underneath is still
-  pinned by an `#[ignore]`d reproduction in `reorder_keeps_everything.rs` and a CI step that
-  requires it to keep reproducing. The whole input class — damaged enough to be wrong, intact enough to open — had
+  ADR 0022**: no caller receives the short document. The engine-seam pin and the two
+  real-engine tests were removed with a replaced damaged-fixture test (2026-10-05; see #259),
+  which tracks a fixture to restore them on. The whole input class — damaged enough to be wrong, intact enough to open — had
   no coverage: every damaged fixture in the conformance corpus is refused at open.
 - **#62 — memory-unsafety in the pinned qpdf 12.4.1, on the open path.** Reproduced from `rotate`, `merge` and `qpdf_check` — it is reached by *opening* a document, so every target and every operation can hit it, which is why seeded fuzzing is nightly-only until it closes. Upstream's code,
   reachable from opening any untrusted document. Private disclosure pending; no reproducer is

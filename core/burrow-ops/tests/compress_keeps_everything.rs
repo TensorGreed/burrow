@@ -180,56 +180,6 @@ fn an_inherited_rotation_is_still_inherited_or_pushed_down_but_never_lost() {
     );
 }
 
-#[test]
-fn a_damaged_document_is_refused_rather_than_losing_a_page_silently() {
-    // ISSUE #61, REACHING COMPRESS. The document opens as five pages and writes as four;
-    // ADR 0022's verification reads the output back through a fresh engine, sees four where
-    // five were promised, and refuses. That meets #61's own stated bar -- "a refusal would not
-    // block; losing the page quietly does".
-    //
-    // THIS IS THE ONLY REAL-ENGINE TEST OF COMPRESS'S ADR 0022 REFUSAL. Everything else that
-    // exercises it does so through a fake engine told to lie, which is necessary (a correct
-    // engine never triggers it) and not sufficient: a fake that stopped lying, or a refactor
-    // that changed how the fake is wired, would take the whole story with it. `reorder` has
-    // exactly this test for exactly this reason; code review pointed out compress had no
-    // counterpart, on a committed fixture that already fires it.
-    //
-    // It is not compress's defect. The same bytes lose the same page through a plain write, a
-    // rotation by zero degrees, and a reorder by the identity -- which is why the fix is the
-    // shared verification step and not a guard here.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/damaged/page-loss-on-write.pdf");
-    let bytes = std::fs::read(&path).expect("the committed reproduction must be readable");
-
-    let engine = Qpdf::new();
-    let source = burrow_engines::DocumentCompressor::open(
-        &engine,
-        bytes.clone().into_boxed_slice(),
-        &options(),
-    )
-    .expect("the document opens -- that is the whole point of this input class");
-    let opened = burrow_engines::DocumentCompressor::pages(&engine, &source).expect("a page count");
-    assert_eq!(
-        opened, 5,
-        "the document declares 6 pages in /Count and yields 5 that resolve"
-    );
-
-    let err = compress(&engine, bytes.into_boxed_slice(), &options())
-        .expect_err("a document short of a page must not reach the caller");
-
-    match err {
-        burrow_types::Error::OutputRejected(why) => {
-            // The MESSAGE, not only the variant. A refusal that does not say which two numbers
-            // disagreed sends someone back to the engine to find out.
-            assert!(
-                why.contains('5') && why.contains('4'),
-                "the refusal must name both counts: {why}"
-            );
-        }
-        other => panic!("expected OutputRejected, got {other:?}"),
-    }
-}
-
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())

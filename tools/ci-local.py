@@ -214,16 +214,6 @@ JOBS: list[dict] = [
         ),
     },
     {
-        "name": "ignored-tests",
-        "run": (
-            "cargo test -p burrow-ops --all-features --test reorder_keeps_everything -- "
-            "--ignored --exact a_damaged_document_loses_pages_on_write"
-        ),
-        "covers": [],
-        "needs_qpdf_cli": True,
-        "why": "the engine-seam defect CI requires to keep reproducing beneath ADR 0022's refusal (#61)",
-    },
-    {
         # THE SEVENTH MISS, AND THE SECOND FROM THE SAME CAUSE AS `subsetting-gate` BELOW.
         #
         # PR #76 added `core/burrow-ops/tests/optimistic_counts.rs`, ran this tool clean, and
@@ -254,6 +244,19 @@ JOBS: list[dict] = [
         ],
         "needs_qpdf_cli": True,
         "why": "ADR 0019 §2's rule, and that the tests asserting it are not ignored (#54)",
+    },
+    {
+        # #260. Every committed fixture through the nine shipped operations natively, each pair
+        # in a process of its own, outcomes pinned in tests/fixtures-survive.tsv. Registered
+        # runtime: ~9 s for 28 fixtures (252 runs) plus ~15 s to build the example cold under its
+        # own target directory, and ~25 s for the self-test -- cheap enough for the pre-push path.
+        "name": "fixtures-survive",
+        "run": "tools/check-fixtures-survive.sh && tools/test-check-fixtures-survive.sh",
+        "covers": [
+            "tools/check-fixtures-survive.sh",
+            "tools/test-check-fixtures-survive.sh",
+        ],
+        "why": "no committed fixture crashes or hangs an operation (#260)",
     },
     {
         # The mutation sweep that stands behind the shared pruning policy. It plants the deleted

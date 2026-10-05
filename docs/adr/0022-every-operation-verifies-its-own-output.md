@@ -479,3 +479,22 @@ wanted and may NOT have, recorded so nobody looks again"* — which was accurate
 
 So #111 stays open, and it is not "add a check": **closing it requires taking one of the three
 decisions above**, none of which belongs to a verification change.
+
+## Amendment, 2026-10-05 — the page-count refusal has no real-engine test until #259
+
+**What was removed.** `compress_keeps_everything.rs` and `reorder_keeps_everything.rs` each had
+one test driving the page-count verification with a **real** engine, on #61's committed
+reproduction: a document that opened as five pages and wrote four, which both operations refused
+with `OutputRejected` naming the two counts. CI also ran an `#[ignore]`d pin that the engine still
+wrote four beneath the refusal. A damaged-fixture test was replaced (see #259), and those two
+tests and the pin went with its input.
+
+**What remains.** The refusal itself is unchanged and still covered on every operation by the
+fake-engine tests this ADR requires ("a fake engine lies on the way back"). What is lost is the
+evidence that a real engine reaches it: the reason those two tests were written, which their own
+comments gave as "a fake that stopped lying, or a refactor that changed how the fake is wired,
+would take the whole story with it". That is a gap, recorded here rather than implied.
+
+**What closes it.** #259: a damaged-but-openable fixture that loses a page on write and is not
+refused by the prescan, meeting the bar every fixture under `tests/damaged/` now meets (its
+README). The two tests and the reproduction step return on it.

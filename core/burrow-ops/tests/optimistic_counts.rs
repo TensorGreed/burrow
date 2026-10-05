@@ -11,8 +11,8 @@
 //! An engine difference is fine. The one that is not fine is [issue
 //! #61](https://github.com/TensorGreed/burrow/issues/61)'s shape: an optimistic count, then a
 //! write that quietly comes back short, so a person is handed a document missing a page and
-//! told nothing. `tests/damaged/page-loss-on-write.pdf` is that shape — it opens as five
-//! pages and writes as four.
+//! told nothing. `tests/damaged/` held a document of that shape -- it opened as five pages and
+//! wrote as four -- until it was removed on 2026-10-05; #259 tracks its replacement.
 //!
 //! **So the difference cannot be recorded as accepted until each of these two has been asked
 //! the same question**, which is what this file does. It is deliberately not a page-count
@@ -283,6 +283,94 @@ fn where_the_engines_differ_at_equal_posture_qpdf_is_the_stricter_one() {
                  bump tightened it -- re-derive the pair rather than deleting the assertion, \
                  and update the `platform_expectations` entries that cite this test: {error:?}"
             ),
+        }
+    }
+}
+
+#[test]
+fn an_object_placed_past_the_end_of_the_file_is_refused_by_every_operation_but_redaction_before_an_engine_opens_it()
+ {
+    // `tests/damaged/xref-entry-past-end.pdf`: a clean six-page document whose only damage is
+    // one cross-reference entry pointing past the end of the file. The prescan refuses it on
+    // every engine path, so each shipped operation must come back with that refusal. Redaction is
+    // the one not here: the redaction golden file pins its outcome on this fixture, case by case.
+    use burrow_ops::compress::compress;
+    use burrow_ops::merge::{Input, merge};
+    use burrow_ops::reorder::reorder;
+    use burrow_ops::rotate::{Pages, rotate};
+    use burrow_ops::split::{Cuts, split};
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/damaged/xref-entry-past-end.pdf");
+    let bytes = std::fs::read(&path).expect("the committed fixture must be readable");
+    let engine = Qpdf::new();
+    let boxed = || bytes.clone().into_boxed_slice();
+    let pdfium = burrow_engines::pdfium::Pdfium::new();
+    let checked = |recovery: bool| {
+        use burrow_engines::StructureEngine;
+        let mut options = burrow_engines::CheckOptions::new(
+            Limits::DEFAULT,
+            Arc::new(SystemClock::new()) as Arc<dyn Clock>,
+        );
+        options.attempt_recovery = recovery;
+        engine.check(boxed(), &options).map(|_| ())
+    };
+    let outcomes: [(&str, Result<(), Error>); 9] = [
+        ("open", {
+            use burrow_engines::DocumentEngine;
+            pdfium.open(boxed(), &options()).map(|_| ())
+        }),
+        ("check without recovery", checked(false)),
+        ("check with recovery", checked(true)),
+        (
+            "render",
+            burrow_ops::render::render(
+                &pdfium,
+                boxed(),
+                &[1],
+                burrow_ops::render::Fit::box_of(200, 200),
+                &options(),
+            )
+            .map(|_| ()),
+        ),
+        (
+            "rotate",
+            rotate(&engine, boxed(), Pages::numbered(&[1]), 90, &options()).map(|_| ()),
+        ),
+        (
+            "reorder",
+            reorder(&engine, boxed(), &[1, 2], &options()).map(|_| ()),
+        ),
+        (
+            "split",
+            split(&engine, boxed(), Cuts::after_pages(&[1]), &options()).map(|_| ()),
+        ),
+        (
+            "compress",
+            compress(&engine, boxed(), &options()).map(|_| ()),
+        ),
+        (
+            "merge",
+            merge(
+                &engine,
+                vec![Input::new(boxed()), Input::new(boxed())],
+                &options(),
+            )
+            .map(|_| ()),
+        ),
+    ];
+    for (operation, outcome) in outcomes {
+        // `merge` names which input failed; the refusal is what that input's open returned.
+        let outcome = match outcome {
+            Err(Error::InputFailed { index: 0, source }) => Err(*source),
+            other => other,
+        };
+        match outcome {
+            Err(Error::Malformed(why)) => assert!(
+                why.contains("past the end of the file"),
+                "{operation}: refused, but not by the prescan: {why}"
+            ),
+            other => panic!("{operation}: expected the prescan's refusal, got {other:?}"),
         }
     }
 }

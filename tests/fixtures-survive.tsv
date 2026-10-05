@@ -1,0 +1,254 @@
+# The outcome of every shipped operation on every committed fixture, pinned (#260).
+# Read by tools/check-fixtures-survive.sh; re-record with BURROW_BLESS_FIXTURES_SURVIVE=1.
+tests/conformance/fixtures/blank-1page.pdf	open	ok 1 page(s)
+tests/conformance/fixtures/blank-1page.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/conformance/fixtures/blank-1page.pdf	rotate	ok every page by 90: output rotations [90] sizes ["792x612"]
+tests/conformance/fixtures/blank-1page.pdf	reorder	ok reversed: input rotations [0] sizes ["612x792"] output rotations [0] sizes ["612x792"]
+tests/conformance/fixtures/blank-1page.pdf	split	ok cuts []: parts 1 page(s)
+tests/conformance/fixtures/blank-1page.pdf	compress	ok not smaller
+tests/conformance/fixtures/blank-1page.pdf	merge	ok two copies: output 2 page(s)
+tests/conformance/fixtures/blank-1page.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 0, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/conformance/fixtures/blank-1page.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	open	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	check	refused strict refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824); recover refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	rotate	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	reorder	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	split	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	compress	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	merge	refused input 0: limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	redact	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-decoy-key.pdf	render	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	open	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	check	refused strict refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824); recover refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	rotate	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	reorder	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	split	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	compress	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	merge	refused input 0: limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	redact	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-padded-dictionary.pdf	render	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	open	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	check	refused strict refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824); recover refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	rotate	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	reorder	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	split	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	compress	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	merge	refused input 0: limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	redact	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/bomb-hidden-trailing-junk.pdf	render	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/canary.pdf	open	ok 1 page(s)
+tests/conformance/fixtures/canary.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover ok 1 page(s)
+tests/conformance/fixtures/canary.pdf	rotate	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/canary.pdf	reorder	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/canary.pdf	split	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/canary.pdf	compress	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/canary.pdf	merge	refused input 0: malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/canary.pdf	redact	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/canary.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/conformance/fixtures/encrypted.pdf	open	refused input is password protected
+tests/conformance/fixtures/encrypted.pdf	check	refused strict refused input is password protected; recover refused input is password protected
+tests/conformance/fixtures/encrypted.pdf	rotate	refused input is password protected
+tests/conformance/fixtures/encrypted.pdf	reorder	refused input is password protected
+tests/conformance/fixtures/encrypted.pdf	split	refused input is password protected
+tests/conformance/fixtures/encrypted.pdf	compress	refused input is password protected
+tests/conformance/fixtures/encrypted.pdf	merge	refused input 0: input is password protected
+tests/conformance/fixtures/encrypted.pdf	redact	refused input is password protected
+tests/conformance/fixtures/encrypted.pdf	render	refused input is password protected
+tests/conformance/fixtures/five-pages-or-six.pdf	open	ok 6 page(s)
+tests/conformance/fixtures/five-pages-or-six.pdf	check	ok strict ok 5 page(s); recover ok 5 page(s)
+tests/conformance/fixtures/five-pages-or-six.pdf	rotate	ok every page by 90: output rotations [90, 90, 90, 90, 90] sizes ["792x612", "792x612", "792x612", "792x612", "792x612"]
+tests/conformance/fixtures/five-pages-or-six.pdf	reorder	ok reversed: input rotations [0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792", "612x792"] output rotations [0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792"]
+tests/conformance/fixtures/five-pages-or-six.pdf	split	ok cuts [1]: parts 1 page(s) + 4 page(s)
+tests/conformance/fixtures/five-pages-or-six.pdf	compress	ok smaller: output 5 page(s)
+tests/conformance/fixtures/five-pages-or-six.pdf	merge	ok two copies: output 10 page(s)
+tests/conformance/fixtures/five-pages-or-six.pdf	redact	refused unsupported: pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known
+tests/conformance/fixtures/five-pages-or-six.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/conformance/fixtures/font-program-with-a-paren.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/font-program-with-a-paren.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/font-program-with-a-paren.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/font-program-with-a-paren.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/font-program-with-a-paren.pdf	split	ok cuts [1]: parts 1 page(s) + 1 page(s)
+tests/conformance/fixtures/font-program-with-a-paren.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/font-program-with-a-paren.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/font-program-with-a-paren.pdf	redact	refused malformed input: pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why
+tests/conformance/fixtures/font-program-with-a-paren.pdf	render	ok [1] into 200x200: page 1 at 200x200
+tests/conformance/fixtures/inherited-rotation-6page.pdf	open	ok 6 page(s)
+tests/conformance/fixtures/inherited-rotation-6page.pdf	check	ok strict ok 6 page(s); recover ok 6 page(s)
+tests/conformance/fixtures/inherited-rotation-6page.pdf	rotate	ok every page by 90: output rotations [180, 180, 180, 180, 180, 180] sizes ["101x792", "102x792", "103x792", "104x792", "105x792", "106x792"]
+tests/conformance/fixtures/inherited-rotation-6page.pdf	reorder	ok reversed: input rotations [90, 90, 90, 90, 90, 90] sizes ["792x101", "792x102", "792x103", "792x104", "792x105", "792x106"] output rotations [90, 90, 90, 90, 90, 90] sizes ["792x106", "792x105", "792x104", "792x103", "792x102", "792x101"]
+tests/conformance/fixtures/inherited-rotation-6page.pdf	split	ok cuts [1]: parts 1 page(s) + 5 page(s)
+tests/conformance/fixtures/inherited-rotation-6page.pdf	compress	ok smaller: output 6 page(s)
+tests/conformance/fixtures/inherited-rotation-6page.pdf	merge	ok two copies: output 12 page(s)
+tests/conformance/fixtures/inherited-rotation-6page.pdf	redact	refused unsupported: pdf redaction [page-attribute-inherited]: a page that takes its /Rotate from the page tree instead of declaring it. A page that overrides it with null is shown without it, but burrow cannot tell a null from an absent entry, so it cannot know which page the region was drawn on
+tests/conformance/fixtures/inherited-rotation-6page.pdf	render	ok [1] into 200x200: page 1 at 200x26
+tests/conformance/fixtures/layered.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/layered.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/layered.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/layered.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/layered.pdf	split	refused unsupported: this document uses optional content (layers), and burrow cannot carry the setting that decides whether a layer is hidden into a part of it
+tests/conformance/fixtures/layered.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/layered.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/layered.pdf	redact	refused unsupported: pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known
+tests/conformance/fixtures/layered.pdf	render	ok [1] into 200x200: page 1 at 200x200
+tests/conformance/fixtures/mixed-rotation-4page.pdf	open	ok 4 page(s)
+tests/conformance/fixtures/mixed-rotation-4page.pdf	check	ok strict ok 4 page(s); recover ok 4 page(s)
+tests/conformance/fixtures/mixed-rotation-4page.pdf	rotate	ok every page by 90: output rotations [0, 180, 180, 180] sizes ["101x792", "102x792", "103x792", "104x792"]
+tests/conformance/fixtures/mixed-rotation-4page.pdf	reorder	ok reversed: input rotations [270, 90, 90, 90] sizes ["792x101", "792x102", "792x103", "792x104"] output rotations [90, 90, 90, 270] sizes ["792x104", "792x103", "792x102", "792x101"]
+tests/conformance/fixtures/mixed-rotation-4page.pdf	split	ok cuts [1]: parts 1 page(s) + 3 page(s)
+tests/conformance/fixtures/mixed-rotation-4page.pdf	compress	ok smaller: output 4 page(s)
+tests/conformance/fixtures/mixed-rotation-4page.pdf	merge	ok two copies: output 8 page(s)
+tests/conformance/fixtures/mixed-rotation-4page.pdf	redact	refused malformed input: pdf resources [font-missing]: the content stream selects a font the page's resources do not name (2 bytes)
+tests/conformance/fixtures/mixed-rotation-4page.pdf	render	ok [1] into 200x200: page 1 at 200x26
+tests/conformance/fixtures/no-pages.pdf	open	refused malformed input: document has no pages
+tests/conformance/fixtures/no-pages.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/no-pages.pdf	rotate	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/no-pages.pdf	reorder	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/no-pages.pdf	split	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/no-pages.pdf	compress	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/no-pages.pdf	merge	refused input 0: malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/no-pages.pdf	redact	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/no-pages.pdf	render	refused malformed input: document has no pages
+tests/conformance/fixtures/not-a-pdf.bin	open	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/not-a-pdf.bin	check	refused strict refused malformed input: qpdf: the document is damaged; recover refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/not-a-pdf.bin	rotate	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/not-a-pdf.bin	reorder	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/not-a-pdf.bin	split	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/not-a-pdf.bin	compress	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/not-a-pdf.bin	merge	refused input 0: malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/not-a-pdf.bin	redact	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/not-a-pdf.bin	render	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/object-number-above-int-max.pdf	open	ok 1 page(s)
+tests/conformance/fixtures/object-number-above-int-max.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover ok 1 page(s)
+tests/conformance/fixtures/object-number-above-int-max.pdf	rotate	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/object-number-above-int-max.pdf	reorder	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/object-number-above-int-max.pdf	split	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/object-number-above-int-max.pdf	compress	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/object-number-above-int-max.pdf	merge	refused input 0: malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/object-number-above-int-max.pdf	redact	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/object-number-above-int-max.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/conformance/fixtures/objstm-bomb.pdf	open	ok 1 page(s)
+tests/conformance/fixtures/objstm-bomb.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/conformance/fixtures/objstm-bomb.pdf	rotate	ok every page by 90: output rotations [90] sizes ["10x10"]
+tests/conformance/fixtures/objstm-bomb.pdf	reorder	ok reversed: input rotations [0] sizes ["10x10"] output rotations [0] sizes ["10x10"]
+tests/conformance/fixtures/objstm-bomb.pdf	split	ok cuts []: parts 1 page(s)
+tests/conformance/fixtures/objstm-bomb.pdf	compress	ok smaller: output 1 page(s)
+tests/conformance/fixtures/objstm-bomb.pdf	merge	ok two copies: output 2 page(s)
+tests/conformance/fixtures/objstm-bomb.pdf	redact	refused unsupported: pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known
+tests/conformance/fixtures/objstm-bomb.pdf	render	ok [1] into 200x200: page 1 at 200x200
+tests/conformance/fixtures/pages-10.pdf	open	ok 10 page(s)
+tests/conformance/fixtures/pages-10.pdf	check	ok strict ok 10 page(s); recover ok 10 page(s)
+tests/conformance/fixtures/pages-10.pdf	rotate	ok every page by 90: output rotations [90, 90, 90, 90, 90, 90, 90, 90, 90, 90] sizes ["792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612"]
+tests/conformance/fixtures/pages-10.pdf	reorder	ok reversed: input rotations [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792"] output rotations [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792"]
+tests/conformance/fixtures/pages-10.pdf	split	ok cuts [1]: parts 1 page(s) + 9 page(s)
+tests/conformance/fixtures/pages-10.pdf	compress	ok smaller: output 10 page(s)
+tests/conformance/fixtures/pages-10.pdf	merge	ok two copies: output 20 page(s)
+tests/conformance/fixtures/pages-10.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 0, carried text dropped 0, ink left on the page none; output 10 page(s)
+tests/conformance/fixtures/pages-10.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/conformance/fixtures/pages-137.pdf	open	ok 137 page(s)
+tests/conformance/fixtures/pages-137.pdf	check	ok strict ok 137 page(s); recover ok 137 page(s)
+tests/conformance/fixtures/pages-137.pdf	rotate	ok every page by 90: output rotations [90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90] sizes ["792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612", "792x612"]
+tests/conformance/fixtures/pages-137.pdf	reorder	ok reversed: input rotations [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792"] output rotations [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792", "612x792"]
+tests/conformance/fixtures/pages-137.pdf	split	ok cuts [1]: parts 1 page(s) + 136 page(s)
+tests/conformance/fixtures/pages-137.pdf	compress	ok smaller: output 137 page(s)
+tests/conformance/fixtures/pages-137.pdf	merge	ok two copies: output 274 page(s)
+tests/conformance/fixtures/pages-137.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 0, carried text dropped 0, ink left on the page none; output 137 page(s)
+tests/conformance/fixtures/pages-137.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/conformance/fixtures/render-one-quadrant.pdf	open	ok 1 page(s)
+tests/conformance/fixtures/render-one-quadrant.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/conformance/fixtures/render-one-quadrant.pdf	rotate	ok every page by 90: output rotations [90] sizes ["400x200"]
+tests/conformance/fixtures/render-one-quadrant.pdf	reorder	ok reversed: input rotations [0] sizes ["200x400"] output rotations [0] sizes ["200x400"]
+tests/conformance/fixtures/render-one-quadrant.pdf	split	ok cuts []: parts 1 page(s)
+tests/conformance/fixtures/render-one-quadrant.pdf	compress	ok not smaller
+tests/conformance/fixtures/render-one-quadrant.pdf	merge	ok two copies: output 2 page(s)
+tests/conformance/fixtures/render-one-quadrant.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 0, carried text dropped 0, ink left on the page some; output 1 page(s)
+tests/conformance/fixtures/render-one-quadrant.pdf	render	ok [1] into 200x200: page 1 at 100x200
+tests/conformance/fixtures/trailer-removed.pdf	open	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/trailer-removed.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover ok 3 page(s)
+tests/conformance/fixtures/trailer-removed.pdf	rotate	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/trailer-removed.pdf	reorder	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/trailer-removed.pdf	split	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/trailer-removed.pdf	compress	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/trailer-removed.pdf	merge	refused input 0: malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/trailer-removed.pdf	redact	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/trailer-removed.pdf	render	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/truncated-mid-object.pdf	open	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/truncated-mid-object.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover ok 1 page(s)
+tests/conformance/fixtures/truncated-mid-object.pdf	rotate	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated-mid-object.pdf	reorder	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated-mid-object.pdf	split	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated-mid-object.pdf	compress	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated-mid-object.pdf	merge	refused input 0: malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated-mid-object.pdf	redact	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated-mid-object.pdf	render	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/truncated.pdf	open	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/truncated.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated.pdf	rotate	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated.pdf	reorder	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated.pdf	split	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated.pdf	compress	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated.pdf	merge	refused input 0: malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated.pdf	redact	refused malformed input: qpdf: the document is damaged
+tests/conformance/fixtures/truncated.pdf	render	refused malformed input: pdfium could not open the document
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	open	ok 2 page(s)
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	split	ok cuts [1]: parts 1 page(s) + 1 page(s)
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	compress	ok smaller: output 2 page(s)
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	redact	refused unsupported: pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach
+tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	render	ok [1] into 200x200: page 1 at 200x200
+tests/conformance/fixtures/xref-bomb.pdf	open	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	check	refused strict refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824); recover refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	rotate	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	reorder	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	split	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	compress	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	merge	refused input 0: limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	redact	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/conformance/fixtures/xref-bomb.pdf	render	refused limit exceeded: max_memory_bytes at prescan (requested 1280000000, allowed 1073741824)
+tests/damaged/xref-entry-past-end.pdf	open	refused malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	check	refused strict refused malformed input: a cross-reference entry places an object past the end of the file; recover refused malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	rotate	refused malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	reorder	refused malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	split	refused malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	compress	refused malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	merge	refused input 0: malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	redact	refused malformed input: a cross-reference entry places an object past the end of the file
+tests/damaged/xref-entry-past-end.pdf	render	refused malformed input: a cross-reference entry places an object past the end of the file
+tests/redaction/fixtures/producer-latex.pdf	open	ok 1 page(s)
+tests/redaction/fixtures/producer-latex.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/redaction/fixtures/producer-latex.pdf	rotate	ok every page by 90: output rotations [90] sizes ["842x595"]
+tests/redaction/fixtures/producer-latex.pdf	reorder	ok reversed: input rotations [0] sizes ["595x842"] output rotations [0] sizes ["595x842"]
+tests/redaction/fixtures/producer-latex.pdf	split	ok cuts []: parts 1 page(s)
+tests/redaction/fixtures/producer-latex.pdf	compress	ok smaller: output 1 page(s)
+tests/redaction/fixtures/producer-latex.pdf	merge	ok two copies: output 2 page(s)
+tests/redaction/fixtures/producer-latex.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 3 of 3, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-latex.pdf	render	ok [1] into 200x200: page 1 at 141x200
+tests/redaction/fixtures/producer-ocr-scan.pdf	open	ok 1 page(s)
+tests/redaction/fixtures/producer-ocr-scan.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/redaction/fixtures/producer-ocr-scan.pdf	rotate	ok every page by 90: output rotations [90] sizes ["2263x1749"]
+tests/redaction/fixtures/producer-ocr-scan.pdf	reorder	ok reversed: input rotations [0] sizes ["1749x2263"] output rotations [0] sizes ["1749x2263"]
+tests/redaction/fixtures/producer-ocr-scan.pdf	split	ok cuts []: parts 1 page(s)
+tests/redaction/fixtures/producer-ocr-scan.pdf	compress	ok smaller: output 1 page(s)
+tests/redaction/fixtures/producer-ocr-scan.pdf	merge	ok two copies: output 2 page(s)
+tests/redaction/fixtures/producer-ocr-scan.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 1 of 1, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-ocr-scan.pdf	render	ok [1] into 200x200: page 1 at 155x200
+tests/redaction/fixtures/producer-vertical-writing.pdf	open	ok 1 page(s)
+tests/redaction/fixtures/producer-vertical-writing.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/redaction/fixtures/producer-vertical-writing.pdf	rotate	ok every page by 90: output rotations [90] sizes ["842x595"]
+tests/redaction/fixtures/producer-vertical-writing.pdf	reorder	ok reversed: input rotations [0] sizes ["595x842"] output rotations [0] sizes ["595x842"]
+tests/redaction/fixtures/producer-vertical-writing.pdf	split	ok cuts []: parts 1 page(s)
+tests/redaction/fixtures/producer-vertical-writing.pdf	compress	ok smaller: output 1 page(s)
+tests/redaction/fixtures/producer-vertical-writing.pdf	merge	ok two copies: output 2 page(s)
+tests/redaction/fixtures/producer-vertical-writing.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 1 of 1, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-vertical-writing.pdf	render	ok [1] into 200x200: page 1 at 141x200
+tests/redaction/fixtures/producer-writer.pdf	open	ok 1 page(s)
+tests/redaction/fixtures/producer-writer.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
+tests/redaction/fixtures/producer-writer.pdf	rotate	ok every page by 90: output rotations [90] sizes ["842x595"]
+tests/redaction/fixtures/producer-writer.pdf	reorder	ok reversed: input rotations [0] sizes ["595x842"] output rotations [0] sizes ["595x842"]
+tests/redaction/fixtures/producer-writer.pdf	split	ok cuts []: parts 1 page(s)
+tests/redaction/fixtures/producer-writer.pdf	compress	ok smaller: output 1 page(s)
+tests/redaction/fixtures/producer-writer.pdf	merge	ok two copies: output 2 page(s)
+tests/redaction/fixtures/producer-writer.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 2 of 2, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-writer.pdf	render	ok [1] into 200x200: page 1 at 141x200
