@@ -1155,7 +1155,12 @@ mod tests {
                 "{value}: {refused}"
             );
         }
-        for value in ["/DP << /K true >>", "/DP << /K null >>", "/D [0 foo 1]"] {
+        for value in [
+            "/DP << /K true >>",
+            "/DP << /K false >>",
+            "/DP << /K null >>",
+            "/D [0 foo 1]",
+        ] {
             let names = read(
                 &image(&format!("{value} /W 9 /H 1 /BPC 8 /CS /G"), 9),
                 InlineImages::REDACTION,

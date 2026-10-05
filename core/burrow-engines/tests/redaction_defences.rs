@@ -337,8 +337,8 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
         ),
         (
             "0xFF after Tj, white space to PDFium (third security review)",
-            format!("BT /F1 24 Tf 72 700 Td (SECRET) Tj\u{1}ET {kept}"),
-            None,
+            format!("BT /F1 24 Tf 72 700 Td (SECRET) Tj\u{1} ET {kept}"),
+            Some("OK"),
         ),
         (
             // The review's shape: the image data begins with `(`. A lexer that did not begin the
@@ -353,12 +353,24 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
         ),
     ];
     for (why, content, code) in cases {
-        let pdf: Vec<u8> = page_with_content(&content)
+        let built = page_with_content(&content);
+        // THE PLACEHOLDER IS SWAPPED ONLY WHERE IT WAS WRITTEN: the builder writes ASCII, and this
+        // says so rather than assuming it.
+        assert_eq!(
+            built.iter().filter(|byte| **byte == 0x01).count(),
+            content.matches('\u{1}').count(),
+            "{why}: a 0x01 the fixture did not write"
+        );
+        let pdf: Vec<u8> = built
             .into_iter()
             .map(|byte| if byte == 0x01 { 0xff } else { byte })
             .collect();
         assert_present(&pdf, b"SECRET", why);
         match (redact(&pdf), code) {
+            // `Some("OK")`: read as PDFium reads it, and `Ok` with the text removed -- not any
+            // refusal, which is what let this case pass with its fix reverted (fourth code review).
+            (Ok((out, _)), Some("OK")) => assert_absent(&out, b"SECRET", why),
+            (Err(error), Some("OK")) => panic!("{why}: refused where it must redact: {error:?}"),
             (Err(error), Some(code)) => assert!(
                 format!("{error:?}").contains(code),
                 "{why}: refused, but not by {code}: {error:?}"
