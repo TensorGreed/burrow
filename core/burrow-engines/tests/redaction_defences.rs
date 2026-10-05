@@ -289,24 +289,36 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
         text
     };
     let kept = "BT /F1 24 Tf 72 300 Td (KIN) Tj ET";
-    let cases = [
+    // `\u{1}` stands for a byte the builder's `&str` cannot carry, swapped in after the build: the
+    // same length, so every `/Length` and offset holds.
+    let cases: [(&str, String, Option<&str>); 8] = [
         (
             "a nested value",
             format!(
                 "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /D [[1 0]] /CS /G /BPC 8 ID {payload} EI Q {kept}"
             ),
+            Some("[inline-image-nested-value]"),
+        ),
+        (
+            "an unknown word as a value inside << >>, ahead of the size keys (third reviews)",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /DP << /K foo >> /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+            Some("[inline-image-nested-value]"),
         ),
         (
             "a key with no value before ID",
             format!(
                 "q 10 0 0 10 200 50 cm BI /H 1 /CS /G /BPC 8 /W 96 /D ID {payload} EI Q {kept}"
             ),
+            Some("[inline-image-key-without-value]"),
         ),
         (
             "a second BI",
             format!(
                 "q 10 0 0 10 200 50 cm BI /W 8 /D BI /Width 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
             ),
+            Some("[inline-image-nested-bi]"),
         ),
         (
             "EI glued to a digit",
@@ -314,20 +326,57 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
                 "q 10 0 0 10 200 50 cm BI /W 1 /H 1 /CS /G /BPC 8 ID X EI5 \
                  BI /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
             ),
+            Some("ends somewhere else"),
         ),
+        // These two are READ as PDFium reads them rather than refused, so the outcome is either a
+        // refusal for some later reason or an `Ok` that saw the text and removed it.
         (
             "a number glued to ID",
             format!("q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8ID {payload} EI Q {kept}"),
+            None,
+        ),
+        (
+            "0xFF after Tj, white space to PDFium (third security review)",
+            format!("BT /F1 24 Tf 72 700 Td (SECRET) Tj\u{1}ET {kept}"),
+            None,
+        ),
+        (
+            // The review's shape: the image data begins with `(`. A lexer that did not begin the
+            // image at `ID\xff` read that `(` as a string swallowing the real text after `EI`.
+            "0xFF after ID, which begins the image there",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8 ID\u{1}({} EI Q \
+                 BT /F1 24 Tf 72 700 Td (SECRET) Tj ET ) pop Q {kept}",
+                " ".repeat(95)
+            ),
+            None,
         ),
     ];
-    for (why, content) in cases {
-        let pdf = page_with_content(&content);
+    for (why, content, code) in cases {
+        let pdf: Vec<u8> = page_with_content(&content)
+            .into_iter()
+            .map(|byte| if byte == 0x01 { 0xff } else { byte })
+            .collect();
         assert_present(&pdf, b"SECRET", why);
-        match redact(&pdf) {
-            Err(_) => {}
-            Ok((out, _)) => assert_absent(&out, b"SECRET", why),
+        match (redact(&pdf), code) {
+            (Err(error), Some(code)) => assert!(
+                format!("{error:?}").contains(code),
+                "{why}: refused, but not by {code}: {error:?}"
+            ),
+            (Ok(_), Some(code)) => panic!("{why}: returned Ok where {code} refuses"),
+            (Err(_), None) => {}
+            (Ok((out, _)), None) => assert_absent(&out, b"SECRET", why),
         }
     }
+    // THE NEAR-MISS: the same image with nothing wrong with it. Its payload is image data to both
+    // readers -- PDFium draws no text from it -- so the redaction goes through.
+    let honest = page_with_content(&format!(
+        "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+    ));
+    assert!(
+        redact(&honest).is_ok(),
+        "an honest inline image is redacted, not refused"
+    );
 }
 
 // ---------------------------------------------------------------------------------------

@@ -790,6 +790,8 @@ partial set as a whole one.
 **The second security review's shapes reach `split` too.** The five inline-image shapes ADR 0029's
 #228 amendment records -- a nested value, a key with no value, a second `BI`, a glued `EI`, a number
 glued to `ID` -- each hid a form's `Do` from the walk, and with it the nested optional-content
-refusal: `Ok` with a hidden layer drawn. They are refused, or read as PDFium reads them, in the
+refusal: `Ok` with a hidden layer drawn. So did the third reviews' two: an unknown word inside a
+`/DP << >>` value, and a 0x80 or 0xFF byte, which PDFium reads as white space -- `/Fm1\xff Do`
+named no form to the walk and a form to the renderer. They are refused, or read as PDFium reads them, in the
 lexer both callers share. Separately, the walk's depth ceiling returns without a refusal, which
 lets a hidden layer eight forms down through with no inline image at all: #253, not this change.

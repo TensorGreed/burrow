@@ -76,12 +76,24 @@ const fn is_delimiter(byte: u8) -> bool {
     )
 }
 
-/// Whether `byte` is one of PDF's six white-space characters.
+/// Whether `byte` ends a word without being a delimiter: PDF's six white-space characters, and the
+/// two PDFium adds.
 ///
 /// NUL is white space in PDF, which is easy to miss and is why this is a named function with a
 /// test rather than a `matches!` at three call sites.
+///
+/// **0x80 and 0xFF are white space to PDFium**, which the specification does not say. Measured by
+/// #228's third security review, every byte value placed between two tokens and rendered: these two
+/// end a word as white space does, and are skipped as the one byte after `ID`. Without them,
+/// `(SECRET) Tj\xff` was an unknown operator `Tj\xff` here and drew text there -- redaction `Ok` over
+/// 1,842 dark pixels -- and `/Fm1\xff Do` named no form, so `split` never walked into a hidden
+/// layer it then carried through. Vertical tab and 0xA0 do NOT end a word to PDFium, and are not
+/// here.
 const fn is_whitespace(byte: u8) -> bool {
-    matches!(byte, b'\0' | b'\t' | b'\n' | 0x0c | b'\r' | b' ')
+    matches!(
+        byte,
+        b'\0' | b'\t' | b'\n' | 0x0c | b'\r' | b' ' | 0x80 | 0xff
+    )
 }
 
 /// Whether `byte` can appear inside a number.
@@ -536,7 +548,7 @@ impl<'a> Lexer<'a> {
 }
 
 /// Read past a composite value in an inline image's dictionary: a flat array, or a dictionary of
-/// name keys each with one plain value (#228).
+/// name keys each with one plain value -- a number, a string, a name, or `true`/`false`/`null` (#228).
 ///
 /// **Nothing nested.** Bracket-balancing was the first version, and PDFium does not read these
 /// that way: `/D [[1 0]]`, `/D [1 [0]]`, `/DP << /A 1 2 >>` and `/DP << (a) 1 >>` each made it
@@ -563,6 +575,15 @@ fn skip_composite(lexer: &mut Lexer<'_>, array: bool) -> Result<()> {
             | Token::Brace => return Err(refusal()),
             Token::Name(_) if !array && expect_key => expect_key = false,
             _ if !array && expect_key => return Err(refusal()),
+            // A KEYWORD AS A DICTIONARY VALUE is `true`, `false` or `null`. Any other word made
+            // PDFium give up on the value and end the image's dictionary at `>>`, ahead of keys
+            // it then never read -- `/DP << /K foo >> /W 96` was `Ok` over 1,842 dark pixels
+            // (#228, third reviews). In an ARRAY PDFium skips the word, measured, so arrays keep it.
+            Token::Keyword(ref word)
+                if !array && !matches!(word.as_slice(), b"true" | b"false" | b"null") =>
+            {
+                return Err(refusal());
+            }
             _ => expect_key = true,
         }
     }
@@ -1074,6 +1095,77 @@ mod tests {
     }
 
     #[test]
+    fn bytes_0x80_and_0xff_end_a_word_as_the_renderer_reads_them() {
+        // #228's THIRD SECURITY REVIEW, every byte value measured between two tokens: PDFium ends a
+        // word at 0x80 and 0xFF as at white space. Without them `Tj\xff` was an unknown operator
+        // here and showed text there, and `/Fm1\xff` named no form.
+        for byte in [0x80u8, 0xff] {
+            let mut stream = b"(S) Tj".to_vec();
+            stream.push(byte);
+            stream.extend_from_slice(b"ET");
+            assert_eq!(
+                tokens(&stream),
+                [
+                    Token::Str,
+                    Token::Keyword(b"Tj".to_vec()),
+                    Token::Keyword(b"ET".to_vec())
+                ],
+                "{byte:#04x} ends the operator"
+            );
+            let mut name = b"/Fm1".to_vec();
+            name.push(byte);
+            name.extend_from_slice(b"Do");
+            assert_eq!(names(&name), ["Fm1"], "{byte:#04x} ends the name");
+            // And it is the one byte after `ID`, so the image begins where PDFium begins it.
+            let mut image = b"BI /W 1 /H 1 /BPC 8 /CS /G ID".to_vec();
+            image.push(byte);
+            image.extend_from_slice(b"X EI /AFTER 1 Tf");
+            let read = read(&image, InlineImages::REDACTION).expect("an image");
+            assert!(read.contains(&"AFTER".to_owned()), "{byte:#04x}: {read:?}");
+        }
+        // THE NEAR-MISSES: vertical tab and 0xA0 do NOT end a word to PDFium, measured.
+        for byte in [0x0bu8, 0xa0] {
+            let stream = [b'T', b'j', byte];
+            assert_eq!(
+                tokens(&stream),
+                [Token::Keyword(stream.to_vec())],
+                "{byte:#04x} is part of the word"
+            );
+        }
+    }
+
+    #[test]
+    fn a_keyword_inside_a_dictionary_value_refuses_and_inside_an_array_reads_on() {
+        // #228's THIRD REVIEWS: an unknown word as a value inside `<< >>` made PDFium end the
+        // image's dictionary at `>>`, ahead of `/W` -- `Ok` over 1,842 dark pixels. In an array
+        // PDFium skips the word, measured, so `/D [0 foo 1]` agrees and reads on.
+        for value in [
+            "/DP << /K foo >>",
+            "/DP << /K 1x >>",
+            "/DP << /K EI >>",
+            "/DecodeParms << /Predictor foo >>",
+        ] {
+            let refused = read(
+                &image(&format!("{value} /W 9 /H 1 /BPC 8 /CS /G"), 9),
+                InlineImages::REDACTION,
+            )
+            .expect_err(value);
+            assert!(
+                refused.contains("[inline-image-nested-value]"),
+                "{value}: {refused}"
+            );
+        }
+        for value in ["/DP << /K true >>", "/DP << /K null >>", "/D [0 foo 1]"] {
+            let names = read(
+                &image(&format!("{value} /W 9 /H 1 /BPC 8 /CS /G"), 9),
+                InlineImages::REDACTION,
+            )
+            .unwrap_or_else(|error| panic!("{value}: {error}"));
+            assert!(names.contains(&"AFTER".to_owned()), "{value}");
+        }
+    }
+
+    #[test]
     fn a_keyword_value_other_than_true_false_or_null_refuses() {
         let refused = read(
             &image("/W 9 /H 1 /BPC 8 /CS /G /I maybe", 9),
@@ -1132,7 +1224,7 @@ mod tests {
                 assert!(result.is_ok(), "{glued}: {result:?}");
             } else {
                 assert!(
-                    result.is_err(),
+                    result.is_err_and(|refused| refused.contains("ends somewhere else")),
                     "{glued}: an EI that is not a word ends nothing"
                 );
             }
@@ -1168,7 +1260,7 @@ mod tests {
                 b"5BI /W 1 /H 1 /CS /G /BPC 8 ID X EI",
                 InlineImages::REDACTION
             )
-            .is_err()
+            .is_err_and(|refused| refused.contains("no 'BI' before it"))
         );
         // THE NEAR-MISSES: a delimiter or white space ends a number as before.
         assert_eq!(
