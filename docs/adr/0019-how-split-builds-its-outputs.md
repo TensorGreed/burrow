@@ -795,3 +795,21 @@ refusal: `Ok` with a hidden layer drawn. So did the third reviews' two: an unkno
 named no form to the walk and a form to the renderer. They are refused, or read as PDFium reads them, in the
 lexer both callers share. Separately, the walk's depth ceiling returns without a refusal, which
 lets a hidden layer eight forms down through with no inline image at all: #253, not this change.
+
+## Amendment, 2026-10-05 — split refuses an input the engine repaired at open
+
+`split` opens with recovery off and now **refuses, at the open, any input qpdf repaired while
+reading it** -- `[engine-repaired-input]` (ADR 0029), read inside the trap. It is the **open-time
+half** of redaction's #224 rule; redaction also checks after the write, for lazy recoveries (a
+wrong `/Length`, a stray byte in a `/Widths`) that do not warn at open. split does not, and such an
+input is not caught here (it stays with #61). split builds new documents from the input and ships them from a
+live tool; an input qpdf had to reconstruct is not the one other readers show.
+
+**Cost, measured, bar registered first (under 1% of real documents):** 0 of #227's 100 real
+documents newly refused; seven fixtures are, all deliberately malformed (the four
+`evade-junk-kid-*`, `five-pages-or-six`, `layered`, `objstm-bomb`). The committed gate pins the
+three it tracks; `layered`, already refused for optional content, now refuses for repair first.
+
+**What it is not.** Not the post-write half of redaction's check, and not a crash fix: it catches
+inputs qpdf *warns* about at open, not ones it opens cleanly and recovers during the copy. Recovery
+for output stays off; the rest of #61 is open.

@@ -156,11 +156,17 @@ echo
 echo "=== the native path"
 {
   plant "$native_file"
+  # NOT the conformance `layered.pdf`: since the split/merge repaired-input guard (#260
+  # follow-up), that fixture -- whose page 2 carries no `/Resources`, which qpdf repairs at
+  # open -- is refused by the guard BEFORE pruning, so deleting the prune pass no longer changes
+  # its outcome and the witness went green with the prune gone. `oc-nested.pdf` opens clean (the
+  # guard does not fire) and is refused only by the optional-content check inside the prune walk,
+  # so the deletion still reddens it -- the native half of the same property, unconfounded.
   require_red \
     "qpdf/extract.rs without its prune" \
-    "split-refuses-a-layered-document" \
-    cargo test -p burrow-ops --features native-engines --test conformance \
-      every_fixture_produces_the_outcome_the_corpus_records
+    "a_layer_one_level_down_is_refused_like_one_on_the_page" \
+    cargo test -p burrow-ops --features native-engines --test split_no_leak \
+      a_layer_one_level_down_is_refused_like_one_on_the_page
   restore
 }
 

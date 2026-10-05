@@ -72,6 +72,12 @@ impl PageExtractor for WebQpdf {
             return Err(error);
         }
 
+        // REPAIR REFUSED AT THE OPEN, as on native and as redaction refuses it (#224): the merge
+        // in a browser that crashed on a repaired input is this path's live counterpart.
+        if session.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
+
         // THE SHARING SWEEP, inside the open's own deadline rather than a fresh one. It is
         // O(source pages) bridge crossings, so on a `max_pages`-sized document it is not "one
         // engine call" of overshoot -- and `Deadline::start` resets the budget as well as the

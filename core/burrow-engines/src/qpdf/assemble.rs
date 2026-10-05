@@ -99,6 +99,13 @@ impl PageAssembler for super::Qpdf {
             return Err(error);
         }
 
+        // REPAIR REFUSED, as redaction refuses it (#224): merge builds a new document from every
+        // input and ships it from a live tool, so a repaired input must not reach the copier.
+        // Asked of each input -- the first here, the rest in `append`.
+        if dest.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
+
         Ok(Assembly {
             dest,
             sources: Vec::new(),
@@ -128,6 +135,11 @@ impl PageAssembler for super::Qpdf {
 
         let source = Document::open(next, options.password, false)?;
         let count = source.page_count()?;
+
+        // THE SAME REPAIR REFUSAL as for the first input, before any page of this one is copied.
+        if source.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
 
         // The ceiling is on the OUTPUT, checked before a single page is copied. A hundred
         // inputs of a hundred pages each is ten thousand pages from a caller who set

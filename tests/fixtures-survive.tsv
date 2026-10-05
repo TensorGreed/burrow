@@ -58,9 +58,9 @@ tests/conformance/fixtures/five-pages-or-six.pdf	open	ok 6 page(s)
 tests/conformance/fixtures/five-pages-or-six.pdf	check	ok strict ok 5 page(s); recover ok 5 page(s)
 tests/conformance/fixtures/five-pages-or-six.pdf	rotate	ok every page by 90: output rotations [90, 90, 90, 90, 90] sizes ["792x612", "792x612", "792x612", "792x612", "792x612"]
 tests/conformance/fixtures/five-pages-or-six.pdf	reorder	ok reversed: input rotations [0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792", "612x792"] output rotations [0, 0, 0, 0, 0] sizes ["612x792", "612x792", "612x792", "612x792", "612x792"]
-tests/conformance/fixtures/five-pages-or-six.pdf	split	ok cuts [1]: parts 1 page(s) + 4 page(s)
+tests/conformance/fixtures/five-pages-or-six.pdf	split	refused unsupported: pdf [engine-repaired-input]: the PDF engine repaired this document while opening it, and a repaired document may not be the one other readers show, so burrow will not build a new document from it
 tests/conformance/fixtures/five-pages-or-six.pdf	compress	ok smaller: output 5 page(s)
-tests/conformance/fixtures/five-pages-or-six.pdf	merge	ok two copies: output 10 page(s)
+tests/conformance/fixtures/five-pages-or-six.pdf	merge	refused input 0: unsupported: pdf [engine-repaired-input]: the PDF engine repaired this document while opening it, and a repaired document may not be the one other readers show, so burrow will not build a new document from it
 tests/conformance/fixtures/five-pages-or-six.pdf	redact	refused unsupported: pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known
 tests/conformance/fixtures/five-pages-or-six.pdf	render	ok [1] into 200x200: page 1 at 155x200
 tests/conformance/fixtures/font-program-with-a-paren.pdf	open	ok 2 page(s)
@@ -85,9 +85,9 @@ tests/conformance/fixtures/layered.pdf	open	ok 2 page(s)
 tests/conformance/fixtures/layered.pdf	check	ok strict ok 2 page(s); recover ok 2 page(s)
 tests/conformance/fixtures/layered.pdf	rotate	ok every page by 90: output rotations [90, 90] sizes ["200x200", "200x200"]
 tests/conformance/fixtures/layered.pdf	reorder	ok reversed: input rotations [0, 0] sizes ["200x200", "200x200"] output rotations [0, 0] sizes ["200x200", "200x200"]
-tests/conformance/fixtures/layered.pdf	split	refused unsupported: this document uses optional content (layers), and burrow cannot carry the setting that decides whether a layer is hidden into a part of it
+tests/conformance/fixtures/layered.pdf	split	refused unsupported: pdf [engine-repaired-input]: the PDF engine repaired this document while opening it, and a repaired document may not be the one other readers show, so burrow will not build a new document from it
 tests/conformance/fixtures/layered.pdf	compress	ok smaller: output 2 page(s)
-tests/conformance/fixtures/layered.pdf	merge	ok two copies: output 4 page(s)
+tests/conformance/fixtures/layered.pdf	merge	refused input 0: unsupported: pdf [engine-repaired-input]: the PDF engine repaired this document while opening it, and a repaired document may not be the one other readers show, so burrow will not build a new document from it
 tests/conformance/fixtures/layered.pdf	redact	refused unsupported: pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known
 tests/conformance/fixtures/layered.pdf	render	ok [1] into 200x200: page 1 at 200x200
 tests/conformance/fixtures/mixed-rotation-4page.pdf	open	ok 4 page(s)
@@ -130,9 +130,9 @@ tests/conformance/fixtures/objstm-bomb.pdf	open	ok 1 page(s)
 tests/conformance/fixtures/objstm-bomb.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
 tests/conformance/fixtures/objstm-bomb.pdf	rotate	ok every page by 90: output rotations [90] sizes ["10x10"]
 tests/conformance/fixtures/objstm-bomb.pdf	reorder	ok reversed: input rotations [0] sizes ["10x10"] output rotations [0] sizes ["10x10"]
-tests/conformance/fixtures/objstm-bomb.pdf	split	ok cuts []: parts 1 page(s)
+tests/conformance/fixtures/objstm-bomb.pdf	split	refused unsupported: pdf [engine-repaired-input]: the PDF engine repaired this document while opening it, and a repaired document may not be the one other readers show, so burrow will not build a new document from it
 tests/conformance/fixtures/objstm-bomb.pdf	compress	ok smaller: output 1 page(s)
-tests/conformance/fixtures/objstm-bomb.pdf	merge	ok two copies: output 2 page(s)
+tests/conformance/fixtures/objstm-bomb.pdf	merge	refused input 0: unsupported: pdf [engine-repaired-input]: the PDF engine repaired this document while opening it, and a repaired document may not be the one other readers show, so burrow will not build a new document from it
 tests/conformance/fixtures/objstm-bomb.pdf	redact	refused unsupported: pdf redaction [engine-repaired-input]: the PDF engine repaired this document while reading it, and a repaired document may not be the one other readers show, so which page the region was drawn on cannot be known
 tests/conformance/fixtures/objstm-bomb.pdf	render	ok [1] into 200x200: page 1 at 200x200
 tests/conformance/fixtures/pages-10.pdf	open	ok 10 page(s)

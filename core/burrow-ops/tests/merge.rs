@@ -447,3 +447,44 @@ fn sized_pdf(width: u32, pages: usize) -> Vec<u8> {
     );
     out
 }
+
+#[test]
+fn merge_refuses_a_repaired_appended_input_not_only_the_first() {
+    // #260 follow-up: the append guard, reached only when the FIRST input opens clean. A clean
+    // generated page, then a committed fixture qpdf repairs at open (`five-pages-or-six.pdf`, the
+    // #61 shape). merge must refuse, naming the repaired input, rather than carry it into the copy.
+    let clean = minimal_pdf::pdf_with_pages(1);
+    let repaired = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/conformance/fixtures/five-pages-or-six.pdf"),
+    )
+    .expect("the committed fixture is readable");
+    match merge_all(vec![clean, repaired], Limits::default()) {
+        Err(Error::InputFailed { index, source }) => {
+            assert_eq!(
+                index, 1,
+                "the appended input, not the first, is the one refused"
+            );
+            assert!(
+                matches!(&*source, Error::Unsupported(why) if why.contains("[engine-repaired-input]")),
+                "the appended input must be refused for repair, got {source:?}"
+            );
+        }
+        other => panic!("expected the appended input refused for repair, got {other:?}"),
+    }
+}
+
+#[test]
+fn merge_accepts_two_clean_inputs() {
+    // THE TWIN: the same shape with both inputs clean must still merge, so the guard is not
+    // "refuse every append."
+    let out = merge_all(
+        vec![
+            minimal_pdf::pdf_with_pages(1),
+            minimal_pdf::pdf_with_pages(2),
+        ],
+        Limits::default(),
+    )
+    .expect("two clean inputs merge");
+    assert_eq!(pages_in(&out), 3);
+}

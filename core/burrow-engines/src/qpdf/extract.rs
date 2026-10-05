@@ -89,6 +89,12 @@ impl PageExtractor for Qpdf {
         // Every ceiling, in one place, shared with the other operations that open a document
         // this way -- see `open_document` for why this is not written out here.
         let (document, pages, rss_before, deadline) = super::open_document(bytes, options)?;
+        // REPAIR REFUSED AT THE OPEN, as redaction refuses it (#224) and for the same reason:
+        // split builds new documents from this input and ships them from a live tool, and a
+        // repaired input is not the one other readers show. See `engine_repaired_the_input`.
+        if document.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
         // INSIDE THE OPEN'S OWN DEADLINE, not a fresh one. This is a sweep over every source
         // page, so on a `max_pages`-sized document it is not "one engine call" of overshoot --
         // and `Deadline::start` resets the budget as well as the origin, so making one here

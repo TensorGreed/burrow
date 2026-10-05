@@ -3135,3 +3135,67 @@ fn a_derived_handle_outlives_its_parent_and_releases_exactly_once() {
         "the derived handle did not release, or released an id the fake never issued"
     );
 }
+
+#[test]
+fn web_split_refuses_an_input_the_engine_repaired_at_open() {
+    // #260 follow-up: the web split path (`WebQpdf as PageExtractor::open`) refuses a repaired
+    // input. Only reachable now that the fake can report a warning; it reports none by default,
+    // so before this the web guard had no witness at all.
+    let (engine, _) = structure_engine(QpdfScript {
+        warned: true,
+        ..QpdfScript::default()
+    });
+    let result = PageExtractor::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &OpenOptions::new(Limits::default(), stopped()),
+    )
+    .map(|_| ());
+    assert!(
+        matches!(&result, Err(Error::Unsupported(why)) if why.contains("[engine-repaired-input]")),
+        "a repaired input must be refused, got {result:?}"
+    );
+}
+
+#[test]
+fn web_merge_refuses_a_repaired_first_input() {
+    let (engine, _) = structure_engine(QpdfScript {
+        warned: true,
+        ..QpdfScript::default()
+    });
+    let result = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .map(|_| ());
+    assert!(
+        matches!(&result, Err(Error::Unsupported(why)) if why.contains("[engine-repaired-input]")),
+        "a repaired first input must be refused, got {result:?}"
+    );
+}
+
+#[test]
+fn web_merge_refuses_a_repaired_appended_input() {
+    // THE APPEND GUARD, which the first-input guard would hide if both inputs warned: the first
+    // input opens clean, then the engine starts repairing, and the appended input is refused.
+    let (engine, state) = structure_engine(QpdfScript::default());
+    let mut assembly = engine
+        .begin(
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .expect("a clean first input begins");
+    state.set_warned(true);
+    let result = engine
+        .append(
+            &mut assembly,
+            ordinary_pdf().into_boxed_slice(),
+            &merge_options(Limits::default()),
+        )
+        .map(|_| ());
+    assert!(
+        matches!(&result, Err(Error::Unsupported(why)) if why.contains("[engine-repaired-input]")),
+        "a repaired appended input must be refused, got {result:?}"
+    );
+}

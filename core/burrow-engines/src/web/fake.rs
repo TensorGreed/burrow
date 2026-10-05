@@ -268,6 +268,9 @@ pub(super) struct FakeHeap {
     heap: Mutex<Heap>,
     calls: Mutex<Vec<Call>>,
     wiped: Mutex<Option<Vec<u8>>>,
+    /// Whether `qpdf_more_warnings` should now report a repair, flippable mid-test so a merge's
+    /// first input can open clean and an appended one warn. Default false.
+    warn: Mutex<bool>,
 }
 
 impl FakeHeap {
@@ -276,6 +279,15 @@ impl FakeHeap {
     }
 
     /// Every call made so far, in order.
+    /// Make `qpdf_more_warnings` report a repair from now on.
+    pub(super) fn set_warned(&self, warned: bool) {
+        *self.warn.lock().expect("not poisoned") = warned;
+    }
+
+    pub(super) fn warned(&self) -> bool {
+        *self.warn.lock().expect("not poisoned")
+    }
+
     pub(super) fn calls(&self) -> Vec<Call> {
         self.calls.lock().expect("not poisoned").clone()
     }
@@ -796,6 +808,10 @@ impl PdfiumBridge for FakePdfium {
 pub(super) struct QpdfScript {
     /// The raw `QPDF_ERROR_CODE` bitmask `qpdf_read_memory` returns.
     pub(super) read_status: i32,
+    /// What `qpdf_more_warnings` returns: whether qpdf has warned since the open -- i.e. whether
+    /// it repaired anything. Defaults to `false` (the fake holds no document to warn about); a
+    /// test that exercises the repaired-input refusal on the web path sets it true.
+    pub(super) warned: bool,
     /// A pending error code, or `None` for "no error in the slot".
     pub(super) pending_error: Option<i32>,
     /// What `qpdf_get_num_pages` returns.
@@ -917,6 +933,7 @@ impl Default for QpdfScript {
     fn default() -> Self {
         Self {
             read_status: 0,
+            warned: false,
             pending_error: None,
             page_count: 1,
             add_page_status: 0,
@@ -1200,8 +1217,9 @@ impl QpdfBridge for FakeQpdf {
     }
 
     fn more_warnings(&self, _data: QpdfPtr) -> bool {
-        // THE FAKE REPAIRS NOTHING: it holds no document for qpdf to warn about.
-        false
+        // Scriptable two ways: a static `script.warned`, and a `FakeHeap` flag a test can flip
+        // between a merge's begin and append. Either drives the `[engine-repaired-input]` refusal.
+        self.script.warned || self.state.warned()
     }
 
     fn get_error(&self, _data: QpdfPtr) -> QpdfPtr {
