@@ -956,3 +956,74 @@ fn a_filtered_inline_image_inside_a_form_refuses_like_one_on_the_page() {
         }
     }
 }
+
+#[test]
+fn a_form_whose_names_the_page_already_read_still_refuses_on_its_filtered_image() {
+    // ONE PASS, NO CACHE HIT (#228, second code review). The page names every word of the form's
+    // image dictionary itself, so the form adds nothing new, the name walk ends after one pass,
+    // and the form is never met in the cache. Only the fresh read's partial mark refuses here;
+    // without it the split returned `Ok` with Courier, which the form draws with, pruned away.
+    let data = "BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 80> EI BT /F2 9 Tf (F) Tj ET";
+    let form = format!(
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Length {} >>\nstream\n{data}\nendstream",
+        data.len()
+    );
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /XObject << /Fm 6 0 R >> /Font << /F2 7 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R \
+         /Resources << >> >>"
+            .to_owned(),
+        content(
+            "/W BMC EMC /H BMC EMC /BPC BMC EMC /CS BMC EMC /G BMC EMC /F BMC EMC \
+             /AHx BMC EMC /Fm Do",
+        ),
+        form,
+        COURIER.to_owned(),
+        content(""),
+    ]);
+    match split_first(bytes, &[1]) {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[split-inline-image-filtered]"),
+            "refused, but not for the image: {error:?}"
+        ),
+        Ok(outputs) => {
+            assert!(
+                contains(&expanded(&outputs[0]), "Courier"),
+                "the font the form draws after its image was pruned off the page"
+            );
+            panic!("returned Ok, where a filtered inline image in a form must refuse the split");
+        }
+    }
+}
+
+#[test]
+fn a_filtered_inline_image_in_an_annotation_appearance_refuses() {
+    // The appearance stream of a kept annotation is read for names like the page's own content,
+    // so a filtered image there stops the read the same way (#228, second code review: nothing
+    // tested this path).
+    let appearance = "BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 80> EI BT /F2 9 Tf (A) Tj ET";
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /Font << /F1 6 0 R /F2 7 0 R >> >> /Annots [8 0 R] >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 10 0 R \
+         /Resources << >> >>"
+            .to_owned(),
+        content("BT /F1 12 Tf 10 10 Td (ONE) Tj ET"),
+        HELVETICA.to_owned(),
+        COURIER.to_owned(),
+        "<< /Type /Annot /Subtype /Square /Rect [10 10 100 100] /AP << /N 9 0 R >> >>".to_owned(),
+        format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 90 90] /Length {} >>\nstream\n{appearance}\nendstream",
+            appearance.len()
+        ),
+        content(""),
+    ]);
+    assert_refused_naming_the_image(split_first(bytes, &[1]), None, "an appearance stream");
+}

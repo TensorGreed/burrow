@@ -247,6 +247,89 @@ fn page_with_font(extra: &str) -> Vec<u8> {
     pdf.build(catalog)
 }
 
+/// A one-page document whose content is `content`, with the same `/F1` as [`page_with_font`].
+fn page_with_content(content: &str) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let stream = pdf.stream("", content);
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {stream} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+#[test]
+fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret() {
+    // #228's SECOND SECURITY REVIEW: five shapes where burrow and PDFium disagree about where an
+    // inline image's dictionary or data begins or ends. In each, the `SECRET` text object sits
+    // in bytes burrow read as image data and PDFium drew -- redaction `Ok` with 1,842 dark pixels
+    // still in the region, measured on main. Each must now refuse, or return `Ok` having seen
+    // the text and removed it; an `Ok` that kept it is the leak.
+    let payload = {
+        let mut text = String::from("\nEI\nQ\nBT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n");
+        while text.len() < 96 {
+            text.push(' ');
+        }
+        text
+    };
+    let kept = "BT /F1 24 Tf 72 300 Td (KIN) Tj ET";
+    let cases = [
+        (
+            "a nested value",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /D [[1 0]] /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+        ),
+        (
+            "a key with no value before ID",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /H 1 /CS /G /BPC 8 /W 96 /D ID {payload} EI Q {kept}"
+            ),
+        ),
+        (
+            "a second BI",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 8 /D BI /Width 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+        ),
+        (
+            "EI glued to a digit",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 1 /H 1 /CS /G /BPC 8 ID X EI5 \
+                 BI /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+        ),
+        (
+            "a number glued to ID",
+            format!("q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8ID {payload} EI Q {kept}"),
+        ),
+    ];
+    for (why, content) in cases {
+        let pdf = page_with_content(&content);
+        assert_present(&pdf, b"SECRET", why);
+        match redact(&pdf) {
+            Err(_) => {}
+            Ok((out, _)) => assert_absent(&out, b"SECRET", why),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // The narrowings: each is a call that a mutation could delete without any test noticing.
 // ---------------------------------------------------------------------------------------

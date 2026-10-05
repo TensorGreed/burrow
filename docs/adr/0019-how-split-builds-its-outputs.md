@@ -776,8 +776,20 @@ missing refusal:
 **Shown to fail**, each mutation asserted to apply and confirmed rebuilt: pruning trusting `/L`
 (the owner's, red on (c) as the excluded image in the output), the refusal switched off so the
 page is pruned by its partial read, the first answer restored (kept whole), and a partial read
-dropped on the page. **A form's partial mark is carried twice**, on the fresh read and on the
-cached one, and each mutation alone survives: `used_names` loops until the name set stops
-growing, so its second pass meets the form in the cache and the cache still says partial.
-Removing both is red, as the font the form draws with pruned off the page. Recorded rather than
-collapsed into one guard: the cache's copy is what keeps a reused set partial.
+dropped on the page or on a fresh read of a form. **The fresh read's mark is load-bearing; the
+cache's is defence in depth.** The first measurement had each surviving alone and both together
+red, and read that as two guards covering each other. That held only for its fixture, whose form
+added names, so `used_names` took a second pass and met the form in the cache. A form whose names
+the page already read takes one pass, and so does an annotation's appearance stream: there the
+fresh mark is the only thing that refuses, and without it the split returned `Ok` with the form's
+font pruned off the page (second code review). Both now have fixtures. The cache's mark has no
+input that reaches it alone -- the first page to read a partial stream refuses before any later page
+can reuse the cached set -- and is kept so that a change which stops refusing cannot reuse a
+partial set as a whole one.
+
+**The second security review's shapes reach `split` too.** The five inline-image shapes ADR 0029's
+#228 amendment records -- a nested value, a key with no value, a second `BI`, a glued `EI`, a number
+glued to `ID` -- each hid a form's `Do` from the walk, and with it the nested optional-content
+refusal: `Ok` with a hidden layer drawn. They are refused, or read as PDFium reads them, in the
+lexer both callers share. Separately, the walk's depth ceiling returns without a refusal, which
+lets a hidden layer eight forms down through with no inline image at all: #253, not this change.
