@@ -5,9 +5,13 @@ every file in it has a hand-written expected outcome in `expectations.json`, thr
 compare against it, and `the_corpus_is_not_shrinking` gates its size. Adding to it changes a
 measurement the project relies on.
 
-These are something narrower — committed reproductions of defects, each named by the issue it
-belongs to, used by a single `#[ignore]`d test that states a gap rather than asserting a
-behaviour. A fixture here graduates to the corpus when its defect is fixed and there is an
+These are something narrower — committed reproductions of defects and of the refusals that
+answer them, each named in the table below with the tests that read it.
+
+**The bar for adding one.** Damaged input is exactly what finds engine defects, so every fixture
+here is run under AddressSanitizer through every operation fuzz target before it is committed,
+and the PR adding it records the result. After it lands, `tools/check-fixtures-survive.sh`
+holds it, natively, to every shipped operation. A fixture here graduates to the corpus when its defect is fixed and there is an
 outcome worth pinning.
 
 ## The input class, and why none of it was covered before
@@ -27,7 +31,9 @@ and pointing a branch at another branch. Fuzzing found it in minutes.
 
 | file | what it is |
 |---|---|
-| `page-loss-on-write.pdf` | 1,871 bytes. A two-level, six-page tree with one page object's cross-reference entry pointing past the end of the file. burrow opens it and reports **5** pages; writing it out — unedited, through the identity permutation, or through `rotate` — yields a valid PDF with **4**. No error on any path. Found by the `reorder` fuzz target, 2026-09-13. |
+| `xref-entry-past-end.pdf` | 1,454 bytes. A minimal document with one in-use cross-reference entry past the end of the file; nothing else is wrong with it. The prescan refuses it before any engine opens it (`prescan::check`, "a cross-reference entry places an object past the end of the file"). Read by `optimistic_counts.rs` (every operation refuses it by the prescan) and the redaction golden file. |
 
-`page-loss-on-write.pdf` is clean under AddressSanitizer (checked against the `qpdf_check`
-target); it reproduces data loss, not memory unsafety.
+`page-loss-on-write.pdf`, #61's reproduction: replaced a damaged-fixture test; see #259.
+
+Every file here is also read by `tools/check-fixtures-survive.sh` (#260), which runs each tracked
+fixture through every shipped operation with its outcome pinned in `tests/fixtures-survive.tsv`.

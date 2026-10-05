@@ -56,6 +56,14 @@ pub(super) fn describe(bytes: &[u8], window: usize, max_chain: usize) -> Declare
     // Visited offsets, so a `/Prev` pointing at itself -- or a cycle of any length --
     // terminates instead of spinning. Bounded by `max_chain`, so this allocation is O(1).
     let mut visited: Vec<usize> = Vec::with_capacity(max_chain);
+    // THE ENTRY BYTES ALREADY JUDGED, as spans, shared by the whole chain. Sections may overlap --
+    // a declared count can land every section's cursor on one shared, large subsection -- and
+    // judging each section's entries afresh read the same bytes once per section: 32 times over a
+    // 480 MB file, 3.7 s with no deadline consulted (second security review). Judging each entry
+    // byte once keeps the walk linear in the file, whatever the chain. SPANS, NOT ONE MARK: an
+    // older section usually sits earlier in the file than the newer one read first, so a single
+    // high-water mark skipped entries nothing had read.
+    let mut judged = Judged::default();
 
     for _ in 0..max_chain {
         if offset >= bytes.len() || visited.contains(&offset) {
@@ -72,8 +80,17 @@ pub(super) fn describe(bytes: &[u8], window: usize, max_chain: usize) -> Declare
             break;
         };
 
-        let (entries, prev) = if starts_with_keyword(section, b"xref") {
-            (classic_table(section), find_int(head, b"/Prev"))
+        // White space before the keyword is skipped, as readers skip it: a `startxref` one byte
+        // early, at the line ending before `xref`, sent this down the stream branch -- which
+        // read the trailer's `/Size` and none of the table's entries.
+        let table = section.get(leading_space(section)..).unwrap_or(section);
+        let (entries, prev) = if starts_with_keyword(table, b"xref") {
+            let base = bytes.len().saturating_sub(table.len());
+            let read = classic_table(table, base, bytes.len(), &mut judged);
+            declared.entry_past_end |= read.past_end;
+            declared.entries_judged = declared.entries_judged.saturating_add(read.judged);
+            let entries = read.entries;
+            (entries, find_int(head, b"/Prev"))
         } else {
             // A cross-reference stream. `/Size` is the entry count unless `/Index`
             // narrows it to specific ranges.
@@ -122,8 +139,18 @@ fn startxref_offset(bytes: &[u8], window: usize) -> Option<usize> {
 /// subsection cap, or as soon as a line is not two integers -- which is what the entries
 /// themselves look like, so this naturally stops at the first entry of each subsection
 /// without needing to understand them.
-fn classic_table(section: &[u8]) -> u64 {
+///
+/// Also whether any in-use entry places its object at or past `file_len` -- see
+/// [`super::Declared::entry_past_end`]. Each entry is read only where it is written exactly as
+/// the specification lays it out; the first that is not ends the judging of its subsection,
+/// so the count above is unaffected and an oddly written table is never refused for it.
+///
+/// `base` is where `section` begins in the file, and `judged` the spans of entry bytes any
+/// section has already read: an entry inside one is skipped, not re-read.
+fn classic_table(section: &[u8], base: usize, file_len: usize, judged: &mut Judged) -> Table {
     let mut entries: u64 = 0;
+    let mut past_end = false;
+    let mut read: u64 = 0;
     let mut cursor = b"xref".len();
 
     for _ in 0..MAX_SUBSECTIONS {
@@ -155,6 +182,37 @@ fn classic_table(section: &[u8]) -> u64 {
         // Skip the entries themselves: `count` lines of exactly twenty bytes.
         let skip = usize::try_from(count.saturating_mul(CLASSIC_ENTRY_BYTES)).unwrap_or(usize::MAX);
         let consumed = section.len().saturating_sub(after_count.len());
+        // Read each one on the way past, bounded by the bytes actually present: a declared
+        // count larger than the table stops at the end of the section, not at the count.
+        let first = consumed.saturating_add(leading_space(after_count));
+        let mut at = first;
+        while let Some(entry) = section.get(at..at.saturating_add(20)) {
+            if at.saturating_sub(first) >= skip {
+                break;
+            }
+            // Already read by another section: jump past that span, on this subsection's own
+            // 20-byte stride.
+            if let Some(end) = judged.covering(base.saturating_add(at)) {
+                let past = end.saturating_sub(base).saturating_sub(first);
+                at = first.saturating_add(past.div_ceil(20).saturating_mul(20));
+                continue;
+            }
+            read = read.saturating_add(1);
+            match in_use_offset(entry) {
+                Some(Some(offset)) => {
+                    if usize::try_from(offset).map_or(true, |offset| offset >= file_len) {
+                        past_end = true;
+                    }
+                }
+                Some(None) => {}
+                None => break,
+            }
+            judged.add(
+                base.saturating_add(at),
+                base.saturating_add(at).saturating_add(20),
+            );
+            at = at.saturating_add(20);
+        }
         cursor = consumed
             .saturating_add(leading_space(after_count))
             .saturating_add(skip);
@@ -163,7 +221,91 @@ fn classic_table(section: &[u8]) -> u64 {
         }
     }
 
-    entries
+    Table {
+        entries,
+        past_end,
+        judged: read,
+    }
+}
+
+/// Spans of the file whose entries have been read, sorted and disjoint.
+///
+/// Bounded: a span grows by merging, and new spans come one per run of unread entries, at most
+/// one per subsection read -- `MAX_SUBSECTIONS` per section, across at most the chain's cap of
+/// sections. A constant, however large the file.
+#[derive(Default)]
+struct Judged {
+    spans: Vec<(usize, usize)>,
+}
+
+impl Judged {
+    /// The end of the span holding `at`, if one does.
+    fn covering(&self, at: usize) -> Option<usize> {
+        let index = self.spans.partition_point(|&(start, _)| start <= at);
+        let &(start, end) = self.spans.get(index.checked_sub(1)?)?;
+        (start <= at && at < end).then_some(end)
+    }
+
+    /// Record `[start, end)` as read, merging with any span it touches.
+    fn add(&mut self, start: usize, end: usize) {
+        let index = self.spans.partition_point(|&(s, _)| s < start);
+        let mut merged = (start, end);
+        let mut from = index;
+        if let Some(&(s, e)) = index.checked_sub(1).and_then(|i| self.spans.get(i))
+            && e >= start
+        {
+            merged = (s, e.max(end));
+            from = index - 1;
+        }
+        let mut to = from;
+        while let Some(&(s, e)) = self.spans.get(to) {
+            if s > merged.1 {
+                break;
+            }
+            merged.1 = merged.1.max(e);
+            merged.0 = merged.0.min(s);
+            to += 1;
+        }
+        self.spans.splice(from..to, [merged]);
+    }
+}
+
+/// What one classic table declared, and how much of it was read.
+struct Table {
+    /// Entries its subsection headers declare.
+    entries: u64,
+    /// Whether an in-use entry placed its object at or past the end of the file.
+    past_end: bool,
+    /// Entries actually read to answer that -- each entry byte once across the whole chain.
+    judged: u64,
+}
+
+/// A classic entry's offset if it is in use: `Some(Some(offset))` for `dddddddddd ddddd n` and a
+/// two-byte line ending, `Some(None)` for a free entry (`… f`), and `None` for anything not
+/// written exactly that way -- all twenty bytes.
+fn in_use_offset(entry: &[u8]) -> Option<Option<u64>> {
+    let digits = |range: core::ops::Range<usize>| {
+        entry
+            .get(range)
+            .filter(|run| run.iter().all(u8::is_ascii_digit))
+    };
+    let offset = digits(0..10)?;
+    digits(11..16)?;
+    if entry.get(10) != Some(&b' ') || entry.get(16) != Some(&b' ') {
+        return None;
+    }
+    // THE WHOLE TWENTY BYTES, line ending included: one of the specification's three two-byte
+    // endings. Reading only the first eighteen judged the first entry of a table written with
+    // one-byte line endings, which is not "written exactly as the specification lays it out"
+    // (fourth code review).
+    if !matches!(entry.get(18..20), Some(b" \n" | b" \r" | b"\r\n")) {
+        return None;
+    }
+    match entry.get(17) {
+        Some(b'n') => Some(read_int(offset)),
+        Some(b'f') => Some(None),
+        _ => None,
+    }
 }
 
 /// Entry count from an `/Index [first count first count ...]` array, if present.
@@ -413,5 +555,278 @@ mod tests {
         assert_eq!(read_int(b""), None);
         let (value, _) = read_int_at(b"99999999999999999999999999").expect("digits");
         assert_eq!(value, u64::MAX);
+    }
+
+    /// A one-table file whose entries are `entries`, with `startxref` `early` bytes before the
+    /// `xref` keyword (0 = exactly at it).
+    fn with_entries(entries: &[&str], early: usize) -> Vec<u8> {
+        let mut pdf = b"%PDF-1.7\n1 0 obj\n<< >>\nendobj\n".to_vec();
+        let at = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", entries.len()).as_bytes());
+        for entry in entries {
+            pdf.extend_from_slice(entry.as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} >>\nstartxref\n{}\n%%EOF\n",
+                entries.len(),
+                at - early
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn an_in_use_entry_past_the_end_of_the_file_is_read_as_one() {
+        let past = with_entries(&["0000000000 65535 f \n", "0000099999 00000 n \n"], 0);
+        assert!(describe_default(&past).entry_past_end);
+        // THE NEAR-MISS: the same table with the object where the file has bytes.
+        let inside = with_entries(&["0000000000 65535 f \n", "0000000009 00000 n \n"], 0);
+        assert!(!describe_default(&inside).entry_past_end);
+    }
+
+    #[test]
+    fn the_boundary_is_the_file_length_itself() {
+        // An object cannot begin AT the end either: no byte is there. One before it can.
+        let probe = with_entries(&["0000000000 65535 f \n", "0000000009 00000 n \n"], 0);
+        let len = probe.len();
+        let at_end = with_entries(
+            &["0000000000 65535 f \n", &format!("{len:010} 00000 n \n")],
+            0,
+        );
+        assert_eq!(
+            at_end.len(),
+            len,
+            "the fixture's length does not depend on the offset"
+        );
+        assert!(describe_default(&at_end).entry_past_end);
+        let before_end = with_entries(
+            &[
+                "0000000000 65535 f \n",
+                &format!("{:010} 00000 n \n", len - 1),
+            ],
+            0,
+        );
+        assert!(!describe_default(&before_end).entry_past_end);
+    }
+
+    #[test]
+    fn a_free_entry_is_not_an_object_and_is_not_judged() {
+        let free = with_entries(&["0000099999 65535 f \n", "0000000009 00000 n \n"], 0);
+        assert!(!describe_default(&free).entry_past_end);
+    }
+
+    #[test]
+    fn a_table_not_written_to_the_specification_is_not_judged() {
+        // Nineteen-byte lines put every later entry one byte off; a reader that judged them
+        // anyway would read digits from the wrong columns. It stops at the first that does not
+        // match, so the misaligned one is never read.
+        let short = with_entries(
+            &[
+                "0000000000 65535 f\n",
+                "0000000009 00000 n\n",
+                "0000099999 00000 n\n",
+            ],
+            0,
+        );
+        assert!(!describe_default(&short).entry_past_end);
+        // THE FIRST MISSHAPEN ENTRY ENDS THE JUDGING of its subsection: a well-formed entry
+        // after it, past the end, is not read -- what follows a broken line is not known to
+        // line up.
+        let after_garbage = with_entries(
+            &[
+                "0000000000 65535 f \n",
+                "xxxxxxxxxx 00000 n \n",
+                "0000099999 00000 n \n",
+            ],
+            0,
+        );
+        assert!(!describe_default(&after_garbage).entry_past_end);
+        // AND THE SEPARATORS ARE PART OF THE SHAPE: the right digits with a `-` where a space
+        // belongs are not an entry this reads.
+        let dashed = with_entries(&["0000000000 65535 f \n", "0000099999-00000 n \n"], 0);
+        assert!(!describe_default(&dashed).entry_past_end);
+    }
+
+    /// A file with two classic sections joined by `/Prev`; `bad_in` names which section holds
+    /// an in-use entry past the end ("newer", "older" or "neither").
+    fn two_sections(bad_in: &str) -> Vec<u8> {
+        let entry = |bad: bool| {
+            if bad {
+                "0000099999 00000 n \n"
+            } else {
+                "0000000009 00000 n \n"
+            }
+        };
+        let mut pdf = b"%PDF-1.7\n1 0 obj\n<< >>\nendobj\n".to_vec();
+        let older = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "xref\n0 2\n0000000000 65535 f \n{}trailer\n<< /Size 2 >>\n",
+                entry(bad_in == "older")
+            )
+            .as_bytes(),
+        );
+        let newer = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "xref\n1 1\n{}trailer\n<< /Size 2 /Prev {older} >>\nstartxref\n{newer}\n%%EOF\n",
+                entry(bad_in == "newer")
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    #[test]
+    fn an_entry_past_the_end_in_any_section_of_the_chain_is_read_as_one() {
+        // THE FLAG ACCUMULATES ACROSS SECTIONS: assigning it instead let a clean older section
+        // overwrite a bad newer one (second code review). Both positions, and the near-miss.
+        assert!(describe_default(&two_sections("newer")).entry_past_end);
+        assert!(describe_default(&two_sections("older")).entry_past_end);
+        assert!(!describe_default(&two_sections("neither")).entry_past_end);
+        assert_eq!(describe_default(&two_sections("neither")).xref_sections, 2);
+    }
+
+    #[test]
+    fn the_separator_before_the_type_is_part_of_the_shape_too() {
+        // Column 16, as the dashed near-miss above is column 10.
+        let dashed = with_entries(&["0000000000 65535 f \n", "0000099999 00000-n \n"], 0);
+        assert!(!describe_default(&dashed).entry_past_end);
+    }
+
+    #[test]
+    fn overlapping_sections_judge_each_entry_byte_once() {
+        // THE WALK STAYS LINEAR: a second section reaching the same entries reads none of them
+        // again. Re-reading them per section was 3.7 s over a 480 MB file with a 32-section
+        // chain (second security review).
+        let entries: Vec<String> = (0..10)
+            .map(|n| format!("{:010} 00000 n \n", 9 + n))
+            .collect();
+        let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let pdf = with_entries(&refs, 0);
+        let at = pdf
+            .windows(4)
+            .position(|w| w == b"xref")
+            .expect("the table");
+        let table = &pdf[at..];
+        let mut judged = Judged::default();
+        let once = classic_table(table, at, pdf.len(), &mut judged);
+        let again = classic_table(table, at, pdf.len(), &mut judged);
+        assert_eq!(once.judged, 10);
+        assert_eq!(again.judged, 0, "the same entries were read twice");
+        assert_eq!(again.entries, 10, "the declared count is still read");
+    }
+
+    #[test]
+    fn an_entry_beyond_the_declared_count_is_not_judged() {
+        // The subsection says one entry; a second, past the end, follows before `trailer`. It is
+        // outside what the table declares, so it is not this table's to judge.
+        let body = "%PDF-1.7\n1 0 obj\n<< >>\nendobj\n";
+        let pdf = format!(
+            "{body}xref\n0 1\n0000000000 65535 f \n0000099999 00000 n \ntrailer\n<< /Size 1 >>\nstartxref\n{}\n%%EOF\n",
+            body.len()
+        );
+        assert!(!describe_default(pdf.as_bytes()).entry_past_end);
+    }
+
+    #[test]
+    fn a_generation_that_is_not_five_digits_is_not_an_entry_this_reads() {
+        let lettered = with_entries(&["0000000000 65535 f \n", "0000099999 0000x n \n"], 0);
+        assert!(!describe_default(&lettered).entry_past_end);
+    }
+
+    #[test]
+    fn describe_shares_one_span_set_across_the_chain() {
+        // WIRED IN, not only working: two sections whose declared counts land on one shared
+        // subsection of ten entries. Shared, the ten are read once -- 10 + one misshapen line per
+        // section = 12. A span set per section reads them twice: 22 (third code review).
+        let mut pdf = b"%PDF-1.7\n1 0 obj\n<< >>\nendobj\n".to_vec();
+        let older = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 2\n");
+        pdf.extend_from_slice(&[b'x'; 11]);
+        let newer = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 1\n");
+        pdf.extend_from_slice(&[b'y'; 20]);
+        pdf.extend_from_slice(b"0 10\n");
+        for n in 0..10 {
+            pdf.extend_from_slice(format!("{:010} 00000 n \n", 9 + n).as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 11 /Prev {older} >>\nstartxref\n{newer}\n%%EOF\n")
+                .as_bytes(),
+        );
+        let declared = describe_default(&pdf);
+        assert_eq!(declared.xref_sections, 2);
+        assert_eq!(declared.entries_judged, 12);
+        assert!(!declared.entry_past_end);
+    }
+
+    #[test]
+    fn judged_spans_agree_with_a_byte_map() {
+        // A MODEL: every `add` is mirrored into a plain byte map, and `covering` must agree with it
+        // at every position. Deterministic pseudo-random sequences, so a failure reproduces.
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % u64::try_from(bound).unwrap()).unwrap()
+        };
+        for _ in 0..2_000 {
+            let mut judged = Judged::default();
+            let mut map = [false; 400];
+            for _ in 0..next(12) + 1 {
+                let start = next(380);
+                let end = start + next(20) + 1;
+                judged.add(start, end);
+                map[start..end].iter_mut().for_each(|b| *b = true);
+            }
+            for at in 0..400 {
+                assert_eq!(
+                    judged.covering(at).is_some(),
+                    map[at],
+                    "at {at}: {:?}",
+                    judged.spans
+                );
+                if let Some(end) = judged.covering(at) {
+                    assert!(map[at..end].iter().all(|b| *b) && map.get(end) != Some(&true));
+                }
+            }
+            assert!(
+                judged.spans.windows(2).all(|w| w[0].1 < w[1].0),
+                "{:?}",
+                judged.spans
+            );
+        }
+    }
+
+    #[test]
+    fn a_first_entry_with_a_one_byte_line_ending_is_not_judged() {
+        // The first entry of a nineteen-byte table lines up with the stride even though the table
+        // is not written to the specification; its line ending is what says so.
+        let first_short = with_entries(&["0000099999 00000 n\n", "0000000009 00000 n\n"], 0);
+        assert!(!describe_default(&first_short).entry_past_end);
+        assert_eq!(
+            describe_default(&first_short).entries_judged,
+            1,
+            "read, and not judged"
+        );
+        // THE NEAR-MISSES: each of the three endings the specification allows is read.
+        for ending in [" \n", " \r", "\r\n"] {
+            let entry = format!("0000099999 00000 n{ending}");
+            let table = with_entries(&["0000000000 65535 f \n", &entry], 0);
+            assert!(describe_default(&table).entry_past_end, "{ending:?}");
+        }
+    }
+
+    #[test]
+    fn a_startxref_one_byte_early_still_reads_the_table() {
+        // At the line ending before `xref`: read as a stream,
+        // it gave the trailer's `/Size` and none of the entries.
+        let early = with_entries(&["0000000000 65535 f \n", "0000099999 00000 n \n"], 1);
+        assert!(describe_default(&early).entry_past_end);
+        assert_eq!(describe_default(&early).xref_entries, 2);
     }
 }

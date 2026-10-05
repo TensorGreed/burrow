@@ -173,7 +173,7 @@ jobs:
       # `peak_rss_kb` reads `/proc/self/status`, which is process-wide, so the measurement is
       # only meaningful when nothing else in the binary is allocating. `#[ignore]` keeps it out
       # of the run above and this is the run that executes it -- an ignored test nobody runs is
-      # no test, which is the argument the `ignored-tests` steps below already make.
+      # no test, which is the argument the subsetting gate's step below makes too.
       - name: The /Annots warning-retention bound, measured alone
         run: |
           cargo test -p burrow-engines --all-features --lib -- --ignored --exact qpdf::sharing_tests::an_annots_array_of_non_dictionaries_does_not_retain_a_warning_each --test-threads=1
@@ -303,6 +303,17 @@ jobs:
       - name: That gate refuses when its own rules are broken
         run: tools/test-check-subsetting-gate.sh
 
+      # #260: every tracked fixture under `tests/` through the nine shipped operations natively,
+      # each pair in a process of its own under a timeout, with the outcome pinned in
+      # `tests/fixtures-survive.tsv`; a death by signal, a timeout or a changed outcome fails.
+      # IN `test` because it needs the native engines. ~10 s of runs, plus ~15 s to build the
+      # runner cold under its own target directory.
+      - name: No committed fixture crashes or hangs an operation
+        run: tools/check-fixtures-survive.sh
+
+      - name: That gate refuses a crash, a hang and a broken runner
+        run: tools/test-check-fixtures-survive.sh
+
       # The shared pruning policy's replacement risk, measured rather than argued.
       #
       # One policy, two callers. The differential corpus can no longer catch the two paths
@@ -319,41 +330,6 @@ jobs:
       # says so rather than reporting a pass.
       - name: Each split path reaches the shared pruning policy
         run: tools/test-prune-is-reached.sh
-
-      # The other kind of ignored test: a REPRODUCTION, required to pass.
-      #
-      # The step above runs ignored tests that must FAIL, because they assert a rule the code
-      # does not yet meet. This one runs ignored tests that must PASS, because they assert the
-      # defective behaviour exactly as it is -- so the day the defect is fixed, or moves, this
-      # step goes red and says which issue needs re-measuring. An ignored test nobody runs is
-      # a comment containing `assert!`, whichever direction it points in.
-      #
-      # #61: a damaged-but-openable document loses a page on write. The OPERATION now refuses
-      # that output -- ADR 0022 reads it back through a fresh engine and sees four pages where
-      # five were promised -- so no caller receives the short document, and
-      # `a_damaged_document_is_refused_rather_than_losing_a_page_silently` asserts that on
-      # every run. What stays ignored here is the defect BENEATH the refusal, at the engine
-      # seam where verification does not run: qpdf still writes four. It is pinned rather than
-      # deleted because #61's recovery-posture decision is still open.
-      - name: Known-defect reproductions still reproduce
-        run: |
-          set -u
-          expected="reorder_keeps_everything::a_damaged_document_loses_pages_on_write"
-          ran=0
-          for suite_test in $expected; do
-            suite=${suite_test%%::*}
-            name=${suite_test##*::}
-            echo "--- $suite::$name (expected to PASS, because it reproduces a defect)"
-            if ! cargo test -p burrow-ops --all-features --test "$suite" -- --ignored --exact "$name" >/tmp/repro.log 2>&1; then
-              echo "::error::$suite::$name no longer reproduces. Either the defect is fixed -- in which case turn this into a positive test, close the issue it names and move the fixture into the conformance corpus -- or the behaviour has moved and the issue needs re-measuring." >&2
-              tail -20 /tmp/repro.log >&2
-              exit 1
-            fi
-            ran=$((ran + 1))
-            echo "    reproduced as required"
-          done
-          [ "$ran" -eq 1 ] || { echo "::error::expected 1 reproduction, ran $ran" >&2; exit 1; }
-          echo "OK -- $ran known-defect reproduction(s) still reproduce"
 
       # Asks the question check-engine-licences.py cannot: is every component we can
       # DETECT in the artifacts actually declared? That is how HarfBuzz went undeclared

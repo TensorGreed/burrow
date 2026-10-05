@@ -339,3 +339,21 @@ fn resident_kb() -> u64 {
         .and_then(|s| s.split_whitespace().nth(1).and_then(|f| f.parse().ok()))
         .map_or(0, |pages: u64| pages * 4)
 }
+
+#[test]
+fn an_object_placed_past_the_end_of_the_file_is_refused_before_any_engine_opens_it() {
+    // A classic table whose second entry places object 1 at byte 99,999 of a file of a few
+    // hundred: impossible on its face. Refused as `Malformed`, naming the declaration.
+    let body = "%PDF-1.7\n1 0 obj\n<< >>\nendobj\n";
+    let past = format!(
+        "{body}xref\n0 2\n0000000000 65535 f \n0000099999 00000 n \ntrailer\n<< /Size 2 >>\nstartxref\n{}\n%%EOF\n",
+        body.len()
+    );
+    match prescan::check(past.as_bytes(), &Limits::default()) {
+        Err(Error::Malformed(why)) => assert!(why.contains("past the end of the file"), "{why}"),
+        other => panic!("an object past the end of the file was not refused: {other:?}"),
+    }
+    // THE NEAR-MISS: the object where it is.
+    let honest = past.replace("0000099999 00000 n", "0000000009 00000 n");
+    assert!(prescan::check(honest.as_bytes(), &Limits::default()).is_ok());
+}

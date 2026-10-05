@@ -717,9 +717,17 @@ fn the_web_engine_produces_the_native_outcome_on_every_recorded_case() {
         let between = bridge.opened();
         let right = outcome(&web.redact_page(bytes, page, &covered, region, &options));
         let after = bridge.opened();
-        let before_the_engine = ["stage: InputSize", "stage: SizeEstimate", "stage: Prescan"]
-            .iter()
-            .any(|stage| right.contains(stage));
+        // A PRESCAN REFUSAL THAT NAMES NO STAGE counts too, when the prescan itself refuses this
+        // input and the web outcome is that refusal: `prescan::check`'s `Malformed` declarations
+        // (a stream longer than the file, an entry past its end) carry no `stage:` text, so the
+        // string match alone read `xref-entry-past-end.pdf` as an engine never asked (#260).
+        let refused_by_prescan = crate::prescan::check(bytes, &options.limits)
+            .err()
+            .is_some_and(|refusal| right.contains(&format!("{refusal:?}")));
+        let before_the_engine = refused_by_prescan
+            || ["stage: InputSize", "stage: SizeEstimate", "stage: Prescan"]
+                .iter()
+                .any(|stage| right.contains(stage));
         pre_engine += usize::from(before_the_engine);
         if between != before || (after == between && !before_the_engine) {
             unbridged.push(format!(

@@ -872,7 +872,7 @@ scenario "a web change skips the Rust jobs" \
 # written down as a requirement. `burrow-types` is under `bindings/burrow-wasm`, whose build is
 # `pkg*`, which both web jobs stage and test.
 scenario "a change to a dependency selects its dependents, and the jobs reading what it builds" \
-  "core/burrow-types/src/lib.rs" "test,ignored-tests,wasm,web,web-e2e" ""
+  "core/burrow-types/src/lib.rs" "test,wasm,web,web-e2e" ""
 scenario "a binding change runs the jobs that read the artifacts built from it" \
   "bindings/burrow-wasm/src/lib.rs" "wasm,web,web-e2e" "fuzz"
 scenario "a fuzz-target change runs the fuzz jobs, which nothing else compiles" \

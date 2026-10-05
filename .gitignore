@@ -186,3 +186,6 @@ core/*/tests/zz_*.rs
 # removed by an EXIT trap; a hard kill leaves it in tools/, one `git add` from being committed.
 *.MUTANT.py
 *.MUTANT.sh
+
+# Agent memory is local to each machine, at any depth.
+**/.claude/agent-memory/
