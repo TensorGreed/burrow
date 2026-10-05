@@ -145,7 +145,7 @@ impl ToUnicode {
     ///   than this module will read. A refusal rather than a truncation: a truncated CMap is
     ///   one that still maps the secret and no longer maps something else.
     pub fn parse(program: &[u8]) -> Result<Self> {
-        let mut lexer = Lexer::new(program);
+        let mut lexer = Lexer::new(program, super::lexer::InlineImages::REDACTION);
         let mut read = Self::default();
         // Operands accumulate until a keyword, exactly as a content stream's do. A CMap is
         // PostScript rather than a content stream, so `ops::operations` is not reused: its

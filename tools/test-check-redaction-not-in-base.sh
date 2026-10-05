@@ -136,7 +136,8 @@ expect_pass "a copy of the real build passes" "$checker" "$work"
 # redaction [`, `pdf resources [`, `redact: the region is not cleared` -- were spelled in code no
 # wasm entry point could reach, because nothing on the web implemented redaction's seam, so they had
 # only planted positives. The probe now runs the public operation over the web engine, and the real
-# compiler keeps all eight literals. No SHIPPED module reaches them: no shipped export calls it.
+# compiler keeps all eight literals -- nine since #228, whose lexer refusal the probe reaches through
+# redaction's own lexer callers. No SHIPPED module reaches them: no shipped export calls it.
 REAL=(
   'pdf geometry ['
   'content-stream edit'
@@ -146,6 +147,7 @@ REAL=(
   'pdf redaction ['
   'pdf resources ['
   'redact: the region is not cleared'
+  '[inline-image-filtered]'
 )
 if ! command -v cargo >/dev/null || ! rustup target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown; then
   echo "  FAIL the probe build needs cargo and the wasm32-unknown-unknown target; refusing rather" >&2
@@ -200,7 +202,7 @@ done
 # character changed, so a rule loosened to a prefix or a case-insensitive match fails here.
 for near in 'pdf name [planted]' 'pdf geometry' 'content stream edit' 'a ToUnicode' \
   'a string token that begins with either' 'pdf regions [x]' 'pdf redactions' 'pdf resources' \
-  'redact: the region is cleared'; do
+  'redact: the region is cleared' '[inline-image-filter]'; do
   fresh
   plant "$base" "$near" || continue
   expect_pass "the near-miss '$near' is not refused" "$checker" "$work"

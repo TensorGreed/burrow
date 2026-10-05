@@ -71,6 +71,6 @@ pub mod tounicode;
 
 pub use contents::{Contents, Edit};
 pub use dict::top_level_keys;
-pub use names::names_in_content;
+pub use names::{ContentNames, names_in_content};
 pub use ops::{Operand, Operation, Span, operations};
 pub use strings::{decode_string, encode_literal};

@@ -29,7 +29,9 @@
 //! 2. **Only two error kinds escape.** Anything else means a failure mode nobody classified,
 //!    reaching a caller that matches on the kind.
 //! 3. **The bounds the module promises actually hold on the returned set** — asserted here rather
-//!    than trusted, because they are what stop the set from being the allocation.
+//!    than trusted, because they are what stop the set from being the allocation. They hold on a
+//!    **partial** read too: since #228 a filtered inline image stops the scan with `read_to_end`
+//!    false rather than refusing, and what came before it is still a set with these caps.
 
 #![no_main]
 
@@ -39,7 +41,8 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     match names_in_content(data) {
-        Ok(names) => {
+        Ok(read) => {
+            let names = read.names;
             // THE CAPS ARE PROPERTIES OF THE ANSWER, not of the code path that built it. A
             // truncated set is the failure this module's rustdoc calls the one that deletes a
             // resource the page draws with, so the ceiling has to be a refusal -- meaning an

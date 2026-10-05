@@ -169,11 +169,12 @@ export function messageFor(failure: Failure): Message {
         // guaranteed to carry the detail, and a sentence that depends on it would be blank
         // when it does not.
         //
-        // HEDGED ON PURPOSE. Layers are the only `Unsupported` split produces today, but the
-        // variant is not reserved for them, so this says "usually" rather than asserting a
-        // cause the page cannot see.
+        // HEDGED ON PURPOSE. Layers are the common `Unsupported`, not the only one: since #228 a
+        // page drawing a compressed image inside its own content refuses here too (ADR 0019's
+        // #228 amendment), and a few structural limits do. The page cannot see which, so it
+        // names the two a person might recognise and says "usually" about both.
         title: "Not Only PDF will not split that document.",
-        next: "This is usually a document that uses layers. Whether a layer is hidden is recorded for the document as a whole, so Not Only PDF cannot carry that setting into a part of it — and a hidden layer that arrived visible in one of the parts would be worse than refusing. Nothing was changed.",
+        next: "This is usually a document that uses layers, or one whose pages draw a compressed picture inside their own content, which Not Only PDF cannot yet read to its end. Whether a layer is hidden is recorded for the document as a whole, so Not Only PDF cannot carry that setting into a part of it — and a hidden layer that arrived visible in one of the parts would be worse than refusing. Nothing was changed.",
         retryable: true,
       };
     case "LimitExceeded":

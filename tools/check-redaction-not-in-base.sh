@@ -77,6 +77,10 @@ NEEDLES=(
   'pdf redaction ['
   'pdf resources ['
   'redact: the region is not cleared'
+  # The lexer's REDACTION mode, whose refusal of a filtered inline image the base module once
+  # carried because the mode was a runtime value (#228). The lexer itself is split's too; this
+  # literal is the one part of it only redaction's callers reach.
+  '[inline-image-filtered]'
 )
 MEANS=(
   'the glyph geometry walk is reachable'
@@ -87,6 +91,7 @@ MEANS=(
   'the redaction steps are reachable'
   "redaction's font and resource resolver is reachable"
   "redaction's output verification is reachable"
+  "the lexer's redaction mode, and its refusal of a filtered inline image, is reachable"
 )
 [ "${#NEEDLES[@]}" -eq "${#MEANS[@]}" ] ||
   fail "NEEDLES has ${#NEEDLES[@]} entries and MEANS has ${#MEANS[@]}; each needle needs its meaning"

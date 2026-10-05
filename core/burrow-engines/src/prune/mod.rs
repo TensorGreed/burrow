@@ -309,6 +309,15 @@ pub(crate) fn annots_sharing<G: ObjectGraph>(
 /// page the output does **not** contain — derived by the caller from [`annots_sharing`], which is
 /// read on the source before the copy.
 ///
+/// # A page whose names cannot all be read (#228)
+///
+/// A filtered inline image ends where its filter's data ends, which `crate::pdfsyntax` cannot
+/// find, so the names past it are unread. Pruning by them would delete what the page draws with,
+/// and keeping its resources whole carries through whatever an excluded page also reaches --
+/// ADR 0019 §2b -- and skips the optional-content refusal for every form drawn after the image,
+/// which is never visited. **So the split is refused**, naming the image (owner, 2026-10-04;
+/// ADR 0019's #228 amendment). #142 is where a filtered image's extent becomes derivable.
+///
 /// # Why this takes the whole output rather than one page
 ///
 /// Because the objects it prunes are **shared between pages**, which is the entire subject of
@@ -350,6 +359,7 @@ pub(crate) fn prune_output<G: ObjectGraph>(
     let clock = std::sync::Arc::clone(&options.clock);
     let mut walk = Walk {
         seen: BTreeMap::new(),
+        partial: false,
         budget: MAX_STREAMS_PER_OUTPUT,
         deadline,
         clock: clock.as_ref(),
@@ -392,7 +402,15 @@ pub(crate) fn prune_output<G: ObjectGraph>(
             // dictionary in the first place.
             continue;
         }
-        let used = used_names(graph, page, &resources, &mut walk)?;
+        let (used, partial) = used_names(graph, page, &resources, &mut walk)?;
+        if partial {
+            return Err(Error::Unsupported(
+                "split [split-inline-image-filtered]: a page draws a filtered inline image, whose \
+                 end burrow cannot find, so which of its resources the page uses after it is \
+                 unknown -- they can neither be pruned nor carried whole (ADR 0019 §2b, #228)"
+                    .to_owned(),
+            ));
+        }
         let identity = graph.identity(&resources)?;
         if identity == (0, 0) {
             // A DIRECT dictionary belongs to this page alone and cannot be shared, so it is
@@ -810,6 +828,9 @@ impl ResourceCategory {
     }
 }
 
+/// A stream's names, and whether it was read to the end.
+type SeenNames = (BTreeSet<Vec<u8>>, bool);
+
 /// What the whole output's resource walk shares.
 ///
 /// **Output-wide rather than per page, and that is a denial-of-service fix rather than a tidy-up.**
@@ -822,8 +843,12 @@ impl ResourceCategory {
 /// Caching the name set per object removes the amplification rather than merely detecting it: a
 /// stream's names do not depend on which page reached it.
 struct Walk<'a> {
-    /// Name sets already computed, by object identity.
-    seen: BTreeMap<(i32, i32), BTreeSet<Vec<u8>>>,
+    /// Name sets already computed, by object identity, each with whether its stream was read to
+    /// the end -- a partial set reused for another page must stay partial there (#228).
+    seen: BTreeMap<(i32, i32), SeenNames>,
+    /// Whether any stream the current page reaches was read only in part, at a filtered inline
+    /// image whose extent cannot be derived (#228). Reset per page by `used_names`.
+    partial: bool,
     /// How many more streams this output may decode.
     budget: usize,
     /// The operation's deadline, checkpointed per stream.
@@ -869,8 +894,10 @@ fn used_names<G: ObjectGraph>(
     page: &G::Handle,
     resources: &G::Handle,
     walk: &mut Walk<'_>,
-) -> Result<BTreeSet<Vec<u8>>> {
-    let mut used = names_in_content(&graph.page_content(page)?)?;
+) -> Result<(BTreeSet<Vec<u8>>, bool)> {
+    let read = names_in_content(&graph.page_content(page)?)?;
+    walk.partial = !read.read_to_end;
+    let mut used = read.names;
 
     // Appearance streams of the annotations that SURVIVED the filter. `prune_annotations` has
     // already run, so a dropped annotation's appearance contributes nothing -- which is the whole
@@ -898,7 +925,7 @@ fn used_names<G: ObjectGraph>(
         let selector = used.clone();
         follow_resources(graph, resources, &selector, &mut used, walk, 0)?;
         if used.len() == before {
-            return Ok(used);
+            return Ok((used, walk.partial));
         }
     }
 }
@@ -1008,9 +1035,10 @@ fn absorb<G: ObjectGraph>(
             // one; it is followed rather than deduplicated, because treating it as already seen
             // would silently skip its names.
             if identity != (0, 0)
-                && let Some(cached) = walk.seen.get(&identity)
+                && let Some((cached, read_to_end)) = walk.seen.get(&identity)
             {
-                let cached = cached.clone();
+                let (cached, read_to_end) = (cached.clone(), *read_to_end);
+                walk.partial |= !read_to_end;
                 absorb_into(used, cached)?;
                 return Ok(());
             }
@@ -1035,9 +1063,11 @@ fn absorb<G: ObjectGraph>(
                         .to_owned(),
                 ));
             };
-            let mine = names_in_content(&data)?;
+            let read = names_in_content(&data)?;
+            walk.partial |= !read.read_to_end;
+            let mine = read.names;
             if identity != (0, 0) {
-                walk.seen.insert(identity, mine.clone());
+                walk.seen.insert(identity, (mine.clone(), read.read_to_end));
             }
             absorb_into(used, mine.clone())?;
 

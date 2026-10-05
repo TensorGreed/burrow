@@ -30,6 +30,12 @@ describe("what split says differently from the other three", () => {
     expect(message.next).toContain("hidden");
   });
 
+  it("names the compressed-picture refusal too, which #228 added to the same variant", () => {
+    // `[split-inline-image-filtered]` arrives as `Unsupported`, and a page that explained it
+    // only as layers would send the person looking for layers their document does not have.
+    expect(messageFor({ kind: "Unsupported" }).next).toContain("compressed picture");
+  });
+
   it("does not assert that layers are the ONLY cause, because the page cannot see that", () => {
     // `Unsupported` is not reserved for optional content. Today it is the only thing split
     // produces it for, and "usually" is the honest width of that claim.

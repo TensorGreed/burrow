@@ -50,11 +50,15 @@ use burrow_types::Error;
 use libfuzzer_sys::fuzz_target;
 
 /// White space and comments only — what may legally sit between two operations.
+///
+/// White space is the lexer's set, 0x80 and 0xFF included: PDFium ends a word there, measured by
+/// #228's third security review, so the lexer skips them between tokens and so does this. A copy
+/// without them failed on `ff ff 10 00` the first time the target ran against that change.
 fn is_only_trivia(bytes: &[u8]) -> bool {
     let mut at = 0usize;
     while let Some(&byte) = bytes.get(at) {
         match byte {
-            b'\0' | b'\t' | b'\n' | 0x0c | b'\r' | b' ' => at += 1,
+            b'\0' | b'\t' | b'\n' | 0x0c | b'\r' | b' ' | 0x80 | 0xff => at += 1,
             b'%' => {
                 // A comment runs to the end of the line, or to the end of the input.
                 at += 1;

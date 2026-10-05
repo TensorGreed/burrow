@@ -713,3 +713,85 @@ prunes, so the test passed under the over-correction it existed to catch.
 Running both fixtures through every operation turned up nothing else: `page_count`,
 `structure_check`, `rotate`, `reorder` and `compress` all accept them unchanged. Only `split`
 ever failed, because only `split` tokenises.
+
+## Amendment, 2026-10-04 — #228: a filtered inline image refuses the split
+
+**Why it comes up.** `crate::pdfsyntax`'s lexer used to end an inline image at its `/L`. PDFium,
+measured for #228, never reads `/L`: it ends an unfiltered image after the bytes it computes from
+the dictionary, and a filtered one at its filter's own end of data. Redaction now follows PDFium
+-- computed extents where PDFium's rule and the specification's agree, refusals where they do not,
+a disagreeing `/L` refused -- and refuses a filtered inline image outright, because burrow cannot
+decode to find its end. The lexer is shared, and `split`'s pruning reads every content stream
+through it, so the same question reached this ADR.
+
+**The unfiltered half applies to every caller**, `split` included: an extent computed as the
+renderer computes it is a better reading of the page for pruning too, and every shape redaction
+refuses for its extent is refused by `split` as well.
+
+**The filtered half: refused** `[split-inline-image-filtered]`, naming the image (owner,
+2026-10-04). Past a filtered image the names are unread, so the page's resources can be neither
+pruned -- that deletes what the page draws with -- nor carried whole. The lexer's
+`InlineImages::Prune` mode stops the read there and says so, and `prune_output` refuses any page,
+or any form or appearance it reaches, whose read stopped.
+
+**Carrying the resources whole was this amendment's first answer, and it was wrong.** It kept a
+page's `/Resources` whole wherever no excluded page reached *that dictionary*, judged by object
+identity, and refused only where one did. Both #228 reviewers broke it:
+
+- **Identity does not answer §2b.** A page's own dictionary can list objects only an excluded page
+  draws: its own `/XObject` entry, an unlisted key such as `/Stash` (the allowlist pruning that
+  normally removes it was skipped), a font reached by the excluded page through a form's
+  `/Resources`, a `/Pages` node's inline dictionary between the page and the root. Each split `Ok`
+  with the excluded page's image, form or font in the output.
+- **It skipped §2a row 6.** The nested optional-content refusal runs on what the walk visits, and a
+  form drawn after the image is never visited. A page that rendered 0 dark pixels split `Ok` with
+  its hidden layer's text drawn at 1,681 and no `/OCProperties` to hide it -- a regression from
+  base, which refused that page.
+- **Its sharing table cost O(pages²).** 10,000 pages sharing one `/Resources` took 3.73 s and 829
+  MB at open, against 0.21 s and 47 MB before, on a 1.36 MB input.
+
+A transitive reachability check would answer the first, at the price of refusing every document
+whose pages share a font, at an unmeasured rate. The owner chose the refusal: *"my fallback was
+wrong, not under-specified."* `prune::resources_sharing` is deleted. Office documents with
+filtered inline images wait for #142, on both paths.
+
+**Measured.** Over the 163 documents of the redaction golden file and #227's 100 real documents,
+split with and without this change: **1 of 263 changed outcome, and it is not a real document** --
+`evade-inline-image`, this corpus's own filtered-image fixture, now refused where it split. **0 of
+the 100 real documents** changed outcome or output size; none carries a filtered inline image. The
+office producers that do write `/Fl` inline images are not in that sample; the rate on them is
+unmeasured until the owner's producer set arrives, and #228 is re-measured there alongside #242.
+
+**Tested** in `split_no_leak.rs`. Each refusal fixture asserts the reason names the image, and its
+`Ok` branch first asserts the leak absent, so a regression shows as the leak rather than as a
+missing refusal:
+- refused with its own `/Resources` (a), and with `/Resources` shared only within the output (b);
+- refused under a `/Pages` node's `/Resources` an excluded page also inherits (c), beside its own
+  `/XObject` entry only the excluded page draws, and under a shared `/XObject` -- each asserting
+  the excluded image's bytes absent;
+- refused with a hidden layer in a form drawn after the image, asserting the layer's text absent;
+- refused when the filtered image is inside a form the page draws, not on the page;
+- the unfiltered twin of (c) (d), pruned as before with the excluded image absent.
+
+**Shown to fail**, each mutation asserted to apply and confirmed rebuilt: pruning trusting `/L`
+(the owner's, red on (c) as the excluded image in the output), the refusal switched off so the
+page is pruned by its partial read, the first answer restored (kept whole), and a partial read
+dropped on the page or on a fresh read of a form. **The fresh read's mark is load-bearing; the
+cache's is defence in depth.** The first measurement had each surviving alone and both together
+red, and read that as two guards covering each other. That held only for its fixture, whose form
+added names, so `used_names` took a second pass and met the form in the cache. A form whose names
+the page already read takes one pass, and so does an annotation's appearance stream: there the
+fresh mark is the only thing that refuses, and without it the split returned `Ok` with the form's
+font pruned off the page (second code review). Both now have fixtures. The cache's mark has no
+input that reaches it alone -- the first page to read a partial stream refuses before any later page
+can reuse the cached set -- and is kept so that a change which stops refusing cannot reuse a
+partial set as a whole one.
+
+**The second security review's shapes reach `split` too.** The five inline-image shapes ADR 0029's
+#228 amendment records -- a nested value, a key with no value, a second `BI`, a glued `EI`, a number
+glued to `ID` -- each hid a form's `Do` from the walk, and with it the nested optional-content
+refusal: `Ok` with a hidden layer drawn. So did the third reviews' two: an unknown word inside a
+`/DP << >>` value, and a 0x80 or 0xFF byte, which PDFium reads as white space -- `/Fm1\xff Do`
+named no form to the walk and a form to the renderer. They are refused, or read as PDFium reads them, in the
+lexer both callers share. Separately, the walk's depth ceiling returns without a refusal, which
+lets a hidden layer eight forms down through with no inline image at all: #253, not this change.

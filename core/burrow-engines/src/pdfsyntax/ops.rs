@@ -225,7 +225,7 @@ pub const MAX_COMPOSITE_ITEMS: usize = 65_536;
 ///   [`MAX_OPERAND_BYTES`] exceeded, or nesting deeper than the lexer's `MAX_NESTING`. Each is
 ///   a refusal rather than a truncation.
 pub fn operations(content: &[u8]) -> Result<Vec<Operation>> {
-    let mut lexer = Lexer::new(content);
+    let mut lexer = Lexer::new(content, super::lexer::InlineImages::REDACTION);
     let mut out: Vec<Operation> = Vec::new();
     let mut pending: Vec<Operand> = Vec::new();
     // Across the WHOLE stream, not per operation. See `MAX_TOTAL_OPERANDS`.
@@ -529,7 +529,7 @@ fn number(content: &[u8], span: Span) -> Result<Operand> {
 /// of five numbers is refused by its caller rather than silently padded here.
 #[must_use]
 pub fn numbers_in(fragment: &[u8]) -> Vec<f64> {
-    let mut lexer = Lexer::new(fragment);
+    let mut lexer = Lexer::new(fragment, super::lexer::InlineImages::REDACTION);
     let mut found = Vec::new();
     while let Ok(Some(token)) = lexer.next_token() {
         if matches!(token, Token::Number) {
@@ -666,7 +666,7 @@ mod tests {
         // The lexer skips the binary itself, so `ID`'s span runs through `EI`. Every byte is
         // accounted for by exactly one operation, which is what lets a rewriter rebuild the
         // stream from spans without losing an image.
-        let content = b"q BI /W 14 /H 1 /CS /G ID \x00(/F9 <</a 1>> EI Q";
+        let content = b"q BI /W 14 /H 1 /BPC 8 /CS /G ID \x00(/F9 <</a 1>> EI Q";
         let read = ops(content);
         assert_eq!(operators(content), ["q", "BI", "ID", "Q"]);
         let (start, end) = read[2].span;

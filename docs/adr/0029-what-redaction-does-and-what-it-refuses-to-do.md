@@ -137,6 +137,11 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a document **the PDF engine repaired while reading it** -- any qpdf warning at the open, or by the write | **refuse**, `[engine-repaired-input]` — added 2026-09-29 ([#224], rounds 2 and 3). A repair can change what a page is: a junk `/Kids` entry makes qpdf push every inherited attribute onto the pages, after which a null-overridden page looks declared. Only whether a warning was raised is read, never its code or text. 4 of 224 local documents, all test fixtures, at either point. **Since [#227] it is also a refusal of a member of an object stream qpdf cannot load** -- one headed at a generation qpdf will not read members from. The reference rule below refuses it first, unless a decoy header declares the member null, and then this is the only refusal; see the [2026-10-01 amendment](#amendment-2026-10-01--227-a-reference-qpdf-resolves-to-null-is-refused-unless-the-file-declares-that-null) |
 | a **reference qpdf resolves to null** that the file does not itself declare as `null` -- a generation the cross-reference does not have, however qpdf came to cache it; a number it does not have; an object in the file body and missing from a valid cross-reference; a member of an object stream qpdf cannot load | **refuse**, `[reference-to-nothing]` — added 2026-10-01 ([#227]). qpdf drops the key that held it and warns about nothing; PDFium finds the object by number. A null redacts only where every header for its number holds `null`, one at the pair written, qpdf holds it at that pair, and no object stream lists the number -- dvipdfm's `/Threads`. **It over-refuses** a reference to an object absent from both readers, and a declared null the cross-reference frees or an object stream also lists. 0 of 99 real documents and 0 of 100 fixtures |
 | a **reference not written in plain digits** -- a sign, a leading zero, a number past 32 bits, a comment inside it -- or a stream object or object stream whose header does not read, or more references than the check's caps | **refuse**, `[reference-unreadable]` — added 2026-10-01 ([#227]). qpdf reads `+6 0 R`, `6 +0 R`, `06 00 R` and a comment between the numbers as ordinary references; the rule refuses the shape rather than deciding what a reader meant. 0 of 99 real documents and 0 of 100 fixtures |
+| an **unfiltered inline image whose `/L` disagrees** with the size its `/W`, `/H`, `/BPC` and colour space imply | **refuse**, `[inline-image-length-disagrees]` — added 2026-10-04 ([#228]). PDFium never reads `/L`; an overstated one hid the text after the image from burrow while PDFium drew it, `Ok` with 1,842 dark pixels in the region, measured. 0 of 100 real documents carry `/L` on an inline image |
+| an **unfiltered inline image PDFium sizes by a rule the specification does not share**, or from the page's resources: no `/CS` and a `/BPC` other than 1; a device `/CS` and no `/BPC`; an image mask that names a `/CS`; a `/CS` that is not one of the six device spellings, or an array | **refuse**, `[inline-image-bpc-without-cs]` / `[inline-image-cs-without-bpc]` / `[inline-image-mask-with-cs]` / `[inline-image-unshared-cs]` — added 2026-10-04 by #228's reviews. PDFium reads no `/CS` as one bit whatever `/BPC` says, a missing `/BPC` beside a `/CS` as 0, and every other colour-space name through the page's resources; burrow read each by the specification and ended the image somewhere else: `Ok` over 1,842 dark pixels on each shape the two reviews ran end to end, the others refused as unmeasured. 0 of 100 real documents: every inline image in them is a mask with no `/CS` and `/BPC 1` |
+| a **filtered inline image** | **refuse**, `[inline-image-filtered]` — added 2026-10-04 ([#228]). PDFium ends it at its first filter's own end of data, which burrow cannot decode to find. 0 of 100 real documents carry one; the TeX-heavy sample is why that is not a rate for office producers, which is unmeasured. `split` refuses it too, `[split-inline-image-filtered]`: ADR 0019's #228 amendment |
+| an **inline image dictionary with a key it may not carry** (`/Intent`, which has no abbreviation, it may), a key written with `#`, or one key given twice in either spelling | **refuse**, `[inline-image-unknown-key]` / `[inline-image-escaped-key]` / `[inline-image-repeated-key]` — added 2026-10-04 ([#228]). PDFium reads keys raw, so `/#57` is not `/W` to it, and lets the abbreviated spelling win in either order. Real inline images here carry `/W /H /BPC /IM /D /I`, each once |
+| an **inline image whose dictionary or data the renderer bounds elsewhere**: a value nested in a value, or a dictionary value that is not name/value pairs, or a keyword other than `true`/`false`/`null` as a value at either level (an array may hold one; PDFium skips it there); a key with no value before `ID`; a `BI` inside an open dictionary; an `EI` that does not stand as a word (`EI5`) | **refuse**, `[inline-image-nested-value]` / `[inline-image-key-without-value]` / `[inline-image-nested-bi]`, and the last as a length that disagrees — added 2026-10-04 by #228's second security review. In each PDFium abandoned the image, or ended it, somewhere burrow did not, and drew as content what burrow had skipped as data: `Ok` over 1,842 dark pixels, each measured on main as well. **A number glued to letters (`8ID`, `10Tf`) is now one word**, as PDFium reads it, rather than a number and a keyword: read as two, `8ID` began an image. **Bytes 0x80 and 0xFF end a word**, as white space does to PDFium (third security review): `Tj\xff` was an unknown operator to burrow and showed text to PDFium. 0 of 100 real documents carry any of these |
 | a page box, `/Rotate` or `/UserUnit` in a **shape the renderer does not read as burrow would** -- a box that is not four numbers, a `/Rotate` that is not a number or is beyond ten turns, a number of magnitude past 2^24, a crop sharing no area with the media box | **refuse**, `[page-frame-unreadable]` — added 2026-09-29 ([#224], round 2). The crop is clipped to the media box, as PDFium clips it. 0 of 224 local documents |
 | a page whose **`/UserUnit` is not 1** | **refuse**, `[user-unit-not-one]` — added 2026-09-29 ([#224], round 2). PDFium's size and its render ignore it and the region conversion divides by it. 0 of 224 local documents |
 | a **font dictionary written inline** (a direct object) among the fonts the operation considers -- the page's own and those its cut glyphs came from, whether it would narrow or retain it | **refuse**, `[direct-font]` — added 2026-09-28 by the owner ([#218]). The engine gives every direct object the identity `(0, 0)`, so two such fonts are one to the dedupe and the sharing rule: the first was narrowed and the second never touched, and a review got that to return `Ok` with a removed character still mapped. None of the 100 golden documents qpdf could dump has one |
@@ -1170,6 +1175,7 @@ the seven cases then in the script:
 [#224]: https://github.com/TensorGreed/burrow/issues/224
 [#226]: https://github.com/TensorGreed/burrow/issues/226
 [#229]: https://github.com/TensorGreed/burrow/issues/229
+[#228]: https://github.com/TensorGreed/burrow/issues/228
 [#242]: https://github.com/TensorGreed/burrow/issues/242
 [#239]: https://github.com/TensorGreed/burrow/issues/239
 [#240]: https://github.com/TensorGreed/burrow/issues/240
@@ -4735,3 +4741,113 @@ annotation naming page 1's array; the check switched off fails both sharing shap
 name ignored fails the trailer case; and this page's own dictionary refused fails the page whose
 `/Annots` is its own object.
 
+## Amendment, 2026-10-04 — #228: an inline image ends where the renderer ends it
+
+**What happened.** `pdfsyntax::lexer` took an inline image's `/L` as its data length. PDFium does
+not read `/L`. Measured with an `EI` placed straight after the true end and the region's text
+after it, then a second `EI` where an overstated `/L` would end: PDFium drew the text -- **1,842
+dark pixels in the region after an `Ok`** -- for an unfiltered image and for `/AHx`, `/A85`, `/Fl`,
+`/RL`, `/LZW`, a one-filter array and an `/AHx /Fl` chain. It ends a filtered image at its first
+filter's own end of data, and an unfiltered one after the bytes it computes from the dictionary.
+
+**Owner's decision, 2026-10-03.**
+- **Unfiltered: the extent is computed** from `/W`, `/H`, `/BPC` and the colour space, as PDFium
+  computes it, and a present `/L` that disagrees refuses `[inline-image-length-disagrees]`.
+- **Filtered: refused** `[inline-image-filtered]`. burrow cannot decode to find the end PDFium
+  uses, and an extent it cannot derive is a page it cannot claim to have read.
+- **A key the inline image dictionary may not carry refuses** `[inline-image-unknown-key]`; both
+  spellings of every key it may carry -- `/W` and `/Width`, and the rest of PDF 32000-1 Table 92 --
+  are read.
+
+**"As PDFium computes it" was first written as the specification's rule, and it is not.** The
+first version of this amendment said the computed extent was "measured exact at every boundary".
+It was measured exact at every boundary *tested*, and every one tested had a device `/CS` with a
+`/BPC`, or was a mask with no `/CS` -- the shapes where the two rules agree. Both #228 reviewers,
+placing an `EI` at every offset, measured where they do not:
+
+| dictionary | the specification | PDFium |
+|---|--:|--:|
+| `/W 9 /H 1 /BPC 8`, no `/CS` | 9 | 2 |
+| `/W 4 /H 1 /CS /RGB`, no `/BPC` | 12 | 0 |
+| `/W 9 /H 1 /BPC 8 /CS /CalRGB` (or `/CalGray`, `/I`, `/Indexed`, no such resource) | 27 | 2 |
+| `/CS [/CalRGB <<…>>] /BPC 8`, `/W 64` | 64 (burrow) | 192 |
+| `/W 8 /H 1 /IM true /BPC 1 /CS /RGB` | 1 | 3 |
+| `/W 1 /Width 9 /H 1 /BPC 8 /CS /G` | 9 | 1 |
+| `/#57 9 /H 1 /BPC 8 /CS /G` | 9 | 0 |
+
+So PDFium's rule is: **no `/CS`** is one bit of one component, whatever `/BPC` and `/IM` say; a
+**device `/CS`** gives its component count, and a missing `/BPC` reads as **0**; **any other `/CS`
+name** is looked up in the page's resources; `/IM` plays no part in the size; keys are read **raw**,
+and the abbreviated spelling wins in either order. Each row returned `Ok` from redaction over the
+same 1,842 pixels, in both directions -- burrow reading longer and swallowing the text, or shorter
+and reading PDFium's image bytes as an unclosed string around it -- and inside a form too.
+
+**So the extent is computed only where the two rules agree, and refused where they do not or
+where the answer is in the page's resources**: `[inline-image-bpc-without-cs]`,
+`[inline-image-cs-without-bpc]`, `[inline-image-mask-with-cs]`, `[inline-image-unshared-cs]`,
+`[inline-image-escaped-key]` and `[inline-image-repeated-key]`, the §3 rows above. "An image mask
+is one bit whatever its `/BPC` says", which the first version stated as a rule, is the no-`/CS`
+case, and is refused as such. A `/BPC` present but not an integer refuses rather than reading as
+absent. Every row of the table is a fixture, each asserting its refusal by name, and the agreeing
+shapes -- no `/CS` with no `/BPC` or `/BPC 1`, each device spelling with a `/BPC` -- are its
+near-miss twins and read on.
+
+**`split` refuses a filtered inline image too.** It first kept the page's resources whole where no
+excluded page reached that dictionary; both reviews broke that, and ADR 0019's #228 amendment
+records how. The lexer still takes a mode every caller names (`InlineImages::Redaction` /
+`Prune`), because the two refusals are written in different places with different reasons.
+
+**The census, and its caveat (owner, 2026-10-03).** #227's 100 real documents hold 16 inline
+images, in 3 documents, every one unfiltered, without `/L`, a mask with no `/CS` and `/BPC 1`,
+and every key given once; #227's fixture list holds 56, one of them filtered -- this corpus's own
+`evade-inline-image`. So **0 of 100 real documents** are refused by any of the new rules, and the
+263-document split census shows no real document changing outcome. That sample is TeX-heavy, and
+the producers that write `/Fl` inline images, colour inline images or a `/CS` beside a mask --
+Word, Ghostscript, print drivers -- are not in it. **The rate against them is unmeasured**; #228
+joins #242 in being re-measured on the owner's producer set, against the same 1% bar.
+
+**One corpus placement moves.** `evade-inline-image` (`/Fl /L 135`), an owed #125 leak until now,
+is refused `[inline-image-filtered]`: its owed marker is removed (#125's count 13 to 12) and it
+leaves the pinned set of owed leaks. Three golden lines change, each from `Ok` to that refusal.
+
+**Shown to fail.** Each mutation asserted to apply and confirmed rebuilt, against a green
+baseline: `/L` used where present instead of the computed size (the owner's), and row padding
+skipped (the owner's), each red on its boundary fixture; the specification's defaults restored
+where there is no `/CS`; each new refusal switched off -- eight mutations, the escaped key and the
+escaped colour space separately; a `/BPC` that is not an integer read as absent; and the
+unknown-key check -- each red on its row of the refusal table. Pruning trusting `/L` is red in
+both places it can be: redaction's corpus, and `split` as the excluded image in the output.
+
+**The second security review: where the dictionary and the data begin and end.** With the extent
+arithmetic right, the review measured five older shapes in which the two readers still disagreed,
+each `Ok` over the same 1,842 pixels and each reproduced on main: a value nested in a value
+(`/D [[1 0]]`, `/DP << /A 1 2 >>`), which PDFium does not read as one value and abandons the image
+over; a key with no value before `ID`, which PDFium fills with `ID` itself; a second `BI` inside an
+open dictionary, which restarted burrow's and not PDFium's -- past the repeated-key and filtered
+refusals both; an `EI` glued to a following character, which PDFium does not take as the end; and
+a number glued to letters, which this lexer read as a number and then `ID` or `BI` and PDFium reads
+as one unknown word. The first four refuse, by the codes in §3. The fifth is read as PDFium reads
+it, one keyword, so the text after `8ID` is the content it is to the renderer and is redacted as
+such. Each has an end-to-end fixture in `redaction_defences.rs` that refuses by its own code -- or, for
+the shapes now read as PDFium reads them, refuses or returns `Ok` with the secret absent from the
+output bytes -- beside one honest inline image that redacts; the near-misses for each rule are the
+lexer's unit tests.
+
+**The third reviews: the value rule one level down, and two bytes.** The keyword rule above was
+first applied only at the dictionary's top level, and both third reviews measured
+`/DP << /K foo >> /W 96 …` -- an unknown word inside a dictionary value, ahead of the size keys --
+`Ok` over the secret: PDFium gave up on the value and ended the image's dictionary at `>>`. It now
+refuses inside a dictionary value too; inside an array PDFium skips the word, measured, so an array
+keeps it. And every byte value placed between two tokens and rendered showed **0x80 and 0xFF ending
+a word** as white space does, which the specification does not say: `(SECRET) Tj\xff` showed text to
+PDFium and was an unknown operator here, `ID\xff(` began an image there and a string here, and
+`/Fm1\xff Do` named a form there and none here, so `split` never walked into a hidden layer it
+carried through. The lexer now reads both as white space. Vertical tab and 0xA0 do not end a word
+to PDFium and are not added. `pdfsyntax::references` keeps its own white-space set: it reproduces
+qpdf's tokenising for qpdf's own reference resolution, not PDFium's, and was not measured here.
+
+**A class, and its residue.** All of this is one class -- two readers bounding an inline image in
+two places -- and the read-back cannot see it, because it re-lexes the output with the same lexer.
+The review recommended an independent check, PDFium's own text in the region after the write; that
+changes ADR 0022's verification design and is the owner's decision, not taken here. Until it is,
+each shape in this class is closed only once it has been measured, and the class itself is not.

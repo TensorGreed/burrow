@@ -247,6 +247,150 @@ fn page_with_font(extra: &str) -> Vec<u8> {
     pdf.build(catalog)
 }
 
+/// A one-page document whose content is `content`, with the same `/F1` as [`page_with_font`].
+fn page_with_content(content: &str) -> Vec<u8> {
+    let mut pdf = Builder::new();
+    let catalog = pdf.reserve();
+    let pages = pdf.reserve();
+    let page = pdf.reserve();
+    let font = pdf.add(&format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
+         /Widths {} >>",
+        support::pdf_builder::HELVETICA_WIDTHS
+    ));
+    let stream = pdf.stream("", content);
+    pdf.put(
+        page,
+        &format!(
+            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 {font} 0 R >> >> /Contents {stream} 0 R >>"
+        ),
+    );
+    pdf.put(
+        pages,
+        &format!("<< /Type /Pages /Count 1 /Kids [{page} 0 R] >>"),
+    );
+    pdf.put(catalog, &format!("<< /Type /Catalog /Pages {pages} 0 R >>"));
+    pdf.build(catalog)
+}
+
+#[test]
+fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret() {
+    // #228's SECOND SECURITY REVIEW: five shapes where burrow and PDFium disagree about where an
+    // inline image's dictionary or data begins or ends. In each, the `SECRET` text object sits
+    // in bytes burrow read as image data and PDFium drew -- redaction `Ok` with 1,842 dark pixels
+    // still in the region, measured on main. Each must now refuse, or return `Ok` having seen
+    // the text and removed it; an `Ok` that kept it is the leak.
+    let payload = {
+        let mut text = String::from("\nEI\nQ\nBT /F1 24 Tf 72 700 Td (SECRET) Tj ET\n");
+        while text.len() < 96 {
+            text.push(' ');
+        }
+        text
+    };
+    let kept = "BT /F1 24 Tf 72 300 Td (KIN) Tj ET";
+    // `\u{1}` stands for a byte the builder's `&str` cannot carry, swapped in after the build: the
+    // same length, so every `/Length` and offset holds.
+    let cases: [(&str, String, Option<&str>); 8] = [
+        (
+            "a nested value",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /D [[1 0]] /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+            Some("[inline-image-nested-value]"),
+        ),
+        (
+            "an unknown word as a value inside << >>, ahead of the size keys (third reviews)",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /DP << /K foo >> /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+            Some("[inline-image-nested-value]"),
+        ),
+        (
+            "a key with no value before ID",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /H 1 /CS /G /BPC 8 /W 96 /D ID {payload} EI Q {kept}"
+            ),
+            Some("[inline-image-key-without-value]"),
+        ),
+        (
+            "a second BI",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 8 /D BI /Width 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+            Some("[inline-image-nested-bi]"),
+        ),
+        (
+            "EI glued to a digit",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 1 /H 1 /CS /G /BPC 8 ID X EI5 \
+                 BI /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+            ),
+            Some("ends somewhere else"),
+        ),
+        // These two are READ as PDFium reads them rather than refused, so the outcome is either a
+        // refusal for some later reason or an `Ok` that saw the text and removed it.
+        (
+            "a number glued to ID",
+            format!("q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8ID {payload} EI Q {kept}"),
+            None,
+        ),
+        (
+            "0xFF after Tj, white space to PDFium (third security review)",
+            format!("BT /F1 24 Tf 72 700 Td (SECRET) Tj\u{1} ET {kept}"),
+            Some("OK"),
+        ),
+        (
+            // The review's shape: the image data begins with `(`. A lexer that did not begin the
+            // image at `ID\xff` read that `(` as a string swallowing the real text after `EI`.
+            "0xFF after ID, which begins the image there",
+            format!(
+                "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8 ID\u{1}({} EI Q \
+                 BT /F1 24 Tf 72 700 Td (SECRET) Tj ET ) pop Q {kept}",
+                " ".repeat(95)
+            ),
+            None,
+        ),
+    ];
+    for (why, content, code) in cases {
+        let built = page_with_content(&content);
+        // THE PLACEHOLDER IS SWAPPED ONLY WHERE IT WAS WRITTEN: the builder writes ASCII, and this
+        // says so rather than assuming it.
+        assert_eq!(
+            built.iter().filter(|byte| **byte == 0x01).count(),
+            content.matches('\u{1}').count(),
+            "{why}: a 0x01 the fixture did not write"
+        );
+        let pdf: Vec<u8> = built
+            .into_iter()
+            .map(|byte| if byte == 0x01 { 0xff } else { byte })
+            .collect();
+        assert_present(&pdf, b"SECRET", why);
+        match (redact(&pdf), code) {
+            // `Some("OK")`: read as PDFium reads it, and `Ok` with the text removed -- not any
+            // refusal, which is what let this case pass with its fix reverted (fourth code review).
+            (Ok((out, _)), Some("OK")) => assert_absent(&out, b"SECRET", why),
+            (Err(error), Some("OK")) => panic!("{why}: refused where it must redact: {error:?}"),
+            (Err(error), Some(code)) => assert!(
+                format!("{error:?}").contains(code),
+                "{why}: refused, but not by {code}: {error:?}"
+            ),
+            (Ok(_), Some(code)) => panic!("{why}: returned Ok where {code} refuses"),
+            (Err(_), None) => {}
+            (Ok((out, _)), None) => assert_absent(&out, b"SECRET", why),
+        }
+    }
+    // THE NEAR-MISS: the same image with nothing wrong with it. Its payload is image data to both
+    // readers -- PDFium draws no text from it -- so the redaction goes through.
+    let honest = page_with_content(&format!(
+        "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+    ));
+    assert!(
+        redact(&honest).is_ok(),
+        "an honest inline image is redacted, not refused"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // The narrowings: each is a call that a mutation could delete without any test noticing.
 // ---------------------------------------------------------------------------------------
