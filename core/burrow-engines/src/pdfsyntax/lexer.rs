@@ -133,14 +133,36 @@ pub(super) struct Lexer<'a> {
 ///
 /// **Named by every caller, with no default** (owner, 2026-10-03): a default is a caller that
 /// never decided. Both callers end in a refusal today, written in two places for two reasons.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// **Redaction's refusal travels in the variant**, and callers name it as [`Self::REDACTION`].
+/// A plain `Redaction` variant kept the refusal's text in the base web module, which reaches this
+/// lexer through `split` and never redacts: the mode is a runtime value, so the compiler could not
+/// drop the arm. Carried as a function that only redaction's callers name, it is unreferenced
+/// wherever they are absent (#228).
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum InlineImages {
-    /// Refuse it: redaction cannot say what the page draws past an image it cannot end, and a
-    /// guess would be a page reported clean that is not.
-    Redaction,
+    /// Refuse it, with the error the function returns: redaction cannot say what the page draws
+    /// past an image it cannot end, and a guess would be a page reported clean that is not.
+    Redaction(fn() -> Error),
     /// Stop lexing and say so: `split`'s pruning then refuses the page, since what it uses past the
     /// image can be neither pruned by nor carried whole (ADR 0019's #228 amendment).
     Prune,
+}
+
+impl InlineImages {
+    /// Redaction's mode: refuse a filtered inline image, `[inline-image-filtered]`.
+    pub(crate) const REDACTION: Self = Self::Redaction(inline_image_filtered);
+}
+
+/// Redaction's refusal of a filtered inline image. Reached only through
+/// [`InlineImages::REDACTION`].
+fn inline_image_filtered() -> Error {
+    Error::Malformed(
+        "pdf syntax [inline-image-filtered]: an inline image with a /F filter, which the renderer \
+         ends at its filter's own end of data rather than at any /L, and which burrow cannot \
+         decode to find"
+            .to_owned(),
+    )
 }
 
 impl<'a> Lexer<'a> {
@@ -448,14 +470,7 @@ impl<'a> Lexer<'a> {
         let length = match inline_image_length(dictionary)? {
             Extent::Bytes(length) => length,
             Extent::Filtered => match self.images {
-                InlineImages::Redaction => {
-                    return Err(Error::Malformed(
-                        "pdf syntax [inline-image-filtered]: an inline image with a /F filter, which the \
-                         renderer ends at its filter's own end of data rather than at any /L, and which burrow \
-                         cannot decode to find"
-                            .to_owned(),
-                    ));
-                }
+                InlineImages::Redaction(refusal) => return Err(refusal()),
                 InlineImages::Prune => {
                     // NOTHING AFTER IT CAN BE READ, so nothing is: the caller is told, and
                     // decides what an unread remainder means for it.
@@ -577,7 +592,10 @@ const IMAGE_KEYS: [[&[u8]; 2]; 10] = [
 /// disagreeing `/L`, a `/BPC` or `/CS` whose size the two readers do not agree on, a missing `/W`
 /// or `/H`, or a size past this machine.
 fn inline_image_length(dictionary: &[u8]) -> Result<Extent> {
-    let mut lexer = Lexer::new(dictionary, InlineImages::Redaction);
+    // `Prune`: the bytes between `BI` and `ID` hold no `ID`, so no image can start in them, and
+    // one that did stops the read and is refused below. Naming `Redaction` here kept redaction's
+    // own refusal text in the base web module, which `split` reaches through this function (#228).
+    let mut lexer = Lexer::new(dictionary, InlineImages::Prune);
     let mut key: Option<Vec<u8>> = None;
     // Which of the ten keys has been seen, in either spelling.
     let mut seen = [false; IMAGE_KEYS.len()];
@@ -690,6 +708,11 @@ fn inline_image_length(dictionary: &[u8]) -> Result<Extent> {
         }
     }
 
+    if lexer.extent_unknown() {
+        return Err(Error::Malformed(
+            "pdf syntax: an inline image dictionary with an image inside it".to_owned(),
+        ));
+    }
     if filtered {
         return Ok(Extent::Filtered);
     }
@@ -806,7 +829,7 @@ mod tests {
     use super::{InlineImages, Lexer, MAX_NESTING, Token, hex_value, is_whitespace};
 
     fn tokens(bytes: &[u8]) -> Vec<Token> {
-        let mut lexer = Lexer::new(bytes, InlineImages::Redaction);
+        let mut lexer = Lexer::new(bytes, InlineImages::REDACTION);
         let mut out = Vec::new();
         while let Some(token) = lexer.next_token().expect("lexes") {
             out.push(token);
@@ -848,7 +871,7 @@ mod tests {
         // The under-keep direction: guessing that `/F#1` means `F#1` would produce a name that
         // matches no resource, and the resource it should have kept is removed.
         for bad in [&b"/F#1"[..], b"/F#zz", b"/F#"] {
-            let mut lexer = Lexer::new(bad, InlineImages::Redaction);
+            let mut lexer = Lexer::new(bad, InlineImages::REDACTION);
             assert!(
                 lexer.next_token().is_err(),
                 "{:?}",
@@ -873,7 +896,7 @@ mod tests {
 
     #[test]
     fn an_unterminated_string_is_refused_rather_than_swallowing_the_rest() {
-        let mut lexer = Lexer::new(b"/F1 (never closed /F2", InlineImages::Redaction);
+        let mut lexer = Lexer::new(b"/F1 (never closed /F2", InlineImages::REDACTION);
         assert_eq!(
             lexer.next_token().expect("first"),
             Some(Token::Name(b"F1".to_vec()))
@@ -925,7 +948,7 @@ mod tests {
         // filter's data ends, so it must still refuse rather than compute one from `/W` and `/H`
         // -- which would end the image in the middle of its own data.
         let stream = b"q BI /W 1 /H 1 /F [/AHx] ID abcd EI Q";
-        let mut lexer = Lexer::new(stream, InlineImages::Redaction);
+        let mut lexer = Lexer::new(stream, InlineImages::REDACTION);
         let mut refused = false;
         loop {
             match lexer.next_token() {
@@ -953,7 +976,7 @@ mod tests {
         stream.extend_from_slice(b" 1 ");
         stream.extend(std::iter::repeat_n(b']', MAX_NESTING + 1));
         stream.extend_from_slice(b" ID a EI Q");
-        let mut lexer = Lexer::new(&stream, InlineImages::Redaction);
+        let mut lexer = Lexer::new(&stream, InlineImages::REDACTION);
         let mut refused = None;
         loop {
             match lexer.next_token() {
@@ -986,7 +1009,7 @@ mod tests {
     #[test]
     fn an_array_that_never_closes_in_an_image_dictionary_is_a_refusal() {
         let stream = b"q BI /W 1 /H 1 /D [1 0 ID abcd EI Q";
-        let mut lexer = Lexer::new(stream, InlineImages::Redaction);
+        let mut lexer = Lexer::new(stream, InlineImages::REDACTION);
         let mut refused = false;
         loop {
             match lexer.next_token() {
@@ -1039,7 +1062,7 @@ mod tests {
         // the image in two places, so there is no answer to carry on with.
         let mut lexer = Lexer::new(
             b"BI /W 1 /H 1 /BPC 8 /CS /G ID AAAAAAAA EI Q",
-            InlineImages::Redaction,
+            InlineImages::REDACTION,
         );
         loop {
             match lexer.next_token() {
@@ -1110,14 +1133,14 @@ mod tests {
             ("the full device RGB", "/W 1 /H 1 /BPC 4 /CS /DeviceRGB", 2),
         ];
         for (why, dictionary, size) in cases {
-            let names = read(&image(dictionary, size), InlineImages::Redaction)
+            let names = read(&image(dictionary, size), InlineImages::REDACTION)
                 .unwrap_or_else(|error| panic!("{why}: {error}"));
             assert!(
                 names.contains(&"AFTER".to_owned()),
                 "{why}: the name after it is read"
             );
             assert!(
-                read(&image(dictionary, size + 1), InlineImages::Redaction).is_err(),
+                read(&image(dictionary, size + 1), InlineImages::REDACTION).is_err(),
                 "{why}: one byte more is a disagreement, refused"
             );
         }
@@ -1135,13 +1158,13 @@ mod tests {
             1 + tail.len()
         );
         assert!(
-            read(overstated.as_bytes(), InlineImages::Redaction).is_err(),
+            read(overstated.as_bytes(), InlineImages::REDACTION).is_err(),
             "an /L the renderer does not read refuses"
         );
         // THE TWIN: an /L that agrees reads on.
         let agrees = read(
             &image("/W 3 /H 1 /BPC 8 /CS /RGB /L 9", 9),
-            InlineImages::Redaction,
+            InlineImages::REDACTION,
         )
         .expect("an agreeing /L");
         assert!(agrees.contains(&"AFTER".to_owned()));
@@ -1220,7 +1243,7 @@ mod tests {
             "/BPC is not a plain integer",
         ];
         for ((why, dictionary, size), code) in cases.into_iter().zip(codes) {
-            let refused = read(&image(dictionary, size), InlineImages::Redaction).expect_err(why);
+            let refused = read(&image(dictionary, size), InlineImages::REDACTION).expect_err(why);
             assert!(
                 refused.contains(code),
                 "{why}: expected {code}, got {refused}"
@@ -1234,7 +1257,7 @@ mod tests {
         let full = "/Width 2 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /Decode [0 1] \
                     /DecodeParms << >> /Interpolate false /Length 2";
         for (family, dictionary) in [("abbreviated", abbreviated), ("full", full)] {
-            let names = read(&image(dictionary, 2), InlineImages::Redaction)
+            let names = read(&image(dictionary, 2), InlineImages::REDACTION)
                 .unwrap_or_else(|error| panic!("{family}: {error}"));
             assert!(names.contains(&"AFTER".to_owned()), "{family}");
         }
@@ -1242,7 +1265,7 @@ mod tests {
             assert!(
                 read(
                     &image(&format!("/W 8 /H 1 {mask}"), 1),
-                    InlineImages::Redaction
+                    InlineImages::REDACTION
                 )
                 .is_ok()
             );
@@ -1251,7 +1274,7 @@ mod tests {
             assert!(
                 read(
                     &image(&format!("/W 1 /H 1 /BPC 8 /CS /G {unknown}"), 1),
-                    InlineImages::Redaction
+                    InlineImages::REDACTION
                 )
                 .is_err_and(|refused| refused.contains("[inline-image-unknown-key]")),
                 "{unknown}: a key nobody enumerated refuses"
@@ -1264,7 +1287,7 @@ mod tests {
         // A FILTERED IMAGE ENDS where its filter's data ends, which this module cannot decode.
         for filter in ["/F /Fl", "/Filter /FlateDecode", "/F [/AHx /Fl]"] {
             let stream = image(&format!("/W 1 /H 1 /CS /G {filter} /L 4"), 4);
-            assert!(read(&stream, InlineImages::Redaction).is_err(), "{filter}");
+            assert!(read(&stream, InlineImages::REDACTION).is_err(), "{filter}");
             let mut lexer = Lexer::new(&stream, InlineImages::Prune);
             let mut names = Vec::new();
             while let Some(token) = lexer.next_token().expect("Prune does not refuse it") {
@@ -1313,7 +1336,7 @@ mod tests {
         for (why, dictionary) in cases {
             let mut stream = dictionary.to_vec();
             stream.extend_from_slice(hidden);
-            let mut lexer = Lexer::new(&stream, InlineImages::Redaction);
+            let mut lexer = Lexer::new(&stream, InlineImages::REDACTION);
             let refused = loop {
                 match lexer.next_token() {
                     Ok(Some(_)) => {}
@@ -1329,7 +1352,7 @@ mod tests {
     fn an_id_with_no_bi_is_refused_because_it_has_no_extent() {
         // It has no dictionary, so there is nothing to compute an extent from and nothing to
         // check a guess against.
-        let mut lexer = Lexer::new(b"q ID x\nBT (SECRET) Tj ET\n EI Q", InlineImages::Redaction);
+        let mut lexer = Lexer::new(b"q ID x\nBT (SECRET) Tj ET\n EI Q", InlineImages::REDACTION);
         loop {
             match lexer.next_token() {
                 Ok(Some(_)) => {}
@@ -1345,7 +1368,7 @@ mod tests {
         // and the answer is the same: there is no `EI` where the dictionary says there is one.
         let mut lexer = Lexer::new(
             b"BI /W 4096 /H 1 /BPC 8 /CS /G ID ab",
-            InlineImages::Redaction,
+            InlineImages::REDACTION,
         );
         loop {
             match lexer.next_token() {
@@ -1367,7 +1390,7 @@ mod tests {
     #[test]
     fn an_unmatched_closing_delimiter_is_refused() {
         for bad in [&b">"[..], b")"] {
-            let mut lexer = Lexer::new(bad, InlineImages::Redaction);
+            let mut lexer = Lexer::new(bad, InlineImages::REDACTION);
             assert!(
                 lexer.next_token().is_err(),
                 "{:?}",
@@ -1383,10 +1406,10 @@ mod tests {
         // returns at all, whichever way it returns.
         for byte in 0u8..=255 {
             let alone = [byte];
-            let mut lexer = Lexer::new(&alone, InlineImages::Redaction);
+            let mut lexer = Lexer::new(&alone, InlineImages::REDACTION);
             let _ = lexer.next_token();
             let in_a_run = [b'/', byte, b' ', byte];
-            let mut lexer = Lexer::new(&in_a_run, InlineImages::Redaction);
+            let mut lexer = Lexer::new(&in_a_run, InlineImages::REDACTION);
             let mut budget = 8;
             while budget > 0 {
                 budget -= 1;

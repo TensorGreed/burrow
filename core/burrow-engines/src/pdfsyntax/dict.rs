@@ -46,7 +46,11 @@ pub const MAX_KEYS: usize = 4_096;
 ///   non-name where a key belongs, or nests deeper than the engine's own `parser_max_nesting`.
 /// - [`Error::Unsupported`] — more than [`MAX_KEYS`] keys.
 pub fn top_level_keys(unparsed: &[u8]) -> Result<Vec<Vec<u8>>> {
-    let mut lexer = Lexer::new(unparsed, super::lexer::InlineImages::Redaction);
+    // `Prune`, NOT `Redaction`, though nothing here can hold an inline image: qpdf unparses a
+    // dictionary, which has no `BI`. If one did, the read stops and the dictionary is refused as
+    // never closed. And naming `Redaction` here kept redaction's own refusal text alive in the
+    // base web module, which `split` reaches through this function (#228).
+    let mut lexer = Lexer::new(unparsed, super::lexer::InlineImages::Prune);
     match lexer.next_token()? {
         Some(Token::DictOpen) => {}
         _ => {
