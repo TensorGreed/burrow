@@ -714,53 +714,70 @@ Running both fixtures through every operation turned up nothing else: `page_coun
 `structure_check`, `rotate`, `reorder` and `compress` all accept them unchanged. Only `split`
 ever failed, because only `split` tokenises.
 
-## Amendment, 2026-10-04 — #228: what pruning does with a filtered inline image
+## Amendment, 2026-10-04 — #228: a filtered inline image refuses the split
 
 **Why it comes up.** `crate::pdfsyntax`'s lexer used to end an inline image at its `/L`. PDFium,
-measured for #228, never reads `/L`: it ends an unfiltered image after the bytes its `/W`, `/H`,
-`/BPC` and colour space imply, and a filtered one at its filter's own end of data. Redaction now
-follows PDFium -- computed extents, a disagreeing `/L` refused -- and refuses a filtered inline
-image outright, because burrow cannot decode to find its end. The lexer is shared, and `split`'s
-pruning reads every content stream through it, so the same question reached this ADR.
+measured for #228, never reads `/L`: it ends an unfiltered image after the bytes it computes from
+the dictionary, and a filtered one at its filter's own end of data. Redaction now follows PDFium
+-- computed extents where PDFium's rule and the specification's agree, refusals where they do not,
+a disagreeing `/L` refused -- and refuses a filtered inline image outright, because burrow cannot
+decode to find its end. The lexer is shared, and `split`'s pruning reads every content stream
+through it, so the same question reached this ADR.
 
 **The unfiltered half applies to every caller**, `split` included: an extent computed as the
-renderer computes it is a better reading of the page for pruning too, and an `/L` that disagrees
-is refused by both.
+renderer computes it is a better reading of the page for pruning too, and every shape redaction
+refuses for its extent is refused by `split` as well.
 
-**The filtered half does not**, because what a wrong answer costs differs. For redaction, a
-misread extent is a page reported clean that is not. For pruning, it is a name the page draws
-with left unread -- and pruning by a partial set deletes a resource the page still uses. So the
-lexer takes a mode, `InlineImages::Prune`, under which a filtered inline image stops the read and
-says so, and pruning decides from there:
+**The filtered half: refused** `[split-inline-image-filtered]`, naming the image (owner,
+2026-10-04). Past a filtered image the names are unread, so the page's resources can be neither
+pruned -- that deletes what the page draws with -- nor carried whole. The lexer's
+`InlineImages::Prune` mode stops the read there and says so, and `prune_output` refuses any page,
+or any form or appearance it reaches, whose read stopped.
 
-| the page's `/Resources` -- and every category dictionary in it that is its own object -- | outcome |
-|---|---|
-| reached by no page outside this output (its own, or shared only among pages in the output) | **kept whole**: a kept resource costs bytes, not the page |
-| reached by a page this output excludes (inherited from a `/Pages` node that page also inherits, or a shared `/XObject`) | **the split is refused**, naming the sharing |
-| an unfiltered inline image, wherever | **pruned as before**, by a complete reading |
+**Carrying the resources whole was this amendment's first answer, and it was wrong.** It kept a
+page's `/Resources` whole wherever no excluded page reached *that dictionary*, judged by object
+identity, and refused only where one did. Both #228 reviewers broke it:
 
-**The refusal is the §2b-preserving answer.** Keeping a dictionary an excluded page shares would
-carry that page's resources through wholesale, which §2b forbids; pruning it by a partial reading
-could delete what the kept page draws with. The owner's first direction was "keep them all", and
-it was §2b that ruled the shared case out (owner, 2026-10-03). The refusal stands until #142
-derives filtered extents.
+- **Identity does not answer §2b.** A page's own dictionary can list objects only an excluded page
+  draws: its own `/XObject` entry, an unlisted key such as `/Stash` (the allowlist pruning that
+  normally removes it was skipped), a font reached by the excluded page through a form's
+  `/Resources`, a `/Pages` node's inline dictionary between the page and the root. Each split `Ok`
+  with the excluded page's image, form or font in the output.
+- **It skipped §2a row 6.** The nested optional-content refusal runs on what the walk visits, and a
+  form drawn after the image is never visited. A page that rendered 0 dark pixels split `Ok` with
+  its hidden layer's text drawn at 1,681 and no `/OCProperties` to hide it -- a regression from
+  base, which refused that page.
+- **Its sharing table cost O(pages²).** 10,000 pages sharing one `/Resources` took 3.73 s and 829
+  MB at open, against 0.21 s and 47 MB before, on a 1.36 MB input.
 
-**The sharing is read on the source, before the copy** (`prune::resources_sharing`), for the
-reason `annots_sharing` gives: in the destination a copy shared with an excluded page is
-indistinguishable from one shared with nobody. A `/Resources` written inline on a `/Pages` node is
-shared by every page beneath it although it has no object number of its own.
+A transitive reachability check would answer the first, at the price of refusing every document
+whose pages share a font, at an unmeasured rate. The owner chose the refusal: *"my fallback was
+wrong, not under-specified."* `prune::resources_sharing` is deleted. Office documents with
+filtered inline images wait for #142, on both paths.
 
 **Measured.** Over the 163 documents of the redaction golden file and #227's 100 real documents,
-split with and without this change: **0 of 263 changed outcome or output size** -- none of them
-carries a filtered inline image. The office producers that do write `/Fl` inline images are not
-in that sample; the rate on them is unmeasured until the owner's producer set arrives, and #228 is
-re-measured there alongside #242.
+split with and without this change: **1 of 263 changed outcome, and it is not a real document** --
+`evade-inline-image`, this corpus's own filtered-image fixture, now refused where it split. **0 of
+the 100 real documents** changed outcome or output size; none carries a filtered inline image. The
+office producers that do write `/Fl` inline images are not in that sample; the rate on them is
+unmeasured until the owner's producer set arrives, and #228 is re-measured there alongside #242.
 
-**Tested** in `split_no_leak.rs`, each asserted on the expanded output bytes:
-- kept whole with its own `/Resources`, and with `/Resources` shared only within the output;
-- refused under a `/Pages` node's `/Resources` an excluded page also inherits, and under a shared
-  `/XObject` -- each written so a regression shows as the excluded page's image in the output,
-  not as a missing refusal;
-- the unfiltered twin, pruned as before with the excluded image absent;
-- a font drawn after an image whose `/L` overstates it, kept;
-- one form read once and reused by two pages, partial for both.
+**Tested** in `split_no_leak.rs`. Each refusal fixture asserts the reason names the image, and its
+`Ok` branch first asserts the leak absent, so a regression shows as the leak rather than as a
+missing refusal:
+- refused with its own `/Resources` (a), and with `/Resources` shared only within the output (b);
+- refused under a `/Pages` node's `/Resources` an excluded page also inherits (c), beside its own
+  `/XObject` entry only the excluded page draws, and under a shared `/XObject` -- each asserting
+  the excluded image's bytes absent;
+- refused with a hidden layer in a form drawn after the image, asserting the layer's text absent;
+- refused when the filtered image is inside a form the page draws, not on the page;
+- the unfiltered twin of (c) (d), pruned as before with the excluded image absent.
+
+**Shown to fail**, each mutation asserted to apply and confirmed rebuilt: pruning trusting `/L`
+(the owner's, red on (c) as the excluded image in the output), the refusal switched off so the
+page is pruned by its partial read, the first answer restored (kept whole), and a partial read
+dropped on the page. **A form's partial mark is carried twice**, on the fresh read and on the
+cached one, and each mutation alone survives: `used_names` loops until the name set stops
+growing, so its second pass meets the form in the cache and the cache still says partial.
+Removing both is red, as the font the form draws with pruned off the page. Recorded rather than
+collapsed into one guard: the cache's copy is what keeps a reused set partial.

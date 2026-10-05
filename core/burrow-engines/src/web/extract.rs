@@ -38,8 +38,6 @@ pub struct WebExtractable {
     /// of the array, and a copy shared with an excluded page is indistinguishable from a copy
     /// shared with nobody.
     annots_shared: Vec<Vec<u64>>,
-    /// See the native `QpdfSource::resources_shared` (#228).
-    resources_shared: Vec<Vec<u64>>,
     /// The deadline `open` started, so the pruning pass spends the same budget.
     deadline: Deadline,
 }
@@ -78,12 +76,9 @@ impl PageExtractor for WebQpdf {
         // O(source pages) bridge crossings, so on a `max_pages`-sized document it is not "one
         // engine call" of overshoot -- and `Deadline::start` resets the budget as well as the
         // origin, so making one here would hand the sweep a whole second `max_duration_ms`.
-        let (annots_shared, resources_shared) = {
+        let annots_shared = {
             let graph = WebGraph::over(self, &session);
-            (
-                crate::prune::annots_sharing(&graph, pages, options, &deadline)?,
-                crate::prune::resources_sharing(&graph, pages, options, &deadline)?,
-            )
+            crate::prune::annots_sharing(&graph, pages, options, &deadline)?
         };
 
         crate::estimate::check_measured_memory(
@@ -98,7 +93,6 @@ impl PageExtractor for WebQpdf {
             heap_before,
             limits,
             annots_shared,
-            resources_shared,
             deadline,
         })
     }
@@ -229,7 +223,6 @@ impl PageExtractor for WebQpdf {
         let kept = usize::try_from(count)
             .map_err(|_| Error::Internal("page count does not fit in usize".to_owned()))?;
         let mut ambiguous = Vec::with_capacity(kept);
-        let mut resources_outside = Vec::with_capacity(kept);
         for at in 0..kept {
             let source_index = usize::try_from(first)
                 .ok()
@@ -239,20 +232,10 @@ impl PageExtractor for WebQpdf {
                 Error::Internal("a copied page has no recorded source page".to_owned())
             })?;
             ambiguous.push(sharers.iter().any(|page| *page < first || *page >= end));
-            let reachers = source.resources_shared.get(source_index).ok_or_else(|| {
-                Error::Internal("a copied page has no recorded source page".to_owned())
-            })?;
-            resources_outside.push(reachers.iter().any(|page| *page < first || *page >= end));
         }
         {
             let graph = WebGraph::over(self, &dest);
-            crate::prune::prune_output(
-                &graph,
-                &ambiguous,
-                &resources_outside,
-                options,
-                &source.deadline,
-            )?;
+            crate::prune::prune_output(&graph, &ambiguous, options, &source.deadline)?;
         }
 
         let init = self.bridge().init_write_memory(dest.data());

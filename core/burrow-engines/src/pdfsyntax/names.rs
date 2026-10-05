@@ -96,9 +96,9 @@ pub struct ContentNames {
 pub fn names_in_content(content: &[u8]) -> Result<ContentNames> {
     let mut found = BTreeSet::new();
     let mut lexer = Lexer::new(content, super::lexer::InlineImages::Prune);
-    // Inline images need no handling here: `Lexer::next_token` skips an image's binary data
-    // itself, so `ID` arrives as an ordinary keyword with the cursor already past `EI`. See its
-    // comment for why that is not the caller's job.
+    // Inline images are the lexer's job: `Lexer::next_token` skips an unfiltered image's data
+    // itself, so `ID` arrives as an ordinary keyword with the cursor already past `EI`. A
+    // filtered one, under `Prune`, ends the read instead, and `extent_unknown` says so below.
     while let Some(token) = lexer.next_token()? {
         if let Token::Name(name) = token {
             if name.len() > MAX_NAME_LENGTH {
@@ -159,10 +159,10 @@ mod tests {
 
     #[test]
     fn an_inline_image_does_not_hide_the_names_after_it() {
-        // `/W 14 /H 1 /CS /G` declares the fourteen bytes between `ID ` and ` EI`, so the
+        // `/W 14 /H 1 /BPC 8 /CS /G` declares the fourteen bytes between `ID ` and ` EI`, so the
         // extent is the dictionary's. `/F9` inside the data stays data.
-        let content = b"BI /W 14 /H 1 /CS /G ID \x00(/F9 <</a 1>> EI Q /F2 12 Tf";
-        assert_eq!(set(content), ["CS", "F2", "G", "H", "W"]);
+        let content = b"BI /W 14 /H 1 /BPC 8 /CS /G ID \x00(/F9 <</a 1>> EI Q /F2 12 Tf";
+        assert_eq!(set(content), ["BPC", "CS", "F2", "G", "H", "W"]);
     }
 
     #[test]

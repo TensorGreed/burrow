@@ -675,11 +675,16 @@ fn content(data: &str) -> String {
 
 /// Page 1 draws `/F1` after an inline image, filtered or not; `/F2` (Courier) is in its resources
 /// and drawn by nothing on it.
+///
+/// The filtered image's `/L 1` ends its data after `8`, so a reader that trusted `/L` would read
+/// on and take `/ImX Do` as page 1 drawing `/ImX` -- which, in the fixtures that have one, is an
+/// image only the excluded page draws. That is what makes "pruning trusts `/L`" show up as the
+/// excluded page's bytes in the output rather than as a missing refusal.
 fn page_one(filtered: bool) -> String {
     let image = if filtered {
-        "BI /W 1 /H 1 /CS /G /F /AHx /L 3 ID 80> EI"
+        "BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx /L 1 ID 8 EI /ImX Do EI"
     } else {
-        "BI /W 1 /H 1 /CS /G ID x EI"
+        "BI /W 1 /H 1 /BPC 8 /CS /G ID x EI"
     };
     content(&format!(
         "q 10 0 0 10 50 50 cm {image} Q BT /F1 12 Tf 10 10 Td (ONE) Tj ET"
@@ -701,11 +706,42 @@ fn split_first(bytes: Vec<u8>, after: &[u64]) -> burrow_types::Result<Vec<Vec<u8
     )
 }
 
+/// #228: a page whose read stops at a filtered inline image refuses the split, and the reason
+/// names the image. Where an `Ok` would carry `leak` -- the excluded page's bytes, or a layer the
+/// source hid -- into the first output, that is asserted first, so a regression reads as the leak
+/// it is rather than as a missing refusal.
+fn assert_refused_naming_the_image(
+    result: burrow_types::Result<Vec<Vec<u8>>>,
+    leak: Option<&str>,
+    why: &str,
+) {
+    match result {
+        Err(error) => {
+            let reason = format!("{error:?}");
+            assert!(
+                reason.contains("[split-inline-image-filtered]")
+                    && reason.contains("filtered inline image"),
+                "{why}: refused, but not for the image: {reason}"
+            );
+        }
+        Ok(outputs) => {
+            if let Some(leak) = leak {
+                assert!(
+                    !contains(&expanded(&outputs[0]), leak),
+                    "{why}: {leak} reached the first output"
+                );
+            }
+            panic!("{why}: returned Ok, where a filtered inline image must refuse the split");
+        }
+    }
+}
+
 #[test]
-fn a_filtered_inline_image_on_a_page_with_its_own_resources_keeps_them_whole() {
+fn a_filtered_inline_image_on_a_page_with_its_own_resources_refuses() {
     // (a) #228: a filtered inline image ends where its filter's data ends, which burrow cannot
-    // find, so the names after it are unread. This page's `/Resources` is its own, so nothing
-    // excluded reaches it: kept whole, the unused Courier with it.
+    // find, so the names after it are unread. Even with resources nobody else reaches, the split
+    // refuses: "nobody else reaches them" was measured to be unanswerable by dictionary identity
+    // (owner, 2026-10-04).
     let bytes = raw_pdf(&[
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
@@ -720,17 +756,12 @@ fn a_filtered_inline_image_on_a_page_with_its_own_resources_keeps_them_whole() {
         COURIER.to_owned(),
         content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
     ]);
-    let outputs = split_first(bytes, &[1]).expect("its resources are its own: kept whole");
-    assert!(
-        contains(&expanded(&outputs[0]), "Courier"),
-        "the unused font is kept, not pruned"
-    );
+    assert_refused_naming_the_image(split_first(bytes, &[1]), None, "(a) own resources");
 }
 
 #[test]
-fn a_filtered_inline_image_on_pages_that_share_resources_only_with_each_other_keeps_them_whole() {
-    // (b) Pages 1 and 2 share one `/Resources`, and both are in the first output; page 3 is not,
-    // and has its own. Nothing excluded reaches the shared dictionary: kept whole.
+fn a_filtered_inline_image_on_pages_that_share_resources_only_with_each_other_refuses() {
+    // (b) Pages 1 and 2 share one `/Resources`, and both are in the first output; page 3 is not.
     let bytes = raw_pdf(&[
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R] >>".to_owned(),
@@ -748,11 +779,7 @@ fn a_filtered_inline_image_on_pages_that_share_resources_only_with_each_other_ke
         HELVETICA.to_owned(),
         COURIER.to_owned(),
     ]);
-    let outputs = split_first(bytes, &[2]).expect("shared only within the output: kept whole");
-    assert!(
-        contains(&expanded(&outputs[0]), "Courier"),
-        "the unused font is kept, not pruned"
-    );
+    assert_refused_naming_the_image(split_first(bytes, &[2]), None, "(b) shared within");
 }
 
 /// Two pages under one `/Pages` node carrying `/Resources` with an image only page 2 draws; page
@@ -774,27 +801,14 @@ fn inherited(filtered: bool) -> Vec<u8> {
 
 #[test]
 fn a_filtered_inline_image_under_resources_an_excluded_page_inherits_refuses() {
-    // (c) THE §2b CASE: page 1's names cannot all be read, and its `/Resources` -- inherited from
-    // the `/Pages` node -- is page 2's too, which this output excludes. Kept whole, page 2's image
-    // would travel with page 1; pruned, by a partial read, page 1 could lose what it draws. So
-    // the split is refused, and the reason names the sharing rather than the image.
-    match split_first(inherited(true), &[1]) {
-        Err(error) => {
-            let reason = format!("{error:?}");
-            assert!(
-                reason.contains("shared with a page outside this output"),
-                "refused, but not for the sharing: {reason}"
-            );
-        }
-        Ok(outputs) => {
-            // WHAT A REGRESSION LOOKS LIKE: not a missing refusal but the leak it prevented.
-            assert!(
-                !contains(&expanded(&outputs[0]), "EXCLUDEDIMAGEBYTES"),
-                "the excluded page's image reached page 1's output"
-            );
-            panic!("returned Ok without the excluded image, where the split must refuse");
-        }
-    }
+    // (c) THE §2b CASE: page 1's `/Resources` -- inherited from the `/Pages` node -- is page 2's
+    // too, which this output excludes. Kept whole, page 2's image would travel with page 1; read
+    // past the image by its `/L`, `/ImX` would be "used" and kept.
+    assert_refused_naming_the_image(
+        split_first(inherited(true), &[1]),
+        Some("EXCLUDEDIMAGEBYTES"),
+        "(c) inherited",
+    );
 }
 
 #[test]
@@ -814,43 +828,34 @@ fn the_same_inheritance_with_an_unfiltered_image_is_pruned_normally() {
 }
 
 #[test]
-fn a_resource_named_after_a_filtered_inline_image_is_never_pruned() {
-    // THE OWNER'S MUTATION'S FIXTURE: a filtered image whose `/L` overstates its data, so an
-    // `/L`-trusting read would skip the `/F2 Tf` after it and prune Courier off a page that draws
-    // with it. The page's resources are its own, so the right answer keeps them whole.
-    let tail = " EI Q BT /F2 12 Tf 10 10 Td (AFTER) Tj ET";
-    let data = "80>";
-    // `/L` reaching to just before a second `EI`, so a reader that trusted it would end there.
-    let overstated = data.len() + tail.len();
-    let page = content(&format!(
-        "q 10 0 0 10 50 50 cm BI /W 1 /H 1 /CS /G /F /AHx /L {overstated} ID {data}{tail} EI Q"
-    ));
+fn a_filtered_inline_image_beside_an_entry_only_an_excluded_page_draws_refuses() {
+    // THE SPEC REVIEW'S S1: page 1's `/Resources` is its own and shared with nobody, but its own
+    // `/XObject` lists an image only page 2 draws. Keeping it whole -- the fallback this PR first
+    // shipped -- carried page 2's image into page 1's output.
     let bytes = raw_pdf(&[
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
-         /Resources << /Font << /F1 6 0 R /F2 7 0 R >> >> >>"
+         /Resources << /Font << /F1 7 0 R >> /XObject << /ImB 8 0 R >> >> >>"
             .to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R \
-         /Resources << /Font << /F1 6 0 R >> >> >>"
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /XObject << /ImB 8 0 R >> >> >>"
             .to_owned(),
-        page,
+        page_one(true),
+        content("q 100 0 0 10 10 10 cm /ImB Do Q"),
         HELVETICA.to_owned(),
-        COURIER.to_owned(),
-        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+        EXCLUDED_IMAGE.to_owned(),
     ]);
-    let outputs = split_first(bytes, &[1]).expect("its resources are its own: kept whole");
-    assert!(
-        contains(&expanded(&outputs[0]), "Courier"),
-        "the font drawn after the image was pruned off the page"
+    assert_refused_naming_the_image(
+        split_first(bytes, &[1]),
+        Some("EXCLUDEDIMAGEBYTES"),
+        "an entry only page 2 draws",
     );
 }
 
 #[test]
 fn a_category_dictionary_an_excluded_page_shares_refuses_too() {
-    // THE SHARING IS READ INSIDE THE DICTIONARY TOO: page 1's `/Resources` is its own, but its
-    // `/XObject` is the same object as page 2's, and page 2 is excluded. Kept whole, page 2's image
-    // would travel in it.
+    // Page 1's `/Resources` is its own, but its `/XObject` is the same object as page 2's.
     let bytes = raw_pdf(&[
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
@@ -866,58 +871,88 @@ fn a_category_dictionary_an_excluded_page_shares_refuses_too() {
         EXCLUDED_IMAGE.to_owned(),
         "<< /ImX 8 0 R >>".to_owned(),
     ]);
-    match split_first(bytes, &[1]) {
-        Err(error) => assert!(
-            format!("{error:?}").contains("shared with a page outside this output"),
-            "refused, but not for the sharing: {error:?}"
-        ),
-        Ok(outputs) => {
-            assert!(
-                !contains(&expanded(&outputs[0]), "EXCLUDEDIMAGEBYTES"),
-                "the excluded page's image reached page 1's output through a shared /XObject"
-            );
-            panic!("returned Ok without the excluded image, where the split must refuse");
-        }
-    }
+    assert_refused_naming_the_image(
+        split_first(bytes, &[1]),
+        Some("EXCLUDEDIMAGEBYTES"),
+        "a shared /XObject",
+    );
 }
 
 #[test]
-fn a_partial_read_stays_partial_for_every_page_that_reaches_the_same_form() {
-    // THE CACHE: one form, drawn by pages 1 and 2, holds a filtered inline image and then
-    // `/F2 Tf`. Its names are read once and reused. Each page's `/F2` is a different font, so if
-    // page 2's reuse lost the "partial" mark it would be pruned by a partial read -- Times off page
-    // 2 while the form still asks for it.
-    let data = "BI /W 1 /H 1 /CS /G /F /AHx /L 3 ID 80> EI BT /F2 9 Tf (F) Tj ET";
+fn a_hidden_layer_in_a_form_drawn_after_a_filtered_inline_image_refuses() {
+    // THE REGRESSION BOTH REVIEWS FOUND. ADR 0019 §2a row 6 refuses a hidden layer one level
+    // down, but that check runs on what the walk visits -- and a form drawn after a filtered
+    // image is never visited, because its name is never read. Kept whole, the part had the
+    // hidden text in it and no `/OCProperties` to hide it: 1,681 dark pixels from a page that
+    // rendered none.
+    let form_data = "/OC /L1 BDC BT /F1 12 Tf 10 10 Td (HIDDENLAYERTEXT) Tj ET EMC";
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R \
+         /OCProperties << /OCGs [9 0 R] /D << /OFF [9 0 R] >> >> >>"
+            .to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /Font << /F1 7 0 R >> /XObject << /Fm 8 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /Font << /F1 7 0 R >> >> >>"
+            .to_owned(),
+        content(
+            "q 10 0 0 10 50 50 cm BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 80> EI Q /Fm Do \
+             BT /F1 12 Tf 10 10 Td (ONE) Tj ET",
+        ),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+        HELVETICA.to_owned(),
+        format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+             /Resources << /Font << /F1 7 0 R >> /Properties << /L1 9 0 R >> >> \
+             /Length {} >>\nstream\n{form_data}\nendstream",
+            form_data.len()
+        ),
+        "<< /Type /OCG /Name (Hidden) >>".to_owned(),
+    ]);
+    assert_refused_naming_the_image(
+        split_first(bytes, &[1]),
+        Some("HIDDENLAYERTEXT"),
+        "a hidden layer after the image",
+    );
+}
+
+#[test]
+fn a_filtered_inline_image_inside_a_form_refuses_like_one_on_the_page() {
+    // A PARTIAL READ ONE LEVEL DOWN. The page's own content reads to the end; the form it draws
+    // holds the filtered image and then `/F2 Tf`. Pruning by that read would take Courier off a
+    // page whose form draws with it.
+    let data = "BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 80> EI BT /F2 9 Tf (F) Tj ET";
     let form = format!(
         "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Length {} >>\nstream\n{data}\nendstream",
         data.len()
     );
     let bytes = raw_pdf(&[
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Count 3 /Kids [3 0 R 4 0 R 5 0 R] >>".to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
-         /Resources << /XObject << /Fm 7 0 R >> /Font << /F2 8 0 R >> >> >>"
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /XObject << /Fm 6 0 R >> /Font << /F2 7 0 R >> >> >>"
             .to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
-         /Resources << /XObject << /Fm 7 0 R >> /Font << /F2 9 0 R >> >> >>"
-            .to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 10 0 R \
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R \
          /Resources << >> >>"
             .to_owned(),
         content("/Fm Do"),
         form,
         COURIER.to_owned(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>".to_owned(),
         content(""),
     ]);
-    let outputs = split_first(bytes, &[2]).expect("each page's resources are its own: kept whole");
-    let text = expanded(&outputs[0]);
-    assert!(
-        contains(&text, "Courier"),
-        "page 1's font, which the form draws with, is kept"
-    );
-    assert!(
-        contains(&text, "Times-Roman"),
-        "page 2's, reached through the cached read, is kept too"
-    );
+    match split_first(bytes, &[1]) {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[split-inline-image-filtered]"),
+            "refused, but not for the image: {error:?}"
+        ),
+        Ok(outputs) => {
+            assert!(
+                contains(&expanded(&outputs[0]), "Courier"),
+                "the font the form draws after its image was pruned off the page"
+            );
+            panic!("returned Ok, where a filtered inline image in a form must refuse the split");
+        }
+    }
 }

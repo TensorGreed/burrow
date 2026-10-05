@@ -666,7 +666,7 @@ mod tests {
         // The lexer skips the binary itself, so `ID`'s span runs through `EI`. Every byte is
         // accounted for by exactly one operation, which is what lets a rewriter rebuild the
         // stream from spans without losing an image.
-        let content = b"q BI /W 14 /H 1 /CS /G ID \x00(/F9 <</a 1>> EI Q";
+        let content = b"q BI /W 14 /H 1 /BPC 8 /CS /G ID \x00(/F9 <</a 1>> EI Q";
         let read = ops(content);
         assert_eq!(operators(content), ["q", "BI", "ID", "Q"]);
         let (start, end) = read[2].span;
