@@ -189,10 +189,16 @@ fn one_operation(op: &str, file: &str) -> i32 {
     // THE REAL WRITE PATH, NOT A REFUSAL OF A BAD ARGUMENT: reorder by the reverse of the actual
     // count, rotate every page, cut after page 1 only where there is a page 2. A count that
     // cannot be had is itself the outcome for those three.
+    // THE ARGUMENT COUNT, via the rotator's open -- the same unguarded qpdf open rotate, reorder
+    // and split's operations use, so it agrees with them on the count. NOT via split's
+    // PageExtractor open, which carries the repaired-input guard: counting there reported split's
+    // refusal as rotate's and reorder's, which are not guarded. NOT via PDFium either, which
+    // disagrees with qpdf on a page count for a document like `five-pages-or-six` and would build
+    // a page list the qpdf operation then rejects.
     let pages = || -> Result<u64, burrow_types::Error> {
-        use burrow_engines::PageExtractor;
-        let document = <Qpdf as PageExtractor>::open(&qpdf, boxed(), &opts())?;
-        <Qpdf as PageExtractor>::pages(&qpdf, &document)
+        use burrow_engines::PageRotator;
+        let source = <Qpdf as PageRotator>::open(&qpdf, boxed(), &opts())?;
+        <Qpdf as PageRotator>::pages(&qpdf, &source)
     };
     // A DETAIL LINE THE GATE PINS, deterministic and free of byte sizes: what each operation
     // was asked (the arguments it was actually given) and what came out (the output re-opened and

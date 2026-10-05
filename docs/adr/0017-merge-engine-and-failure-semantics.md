@@ -195,3 +195,25 @@ and the divergence must be visible in the typed outcome.
 **Partial success**, covered in §2.
 
 **Per-input limits only**, covered in §3.
+
+## Amendment, 2026-10-05 — merge refuses an input the engine repaired at open
+
+`merge` opens each input with recovery off (above) and now **refuses, at the open, any input qpdf
+repaired while reading it** -- `[engine-repaired-input]` (ADR 0029), read inside the trap from
+`qpdf_more_warnings`. It is the **open-time half** of redaction's #224 rule: redaction also asks
+again after the write, because qpdf reads lazily and recovers some shapes (a wrong `/Length`, a
+stray byte in a `/Widths`) only while copying. merge does not; an input that opens clean and is
+recovered during the copy is not caught, and stays with #61. merge
+builds a new document from every input and ships it from a live tool, so an input qpdf had to
+reconstruct is not the one other readers show, and it must not reach the copier.
+
+**Cost, measured, bar registered first (under 1% of real documents):** across #227's 100 real
+documents plus the 162 committed fixtures, **0 of 100 real documents** are newly refused. Seven
+fixtures are: the four `evade-junk-kid-*` redaction fixtures, `five-pages-or-six`, `layered` and
+`objstm-bomb`, each one deliberately malformed. The committed gate (`tools/check-fixtures-survive.sh`)
+pins the three of those it tracks, so removing the guard turns it red.
+
+**What it is not.** Not the post-write half of redaction's check, and not a fix for any engine
+crash: it refuses inputs qpdf *warns* about at open, not ones it opens cleanly and recovers during
+the copy. The recovery posture for output is unchanged (recovery stays off), and the rest of #61
+stays open.

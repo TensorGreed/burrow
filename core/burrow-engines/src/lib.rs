@@ -132,6 +132,28 @@ pub fn glyphs_on_first_page(
     qpdf::walk_first_page_for_probe(bytes, options)
 }
 
+/// The refusal for a document the PDF engine repaired while opening it.
+///
+/// qpdf reconstructs a damaged cross-reference or object on the way in, and a repaired document
+/// may not be the one another reader shows. `merge` and `split` refuse it **at the open**,
+/// because both build a new document from the input and ship it from a live tool. It is the same
+/// `[engine-repaired-input]` rule redaction uses (#224), but only its open-time half: redaction
+/// also asks again after the write (`redact::repaired_by_the_engine`, `redact/steps.rs`), because
+/// qpdf reads lazily and recovers some shapes -- a wrong `/Length`, a stray byte in a `/Widths`
+/// array -- only while copying. An input that opens cleanly and is recovered during the copy is
+/// **not** caught here; that lazy class, and any engine crash it can reach, stay with #61.
+///
+/// Read from `qpdf_more_warnings` inside the trap; it names no document content. Ungated: the
+/// `web` module always compiles (ADR 0006) and calls this, so it is always referenced.
+pub(crate) fn engine_repaired_the_input() -> burrow_types::Error {
+    burrow_types::Error::Unsupported(
+        "pdf [engine-repaired-input]: the PDF engine repaired this document while opening it, and a \
+         repaired document may not be the one other readers show, so burrow will not build a new \
+         document from it"
+            .to_owned(),
+    )
+}
+
 /// A page's frame, for converting a region into content space.
 ///
 /// # Geometry, not redaction, and the same reasoning as [`glyphs_on_first_page`]

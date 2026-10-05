@@ -124,7 +124,7 @@ def main(out: Path) -> None:
     objs = (
         [
             b"<< /Type /Catalog /Pages 2 0 R /Outlines 13 0 R /PageMode /UseOutlines >>",
-            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
         ]
         + pages
         + streams
@@ -152,7 +152,7 @@ def main(out: Path) -> None:
     objs = (
         [
             b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [13 0 R 14 0 R] >> >>",
-            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
         ]
         + pages
         + streams
@@ -167,7 +167,7 @@ def main(out: Path) -> None:
         [
             b"<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles "
             b"<< /Names [(note.txt) 13 0 R] >> >> >>",
-            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
         ]
         + pages
         + streams
@@ -188,7 +188,7 @@ def main(out: Path) -> None:
     objs = (
         [
             b"<< /Type /Catalog /Pages 2 0 R >>",
-            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
         ]
         + pages
         + streams
@@ -269,7 +269,7 @@ def canary_per_page(out: Path) -> None:
             + b"/Names << /EmbeddedFiles << /Names ["
             + names.encode()
             + b"] >> >> >>",
-            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
         ]
         + pages
         + streams
@@ -456,7 +456,7 @@ def destinations(out: Path) -> None:
     objs = (
         [
             b"<< /Type /Catalog /Pages 2 0 R >>",
-            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
         ]
         + pages
         + streams
@@ -518,7 +518,12 @@ def walk_shapes(out: Path) -> None:
         return build(
             [
                 f"<< /Type /Catalog /Pages 2 0 R {catalog_extra}>>".encode(),
-                f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+                # AN INHERITED EMPTY `/Resources` on the node, so pages past the first -- which
+                # carry none of their own -- inherit a valid one rather than leaving qpdf to
+                # repair a page with no resources at all. Page 1 overrides it with the feature
+                # resources the fixture is about. Without this every `document()` fixture opened
+                # with a repair warning, which `split`/`merge` now refuse (#260 follow-up).
+                f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
             ]
             + pages
             + streams
@@ -644,7 +649,7 @@ def refusal_shapes(out: Path) -> None:
         objs = (
             [
                 b"<< /Type /Catalog /Pages 2 0 R >>",
-                f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+                f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
             ]
             + pages
             + streams
@@ -691,7 +696,7 @@ def optional_content(out: Path) -> None:
         [
             b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [13 0 R] "
             b"/D << /OFF [13 0 R] >> >> >>",
-            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} >>".encode(),
+            f"<< /Type /Pages /Kids [{kids}] /Count {PAGES} /Resources << >> >>".encode(),
         ]
         + pages
         + streams

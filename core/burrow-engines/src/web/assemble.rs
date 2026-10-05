@@ -85,6 +85,12 @@ impl PageAssembler for WebQpdf {
             return Err(error);
         }
 
+        // REPAIR REFUSED, as on native: merge ships a new document from a live tool, and this is
+        // the browser path that crashed on a repaired input. Each input, the first here.
+        if dest.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
+
         Ok(WebAssembly {
             dest,
             sources: Vec::new(),
@@ -115,6 +121,11 @@ impl PageAssembler for WebQpdf {
         let source = Session::open(self, &next, options.password, false)?;
         drop(next);
         let count = source.page_count()?;
+
+        // THE SAME REPAIR REFUSAL as for the first input, before any page of this one is copied.
+        if source.repaired() {
+            return Err(crate::engine_repaired_the_input());
+        }
 
         // The ceiling is on the OUTPUT, checked before a single page is copied. ADR 0017 §3.
         let total = assembly
