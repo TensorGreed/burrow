@@ -413,6 +413,18 @@ p.write_text(s)
 assert "tools/cosign-blob.sh sign \"${{ steps.pack.outputs.archive }}\"" not in s, "plant did not reach the file"
 '
 
+# Drop --tag from the in-job verify step: `--verify-command` requires it, so the step would exit 2
+# and abort the sign job before publishing (the headline finding of the signing-fix review).
+expect_refusal "the verify step without --tag is refused" "without \`--tag\`" '
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "--archive \"${{ steps.pack.outputs.archive }}\" \\\n            --tag \"${{ steps.pack.outputs.tag }}\" > verify.sh"
+assert old in s, "MUTATION DID NOT APPLY: verify step shape changed"
+s = s.replace(old, "--archive \"${{ steps.pack.outputs.archive }}\" > verify.sh", 1)
+p.write_text(s)
+assert "--tag \"${{ steps.pack.outputs.tag }}\" > verify.sh" not in s, "plant did not reach the file"
+'
+
 # Remove the rehearsal job entirely: a broken invocation would then first fail on a release.
 expect_refusal "removing the sign-rehearsal job is refused" "no \`sign-rehearsal\` job" '
 import sys, pathlib, yaml

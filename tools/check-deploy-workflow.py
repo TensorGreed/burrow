@@ -313,12 +313,39 @@ def check_signing_is_rehearsed(workflow: dict, report: list[str]) -> None:
             f"the `{REHEARSAL_JOB}` job does not invoke `{COSIGN_WRAPPER}` -- then it is not "
             f"rehearsing the real invocation, only a copy of it."
         )
+    # IT MUST ACTUALLY RUN ON THE MAIN PUSH. An `if: false` or a narrowed condition would keep the
+    # checker green while rehearsing nothing -- the "a check that silently examines nothing reads
+    # as coverage" failure mode. The condition must reference the main push.
+    rehearsal_if = jobs[REHEARSAL_JOB].get("if") if isinstance(jobs[REHEARSAL_JOB], dict) else None
+    if rehearsal_if is not None and "refs/heads/main" not in str(rehearsal_if):
+        raise Refused(
+            f"the `{REHEARSAL_JOB}` job's `if` is {rehearsal_if!r}, which does not run it on the "
+            f"main push. A rehearsal that does not run on every main push catches nothing before a "
+            f"release."
+        )
     env = workflow.get("env", {})
     if not (isinstance(env, dict) and "COSIGN_SHA256_AMD64" in env):
         raise Refused(
             "cosign is not pinned by sha256 (`COSIGN_SHA256_AMD64` is absent from the workflow "
             "env), so the rehearsal and the release could run different cosign versions."
         )
+
+    # THE IN-JOB VERIFY STEP MUST PASS `--tag`. `check-release-notes.py --verify-command` requires
+    # both `--archive` and `--tag`; a step that omits one exits 2 and -- under `set -euo pipefail`
+    # -- aborts the sign job BEFORE `gh release create`, so the site deploys and nothing is
+    # published. That shipped once, caught by nobody because no test ran that invocation. This
+    # asserts the arguments, not just that the step exists.
+    for step in (jobs[SIGNING_JOB].get("steps", []) if isinstance(jobs[SIGNING_JOB], dict) else []):
+        body = step.get("run") if isinstance(step, dict) else None
+        if not isinstance(body, str):
+            continue
+        code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+        if "check-release-notes.py --verify-command" in code and "--tag" not in code:
+            raise Refused(
+                f"the `{SIGNING_JOB}` job runs `check-release-notes.py --verify-command` without "
+                f"`--tag`; it requires `--archive` AND `--tag`, so the step would exit 2 and abort "
+                f"the job before the release is published."
+            )
     report.append(f"`{SIGNING_JOB}` and `{REHEARSAL_JOB}` share `{COSIGN_WRAPPER}`; cosign pinned")
 
 
@@ -878,6 +905,40 @@ PROBES = [
         lambda: check_signing_is_rehearsed(
             {"env": {"COSIGN_SHA256_AMD64": "x"},
              "jobs": {SIGNING_JOB: {"steps": [{"run": COSIGN_WRAPPER + " sign a b"}]},
+                      REHEARSAL_JOB: {"steps": [{"run": COSIGN_WRAPPER + " sign a b"}]}}}, []
+        ),
+    ),
+    (
+        # The rehearsal must actually run on the main push, not be disabled.
+        "a disabled rehearsal job is refused",
+        lambda: check_signing_is_rehearsed(
+            {"env": {"COSIGN_SHA256_AMD64": "x"},
+             "jobs": {SIGNING_JOB: {"steps": [{"run": COSIGN_WRAPPER + " sign a b"}]},
+                      REHEARSAL_JOB: {"if": False, "steps": [{"run": COSIGN_WRAPPER + " sign a b"}]}}}, []
+        ),
+        lambda: check_signing_is_rehearsed(
+            {"env": {"COSIGN_SHA256_AMD64": "x"},
+             "jobs": {SIGNING_JOB: {"steps": [{"run": COSIGN_WRAPPER + " sign a b"}]},
+                      REHEARSAL_JOB: {"if": "github.ref == 'refs/heads/main'",
+                                      "steps": [{"run": COSIGN_WRAPPER + " sign a b"}]}}}, []
+        ),
+    ),
+    (
+        # The in-job verify step must pass --tag to --verify-command, or it exits 2 and aborts the
+        # sign job before publishing (it did -- the headline finding of the signing-fix review).
+        "the verify step must pass --tag",
+        lambda: check_signing_is_rehearsed(
+            {"env": {"COSIGN_SHA256_AMD64": "x"},
+             "jobs": {SIGNING_JOB: {"steps": [
+                          {"run": COSIGN_WRAPPER + " sign a b"},
+                          {"run": "python3 tools/check-release-notes.py --verify-command --archive a > v.sh"}]},
+                      REHEARSAL_JOB: {"steps": [{"run": COSIGN_WRAPPER + " sign a b"}]}}}, []
+        ),
+        lambda: check_signing_is_rehearsed(
+            {"env": {"COSIGN_SHA256_AMD64": "x"},
+             "jobs": {SIGNING_JOB: {"steps": [
+                          {"run": COSIGN_WRAPPER + " sign a b"},
+                          {"run": "python3 tools/check-release-notes.py --verify-command --archive a --tag t > v.sh"}]},
                       REHEARSAL_JOB: {"steps": [{"run": COSIGN_WRAPPER + " sign a b"}]}}}, []
         ),
     ),

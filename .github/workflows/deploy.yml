@@ -633,8 +633,11 @@ jobs:
       - name: Verify the signature the way the notes tell a reader to
         run: |
           set -euo pipefail
+          # `--tag` is required: the published identity is bound to the tag's ref, and the command
+          # must be the one the notes carry.
           python3 tools/check-release-notes.py --verify-command \
-            --archive "${{ steps.pack.outputs.archive }}" > verify.sh
+            --archive "${{ steps.pack.outputs.archive }}" \
+            --tag "${{ steps.pack.outputs.tag }}" > verify.sh
           cat verify.sh
           bash verify.sh
 
@@ -672,24 +675,23 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "${{ steps.pack.outputs.tag }}" \
-            --json body,targetCommitish,isDraft > release.json
+            --json body,isDraft > release.json
+          # `--target` IS A REQUEST, NOT A FACT, and under deploy-on-tag the tag ALWAYS pre-exists
+          # (it is the trigger), so GitHub keeps it where it points and `targetCommitish` reports the
+          # default branch rather than the SHA -- asserting it `== github.sha` would fail every
+          # correct release. Resolve the tag to its commit with git instead; that is authoritative
+          # regardless of what the API reports, and it is the real question: does the release's tag
+          # point at the artifact commit, or at something pushed ahead of time?
+          tag_commit="$(git rev-list -n1 "${{ steps.pack.outputs.tag }}")"
+          [ "$tag_commit" = "${{ github.sha }}" ] || {
+            echo "the release tag points at $tag_commit, not ${{ github.sha }}"; exit 1; }
           python3 -c '
-          import json, sys
+          import json
           release = json.load(open("release.json"))
           open("published.md", "w").write(release["body"])
-          # `--target` IS A REQUEST, NOT A FACT. GitHub ignores `target_commitish` when the tag
-          # already exists, and this tag name is derivable from any public commit -- so a tag
-          # pushed ahead of time would produce a release whose tag points elsewhere while the
-          # notes and the certificate describe the artifact commit. Read back, not assumed.
-          want = sys.argv[1]
-          if release["targetCommitish"] != want:
-              raise SystemExit(
-                  f"the release points at {release[\"targetCommitish\"]}, not {want} -- "
-                  f"the tag already existed and GitHub kept it where it was"
-              )
           if release["isDraft"]:
               raise SystemExit("the release was created as a draft; nobody can fetch it")
-          ' "${{ github.sha }}"
+          '
           python3 tools/check-release-notes.py --check published.md \
             --archive "${{ steps.pack.outputs.archive }}" \
             --tag "${{ steps.pack.outputs.tag }}"
