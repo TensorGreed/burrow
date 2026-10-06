@@ -35,7 +35,7 @@
 
 #![no_main]
 
-use burrow_engines::pdfsyntax::names::{MAX_NAME_LENGTH, MAX_NAMES, names_in_content};
+use burrow_engines::pdfsyntax::names::{MAX_NAMES, MAX_TOKEN_BYTES, names_in_content};
 use burrow_types::Error;
 use libfuzzer_sys::fuzz_target;
 
@@ -53,8 +53,12 @@ fuzz_target!(|data: &[u8]| {
                 names.len()
             );
             for name in &names {
+                // The lexer refuses a RAW token past `MAX_TOKEN_BYTES` (the `/` counted, #257), so
+                // any name that comes back `Ok` decodes to at most `MAX_TOKEN_BYTES - 1` bytes --
+                // the slash is in the raw count, and `#xx` escapes only shrink the decoding
+                // further. A longer decoded name coming back is the bug.
                 assert!(
-                    name.len() <= MAX_NAME_LENGTH,
+                    name.len() <= MAX_TOKEN_BYTES - 1,
                     "a name longer than the recorded maximum came back instead of a refusal: {}",
                     name.len()
                 );

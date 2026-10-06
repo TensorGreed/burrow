@@ -179,21 +179,23 @@ pub const MAX_TOTAL_OPERANDS: usize = 1_048_576;
 /// The longest token -- name, number or bare keyword -- an operand may be, in RAW bytes.
 ///
 /// PDF 32000-1 §7.3.5 sets an implementation limit of 127 bytes, so anything past this is
-/// generated rather than written. [`super::names::MAX_NAME_LENGTH`] measures DECODED names, and
-/// the two now differ on purpose: `names` is a keep-filter, where a mismatch drops a resource
-/// rather than leaking one, and this one decides what a reader draws. It bounds what the
-/// operation list KEEPS; the lexer has already read the token by the time this is checked, so the
-/// token's own copy is bounded by the stream's decode ceiling, not by this.
+/// generated rather than written. This is the SAME raw-token cut the lexer enforces for names
+/// ([`super::names::MAX_TOKEN_BYTES`], which this is defined as, so they cannot drift): a name and
+/// a number are both tokens PDFium truncates at 255 raw bytes. It bounds what the operation list
+/// KEEPS; the lexer has already read the token by the time this is checked, so the token's own
+/// copy is bounded by the stream's decode ceiling, not by this.
 ///
-/// # Raw, counting the `/` or the sign, and before any `#xx` is decoded (#152)
+/// # Raw, counting the `/` or the sign, and before any `#xx` is decoded (#152, #257)
 ///
 /// PDFium's content-stream lexer keeps the first 255 raw bytes of a token and drops the rest,
-/// and only then decodes a name's escapes -- measured to the byte by #152's security review. This
-/// capped the DECODED name and did not cap numbers at all, so the two readers read one token two
-/// ways: `/G{200}#47{20} gs` named a different graphics state to each, and `-0{300}700 Td` was
-/// -700 here and 0 to PDFium, which drew the text inside a region this walk placed it outside of.
-/// Both returned `Ok` with the secret visible. A token past the length both read alike is refused.
-pub const MAX_OPERAND_BYTES: usize = 255;
+/// and only then decodes a name's escapes -- measured to the byte by #152's security review. The
+/// name case went in the LEXER (#257), so every name consumer gets it -- content operands, resource
+/// and page dictionary keys alike -- rather than only the operand list here; a `names`-only
+/// DECODED cap read `/A#41…` 300 bytes raw as 100 and let split's walk miss the form. Numbers were
+/// capped nowhere before #152: `-0{300}700 Td` was -700 here and 0 to PDFium, which drew text
+/// inside a region this walk placed it outside of, `Ok` with the secret visible. A token past the
+/// length both read alike is refused.
+pub const MAX_OPERAND_BYTES: usize = super::lexer::MAX_TOKEN_BYTES;
 
 /// The most items one array or dictionary operand may hold.
 ///

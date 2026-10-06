@@ -1027,3 +1027,107 @@ fn a_filtered_inline_image_in_an_annotation_appearance_refuses() {
     ]);
     assert_refused_naming_the_image(split_first(bytes, &[1]), None, "an appearance stream");
 }
+
+/// #257 fixtures: a name token longer than a renderer reads is refused, so split cannot carry a
+/// hidden layer a renderer would draw from the truncated name. The active discriminator is the
+/// `[name-token-too-long]` refusal marker. The hidden layer is really drawn (via `/Fm`), but that
+/// is a LATENT guard: today, removing the lexer check does not leak -- split still refuses, via the
+/// optional-content path -- so the `HIDDENLAYERTEXT`-absent branch is a backstop against a future
+/// regression that removed both, not something these fixtures exercise now. The over-long name is
+/// the refusal trigger, standing in for the draw operand PDFium would cut to a real resource.
+fn hidden_layer_pdf_drawing(page_one_content: &str) -> Vec<u8> {
+    let form_data = "/OC /L1 BDC BT /F1 12 Tf 10 10 Td (HIDDENLAYERTEXT) Tj ET EMC";
+    raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R \
+         /OCProperties << /OCGs [9 0 R] /D << /OFF [9 0 R] >> >> >>"
+            .to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Resources << /Font << /F1 7 0 R >> /XObject << /Fm 8 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /Font << /F1 7 0 R >> >> >>"
+            .to_owned(),
+        content(page_one_content),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+        HELVETICA.to_owned(),
+        format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+             /Resources << /Font << /F1 7 0 R >> /Properties << /L1 9 0 R >> >> \
+             /Length {} >>\nstream\n{form_data}\nendstream",
+            form_data.len()
+        ),
+        "<< /Type /OCG /Name (Hidden) >>".to_owned(),
+    ])
+}
+
+fn assert_refused_for_long_name(result: burrow_types::Result<Vec<Vec<u8>>>, why: &str) {
+    match result {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[name-token-too-long]"),
+            "{why}: refused, but not for the over-long name: {error:?}"
+        ),
+        Ok(outputs) => {
+            assert!(
+                !contains(&expanded(&outputs[0]), "HIDDENLAYERTEXT"),
+                "{why}: split carried the hidden layer into the part"
+            );
+            panic!("{why}: returned Ok, where an over-long name must refuse the split");
+        }
+    }
+}
+
+#[test]
+fn a_name_token_longer_than_a_renderer_reads_refuses_the_split() {
+    // 256 raw bytes (`/` + 255) -- one past PDFium's 255-byte cut, which would truncate it to a
+    // 255-raw name and resolve a different resource. The hidden-layer form is drawn by `/Fm`; the
+    // over-long name is the operand that carries the leak, refused before the walk resolves it.
+    let long = format!("/{} Do", "A".repeat(255));
+    assert_refused_for_long_name(
+        split_first(hidden_layer_pdf_drawing(&format!("/Fm Do {long}")), &[1]),
+        "a 256-raw-byte name",
+    );
+}
+
+#[test]
+fn a_name_long_in_raw_escapes_refuses_even_though_it_decodes_short() {
+    // The #257 case the OLD decoded-length check missed: `/` + 100 x `#41` is 301 raw bytes and
+    // decodes to "A" x 100 (100 bytes), so a decoded cap passed it while PDFium cut it to a
+    // different resource. The RAW check refuses it.
+    let escapes = "#41".repeat(100);
+    let long = format!("/{escapes} Do");
+    assert_refused_for_long_name(
+        split_first(hidden_layer_pdf_drawing(&format!("/Fm Do {long}")), &[1]),
+        "a 301-raw-byte escape name",
+    );
+}
+
+#[test]
+fn a_long_but_valid_name_at_the_ceiling_still_splits() {
+    // THE NEAR-MISS. 255 raw bytes (`/` + 254) -- exactly the cut, which both readers read whole --
+    // is a legitimate resource name and must NOT be refused, or the ceiling is a wall one byte low.
+    // A real form keyed by that name, no hidden layer, drawn on page 1.
+    let key = "A".repeat(254);
+    let bytes = raw_pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+             /Resources << /Font << /F1 7 0 R >> /XObject << /{key} 6 0 R >> >> >>"
+        ),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R \
+         /Resources << /Font << /F1 7 0 R >> >> >>"
+            .to_owned(),
+        content(&format!("/{key} Do BT /F1 12 Tf 10 10 Td (ONE) Tj ET")),
+        "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>\nstream\n\nendstream"
+            .to_owned(),
+        HELVETICA.to_owned(),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+    ]);
+    let outputs = split_first(bytes, &[1]).expect("a 255-raw name is at the ceiling, not past it");
+    assert_eq!(
+        outputs.len(),
+        2,
+        "split after page 1 of a 2-page doc yields two parts"
+    );
+}
