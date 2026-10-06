@@ -326,6 +326,22 @@ p.write_text(yaml.safe_dump(d, sort_keys=False))
 assert not any("check-release-preconditions" in str(x.get("run", "")) for x in d["jobs"]["publish"]["steps"]), "plant did not apply"
 '
 
+# The artifact-side gate (check-release-artifact.sh) shares the gather step with the decision, so
+# this removes just its INVOCATION from that step rather than the whole step -- without it, the
+# downloaded bytes are never checked against the tagged sha.
+expect_refusal "deleting the release-artifact gate is refused" "never runs in the \`publish\` job" '
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+# The publish invocation (uses "$sha"); the build job has its own (uses "$GITHUB_SHA"), which
+# stays -- removing only the publish one leaves the build gate in place, so a refusal is about
+# the publish side exactly.
+old = "tools/check-release-artifact.sh apps/web/dist \"$sha\""
+assert old in s, "MUTATION DID NOT APPLY: no publish release-artifact invocation to remove"
+s = s.replace(old, "true", 1)
+p.write_text(s)
+assert old not in s, "plant did not reach the file"
+'
+
 # --- THE READ-BACK MUST EXIST, AND MUST FOLLOW THE UPLOAD -------------------------------------
 #
 # The first version of that step asserted `wrangler's URL == $BURROW_SITE`, which no correct
