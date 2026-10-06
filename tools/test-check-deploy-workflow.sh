@@ -400,6 +400,42 @@ steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
 assert not any("check-live-release-sha" in str(x.get("run", "")) for x in steps), "plant did not apply"
 '
 
+# --- signing is defined once and rehearsed -----------------------------------------------------
+# Inline the real sign-blob in the sign job instead of the shared wrapper: the rehearsal would
+# then exercise a copy, not the real invocation.
+expect_refusal "the sign job bypassing the shared wrapper is refused" "must go through the shared script" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "tools/cosign-blob.sh sign \"${{ steps.pack.outputs.archive }}\""
+assert old in s, "MUTATION DID NOT APPLY: no sign-job wrapper call to replace"
+s = s.replace(old, "cosign sign-blob --yes \"${{ steps.pack.outputs.archive }}\"", 1)
+p.write_text(s)
+assert "tools/cosign-blob.sh sign \"${{ steps.pack.outputs.archive }}\"" not in s, "plant did not reach the file"
+'
+
+# Drop --tag from the in-job verify step: `--verify-command` requires it, so the step would exit 2
+# and abort the sign job before publishing (the headline finding of the signing-fix review).
+expect_refusal "the verify step without --tag is refused" "without \`--tag\`" '
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "--archive \"${{ steps.pack.outputs.archive }}\" \\\n            --tag \"${{ steps.pack.outputs.tag }}\" > verify.sh"
+assert old in s, "MUTATION DID NOT APPLY: verify step shape changed"
+s = s.replace(old, "--archive \"${{ steps.pack.outputs.archive }}\" > verify.sh", 1)
+p.write_text(s)
+assert "--tag \"${{ steps.pack.outputs.tag }}\" > verify.sh" not in s, "plant did not reach the file"
+'
+
+# Remove the rehearsal job entirely: a broken invocation would then first fail on a release.
+expect_refusal "removing the sign-rehearsal job is refused" "no \`sign-rehearsal\` job" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+start = next(i for i, l in enumerate(lines) if l.startswith("  sign-rehearsal:"))
+end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("  publish:"))
+p.write_text("".join(lines[:start] + lines[end:]))
+assert "sign-rehearsal" not in yaml.safe_load(p.read_text())["jobs"], "plant did not apply"
+'
+
 # --- the forbidden triggers, each named ---------------------------------------------------------
 for trigger in pull_request pull_request_target workflow_call repository_dispatch issue_comment schedule; do
   expect_refusal "a \`$trigger\` trigger is refused" "triggers are" "

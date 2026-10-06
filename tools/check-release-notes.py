@@ -48,11 +48,17 @@ from pathlib import Path
 #: workflow that does the signing.
 SLUG = "TensorGreed/burrow"
 
-#: Keyless signing through GitHub's OIDC provider binds the certificate to the workflow FILE at a
-#: ref. Both halves matter: the identity without the issuer would accept a certificate from any
-#: provider willing to assert that string.
-IDENTITY = f"https://github.com/{SLUG}/.github/workflows/deploy.yml@refs/heads/main"
+#: Keyless signing through GitHub's OIDC provider binds the certificate to the workflow FILE at the
+#: ref that TRIGGERED the run. Since deploy-on-tag, `sign` runs on the `v*` tag, so the identity is
+#: `deploy.yml@refs/tags/<tag>`, NOT `@refs/heads/main` -- the old hardcoded `main` would have made
+#: every published verify command fail, which is why v0.1.1 could never have verified even with the
+#: bundle fixed. Both halves matter: the identity without the issuer would accept a certificate
+#: from any provider willing to assert that string.
 ISSUER = "https://token.actions.githubusercontent.com"
+
+
+def identity_for(tag: str) -> str:
+    return f"https://github.com/{SLUG}/.github/workflows/deploy.yml@refs/tags/{tag}"
 
 #: The sentence a reader must not be able to lose. Checked as a substring of the published body.
 CLAIM = (
@@ -65,13 +71,18 @@ CLAIM = (
 )
 
 
-def verify_command(archive: str) -> str:
-    """The exact invocation, with identity and issuer filled in."""
+def verify_command(archive: str, tag: str) -> str:
+    """The exact invocation, with identity and issuer filled in.
+
+    A single Sigstore `--bundle` carries the signature and the certificate together; cosign v3's
+    `sign-blob` writes that bundle (the old `--signature`/`--certificate` pair was removed, and
+    calling it the old way is what broke v0.1.1's release). The identity is bound to this tag's ref,
+    which is where the keyless signature was actually made.
+    """
     return (
         f"cosign verify-blob {archive} \\\n"
-        f"  --signature {archive}.sig \\\n"
-        f"  --certificate {archive}.pem \\\n"
-        f"  --certificate-identity {IDENTITY} \\\n"
+        f"  --bundle {archive}.bundle \\\n"
+        f"  --certificate-identity {identity_for(tag)} \\\n"
         f"  --certificate-oidc-issuer {ISSUER}"
     )
 
@@ -85,7 +96,7 @@ packed from the same `production-dist` artifact the deploy consumed.
 ## Verify it
 
 ```
-{verify_command(archive)}
+{verify_command(archive, tag)}
 ```
 
 `--certificate-identity` and `--certificate-oidc-issuer` are not optional decoration. Without
@@ -113,7 +124,7 @@ on every deploy rather than once.
   the payload and this commit — not of the machine that packed it, which is the property a third
   party reconstructing it needs. The workflow packs it twice and compares, rather than asserting
   this.
-- `{archive}.sha256`, `{archive}.sig`, `{archive}.pem`
+- `{archive}.sha256`, `{archive}.bundle`
 - `burrow.cdx.json` — the CycloneDX SBOM for this commit: the Rust crates of the locked
   workspace and the native engine components, verified in CI against `engines/licenses.toml` and
   against symbol inspection of the shipped binaries.
@@ -129,10 +140,10 @@ on every deploy rather than once.
 
 #: Each rule: a name, the text it requires, and why losing it would matter. Gated on the SET, so
 #: a rule added here without a probe below fails rather than passing quietly.
-def rules(archive: str) -> list[tuple[str, str]]:
+def rules(archive: str, tag: str) -> list[tuple[str, str]]:
     return [
-        ("the verify-blob invocation", verify_command(archive)),
-        ("the certificate identity", IDENTITY),
+        ("the verify-blob invocation", verify_command(archive, tag)),
+        ("the certificate identity", identity_for(tag)),
         ("the OIDC issuer", ISSUER),
         ("the claim, and its limit", CLAIM),
         ("the checksum command", f"sha256sum -c {archive}.sha256"),
@@ -149,8 +160,8 @@ def tag_rule(tag: str) -> tuple[str, str]:
     return ("the tag this body belongs to", f"deployed at `{tag}`")
 
 
-def check(body: str, archive: str, tag: str | None = None) -> int:
-    applied = rules(archive) + ([tag_rule(tag)] if tag else [])
+def check(body: str, archive: str, tag: str) -> int:
+    applied = rules(archive, tag) + [tag_rule(tag)]
     missing = [name for name, text in applied if text not in body]
     print(f"check-release-notes: {len(applied)} rule(s) checked against the published body")
     if missing:
@@ -177,8 +188,8 @@ def probe(quiet: bool = False) -> int:
     the sentence claiming so was here first and was false: `main()` called this only under
     `--probe`, so the post-publish read-back ran unprobed rules. It costs microseconds.
     """
-    archive = "burrow-web-deploy-2026-01-01-abc1234.tar.gz"
-    sample_tag = "deploy-2026-01-01-abc1234"
+    archive = "burrow-web-v1.2.3.tar.gz"
+    sample_tag = "v1.2.3"
     full = notes(archive, sample_tag)
     problems: list[str] = []
 
@@ -193,7 +204,7 @@ def probe(quiet: bool = False) -> int:
     if quietly(full) != 0:
         problems.append("the generated notes do not pass their own rules")
 
-    for name, text in rules(archive) + [tag_rule(sample_tag)]:
+    for name, text in rules(archive, sample_tag) + [tag_rule(sample_tag)]:
         if text not in full:
             problems.append(f"{name}: the generated notes do not contain it; the rule is inert")
             continue
@@ -201,7 +212,7 @@ def probe(quiet: bool = False) -> int:
             problems.append(f"{name}: a body with it removed still passed; the rule is inert")
 
     if not quiet:
-        print(f"check-release-notes: {len(rules(archive)) + 1} rule(s) probed against the full "
+        print(f"check-release-notes: {len(rules(archive, sample_tag)) + 1} rule(s) probed against the full "
               f"notes and against the notes with that rule removed")
     if problems:
         for problem in problems:
@@ -240,16 +251,16 @@ def main() -> int:
         # SO A NEW RULE CANNOT ARRIVE WITHOUT A CASE. `tools/test-check-release-notes.sh` reads
         # this rather than carrying a hardcoded list: a review added a sixth rule to a scratch
         # copy and the suite passed 8 of 8, because the count it gated on was a constant.
-        for name, _ in rules("ARCHIVE") + [tag_rule("TAG")]:
+        for name, _ in rules("ARCHIVE", "TAG") + [tag_rule("TAG")]:
             print(name)
         return 0
 
     if args.verify_command:
-        if not args.archive:
-            parser.error("--archive is required")
+        if not args.archive or not args.tag:
+            parser.error("--archive and --tag are required")
         # ONE DEFINITION. The job runs what the notes publish, character for character; a second
         # copy of this command in the workflow is the copy that would rot.
-        print(verify_command(args.archive))
+        print(verify_command(args.archive, args.tag))
         return 0
 
     if not args.archive or not args.tag:

@@ -10,10 +10,15 @@ it as an artifact — it does **not** deploy. A push of an annotated **`v*`** ta
 by reusing that verified artifact. So a release is one deliberate step, taken when you decide to
 cut one.
 
-> **`v0.1.0` exists on `0aa1bd2` and was never deployed.** Its `publish` run refused on a
-> stamp-check defect: the precondition checked `apps/web/dist` for a `build-stamp` nothing ever
-> wrote there, so it refused every tag. Fixed by the literal SHA stamp (`release-sha.txt`) in
-> PR #265. The tag is left in place as the record; the first real release is **`v0.1.1`**.
+> **Release history, and two tags that stand as records of fixed defects.**
+> - **`v0.1.0`** (on `0aa1bd2`) **was never deployed.** Its `publish` refused on a stamp-check
+>   defect — the precondition checked `apps/web/dist` for a `build-stamp` nothing wrote there, so
+>   it refused every tag. Fixed by the literal SHA stamp (`release-sha.txt`) in PR #265.
+> - **`v0.1.1`** (on `f834607`, deploy run `37495869245`) **deployed but was never signed.** The
+>   site went live and verified (live `release-sha.txt` == the tag), but the `sign` job failed:
+>   cosign v3's `sign-blob` had been called with flags cosign removed. Fixed by pinning cosign and
+>   the `--bundle` invocation in PR #266, rehearsed on every main push so it cannot recur.
+> - The first **complete** release — deployed *and* signed — is **`v0.1.2`**.
 
 ### Before you tag
 
@@ -65,13 +70,25 @@ BUILD_RUN=$(gh run list --commit "$SHA" --workflow deploy.yml --branch main \
 rm -rf /tmp/burrow-deployed && gh run download "$BUILD_RUN" -n production-dist -D /tmp/burrow-deployed
 tools/check-live-routes.py https://notonlypdf.com /tmp/burrow-deployed   # live == these bytes (incl. /release-sha.txt)
 
-echo "deployed: https://notonlypdf.com is serving $VERSION ($SHA)"
+# 4. The signed release exists and verifies. The `sign` job publishes a GitHub Release with the
+#    tarball, its single Sigstore bundle, and the SBOM. Confirm all three are attached and that the
+#    signature verifies against the DOWNLOADED assets with the pinned cosign.
+rm -rf /tmp/burrow-rel && gh release download "$VERSION" -D /tmp/burrow-rel
+ls /tmp/burrow-rel   # expect burrow-web-$VERSION.tar.gz, .tar.gz.bundle, .tar.gz.sha256, burrow.cdx.json
+( cd /tmp/burrow-rel && sha256sum -c "burrow-web-$VERSION.tar.gz.sha256" )
+cosign verify-blob "/tmp/burrow-rel/burrow-web-$VERSION.tar.gz" \
+  --bundle "/tmp/burrow-rel/burrow-web-$VERSION.tar.gz.bundle" \
+  --certificate-identity "https://github.com/TensorGreed/burrow/.github/workflows/deploy.yml@refs/tags/$VERSION" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+echo "deployed and signed: https://notonlypdf.com is serving $VERSION ($SHA), release assets verify"
 ```
 
-Do not say "deployed" until both `check-live-release-sha.sh` and `check-live-routes.py` pass: the
-first says the live origin is serving this exact tag's build, the second says it is serving the
-whole verified artifact. Either failing means the live site is **not** this tag, whatever the run's
-exit code was.
+Do not say "deployed" until `check-live-release-sha.sh` and `check-live-routes.py` pass; do not say
+"released" until step 4 also passes. The first two say the live origin is serving this exact tag's
+whole verified build; step 4 says the signed tarball, its bundle and the SBOM are published and the
+signature verifies against the downloaded assets. Any of them failing means the live site or the
+release is **not** this tag, whatever the run's exit code was.
 
 ### If publish refuses
 

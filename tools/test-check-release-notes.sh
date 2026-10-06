@@ -19,7 +19,7 @@ trap 'rm -rf "$work" "$mutant"' EXIT
 #: 8 of 8, because the number it gated on was a constant. One case per rule, plus the positive
 #: control and the two meta-cases.
 mapfile -t RULES < <(python3 "$here/check-release-notes.py" --list-rules)
-EXPECTED_CASES=$(( ${#RULES[@]} + 3 ))
+EXPECTED_CASES=$(( ${#RULES[@]} + 5 ))
 if [ "${#RULES[@]}" -lt 5 ]; then
   echo "  FAIL the tool reports only ${#RULES[@]} rule(s); it had 6 when this was written" >&2
   exit 1
@@ -68,7 +68,7 @@ mod = importlib.util.module_from_spec(spec)
 sys.modules["crn"] = mod
 spec.loader.exec_module(mod)
 
-rules = dict(mod.rules(archive))
+rules = dict(mod.rules(archive, tag))
 rules.update([mod.tag_rule(tag)])
 if rule not in rules:
     raise SystemExit(f"the tool lists {rule!r} but no rule of that name exists; the list and the "
@@ -120,6 +120,34 @@ if grep -qF "rule(s) probed" <<<"$probe_output"; then
 else
   bad "the mutant refused as a checker, not as a traceback"
   sed 's/^/         /' <<<"$probe_output" >&2
+fi
+
+# --verify-command is the path the deploy workflow runs; it was untested when a refactor made
+# --tag required and the workflow step (passing only --archive) would have aborted the sign job on
+# the next release. Exercise it the way the workflow does.
+set +e
+vc="$(python3 "$here/check-release-notes.py" --verify-command --archive "$archive" --tag "$tag" 2>&1)"
+vc_status=$?
+set -e
+if [ "$vc_status" -eq 0 ] \
+   && grep -qF "cosign verify-blob" <<<"$vc" \
+   && grep -qF -- "--bundle $archive.bundle" <<<"$vc" \
+   && grep -qF "refs/tags/$tag" <<<"$vc"; then
+  ok "--verify-command emits a bundle verify-blob bound to the tag"
+else
+  bad "--verify-command emits a bundle verify-blob bound to the tag (exit $vc_status)"
+  sed 's/^/         /' <<<"$vc" >&2
+fi
+
+set +e
+vc_notag="$(python3 "$here/check-release-notes.py" --verify-command --archive "$archive" 2>&1)"
+vc_notag_status=$?
+set -e
+if [ "$vc_notag_status" -ne 0 ] && grep -qF -- "--tag" <<<"$vc_notag"; then
+  ok "--verify-command without --tag is refused (the workflow bug that shipped)"
+else
+  bad "--verify-command without --tag is refused (exit $vc_notag_status)"
+  sed 's/^/         /' <<<"$vc_notag" >&2
 fi
 
 echo
