@@ -13,19 +13,24 @@ name: Deploy
 # for the same reason: each is a way for content outside `main` to reach a job holding a
 # credential.
 on:
+  # A MANUAL DISPATCH BUILDS AND VERIFIES ONLY -- it does not deploy or sign. Deploying and
+  # signing happen on a `v*` tag (see below); there is no input that reaches the credential from
+  # a dispatch, by construction. Use it to exercise the production build off a branch.
   workflow_dispatch:
     inputs:
       reason:
-        description: "Why this deploy is happening (recorded in the run)"
+        description: "Why this build is being run manually (recorded in the run)"
         required: false
         default: "manual"
-      sign:
-        description: "Also publish and sign a tarball of this exact payload"
-        type: boolean
-        required: false
-        default: false
+  # DEPLOY-ON-TAG (2026-10-05). A push to `main` builds and verifies the production payload and
+  # uploads it as an artifact; it does NOT reach Cloudflare. A push of a `v*` tag is what deploys,
+  # and only after `publish` confirms the tagged commit is merged, that `ci` and this build both
+  # concluded success on it, that the tag is annotated, and that the artifact's stamp matches the
+  # tagged tree -- `tools/check-release-preconditions.py`. One `v*` family drives both the site
+  # deploy and the signed release. `tools/check-deploy-workflow.py` holds this shape.
   push:
     branches: [main]
+    tags: ["v*"]
 
 # ONE DEPLOY AT A TIME, AND NEVER CANCELLED HALF WAY. `cancel-in-progress: false`, unlike
 # `ci.yml`: cancelling a build wastes a runner, cancelling an upload leaves the live site
@@ -97,6 +102,10 @@ jobs:
   # credential in its environment. The job that holds the token does almost nothing.
   build:
     name: build the production payload
+    # ON THE MAIN PUSH (or a manual dispatch), never on a tag: the tag's `publish` reuses THIS
+    # run's artifact rather than rebuilding, so building again on the tag would defeat the point
+    # and produce bytes from a second compile nobody verified against `ci`.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -137,7 +146,11 @@ jobs:
         with:
           name: production-dist
           path: apps/web/dist
-          retention-days: 7
+          # 30 DAYS, and the number is load-bearing: `publish` deploys THIS artifact, so a `v*`
+          # tag on a commit whose main-push build is older than this finds no artifact and
+          # refuses, naming the run. The fix is a new commit on main, not a rebuild. OPERATIONS.md
+          # records the number beside the release command.
+          retention-days: 30
           if-no-files-found: error
           # `include-hidden-files` governs paths whose components start with a DOT. An earlier
           # comment here claimed it was what preserved `_headers` -- that is wrong, and
@@ -151,22 +164,98 @@ jobs:
           # no `nosniff`, leaving only the `<meta>` copy.
           include-hidden-files: true
 
-  # THE ONLY JOB WITH THE CREDENTIAL, and it does three things: download, verify, upload.
+  # THE ONLY JOB WITH THE CREDENTIAL. Since deploy-on-tag it runs only on a `v*` tag, and before
+  # it uploads it proves the tag deserves to: merged, `ci` and the build both green on that exact
+  # commit, annotated, and the artifact's stamp matching the tagged tree. It deploys THAT build's
+  # bytes -- downloaded by run id -- and never compiles.
   publish:
     name: publish to Cloudflare Pages
-    needs: build
+    # EVENT AND REF, both: only a `push` of a `v*` tag. Checking the ref alone would let a manual
+    # dispatch whose selected ref is a v* tag reach the credential (github.ref would be the tag),
+    # which is what the dispatch comment above promises cannot happen.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: production
+    # `actions: read` to query the ci and build runs and to download the build artifact by id;
+    # `contents: read` for the checkout. NO `id-token`/`contents: write` -- those belong to `sign`.
+    permissions:
+      contents: read
+      actions: read
     steps:
-      # CHECKED OUT FOR THE GATE SCRIPT ONLY. `dist/` comes from the artifact, never from a
-      # build in this job — a job holding a live-site token does not compile anything.
+      # FULL HISTORY AND TAGS: the ancestry and annotated-tag checks need both. `dist/` comes from
+      # the build run's artifact, never from a compile here -- a job holding a live-site token does
+      # not build.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download the payload
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: production-dist
-          path: apps/web/dist
+          fetch-depth: 0
+          fetch-tags: true
+
+      # GATHER THE FACTS, then let `check-release-preconditions.py` decide. The gather is here
+      # because it touches the network and the live repo; the decision is a script with a
+      # fixture-fed self-test. `publish` must not upload if the decision refuses.
+      - name: The tag may be deployed -- every precondition
+        id: preconditions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="${{ github.sha }}"
+          tag="${GITHUB_REF_NAME}"
+
+          # ANNOTATED, not lightweight: the tag object is a `tag`, a `commit` means lightweight.
+          tag_type="$(git cat-file -t "refs/tags/$tag" 2>/dev/null || echo missing)"
+
+          # MERGED: the tagged commit is an ancestor of main's tip, or its tip. The fetched tip is
+          # `FETCH_HEAD` (not `origin/FETCH_HEAD`, which is not a ref -- an earlier spelling of this
+          # made `merged` always false, refusing every tag; there is a gather smoke test for it now,
+          # `tools/test-release-gather.sh`). No `--depth`: ancestry needs main's history, not just
+          # its tip. The checkout above is `fetch-depth: 0`.
+          git fetch --no-tags origin main
+          if git merge-base --is-ancestor "$sha" FETCH_HEAD; then merged=true; else merged=false; fi
+
+          # THE RUNS for the MAIN PUSH of this commit: ci (the verdict) and deploy build (the bytes).
+          # `--branch main` so the tag's own deploy run is never mistaken for the build run.
+          ci_run="$(gh run list --commit "$sha" --workflow ci.yml --branch main \
+                      --json databaseId,conclusion,headSha,event -L 1 | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r[0]["databaseId"] if r else "")')"
+          build_run="$(gh run list --commit "$sha" --workflow deploy.yml --branch main \
+                      --json databaseId,conclusion,headSha,event -L 1 | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r[0]["databaseId"] if r else "")')"
+
+          # Per-job facts for each, or a null run if there is none.
+          run_facts() {
+            local id="$1"
+            if [ -z "$id" ]; then echo null; return; fi
+            gh run view "$id" --json conclusion,headSha,event,jobs \
+              | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({"conclusion":r["conclusion"],"head_sha":r["headSha"],"event":r["event"],"jobs":[{"name":j["name"],"conclusion":j["conclusion"]} for j in r["jobs"]]}))'
+          }
+          ci_facts="$(run_facts "$ci_run")"
+          build_facts="$(run_facts "$build_run")"
+
+          # THE BYTES: download the build run's artifact by ID, never by name alone or "latest".
+          # An expired or missing artifact refuses here, naming the run; there is no rebuild.
+          stamp_current=false
+          if [ -n "$build_run" ] && gh run download "$build_run" -n production-dist -D apps/web/dist 2>/dev/null; then
+            # STAMP AGAINST THE TAGGED TREE (already checked out at the tag): the bytes are the
+            # ones this commit builds.
+            if python3 tools/build-stamp.py check apps/web/dist >/dev/null 2>&1; then stamp_current=true; fi
+          else
+            echo "::warning::no production-dist artifact for build run '${build_run:-<none>}' -- expired (30-day retention) or never produced; tag a newer commit on main"
+          fi
+
+          python3 - "$tag_type" "$sha" "$merged" "$stamp_current" "$ci_facts" "$build_facts" <<'PY' > facts.json
+          import json, sys
+          tag_type, sha, merged, stamp, ci, build = sys.argv[1:7]
+          print(json.dumps({
+              "ref": "${{ github.ref }}",
+              "tag_object_type": tag_type,
+              "tagged_sha": sha,
+              "merged": merged == "true",
+              "ci_run": json.loads(ci),
+              "build_run": json.loads(build),
+              "stamp_current": stamp == "true",
+          }))
+          PY
+          cat facts.json
+          python3 tools/check-release-preconditions.py < facts.json
 
       # INSTALLED BEFORE THE GATE, DELIBERATELY. `npx --yes` resolves and installs wrangler's
       # whole transitive tree from the network at run time, in the only job holding the
@@ -295,6 +384,18 @@ jobs:
             echo "after engine init."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # HAND THE VERIFIED BYTES TO `sign`. On a tag run `build` does not run, so the artifact
+      # `sign` consumes comes from here -- exactly what was deployed, after every gate. `sign`
+      # re-verifies it, so a tampered re-upload is caught there too.
+      - name: Hand the deployed payload to the signing job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-dist
+          path: apps/web/dist
+          retention-days: 30
+          if-no-files-found: error
+          include-hidden-files: true
+
   # THE SIGNING JOB. A SIBLING OF `publish`, NOT A STEP INSIDE IT, AND THE SPLIT IS THE POINT.
   #
   # Both jobs consume the same `production-dist` artifact, so the bytes that get signed are the
@@ -310,9 +411,9 @@ jobs:
   # nothing while the job is still being written and closes #115's second option by
   # construction. `tools/check-deploy-workflow.py` asserts the credential stays in `publish`.
   #
-  # ON DEMAND, NOT PER DEPLOY. Every merge to `main` deploys (ADR 0024), and a signed tarball
-  # per merge would be noise: dozens of releases nobody asked for, each claiming the weight of
-  # a release. This runs only on a manual dispatch with `sign: true`.
+  # PER TAG, NOT PER MERGE. Since deploy-on-tag a `main` merge no longer deploys; a `v*` tag does,
+  # and that tag is the release, so signing it is not noise -- it is the point. (Before, every
+  # merge deployed and per-merge signing would have been dozens of releases nobody asked for.)
   #
   # `needs: [build, publish]`, AND THE SECOND ENTRY IS LOAD-BEARING. ADR 0024's 2026-09-18
   # amendment records this finding in full, under "`needs: [build, publish]` is not incidental";
@@ -331,10 +432,12 @@ jobs:
   # notes say `main`, and the verification command fails for every reader who runs it.
   sign:
     name: sign and publish the payload
-    needs: [build, publish]
-    if: >-
-      github.event_name == 'workflow_dispatch' && inputs.sign
-      && github.ref == 'refs/heads/main'
+    # ON THE TAG, AFTER THE DEPLOY. `needs: [publish]` keeps ADR 0024's load-bearing ordering:
+    # the release notes attest that the live origin served these bytes, and that is only true if
+    # `publish` succeeded first. One `v*` family drives both the deploy and the signed release
+    # (the tag IS the release), so this no longer needs a `sign: true` dispatch input.
+    needs: [publish]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release and its tag
@@ -374,14 +477,11 @@ jobs:
         id: pack
         run: |
           set -euo pipefail
-          tag="deploy-$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%d)-$(git rev-parse --short=7 HEAD)"
-          # BEFORE ANYTHING EXPENSIVE. Re-dispatching the same commit on the same day collides
-          # with its own previous tag, and `gh release create` would fail several steps later,
-          # after signing, with a message about tags in the middle of cosign output.
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "::error::the tag $tag already exists; this commit was already released" >&2
-            exit 1
-          fi
+          # THE RELEASE TAG IS THE v* TAG that triggered this run; it already exists, so there is
+          # no collision pre-check -- the release is created ON it below. (The old scheme computed
+          # a `deploy-DATE-sha` tag because deploys were per-main-merge; deploy-on-tag made the tag
+          # the unit of release.)
+          tag="${GITHUB_REF_NAME}"
           archive="burrow-web-$tag.tar.gz"
           mtime="$(git log -1 --format=%cI)"
           tar --format=gnu --sort=name --owner=0 --group=0 --numeric-owner \

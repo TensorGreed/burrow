@@ -767,6 +767,8 @@ jobs:
         run: |
           python3 tools/check-deploy-workflow.py
           tools/test-check-deploy-workflow.sh
+          tools/test-check-release-preconditions.sh
+          tools/test-release-gather.sh
           tools/test-check-deployment-url.sh
           tools/test-check-live-routes.sh
 

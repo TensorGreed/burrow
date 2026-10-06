@@ -55,8 +55,16 @@ SIGNING_JOB = "sign"
 #: The job that may hold the credential, and the only one.
 CREDENTIAL_JOB = "publish"
 
+#: The one guard that job may carry: a `push` event AND a `v*` tag ref. Exact, because anything
+#: wider that merely mentions the tag re-opens a path to the credential (a dispatch, or a negation
+#: true on a branch push). `deploy.yml` must spell it character-for-character.
+CANONICAL_PUBLISH_IF = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+
 #: Gates that must run in that job before the upload, by the script each one invokes.
-REQUIRED_PRE_UPLOAD_GATES = ["tools/check-deployable-build.sh"]
+REQUIRED_PRE_UPLOAD_GATES = [
+    "tools/check-release-preconditions.py",
+    "tools/check-deployable-build.sh",
+]
 
 #: And after it: reading the state back. `CLAUDE.md` records three measured cases of a green
 #: exit over something that had not happened, and this is the workflow whose outcome is a live
@@ -176,20 +184,22 @@ def check_triggers(workflow: dict, report: list[str]) -> None:
     push = triggers.get("push")
     if push is None:
         raise Refused(
-            "the `push` trigger has no filter, so a push to ANY branch or tag deploys. "
-            "It must be exactly `branches: [main]`."
+            "the `push` trigger has no filter, so a push to ANY branch or tag starts it. "
+            "It must be exactly `branches: [main]` and `tags: ['v*']`."
         )
     if not isinstance(push, dict):
         raise Refused(f"the `push` trigger is a {type(push).__name__}, not a filter map")
-    # EXACT, NOT "branches is present". A sibling `tags: ['**']` passed the first version of
-    # this rule, and a push of any tag then deployed that tag's tree.
-    if push != {"branches": ["main"]}:
+    # EXACT. Since deploy-on-tag the push filter is `branches: [main]` (which BUILDS, no upload)
+    # and `tags: ['v*']` (which the credential job keys off). It must be exactly these: a wider
+    # `branches:` builds from any branch, and a wider tag glob than `v*` lets another tag family
+    # reach the job that keys off a tag. The branch-vs-upload split is enforced per job below
+    # (`check_publish_is_tag_gated`): the push filter alone does not decide what uploads.
+    if push != {"branches": ["main"], "tags": ["v*"]}:
         raise Refused(
-            f"the `push` filter is {push!r}, expected exactly {{'branches': ['main']}}. "
-            f"A `tags:` filter beside it deploys on any tag; a wider `branches:` deploys "
-            f"from any branch."
+            f"the `push` filter is {push!r}, expected exactly "
+            f"{{'branches': ['main'], 'tags': ['v*']}}."
         )
-    report.append("push restricted to exactly branches: [main]")
+    report.append("push restricted to branches: [main] and tags: [v*]")
 
 
 def secret_references(value, path: str = "") -> list[str]:
@@ -245,6 +255,50 @@ def check_credential_scope(workflow: dict, report: list[str]) -> None:
 
 def step_label(step: dict) -> str:
     return step.get("name") or step.get("uses") or "<unnamed step>"
+
+
+def check_publish_is_tag_gated(workflow: dict, report: list[str]) -> None:
+    """The credential job runs ONLY on a `v*` tag, and the build job does not upload.
+
+    The push filter lets the workflow start on a `main` push (to build) and on a `v*` tag (to
+    deploy). What keeps a `main` push from reaching the Cloudflare upload is the credential job's
+    own `if`: it must gate on the ref being a `v*` tag. Without this, adding `tags: ['v*']` to the
+    filter would have let every `main` push upload, which is the behaviour deploy-on-tag removes.
+    """
+    jobs = workflow.get("jobs", {})
+    publish = jobs.get(CREDENTIAL_JOB)
+    if not isinstance(publish, dict):
+        raise Refused(f"there is no `{CREDENTIAL_JOB}` job to check")
+    # EXACT, not "contains refs/tags/v". A substring test accepts a BROADER guard that still
+    # mentions the tag -- `... || github.event_name == 'workflow_dispatch'` re-opens the dispatch
+    # path, and `github.ref != 'refs/tags/v-never'` is true on a main push and re-enables publish
+    # on every merge. Both passed the substring version. The guard must be exactly the canonical
+    # one: a `push` event AND a `v*` tag ref, nothing wider.
+    guard = publish.get("if")
+    if not isinstance(guard, str) or guard.strip() != CANONICAL_PUBLISH_IF:
+        raise Refused(
+            f"the `{CREDENTIAL_JOB}` job's `if` is {guard!r}, which is not exactly the canonical "
+            f"guard {CANONICAL_PUBLISH_IF!r}. It must be that and nothing wider, so neither a "
+            f"`main` push nor a `workflow_dispatch` on a v* ref can reach the upload."
+        )
+    if "needs" in publish:
+        raise Refused(
+            f"the `{CREDENTIAL_JOB}` job has `needs: {publish['needs']!r}`. On a tag push the "
+            f"`build` job does not run, so a `needs` on it would skip the deploy; the verified "
+            f"bytes come from the build run's artifact, downloaded by id, not from `needs`."
+        )
+    report.append(f"`{CREDENTIAL_JOB}` gated on a v* tag, no `needs`")
+
+    build = jobs.get("build")
+    if isinstance(build, dict):
+        build_if = build.get("if")
+        if not isinstance(build_if, str) or "refs/heads/main" not in build_if:
+            raise Refused(
+                f"the `build` job's `if` is {build_if!r}, which does not restrict it to the "
+                f"`main` push (and dispatch). A build on the tag would compile fresh bytes the "
+                f"tag's `publish` is supposed to take from the verified build run instead."
+            )
+        report.append("`build` restricted to the main push (and dispatch)")
 
 
 def check_gates_before_upload(workflow: dict, report: list[str]) -> None:
@@ -618,20 +672,20 @@ PROBES = [
     ),
     (
         "the trigger allowlist",
-        lambda: check_triggers({True: {"push": {"branches": ["main"]}, "pull_request": None}}, []),
-        lambda: check_triggers({True: {"push": {"branches": ["main"]}, "workflow_dispatch": None}}, []),
+        lambda: check_triggers({True: {"push": {"branches": ["main"], "tags": ["v*"]}, "pull_request": None}}, []),
+        lambda: check_triggers({True: {"push": {"branches": ["main"], "tags": ["v*"]}, "workflow_dispatch": None}}, []),
     ),
     (
         "the quoted-key spelling",
-        lambda: check_triggers({"on": {"push": {"branches": ["main"]}, "pull_request": None}}, []),
-        lambda: check_triggers({"on": {"push": {"branches": ["main"]}, "workflow_dispatch": None}}, []),
+        lambda: check_triggers({"on": {"push": {"branches": ["main"], "tags": ["v*"]}, "pull_request": None}}, []),
+        lambda: check_triggers({"on": {"push": {"branches": ["main"], "tags": ["v*"]}, "workflow_dispatch": None}}, []),
     ),
     (
         "the push filter",
         lambda: check_triggers(
             {True: {"push": {"branches": ["main"], "tags": ["**"]}, "workflow_dispatch": None}}, []
         ),
-        lambda: check_triggers({True: {"push": {"branches": ["main"]}, "workflow_dispatch": None}}, []),
+        lambda: check_triggers({True: {"push": {"branches": ["main"], "tags": ["v*"]}, "workflow_dispatch": None}}, []),
     ),
     (
         "the pages-host anchor",
@@ -714,6 +768,44 @@ PROBES = [
         lambda: check_origin({"env": {"BURROW_SITE": "http://localhost:4321"}}, []),
         lambda: check_origin({"env": {"BURROW_SITE": "https://burrow.example"}}, []),
     ),
+    (
+        # The credential job must gate on a `v*` tag; an ungated publish reachable on a main
+        # push is the exact regression deploy-on-tag removes.
+        "publish is gated on a v* tag",
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": "github.event_name == 'push'"},
+                      "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
+        ),
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
+                      "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
+        ),
+    ),
+    (
+        # A BROADER guard that still mentions the tag must be refused -- the substring version
+        # accepted both of these, which is finding 2 of the deploy-on-tag review.
+        "a wider publish guard that re-opens dispatch is refused",
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF + " || github.event_name == 'workflow_dispatch'"},
+                      "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
+        ),
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
+                      "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
+        ),
+    ),
+    (
+        # And the build job must be restricted to the main push, not left to run on the tag too.
+        "build is restricted to the main push",
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
+                      "build": {"if": "always()"}}}, []
+        ),
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
+                      "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
+        ),
+    ),
 ]
 
 
@@ -749,6 +841,7 @@ def main(argv: list[str]) -> int:
         if not isinstance(workflow, dict):
             raise Refused(f"{show(path)} does not parse as a workflow mapping")
         check_triggers(workflow, report)
+        check_publish_is_tag_gated(workflow, report)
         check_credential_scope(workflow, report)
         check_gates_before_upload(workflow, report)
         check_no_harness(workflow, report)

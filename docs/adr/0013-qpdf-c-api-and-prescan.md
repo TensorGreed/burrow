@@ -567,3 +567,12 @@ against 190 ms before it.
 **What it does not read.** An entry that is not twenty bytes ending in one of the
 specification's three line endings, a cross-reference stream, or a file with no cross-reference at
 all.
+
+**A recovery-on detector was measured and rejected, 2026-10-05.** Opening a second time with
+qpdf's recovery enabled, to refuse inputs it silently repairs, was prototyped and dropped: it
+refused nothing across the 100 real documents and the committed fixtures that a recovery-off open
+does not already refuse, it does not detect the damage it was built to detect (qpdf reports that
+only when objects are resolved during the copy, not at open), and a detector that resolves objects
+is a different and larger change. The open-time guard shipped in #263 (`[engine-repaired-input]`,
+refused by `split` and `merge` at open) stays as the whole of what is done here; the rest remains
+with #61.
