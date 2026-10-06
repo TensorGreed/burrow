@@ -42,6 +42,14 @@ use burrow_types::{Error, Result};
 /// lexed. Matching the number rather than choosing a new one keeps the two from disagreeing.
 pub(super) const MAX_NESTING: usize = 64;
 
+/// The raw byte length past which a renderer cuts a token — the `/` and `#xx` escapes counted as
+/// the bytes they are. PDFium keeps the first 255 raw bytes of a name or operand token and drops
+/// the rest, so a longer token reaches it as a shorter, different one; burrow refuses rather than
+/// disagree (#152 for operands, #257 for names). This is the ONE source of that boundary:
+/// [`super::ops::MAX_OPERAND_BYTES`] is defined as this, so the name cut and the operand cut
+/// cannot drift apart into two 255s.
+pub const MAX_TOKEN_BYTES: usize = 255;
+
 /// One PDF token, with the parts a caller here actually needs.
 ///
 /// Strings carry no value: nothing this module answers depends on what a string says, and
@@ -372,8 +380,17 @@ impl<'a> Lexer<'a> {
     /// not emit it, and guessing would mean two readers of the same document could disagree about
     /// what a resource is called — which, for a filter keyed on the name, is the under-keep that
     /// breaks a page.
+    ///
+    /// The RAW token — from the `/` to the delimiter, `#xx` escapes counted as the three bytes
+    /// they are — is refused past [`MAX_TOKEN_BYTES`]. PDFium cuts the raw token there (#257), so a
+    /// longer name reaches it as a different, shorter resource; `/A…254…B` becomes `/A…254`, and a
+    /// name of escapes that *decodes* short is still long raw. Measuring the raw span, not the
+    /// decoded length, is the whole point — the decoded-length check this replaced read a 300-byte
+    /// escape name as 100 bytes and let split's walk miss the form (ADR 0019 §2a).
     fn read_name(&mut self) -> Result<Vec<u8>> {
-        // The `/` itself.
+        // The `/` itself. `start` is at the slash, so `self.at - start` is the raw token length,
+        // the slash included, which is what PDFium counts.
+        let start = self.at;
         self.at += 1;
         let mut name = Vec::new();
         while let Some(byte) = self.peek() {
@@ -394,6 +411,13 @@ impl<'a> Lexer<'a> {
                 name.push(byte);
                 self.at += 1;
             }
+        }
+        if self.at - start > MAX_TOKEN_BYTES {
+            return Err(Error::Unsupported(
+                "[name-token-too-long] a name token longer than a renderer reads, which would cut \
+                 it to a different resource"
+                    .to_owned(),
+            ));
         }
         Ok(name)
     }

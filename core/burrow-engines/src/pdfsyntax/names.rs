@@ -51,6 +51,11 @@ use burrow_types::{Error, Result};
 
 use super::lexer::{Lexer, Token};
 
+/// The raw-token byte limit a name is refused past, re-exported from the lexer so the one
+/// boundary has a public home. The lexer's `read_name` enforces it; this module, its fuzz target,
+/// and `ops::MAX_OPERAND_BYTES` all name the same constant so it cannot drift into two 255s.
+pub use super::lexer::MAX_TOKEN_BYTES;
+
 /// The most distinct names one stream may mention.
 ///
 /// A real page names tens; a generated one might name thousands. Past this, the answer is a
@@ -62,14 +67,6 @@ use super::lexer::{Lexer, Token};
 /// names — a set several gigabytes wide, built out of an input nothing else in this path would
 /// have let through.
 pub const MAX_NAMES: usize = 65_536;
-
-/// The longest name this will record.
-///
-/// PDF 32000-1 §7.3.5 sets an implementation limit of 127 bytes. A longer one is recorded up to
-/// this bound and anything past it is a refusal, for the same reason a truncated set is: two
-/// names sharing a 255-byte prefix would collapse into one and the second one's resource would be
-/// removed.
-pub const MAX_NAME_LENGTH: usize = 255;
 
 /// What a content stream names, and whether it was read to the end.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,8 +88,10 @@ pub struct ContentNames {
 ///   name set may not escape — it would delete a resource the page draws with — so a lexing
 ///   failure is returned rather than the names collected so far. The module header has the
 ///   asymmetry in full.
-/// - [`Error::Unsupported`] — more than [`MAX_NAMES`] distinct names, or one longer than
-///   [`MAX_NAME_LENGTH`]. Both are refusals rather than truncations.
+/// - [`Error::Unsupported`] — more than [`MAX_NAMES`] distinct names. A name longer than a
+///   renderer reads is refused one layer down, by the lexer's raw-token limit
+///   ([`MAX_TOKEN_BYTES`]), so it surfaces here as the lexer's `Err`. Both are
+///   refusals rather than truncations.
 pub fn names_in_content(content: &[u8]) -> Result<ContentNames> {
     let mut found = BTreeSet::new();
     let mut lexer = Lexer::new(content, super::lexer::InlineImages::Prune);
@@ -101,11 +100,12 @@ pub fn names_in_content(content: &[u8]) -> Result<ContentNames> {
     // filtered one, under `Prune`, ends the read instead, and `extent_unknown` says so below.
     while let Some(token) = lexer.next_token()? {
         if let Token::Name(name) = token {
-            if name.len() > MAX_NAME_LENGTH {
-                return Err(Error::Unsupported(
-                    "a content stream names a resource longer than burrow will record".to_owned(),
-                ));
-            }
+            // A name longer than a renderer reads is refused by the lexer (`read_name`, measuring
+            // the RAW token against `MAX_TOKEN_BYTES`), so `next_token()?` above has already
+            // returned `Err` for one -- it never reaches here. The check used to live here and
+            // measured the DECODED length, which read a 300-byte escape name as 100 and let it
+            // through; moving it to the lexer gives every name consumer (these content operands,
+            // and the resource/page dict keys) the same raw boundary. See #257.
             found.insert(name);
             if found.len() > MAX_NAMES {
                 return Err(Error::Unsupported(
@@ -123,7 +123,8 @@ pub fn names_in_content(content: &[u8]) -> Result<ContentNames> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_NAME_LENGTH, MAX_NAMES, names_in_content};
+    use super::super::lexer::MAX_TOKEN_BYTES;
+    use super::{MAX_NAMES, names_in_content};
 
     fn set(content: &[u8]) -> Vec<String> {
         let read = names_in_content(content).expect("collects");
@@ -187,19 +188,37 @@ mod tests {
 
     #[test]
     fn an_over_long_name_is_a_refusal_rather_than_a_truncated_one() {
+        // RAW token length, the `/` counted (`MAX_TOKEN_BYTES`). A name of 255 bytes is a 256-byte
+        // raw token -- one past the cut -- so it is refused; 254 bytes is a 255-byte token, exactly
+        // the ceiling, and is accepted. This is the #257 boundary (PDFium keeps 255 raw incl `/`),
+        // and the ceiling is a ceiling, not a wall one byte low.
         let mut content = b"/".to_vec();
-        content.extend(std::iter::repeat_n(b'a', MAX_NAME_LENGTH + 1));
+        content.extend(std::iter::repeat_n(b'a', MAX_TOKEN_BYTES)); // raw = 1 + 255 = 256
         assert!(names_in_content(&content).is_err());
-        // And the boundary itself is accepted, so the refusal is a ceiling rather than a wall
-        // one byte lower than it says.
         let mut content = b"/".to_vec();
-        content.extend(std::iter::repeat_n(b'a', MAX_NAME_LENGTH));
+        content.extend(std::iter::repeat_n(b'a', MAX_TOKEN_BYTES - 1)); // raw = 1 + 254 = 255
         assert_eq!(
             names_in_content(&content)
                 .expect("at the ceiling")
                 .names
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn a_name_long_in_raw_escapes_is_refused_even_though_it_decodes_short() {
+        // THE #257 CASE. `/` + 100 x `#41` is 301 raw bytes but decodes to "A" x 100 -- the old
+        // decoded-length check read it as 100 and let it through, and PDFium cut it to `A{84}#4`,
+        // naming a different resource split's walk never found. The raw check refuses it.
+        let mut content = b"/".to_vec();
+        for _ in 0..100 {
+            content.extend_from_slice(b"#41");
+        }
+        content.extend_from_slice(b" Do");
+        assert!(
+            names_in_content(&content).is_err(),
+            "a name 301 raw bytes long must refuse, not pass as its 100-byte decoding"
         );
     }
 

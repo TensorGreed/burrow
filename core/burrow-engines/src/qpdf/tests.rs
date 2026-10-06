@@ -1742,13 +1742,21 @@ mod wiring {
             "<< >>",
             &[helvetica("/Encoding /WinAnsiEncoding")],
         );
-        for (what, bytes) in [
-            ("an escape-inflated gs name", escaped),
-            ("a padded number", padded),
+        // The NAME case is now refused one layer earlier, by the lexer's raw-token cut
+        // (`[name-token-too-long]`, #257), before the operand-length check here is reached -- the
+        // name/operand cut is one boundary (`lexer::MAX_TOKEN_BYTES`). The padded NUMBER is not a
+        // name, so the lexer does not touch it and the operand check still refuses it.
+        for (what, bytes, expected) in [
+            (
+                "an escape-inflated gs name",
+                escaped,
+                "[name-token-too-long]",
+            ),
+            ("a padded number", padded, "token longer than readers agree"),
         ] {
             match redact_bytes(&bytes, &[0]) {
                 Err(error) => assert!(
-                    format!("{error:?}").contains("token longer than readers agree"),
+                    format!("{error:?}").contains(expected),
                     "{what}: refused, but not for the token's length: {error:?}"
                 ),
                 Ok(()) => panic!("{what} was redacted"),
