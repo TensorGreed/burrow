@@ -190,9 +190,13 @@ jobs:
   # REHEARSE THE RELEASE SIGNING ON EVERY MAIN PUSH. The `sign` job runs `tools/cosign-blob.sh`
   # keyless on a `v*` tag; this runs the SAME script -- the same output-shape flags -- with a
   # throwaway key and no transparency-log upload, so it writes nothing public and needs no
-  # credential, yet it fails the day the invocation breaks rather than first on a release. v0.1.1
-  # proved the cost of not having this: the sign-blob flags were wrong for the cosign that ran, and
-  # the first thing to run them was a release.
+  # credential. It fails the day the shared invocation's OUTPUT SHAPE breaks: if `sign` stops
+  # producing a `--bundle` (the v0.1.1 regression), the verify step here has no bundle to check and
+  # goes red. What it does NOT cover, because it is keyed, is the keyless-only machinery -- Fulcio
+  # cert issuance, the Rekor upload, the default signing config, identity verification; those are
+  # exercised by the in-job "Verify the signature..." step on a real tag, before publishing. v0.1.1
+  # proved the cost of rehearsing none of it: the sign-blob flags were wrong for the cosign that
+  # ran, and the first thing to run them was a release.
   sign-rehearsal:
     name: rehearse the release signing
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
@@ -239,20 +243,34 @@ jobs:
         run: |
           set -euo pipefail
           export COSIGN_PASSWORD=""
-          [ -f cosign.key ] || { echo "no key from the rehearsal step"; exit 1; }
+          { [ -f cosign.key ] && [ -f cosign.pub ]; } || { echo "no key pair from the rehearsal step"; exit 1; }
           # Plant the cosign v2 flags cosign v3 removed (the v0.1.1 set) into a COPY of the shared
-          # script, and require it to FAIL at the pinned cosign. If it succeeded, the rehearsal
-          # would not catch the regression it exists to catch.
+          # script. The keyed sign TOLERATES those flags -- they only break the keyless/default-
+          # config path the release uses -- so it exits 0, but with no `--bundle` it writes NO
+          # bundle, and the verify step (`--bundle`) then fails. That is how a wrapper reverted to
+          # the v0.1.1 flags reddens the real rehearsal: via verify, not sign.
+          #
+          # ASSERT THE MECHANISM, don't infer it from a falsified `sign && verify`. A bare
+          # `if sign && verify` would print OK whenever EITHER failed for any unrelated reason
+          # (cosign gone, a future cosign that hard-rejects the old flags, a missing key), leaving
+          # the control silently inert. So: the planted sign must EXIT 0 (it ran), it must write NO
+          # bundle (the defining property of the revert), and only then must verify fail on the
+          # missing bundle. Anything else is INCONCLUSIVE and reddens loudly rather than passing.
           sed 's|exec cosign sign-blob --yes --bundle "$bundle" "$@" "$artifact"|exec cosign sign-blob --yes "$artifact" --output-signature "$bundle.sig" --output-certificate "$bundle.pem" "$@"|' \
             tools/cosign-blob.sh > planted.sh
           chmod +x planted.sh
           grep -q 'output-signature' planted.sh || { echo "mutation did not apply"; exit 1; }
           printf 'probe\n' > probe.blob
-          if ./planted.sh sign probe.blob probe.bundle \
-               --key cosign.key --use-signing-config=false --tlog-upload=false 2>/dev/null; then
-            echo "PROBE FAILED: the v0.1.1 flag set signed, so the rehearsal would not catch it"; exit 1
+          rm -f probe.bundle probe.bundle.sig probe.bundle.pem
+          ./planted.sh sign probe.blob probe.bundle \
+            --key cosign.key --use-signing-config=false --tlog-upload=false 2>/dev/null \
+            || { echo "PROBE INCONCLUSIVE: the planted keyed sign did not exit 0"; exit 1; }
+          [ ! -f probe.bundle ] || { echo "PROBE FAILED: a bundle was written, so verify would pass and the revert would slip through"; exit 1; }
+          if ./planted.sh verify probe.blob probe.bundle \
+               --key cosign.pub --insecure-ignore-tlog=true 2>/dev/null; then
+            echo "PROBE FAILED: verify passed with no bundle"; exit 1
           fi
-          echo "probe OK: the v0.1.1 flag set fails under the pinned cosign"
+          echo "probe OK: the planted v0.1.1 sign wrote no bundle, and verify failed on the missing bundle"
 
   # THE ONLY JOB WITH THE CREDENTIAL. Since deploy-on-tag it runs only on a `v*` tag, and before
   # it uploads it proves the tag deserves to: merged, `ci` and the build both green on that exact
