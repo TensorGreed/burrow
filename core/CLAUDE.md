@@ -1,7 +1,10 @@
 # core
 
 The Rust core: every operation, implemented once, for all three platforms. See
-[ADR 0002](../docs/adr/0002-rust-core-and-bindings.md).
+[ADR 0002](../docs/adr/0002-rust-core-and-bindings.md). The decisions already settled for this
+work — refuse rather than model PDFium, measure before a rule, fail closed, the object-resolving
+trap rule, and the rest — are in [`docs/DECISIONS.md`](../docs/DECISIONS.md); apply a rule there
+rather than re-deciding it (see the standing instruction in [`../CLAUDE.md`](../CLAUDE.md#applying-a-recorded-decision)).
 
 ## Commands
 
