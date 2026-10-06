@@ -1131,3 +1131,194 @@ fn a_long_but_valid_name_at_the_ceiling_still_splits() {
         "split after page 1 of a 2-page doc yields two parts"
     );
 }
+
+/// Build a 2-page doc whose page 1 draws a chain of `levels` nested Form XObjects; the deepest
+/// form draws a hidden-OCG layer (if `hidden`) or a plain font (if not). Object numbering:
+/// 1 catalog, 2 pages, 3 page1, 4 page2, 5 page1-content, 6 page2-content, 7 OCG, 8 font,
+/// 9.. forms Fm1..FmN.
+fn nested_form_chain(levels: usize, hidden: bool) -> Vec<u8> {
+    let first_form = 9; // object number of Fm1
+    let catalog = if hidden {
+        "<< /Type /Catalog /Pages 2 0 R \
+         /OCProperties << /OCGs [7 0 R] /D << /OFF [7 0 R] >> >> >>"
+            .to_owned()
+    } else {
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned()
+    };
+    let mut objects = vec![
+        catalog,
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+             /Resources << /Font << /F1 8 0 R >> /XObject << /Fm1 {first_form} 0 R >> >> >>"
+        ),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /Font << /F1 8 0 R >> >> >>"
+            .to_owned(),
+        content("/Fm1 Do BT /F1 12 Tf 10 10 Td (ONE) Tj ET"),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+        "<< /Type /OCG /Name (Hidden) >>".to_owned(),
+        HELVETICA.to_owned(),
+    ];
+    for level in 1..=levels {
+        let obj = first_form + level - 1;
+        let body = if level < levels {
+            let next = obj + 1;
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+                 /Resources << /XObject << /Fm{} {next} 0 R >> >> /Length {{LEN}} >>\nstream\n/Fm{} Do\nendstream",
+                level + 1,
+                level + 1
+            )
+        } else if hidden {
+            let data = "/OC /L1 BDC BT /F1 12 Tf 10 10 Td (HIDDENLAYERTEXT) Tj ET EMC";
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+                 /Resources << /Font << /F1 8 0 R >> /Properties << /L1 7 0 R >> >> \
+                 /Length {} >>\nstream\n{data}\nendstream",
+                data.len()
+            )
+        } else {
+            // A vector with no resources of its own, so the clean near-miss does not descend one
+            // level further into a font and refuse for depth that way -- the form level maps to
+            // the walk depth cleanly.
+            let data = "10 10 20 20 re f";
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Length {} >>\nstream\n{data}\nendstream",
+                data.len()
+            )
+        };
+        // Fix up {LEN} for the intermediate forms (their stream is `/Fm{next} Do`).
+        let body = if body.contains("{LEN}") {
+            let stream = format!("/Fm{} Do", level + 1);
+            body.replace("{LEN}", &stream.len().to_string())
+        } else {
+            body
+        };
+        objects.push(body);
+    }
+    raw_pdf(&objects)
+}
+
+#[test]
+fn a_hidden_layer_past_the_form_nesting_ceiling_is_refused() {
+    // #253. The walk follows form XObjects to a bounded depth; past it, it used to return
+    // Ok(()) silently, so the optional-content refusal (ADR 0019 §2a row 6) never ran on the
+    // deepest forms and a hidden layer nine forms down was carried into the part. Nine levels is
+    // the MEASURED leaking depth: with the guard restored to Ok(()), this fixture splits Ok with
+    // HIDDENLAYERTEXT in the part (confirmed by mutation); chains of eight and shallower are
+    // caught by the optional-content refusal itself. The guard now refuses instead.
+    let result = split_first(nested_form_chain(9, true), &[1]);
+    match result {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[split-nested-form-too-deep]"),
+            "refused, but not for the nesting depth: {error:?}"
+        ),
+        Ok(outputs) => {
+            assert!(
+                !contains(&expanded(&outputs[0]), "HIDDENLAYERTEXT"),
+                "split carried a layer hidden nine forms down into the part"
+            );
+            panic!("returned Ok, where a form chain past the depth ceiling must refuse the split");
+        }
+    }
+}
+
+#[test]
+fn a_form_chain_at_the_ceiling_still_splits() {
+    // THE NEAR-MISS. A legitimate eight-deep chain (the deepest form draws a plain vector, no
+    // hidden layer) is exactly at the ceiling the walk follows, so it must still split -- the
+    // ceiling is a ceiling, not a wall one level below it. (The census found real documents nest
+    // forms at most two deep, so refusing at nine newly refuses zero of them.)
+    let outputs = split_first(nested_form_chain(8, false), &[1])
+        .expect("an eight-deep form chain is at the ceiling, not past it");
+    assert_eq!(
+        outputs.len(),
+        2,
+        "split after page 1 of a 2-page doc yields two parts"
+    );
+}
+
+/// A 2-page doc whose page 1 carries a widget annotation whose `/AP /N` appearance is a chain of
+/// `levels` nested Form XObjects, the deepest holding a hidden OCG. The appearance is absorbed at
+/// EVEN depth, so this drives the `follow_resources` guard parity the form-chain fixtures do not.
+/// Objects: 1 catalog, 2 pages, 3 page1, 4 page2, 5 page1-content, 6 page2-content, 7 OCG, 8 font,
+/// 9 widget, 10.. appearance forms Ap1..ApN.
+fn annotation_appearance_chain(levels: usize, hidden: bool) -> Vec<u8> {
+    let first = 10;
+    let catalog = if hidden {
+        "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [7 0 R] /D << /OFF [7 0 R] >> >> >>"
+            .to_owned()
+    } else {
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned()
+    };
+    let mut objects = vec![
+        catalog,
+        "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 5 0 R \
+         /Annots [9 0 R] /Resources << /Font << /F1 8 0 R >> >> >>"
+            .to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+         /Resources << /Font << /F1 8 0 R >> >> >>"
+            .to_owned(),
+        content("BT /F1 12 Tf 10 10 Td (ONE) Tj ET"),
+        content("BT /F1 12 Tf 10 10 Td (TWO) Tj ET"),
+        "<< /Type /OCG /Name (Hidden) >>".to_owned(),
+        HELVETICA.to_owned(),
+        format!(
+            "<< /Type /Annot /Subtype /Widget /Rect [0 0 100 100] /FT /Btn /AP << /N {first} 0 R >> >>"
+        ),
+    ];
+    for level in 1..=levels {
+        let obj = first + level - 1;
+        let body = if level < levels {
+            let next = obj + 1;
+            let stream = format!("/Ap{} Do", level + 1);
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+                 /Resources << /XObject << /Ap{} {next} 0 R >> >> /Length {} >>\nstream\n{stream}\nendstream",
+                level + 1,
+                stream.len()
+            )
+        } else if hidden {
+            let data = "/OC /L1 BDC BT /F1 12 Tf 10 10 Td (HIDDENLAYERTEXT) Tj ET EMC";
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+                 /Resources << /Font << /F1 8 0 R >> /Properties << /L1 7 0 R >> >> /Length {} >>\nstream\n{data}\nendstream",
+                data.len()
+            )
+        } else {
+            let data = "10 10 20 20 re f";
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length {} >>\nstream\n{data}\nendstream",
+                data.len()
+            )
+        };
+        objects.push(body);
+    }
+    raw_pdf(&objects)
+}
+
+#[test]
+fn a_hidden_layer_in_an_annotation_appearance_past_the_ceiling_is_refused() {
+    // #253, the EVEN-PARITY path. An annotation `/AP` appearance is absorbed at depth 0, not via a
+    // page form at depth 1, so a deep appearance chain trips the `follow_resources` guard (the one
+    // the form-chain fixtures above never reach). Nine appearance levels is the measured leaking
+    // depth here: with the guards restored to Ok(()) this splits with HIDDENLAYERTEXT in the part
+    // (confirmed by mutation); eight is caught by the optional-content refusal. Annotation
+    // appearances are a resource split prunes, so this is a redaction-reachable path.
+    let result = split_first(annotation_appearance_chain(9, true), &[1]);
+    match result {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[split-nested-form-too-deep]"),
+            "refused, but not for the nesting depth: {error:?}"
+        ),
+        Ok(outputs) => {
+            assert!(
+                !contains(&expanded(&outputs[0]), "HIDDENLAYERTEXT"),
+                "split carried a layer hidden deep in an annotation appearance into the part"
+            );
+            panic!("returned Ok, where a deep annotation-appearance chain must refuse the split");
+        }
+    }
+}
