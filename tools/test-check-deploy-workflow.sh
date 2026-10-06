@@ -127,12 +127,56 @@ p.write_text(s)
 assert "pull_request" in yaml.safe_load(s)[True], "plant did not reach the parsed document"
 '
 
-expect_refusal "a sibling tags: filter is refused (presence is not exclusivity)" "expected exactly" '
+# Since deploy-on-tag the push filter is exactly {branches:[main], tags:[v*]}. A WIDER tag glob
+# lets another tag family reach the job that keys off a tag; dropping the tag line entirely is a
+# different filter. Both must be refused as "not exactly".
+expect_refusal "a WIDER tag glob than v* is refused" "expected exactly" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-s = s.replace("    branches: [main]\n", "    branches: [main]\n    tags: [\"**\"]\n", 1)
+assert "    tags: [\"v*\"]\n" in s, "MUTATION DID NOT APPLY: no tags: [\"v*\"] line to widen"
+s = s.replace("    tags: [\"v*\"]\n", "    tags: [\"**\"]\n", 1)
 p.write_text(s)
-assert "tags" in yaml.safe_load(s)[True]["push"], "plant did not reach the parsed document"
+assert yaml.safe_load(s)[True]["push"]["tags"] == ["**"], "plant did not reach the parsed document"
+'
+
+expect_refusal "dropping the tags: filter (branches only) is refused" "expected exactly" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+assert "    tags: [\"v*\"]\n" in s, "MUTATION DID NOT APPLY: no tags: [\"v*\"] line to drop"
+s = s.replace("    tags: [\"v*\"]\n", "", 1)
+p.write_text(s)
+assert "tags" not in yaml.safe_load(s)[True]["push"], "plant did not reach the parsed document"
+'
+
+# --- deploy-on-tag: the credential job runs ONLY on a v* tag, and the build does not upload -----
+expect_refusal "an un-gated publish (reachable on a main push) is refused" "does not gate on a \`v*\` tag" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "    if: startsWith(github.ref, \x27refs/tags/v\x27)\n"
+assert old in s, "MUTATION DID NOT APPLY: no publish tag guard to remove"
+s = s.replace(old, "    if: github.event_name == \x27push\x27\n", 1)
+p.write_text(s)
+assert "refs/tags/v" not in yaml.safe_load(s)["jobs"]["publish"]["if"], "plant did not reach the parsed document"
+'
+
+expect_refusal "a publish with a needs: is refused (the tag run has no build job)" "has \`needs:" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "    if: startsWith(github.ref, \x27refs/tags/v\x27)\n"
+assert old in s, "MUTATION DID NOT APPLY: no publish guard to anchor the needs on"
+s = s.replace(old, old + "    needs: build\n", 1)
+p.write_text(s)
+assert yaml.safe_load(s)["jobs"]["publish"]["needs"] == "build", "plant did not reach the parsed document"
+'
+
+expect_refusal "a build job not restricted to the main push is refused" "does not restrict it to the" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "    if: github.event_name == \x27workflow_dispatch\x27 || github.ref == \x27refs/heads/main\x27\n"
+assert old in s, "MUTATION DID NOT APPLY: no build guard to widen"
+s = s.replace(old, "    if: always()\n", 1)
+p.write_text(s)
+assert yaml.safe_load(s)["jobs"]["build"]["if"] == "always()", "plant did not reach the parsed document"
 '
 
 expect_refusal "a WORKFLOW-LEVEL env: secret is refused (it reaches every job)" "OUTSIDE the jobs block" '
@@ -254,6 +298,21 @@ steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
 assert not any("check-deployable-build" in str(x.get("run", "")) for x in steps), "plant did not apply"
 '
 
+# The preconditions gate is the OTHER pre-upload gate, and it is the one that decides a tag may
+# deploy at all. Removing its invocation from the publish job must refuse: without it a `v*` tag
+# on any commit would reach the upload. The step body is located and dropped by key, not matched
+# literally (it is a large shell block).
+expect_refusal "deleting the release-preconditions gate is refused" "never runs in the \`publish\` job" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); d = yaml.safe_load(p.read_text())
+steps = d["jobs"]["publish"]["steps"]
+keep = [x for x in steps if "check-release-preconditions.py" not in str(x.get("run", ""))]
+assert len(keep) == len(steps) - 1, "MUTATION DID NOT APPLY: expected exactly one preconditions step to drop"
+d["jobs"]["publish"]["steps"] = keep
+p.write_text(yaml.safe_dump(d, sort_keys=False))
+assert not any("check-release-preconditions" in str(x.get("run", "")) for x in d["jobs"]["publish"]["steps"]), "plant did not apply"
+'
+
 # --- THE READ-BACK MUST EXIST, AND MUST FOLLOW THE UPLOAD -------------------------------------
 #
 # The first version of that step asserted `wrangler's URL == $BURROW_SITE`, which no correct
@@ -319,7 +378,7 @@ assert set(yaml.safe_load(s)[True]) == {"push", "pull_request"}, "plant did not 
 expect_refusal "losing workflow_dispatch is refused, not silently accepted" "missing: workflow_dispatch" '
 import sys, pathlib, yaml, re
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-s = re.sub(r"\n  workflow_dispatch:\n(?:    .*\n|\n)*?(?=  push:)", "\n", s, count=1)
+s = re.sub(r"(?m)^  workflow_dispatch:\n(?:^(?!  push:).*\n)*", "", s, count=1)
 p.write_text(s)
 assert "workflow_dispatch" not in yaml.safe_load(s)[True], "plant did not apply"
 '
@@ -398,9 +457,11 @@ fi
 expect_refusal "an OIDC token in the credential job is refused" "hold BOTH" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-old = "    environment: production\n"
-assert old in s
-s = s.replace(old, old + "    permissions:\n      id-token: write\n", 1)
+# publish already carries a permissions block (contents/actions read); inject id-token INTO it
+# so the job holds both the Cloudflare token and an OIDC token.
+old = "      actions: read\n"
+assert old in s, "MUTATION DID NOT APPLY: no publish actions:read line to anchor on"
+s = s.replace(old, old + "      id-token: write\n", 1)
 p.write_text(s)
 assert yaml.safe_load(s)["jobs"]["publish"]["permissions"]["id-token"] == "write", "plant did not apply"
 '
@@ -408,8 +469,13 @@ assert yaml.safe_load(s)["jobs"]["publish"]["permissions"]["id-token"] == "write
 expect_refusal "an OIDC token INHERITED from workflow level is refused" "hold BOTH" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
+# Remove the publish job permissions block so it INHERITS workflow level, then give workflow
+# level id-token. Now publish holds the Cloudflare token AND an inherited OIDC token.
+pub_perms = "    permissions:\n      contents: read\n      actions: read\n"
+assert pub_perms in s, "MUTATION DID NOT APPLY: publish has no permissions block to strip"
+s = s.replace(pub_perms, "", 1)
 old = "permissions:\n  contents: read\n"
-assert old in s
+assert old in s, "MUTATION DID NOT APPLY: no workflow-level permissions to widen"
 s = s.replace(old, "permissions:\n  contents: read\n  id-token: write\n", 1)
 p.write_text(s)
 d = yaml.safe_load(s)

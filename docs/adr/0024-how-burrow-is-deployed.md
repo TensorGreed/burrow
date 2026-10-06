@@ -302,3 +302,47 @@ hold both `id-token: write` and the Cloudflare credential, the signing job must 
 token, and the permissions are read as **effective** — a review measured the first version
 passing a workflow-level `id-token: write` that `publish` inherited, while printing that the
 separation held.
+
+## Amendment, 2026-10-05 — deploy on a tag, not on a merge
+
+The decisions above stand, with one changed and recorded here on the owner's direction: **a push
+to `main` no longer deploys.** It builds the production payload, runs every gate, and uploads the
+bytes as an artifact — and stops there. **A push of an annotated `v*` tag is what deploys**, by
+reusing that artifact. One `v*` family carries both the site deploy and the signed release.
+
+Why: a `main` merge and a release are different decisions made at different times, and coupling
+them meant every merge was a release whether or not anyone had decided to cut one. Separating them
+costs one deliberate step — the `docs/OPERATIONS.md` release command — and buys a release that
+is chosen rather than incurred.
+
+**The credential job runs only on a `v*` tag, and proves the tag before it uploads.** A tag is not
+covered by `main`'s branch ruleset — whoever can push one could otherwise reach the Cloudflare
+credential and point it at a commit `ci` never ran. So `publish` gathers the facts and
+`tools/check-release-preconditions.py` decides, refusing unless **all** hold: the tag is
+*annotated* (not a lightweight pointer); the tagged commit is an ancestor of `origin/main` (merged,
+so it passed `ci` through the ruleset); the **`ci`** run *and* the **`deploy` build** run for the
+*main push* of that exact commit both concluded success, read per job with `headSha` matching; and
+the artifact's build stamp is current against the tagged tree. The tag ruleset on `refs/tags/v*`
+(owner-only create/update/delete, no bypass) is the matching control on who can cut a tag at all.
+
+**It deploys the verified bytes; it does not rebuild.** `publish` downloads the artifact **by the
+build run's id** — never by name or "latest" — so the bytes are the ones `ci` and the build gated,
+not a second compile nobody checked. If that artifact has expired (30-day retention; see
+`docs/OPERATIONS.md`) or is missing, `publish` refuses and names the run rather than falling back
+to a rebuild. The consequence is deliberate: tagging a commit whose main-push build is older than
+the retention window refuses, and the fix is a new commit on `main`, not a loosened check.
+
+**Two earlier claims in this ADR are now wrong, and are corrected rather than left standing.**
+"Every merge to `main` deploys" was true until this amendment and is not now. And `sign` is no
+longer "restricted to `github.ref == 'refs/heads/main'`": it is a sibling of `publish` on the
+`v*` tag (`needs: [publish]`), signing the same verified artifact after the deploy, so the tag —
+not a branch dispatch — is what cuts a signed release. The credential split `sign` depends on is
+unchanged: `publish` holds the Cloudflare token and no `id-token`; `sign` holds `id-token` and no
+Cloudflare token; `tools/check-deploy-workflow.py` still enforces both, and now also that `publish`
+is gated on a `v*` tag and that the `build` job is restricted to the main push.
+
+**What this does not close.** The residual above still applies: a dispatch runs the workflow file
+from the ref it is dispatched from, and someone with write access can still push a modified
+`deploy.yml` to `main`. Deploy-on-tag narrows the blast radius — a dispatch now only *builds*, and
+the credential is reachable only through a `v*` tag that the ruleset governs and the preconditions
+re-check — but it does not remove the standing fact that `main` itself is trusted.
