@@ -149,20 +149,33 @@ assert "tags" not in yaml.safe_load(s)[True]["push"], "plant did not reach the p
 '
 
 # --- deploy-on-tag: the credential job runs ONLY on a v* tag, and the build does not upload -----
-expect_refusal "an un-gated publish (reachable on a main push) is refused" "does not gate on a \`v*\` tag" '
+# The canonical publish guard; it now appears on both publish (first) and sign. `replace(..., 1)`
+# hits publish, which is defined first.
+expect_refusal "an un-gated publish (reachable on a main push) is refused" "not exactly the canonical guard" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-old = "    if: startsWith(github.ref, \x27refs/tags/v\x27)\n"
+old = "    if: github.event_name == \x27push\x27 && startsWith(github.ref, \x27refs/tags/v\x27)\n"
 assert old in s, "MUTATION DID NOT APPLY: no publish tag guard to remove"
 s = s.replace(old, "    if: github.event_name == \x27push\x27\n", 1)
 p.write_text(s)
 assert "refs/tags/v" not in yaml.safe_load(s)["jobs"]["publish"]["if"], "plant did not reach the parsed document"
 '
 
+# A broader guard that still mentions the tag must be refused too -- not just a missing one.
+expect_refusal "a wider publish guard (re-opening dispatch) is refused" "not exactly the canonical guard" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "    if: github.event_name == \x27push\x27 && startsWith(github.ref, \x27refs/tags/v\x27)\n"
+assert old in s, "MUTATION DID NOT APPLY: no publish guard to widen"
+s = s.replace(old, "    if: startsWith(github.ref, \x27refs/tags/v\x27) || github.event_name == \x27workflow_dispatch\x27\n", 1)
+p.write_text(s)
+assert "workflow_dispatch" in yaml.safe_load(s)["jobs"]["publish"]["if"], "plant did not reach the parsed document"
+'
+
 expect_refusal "a publish with a needs: is refused (the tag run has no build job)" "has \`needs:" '
 import sys, pathlib, yaml
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
-old = "    if: startsWith(github.ref, \x27refs/tags/v\x27)\n"
+old = "    if: github.event_name == \x27push\x27 && startsWith(github.ref, \x27refs/tags/v\x27)\n"
 assert old in s, "MUTATION DID NOT APPLY: no publish guard to anchor the needs on"
 s = s.replace(old, old + "    needs: build\n", 1)
 p.write_text(s)

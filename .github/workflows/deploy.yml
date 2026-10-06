@@ -170,7 +170,10 @@ jobs:
   # bytes -- downloaded by run id -- and never compiles.
   publish:
     name: publish to Cloudflare Pages
-    if: startsWith(github.ref, 'refs/tags/v')
+    # EVENT AND REF, both: only a `push` of a `v*` tag. Checking the ref alone would let a manual
+    # dispatch whose selected ref is a v* tag reach the credential (github.ref would be the tag),
+    # which is what the dispatch comment above promises cannot happen.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: production
     # `actions: read` to query the ci and build runs and to download the build artifact by id;
@@ -202,9 +205,13 @@ jobs:
           # ANNOTATED, not lightweight: the tag object is a `tag`, a `commit` means lightweight.
           tag_type="$(git cat-file -t "refs/tags/$tag" 2>/dev/null || echo missing)"
 
-          # MERGED: the tagged commit is an ancestor of origin/main, or its tip.
-          git fetch --no-tags --depth=1 origin main >/dev/null 2>&1 || git fetch --no-tags origin main
-          if git merge-base --is-ancestor "$sha" origin/FETCH_HEAD; then merged=true; else merged=false; fi
+          # MERGED: the tagged commit is an ancestor of main's tip, or its tip. The fetched tip is
+          # `FETCH_HEAD` (not `origin/FETCH_HEAD`, which is not a ref -- an earlier spelling of this
+          # made `merged` always false, refusing every tag; there is a gather smoke test for it now,
+          # `tools/test-release-gather.sh`). No `--depth`: ancestry needs main's history, not just
+          # its tip. The checkout above is `fetch-depth: 0`.
+          git fetch --no-tags origin main
+          if git merge-base --is-ancestor "$sha" FETCH_HEAD; then merged=true; else merged=false; fi
 
           # THE RUNS for the MAIN PUSH of this commit: ci (the verdict) and deploy build (the bytes).
           # `--branch main` so the tag's own deploy run is never mistaken for the build run.
@@ -430,7 +437,7 @@ jobs:
     # `publish` succeeded first. One `v*` family drives both the deploy and the signed release
     # (the tag IS the release), so this no longer needs a `sign: true` dispatch input.
     needs: [publish]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release and its tag

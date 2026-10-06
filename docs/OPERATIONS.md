@@ -82,6 +82,24 @@ failing means the live site is **not** this tag, whatever the run's exit code wa
 - *no artifact for the build run* — the build is older than the 30-day retention. Land a new
   commit on `main` and tag that.
 
+## Repo settings the deploy boundary depends on (not visible in the tree)
+
+The workflow enforces what it can, but three settings live in GitHub, not in this repo, and the
+credential boundary rests on them. Confirm each when setting this up, and after any settings change:
+
+1. **The `production` environment's deployment-branch policy must allow `v*` tags.** Before
+   deploy-on-tag it was restricted to `main`; if it still is, every tag deploy is blocked by the
+   environment (which is itself a correct fail-closed, but not the intended behaviour). Set it to
+   allow the tag pattern `v*` (or the refs it needs), and keep it as the real backstop on which
+   refs may use the environment.
+2. **`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` must be `production` *environment* secrets,
+   not repository secrets.** As environment secrets they are reachable only by a job that names
+   `environment: production` (the `publish` job), and the environment's branch/tag policy then
+   governs when that is. As repo secrets they would be reachable from any job.
+3. **The branch ruleset on `main` must require `ci` to pass.** The preconditions lean on "a green
+   `ci` push-run on `main` means the commit passed CI"; that meaning comes from the branch
+   ruleset, not from the deploy workflow.
+
 ## The `refs/tags/v*` ruleset
 
 The deploy credential is reachable only through a `v*` tag, so who may create one is a security

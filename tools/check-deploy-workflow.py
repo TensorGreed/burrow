@@ -55,6 +55,11 @@ SIGNING_JOB = "sign"
 #: The job that may hold the credential, and the only one.
 CREDENTIAL_JOB = "publish"
 
+#: The one guard that job may carry: a `push` event AND a `v*` tag ref. Exact, because anything
+#: wider that merely mentions the tag re-opens a path to the credential (a dispatch, or a negation
+#: true on a branch push). `deploy.yml` must spell it character-for-character.
+CANONICAL_PUBLISH_IF = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+
 #: Gates that must run in that job before the upload, by the script each one invokes.
 REQUIRED_PRE_UPLOAD_GATES = [
     "tools/check-release-preconditions.py",
@@ -264,12 +269,17 @@ def check_publish_is_tag_gated(workflow: dict, report: list[str]) -> None:
     publish = jobs.get(CREDENTIAL_JOB)
     if not isinstance(publish, dict):
         raise Refused(f"there is no `{CREDENTIAL_JOB}` job to check")
+    # EXACT, not "contains refs/tags/v". A substring test accepts a BROADER guard that still
+    # mentions the tag -- `... || github.event_name == 'workflow_dispatch'` re-opens the dispatch
+    # path, and `github.ref != 'refs/tags/v-never'` is true on a main push and re-enables publish
+    # on every merge. Both passed the substring version. The guard must be exactly the canonical
+    # one: a `push` event AND a `v*` tag ref, nothing wider.
     guard = publish.get("if")
-    if not isinstance(guard, str) or "refs/tags/v" not in guard:
+    if not isinstance(guard, str) or guard.strip() != CANONICAL_PUBLISH_IF:
         raise Refused(
-            f"the `{CREDENTIAL_JOB}` job's `if` is {guard!r}, which does not gate on a `v*` tag. "
-            f"It must be `startsWith(github.ref, 'refs/tags/v')` so a `main` push -- which the "
-            f"push filter also allows, to build -- cannot reach the upload."
+            f"the `{CREDENTIAL_JOB}` job's `if` is {guard!r}, which is not exactly the canonical "
+            f"guard {CANONICAL_PUBLISH_IF!r}. It must be that and nothing wider, so neither a "
+            f"`main` push nor a `workflow_dispatch` on a v* ref can reach the upload."
         )
     if "needs" in publish:
         raise Refused(
@@ -767,7 +777,20 @@ PROBES = [
                       "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
         ),
         lambda: check_publish_is_tag_gated(
-            {"jobs": {CREDENTIAL_JOB: {"if": "startsWith(github.ref, 'refs/tags/v')"},
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
+                      "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
+        ),
+    ),
+    (
+        # A BROADER guard that still mentions the tag must be refused -- the substring version
+        # accepted both of these, which is finding 2 of the deploy-on-tag review.
+        "a wider publish guard that re-opens dispatch is refused",
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF + " || github.event_name == 'workflow_dispatch'"},
+                      "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
+        ),
+        lambda: check_publish_is_tag_gated(
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
                       "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
         ),
     ),
@@ -775,11 +798,11 @@ PROBES = [
         # And the build job must be restricted to the main push, not left to run on the tag too.
         "build is restricted to the main push",
         lambda: check_publish_is_tag_gated(
-            {"jobs": {CREDENTIAL_JOB: {"if": "startsWith(github.ref, 'refs/tags/v')"},
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
                       "build": {"if": "always()"}}}, []
         ),
         lambda: check_publish_is_tag_gated(
-            {"jobs": {CREDENTIAL_JOB: {"if": "startsWith(github.ref, 'refs/tags/v')"},
+            {"jobs": {CREDENTIAL_JOB: {"if": CANONICAL_PUBLISH_IF},
                       "build": {"if": "github.ref == 'refs/heads/main'"}}}, []
         ),
     ),
