@@ -215,6 +215,26 @@ A change is done when all of these hold:
 
 ## Working agreements
 
+### Applying a recorded decision
+
+The decisions this project has already made are in [`docs/DECISIONS.md`](docs/DECISIONS.md), one
+line each with the issue where it was made and what it does not cover. **When a question is
+answered by a rule there, apply it, say which rule, and continue.** Stop for the owner only when
+no rule covers it, when a rule would have to change, or when the decision cannot be undone (a
+history rewrite, a budget move, anything that reaches a visitor). Keep stopping for genuinely new
+questions — those stops have caught real errors. Re-litigating a settled rule is the waste this
+index exists to remove.
+
+### Spec review first
+
+For every **new rule** (a change that decides what redaction or split removes or keeps): before
+writing code, give the `security-reviewer` the proposed rule, the ADR 0029 §3 / ADR 0019 §2b
+accept-vs-refuse table (DECISIONS.md rule 10), and the census plan, and ask for (a) the inputs the
+rule would accept that the table says to refuse, and (b) the fixture list it would demand. Build
+from that list. The post-code reviews (*Conventions*: both reviewers for redaction-deciding code)
+still run — the aim is that round 2 finds nothing a round 0 could have. This does not change the
+reviewers, the sweep, the bar, or any test; it adds a round 0 before them.
+
 ### When to proceed, and when to stop and ask
 
 The default is **proceed**. Stopping for confirmation has its own cost, and it was being
