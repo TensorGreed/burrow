@@ -88,6 +88,12 @@ REQUIRED_POST_UPLOAD_CHECKS = {
         "`dist/` locally, the header checks read headers, and a plain `curl` gets the clean "
         "document because the rewrite is conditional on looking like a browser."
     ),
+    "tools/check-live-release-sha.sh": (
+        "Nothing would then confirm the live origin is serving THIS release. It reads "
+        "`release-sha.txt` back from the live site and requires it equals the tagged commit, "
+        "ignoring the status code (a static host can answer a missing path with 200+HTML). "
+        "Without it a deploy that uploaded the wrong or a stale build could still read green."
+    ),
 }
 
 #: The secret prefix that must appear in no other workflow. `deploy.yml` being airtight is

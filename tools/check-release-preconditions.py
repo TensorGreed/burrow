@@ -18,9 +18,12 @@ byte is uploaded, every one of these must hold, and a single missing one refuses
     `headSha` equal to the tagged commit and the event a branch `push`, not a pull request;
   * the `deploy` build run for that same main push concluded success -- that is the run that built
     the production-origin bytes and uploaded them as an artifact;
-  * the downloaded artifact's `.release-sha` **equals the tagged commit** -- the bytes are the
-    ones that commit builds, checked with `tools/check-release-artifact.sh`, the same command the
-    build job runs on the fresh payload on every main push.
+  * the downloaded artifact's `release-sha.txt` **equals the tagged commit** -- so the artifact is
+    labelled as this commit's build, checked with `tools/check-release-artifact.sh`, the same
+    command the build job runs on the fresh payload on every main push. (The stamp is a label: it
+    says the artifact CLAIMS this commit. That the whole live site then matches these exact bytes
+    is `tools/check-live-routes.py`'s job, post-upload; the gated `deploy` build run above is what
+    ties the artifact to a build CI saw.)
 
 This script is the DECISION over those facts, gathered by the workflow (git, `gh run`,
 `check-release-artifact.sh`) and handed in as JSON on stdin. The split is what makes it testable: the
@@ -40,7 +43,7 @@ before the upload; `tools/check-deploy-workflow.py` asserts that structure.
                  "jobs": [{"name": "...", "conclusion": "success"}, ...]},
       "build_run": {"conclusion": "success", "head_sha": "<40 hex>", "event": "push",
                     "jobs": [...]},
-      "release_sha_ok": true               # .release-sha in the artifact == tagged sha (and it is complete)
+      "release_sha_ok": true               # release-sha.txt in the artifact == tagged sha (and it is complete)
     }
 
 A missing key is a refusal, never a pass: a gather step that failed to produce a fact must not
@@ -124,8 +127,8 @@ def decide(facts: object) -> list[str]:
 
     if facts.get("release_sha_ok") is not True:
         problems.append(
-            "the downloaded artifact's .release-sha does not equal the tagged commit (or the "
-            "artifact is missing or incomplete), so the bytes are not the ones this commit builds"
+            "the downloaded artifact's release-sha.txt does not equal the tagged commit (or the "
+            "artifact is missing or incomplete), so it is not labelled as this commit's build"
         )
 
     return problems

@@ -91,7 +91,7 @@ expect fail "a lightweight tag is refused" "annotated tag" \
 
 # 4. an expired or missing artifact shows as a build run that cannot be confirmed, or a stamp
 #    does not match -- the workflow turns 'artifact gone' or 'wrong sha' into release_sha_ok:false.
-expect fail "a .release-sha that does not match the tag is refused" ".release-sha does not equal the tagged commit" \
+expect fail "a release-sha.txt that does not match the tag is refused" "release-sha.txt does not equal the tagged commit" \
   < <(mutate "d['release_sha_ok']=False")
 expect fail "a missing build run is refused" "deploy build run is absent" \
   < <(mutate "del d['build_run']")
@@ -107,7 +107,7 @@ expect fail "a non-push ci event is refused" "not a branch push" \
 # 7. a non-v tag, and absent facts
 expect fail "a non-v tag is refused" "not a refs/tags/v* tag" \
   < <(mutate "d['ref']='refs/tags/release-1'")
-expect fail "a missing release_sha fact is refused, not assumed true" ".release-sha does not equal the tagged commit" \
+expect fail "a missing release_sha fact is refused, not assumed true" "release-sha.txt does not equal the tagged commit" \
   < <(mutate "del d['release_sha_ok']")
 
 if [ "$failed" -gt 0 ]; then

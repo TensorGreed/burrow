@@ -385,6 +385,21 @@ steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
 assert not any("check-live-routes" in str(x.get("run", "")) for x in steps), "plant did not apply"
 '
 
+expect_refusal "deleting the live-release-sha check is refused, naming what IT is for" \
+  "serving THIS release" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+start = next(i for i, l in enumerate(lines) if "The live origin is serving this exact release" in l)
+end = next(
+    i for i in range(start + 1, len(lines))
+    if lines[i].startswith("      - name:") or lines[i].startswith("      - uses:")
+)
+p.write_text("".join(lines[:start] + lines[end:]))
+steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
+assert not any("check-live-release-sha" in str(x.get("run", "")) for x in steps), "plant did not apply"
+'
+
 # --- the forbidden triggers, each named ---------------------------------------------------------
 for trigger in pull_request pull_request_target workflow_call repository_dispatch issue_comment schedule; do
   expect_refusal "a \`$trigger\` trigger is refused" "triggers are" "

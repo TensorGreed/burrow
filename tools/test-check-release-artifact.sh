@@ -24,7 +24,7 @@ make_dist() {
   rm -rf "$d"; mkdir -p "$d"
   echo "<!doctype html>" > "$d/index.html"
   printf 'x' > "$d/_headers"
-  printf '%s' "$sha" > "$d/.release-sha"
+  printf '%s' "$sha" > "$d/release-sha.txt"
 }
 
 # expect <pass|fail> <label> <needle> -- runs the checker on $work/dist for $SHA
@@ -49,16 +49,16 @@ expect pass "a complete artifact stamped for the sha passes" ""
 # THE ORIGINAL DEFECT, reproduced: a dist with no stamp file. The previous check pointed at a path
 # nothing stamped, so this was its permanent state -- and it must go red, which is what makes the
 # build job's self-check on main catch it the day it breaks.
-make_dist "$work/dist" "$SHA"; rm -f "$work/dist/.release-sha"
-expect fail "a missing .release-sha is refused (the original always-fail bug)" ".release-sha is absent"
+make_dist "$work/dist" "$SHA"; rm -f "$work/dist/release-sha.txt"
+expect fail "a missing release-sha.txt is refused (the original always-fail bug)" "release-sha.txt is absent"
 
 make_dist "$work/dist" "ffffffffffffffffffffffffffffffffffffffff"
-expect fail "a mismatched .release-sha is refused" "not this commit's build"
+expect fail "a mismatched release-sha.txt is refused" "not this commit's build"
 
-make_dist "$work/dist" "$SHA"; printf '%s\n' "$SHA" > "$work/dist/.release-sha"
+make_dist "$work/dist" "$SHA"; printf '%s\n' "$SHA" > "$work/dist/release-sha.txt"
 expect fail "a trailing newline is refused" "trimming whitespace"
 
-make_dist "$work/dist" "$SHA"; printf ' %s ' "$SHA" > "$work/dist/.release-sha"
+make_dist "$work/dist" "$SHA"; printf ' %s ' "$SHA" > "$work/dist/release-sha.txt"
 expect fail "surrounding whitespace is refused" "trimming whitespace"
 
 make_dist "$work/dist" "$SHA"; rm -f "$work/dist/"*/index.html "$work/dist/index.html"
@@ -67,8 +67,8 @@ expect fail "an artifact with no pages is refused as incomplete" "no index.html"
 make_dist "$work/dist" "$SHA"; rm -f "$work/dist/_headers"
 expect fail "a missing _headers is refused" "_headers"
 
-make_dist "$work/dist" "$SHA"; mkdir -p "$work/dist/.release-sha.d"; rm -rf "$work/dist/.release-sha"; mkdir "$work/dist/.release-sha"
-expect fail "a .release-sha that is a directory is refused" "not a regular file"
+make_dist "$work/dist" "$SHA"; rm -rf "$work/dist/release-sha.txt"; mkdir "$work/dist/release-sha.txt"
+expect fail "a release-sha.txt that is a directory is refused" "not a regular file"
 
 # A malformed expectation (caller bug) must refuse, not compare loosely.
 make_dist "$work/dist" "$SHA"

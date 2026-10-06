@@ -130,11 +130,12 @@ jobs:
         run: pnpm build
 
       # THE LITERAL SHA STAMP. Written into the payload so the publish job can prove the bytes it
-      # downloads are THIS commit's build, by reading `.release-sha` back and requiring it equals
-      # the tagged sha. The bare 40-char sha, no trailing newline -- the check requires exact bytes.
-      # `include-hidden-files: true` on the upload carries this dotfile into the artifact.
+      # downloads are THIS commit's build, by reading `release-sha.txt` back and requiring it
+      # equals the tagged sha. A regular `.txt` at the root -- NOT a dotfile -- so Cloudflare Pages
+      # serves it as text/plain and the live read can fetch it (a root dotfile is not reliably
+      # served). The bare 40-char sha, no trailing newline -- the check requires exact bytes.
       - name: Stamp the payload with the commit it was built from
-        run: printf '%s' "$GITHUB_SHA" > apps/web/dist/.release-sha
+        run: printf '%s' "$GITHUB_SHA" > apps/web/dist/release-sha.txt
 
       # THE REAL ARTIFACT-SIDE PRECONDITION, RUN HERE ON THE FRESH BUILD. This is the SAME command
       # the publish job runs on the downloaded artifact (`tools/check-release-artifact.sh`), not a
@@ -246,7 +247,7 @@ jobs:
 
           # THE BYTES: download the build run's artifact by ID, never by name alone or "latest".
           # An expired or missing artifact refuses here, naming the run; there is no rebuild.
-          # Then the SAME artifact-side check the build job ran on this payload: its `.release-sha`
+          # Then the SAME artifact-side check the build job ran on this payload: its `release-sha.txt`
           # must equal the tagged commit. `tools/check-release-artifact.sh` is one script run in
           # both places, so a check that can never pass fails on main, not first on a release.
           release_sha_ok=false
@@ -384,6 +385,13 @@ jobs:
       # bytes against exactly what was uploaded.
       - name: The live origin serves the body we built, and nothing else
         run: tools/check-live-routes.py "$BURROW_SITE" apps/web/dist
+
+      # AND IT IS SERVING THIS EXACT RELEASE. Reads `release-sha.txt` back from the live origin and
+      # requires it equals the tagged commit -- ignoring the status code, because a static host can
+      # answer a missing path with 200+HTML. This is post-upload, so it is the one gate reachable
+      # only on a real deploy; `check-live-routes.py` above also compares this file byte-for-byte.
+      - name: The live origin is serving this exact release
+        run: tools/check-live-release-sha.sh "$BURROW_SITE" "${{ github.sha }}"
 
       - name: Say where it went
         run: |

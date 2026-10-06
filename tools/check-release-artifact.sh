@@ -39,10 +39,10 @@ esac
   || fail "'$dist' contains no index.html -- the artifact is empty or incomplete"
 [ -r "$dist/_headers" ] || fail "'$dist/_headers' is missing or unreadable -- the response-header policy is not in the artifact"
 
-stamp="$dist/.release-sha"
-[ -e "$stamp" ]        || fail ".release-sha is absent from the artifact -- it cannot be shown to be this commit's build (this is the shape of the defect fixed in the SHA-stamp PR: a precondition checking a file nothing writes)"
-[ -f "$stamp" ]        || fail ".release-sha is not a regular file"
-[ -r "$stamp" ]        || fail ".release-sha is not readable"
+stamp="$dist/release-sha.txt"
+[ -e "$stamp" ]        || fail "release-sha.txt is absent from the artifact -- it cannot be shown to be this commit's build (this is the shape of the defect fixed in the SHA-stamp PR: a precondition checking a file nothing writes)"
+[ -f "$stamp" ]        || fail "release-sha.txt is not a regular file"
+[ -r "$stamp" ]        || fail "release-sha.txt is not readable"
 
 # EXACT bytes. The build writes the bare 40-char sha with no trailing newline; anything else --
 # a mismatch, a trailing newline, surrounding whitespace -- means the bytes are not what this
@@ -53,9 +53,9 @@ actual="$(cat "$stamp"; printf x)"; actual="${actual%x}"
 if [ "$actual" != "$expected" ]; then
   # Name the likely cause without leaking a long diff.
   if [ "$(printf '%s' "$actual" | tr -d '[:space:]')" = "$expected" ]; then
-    fail ".release-sha matches the tagged commit only after trimming whitespace; it must be the bare 40-char sha with no trailing newline"
+    fail "release-sha.txt matches the tagged commit only after trimming whitespace; it must be the bare 40-char sha with no trailing newline"
   fi
-  fail ".release-sha is '${actual}', not the expected '${expected}' -- the bytes are not this commit's build"
+  fail "release-sha.txt is '${actual}', not the expected '${expected}' -- the bytes are not this commit's build"
 fi
 
-echo "OK -- .release-sha == $expected, and the artifact has pages and _headers"
+echo "OK -- release-sha.txt == $expected, and the artifact has pages and _headers"

@@ -322,16 +322,16 @@ credential and point it at a commit `ci` never ran. So `publish` gathers the fac
 *annotated* (not a lightweight pointer); the tagged commit is an ancestor of `origin/main` (merged,
 so it passed `ci` through the ruleset); the **`ci`** run *and* the **`deploy` build** run for the
 *main push* of that exact commit both concluded success, read per job with `headSha` matching; and
-the artifact's `.release-sha` equals the tagged commit. The tag ruleset on `refs/tags/v*`
+the artifact's `release-sha.txt` equals the tagged commit. The tag ruleset on `refs/tags/v*`
 (owner-only create/update/delete, no bypass) is the matching control on who can cut a tag at all.
 
-The `.release-sha` check replaced an earlier "build stamp is current against the tagged tree" one,
+The `release-sha.txt` check replaced an earlier "build stamp is current against the tagged tree" one,
 and the correction is worth recording because the first shipped a defect to a release. That check
 ran `tools/build-stamp.py check apps/web/dist`, but nothing ever wrote a `build-stamp` to
 `apps/web/dist` — only to the wasm `pkg*` bindings — so it refused **every** tag, fail-closed, and
 `v0.1.0` refused on it. It reached a release because a fixture stood in for the command: the
 decision's self-test fed `stamp_current: true` and never ran the real check. The fix is a literal
-stamp the build writes (`printf '%s' "$GITHUB_SHA" > apps/web/dist/.release-sha`) and
+stamp the build writes (`printf '%s' "$GITHUB_SHA" > apps/web/dist/release-sha.txt`) and
 `tools/check-release-artifact.sh` reads back — and that one script is run by the **build** job on
 the fresh artifact on every main push, not only by `publish` on a tag, so a check that can never
 pass now fails on `main` the day it breaks rather than first on a release.
