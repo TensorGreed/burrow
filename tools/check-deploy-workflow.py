@@ -62,6 +62,7 @@ CANONICAL_PUBLISH_IF = "github.event_name == 'push' && startsWith(github.ref, 'r
 
 #: Gates that must run in that job before the upload, by the script each one invokes.
 REQUIRED_PRE_UPLOAD_GATES = [
+    "tools/check-release-artifact.sh",
     "tools/check-release-preconditions.py",
     "tools/check-deployable-build.sh",
 ]
@@ -86,6 +87,12 @@ REQUIRED_POST_UPLOAD_CHECKS = {
         "no other gate could see it: `dist/` does not contain it, the e2e suite serves "
         "`dist/` locally, the header checks read headers, and a plain `curl` gets the clean "
         "document because the rewrite is conditional on looking like a browser."
+    ),
+    "tools/check-live-release-sha.sh": (
+        "Nothing would then confirm the live origin is serving THIS release. It reads "
+        "`release-sha.txt` back from the live site and requires it equals the tagged commit, "
+        "ignoring the status code (a static host can answer a missing path with 200+HTML). "
+        "Without it a deploy that uploaded the wrong or a stale build could still read green."
     ),
 }
 
@@ -317,9 +324,17 @@ def check_gates_before_upload(workflow: dict, report: list[str]) -> None:
         for position, step in enumerate(steps):
             # `run:` only. A comment naming the script is not an invocation, and reading one
             # as such produced "the origin gate runs AFTER the upload" for a comment, which
-            # cannot run at all.
+            # cannot run at all. That was fixed for STEP-level comments; this also drops
+            # full-line comments INSIDE a run block, because a run step may explain a gate in a
+            # `#` line (this workflow does) and the explanation must not satisfy the gate -- a
+            # deleted invocation whose comment remained would otherwise read as present.
             body = step.get("run")
-            if isinstance(body, str) and re.search(needle, body):
+            if not isinstance(body, str):
+                continue
+            code = "\n".join(
+                line for line in body.splitlines() if not line.lstrip().startswith("#")
+            )
+            if re.search(needle, code):
                 return position
         return None
 

@@ -326,6 +326,22 @@ p.write_text(yaml.safe_dump(d, sort_keys=False))
 assert not any("check-release-preconditions" in str(x.get("run", "")) for x in d["jobs"]["publish"]["steps"]), "plant did not apply"
 '
 
+# The artifact-side gate (check-release-artifact.sh) shares the gather step with the decision, so
+# this removes just its INVOCATION from that step rather than the whole step -- without it, the
+# downloaded bytes are never checked against the tagged sha.
+expect_refusal "deleting the release-artifact gate is refused" "never runs in the \`publish\` job" '
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+# The publish invocation (uses "$sha"); the build job has its own (uses "$GITHUB_SHA"), which
+# stays -- removing only the publish one leaves the build gate in place, so a refusal is about
+# the publish side exactly.
+old = "tools/check-release-artifact.sh apps/web/dist \"$sha\""
+assert old in s, "MUTATION DID NOT APPLY: no publish release-artifact invocation to remove"
+s = s.replace(old, "true", 1)
+p.write_text(s)
+assert old not in s, "plant did not reach the file"
+'
+
 # --- THE READ-BACK MUST EXIST, AND MUST FOLLOW THE UPLOAD -------------------------------------
 #
 # The first version of that step asserted `wrangler's URL == $BURROW_SITE`, which no correct
@@ -367,6 +383,21 @@ end = next(
 p.write_text("".join(lines[:start] + lines[end:]))
 steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
 assert not any("check-live-routes" in str(x.get("run", "")) for x in steps), "plant did not apply"
+'
+
+expect_refusal "deleting the live-release-sha check is refused, naming what IT is for" \
+  "serving THIS release" '
+import sys, pathlib, yaml
+p = pathlib.Path(sys.argv[1])
+lines = p.read_text().splitlines(keepends=True)
+start = next(i for i, l in enumerate(lines) if "The live origin is serving this exact release" in l)
+end = next(
+    i for i in range(start + 1, len(lines))
+    if lines[i].startswith("      - name:") or lines[i].startswith("      - uses:")
+)
+p.write_text("".join(lines[:start] + lines[end:]))
+steps = yaml.safe_load(p.read_text())["jobs"]["publish"]["steps"]
+assert not any("check-live-release-sha" in str(x.get("run", "")) for x in steps), "plant did not apply"
 '
 
 # --- the forbidden triggers, each named ---------------------------------------------------------

@@ -18,12 +18,15 @@ byte is uploaded, every one of these must hold, and a single missing one refuses
     `headSha` equal to the tagged commit and the event a branch `push`, not a pull request;
   * the `deploy` build run for that same main push concluded success -- that is the run that built
     the production-origin bytes and uploaded them as an artifact;
-  * the downloaded artifact's build stamp is **current against the tagged commit's tree** -- the
-    bytes are the ones that commit builds, checked with `tools/build-stamp.py` after the tree is
-    checked out at the tag.
+  * the downloaded artifact's `release-sha.txt` **equals the tagged commit** -- so the artifact is
+    labelled as this commit's build, checked with `tools/check-release-artifact.sh`, the same
+    command the build job runs on the fresh payload on every main push. (The stamp is a label: it
+    says the artifact CLAIMS this commit. That the whole live site then matches these exact bytes
+    is `tools/check-live-routes.py`'s job, post-upload; the gated `deploy` build run above is what
+    ties the artifact to a build CI saw.)
 
 This script is the DECISION over those facts, gathered by the workflow (git, `gh run`,
-`build-stamp check`) and handed in as JSON on stdin. The split is what makes it testable: the
+`check-release-artifact.sh`) and handed in as JSON on stdin. The split is what makes it testable: the
 gather touches the network and the live repo and cannot run in a unit test, but the decision is a
 pure function of the facts, so `tools/test-check-release-preconditions.sh` feeds it a fixture for
 each refusal and one that passes. The workflow's job is to GATHER honestly and to invoke this
@@ -40,7 +43,7 @@ before the upload; `tools/check-deploy-workflow.py` asserts that structure.
                  "jobs": [{"name": "...", "conclusion": "success"}, ...]},
       "build_run": {"conclusion": "success", "head_sha": "<40 hex>", "event": "push",
                     "jobs": [...]},
-      "stamp_current": true                # build-stamp check passed against the tagged tree
+      "release_sha_ok": true               # release-sha.txt in the artifact == tagged sha (and it is complete)
     }
 
 A missing key is a refusal, never a pass: a gather step that failed to produce a fact must not
@@ -122,10 +125,10 @@ def decide(facts: object) -> list[str]:
         problems += run_is_green(facts.get("ci_run"), sha, "ci")
         problems += run_is_green(facts.get("build_run"), sha, "deploy build")
 
-    if facts.get("stamp_current") is not True:
+    if facts.get("release_sha_ok") is not True:
         problems.append(
-            "the downloaded artifact's build stamp is not current against the tagged commit's "
-            "tree, so the bytes are not the ones this commit builds"
+            "the downloaded artifact's release-sha.txt does not equal the tagged commit (or the "
+            "artifact is missing or incomplete), so it is not labelled as this commit's build"
         )
 
     return problems

@@ -10,6 +10,11 @@ it as an artifact — it does **not** deploy. A push of an annotated **`v*`** ta
 by reusing that verified artifact. So a release is one deliberate step, taken when you decide to
 cut one.
 
+> **`v0.1.0` exists on `0aa1bd2` and was never deployed.** Its `publish` run refused on a
+> stamp-check defect: the precondition checked `apps/web/dist` for a `build-stamp` nothing ever
+> wrote there, so it refused every tag. Fixed by the literal SHA stamp (`release-sha.txt`) in
+> PR #265. The tag is left in place as the record; the first real release is **`v0.1.1`**.
+
 ### Before you tag
 
 - **The commit must be on `main` and green.** The tag's commit has to be an ancestor of
@@ -46,28 +51,27 @@ RUN=$(gh run list --workflow deploy.yml --event push --branch "$VERSION" \
 gh run watch "$RUN" --exit-status
 gh run view "$RUN" --json conclusion,jobs -q '.conclusion'   # must print: success
 
-# 3. Read the deployed bytes back from the LIVE site, and only then call it deployed.
-#    "deployed" means the live origin serves the verified artifact for this exact tag — not that
-#    a step exited 0. Download the artifact publish deployed (by the run's id, never "latest"),
-#    then compare the live origin against it.
+# 3. Read the deployed SHA back from the LIVE site, and only then call it deployed.
+#    "deployed" means the live origin serves THIS tag's build — not that a step exited 0. The
+#    build stamps the payload with the commit it was built from (apps/web/dist/release-sha.txt),
+#    served as text/plain, so the live origin serves /release-sha.txt and it must equal the SHA.
+#    This reads the BODY, not the status code: a static host can answer a missing path 200+HTML.
+tools/check-live-release-sha.sh https://notonlypdf.com "$SHA"
+
+# And the whole live build must match the verified artifact (not just the stamp). Download the
+# artifact publish deployed (by the run's id, never "latest") and compare the live origin to it.
 BUILD_RUN=$(gh run list --commit "$SHA" --workflow deploy.yml --branch main \
               --json databaseId -q '.[0].databaseId')
 rm -rf /tmp/burrow-deployed && gh run download "$BUILD_RUN" -n production-dist -D /tmp/burrow-deployed
-
-# The stamp must be current against the tagged commit's tree (the bytes ARE this commit's), and
-# the live origin must serve exactly those bytes.
-git -C . stash --include-untracked >/dev/null 2>&1 || true   # if your tree is dirty
-git checkout "$VERSION" --quiet
-python3 tools/build-stamp.py check /tmp/burrow-deployed       # stamp == the tagged tree
-tools/check-live-routes.py https://notonlypdf.com /tmp/burrow-deployed   # live == these bytes
-git checkout - --quiet
+tools/check-live-routes.py https://notonlypdf.com /tmp/burrow-deployed   # live == these bytes (incl. /release-sha.txt)
 
 echo "deployed: https://notonlypdf.com is serving $VERSION ($SHA)"
 ```
 
-Do not say "deployed" until both the stamp check and `check-live-routes.py` pass: the first says
-the artifact is the tagged commit's bytes, the second says the live origin is serving them. Either
-failing means the live site is **not** this tag, whatever the run's exit code was.
+Do not say "deployed" until both `check-live-release-sha.sh` and `check-live-routes.py` pass: the
+first says the live origin is serving this exact tag's build, the second says it is serving the
+whole verified artifact. Either failing means the live site is **not** this tag, whatever the run's
+exit code was.
 
 ### If publish refuses
 

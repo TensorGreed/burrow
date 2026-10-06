@@ -27,7 +27,7 @@ baseline() {
                       {"name": "web", "conclusion": "skipped"}]},
   "build_run": {"conclusion": "success", "head_sha": "$SHA", "event": "push",
                 "jobs": [{"name": "build the production payload", "conclusion": "success"}]},
-  "stamp_current": true
+  "release_sha_ok": true
 }
 JSON
 }
@@ -90,9 +90,9 @@ expect fail "a lightweight tag is refused" "annotated tag" \
   < <(mutate "d['tag_object_type']='commit'")
 
 # 4. an expired or missing artifact shows as a build run that cannot be confirmed, or a stamp
-#    that is not current -- the workflow turns 'artifact gone' into stamp_current:false.
-expect fail "a stamp that does not match the tag is refused" "build stamp is not current" \
-  < <(mutate "d['stamp_current']=False")
+#    does not match -- the workflow turns 'artifact gone' or 'wrong sha' into release_sha_ok:false.
+expect fail "a release-sha.txt that does not match the tag is refused" "release-sha.txt does not equal the tagged commit" \
+  < <(mutate "d['release_sha_ok']=False")
 expect fail "a missing build run is refused" "deploy build run is absent" \
   < <(mutate "del d['build_run']")
 
@@ -107,8 +107,8 @@ expect fail "a non-push ci event is refused" "not a branch push" \
 # 7. a non-v tag, and absent facts
 expect fail "a non-v tag is refused" "not a refs/tags/v* tag" \
   < <(mutate "d['ref']='refs/tags/release-1'")
-expect fail "a missing stamp fact is refused, not assumed true" "build stamp is not current" \
-  < <(mutate "del d['stamp_current']")
+expect fail "a missing release_sha fact is refused, not assumed true" "release-sha.txt does not equal the tagged commit" \
+  < <(mutate "del d['release_sha_ok']")
 
 if [ "$failed" -gt 0 ]; then
   echo "FAILED -- $failed case(s) failed, $passed passed"
