@@ -40,8 +40,30 @@ We will keep you updated, credit you in the advisory unless you prefer otherwise
 tell you before we publish. If we conclude a report is not a vulnerability we will
 explain why rather than close it silently.
 
-burrow is pre-alpha with no releases yet, so there is nothing deployed to patch. Reports
-against `main` are still welcome and will be fixed there.
+Reports against `main` are welcome and will be fixed there.
+
+## Verifying a release
+
+Each release's web payload is published as a tarball signed with [Sigstore cosign](https://docs.sigstore.dev/),
+keyless, through GitHub's OIDC provider — no key of ours to trust or lose. The signature and
+certificate travel together in a single `*.bundle` beside the tarball. Verify it with the pinned
+cosign version (see `COSIGN_VERSION` in `.github/workflows/deploy.yml`):
+
+```
+cosign verify-blob burrow-web-<tag>.tar.gz \
+  --bundle burrow-web-<tag>.tar.gz.bundle \
+  --certificate-identity-regexp '^https://github\.com/TensorGreed/burrow/\.github/workflows/deploy\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+`--certificate-identity-regexp` and `--certificate-oidc-issuer` are not optional: without them
+cosign confirms only that the bundled certificate signs the blob, not **who** holds it, which any
+signer can satisfy. The regexp binds the signature to this repository's `deploy.yml` on a `v*`
+tag. Each release's notes carry the exact, non-regexp command for that tag — that generated copy
+is authoritative; this one is the general form.
+
+> `v0.1.1` was deployed but never signed — a cosign-invocation defect, fixed in #266. The first
+> signed release is `v0.1.2`.
 
 ## In scope
 

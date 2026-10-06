@@ -68,7 +68,7 @@ mod = importlib.util.module_from_spec(spec)
 sys.modules["crn"] = mod
 spec.loader.exec_module(mod)
 
-rules = dict(mod.rules(archive))
+rules = dict(mod.rules(archive, tag))
 rules.update([mod.tag_rule(tag)])
 if rule not in rules:
     raise SystemExit(f"the tool lists {rule!r} but no rule of that name exists; the list and the "
