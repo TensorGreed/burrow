@@ -717,6 +717,30 @@ fn optional_content_refusal() -> Error {
     )
 }
 
+/// The one refusal for form nesting past the walk's depth ceiling, so the two guard sites in
+/// `follow_resources` and `absorb` cannot drift.
+///
+/// Overrunning the ceiling used to return `Ok(())`, which is a silent under-approximation: the
+/// optional-content check (ADR 0019 §2a row 6) never ran on the deeper forms, so a hidden layer
+/// nine forms down was carried into a part (eight is still caught by the check itself), and names
+/// used that deep were never collected, so a resource a deep form draws with could be pruned off.
+/// Both are refusals now (#253).
+///
+/// The `absorb` site is the load-bearing one — a form chain reaches the ceiling there, and the
+/// `absorb` guard at the top of every recursion backstops the `follow_resources` one on the paths
+/// that reach it (an annotation `/AP` or Type 3 `/CharProcs` chain starts at even depth and so
+/// trips `follow_resources` one call earlier; a measurement found `absorb` still catches those
+/// regardless). `follow_resources`'s guard is kept as that earlier, defence-in-depth refusal. The
+/// ceiling is for stack safety; raising it is a separate, measured change.
+fn nested_depth_refusal() -> Error {
+    Error::Unsupported(
+        "split [split-nested-form-too-deep]: this document nests form XObjects deeper than burrow \
+         follows, so which resources the deepest forms use -- and whether any reference optional \
+         content -- cannot be determined; they can be neither pruned nor carried whole"
+            .to_owned(),
+    )
+}
+
 /// Whether `object` carries a non-null `/OC`, looking through a stream to its dictionary.
 fn has_oc<G: ObjectGraph>(graph: &G, object: &G::Handle) -> Result<bool> {
     let dictionary = match graph.type_code(object)? {
@@ -973,7 +997,7 @@ fn follow_resources<G: ObjectGraph>(
     depth: usize,
 ) -> Result<()> {
     if depth > MAX_NESTED_STREAM_DEPTH {
-        return Ok(());
+        return Err(nested_depth_refusal());
     }
     for (category, follow) in [
         (&b"/XObject"[..], Follow::FormsOnly),
@@ -1006,7 +1030,7 @@ fn absorb<G: ObjectGraph>(
     depth: usize,
 ) -> Result<()> {
     if depth > MAX_NESTED_STREAM_DEPTH {
-        return Ok(());
+        return Err(nested_depth_refusal());
     }
     match graph.type_code(object)? {
         object_type::STREAM => {

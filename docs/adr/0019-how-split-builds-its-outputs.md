@@ -813,3 +813,32 @@ three it tracks; `layered`, already refused for optional content, now refuses fo
 **What it is not.** Not the post-write half of redaction's check, and not a crash fix: it catches
 inputs qpdf *warns* about at open, not ones it opens cleanly and recovers during the copy. Recovery
 for output stays off; the rest of #61 is open.
+
+## Amendment, 2026-10-06 — the depth ceiling refuses rather than returns Ok (#253)
+
+The nested-resource walk (`prune::follow_resources` and `prune::absorb`) stopped at a depth
+ceiling (`MAX_NESTED_STREAM_DEPTH`, for stack safety) by returning `Ok(())`. That is a silent
+under-approximation: past the ceiling the §2a row 6 optional-content refusal never ran, so a layer
+hidden nine forms down was carried into a part, and names used that deep were never collected, so a
+resource a deep form draws with could be pruned off. This is the gap ADR 0029's "one level is what
+is measured; deeper nesting is walked and not pinned" admitted in writing, and the residual #228's
+amendment named (#253).
+
+Both guard sites now refuse (`Error::Unsupported`, `[split-nested-form-too-deep]`, one shared
+`nested_depth_refusal()` so they cannot drift). The `absorb` guard is the load-bearing one: a form
+chain reaches the ceiling there, and because the guard sits at the top of every `absorb`
+recursion it also backstops the `follow_resources` guard on the paths that reach it (a review
+measured that an annotation `/AP` or Type 3 `/CharProcs` chain — which trips `follow_resources`
+one call earlier, at even depth — is still caught by `absorb` regardless). `follow_resources`'s
+guard is kept as that earlier, defence-in-depth refusal. The ceiling (counted in resource-walk
+steps, roughly two per form level, with a couple more for an `/AP` or `/CharProcs` chain — so
+about seven to eight form levels, not a fixed form count) is unchanged; raising it is a separate,
+measured change, because refusing at it is the fail-closed, reversible move.
+
+**Measured, bar registered first (≤1% of real documents newly refused).** Across #227's 100 real
+documents the maximum form-XObject nesting depth is **2 levels**; **0** real documents nest past the
+ceiling, so none is newly refused. The leaking depth was pinned by measurement, not arithmetic: a
+hidden layer is refused by the optional-content check through eight form levels and by the depth
+guard at nine, and restoring the old `Ok(())` makes the nine-level fixture split with the hidden
+text in the part. `split_no_leak.rs` carries the depth-9 leak fixture and a depth-8 near-miss that
+still splits (the ceiling is a ceiling, not a wall one level low).
