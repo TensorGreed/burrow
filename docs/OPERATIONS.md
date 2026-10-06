@@ -18,7 +18,20 @@ cut one.
 >   site went live and verified (live `release-sha.txt` == the tag), but the `sign` job failed:
 >   cosign v3's `sign-blob` had been called with flags cosign removed. Fixed by pinning cosign and
 >   the `--bundle` invocation in PR #266, rehearsed on every main push so it cannot recur.
-> - The first **complete** release — deployed *and* signed — is **`v0.1.2`**.
+> - **`v0.1.2`** (on `f497910`, deploy run `37515670056`) is the **first complete release** —
+>   deployed *and* signed. Verified both halves: live `release-sha.txt` == the tag and all live
+>   files byte-identical to the build; and the GitHub Release carries the tarball, its `.bundle`
+>   and the SBOM, with `cosign verify-blob --bundle` (identity `…deploy.yml@refs/tags/v0.1.2`,
+>   issuer `token.actions.githubusercontent.com`) passing against the downloaded assets.
+>
+> **cosign version history (the "did it drift?" question).** It did not drift — there was nothing
+> to drift from. **No release before `v0.1.2` was ever signed:** `v0.1.0` never deployed, and
+> `v0.1.1`'s `sign` job failed before producing anything. `v0.1.1` ran the cosign-installer's
+> **unpinned default, cosign v3.0.6**, whose `sign-blob` had dropped the v2 flags the invocation
+> still used — the invocation was simply never valid for the version that ran, not a drift between
+> versions. Since PR #266 cosign is **pinned to v3.0.6 by sha256** (`COSIGN_VERSION` /
+> `COSIGN_SHA256_AMD64` in `deploy.yml`), so `v0.1.2` — the first signature that exists — was made
+> by, and verifies against, that exact pinned version.
 
 ### Before you tag
 
