@@ -56,6 +56,11 @@ burrow-core.workspace = true
 # web-sys feature ban (RequestInit, WebSocket, XmlHttpRequest, EventSource) has nothing to
 # bite on here -- the engine fetch is in the worker's JavaScript, not in Rust.
 wasm-bindgen = { version = "0.2", default-features = false, features = ["std"] }
+# Already in this graph through burrow-core -> burrow-types, which uses it for `Password`; no
+# new crate. Here it wipes the copies of the input and the password that the binding itself
+# owns (#199), for the reason burrow-types gives: the crate forbids `unsafe`, so a volatile
+# write is not available.
+zeroize.workspace = true
 
 [lints]
 workspace = true

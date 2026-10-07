@@ -34,6 +34,23 @@ function qpdf() {
   return qpdfModule;
 }
 
+// #199: every copy of the document this bridge hands to Rust is zeroed once wasm-bindgen has
+// copied it in -- at the next hand-out, so at most one is live, and at the operation's end.
+/** @type {Uint8Array[]} */
+const handedOut = [];
+
+/** @param {Uint8Array} copy */
+function handOut(copy) {
+  __burrow_wipe_handed_out();
+  handedOut.push(copy);
+  return copy;
+}
+
+function __burrow_wipe_handed_out() {
+  for (const copy of handedOut) copy.fill(0);
+  handedOut.length = 0;
+}
+
 // --- qpdf -----------------------------------------------------------------------------
 
 self.__burrow_qpdf_copy_in = (bytes) => copyInto(qpdf(), bytes);
@@ -220,6 +237,7 @@ self.__burrow_qpdf_oh_replace_stream_data = (data, stream, bytes, filter, decode
     module._qpdf_oh_replace_stream_data(data, stream, buf, bytes.length, filter, decodeParms);
     return true;
   } finally {
+    module.HEAPU8.fill(0, buf, buf + bytes.length);
     // qpdf COPIES the buffer before returning -- `qpdf-c.h:942-944` says so in those words.
     // Without that, freeing here would be a use-after-free that looked like a working
     // redaction on every document small enough for the allocator to leave the bytes alone.
@@ -249,7 +267,7 @@ self.__burrow_qpdf_copy_c_string = (ptr) => {
   if (end >= heap.length) {
     throw new Error("unterminated string from the engine");
   }
-  return heap.slice(ptr, end);
+  return handOut(heap.slice(ptr, end));
 };
 
 /**
@@ -293,9 +311,12 @@ self.__burrow_qpdf_oh_page_content = (data, page) => {
       // trapped function LATCHES its error on the `qpdf_data`, and `WebGraph` drains that
       // after every call -- so Rust sees the real typed error before it ever looks at these
       // bytes. Returning what is here decides nothing.
-      return buf === 0 || len === 0 ? new Uint8Array(0) : module.HEAPU8.slice(buf, buf + len);
+      return buf === 0 || len === 0
+        ? new Uint8Array(0)
+        : handOut(module.HEAPU8.slice(buf, buf + len));
     } finally {
       if (buf !== 0) {
+        module.HEAPU8.fill(0, buf, buf + len);
         module.HEAPU32[bufp >>> 2] = buf;
         module._qpdf_oh_free_buffer(bufp);
       }
@@ -350,9 +371,12 @@ self.__burrow_qpdf_oh_stream_data = (data, oh) => {
       // A throw is a different thing and is not read here at all: it is latched on the
       // `qpdf_data` and `WebGraph` drains it after every call.
       if (filtered === 0) return null;
-      return buf === 0 || len === 0 ? new Uint8Array(0) : module.HEAPU8.slice(buf, buf + len);
+      return buf === 0 || len === 0
+        ? new Uint8Array(0)
+        : handOut(module.HEAPU8.slice(buf, buf + len));
     } finally {
       if (buf !== 0) {
+        module.HEAPU8.fill(0, buf, buf + len);
         module.HEAPU32[bufp >>> 2] = buf;
         module._qpdf_oh_free_buffer(bufp);
       }
@@ -384,7 +408,7 @@ self.__burrow_qpdf_get_buffer = (data) => u32(qpdf()._qpdf_get_buffer(data));
  * @param {number} len
  * @returns {Uint8Array}
  */
-self.__burrow_qpdf_copy_out = (ptr, len) => qpdf().HEAPU8.slice(ptr, ptr + len);
+self.__burrow_qpdf_copy_out = (ptr, len) => handOut(qpdf().HEAPU8.slice(ptr, ptr + len));
 
 self.__burrow_qpdflogger_create = () => u32(qpdf()._qpdflogger_create());
 

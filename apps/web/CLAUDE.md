@@ -342,8 +342,24 @@ with its bytes intact is the secret persisting after the operation that removed 
 document. **This half cannot be tested** -- the JS heap is not reliably inspectable from a test --
 so it is an invariant, and **the review of any change to the worker, the bridges or the binding
 checks it**. The wasm heaps are held by a canary test. Both are #199's discharge, a ship blocker
-for the redaction page (`docs/ROADMAP.md`); until it lands this rule is not yet true of the code,
-and saying so is the point of writing it here.
+for the redaction page (`docs/ROADMAP.md`).
+
+**Where the code stands (2026-10-07).** The JS half is in place for both qpdf workers, and
+`src/worker/input-wipe.test.ts` holds it, each line shown to fail under mutation:
+
+- each worker zeroes its input and password once the Rust call returns, including when the call
+  throws or the request is refused;
+- the bridge zeroes qpdf's decoded-content buffers before freeing them, and every copy it hands
+  to Rust (`__burrow_wipe_handed_out`);
+- the binding zeroes the copies it owns: redaction's input, merge's buffer and every password.
+
+**Still not true of the code:**
+
+- the Rust side's copies of decoded content, and of the input wherever an operation takes
+  ownership of it, are core's to wipe;
+- the canary test over both wasm heaps, and recycling the worker, are not written yet.
+
+Both are #199's remaining work. Until they land, this rule is not yet true of the code.
 
 ## Design
 

@@ -119,6 +119,8 @@ export interface Harness {
   qpdfInstances: object[];
   /** Every `__burrow_attach` call, in order. */
   attaches: Attachment[];
+  /** How many times the bridge's hand-outs were wiped (#199). */
+  wipes: () => number;
   /** Everything the worker posted to the page. */
   posted: Record<string, unknown>[];
   /** Let the pending `createQpdfModule()` settle. */
@@ -167,6 +169,7 @@ export function load(
   let blobReads = 0;
   const qpdfOptions: { printErr?: unknown; print?: unknown }[] = [];
   const budgetCalls: number[][] = [];
+  let wipes = 0;
 
   // A Reply as `drainReply` reads it. Field names match the wasm-bindgen getters.
   const reply = () => ({ ...replyShape(), pages: 1 });
@@ -223,6 +226,11 @@ export function load(
       return instance;
     },
     __burrow_attach: (qpdf: unknown) => attaches.push({ qpdf }),
+    // `bridge-qpdf.js`'s, which this concatenation leaves out as it leaves out the rest of the
+    // bridge. Counted, so a case can ask whether an operation wiped what the bridge handed out.
+    __burrow_wipe_handed_out: () => {
+      wipes += 1;
+    },
     // WHAT `render-prelude.js` WOULD HAVE PUT THERE. The render bundle's `init()` awaits
     // `pdfiumReady` and calls `_FPDF_InitLibrary` on what it resolves to; the prelude is not in
     // this concatenation for the same reason `prelude.js` is not — the stubs above model it.
@@ -263,6 +271,7 @@ export function load(
     qpdfOptions,
     qpdfInstances,
     attaches,
+    wipes: () => wipes,
     posted,
     releaseQpdf: gate.resolve,
     ensureReady: scope["ensureReady"] as () => Promise<unknown>,

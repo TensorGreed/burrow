@@ -83,6 +83,7 @@ version = "0.0.0"
 dependencies = [
  "burrow-core",
  "wasm-bindgen",
+ "zeroize",
 ]
 
 [[package]]

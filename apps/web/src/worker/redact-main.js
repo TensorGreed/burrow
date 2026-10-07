@@ -120,5 +120,12 @@ async function runOperation(request) {
   );
   const area = new wasm_bindgen.WebRegion(region.left, region.top, region.width, region.height);
 
-  return wasm_bindgen.redact(bytes, page, Uint32Array.from(covered), area, password, limits);
+  try {
+    return wasm_bindgen.redact(bytes, page, Uint32Array.from(covered), area, password, limits);
+  } finally {
+    // #199: the document being redacted is the secret. Zeroed once Rust has copied it in.
+    __burrow_wipe_handed_out();
+    bytes.fill(0);
+    password?.fill(0);
+  }
 }

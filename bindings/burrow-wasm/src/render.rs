@@ -76,7 +76,7 @@ pub(crate) fn pdfium() -> WebPdfium {
 pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
@@ -331,7 +331,7 @@ pub fn render_begin(
 ) -> RenderSession {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, Arc::clone(&clock));
     options.password = password.as_ref();
