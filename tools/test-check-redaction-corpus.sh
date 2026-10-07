@@ -372,7 +372,7 @@ copy="$here/.redaction-corpus-leaks.py"
 python3 - "$checker" "$copy" <<'PYEOF'
 import sys
 text = open(sys.argv[1]).read()
-line = '    "evade-field-with-no-widget",\n'
+line = '    "evade-image-in-form",\n'
 assert text.count(line) == 1, "the pinned leak set is not where this expects it"
 open(sys.argv[2], "w").write(text.replace(line, "", 1))
 PYEOF
@@ -381,7 +381,7 @@ if cmp -s "$checker" "$copy"; then
   fail=$((fail + 1))
 else
   expect_refusal "a change in how many owed placements leak is refused" \
-    "newly disclosing \['evade-field-with-no-widget'\]" \
+    "newly disclosing \['evade-image-in-form'\]" \
     env -u BURROW_AFTER_ONLY python3 "$copy" --after
 fi
 rm -f "$copy"

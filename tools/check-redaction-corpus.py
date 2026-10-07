@@ -512,7 +512,7 @@ BYTE_WITNESSES = {
 # Both are floors rather than equalities: a new fixture adds assertions and must not fail the
 # gate. Raise them when the corpus grows -- the run prints the current counts, so the number to
 # raise them to is in the output.
-PLACEMENT_FLOOR = 146
+PLACEMENT_FLOOR = 148
 MAX_SILENT_FIXTURES = 2
 
 
@@ -1073,19 +1073,19 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
 
 
 # The owed markers per issue, committed. Changing a marker changes this, on purpose.
-OWED_EXPECTED = {125: 12, 131: 1}
+# #125 dropped from 12 to 10 when the /AcroForm `[acroform-field]` refusal landed and its two
+# evade placements (`evade-widget-on-another-page`, `evade-field-with-no-widget`) stopped being owed.
+OWED_EXPECTED = {125: 10, 131: 1}
 # The fixtures whose owed placements still disclose their canary or carrier after a redaction
 # that returned Ok: ADR 0029 §5's four signals, not yet built (#125). A set, not a count.
-# `acroform-field` left it in #239: its widget, over the region, is its own field, and
-# `/AcroForm /Fields` still names it, so the redaction is refused `[annotation-dependent-kept]`.
+# `acroform-field` and the two `/AcroForm` evades left it in #125: all three now refuse by
+# `[acroform-field]` (a form field anywhere in the document), so none redacts Ok over a canary.
 # `evade-inline-image` left it in #228: its inline image is filtered, which redaction now refuses.
 OWED_LEAKS_EXPECTED = {
-    "evade-field-with-no-widget",
     "evade-image-in-form",
     "evade-paths-in-form",
     "evade-paths-in-type3-glyph",
     "evade-struct-without-structparents",
-    "evade-widget-on-another-page",
     "image-pixels",
     "producer-ocr-scan",
     "producer-writer",

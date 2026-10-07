@@ -73,9 +73,9 @@ const WRITER = "tests/redaction/fixtures/producer-writer.pdf";
  */
 const BUILDERS: Record<string, [string, string]> = {
   "09-actualtext.pdf": ["make-redaction-fixtures.py", "m.ch09_actualtext"],
-  "evade-widget-on-another-page.pdf": [
+  "nearmiss-oc-on-another-page.pdf": [
     "make-evasion-fixtures.py",
-    'm.BUILDERS["evade-widget-on-another-page"]',
+    'm.BUILDERS["nearmiss-oc-on-another-page"]',
   ],
 };
 
@@ -248,8 +248,10 @@ function statedCounts(report: string): { retained: number; dropped: number } {
 }
 
 for (const [name, label, covered, expectRetained, expectDropped] of [
-  // One font kept because page 2 still uses it: ADR 0029 §7's disclosure.
-  ["evade-widget-on-another-page.pdf", "whole", "0", 1, 0],
+  // One font kept because page 2 still uses it: ADR 0029 §7's disclosure. (Was
+  // evade-widget-on-another-page until #125 made it refuse [acroform-field]; this twin
+  // is a near-miss that still redacts, two pages sharing /Helv.)
+  ["nearmiss-oc-on-another-page.pdf", "whole", "0", 1, 0],
   // One `/ActualText` whose carried text went with the redaction.
   ["09-actualtext.pdf", "whole", "0", 0, 1],
 ] as const) {

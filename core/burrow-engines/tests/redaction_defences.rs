@@ -274,6 +274,85 @@ fn page_with_content(content: &str) -> Vec<u8> {
     pdf.build(catalog)
 }
 
+/// A PDF whose trailer `/Root` is a DIRECT (inline) catalogue dictionary, with correct classic
+/// cross-reference offsets so qpdf reads it without reconstructing (a reconstruction would refuse
+/// as `[engine-repaired-input]`, not for the form). `acroform` is the catalogue's `/AcroForm`
+/// value — an inline `<< … >>` or an indirect `N 0 R` — and `extra` is an optional trailing object
+/// (the indirect `/AcroForm`, object 4). qpdf accepts a direct `/Root` though ISO 32000-1 says it
+/// is an indirect reference; the catalogue then has no object number and is in no reference set, so
+/// only resolving `/Root` through the trailer catches its `/AcroForm`.
+fn direct_root_pdf(acroform: &[u8], extra: Option<&[u8]>) -> Vec<u8> {
+    let content: &[u8] = b"BT /F0 20 Tf 40 100 Td (PAGE-TEXT) Tj ET\n";
+    let mut obj3 = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    obj3.extend_from_slice(content);
+    obj3.extend_from_slice(b"endstream");
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Pages /Count 1 /Kids [2 0 R] >>".to_vec(),
+        b"<< /Type /Page /Parent 1 0 R /MediaBox [0 0 400 200] /Resources << >> /Contents 3 0 R >>"
+            .to_vec(),
+        obj3,
+    ];
+    if let Some(extra) = extra {
+        objects.push(extra.to_vec());
+    }
+    let mut out = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mut offsets = vec![0usize; objects.len() + 1];
+    for (index, body) in objects.iter().enumerate() {
+        let num = index + 1;
+        offsets[num] = out.len();
+        out.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let size = objects.len() + 1;
+    let xref_at = out.len();
+    out.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.iter().take(size).skip(1) {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(b"trailer\n<< /Size ");
+    out.extend_from_slice(size.to_string().as_bytes());
+    out.extend_from_slice(b" /Root << /Type /Catalog /Pages 1 0 R /AcroForm ");
+    out.extend_from_slice(acroform);
+    out.extend_from_slice(b" >> >>\n");
+    out.extend_from_slice(format!("startxref\n{xref_at}\n%%EOF\n").as_bytes());
+    out
+}
+
+/// A direct (inline) `/Root` catalogue carrying a form is refused, both when its `/AcroForm` is
+/// inline and when it is an indirect object. The second #125 security re-review found these leak a
+/// field `/V` through a region redaction under a scan that reads `/AcroForm` off *referenced*
+/// objects — the direct catalogue is in no reference set. The fix resolves `/Root` through the
+/// trailer; this pins it. Not corpus fixtures: a direct `/Root` is PDFium-marginal and
+/// `redaction_corpus`'s oracle opens every fixture with PDFium.
+#[test]
+fn a_direct_root_catalogue_carrying_a_form_is_refused() {
+    // Field values as UTF-16BE hex, so a scan of the output would find the canary if it survived.
+    let inline_field: &[u8] =
+        b"<< /Fields [ << /FT /Tx /V <FEFF005300450043005200450054> >> ] /DA (/Helv 0 Tf 0 g) >>";
+    let fully_inline = direct_root_pdf(
+        b"<< /Fields [ << /FT /Tx /V <FEFF005300450043005200450054> >> ] /DA (/Helv 0 Tf 0 g) >>",
+        None,
+    );
+    assert!(
+        refusal(&fully_inline, "a direct /Root with an inline /AcroForm")
+            .contains("[acroform-field]"),
+        "a direct /Root catalogue carrying an inline /AcroForm must refuse [acroform-field]"
+    );
+    // Direct /Root whose /AcroForm is an indirect object (4 0 R) with an inline field: no
+    // referenced object carries /AcroForm or a top-level /FT, so only /Root resolution catches it.
+    let indirect_acroform = direct_root_pdf(b"4 0 R", Some(inline_field));
+    assert!(
+        refusal(
+            &indirect_acroform,
+            "a direct /Root with an indirect /AcroForm"
+        )
+        .contains("[acroform-field]"),
+        "a direct /Root catalogue whose /AcroForm is an indirect object must refuse [acroform-field]"
+    );
+}
+
 #[test]
 fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret() {
     // #228's SECOND SECURITY REVIEW: five shapes where burrow and PDFium disagree about where an
@@ -2474,7 +2553,7 @@ fn a_carrier_never_reaches_the_output_however_deeply_its_glyphs_are_nested() {
 /// look at the carrier and decline -- and too loose for this one. A named list carrying text
 /// refused as *unresolved* would pass it, and that is the pre-#166 outcome: the resolver could be
 /// deleted and the carrier test would stay green. So the rule is pinned per fixture here.
-const RESOLVED_OUTCOMES: [(&str, Option<&str>); 83] = [
+const RESOLVED_OUTCOMES: [(&str, Option<&str>); 88] = [
     (
         "evade-actualtext-named-through-properties.pdf",
         Some("marked-content-named-properties-carry-text"),
@@ -2733,10 +2812,19 @@ const RESOLVED_OUTCOMES: [(&str, Option<&str>); 83] = [
         Some("annotation-dependent-kept"),
     ),
     ("nearmiss-annotation-popup-of-a-kept-parent.pdf", None),
+    // /AcroForm (#125): a form field anywhere, or an /AcroForm on the catalogue (resolved through
+    // the trailer's /Root). The direct-/Root catalogue cases are PDFium-marginal, so they are a
+    // qpdf-only test below (`a_direct_root_catalogue_carrying_a_form_is_refused`), not corpus
+    // fixtures the oracle would open.
+    ("evade-widget-on-another-page.pdf", Some("acroform-field")),
+    ("evade-field-with-no-widget.pdf", Some("acroform-field")),
+    ("evade-acroform-inline-field.pdf", Some("acroform-field")),
+    ("evade-field-without-acroform.pdf", Some("acroform-field")),
+    ("nearmiss-annotation-not-a-widget.pdf", None),
 ];
 
 /// The `probes_refusal` groups whose fixtures [`RESOLVED_OUTCOMES`] must cover, every one.
-const RESOLVED_GROUPS: [&str; 12] = [
+const RESOLVED_GROUPS: [&str; 13] = [
     "named /Properties",
     "optional content",
     "not a dictionary",
@@ -2749,6 +2837,7 @@ const RESOLVED_GROUPS: [&str; 12] = [
     "reference unreadable",
     "annotation appearance",
     "annotation dependents",
+    "/AcroForm",
 ];
 
 /// The manifest, as `tools/check-redaction-corpus.sh` writes it beside the generated corpus.

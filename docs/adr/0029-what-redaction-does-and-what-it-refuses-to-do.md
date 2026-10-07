@@ -124,7 +124,7 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | **optional content** referenced by a kept page | **refuse** |
 | a region intersecting an **image** | **refuse** — see §5, the signal is owed |
 | a region intersecting **vector path content** | **refuse** — see §5, the signal is owed |
-| a document with an **`/AcroForm`** | **refuse** — see §5, the signal is owed |
+| a document with an **`/AcroForm`** | **refuse**, `[acroform-field]` — landed #125. Two signals: the catalogue's **`/AcroForm`**, resolved through the trailer's `/Root` (which may be a *direct* dictionary — qpdf accepts one, and then the catalogue is in no reference set — so `/Root` is resolved, not scanned for), which catches the form however its fields are laid out (including a field written *inline* inside `/AcroForm /Fields`); and a top-level **`/FT`** on any referenced object (a field object with no catalogue `/AcroForm`). A **deliberate over-refusal**: it refuses every document with a form, not only one whose field reaches the region; the narrowing is [#274] |
 | a document with a **`/StructTreeRoot`** reaching the region | **refuse** — see §5, the signal is owed |
 | catalogue **`/Metadata`** and the trailer's **`/Info`** | **disclose** |
 | **`/EmbeddedFiles`** attachments | **disclose** |
@@ -195,7 +195,7 @@ owed.**
 | optional content | a page's resources reference an OCG, **followed transitively over the resource graph** | **MEASURED, and to this section's bar.** `prune/mod.rs` calls `refuse_optional_content_in` from inside `follow_resources`, so it descends nested forms and Type 3 `/CharProcs`; ADR 0019's 2026-09-14 amendment records the defect where it read the page's `/Resources` only, and the fix. The evade fixture exists and passes: `oc-nested.pdf`, an OCG one level down inside a form's own resources, and `split_no_leak.rs::a_layer_one_level_down_is_refused_like_one_on_the_page`. **One level is what is measured**; deeper nesting is walked by the code and not pinned by a fixture |
 | an image in the region | the page's own content stream | **OWED.** A `Do` of an image inside a **Form XObject**, an **inline `BI`…`ID`…`EI`** image, and an image reached as a **tiling pattern** or a **shading** fill are all past a page-content-stream signal. Spike 0006's channel 20 draws its image directly on the page, so nothing here has been measured against an evasion |
 | vector paths in the region | the page's own content stream | **OWED.** Same shape: paths inside a **Form XObject**, and inside a **Type 3 glyph procedure**, are past it. Channel 18 draws its paths directly on the page |
-| `/AcroForm` | proposed: an `/Annots` entry with `/Subtype /Widget` | **OWED.** A field whose widget sits on a *different* page walks straight through |
+| `/AcroForm` | the catalogue's `/AcroForm` (via the trailer's `/Root`), or a top-level `/FT` on any referenced object | **LANDED #125, `[acroform-field]`.** The proposed page-side proxy — an `/Annots` entry with `/Subtype /Widget` — was abandoned: a field whose widget sits on a *different* page, a field with no widget, and a widget whose `/FT` is inherited from a `/Parent` all walk straight through it (`evade-widget-on-another-page`, `evade-field-with-no-widget`). Two security-review rounds then corrected the landed signal. The first scanned only a top-level `/FT` and missed a field written *inline* inside `/AcroForm /Fields`, whose `/FT` is a key of the array element, not a top-level key of any referenced object (`PdfObject::key` reads one top-level key, it does not descend) — `evade-acroform-inline-field`. The second found that reading `/AcroForm` as a top-level key of a *referenced* object missed a **direct (inline) `/Root`** catalogue, which qpdf accepts and which has no object number and so is in no reference set — the `/V` survived a region redaction (`evade-acroform-direct-root`, `evade-acroform-direct-root-indirect-acroform`). The landed signal is therefore: `/AcroForm` read off the catalogue **resolved through `/Root`** (direct or indirect), plus a top-level `/FT` on any referenced object for a field object with no catalogue `/AcroForm` (`evade-field-without-acroform`). A **deliberate over-refusal** — it refuses every document with a form; narrowing to fields reaching the region is [#274] |
 | `/StructTreeRoot` | proposed: the page's `/StructParents` | **OWED.** A `/StructElem` reaching this page's MCIDs without the page carrying `/StructParents` walks straight through |
 
 **The four are owed in two different ways, and the remedies differ.**
@@ -1179,6 +1179,7 @@ the seven cases then in the script:
 [#242]: https://github.com/TensorGreed/burrow/issues/242
 [#239]: https://github.com/TensorGreed/burrow/issues/239
 [#240]: https://github.com/TensorGreed/burrow/issues/240
+[#274]: https://github.com/TensorGreed/burrow/issues/274
 [#227]: https://github.com/TensorGreed/burrow/issues/227
 [#152]: https://github.com/TensorGreed/burrow/issues/152
 

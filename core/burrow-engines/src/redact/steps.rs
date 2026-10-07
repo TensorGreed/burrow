@@ -383,6 +383,94 @@ impl<D: PdfDocument> PageRedaction<D> {
         Ok(())
     }
 
+    /// Refuse the document if it carries an interactive form — `/AcroForm` on the catalogue, or a
+    /// form field (`/FT`) on any referenced object. ADR 0029 §3 refuses a document with an
+    /// `/AcroForm`: the carrier sits on the catalogue, out of the page-scoped reach redaction has,
+    /// and a field's value `/V` lives in a field object off the page, so a page-side proxy (a
+    /// `/Widget` on this page's `/Annots`) misses a field whose widget is on another page, a field
+    /// with no widget, and a widget whose `/FT` is inherited from a `/Parent`.
+    ///
+    /// Two signals, because neither alone is faithful to §3:
+    ///
+    /// - The catalogue's `/AcroForm`, resolved **through the trailer's `/Root`** rather than by
+    ///   scanning referenced objects. `/Root` may be a *direct* dictionary — qpdf accepts one, and
+    ///   then the catalogue has no object number and is absent from the reference set, so a scan of
+    ///   referenced objects would never see its `/AcroForm` (a security review found exactly this
+    ///   leak: the field `/V` survived a region redaction). `PdfObject::key` resolves a direct or an
+    ///   indirect `/Root` alike, so reading `/AcroForm` off the resolved catalogue catches the form
+    ///   **however its fields are laid out**, including a field written *inline* inside
+    ///   `/AcroForm /Fields` (whose `/FT` is a key of the array element, invisible to a `/FT` scan —
+    ///   `key` reads one top-level key, it does not descend). `/AcroForm` is valid only on the
+    ///   catalogue (ISO 32000-1 §12.7.2, Table 28), so this is the whole of that signal.
+    /// - A top-level `/FT` on any referenced object — a field object carrying `/FT` with no
+    ///   catalogue `/AcroForm` (`/FT` is a field-dictionary entry, §12.7.3.1, Table 220).
+    ///
+    /// An annotation that is not a field, under a catalogue with no `/AcroForm` (the near-miss
+    /// twin), carries neither and is not refused.
+    ///
+    /// It is a **deliberate over-refusal**: it refuses every document with a form, not only those
+    /// whose field reaches the redacted region (#125, owner 2026-10-07). The narrower "fields
+    /// reaching the region" refusal is filed as a post-launch issue (#274).
+    ///
+    /// # Errors
+    ///
+    /// `[acroform-field]`, the deadline, and whatever reading an object raises. An `Internal`
+    /// if the reference pass did not run first, which `run` always arranges.
+    pub(crate) fn refuse_form_fields(&self) -> Result<()> {
+        const FIELD_TYPE: Name = Name::literal(b"/FT\0");
+        const ACRO_FORM: Name = Name::literal(b"/AcroForm\0");
+        const ROOT: Name = Name::literal(b"/Root\0");
+        let refusal = || {
+            Error::Unsupported(
+                "pdf redaction [acroform-field]: the document carries an interactive form \
+                 (/AcroForm on the catalogue, or an /FT field), whose field values the /AcroForm \
+                 names from the catalogue -- out of the page-scoped reach redaction has, so the \
+                 whole document is refused"
+                    .to_owned(),
+            )
+        };
+        // THE CATALOGUE'S /AcroForm, resolved through the trailer's /Root. `key` follows a direct
+        // or an indirect /Root, so a direct catalogue -- which has no object number and so is in no
+        // reference set -- is still read.
+        let trailer = self.document.trailer()?;
+        let catalog = trailer.key(&ROOT);
+        let has_acro_form = catalog.key(&ACRO_FORM).type_code() != object_type::NULL;
+        catalog.drained()?;
+        trailer.drained()?;
+        if has_acro_form {
+            return Err(refusal());
+        }
+        // A FIELD OBJECT carrying /FT, for a form with no catalogue /AcroForm. The catalogue signal
+        // above cannot see a bare field object, so the two together are the faithful refusal.
+        // DEFENCE IN DEPTH, unwitnessed: `run` always calls the reference pass before this, so
+        // this cannot be `None`; refusing is the answer if a later order ever makes it so.
+        let Some(referenced) = &self.referenced else {
+            return Err(Error::Internal(
+                "pdf redaction: the reference pass did not run before the form-field scan"
+                    .to_owned(),
+            ));
+        };
+        for &(number, generation) in &referenced.objects {
+            self.deadline.checkpoint(self.clock.as_ref())?;
+            let object = self.document.object(number, generation)?;
+            // A field is a dictionary; `/FT` on a stream would be irregular, but a stream dict is
+            // read the same way and fails closed if one ever carries it.
+            let is_field = match object.type_code() {
+                object_type::DICTIONARY => object.key(&FIELD_TYPE).type_code() != object_type::NULL,
+                object_type::STREAM => {
+                    object.stream_dict().key(&FIELD_TYPE).type_code() != object_type::NULL
+                }
+                _ => false,
+            };
+            // Surface any engine error the reads left on the document before acting on them.
+            object.drained()?;
+            if is_field {
+                return Err(refusal());
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse the page if its `/MediaBox` comes from the page tree and `renderer_size` does not
     /// vouch for it; see `frame::check_inherited_media_box` (#224).
     ///
