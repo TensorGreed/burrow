@@ -160,7 +160,7 @@ tests/conformance/fixtures/render-one-quadrant.pdf	reorder	ok reversed: input ro
 tests/conformance/fixtures/render-one-quadrant.pdf	split	ok cuts []: parts 1 page(s)
 tests/conformance/fixtures/render-one-quadrant.pdf	compress	ok not smaller
 tests/conformance/fixtures/render-one-quadrant.pdf	merge	ok two copies: output 2 page(s)
-tests/conformance/fixtures/render-one-quadrant.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 0 of 0, carried text dropped 0, ink left on the page some; output 1 page(s)
+tests/conformance/fixtures/render-one-quadrant.pdf	redact	refused unsupported: pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared
 tests/conformance/fixtures/render-one-quadrant.pdf	render	ok [1] into 200x200: page 1 at 100x200
 tests/conformance/fixtures/trailer-removed.pdf	open	refused malformed input: pdfium could not open the document
 tests/conformance/fixtures/trailer-removed.pdf	check	refused strict refused malformed input: qpdf: the document is damaged; recover ok 3 page(s)
@@ -232,7 +232,7 @@ tests/redaction/fixtures/producer-ocr-scan.pdf	reorder	ok reversed: input rotati
 tests/redaction/fixtures/producer-ocr-scan.pdf	split	ok cuts []: parts 1 page(s)
 tests/redaction/fixtures/producer-ocr-scan.pdf	compress	ok smaller: output 1 page(s)
 tests/redaction/fixtures/producer-ocr-scan.pdf	merge	ok two copies: output 2 page(s)
-tests/redaction/fixtures/producer-ocr-scan.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 1 of 1, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-ocr-scan.pdf	redact	refused unsupported: pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared
 tests/redaction/fixtures/producer-ocr-scan.pdf	render	ok [1] into 200x200: page 1 at 155x200
 tests/redaction/fixtures/producer-vertical-writing.pdf	open	ok 1 page(s)
 tests/redaction/fixtures/producer-vertical-writing.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)

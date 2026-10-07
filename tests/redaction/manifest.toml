@@ -201,7 +201,6 @@ Measured in the qdf expansion:
   witness_before = "image-covers-page"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
   [[fixture.placement]]
   channel = "the invisible OCR text layer (3 Tr)"
@@ -211,7 +210,6 @@ Measured in the qdf expansion:
   witness_before = "pdfium-text"
   witness_observes = "canary"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
   [fixture.decision]
   # ---------------------------------------------------------------------------------
@@ -591,7 +589,6 @@ pages = 1
   witness_before = "vector-fills"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "Indistinguishable from a chart, a logo or a signature. Witnessed structurally: there is no text to witness."
 
 [[fixture]]
@@ -604,12 +601,12 @@ pages = 1
   [[fixture.placement]]
   channel = "drawn, then a black rectangle drawn over it"
   canary = "BURROW-SECRET-19"
-  verdict = "handle"
+  verdict = "refuse"
   adr = "§1, §3"
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
-  expect_after = "gone"
-  notes = "The anti-pattern. qpdf --qdf and PDFium both read the text straight out from under the bar."
+  expect_after = "refused"
+  notes = "The anti-pattern: qpdf --qdf and PDFium both read the text straight out from under the bar. Refused by [vector-in-region] since #125 (slice 2): the black rectangle is a filled path over the region, unremovable vector ink §3 refuses -- and indistinguishable from a secret drawn as a filled shape (vector-outlines). Before #125 this redacted Ok, removing the text under the box; now the pre-existing cover rectangle itself is what refuses. A deliberate, owner-noted consequence of the vector rule."
 
 [[fixture]]
 name = "image-pixels"
@@ -626,7 +623,6 @@ pages = 1
   witness_before = "image-drawn"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "Refused because burrow cannot write an edited image back — ADR 0029's third condition."
 
 [[fixture]]
@@ -720,7 +716,6 @@ pages = 1
   witness_before = "image-drawn"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
   notes = "A `Do` inside a Form XObject. The page's content stream says only `/X1 Do`."
 
 [[fixture]]
@@ -806,7 +801,6 @@ pages = 1
   witness_before = "vector-fills"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
 [[fixture]]
 name = "evade-paths-in-type3-glyph"
