@@ -17,7 +17,7 @@ is short on purpose: a blocker is not "important", it is "we do not ship with th
 and **one final spec-review round finds no new leak**. After that bar is met, a later finding is a
 **post-launch issue, not a ship blocker — unless it is a critical leak** (an operation returning a
 result that looks redacted over a secret still present), which returns it to this table. The focus
-until launch is redaction only: #125, #137, #136.
+until launch is redaction only: #125, #199, #136.
 
 | | what | why it blocks |
 |---|---|---|
