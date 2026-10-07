@@ -584,6 +584,68 @@ def evade_field_with_no_widget() -> bytes:
     )
 
 
+def evade_acroform_inline_field() -> bytes:
+    """A form field written INLINE inside /AcroForm /Fields, not as its own object.
+
+    The field's `/FT` and `/V` are keys of the direct dictionary sitting in the array, so they are
+    keys of the `/AcroForm` object, not top-level keys of any referenced object a one-key `/FT`
+    scan reads (`PdfObject::key` does not descend). The security review of the first #125 /AcroForm
+    slice found this: the `/FT`-only scan returned Ok and the `/V` secret survived. The catalogue's
+    `/AcroForm` key -- always on an indirect object -- is what catches it. MUST be refused.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    acroform = pdf.add(
+        b"<< /Fields [ << /FT /Tx /T " + literal("inline") +
+        b" /V " + utf16_hex(secret("FORM-INLINE")) + b" >> ] /DA (/Helv 0 Tf 0 g) >>"
+    )
+    content = (
+        b"BT /Helv 20 Tf " + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal("PAGE-TEXT-ONLY") + b" Tj ET\n" + keep_line_ops()
+    )
+    return simple_page(
+        pdf,
+        content,
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        catalog_extra=b" /AcroForm " + str(acroform).encode() + b" 0 R",
+    )
+
+
+# The two direct-/Root evasions the second security re-review found are NOT corpus fixtures: a
+# direct (inline) /Root catalogue is PDFium-marginal, and `redaction_corpus`'s oracle opens every
+# fixture with PDFium. They live as a qpdf-only Rust test instead
+# (`redaction_defences::a_direct_root_catalogue_carrying_a_form_is_refused`), which refuses through
+# qpdf and needs no PDFium oracle. `evade-field-without-acroform` below is PDFium-openable and stays.
+
+
+def evade_field_without_acroform() -> bytes:
+    """A terminal field merged with its widget (/FT on the annotation), on the page, under a
+    catalogue with NO /AcroForm.
+
+    There is no /AcroForm to resolve, so the catalogue signal cannot see it; the /FT scan over
+    referenced objects is the only signal that catches it. The widget /Rect sits OUTSIDE the
+    redaction region, so the annotation is kept rather than removed -- without the /FT scan the /V
+    would survive. MUST be refused. This is the committed guard for the /FT half of the refusal.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    widget = pdf.add(
+        b"<< /Type /Annot /Subtype /Widget /FT /Tx /T " + literal("merged") +
+        b" /V " + utf16_hex(secret("FORM-NOACRO")) +
+        b" /Rect [40 150 240 174] /F 4 >>"
+    )
+    content = (
+        b"BT /Helv 20 Tf " + f"{SECRET_X} {SECRET_Y} Td ".encode()
+        + literal("PAGE-TEXT-ONLY") + b" Tj ET\n" + keep_line_ops()
+    )
+    return simple_page(
+        pdf,
+        content,
+        b"/Font << /Helv " + str(helv).encode() + b" 0 R >>",
+        page_extra=b" /Annots [" + str(widget).encode() + b" 0 R]",
+    )
+
+
 def nearmiss_annotation_not_a_widget() -> bytes:
     """A plain text annotation and no /AcroForm at all. MUST NOT be refused.
 
@@ -2590,6 +2652,8 @@ CASES: list[tuple[str, str]] = [
     ("nearmiss-paths-outside-region", "vector paths"),
     ("evade-widget-on-another-page", "/AcroForm"),
     ("evade-field-with-no-widget", "/AcroForm"),
+    ("evade-acroform-inline-field", "/AcroForm"),
+    ("evade-field-without-acroform", "/AcroForm"),
     ("nearmiss-annotation-not-a-widget", "/AcroForm"),
     ("evade-struct-without-structparents", "/StructTreeRoot"),
     ("nearmiss-structparents-but-nothing-in-region", "/StructTreeRoot"),
@@ -2704,6 +2768,8 @@ BUILDERS = {
     "nearmiss-paths-outside-region": nearmiss_paths_outside_region,
     "evade-widget-on-another-page": evade_widget_on_another_page,
     "evade-field-with-no-widget": evade_field_with_no_widget,
+    "evade-acroform-inline-field": evade_acroform_inline_field,
+    "evade-field-without-acroform": evade_field_without_acroform,
     "nearmiss-annotation-not-a-widget": nearmiss_annotation_not_a_widget,
     "evade-struct-without-structparents": evade_struct_without_structparents,
     "nearmiss-structparents-but-nothing-in-region": nearmiss_structparents_but_nothing_in_region,

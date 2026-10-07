@@ -506,7 +506,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
-  notes = "The field /V is on the catalogue and unreachable. Refused since #239 by [annotation-dependent-kept]: this widget is its own field, over the region, and /AcroForm /Fields still names it. #125 still owes the refusal for a field whose widget is not over the region."
+  notes = "The field /V is on the catalogue and unreachable. Refused by [acroform-field] since #125: the /FT scan refuses any document with a form field. (Before #125 this refused by [annotation-dependent-kept] since #239, because the widget is its own field over the region and /AcroForm /Fields names it; [acroform-field] now fires first and covers the field whose widget is not over the region too.)"
 
 [[fixture]]
 name = "optional-content"
@@ -857,8 +857,7 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
-  notes = "ADR 0029 §5 names this bypass in those words: the widget is on page 2."
+  notes = "ADR 0029 §5 names this bypass in those words: the widget is on page 2. Refused by [acroform-field] since #125: the /FT scan sees the field wherever its widget sits."
 
 [[fixture]]
 name = "evade-field-with-no-widget"
@@ -875,8 +874,46 @@ pages = 1
   witness_before = "raw-utf16-hex"
   witness_observes = "canary"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
-  notes = "No `/Annots` entry on any page names the field."
+  notes = "No `/Annots` entry on any page names the field. Refused by [acroform-field] since #125: a field needs no widget to carry /FT."
+
+[[fixture]]
+name = "evade-acroform-inline-field"
+file = "generated/evade-acroform-inline-field.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — evasion"
+  canary = "BURROW-EVADE-FORM-INLINE"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "The field is written INLINE inside /AcroForm /Fields, so its /FT is a key of the /AcroForm object, not a top-level key of any referenced object. The security review of the first #125 /AcroForm slice found the /FT-only scan returned Ok here and the /V survived; refused by [acroform-field] since the /AcroForm key on the catalogue was added."
+
+# The two direct-/Root evasions the second security re-review found are not corpus fixtures: a
+# direct (inline) /Root catalogue is PDFium-marginal and redaction_corpus's oracle opens every
+# fixture with PDFium. They are a qpdf-only Rust test instead
+# (redaction_defences::a_direct_root_catalogue_carrying_a_form_is_refused).
+
+[[fixture]]
+name = "evade-field-without-acroform"
+file = "generated/evade-field-without-acroform.pdf"
+kind = "hand-built"
+probes_refusal = "/AcroForm"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "/AcroForm — evasion"
+  canary = "BURROW-EVADE-FORM-NOACRO"
+  verdict = "refuse"
+  adr = "§5"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "A terminal field merged with its widget (/FT on the annotation) on the page, under a catalogue with NO /AcroForm. The /Rect is outside the region, so the annotation is kept and the /V would survive without a signal. The catalogue /AcroForm resolution sees nothing here; the top-level /FT scan is the sole guard, so this fixture is what fails if the /FT clause is removed."
 
 [[fixture]]
 name = "nearmiss-annotation-not-a-widget"

@@ -544,6 +544,10 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     // entry as "nothing there" would be reading what the viewer does not show. After the
     // constructor, so `[page-out-of-range]` still names an index past the end.
     steps.refuse_references_to_nothing(bytes)?;
+    // A FORM FIELD ANYWHERE IN THE DOCUMENT (/FT), refused as ADR 0029 §3's /AcroForm refusal
+    // (#125). Document-level, so it reuses the reference pass's object set and does not depend on
+    // the page or region; after `refuse_references_to_nothing`, which populates that set.
+    steps.refuse_form_fields()?;
     // A `/MediaBox` FROM THE PAGE TREE, vouched for by a second reading or refused (#224). After
     // the constructor, so `[page-out-of-range]` still names an index past the end; and the
     // renderer is opened only for the page that needs it.
