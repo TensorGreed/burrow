@@ -11,6 +11,16 @@ Dates are deliberately absent. The order is the commitment.
 Things that must be fixed before anything reaches a user, including a pre-alpha one. This list
 is short on purpose: a blocker is not "important", it is "we do not ship with this open".
 
+### When redaction ships (the exit rule)
+
+`/redact-pdf` ships when **both** hold: the blocker table above is empty for the redaction route,
+and **a final spec review finds nothing the read-back would not catch** — where "the read-back" is
+the independent PDFium read-back once its decision is made (draft: `adr/DRAFT-0022-amendment-independent-pdfium-readback.md`).
+After that bar is met, a finding is a **post-launch issue, not a ship blocker — unless it is one the
+read-back misses**, which returns it to this table. This is why the focus until launch is redaction
+only (the read-back decision, then #125, #137, #136); work that the read-back's coverage would
+settle — #206 among it — waits on that decision rather than preceding it.
+
 | | what | why it blocks |
 |---|---|---|
 | **#62** | Memory-unsafety in the pinned qpdf — two distinct defects | Blocks **M3/M4 only**. Natively it is a hard crash with no sandbox, and opening an attachment is the scenario. **Does not block the web**, and the earlier conditional block on `/merge-pdf` is withdrawn: measured on every path it is a fault natively and a hang on wasm that the watchdog converts into a typed error, with **no silent wrong output observed anywhere**. The argument that blocked merge — *not observed is not cannot happen* — applies to every operation, since the defect is reachable from `open`; used as a blocker criterion it blocks everything indefinitely. The answer to *cannot be excluded* is a detector, and that is ADR 0022. Accepted and recorded: a crafted file freezes an operation for the 60 s watchdog budget before failing. `docs/security/exposure-2026-09-14-qpdf-uaf.md`. |
