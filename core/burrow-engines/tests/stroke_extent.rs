@@ -589,9 +589,10 @@ fn a_stroked_glyphs_vertex_spikes_as_far_as_the_miter_limit_allows() {
 /// HOW FAR A RENDERING MODE LASTS, as PDFium measured it in #278's security review: `Tr` is
 /// graphics state, so it survives `ET`/`BT`, is carried into a form by `Do`, and an out-of-range
 /// mode after a stroking one leaves it stroking. And a rotated CTM carries the reach through its
-/// off-diagonal terms. Each of these drew 176 to 806 dark pixels in the region after an `Ok` under
-/// a mutation the rest of this file did not catch: the reach from the diagonal only, `Tr` reset on
-/// entering a form, `Tr` reset at `BT`, and only 1, 2, 5 and 6 treated as stroking.
+/// off-diagonal terms. Each drew 176 to 806 dark pixels in the region after an `Ok` under a
+/// mutation: the reach from the diagonal only, `Tr` reset on entering a form, and `Tr` reset at
+/// `BT` survived the rest of this file; only 1, 2, 5 and 6 treated as stroking was already caught
+/// by the `9 Tr` case, and `2 Tr -3 Tr` is here as the shape PDFium really strokes.
 #[test]
 fn a_stroking_mode_lasts_as_long_as_the_graphics_state_does() {
     let fonts = "<< /Font << /F1 5 0 R >> >>";
@@ -642,4 +643,53 @@ fn a_stroking_mode_lasts_as_long_as_the_graphics_state_does() {
             "{what}: the output still inks the region"
         );
     }
+}
+
+/// A ROUND PEN UNDER A STRETCHED CTM (#278's second security review). PDFium and poppler stroke
+/// text with the pen the CTM transforms, which under `10 0 0 1 cm` reaches 14 points up from this
+/// glyph and leaves the region clear; MuPDF strokes it with a round pen sized by the CTM's scale,
+/// which reached 31 points and inked 290 dark pixels in the region after an `Ok`. The suite's
+/// pixel oracle is PDFium, which sees nothing here, so this pins the box rather than the pixels:
+/// the glyph's reach is the matrix's greatest stretch on both axes, and the glyph is removed.
+#[test]
+fn a_stroked_glyphs_reach_is_its_ctms_greatest_stretch_on_both_axes() {
+    let pdf = page(
+        "q 10 0 0 1 150 215 cm 0 g 0 G 20 w 1 M BT /F1 20 Tf 2 Tr 0 0 Td (I) Tj ET Q",
+        "<< /Font << /F1 5 0 R >> >>",
+        &[],
+    );
+    assert_eq!(glyphs(&pdf), 1);
+    let (out, _) = redact(&pdf).expect("the stroked glyph is removed, not refused");
+    assert_eq!(
+        glyphs(&out),
+        0,
+        "a reach of the vertical stretch alone kept this glyph"
+    );
+}
+
+/// THE MITER LIMIT FALLS BACK THROUGH SCOPES AS THE WIDTH DOES (#278's second security review): a
+/// form with no `/ExtGState` drawing `/GS1 gs` takes the page's `/ML 50`. Every other scope test
+/// was about `/LW`, so a merge that dropped `/ML` from the enclosing scope survived the suite and
+/// left 76 dark pixels in the region after an `Ok`.
+#[test]
+fn a_miter_limit_falls_back_to_the_pages_as_a_width_does() {
+    let v = "0 G 10 w /GS1 gs 191.5 20 m 200 190 l 208.5 20 l S";
+    let fm0 = form("<< /Font << /F1 5 0 R >> >>", v);
+    reaches_and_refuses(
+        "page /GS1 /ML 50, through a form",
+        &page(
+            "/Fm0 Do",
+            "<< /XObject << /Fm0 6 0 R >> /ExtGState << /GS1 << /ML 50 >> >> >>",
+            &[&fm0],
+        ),
+        "vector-in-region",
+    );
+    redacts_clean(
+        "page /GS1 /ML 11, through a form",
+        &page(
+            "/Fm0 Do",
+            "<< /XObject << /Fm0 6 0 R >> /ExtGState << /GS1 << /ML 11 >> >> >>",
+            &[&fm0],
+        ),
+    );
 }

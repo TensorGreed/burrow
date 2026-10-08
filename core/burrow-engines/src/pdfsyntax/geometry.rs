@@ -2688,8 +2688,10 @@ pub trait Resources {
     /// Whether the ExtGState named `name` carries a `/Font` entry **in this scope** (#152).
     ///
     /// `gs` with such an ExtGState sets the text font without a `Tf`, which the walk refuses;
-    /// see the `gs` arm of the walk. `false` for a name this scope does not hold, or an ENTRY
-    /// that is not a dictionary -- PDFium ignores an entry written as a stream, measured. A
+    /// see the `gs` arm of the walk. `false` for a name this scope does not hold, or an entry that
+    /// is neither a dictionary nor a stream. **An entry written as a stream is read through its
+    /// dictionary** (#278's code review): PDFium and poppler ignore one, and MuPDF applies it --
+    /// measured, 1,782 dark pixels from a stream `/LW` -- so it is read as though it applied. A
     /// CATEGORY that is not a dictionary answers `false` too, which is safe only because the
     /// sharing walk refuses such a category before any walk runs.
     /// **Not the whole answer inside a form:** PDFium looks a name up in the PAGE's `/ExtGState`
@@ -2708,8 +2710,8 @@ pub trait Resources {
     /// `gs` sets both as `w` and `M` do, so a stroke whose width comes only from an ExtGState was
     /// boxed at the width before it: `Ok` over 3,168 dark pixels in the region, measured. Each
     /// parameter is [`LineParameter::UNSET`] where this scope does not set it -- no category, no
-    /// such name, an entry that is not a dictionary (PDFium ignores one written as a stream,
-    /// measured), or no such key -- and unreadable where the key holds anything but one number
+    /// such name, an entry that is neither a dictionary nor a stream (a stream is read through its
+    /// dictionary, as for the font), or no such key -- and unreadable where the key holds anything but one number
     /// both readers agree on. No default, for [`Self::ext_gstate_sets_font`]'s reason: an
     /// implementor that forgot it would box every such stroke at the old width.
     ///
@@ -3892,17 +3894,22 @@ fn show(
         };
         let displacement = (width * state.text.font_size + state.text.char_spacing + word) * scale;
 
-        // THE STROKE'S REACH, in page space (#278): a user-space distance `r` in any direction
-        // maps to at most `r(|a|+|c|)` horizontally and `r(|b|+|d|)` vertically under the CTM.
-        // The line width is in user space, so the CTM is the transform that applies, not the
-        // text matrix.
+        // THE STROKE'S REACH, in page space (#278), the SAME ON BOTH AXES. A pen transformed by the
+        // CTM reaches `r(|a|+|c|)` across and `r(|b|+|d|)` up -- PDFium's reading -- but MuPDF
+        // strokes text with a round pen sized by the CTM's scale, so under `10 0 0 1 cm` a glyph
+        // that pen bounds at 14 points above it inked 290 dark pixels in a region 31 points above
+        // (#278's second security review). The largest row or column sum bounds every round or
+        // transformed pen up to the matrix's greatest stretch, on both axes, so neither reading
+        // nor a row-for-column slip can under-cover. The cost is extra removal of stroked text
+        // under a stretched CTM only.
         let stroke_reach = if strokes_text(state.text_render_mode) {
             let reach = stroke_reach(state.line_width, state.miter_limit);
             let ctm = &state.ctm;
-            (
-                reach * (ctm.a.abs() + ctm.c.abs()),
-                reach * (ctm.b.abs() + ctm.d.abs()),
-            )
+            let stretch = (ctm.a.abs() + ctm.c.abs())
+                .max(ctm.b.abs() + ctm.d.abs())
+                .max(ctm.a.abs() + ctm.b.abs())
+                .max(ctm.c.abs() + ctm.d.abs());
+            (reach * stretch, reach * stretch)
         } else {
             (0.0, 0.0)
         };

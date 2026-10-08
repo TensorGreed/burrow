@@ -4895,17 +4895,25 @@ need no `gs` at all, also measured on `main`:
   string or array width thin. A negative width is boxed at its magnitude, which over-refuses the
   same way; that is pinned too.
 - **An ExtGState entry written as a stream is read as though it applied:** its dictionary's
-  `/LW`, `/ML` and `/Font` count. PDFium and poppler ignore such an entry. A reader that resolves
-  keys through a stream's dictionary would apply it. Which one draws is reader-dependent, so rule 1
-  applies (the code review's correction; the first version modelled PDFium and ignored it). It
-  over-refuses for PDFium, and that is pinned. #152's `/Font` refusal reaches a stream entry too,
-  for the same reason.
+  `/LW`, `/ML` and `/Font` count. The first version ignored it because PDFium does, which models
+  PDFium (the code review). The second security review measured what that cost: a stream `/GS0`
+  with `/LW 120` draws nothing in PDFium, poppler or Ghostscript, and **1,782 dark pixels in
+  MuPDF**. So ignoring it was a real leak against MuPDF, and this fixes it.
+  - It over-refuses for PDFium, and that is pinned.
+  - #152's `/Font` refusal reaches a stream entry too, for the same reason.
+  - Its cost on real documents is **0, measured**: none of the 1,725 ExtGState entries in #227's
+    99 readable documents is a stream.
 - **The miter multiplier is floored at the square root of two.** With that floor no cap or join
   shape reaches past the box, so `/LC`, `/LJ`, `J` and `j` need no modelling. The review went
   through every other ExtGState key: dashes only remove ink, and the transparency, transfer and
   halftone keys change colour, not extent.
-- **A stroking `Tr` grows the glyph's own box** by the stroke's reach, transformed by the CTM, so
-  the region removes a glyph whose outline reaches it.
+- **A stroking `Tr` grows the glyph's own box** by the stroke's reach, so the region removes a
+  glyph whose outline reaches it. **The reach is the same on both axes: the CTM's greatest row or
+  column sum.** PDFium and poppler stroke text with the pen the CTM transforms. MuPDF strokes it
+  with a round pen sized by the CTM's scale. Under `10 0 0 1 cm`, a glyph that PDFium's pen bounds
+  14 points short of the region inked 290 dark pixels inside it in MuPDF after an `Ok` (the second
+  security review). The isotropic bound covers both pens and any row-for-column slip; the cost is
+  extra removal of stroked text under a stretched CTM only.
   - It is **handled as text, not refused as ink:** refusing would have turned away every faux-bold
     run a producer draws with `2 Tr`.
   - Any mode that is not exactly 0, 3, 4 or 7 counts as stroking. PDFium ignores an out-of-range
@@ -4932,7 +4940,7 @@ pixels on the edge row, none of them dark. The same is true of `0 w`, and of a C
 stroke below a pixel. The walk has no device scale to do better. It is pinned in
 `a_zero_width_line_at_the_edge_is_the_recorded_residual`.
 
-**Shown to fail.** `core/burrow-engines/tests/stroke_extent.rs` holds 18 tests over the
+**Shown to fail.** `core/burrow-engines/tests/stroke_extent.rs` holds 20 tests over the
 reviews' fixtures:
 
 - every reaching shape draws into the region, measured by PDFium on the input, and refuses, or,
@@ -4951,20 +4959,36 @@ rebuilt, and each went red on its fixtures:
 7. `Tr` never stroking (1);
 8. the reach left out of the glyph box (1).
 
-The two post-code reviews found ten more mutations that survived that suite. Two were lifted from
-the code review, five from the security review, and three are new. Each now has a test, and each
-is red. The security review's five each drew 176 to 806 dark pixels in the region after an `Ok`:
+Round 1 of the post-code reviews found nine more mutations that the suite did not pin. Four of
+them survived it outright and each leaked 176 to 806 dark pixels in the region after an `Ok`,
+measured by the security review:
 
-- the reach multiplied by 1,000, which would remove visible text outside the region;
-- the reach from the wrong CTM column;
 - the reach from the diagonal only, which leaks text rotated a quarter turn;
-- the miter multiplier dropped from the text reach. A `V`'s vertex at `30 w` inks 72 dark pixels
-  under the default limit and none under `1 M`, so only the multiplier decides it;
 - `Tr` reset on entering a form;
 - `Tr` reset at `BT`;
-- only 1, 2, 5 and 6 treated as stroking;
-- `Tr` dropped from the arity table;
-- a stream entry ignored.
+- `Tr` dropped from the arity table.
+
+Five more were named by the code review or written alongside the fixes:
+
+- the reach multiplied by 1,000, which would remove visible text outside the region;
+- the vertical reach taken from the wrong CTM column;
+- the miter multiplier dropped from the text reach. A `V`'s vertex at `30 w` inks 72 dark pixels
+  under the default limit and none under `1 M`, so only the multiplier decides it;
+- a stream entry ignored;
+- only 1, 2, 5 and 6 treated as stroking. The round-1 security review measured this one leaking
+  806 dark pixels, but it had already been caught by the `9 Tr` case, so it was not a survivor.
+
+Each now has a test, and each is red.
+
+Round 2 of the security review, with 20 mutations against the result, found two more survivors:
+
+- **The `/ML` merge across scopes dropped.** Every scope test was about `/LW`. Under this mutation,
+  a form with no `/ExtGState`, falling back to the page's `/ML 50`, left 76 dark pixels in the
+  region after an `Ok`. It now has a fixture and a twin, and it is red.
+- **The CTM's rows and columns transposed in the reach.** It leaked nothing: every fixture's CTM
+  was diagonal or a quarter turn, where the two agree. It is moot now that the reach is the
+  greatest row or column sum on both axes, and the mutation back to a per-axis reach is red on the
+  MuPDF shape.
 
 **The census.** The bar was registered first: 1% of real documents newly refused.
 - **The run:** #227's 100 real documents, the first three pages of each, a 4×6 tile grid per
