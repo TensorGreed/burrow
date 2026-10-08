@@ -2279,9 +2279,9 @@ fn a_cid_widths_array_that_assigns_too_much_is_refused_by_name() {
             "<< /Type /FontDescriptor /FontName /X /Flags 4 /FontBBox [0 0 1000 1000] \
              /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>"
                 .to_owned(),
-            // DISTINCT RANGES, each 65,536 codes: the same range repeated is now refused first as
-            // `[widths-overlap]` (#125's fourth security review), which is not the ceiling this
-            // kills. Every bound stays under 2^24, so `[number-unreadable]` does not fire either.
+            // DISTINCT RANGES, each 65,536 codes: a range repeated with a different width is refused
+            // first as `[widths-overlap]` (#125's fourth security review), which is not the
+            // ceiling this kills. Every bound stays under 2^24, so `[number-unreadable]` does not fire either.
             format!(
                 "[{}]",
                 (0..200u32)

@@ -23,8 +23,8 @@
 //! WHAT EACH TEST MEASURES, said rather than implied. The tests built on `reaches_and_refuses` /
 //! `reaches_and_redacts` measure PDFium's ink in the region on the input and, for a twin, on the
 //! output; the clamp test also requires no character to survive, since a glyph moved off the
-//! region reads as clean ink. The CID-width tests and the width-range test built on `refuses_by`
-//! pin the outcome only. The `/FontMatrix` and `/FontBBox` twins refuse `[type-three-image-cut]`
+//! region reads as clean ink. The other CID-width tests, the width-range test and the
+//! `/FirstChar` tests built on `refuses_by` pin the outcome only. The `/FontMatrix` and `/FontBBox` twins refuse `[type-three-image-cut]`
 //! deliberately: the identity reading reaches the image, which is the rule those shapes hid from.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
@@ -674,9 +674,28 @@ fn a_cid_code_given_the_same_width_twice_redacts() {
 /// only for a font that is cut, and a shared font is not. Refused where every font is read.
 #[test]
 fn a_negative_first_char_refuses_even_on_a_shared_font() {
+    refuses_by(
+        "/FirstChar -1, shared",
+        &shared_font_document("-1"),
+        "first-char",
+    );
+    // THE TWIN: the same shared font from code 0 redacts.
+    redact(&shared_font_document("0")).expect("/FirstChar 0, shared, redacts");
+    // AND PAST 255 WITH `/Widths` DECLARED (#125's sixth code review): read to code 255 the array
+    // is empty, which would send the font to the bundled table. Refused instead.
+    refuses_by(
+        "/FirstChar 300, shared",
+        &shared_font_document("300"),
+        "first-char",
+    );
+}
+
+/// Two pages drawing one Helvetica with `/FirstChar first` and 95 widths of 600, so redacting page
+/// 0 does not cut the font.
+fn shared_font_document(first: &str) -> Vec<u8> {
     let widths = vec!["600"; 95].join(" ");
     let font = format!(
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar -1 /LastChar 93 \
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar {first} /LastChar 126 \
          /Widths [{widths}] >>"
     );
     // Two pages, both drawing with the font, so redacting page 0 does not cut it.
@@ -725,7 +744,7 @@ fn a_negative_first_char_refuses_even_on_a_shared_font() {
         )
         .as_bytes(),
     );
-    refuses_by("/FirstChar -1, shared", &out, "first-char");
+    out
 }
 
 /// #292, THE OWNER'S DECISION (2026-10-08): a simple font's width below 0 or at 65,535 and above,
@@ -760,5 +779,102 @@ fn a_simple_font_width_out_of_sixteen_bits_refuses() {
             content,
             &[&helvetica_with_space("1000")],
         ),
+    );
+    // THE BOUNDARIES ARE ACCEPTED: 0 and 65,534 are inside, so a mutation making either end of the
+    // range exclusive in the wrong direction fails here.
+    for edge in ["0", "65534"] {
+        redact(&document(
+            "/Font << /F1 5 0 R >>",
+            content,
+            &[&helvetica_with_space(edge)],
+        ))
+        .unwrap_or_else(|error| panic!("a width of {edge} is in range: {error}"));
+    }
+}
+
+/// WHERE THE WIDTHS COME FROM (#125's sixth security review): PDFium decides by what `/Widths`
+/// IS. An array of any length means the array and `/MissingWidth`, never the standard-14 table; no
+/// `/Widths` means the table, with `/MissingWidth` ignored; a Type 3 font never uses the table or
+/// `/MissingWidth`. burrow decided by what reading produced, and each shape here returned `Ok` with
+/// the secret drawn in the region (110 dark pixels before and after, measured by the review).
+/// Each refuses `[width-source]`; the plain standard-14 font with no `/Widths` and no descriptor
+/// redacts.
+#[test]
+fn a_font_whose_widths_pdfium_takes_from_another_source_refuses() {
+    let content = b"BT /F1 20 Tf 110 260 Td (SECRET) Tj ET";
+    let simple = |extra: &str| -> Vec<u8> {
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica {extra} >>").into_bytes()
+    };
+    let descriptor: &[u8] =
+        b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /MissingWidth 500 >>";
+    for (what, font, more) in [
+        (
+            "/Widths []",
+            simple("/FirstChar 32 /LastChar 32 /Widths []"),
+            None,
+        ),
+        (
+            "/Widths 0",
+            simple("/FirstChar 32 /LastChar 32 /Widths 0"),
+            None,
+        ),
+        (
+            "/MissingWidth, no /Widths",
+            simple("/FontDescriptor 6 0 R"),
+            Some(descriptor),
+        ),
+    ] {
+        let mut objects: Vec<&[u8]> = vec![&font];
+        objects.extend(more);
+        refuses_by(
+            what,
+            &document("/Font << /F1 5 0 R >>", content, &objects),
+            "width-source",
+        );
+    }
+    // TYPE 3: no `/Widths`, an empty one, and a `/MissingWidth` PDFium ignores for it.
+    let procedure = b"10 0 d0\n";
+    let proc_stream = [
+        format!("<< /Length {} >>\nstream\n", procedure.len()).as_bytes(),
+        procedure,
+        b"\nendstream",
+    ]
+    .concat();
+    let type3 = |widths: &str, descriptor: &str| -> Vec<u8> {
+        format!(
+            "<< /Type /Font /Subtype /Type3 /BaseFont /Helvetica /FontBBox [0 0 10 10] \
+             /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs 6 0 R \
+             /Encoding << /Type /Encoding /Differences [97 /g] >> {widths} {descriptor} \
+             /Resources << >> >>"
+        )
+        .into_bytes()
+    };
+    let t3_descriptor: &[u8] =
+        b"<< /Type /FontDescriptor /FontName /T3 /Flags 32 /MissingWidth 500 >>";
+    for (what, font) in [
+        ("Type 3, no /Widths", type3("", "")),
+        (
+            "Type 3, /Widths []",
+            type3("/FirstChar 97 /LastChar 97 /Widths []", ""),
+        ),
+        (
+            "Type 3, /MissingWidth",
+            type3(
+                "/FirstChar 97 /LastChar 97 /Widths [10]",
+                "/FontDescriptor 8 0 R",
+            ),
+        ),
+    ] {
+        let pdf = document(
+            "/Font << /T3 5 0 R >>",
+            b"BT /T3 20 Tf 110 260 Td (a) Tj ET",
+            &[&font, b"<< /g 7 0 R >>", &proc_stream, t3_descriptor],
+        );
+        refuses_by(what, &pdf, "width-source");
+    }
+    // THE TWIN: the standard-14 font as the specification writes it, no `/Widths`, no descriptor.
+    reaches_and_redacts(
+        "Helvetica, no /Widths",
+        &document("/Font << /F1 5 0 R >>", content, &[&simple("")]),
     );
 }
