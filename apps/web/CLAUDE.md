@@ -339,11 +339,32 @@ Every `ArrayBuffer` or typed array holding a person's input or content qpdf deco
 (`.fill(0)`) before it is released, and decoded content never becomes a JS string, because a
 string cannot be wiped. A worker serves many documents in one session, and a buffer released
 with its bytes intact is the secret persisting after the operation that removed it from the
-document. **This half cannot be tested** -- the JS heap is not reliably inspectable from a test --
-so it is an invariant, and **the review of any change to the worker, the bridges or the binding
-checks it**. The wasm heaps are held by a canary test. Both are #199's discharge, a ship blocker
-for the redaction page (`docs/ROADMAP.md`); until it lands this rule is not yet true of the code,
-and saying so is the point of writing it here.
+document. **The heap itself cannot be inspected** from a test, so this is an invariant, and **the
+review of any change to the worker, the bridges or the binding checks it**. What the code zeroes,
+and when, is tested. The wasm heaps are to be held by a canary test, not yet written. Both are #199's discharge, a ship blocker
+for the redaction page (`docs/ROADMAP.md`).
+
+**Where the code stands (2026-10-08).** For the two qpdf workers (base and redaction),
+`src/worker/input-wipe.test.ts` holds the following, each line shown to fail under mutation:
+
+- each worker zeroes its input and password once the Rust call returns, including when the call
+  throws, the request is refused, or a later file cannot be read;
+- the bridge zeroes qpdf's buffers of decoded content, and of stream data it copied in, before
+  freeing them, and every copy it hands to Rust (`__burrow_wipe_handed_out`).
+
+The binding zeroes the copies it owns: redaction's input and merge's buffer (`Zeroizing`), and
+every password's `Box`. Only the password's wipe has a test (`bindings/burrow-wasm/src/lib.rs`).
+The two `Zeroizing` wrappers are held by review.
+
+**Still not true of the code:**
+
+- the Rust side's copies of decoded content, and of the input wherever an operation takes
+  ownership of it, are core's to wipe;
+- the canary test over both wasm heaps, and recycling the worker, are not written yet;
+- the render worker (`render-main.js`, `bridge-pdfium.js`) zeroes neither its input nor its
+  password, and the pixels it posts are the page as drawn.
+
+All three are #199's remaining work. The render worker is in scope if the redaction page previews through it. Until they land, this rule is not yet true of the code.
 
 ## Design
 

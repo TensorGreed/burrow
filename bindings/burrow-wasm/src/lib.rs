@@ -99,6 +99,23 @@ mod render;
 
 use burrow_core::{Clock, Error, Limits};
 use wasm_bindgen::prelude::wasm_bindgen;
+use zeroize::Zeroize;
+
+/// A password from the bytes JavaScript handed over, with that copy wiped (#199).
+///
+/// [`burrow_core::Password`] zeroizes its own copy when dropped. The `Box` it is copied FROM is
+/// the binding's, and dropping it unwiped leaves the password in this module's free list for
+/// whatever allocates next. Every entry point that takes a password goes through here.
+fn password_from(given: Option<Box<[u8]>>) -> Option<burrow_core::Password> {
+    given.map(|mut bytes| password_wiping(&mut bytes))
+}
+
+/// [`password_from`]'s body, on a slice a test can read back after the copy.
+fn password_wiping(bytes: &mut [u8]) -> burrow_core::Password {
+    let password = burrow_core::Password::new(bytes);
+    bytes.zeroize();
+    password
+}
 
 /// A REAL POSITIVE for `tools/check-redaction-not-in-base.sh`, and nothing else.
 ///
@@ -1111,6 +1128,18 @@ pub fn available_operations() -> &'static [&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #199: the binding's copy of a password is zero once `Password` has taken its own.
+    #[test]
+    fn a_password_is_wiped_from_the_bytes_it_was_copied_from() {
+        let mut given = *b"hunter2";
+        let password = password_wiping(&mut given);
+        assert_eq!(
+            given, [0u8; 7],
+            "the binding's copy of the password survived"
+        );
+        assert_eq!(password.as_bytes(), b"hunter2", "the copy was taken first");
+    }
 
     /// THE TWO DISCLOSURE COUNTS, pinned against a report whose every field is non-trivial.
     ///

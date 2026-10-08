@@ -107,18 +107,29 @@ async function runOperation(request) {
     return null;
   }
 
-  const bytes = new Uint8Array(await request.blob.arrayBuffer());
-  const password = request.password ? new Uint8Array(request.password) : undefined;
-  // BOTH STRUCTS ARE CONSUMED BY THE CALL: wasm-bindgen moves them into Rust. Freeing either
-  // afterwards is a double free; `main.js` records what that looks like.
-  const limits = new wasm_bindgen.WebLimits(
-    BigInt(request.limits.maxInputBytes),
-    BigInt(request.limits.maxMemoryBytes),
-    BigInt(request.limits.maxDurationMs),
-    BigInt(request.limits.maxPages),
-    BigInt(request.limits.maxPixels),
-  );
-  const area = new wasm_bindgen.WebRegion(region.left, region.top, region.width, region.height);
+  /** @type {Uint8Array | undefined} */
+  let bytes;
+  /** @type {Uint8Array | undefined} */
+  let password;
+  try {
+    bytes = new Uint8Array(await request.blob.arrayBuffer());
+    password = request.password ? new Uint8Array(request.password) : undefined;
+    // BOTH STRUCTS ARE CONSUMED BY THE CALL: wasm-bindgen moves them into Rust. Freeing either
+    // afterwards is a double free; `main.js` records what that looks like.
+    const limits = new wasm_bindgen.WebLimits(
+      BigInt(request.limits.maxInputBytes),
+      BigInt(request.limits.maxMemoryBytes),
+      BigInt(request.limits.maxDurationMs),
+      BigInt(request.limits.maxPages),
+      BigInt(request.limits.maxPixels),
+    );
+    const area = new wasm_bindgen.WebRegion(region.left, region.top, region.width, region.height);
 
-  return wasm_bindgen.redact(bytes, page, Uint32Array.from(covered), area, password, limits);
+    return wasm_bindgen.redact(bytes, page, Uint32Array.from(covered), area, password, limits);
+  } finally {
+    // #199: the document being redacted is the secret. Zeroed once Rust has copied it in.
+    __burrow_wipe_handed_out();
+    bytes?.fill(0);
+    password?.fill(0);
+  }
 }

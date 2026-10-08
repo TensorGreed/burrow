@@ -68,7 +68,7 @@ compile-time.
 | `cfg-if` | MIT OR Apache-2.0 | `cpufeatures`, `wasm-bindgen` | **No longer build/dev only**: `wasm-bindgen` uses it in `describe.rs` and `externref.rs`, so it is in the wasm module's link graph |
 | `cpufeatures` | MIT OR Apache-2.0 | `sha2` | CPU feature detection; build/dev only |
 | `libc` | MIT OR Apache-2.0 | `cpufeatures` | Build/dev only |
-| `zeroize` | Apache-2.0 OR MIT | `burrow-types`, `burrow-engines` | **Runtime; ships in the binary.** Wipes password buffers on drop. `default-features = false`, `features = ["alloc"]` — no transitive dependencies |
+| `zeroize` | Apache-2.0 OR MIT | `burrow-types`, `burrow-engines`, `burrow-wasm` | **Runtime; ships in the binary.** Wipes password buffers on drop, and the web binding's copies of the input (#199). `default-features = false`, `features = ["alloc"]` — no transitive dependencies |
 | `wasm-bindgen` | MIT OR Apache-2.0 | `burrow-wasm` | **Runtime; ships in the wasm module.** The JS↔Rust boundary for the engine bridge. `default-features = false`, `features = ["std"]` — deliberately no `js-sys` and no `web-sys` |
 | `wasm-bindgen-macro` | MIT OR Apache-2.0 | `wasm-bindgen` | Proc macro expanding `#[wasm_bindgen]`; compile-time only |
 | `wasm-bindgen-macro-support` | MIT OR Apache-2.0 | `wasm-bindgen-macro` | Macro implementation; compile-time only |

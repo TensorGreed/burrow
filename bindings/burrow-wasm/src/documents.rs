@@ -29,6 +29,7 @@ use burrow_core::engines::web::WebQpdf;
 use burrow_core::engines::{CheckOptions, OpenOptions, StructureEngine};
 use burrow_core::{Clock, Deadline, Error, Limits, Password};
 use wasm_bindgen::prelude::wasm_bindgen;
+use zeroize::Zeroizing;
 
 use crate::qpdf_engine::qpdf;
 use crate::{Reply, WebClock, WebLimits};
@@ -55,7 +56,7 @@ use crate::{Reply, WebClock, WebLimits};
 pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     // QPDF, NOT PDFIUM, and this is the call that let PDFium leave the web payload at all.
     //
@@ -112,6 +113,8 @@ pub fn page_count(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimi
 #[wasm_bindgen]
 #[must_use]
 pub fn merge(inputs: Box<[u8]>, lengths: Box<[u32]>, limits: WebLimits) -> Reply {
+    // WIPED WHEN DROPPED (#199): every document's bytes, end to end.
+    let inputs = Zeroizing::new(inputs);
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
     let options = OpenOptions::new(limits, clock);
@@ -199,7 +202,7 @@ pub fn reorder(
 ) -> Reply {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
@@ -358,7 +361,7 @@ pub fn split_begin(
 ) -> SplitSession {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, Arc::clone(&clock));
     options.password = password.as_ref();
@@ -432,7 +435,7 @@ pub fn rotate(
 ) -> Reply {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
@@ -496,7 +499,7 @@ pub fn rotate(
 pub fn compress(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
@@ -555,7 +558,7 @@ pub fn compress(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits
 pub fn page_rotations(bytes: Box<[u8]>, password: Option<Box<[u8]>>, limits: WebLimits) -> Reply {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
@@ -631,7 +634,7 @@ pub fn structure_check(
 ) -> Reply {
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = CheckOptions::new(limits, clock);
     options.password = password.as_ref();

@@ -31,8 +31,9 @@ use std::sync::Arc;
 
 use burrow_core::engines::OpenOptions;
 use burrow_core::engines::pdfsyntax::region::Region;
-use burrow_core::{Clock, Error, Password};
+use burrow_core::{Clock, Error};
 use wasm_bindgen::prelude::wasm_bindgen;
+use zeroize::Zeroizing;
 
 use crate::qpdf_engine::qpdf;
 use crate::{Reply, WebClock, WebLimits};
@@ -73,9 +74,11 @@ pub fn redact(
     password: Option<Box<[u8]>>,
     limits: WebLimits,
 ) -> Reply {
+    // WIPED WHEN DROPPED (#199): the document being redacted is the secret.
+    let bytes = Zeroizing::new(bytes);
     let limits = limits.to_core();
     let clock: Arc<dyn Clock> = Arc::new(WebClock);
-    let password = password.map(|p| Password::new(&p));
+    let password = crate::password_from(password);
 
     let mut options = OpenOptions::new(limits, clock);
     options.password = password.as_ref();
