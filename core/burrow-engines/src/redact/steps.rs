@@ -33,8 +33,9 @@ use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, NamedProperties, PropertyList, ScopedFont, Watch, carried_text_edits,
-    check_form_sharing, check_type_three_procedure, glyphs_in, remove_glyphs_and_carried_text,
+    FormsReached, Glyph, InkKind, NamedProperties, PropertyList, ScopedFont, Watch,
+    carried_text_edits, check_form_sharing, check_type_three_procedure, glyphs_and_ink_in,
+    glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -645,8 +646,26 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         let region = self.region.to_content_space(&frame)?;
 
         // EVERY GLYPH, then the ones the region reaches. The conservative box, not the advance
-        // box: a glyph's ink can sit far from its origin, so uncertainty removes more.
-        let glyphs = glyphs_in(contents.bytes(), &resources, &self.watch())?;
+        // box: a glyph's ink can sit far from its origin, so uncertainty removes more. The same
+        // walk also returns the non-text ink -- images, painted paths, shadings -- which the
+        // redaction cannot remove (#125).
+        let (glyphs, ink) = glyphs_and_ink_in(contents.bytes(), &resources, &self.watch())?;
+        // NON-TEXT INK THE REGION REACHES is refused before any edit is planned. Redaction removes
+        // glyphs, not ink, so a secret drawn as an image or a path in the region would survive an
+        // `Ok` -- ADR 0029 §3 (the image and vector-path rows) and §8's forbidden outcome. The box
+        // is fail closed (see `InkBox`): larger than the ink, and the whole page for a bare `sh`.
+        if let Some(reached) = ink.iter().find(|box_| box_.reaches(&region)) {
+            return Err(Error::Unsupported(format!(
+                "pdf redaction [{}]: the redacted region reaches {}, which the redaction removes \
+                 no part of, so the region cannot be cleared",
+                reached.kind.rule(),
+                match reached.kind {
+                    InkKind::Image => "an image",
+                    InkKind::Vector => "vector path content",
+                    InkKind::Shading => "a shading",
+                },
+            )));
+        }
         let cut: Vec<Glyph> = glyphs
             .iter()
             .filter(|glyph| glyph.conservative_box().intersects(&region))

@@ -63,6 +63,29 @@ one is decided in an issue, with the same three parts.
     document? *Decided:* ADR 0029 §3, ADR 0019 §2b. *Does not cover:* changes that touch neither
     redaction nor split geometry.
 
+11. **A run-level CI conclusion other than `success` is a stop — even when every job, step and
+    check-run is green.** The merge gate is GitHub CI green on the head, and "green" means the
+    *run* concluded `success`, not merely that no job failed. A run that concludes
+    `failure`/`cancelled`/`timed_out` while its jobs and check-suite are all `success` is
+    unexplained until shown otherwise: investigate attempts, annotations, the check-suite, and any
+    skipped/cancelled job; if no real failure is found, re-run CI on the head (or confirm the
+    `push`-event run on the merged SHA) and require a `success` run before merge. Never merge on
+    the reasoning "every job looks green." *Decided:* #275, 2026-10-07 — a `pull_request` run
+    concluded `failure` with all 10 jobs `success`, attempt 1, only `notice`/`warning` annotations;
+    the `push` run on the identical merged tree concluded `success`. *Does not cover:* a run whose
+    non-success is a real job/step failure — that is an ordinary red, fix it.
+
+12. **Never hand-merge `tests/redaction/outcomes.tsv`; regenerate it from the merged tree.** It is
+    the golden the native and web differentials replay, and the only file #125 and #137 both
+    touch. On every rebase onto `main`, regenerate it from the merged tree
+    (`BURROW_BLESS_REDACTION_OUTCOMES=1` over the native redaction outcomes) and commit the
+    regenerated version rather than resolving a conflict by hand. **If the regenerated file differs
+    from what your own change predicts, stop and report** — a surprise there means the merged base
+    changed an outcome your change did not account for. *Decided:* owner, 2026-10-07, for the
+    parallel #125 (core) and #137 (web/wasm) sessions. *Does not cover:* a change that does not
+    alter any fixture outcome — then the regenerated file is identical and there is nothing to
+    reconcile.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new rule from here: **before writing code**, give the `security-reviewer` the proposed

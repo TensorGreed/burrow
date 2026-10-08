@@ -133,6 +133,8 @@ pub enum Refusal {
     NonFiniteGeometry,
     /// More glyphs on one page than burrow will place.
     TooManyGlyphs,
+    /// More non-text-ink boxes on one page than burrow will collect (#125).
+    TooMuchInk,
     /// More Form XObject draws in one walk than burrow will follow.
     TooManyFormDraws,
     /// A pattern fill, which can draw text burrow's walk does not reach.
@@ -277,6 +279,7 @@ impl Refusal {
         Self::OperandCountMismatch,
         Self::NonFiniteGeometry,
         Self::TooManyGlyphs,
+        Self::TooMuchInk,
         Self::TooManyFormDraws,
         Self::PatternMayDrawText,
         Self::UnreadableCMap,
@@ -324,6 +327,7 @@ impl Refusal {
             Self::OperandCountMismatch => "operand-count-mismatch",
             Self::NonFiniteGeometry => "non-finite-geometry",
             Self::TooManyGlyphs => "too-many-glyphs",
+            Self::TooMuchInk => "too-much-ink",
             Self::TooManyFormDraws => "too-many-form-draws",
             Self::PatternMayDrawText => "pattern-may-draw-text",
             Self::UnreadableCMap => "unreadable-cmap",
@@ -362,6 +366,7 @@ impl Refusal {
                 | Self::FormDepth
                 | Self::VerticalWriting
                 | Self::TooManyGlyphs
+                | Self::TooMuchInk
                 | Self::TooManyFormDraws
                 | Self::PatternMayDrawText
                 | Self::MarkedContentPropertiesUnresolved
@@ -2406,6 +2411,15 @@ pub const MAX_FORM_DRAWS: usize = 4096;
 /// growth is the problem: `size_of::<Glyph>()` is 120 bytes, so this bounds `out` at ~24 MiB.
 pub const MAX_GLYPHS: usize = 200_000;
 
+/// How many non-text-ink boxes one walk will collect (#125).
+///
+/// The same reason as [`MAX_GLYPHS`]: a path-heavy content stream draws no glyphs, so that cap
+/// does not bound the `ink` the walk accumulates (an image, a painted path or a shading each add
+/// a box, and a stroked path adds one per segment). Far above any real page; an `InkBox` is small,
+/// so this bounds `ink` at a few MiB. A page past it is refused rather than left to grow `ink`
+/// without limit — the walk is driven by file content, and all input is hostile.
+pub const MAX_INK: usize = 200_000;
+
 /// How many operands each operator this walk models takes, or `None` for one it ignores.
 ///
 /// # Why a count mismatch is refused rather than trimmed
@@ -2423,17 +2437,29 @@ pub const MAX_GLYPHS: usize = 200_000;
 const fn arity(operator: &[u8]) -> Option<usize> {
     Some(match operator {
         b"q" | b"Q" | b"BT" | b"ET" | b"T*" => 0,
+        // THE PATH PAINTS AND CLIPS, which take nothing (#125). Listed so a padded run is refused
+        // like any other: `ops::operations` attaches every pending operand to the next operator,
+        // so a paint with operands before it is a stack a renderer reads differently than this
+        // walk, the same divergence `gs`/`BDC` were added for.
+        b"n" | b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" | b"W" | b"W*"
+        | b"h" => 0,
         // `gs` COUNTED WITH THEM (#152): its one operand names the ExtGState whose `/Font` the
         // walk now refuses, and a padded run would hide the name the way it hid a `BDC`'s tag.
+        // `w` (line width) and `sh` (a shading name) join them (#125): a padded `w` would let a
+        // reader take a different width than the one this walk inflates a stroke box by.
         b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" | b"Do" | b"Tj" | b"TJ" | b"'" | b"BMC" | b"MP"
-        | b"gs" => 1,
+        | b"gs" | b"w" | b"sh" | b"M" => 1,
         // THE MARKED-CONTENT OPERATORS, which had no count. A reader takes a `BDC`'s tag and
         // property list from its LAST TWO operands; this walk read the tag from the FIRST, so
         // `/Pad /OC /OC1 BDC` hid a layer from the `/OC` mark refusal -- measured by the #166
         // security review, `Ok` over content PDFium and poppler hide. A padded run is refused.
-        b"Tf" | b"Td" | b"TD" | b"BDC" | b"DP" => 2,
+        // `m`/`l` (a point) join them (#125), the same front-vs-trailing-operand divergence.
+        b"Tf" | b"Td" | b"TD" | b"BDC" | b"DP" | b"m" | b"l" => 2,
         b"\"" => 3,
-        b"cm" | b"Tm" => 6,
+        // THE RECTANGLE AND THE SHORTHAND CURVES (#125): `re` is x/y/w/h; `v`/`y` are two points.
+        b"re" | b"v" | b"y" => 4,
+        // `c` is three points, `cm`/`Tm` a matrix.
+        b"c" | b"cm" | b"Tm" => 6,
         _ => return None,
     })
 }
@@ -2698,6 +2724,73 @@ struct GraphicsState {
     font: Option<Vec<u8>>,
     /// The route of the stream whose `Tf` selected [`Self::font`] -- see [`show`]'s refusal.
     font_selected_along: Arc<[Vec<u8>]>,
+    /// The line width set by `w`, in user space, default 1.0 (PDF 32000-1 §8.4.3.2). A path
+    /// stroke's box is inflated by half of this (transformed by the CTM) so the stroke, not just
+    /// the centreline, is tested against the region. Saved and restored by `q`/`Q`.
+    line_width: f64,
+    /// The miter limit set by `M`, default 10.0 (§8.4.3.5). A miter join reaches up to this times
+    /// the half line width past a sharp corner, so a stroke box is inflated by that worst case;
+    /// reading it from the file means a document raising it cannot ink past the box. `q`/`Q` carry
+    /// it. An ExtGState's `/LW`/`/ML` are NOT yet read ([#278]), noted in ADR 0029 §5 as owed.
+    ///
+    /// [#278]: https://github.com/TensorGreed/burrow/issues/278
+    miter_limit: f64,
+    /// The selected font's writing mode, computed once and cached. `writing_mode_of` lexes the
+    /// whole embedded CMap program, so computing it per shown glyph was quadratic in the input --
+    /// a legitimate large-CMap document with many shows hit `max_duration_ms`, and the fuzz
+    /// target (which runs unwatched) timed out (nightly 2026-10-07, geometry). The mode is a
+    /// property of the font, so it is derived on the first glyph after a `Tf` and reused until the
+    /// next `Tf` clears it. `q`/`Q` carry it with the rest of the state.
+    writing_mode: Option<WritingMode>,
+}
+
+/// What drew a non-text-ink box, for the refusal message the caller builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InkKind {
+    /// An image `Do` or an inline `BI`…`ID`…`EI`.
+    Image,
+    /// A painted path — fill or stroke.
+    Vector,
+    /// A shading painted by the `sh` operator.
+    Shading,
+}
+
+impl InkKind {
+    /// The bracketed refusal rule for this kind, as the caller names it.
+    #[must_use]
+    pub fn rule(self) -> &'static str {
+        match self {
+            Self::Image => "image-in-region",
+            Self::Vector => "vector-in-region",
+            Self::Shading => "shading-in-region",
+        }
+    }
+}
+
+/// A box drawn by something that is **not text** — an image, a painted path, or a shading.
+///
+/// Redaction removes glyphs; it cannot remove this ink. So a secret drawn as an image or a path
+/// that falls in the redacted region would survive an `Ok` redaction, which is the one outcome
+/// this module exists to prevent. The region-aware caller refuses when an `InkBox` intersects the
+/// region. Every box is **fail-closed**: larger than the ink it stands for, never smaller — the
+/// bounding box of the transformed unit square for an image (clipping ignored), the path extent
+/// inflated by half the line width with miter joins at worst case for a path, and the **whole
+/// page** (`extent: None`) for a bare `sh`, whose extent the walk cannot derive.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InkBox {
+    /// What drew it.
+    pub kind: InkKind,
+    /// The page-space box, or `None` for ink whose extent is unknown and so covers the page.
+    pub extent: Option<Rect>,
+}
+
+impl InkBox {
+    /// Whether this ink reaches `region`. Ink of unknown extent (`None`) reaches everything —
+    /// fail closed.
+    #[must_use]
+    pub fn reaches(&self, region: &Rect) -> bool {
+        self.extent.is_none_or(|box_| box_.intersects(region))
+    }
 }
 
 /// Walk a content stream and place every glyph it draws.
@@ -2720,7 +2813,25 @@ pub fn glyphs_in(
     resources: &dyn Resources,
     watch: &Watch<'_>,
 ) -> Result<Vec<Glyph>> {
+    Ok(glyphs_and_ink_in(content, resources, watch)?.0)
+}
+
+/// Walk a content stream and return both the glyphs it draws and the non-text-ink boxes it
+/// paints — images, paths and shadings. The redaction path uses this so it can refuse a document
+/// whose region intersects ink it cannot remove (#125); [`glyphs_in`] is the glyph-only entry for
+/// callers that do not apply a region (font surgery, the verify witness).
+///
+/// # Errors
+///
+/// The same as [`glyphs_in`]: a stream that will not tokenise, unbalanced state, a form cycle or
+/// over-deep nesting, or a vertical writing mode.
+pub fn glyphs_and_ink_in(
+    content: &[u8],
+    resources: &dyn Resources,
+    watch: &Watch<'_>,
+) -> Result<(Vec<Glyph>, Vec<InkBox>)> {
     let mut out = Vec::new();
+    let mut ink = Vec::new();
     let mut budget = Budget {
         watch,
         open_forms: Vec::new(),
@@ -2736,11 +2847,15 @@ pub fn glyphs_in(
             text: TextState::default(),
             font: None,
             font_selected_along: Arc::from(Vec::new()),
+            line_width: 1.0,
+            miter_limit: 10.0,
+            writing_mode: None,
         },
         &mut budget,
         &mut out,
+        &mut ink,
     )?;
-    Ok(out)
+    Ok((out, ink))
 }
 
 /// One numeric operand, refused rather than defaulted.
@@ -2766,6 +2881,72 @@ fn number_operand(operands: &[Operand], at: usize) -> Result<f64> {
     Ok(value)
 }
 
+/// The user-space bounding box of a fill's path points. `None` for an empty path. A fill inks its
+/// whole enclosed area, which lies within the bounding box of the points that bound it, so this is
+/// the fail-closed box for a fill (the caller transforms it to page space).
+fn points_box(points: &[(f64, f64)]) -> Option<Rect> {
+    let (&first, rest) = points.split_first()?;
+    let mut box_ = Rect {
+        left: first.0,
+        bottom: first.1,
+        right: first.0,
+        top: first.1,
+    };
+    for &(x, y) in rest {
+        box_.left = box_.left.min(x);
+        box_.right = box_.right.max(x);
+        box_.bottom = box_.bottom.min(y);
+        box_.top = box_.top.max(y);
+    }
+    Some(box_)
+}
+
+/// The page-space box of one stroked segment, inflated for the worst-case stroke extent (#125).
+///
+/// A stroke reaches half the line width from the centreline, and a miter join reaches up to the
+/// miter limit (default 10, PDF 32000-1 §8.4.3.5; set by `M`) times that past a sharp corner — so
+/// the segment's box is inflated by `|line_width| / 2 * miter_limit` on every side, the worst
+/// case, in user space (so it scales and rotates with the CTM), then transformed to page space. A
+/// stroke is boxed per SEGMENT rather than over the whole path, because a bordered page's stroke
+/// does not ink the interior the border encloses. `|line_width|`/`|miter_limit|` so a negative
+/// value cannot shrink the box.
+fn stroke_box(segment: &[(f64, f64); 2], line_width: f64, miter_limit: f64, ctm: &Matrix) -> Rect {
+    let reach = (line_width.abs() / 2.0) * miter_limit.abs().max(1.0);
+    let [(ax, ay), (bx, by)] = *segment;
+    Rect {
+        left: ax.min(bx) - reach,
+        bottom: ay.min(by) - reach,
+        right: ax.max(bx) + reach,
+        top: ay.max(by) + reach,
+    }
+    .transformed(ctm)
+}
+
+/// The image space an image `Do` or inline `BI` paints into, before the CTM places it.
+const UNIT_SQUARE: Rect = Rect {
+    left: 0.0,
+    bottom: 0.0,
+    right: 1.0,
+    top: 1.0,
+};
+
+/// Push a non-text-ink box, falling back to the **whole page** if it is not finite after the CTM
+/// (#125).
+///
+/// A finite coordinate under a finite-but-large CTM can transform to a NaN corner, which
+/// `Rect::transformed`'s `min`/`max` drop, leaving an inverted rectangle that intersects nothing
+/// -- a box *smaller* than the ink, the one direction that misses it (the mechanism the `cm` guard
+/// describes). Rather than trust such a box, the ink is treated as covering the whole page, so it
+/// reaches any region. That keeps `InkBox`'s "never smaller than the ink" invariant true without a
+/// refusal the region test would otherwise have to reach; the glyph path refuses `NonFiniteGeometry`
+/// instead, but a glyph is *removed* where ink is only *tested*, so whole-page is the ink analogue.
+fn push_finite_ink(ink: &mut Vec<InkBox>, kind: InkKind, box_: Rect) {
+    ink.push(InkBox {
+        kind,
+        extent: if box_.is_finite() { Some(box_) } else { None },
+    });
+}
+
 /// One content stream, at one nesting level.
 fn walk(
     content: &[u8],
@@ -2777,6 +2958,7 @@ fn walk(
     initial: GraphicsState,
     budget: &mut Budget<'_>,
     out: &mut Vec<Glyph>,
+    ink: &mut Vec<InkBox>,
 ) -> Result<()> {
     let operations = super::ops::operations(content)?;
     // AND ONCE AFTER THE LEX, which is the one step here the watch cannot interrupt: without
@@ -2788,11 +2970,43 @@ fn walk(
     // `Some` between `BT` and `ET`. The matrices live here rather than in `GraphicsState`
     // because `q`/`Q` do NOT save them -- they are reset by `BT` and nothing else touches them.
     let mut position: Option<TextPosition> = None;
+    // THE CURRENT PATH, in USER SPACE, built by `m`/`l`/`c`/`v`/`y`/`re` and consumed by a paint
+    // operator (#125). User space, so the stroke inflation is applied before the CTM and so scales
+    // and rotates with the path; boxes are transformed by the CTM at the paint. Two views, because
+    // a FILL inks its enclosed area (the points' bounding box) while a STROKE inks only near its
+    // line segments -- a page-border rectangle's stroke does not ink the interior it encloses, so
+    // bounding the enclosed area would refuse every bordered page. A curve (`c`/`v`/`y`) records a
+    // single segment spanning the bounding box of its control points: the Bézier lies in their
+    // convex hull, so one hull box covers a STROKE of it, where per-chord segment boxes would
+    // leave the curve's bulge between non-adjacent control points uncovered (a security review
+    // found a pure-stroke curve leaking through that gap).
+    let mut path_points: Vec<(f64, f64)> = Vec::new();
+    let mut path_segments: Vec<[(f64, f64); 2]> = Vec::new();
+    let mut current: Option<(f64, f64)> = None;
+    let mut subpath_start: Option<(f64, f64)> = None;
+    // THE CTM WHEN THE CURRENT PATH WAS STARTED. The path is boxed under the CTM at the paint, but
+    // a `cm`/`q`/`Q` between construction and paint would place it under a different CTM for a
+    // renderer that freezes the path to device space at construction. So if the CTM has shifted
+    // since the path began, the box cannot be trusted and the paint is treated as covering the
+    // whole page (#125, fail closed, from a security review). `path_ctm` is the CTM at the first
+    // construction op; `path_ctm_shifted` records any LATER construction op running under a
+    // different CTM -- a `cm` applied mid-path and undone by a `Q` before the paint would leave
+    // `path_ctm == state.ctm` at paint yet have placed a point elsewhere, so comparing only at
+    // paint is not enough (a second security review found that leak).
+    let mut path_ctm: Option<Matrix> = None;
+    let mut path_ctm_shifted = false;
 
     for operation in &operations {
         // THE DEADLINE, INSIDE THE WALK (#175). Before it, a form drawn 4,000 times walked for
         // 17.9 s against a 100 ms budget, because nothing here could see the clock.
         budget.watch.tick()?;
+        // THE INK CEILING (#125), the counterpart of `MAX_GLYPHS` for a path-only page. `ink`
+        // accumulates across every form draw, so it is bounded here where the form recursion also
+        // passes, not only per stream.
+        if ink.len() >= MAX_INK {
+            return Refusal::TooMuchInk
+                .refuse("more non-text-ink boxes on one page than burrow will collect");
+        }
         // FALLIBLE, and the reason is `Tz`. An operand that is missing or is not a number used
         // to become `0.0`, so `/Bogus Tz` set the horizontal scale to zero and collapsed every
         // glyph box on the page to a point -- a box that intersects almost nothing, so a
@@ -2885,13 +3099,16 @@ fn walk(
                     _ => None,
                 };
                 state.font_selected_along = Arc::clone(&budget.route);
+                // A NEW FONT, so the cached writing mode no longer applies; the next show derives
+                // it once for this font. See `GraphicsState::writing_mode`.
+                state.writing_mode = None;
             }
             b"Do" => {
                 let Some(Operand::Name { value, .. }) = operation.operands.first() else {
                     return Refusal::FormOperandNotAName
                         .refuse("a 'Do' whose operand is not a name");
                 };
-                draw_form(value, resources, &state, budget, out)?;
+                draw_form(value, resources, &state, budget, out, ink)?;
             }
             // AN EXTGSTATE THAT SETS THE FONT (#152). It changes the face and size with no `Tf`,
             // and PDFium, measured, then draws with its own metrics even where the `/Font` names
@@ -2928,6 +3145,148 @@ fn walk(
                     content, operation, &mut state, place, resources, budget, out,
                 )?;
             }
+            // THE LINE WIDTH, graphics state, so `q`/`Q` save and restore it with the rest.
+            b"w" => state.line_width = number(0)?,
+            // THE MITER LIMIT, read so a document raising it cannot ink a sharp-corner spike past
+            // the stroke box this walk inflates (#125). Graphics state, carried by `q`/`Q`.
+            b"M" => state.miter_limit = number(0)?,
+            // PATH CONSTRUCTION, in user space. Each operator records the points (for a fill's
+            // enclosed box) and the line segments (for a stroke's extent). A curve records
+            // segments through its control points, which bound the Bézier (fail closed).
+            b"m" => {
+                if *path_ctm.get_or_insert(state.ctm) != state.ctm {
+                    path_ctm_shifted = true;
+                }
+                let p = (number(0)?, number(1)?);
+                current = Some(p);
+                subpath_start = Some(p);
+                path_points.push(p);
+            }
+            b"l" => {
+                if *path_ctm.get_or_insert(state.ctm) != state.ctm {
+                    path_ctm_shifted = true;
+                }
+                let p = (number(0)?, number(1)?);
+                if let Some(from) = current {
+                    path_segments.push([from, p]);
+                }
+                current = Some(p);
+                path_points.push(p);
+            }
+            b"c" | b"v" | b"y" => {
+                if *path_ctm.get_or_insert(state.ctm) != state.ctm {
+                    path_ctm_shifted = true;
+                }
+                let through: Vec<(f64, f64)> = if operation.operator.as_slice() == b"c" {
+                    vec![
+                        (number(0)?, number(1)?),
+                        (number(2)?, number(3)?),
+                        (number(4)?, number(5)?),
+                    ]
+                } else {
+                    vec![(number(0)?, number(1)?), (number(2)?, number(3)?)]
+                };
+                // ONE SEGMENT SPANNING THE CONTROL-POINT HULL, not per chord: the Bézier lies in
+                // the convex hull of `{current} ∪ through`, so boxing that hull covers a stroke of
+                // the whole curve. Per-chord boxes leave the curve's bulge between non-adjacent
+                // control points uncovered -- a security review found a pure stroke leaking there.
+                let mut hull: Vec<(f64, f64)> = current.into_iter().collect();
+                hull.extend_from_slice(&through);
+                if let Some(bb) = points_box(&hull) {
+                    path_segments.push([(bb.left, bb.bottom), (bb.right, bb.top)]);
+                }
+                for &p in &through {
+                    path_points.push(p);
+                }
+                current = through.last().copied().or(current);
+            }
+            b"re" => {
+                if *path_ctm.get_or_insert(state.ctm) != state.ctm {
+                    path_ctm_shifted = true;
+                }
+                let (x, y, w, h) = (number(0)?, number(1)?, number(2)?, number(3)?);
+                let (c0, c1, c2, c3) = ((x, y), (x + w, y), (x + w, y + h), (x, y + h));
+                for seg in [[c0, c1], [c1, c2], [c2, c3], [c3, c0]] {
+                    path_segments.push(seg);
+                }
+                for corner in [c0, c1, c2, c3] {
+                    path_points.push(corner);
+                }
+                current = Some(c0);
+                subpath_start = Some(c0);
+            }
+            b"h" => {
+                if let (Some(from), Some(start)) = (current, subpath_start) {
+                    path_segments.push([from, start]);
+                    current = Some(start);
+                }
+            }
+            // AN INLINE IMAGE (`BI`…`ID`…`EI`) draws in the unit square under the CTM, exactly as
+            // an image `Do` does, so its box is the same transformed unit square (#125). The `ID`
+            // marker and the image data that follows are not operators the walk acts on. A
+            // FILTERED inline image is already refused upstream (#228); this catches an unfiltered
+            // one whose box reaches the region, and lets one outside it through.
+            b"BI" => push_finite_ink(ink, InkKind::Image, UNIT_SQUARE.transformed(&state.ctm)),
+            // A SHADING painted by `sh` covers whatever the current clip admits, which this walk
+            // does not track -- so it is treated as covering the whole page (#125, fail closed).
+            b"sh" => ink.push(InkBox {
+                kind: InkKind::Shading,
+                extent: None,
+            }),
+            // THE CLIP OPERATORS add no geometry and do not end the path; the paint after them
+            // does. A fill inks its enclosed box; a stroke inks each segment's inflated box. `n`
+            // paints nothing. All of them clear the path.
+            b"W" | b"W*" => {}
+            b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" | b"n" => {
+                let op = operation.operator.as_slice();
+                let fills = matches!(op, b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*");
+                let strokes = matches!(op, b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*");
+                // A CLOSE-AND-PAINT (`s`/`b`/`b*` = `h` then paint) strokes the implied closing
+                // edge too, which only the explicit `h` arm records otherwise -- so add it here
+                // before boxing, or a stroked secret on that edge has no box (a security review
+                // found this for a pure `s`).
+                if matches!(op, b"s" | b"b" | b"b*")
+                    && let (Some(from), Some(start)) = (current, subpath_start)
+                {
+                    path_segments.push([from, start]);
+                }
+                // THE CTM SHIFTED SINCE THE PATH BEGAN, so the box cannot be trusted: a renderer
+                // that froze the path to device space at construction draws it elsewhere. Treat
+                // the paint as the whole page (#125, fail closed). `path_ctm_shifted` also catches
+                // a `cm` applied mid-path and undone by a `Q` before the paint. `n` paints nothing.
+                let shifted =
+                    path_ctm_shifted || path_ctm.is_some_and(|started| started != state.ctm);
+                if (fills || strokes) && shifted {
+                    ink.push(InkBox {
+                        kind: InkKind::Vector,
+                        extent: None,
+                    });
+                } else {
+                    if fills && let Some(box_) = points_box(&path_points) {
+                        push_finite_ink(ink, InkKind::Vector, box_.transformed(&state.ctm));
+                    }
+                    if strokes {
+                        for segment in &path_segments {
+                            push_finite_ink(
+                                ink,
+                                InkKind::Vector,
+                                stroke_box(
+                                    segment,
+                                    state.line_width,
+                                    state.miter_limit,
+                                    &state.ctm,
+                                ),
+                            );
+                        }
+                    }
+                }
+                path_points.clear();
+                path_segments.clear();
+                current = None;
+                subpath_start = None;
+                path_ctm = None;
+                path_ctm_shifted = false;
+            }
             _ => {}
         }
     }
@@ -2952,9 +3311,17 @@ fn draw_form(
     state: &GraphicsState,
     budget: &mut Budget<'_>,
     out: &mut Vec<Glyph>,
+    ink: &mut Vec<InkBox>,
 ) -> Result<()> {
     let Some(form) = resources.form(name)? else {
-        // An image, or anything else that is not a form. It draws no glyphs.
+        // NOT A FORM: an image `Do` (or a missing XObject, which fails closed). It draws no
+        // glyphs, so the form walk below never ran it -- but an image IS ink the redaction cannot
+        // remove, so its box is the transformed unit square under the live CTM (#125). The unit
+        // square [0,1]x[0,1] is image space; `Rect::transformed` takes the four corners, so a
+        // rotated or sheared placement is bounded correctly, and clipping is ignored (it could
+        // only shrink the box). A missing XObject draws nothing, but recording its placement box
+        // over-refuses rather than under -- the fail-closed direction.
+        push_finite_ink(ink, InkKind::Image, UNIT_SQUARE.transformed(&state.ctm));
         return Ok(());
     };
 
@@ -3009,6 +3376,7 @@ fn draw_form(
         },
         budget,
         out,
+        ink,
     );
     budget.in_form = enclosing;
     budget.route = enclosing_route;
@@ -3198,7 +3566,7 @@ struct Shown<'a> {
 fn show(
     shown: &Shown<'_>,
     operand: Option<&Operand>,
-    state: &GraphicsState,
+    state: &mut GraphicsState,
     place: &mut TextPosition,
     resources: &dyn Resources,
     out: &mut Vec<Glyph>,
@@ -3264,7 +3632,15 @@ fn show(
         }
         let metrics = resources.glyph(&font, code)?;
         // THE WALK DRAWS THE CONCLUSION, from what the file says. See `GlyphMetrics::encoding`.
-        check_writing_mode(writing_mode_for(&metrics.encoding, per_code)?)?;
+        // ONCE PER FONT, NOT PER GLYPH: `writing_mode_of` lexes the whole embedded CMap, so doing
+        // it per shown code was quadratic -- the nightly 2026-10-07 geometry timeout. The mode is
+        // a property of the font, constant across its codes, so it is derived on the first glyph
+        // after a `Tf` and cached (cleared by `Tf`); vertical is still refused, at the same point.
+        if state.writing_mode.is_none() {
+            let mode = writing_mode_for(&metrics.encoding, per_code)?;
+            check_writing_mode(mode)?;
+            state.writing_mode = Some(mode);
+        }
         // THE METRICS COME OUT OF THE FILE TOO. Checking the content stream's operands and the
         // composed CTM left this open: a `/W` entry of `f64::MAX` against a `/FontMatrix` of
         // 1e297 multiplies to an infinity, and the box built from it was
@@ -3373,11 +3749,12 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        CMap, Encoding, Form, FormUses, FormsReached, Glyph, GlyphMetrics, MAX_FORM_DEPTH,
-        MAX_GLYPHS, Matrix, NamedProperties, Operand, PropertyList, RAISED, Rect, Refusal,
+        CMap, Encoding, Form, FormUses, FormsReached, Glyph, GlyphMetrics, InkKind, MAX_FORM_DEPTH,
+        MAX_GLYPHS, MAX_INK, Matrix, NamedProperties, Operand, PropertyList, RAISED, Rect, Refusal,
         Resources, TextPosition, TextState, WATCH_EVERY, Watch, WritingMode, carried_text_edits,
-        check_form_sharing, check_type_three_procedure, check_writing_mode, glyphs_in,
-        remove_glyphs, remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
+        check_form_sharing, check_type_three_procedure, check_writing_mode, glyphs_and_ink_in,
+        glyphs_in, remove_glyphs, remove_glyphs_and_carried_text, takes_word_spacing,
+        writing_mode_of,
     };
 
     /// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
@@ -3509,7 +3886,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 41,
+            total, 42,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -3982,6 +4359,7 @@ mod tests {
                 }),
             ],
             Refusal::TooManyGlyphs => vec![(Content, || walk(&past_the_glyph_ceiling()))],
+            Refusal::TooMuchInk => vec![(Content, || walk(&past_the_ink_ceiling()))],
             Refusal::TooManyFormDraws => vec![(Content, || {
                 let mut resources = Fake::new();
                 for level in 0..6_u64 {
@@ -4955,6 +5333,17 @@ mod tests {
         body
     }
 
+    /// A content stream that paints more non-text-ink boxes than [`MAX_INK`] -- each `sh` adds
+    /// one -- so the walk refuses `TooMuchInk`.
+    fn past_the_ink_ceiling() -> String {
+        let body = "/S sh ".repeat(MAX_INK + 1);
+        assert!(
+            body.matches(" sh ").count() > MAX_INK,
+            "the fixture must paint more ink than the ceiling"
+        );
+        body
+    }
+
     #[test]
     fn a_pattern_fill_is_refused_because_the_walk_does_not_reach_its_text() {
         // MEASURED: a page whose only text lives in a tiling pattern walked to `Ok(0)` while
@@ -5226,6 +5615,226 @@ mod tests {
                 .expect("the twin must walk")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn an_embedded_cmap_is_lexed_once_per_font_not_once_per_glyph() {
+        // THE NIGHTLY 2026-10-07 GEOMETRY TIMEOUT, as a regression. `show` derived the writing
+        // mode for every shown glyph, and for an embedded CMap that re-lexed the whole program --
+        // so the cost was (shows) x (CMap size), quadratic in the input: burrow-4b's triage
+        // measured 86 s at 16,000 shows, crossing the nightly's `-timeout=10` at about 8,000. In
+        // production `watch.tick()` bounds it to one overshoot, so it is a `max_duration_ms`
+        // failure on a legitimate large-CMap document rather than a hang; the fuzz target runs
+        // unwatched, which is why it timed out there. The fix derives the mode once per font
+        // selection and caches it (cleared by `Tf`).
+        //
+        // Wall-clock, with a wide margin, because the cost is real CPU time rather than a count
+        // of deadline reads the `Ticking` clock measures. Post-fix this walk is ~0.2 s; a revert
+        // to per-glyph lexing is tens of seconds, well past the 10 s the nightly also enforces.
+        let mut fake = Fake::new();
+        fake.bytes_per_code = 1;
+        // A sizable CMap program, lexed in full by `writing_mode_of` because `/WMode` sits at the
+        // end. ~57 KB, the order of the triage's 16,000-show body.
+        let mut program = b"/CMapName /Big def ".repeat(3000);
+        program.extend_from_slice(b"/WMode 0 def");
+        fake.encoding = Encoding::Embedded {
+            dictionary_wmode: None,
+            program,
+        };
+        // One `Tf`, then 16,000 shows -- the shape `make.py` produces, under `MAX_GLYPHS`.
+        let mut content = b"BT /F 12 Tf ".to_vec();
+        for _ in 0..16_000 {
+            content.extend_from_slice(b"(a) Tj ");
+        }
+        content.extend_from_slice(b"ET");
+        let start = std::time::Instant::now();
+        let glyphs = glyphs_in(&content, &fake, &unwatched()).expect("the walk completes");
+        let elapsed = start.elapsed();
+        assert_eq!(glyphs.len(), 16_000, "one glyph per show");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "16,000 shows over a ~57 KB embedded CMap took {elapsed:?}; the writing mode must be \
+             derived once per font selection, not re-lexed per glyph (nightly 2026-10-07 \
+             pdfsyntax_geometry timeout)"
+        );
+    }
+
+    /// The region every ink-box test here is measured against: the upper band, as the corpus uses.
+    fn band_region() -> Rect {
+        Rect {
+            left: 30.0,
+            bottom: 88.0,
+            right: 370.0,
+            top: 132.0,
+        }
+    }
+
+    fn ink_of(content: &str) -> Vec<super::InkBox> {
+        glyphs_and_ink_in(content.as_bytes(), &Fake::new(), &unwatched())
+            .expect("the walk completes")
+            .1
+    }
+
+    #[test]
+    fn a_rotated_image_is_boxed_by_its_transformed_corners_reaching_the_region() {
+        // The image box is the bounding box of the transformed unit square, so a rotation that
+        // swings a corner into the region is caught even where the un-rotated placement would
+        // miss (#125, owner). A 40-unit image at y=40 rotated 45 degrees reaches up to y~96.6,
+        // over the region's bottom at 88; un-rotated it would stop at y=80 and miss.
+        let r = 40.0 * std::f64::consts::FRAC_1_SQRT_2;
+        let reaching = format!("q {r} {r} {} {r} 200 40 cm /Im1 Do Q", -r);
+        let ink = ink_of(&reaching);
+        assert!(
+            ink.iter()
+                .any(|box_| box_.kind == InkKind::Image && box_.reaches(&band_region())),
+            "a rotated image whose corner reaches the region must be boxed reaching it"
+        );
+    }
+
+    #[test]
+    fn a_rotated_image_clear_of_the_region_does_not_reach_it() {
+        // The twin: the same rotation, placed low enough that even its rotated box (top ~y=66.6)
+        // stays under the region's bottom at 88.
+        let r = 40.0 * std::f64::consts::FRAC_1_SQRT_2;
+        let clear = format!("q {r} {r} {} {r} 200 10 cm /Im1 Do Q", -r);
+        assert!(
+            ink_of(&clear)
+                .iter()
+                .all(|box_| !box_.reaches(&band_region())),
+            "a rotated image placed clear of the region must not reach it"
+        );
+    }
+
+    #[test]
+    fn a_stroke_reaches_the_region_by_its_width_though_its_centreline_misses() {
+        // A stroke inks within half the line width (and a miter past a corner) of its centreline,
+        // so a line just below the region whose stroke reaches in is caught, where testing the
+        // centreline alone would miss (#125, owner). Centreline y=85, below the region's bottom
+        // at 88; line width 8, so the stroke -- and the inflated box -- reach over it.
+        let ink = ink_of("8 w 50 85 m 350 85 l S");
+        assert!(
+            ink.iter()
+                .any(|box_| box_.kind == InkKind::Vector && box_.reaches(&band_region())),
+            "a stroke whose width reaches the region must be boxed reaching it"
+        );
+    }
+
+    #[test]
+    fn a_stroke_clear_of_the_region_does_not_reach_it_even_inflated() {
+        // The twin: centreline y=40, far below the region; even the worst-case miter inflation
+        // (|w|/2 * 10 = 40 at width 8, so a top of y=80) stays under the bottom at 88.
+        assert!(
+            ink_of("8 w 50 40 m 350 40 l S")
+                .iter()
+                .all(|box_| !box_.reaches(&band_region())),
+            "a stroke clear of the region, inflation included, must not reach it"
+        );
+    }
+
+    #[test]
+    fn a_stroked_curve_bulging_into_the_region_is_boxed_reaching_it() {
+        // A pure stroke of a cubic Bezier is boxed by its control-point HULL, not its chords: a
+        // security review found that per-chord segment boxes leave the curve's bulge between
+        // non-adjacent control points uncovered, leaking a stroked secret. The curve
+        // (0,0)->(0,100)->(100,100)->(100,0) passes through its midpoint (50,75); a region on
+        // that bulge is reached by no chord box but is inside the hull box.
+        let bulge = Rect {
+            left: 45.0,
+            bottom: 70.0,
+            right: 55.0,
+            top: 80.0,
+        };
+        let ink = ink_of("1 w 0 0 m 0 100 100 100 100 0 c S");
+        assert!(
+            ink.iter()
+                .any(|box_| box_.kind == InkKind::Vector && box_.reaches(&bulge)),
+            "a stroked curve bulging into the region must be boxed reaching it"
+        );
+    }
+
+    #[test]
+    fn a_path_operator_with_padded_operands_is_refused() {
+        // `ops::operations` attaches every pending operand to the next operator, and this walk
+        // reads from the FRONT where a renderer pops the TRAILING ones. `999 0 88 340 44 re f`
+        // boxes here at left~999 (right of the band) while a renderer draws the trailing
+        // (0,88,340,44) inside it -- an Ok over surviving ink. The `arity` guard refuses the
+        // padded `re`, the same divergence `gs`/`BDC` were added for.
+        assert_refused(
+            glyphs_in(b"999 0 88 340 44 re f", &Fake::new(), &unwatched()),
+            Refusal::OperandCountMismatch,
+        );
+    }
+
+    #[test]
+    fn a_path_painted_under_a_shifted_ctm_is_boxed_as_the_whole_page() {
+        // A `cm` between construction and paint: a renderer that froze the path to device space
+        // at construction draws it under the OLD CTM, so the paint-time box cannot be trusted and
+        // the ink is treated as the whole page (fail closed, from a security review). The path is
+        // built at (0,0)-(1000,1000), then scaled down 1000x, then stroked; the paint-time box
+        // would be tiny, but the whole-page fallback reaches any region.
+        let far = Rect {
+            left: 300.0,
+            bottom: 150.0,
+            right: 320.0,
+            top: 170.0,
+        };
+        let ink = ink_of("1 w 0 0 m 1000 1000 l 0.001 0 0 0.001 0 0 cm S");
+        assert!(
+            ink.iter()
+                .any(|box_| box_.kind == InkKind::Vector && box_.extent.is_none()),
+            "a path painted under a shifted CTM must be boxed as the whole page"
+        );
+        assert!(
+            ink.iter().any(|box_| box_.reaches(&far)),
+            "the whole-page box reaches a region the tiny paint-time box would miss"
+        );
+    }
+
+    #[test]
+    fn a_mid_path_cm_undone_before_paint_is_boxed_as_the_whole_page() {
+        // A `cm` applied mid-path inside `q`/`Q` and undone before the paint: `path_ctm` captured
+        // at the first op equals the paint-time CTM, so comparing only at paint would miss it --
+        // but the `0 0 l` point is laid under the translated CTM. The dirty flag catches it and
+        // the paint boxes whole-page (a second security review found this leak).
+        let ink = ink_of("0 0 m q 1 0 0 1 200 100 cm 0 0 l Q 10 0 l f");
+        assert!(
+            ink.iter()
+                .any(|box_| box_.kind == InkKind::Vector && box_.extent.is_none()),
+            "a path with a mid-path CTM shift undone before paint must box whole-page"
+        );
+    }
+
+    #[test]
+    fn a_close_and_stroke_boxes_the_implied_closing_edge() {
+        // `s` is `h` then stroke, so it strokes the implied closing edge too. That edge (from the
+        // last point back to the subpath start) is boxed now; before, only the explicit segments
+        // were, and a stroked secret on the closing edge had no box (a security review found this).
+        // The closing edge here runs along y=110 across the band; the three explicit edges miss it.
+        let ink = ink_of("1 w 400 110 m 400 300 l 10 300 l 10 110 l s");
+        assert!(
+            ink.iter()
+                .any(|box_| box_.kind == InkKind::Vector && box_.reaches(&band_region())),
+            "a close-and-stroke must box its implied closing edge reaching the region"
+        );
+    }
+
+    #[test]
+    fn a_raised_miter_limit_widens_the_stroke_box() {
+        // The miter limit (`M`) is read, so a document raising it cannot ink a sharp-corner spike
+        // past the box. A stroke centreline at y=0 is 88 below the band; at the default limit (10)
+        // the box reaches only y~40 and misses, but `M 1000` widens it to reach the band.
+        assert!(
+            ink_of("8 w 50 0 m 350 0 l S")
+                .iter()
+                .all(|box_| !box_.reaches(&band_region())),
+            "at the default miter limit the far stroke must miss the band"
+        );
+        assert!(
+            ink_of("1000 M 8 w 50 0 m 350 0 l S")
+                .iter()
+                .any(|box_| box_.kind == InkKind::Vector && box_.reaches(&band_region())),
+            "a raised miter limit must widen the stroke box to reach the band"
         );
     }
 

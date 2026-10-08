@@ -9,10 +9,10 @@ CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	whole	OK b5937ded480deaebe2
 CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	band	OK 73570d2d11a0e33d192c0427cdfb9e14454f76b263210b80a8c1d5b72be4a677 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
 INPUT	tests/redaction/fixtures/producer-ocr-scan.pdf	27d43eb68ecfbcd929f0c5f0ca3dfd10ba252dcdaebd22ca7823956d6feef31b
 CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	manifest	OK fbf393b48308ff93170616013cb8f8c304a7fae2ce4614da308b68022186c4ee report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
-CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	pdfbuild	OK d695f43b25764ab6237e0ccd41bbeaa1c46b1d90330ee8cc29ea5ea4112d713d report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
-CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	whole	OK cf0d721e9b2e2b34097ba07ba089bc1c5c66d1b7501134ee25404411f5c7dab4 report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
-CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	band	OK 517c85fd0839bb079fd372dcaf9cdd505b9cad285a24e0988c4b55f2bde7a519 report 660bd2ae9bc26af3b61141ef5bec1c05235f70d882b4c4b3034545dac5957f91
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	manifest	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	whole	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	0	0	band	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
 INPUT	tests/redaction/fixtures/producer-vertical-writing.pdf	b6738e36df1e2d04074a55abd3c32244b5dea2131a7f01d46cbe8fc94071c504
 CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/fixtures/producer-vertical-writing.pdf	0	0	pdfbuild	OK 441b79d57c7f22c73a201888c90518acead85ce6f0e72efcde9b9570d85d9d6b report 8e0d8ce87e282fc6624b6025a42143717295222fa45d5c2f9cf9d8c16609401a
@@ -116,18 +116,18 @@ CASE	tests/redaction/generated/17-incremental-update.pdf	0	0	whole	OK 1e9362ef3b
 CASE	tests/redaction/generated/17-incremental-update.pdf	0	0	band	OK 14857756824808f1ac53a60c38332d10f88051ac9656d7376c1cfc743db415ce report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/18-vector-outlines.pdf	d674b764c72344d648f8a7b391eb9c3c8420ee5ea84a153647905f1ec67856aa
 CASE	tests/redaction/generated/18-vector-outlines.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	pdfbuild	OK a07f21dc9be966957cc80bda24543a0eb335a00e622129b00fe7b4f2aba6612f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	whole	OK f441516b3ae0e397bed5fe40424fface97aed0d320eb31e30173688243f668d3 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	whole	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/18-vector-outlines.pdf	0	0	band	OK a07f21dc9be966957cc80bda24543a0eb335a00e622129b00fe7b4f2aba6612f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/19-covered-by-a-rectangle.pdf	ad97f2c7fb8c4e66c9bbf338985d11fdd234766ad7ce5e2aac6adf02b85ab9c0
 CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	pdfbuild	OK 98c3d55eeff096821306a44495098d70ebf66a2e953fce3dd1ca51d7d1174a7e report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	whole	OK d392af28e395bf21cad2f22a5de4dd2ce28e4b1ecccc20810e0d26057feda110 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	whole	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/19-covered-by-a-rectangle.pdf	0	0	band	OK 6a59030787c9b6240bd5513197ebdc615fd624a8aa7f124241079fb4d9eda672 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/20-image-pixels.pdf	e8dd92a61d28fc5ab25f55513501cd6f8cae97d2d7f290d8fa2a2da4b8a9cfee
 CASE	tests/redaction/generated/20-image-pixels.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	pdfbuild	OK 271d4753770b1e4f29a5f56e86b6b64ce79778cb88bde70562d724327b3eb670 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	whole	OK a024a5a31e957c91826b4b19cead0bd88cbb0c4a4fa4aafc909bde9bbadd4414 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	whole	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/20-image-pixels.pdf	0	0	band	OK 271d4753770b1e4f29a5f56e86b6b64ce79778cb88bde70562d724327b3eb670 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/21-cid-lying-tounicode.pdf	c5b407e4fffa5883abe7f2bb34ff24d81b777900631a885c007d1508457c4b50
 CASE	tests/redaction/generated/21-cid-lying-tounicode.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -335,8 +335,8 @@ CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	whole	ERR Unsuppor
 CASE	tests/redaction/generated/evade-image-as-pattern.pdf	0	0	band	ERR Unsupported("pdf geometry [pattern-may-draw-text]: a pattern fill, whose own content stream burrow does not yet walk")
 INPUT	tests/redaction/generated/evade-image-in-form.pdf	bff6fefd434078b753f8f8f44df8f482f5e0d86e17b21f3e557257df67c03b0e
 CASE	tests/redaction/generated/evade-image-in-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	pdfbuild	OK 53e85b63a86f543cc107a4dfc4e2590aeea1cb4a8b8460fb38046754664b1b66 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	whole	OK e7bdaf9309863d0dedaa328f0e5c2c4b2306a21f688ea431496cd53754dab50e report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	whole	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/evade-image-in-form.pdf	0	0	band	OK 53e85b63a86f543cc107a4dfc4e2590aeea1cb4a8b8460fb38046754664b1b66 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/evade-image-in-type3-glyph.pdf	30ef3383f0cde7b3998f06330b7728ae511c84635aefc9b1aa33e41f5bbfbc20
 CASE	tests/redaction/generated/evade-image-in-type3-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -460,8 +460,8 @@ CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	wh
 CASE	tests/redaction/generated/evade-oc-untyped-membership-dictionary.pdf	0	0	band	ERR Unsupported("pdf geometry [optional-content-marked]: this page marks some of its content as belonging to a layer (optional content), which can hide it from view")
 INPUT	tests/redaction/generated/evade-paths-in-form.pdf	6fcfa0207a72a226d3f84106c1a7bb66fe13b032ead85084f7ea34b7b9936c43
 CASE	tests/redaction/generated/evade-paths-in-form.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	pdfbuild	OK e65242b05252bb9c9f2a71630a3d1ade6d3c1079d617f89d252d0b7d45b702f8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	whole	OK 79c17d21e88061161e5f2f2fcdde8f1c91561e4c3cfc6848d0fb5d4b4c450e83 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	whole	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	band	OK e65242b05252bb9c9f2a71630a3d1ade6d3c1079d617f89d252d0b7d45b702f8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0732d533f2c7b248f056b37969dba91897f2438b1ea4c90919370d82e212b0f2
 CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -621,7 +621,7 @@ CASE	tests/redaction/generated/nearmiss-form-carrying-its-own-font.pdf	0	0	band	
 INPUT	tests/redaction/generated/nearmiss-image-outside-region.pdf	5f5e0ef578c35d49bc811862e55f71c44a5b06bab37dc8ec33d955b9407dce63
 CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	0	pdfbuild	OK d3daa12ec368a1fc400aaff9c1f2145a8ba943fe06a799af8618f50d78d8569f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	0	whole	OK 7858072cc6bf9c97260ebfba68b6bb8f301a0bde23b8e27669b5ad1c894a7e4d report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	0	whole	ERR Unsupported("pdf redaction [image-in-region]: the redacted region reaches an image, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/nearmiss-image-outside-region.pdf	0	0	band	OK acb19584cc427cdb0dfd0ce4ee44f19a72944569b2912fa067bd5609c4eb80df report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-kids-all-pages.pdf	dcfa34be68d22d33acf77dc27c991f6d37b2d87dd1f37b5909966cdb3b39b5a7
 CASE	tests/redaction/generated/nearmiss-kids-all-pages.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -685,7 +685,7 @@ CASE	tests/redaction/generated/nearmiss-page-frame-plainly-declared.pdf	0	0	band
 INPUT	tests/redaction/generated/nearmiss-paths-outside-region.pdf	b2134e96b63c8dc7af4b76dcc76bd99e4e1920a22fbb986edbd5ea6c58b8fbc7
 CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	0	pdfbuild	OK 315afd199d2a296f59153d67763dcd39b129fda4dde308d782f963a3ca395047 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	0	whole	OK 3e8b6df6cf424fa3751a10f5d5072c61018361fa1ba72c1f43314c333ec83600 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	0	whole	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/redaction/generated/nearmiss-paths-outside-region.pdf	0	0	band	OK f9d27c90c5355aadc359c95cc7c52bb3fd00314a5fa986937284044347100347 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/nearmiss-reference-written-plainly.pdf	8bc06a062102ccd520a6cfa35df901a0a4f6a0b74f8adfad1f3705a9e176aaa3
 CASE	tests/redaction/generated/nearmiss-reference-written-plainly.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -829,8 +829,8 @@ CASE	tests/conformance/fixtures/pages-137.pdf	136	136	band	OK 25233bb77bc11fb6e6
 CASE	tests/conformance/fixtures/pages-137.pdf	0	0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136	whole	OK 25233bb77bc11fb6e6a2f60bf63b16d92db46faa21ae839878581f55682e15a7 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
 INPUT	tests/conformance/fixtures/render-one-quadrant.pdf	d04cb542b0a973eb658350c0f5200e03bf8c7675bae637218881213a46e2c059
 CASE	tests/conformance/fixtures/render-one-quadrant.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	pdfbuild	OK 62b10d1e23be9422a2f91f5ef13bc86e626036e8d89633f2b4d5153e05791dfb report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
-CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	whole	OK 62b10d1e23be9422a2f91f5ef13bc86e626036e8d89633f2b4d5153e05791dfb report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	whole	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/conformance/fixtures/render-one-quadrant.pdf	0	0	band	OK 62b10d1e23be9422a2f91f5ef13bc86e626036e8d89633f2b4d5153e05791dfb report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
 INPUT	tests/conformance/fixtures/trailer-removed.pdf	338f304b36d73bded3b24173105eddf992fe6b4a6e0cdc95190655423d1d37b5
 CASE	tests/conformance/fixtures/trailer-removed.pdf	0	0	pdfbuild	ERR Malformed("qpdf: the document is damaged")
@@ -849,8 +849,8 @@ CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	2	2	whole	ERR I
 CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
 CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
 CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0	band	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
-CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	pdfbuild	OK 970d7d237ab094dc94e1345b9611080a744d5f0eea7cabd482fa682924684952 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
-CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	whole	OK 970d7d237ab094dc94e1345b9611080a744d5f0eea7cabd482fa682924684952 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	pdfbuild	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
+CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	whole	ERR Unsupported("pdf redaction [vector-in-region]: the redacted region reaches vector path content, which the redaction removes no part of, so the region cannot be cleared")
 CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	1	1	band	OK 970d7d237ab094dc94e1345b9611080a744d5f0eea7cabd482fa682924684952 report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0
 CASE	tests/conformance/fixtures/type3-glyph-draws-an-xobject.pdf	0	0,1	whole	ERR Unsupported("pdf geometry [type-three-procedure-shows-text]: a Type 3 glyph procedure that draws content of its own, which burrow's walk does not yet reach")
 INPUT	tests/conformance/fixtures/xref-bomb.pdf	ae2f916b2e0867f69a4cae984094a78ac44403ebcec4ffd080d234351adc5f4b
