@@ -741,6 +741,57 @@ pages = 1
   notes = "A Type 3 glyph ten points square, far from the region, whose procedure draws an unfiltered inline image into it. No region over the image reaches the glyph's box. Refused [type-three-image-outside-its-box] (#125, 2026-10-08)."
 
 [[fixture]]
+name = "evade-type3-subtype-as-a-string"
+file = "generated/evade-type3-subtype-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "/Subtype not a name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Subtype written as a string"
+  canary = "BURROW-EVADE-TYPE3-STRING-SUBTYPE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "A Type 3 font whose /Subtype is the string (Type3), far from the region, its procedure showing the text into it. PDFium reads the bytes; burrow read 'not a name' as 'not Type 3' and skipped every Type 3 rule. Refused [subtype-not-a-name] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "evade-form-subtype-as-a-string"
+file = "generated/evade-form-subtype-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "/Subtype not a name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Subtype written as a string"
+  canary = "BURROW-EVADE-FORM-STRING-SUBTYPE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "A Form XObject whose /Subtype is the string (Form), holding the text in the region. The walk read it as 'not a form' and never entered it. Refused [subtype-not-a-name] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "nearmiss-form-subtype-as-a-name"
+file = "generated/nearmiss-form-subtype-as-a-name.pdf"
+kind = "hand-built"
+probes_refusal = "/Subtype not a name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Subtype written as a string"
+  canary = "BURROW-EVADE-FORM-NAME-SUBTYPE"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin: the same form under the name /Form. The rule must not fire, and the text must be gone."
+
+[[fixture]]
 name = "evade-inline-image"
 file = "generated/evade-inline-image.pdf"
 kind = "hand-built"

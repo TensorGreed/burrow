@@ -30,6 +30,8 @@
 //! 4. **No box is built from a non-finite number.** An infinity composes to a NaN and
 //!    `Rect::transformed` folds NaN corners into an inverted rectangle, which intersects
 //!    nothing — a glyph a redaction silently skips.
+//! 5. **The same bytes as a Type 3 glyph procedure** (#125): every refusal the procedure scan
+//!    raises names a rule, and a reported image extent is judged against a box without panicking.
 
 #![no_main]
 

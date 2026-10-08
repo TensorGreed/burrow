@@ -980,20 +980,41 @@ fn a_page_drawing(more: &str, fonts: &str, extra_resources: &str, objects: &[&st
     pdf_of(&all)
 }
 
-/// An XObject whose `/Subtype` is a number redacts on both engines (#224, round 3).
+/// An XObject whose `/Subtype` is a number REFUSES on both engines, by its own rule.
 ///
-/// Nobody draws it, and nothing asks its type before reading its `/Subtype` as a name -- so the
-/// reader must, or qpdf answers `/QPDFFakeName` with a warning and the write refuses the page as
-/// one the engine repaired. Deleting the `name` guard, natively or on the web, fails this.
+/// #224 round 3 wrote this as "redacts alike": the reader had to ask the type before reading
+/// `/Subtype` as a name, or qpdf answered `/QPDFFakeName` with a warning and the write refused the
+/// page as repaired. #125's second security review then showed that reading a non-name `/Subtype`
+/// as "not a form" is itself the leak -- `(Form)` is a form to PDFium -- so every non-name
+/// `/Subtype` now refuses `[subtype-not-a-name]`. The type is still asked first: deleting that
+/// guard turns this refusal into the `QPDFFakeName` repair refusal, and the reason check fails.
 #[test]
-fn an_xobject_whose_subtype_is_a_number_redacts_on_both_engines() {
+fn an_xobject_whose_subtype_is_a_number_refuses_alike_on_both_engines() {
     let bytes = a_page_drawing(
         "q /X1 Do Q",
         "",
         "/XObject << /X1 6 0 R >>",
         &["<< /Subtype 7 /Length 0 >>\nstream\nendstream"],
     );
-    redacts_alike(&bytes, "a /Subtype that is not a name is not a form");
+    let options = OpenOptions::new(
+        Limits::default(),
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+    );
+    let region = Region {
+        left: 0.0,
+        top: 30.0,
+        width: 300.0,
+        height: 40.0,
+    };
+    let covered = std::collections::BTreeSet::from([0]);
+    let natively = outcome(&super::Qpdf.redact_page(&bytes, 0, &covered, region, &options));
+    assert!(
+        natively.contains("[subtype-not-a-name]"),
+        "a numeric /Subtype refuses by its own rule, natively: {natively}"
+    );
+    let web = crate::web::WebQpdf::new(Arc::new(NativeBridge::new()));
+    let on_the_web = outcome(&web.redact_page(&bytes, 0, &covered, region, &options));
+    assert_eq!(on_the_web, natively, "the two engines disagree");
 }
 
 /// A CID font whose `/W` ends mid-range redacts on both engines (#224, round 3).

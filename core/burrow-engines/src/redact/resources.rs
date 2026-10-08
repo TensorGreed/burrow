@@ -374,7 +374,7 @@ impl<O: PdfObject> Resources for PageResources<O> {
             _ => return Ok(None),
         }
         let dictionary = entry.stream_dict();
-        if !names(&dictionary.key(&SUBTYPE), &SUBTYPE_FORM) {
+        if subtype_of(&dictionary)? != Some(SUBTYPE_FORM) {
             return Ok(None);
         }
         let Some(content) = entry.stream_data()? else {
@@ -495,7 +495,7 @@ fn base_encoding<O: PdfObject>(font: &O) -> crate::pdfsyntax::standard14::BaseEn
 
 /// Read one font dictionary.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
-    let subtype = font.key(&SUBTYPE);
+    let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
         first_char: integer_or(&font.key(&FIRST_CHAR), 0),
         widths: numbers_of(&font.key(&WIDTHS)),
@@ -518,7 +518,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         facts.missing_width = missing.first().copied();
     }
 
-    if names(&subtype, &SUBTYPE_TYPE3) {
+    if subtype == Some(SUBTYPE_TYPE3) {
         match numbers_of(&font.key(&FONT_MATRIX)).as_slice() {
             [a, b, c, d, e, f] => {
                 facts.font_matrix = Matrix {
@@ -540,7 +540,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         }
     }
 
-    if names(&subtype, &SUBTYPE_TYPE0) {
+    if subtype == Some(SUBTYPE_TYPE0) {
         read_composite(font, &mut facts)?;
     } else if facts.widths.is_empty() {
         // NO METRICS IN THE DOCUMENT. A standard-14 font's advances live in the viewer rather
@@ -714,6 +714,32 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
 /// error: the callers are all "is this a Type 3 font" questions where absent means no.
 fn names<O: PdfObject>(handle: &O, want: &Name) -> bool {
     handle.name().is_ok_and(|found| found == *want)
+}
+
+/// The `/Subtype` burrow may branch on: absent, or a name -- and a refusal for anything else (#125).
+///
+/// PDFium reads `/Subtype` as its BYTES, so `(Type3)` is a Type 3 font and `(Form)` a form to it
+/// (#229 measured the same for annotations). Comparing a name and finding none read a string as
+/// "not this", so the walk skipped a form's content and every Type 3 rule skipped the font: the
+/// security review of #125's Type 3 slice measured `Ok` with a procedure's painted path, its image
+/// and its shown text all left in the region, and a form's text likewise -- 879 dark pixels
+/// before and after. Refused rather than read as bytes (DECISIONS.md rule 1): one reader of a
+/// malformed key is not the other's.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] for a `/Subtype` that is present and not a name.
+pub(super) fn subtype_of<O: PdfObject>(dictionary: &O) -> Result<Option<Name>> {
+    let subtype = dictionary.key(&SUBTYPE);
+    match subtype.type_code() {
+        object_type::NULL => Ok(None),
+        object_type::NAME => Ok(Some(subtype.name()?)),
+        _ => Err(Error::Unsupported(
+            "pdf redaction [subtype-not-a-name]: a /Subtype that is not a name, which a renderer \
+             reads by its bytes and burrow would read as absent"
+                .to_owned(),
+        )),
+    }
 }
 
 /// [`PageResources::resolve`]'s walk from one scope along `steps`.

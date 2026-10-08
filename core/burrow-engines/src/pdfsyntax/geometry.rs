@@ -1284,9 +1284,11 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 ///
 /// [`Refusal::TypeThreeProcedureShowsText`] if the procedure shows text or draws an XObject;
 /// [`Refusal::TypeThreeProcedurePaints`] if it paints a path or a shading;
-/// [`Refusal::UnmatchedRestore`] for a `Q` with no `q`, since the transform after it is a
-/// reader's guess; [`Refusal::NonFiniteGeometry`] for a `cm` that composes to a non-finite
-/// transform; whatever a `cm` operand that is not a number refuses. An image is reported in
+/// [`Refusal::OperandCountMismatch`] for an operator given more or fewer operands than it takes,
+/// as the page walk counts them; [`Refusal::NumericOperandNotANumber`] for a `cm` operand that is
+/// not a number; [`Refusal::UnmatchedRestore`] for a `Q` with no `q`, since the transform after it
+/// is a reader's guess; [`Refusal::NonFiniteGeometry`] for a `cm` that composes to a non-finite
+/// transform. An image is reported in
 /// [`ProcedureDraws::image`], and judged against each font's box by
 /// [`check_type_three_image_inside`]. Whatever [`super::ops::operations`]
 /// refuses, since a procedure burrow cannot tokenise is one whose contents it cannot rule on.

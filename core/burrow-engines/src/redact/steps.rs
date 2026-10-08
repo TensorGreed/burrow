@@ -33,7 +33,7 @@ use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, InkKind, NamedProperties, PropertyList, ScopedFont, Watch,
+    FormsReached, Glyph, InkKind, NamedProperties, PropertyList, Rect, ScopedFont, Watch,
     carried_text_edits, check_form_sharing, check_type_three_image_inside,
     check_type_three_procedure, glyphs_and_ink_in, glyphs_in, remove_glyphs_and_carried_text,
 };
@@ -1911,33 +1911,68 @@ fn check_type_three<O: PdfObject>(
     drawn: &BTreeSet<ScopedFont>,
     watch: &Watch<'_>,
 ) -> Result<BTreeSet<ScopedFont>> {
-    const SUBTYPE: Name = Name::literal(b"/Subtype\0");
+    let mut scanned: BTreeMap<u64, Option<Rect>> = BTreeMap::new();
+    // EACH FONT OBJECT ONCE, whatever names it is drawn under (#125's security review): 4,000 names
+    // for one Type 3 font re-parsed its `/CharProcs` 4,000 times and read the deadline on none of
+    // the cache hits -- 7.4 s against a 500 ms budget, measured. The verdict is the font's, so it is
+    // computed once and given to every name. Fonts are never written inline here (`[direct-font]`
+    // refuses them first), so the object identity is the font's.
+    let mut fonts_judged: BTreeMap<u64, bool> = BTreeMap::new();
+    let mut image_fonts = BTreeSet::new();
+    for font_name in drawn {
+        watch.tick()?;
+        let font = resources.font_in_scope(font_name)?;
+        // A FONT WRITTEN INLINE has the identity `(0, 0)`, shared by every direct object, so it is
+        // judged every time rather than cached: two inline fonts must never share a verdict, even
+        // though `[direct-font]` should have refused them before this runs.
+        let object = font.object()?;
+        let font_identity = (object != (0, 0)).then(|| pack(object));
+        if let Some(&draws_image) = font_identity.and_then(|id| fonts_judged.get(&id)) {
+            if draws_image {
+                image_fonts.insert(font_name.clone());
+            }
+            continue;
+        }
+        let draws_image = judge_type_three_font(&font, &mut scanned, watch)?;
+        if let Some(id) = font_identity {
+            fonts_judged.insert(id, draws_image);
+        }
+        if draws_image {
+            image_fonts.insert(font_name.clone());
+        }
+    }
+    Ok(image_fonts)
+}
+
+/// One Type 3 font, judged once: whether any procedure it names draws an image (inside its box,
+/// or this refuses), after every procedure has passed `check_type_three_procedure` -- cached per
+/// procedure across fonts, with the deadline read on every key.
+fn judge_type_three_font<O: PdfObject>(
+    font: &O,
+    scanned: &mut BTreeMap<u64, Option<Rect>>,
+    watch: &Watch<'_>,
+) -> Result<bool> {
     const TYPE_THREE: Name = Name::literal(b"/Type3\0");
     const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
-
     const FONT_BBOX: Name = Name::literal(b"/FontBBox\0");
     const MATRIX: Name = Name::literal(b"/Matrix\0");
 
-    let mut scanned: BTreeMap<u64, Option<crate::pdfsyntax::geometry::Rect>> = BTreeMap::new();
-    let mut image_fonts = BTreeSet::new();
-    for font_name in drawn {
-        let font = resources.font_in_scope(font_name)?;
-        let subtype = font.key(&SUBTYPE);
-        if subtype.type_code() != object_type::NAME || subtype.name()? != TYPE_THREE {
-            continue;
-        }
-        let procs = font.key(&CHAR_PROCS);
-        if procs.type_code() != object_type::DICTIONARY {
-            continue;
-        }
-        let font_bbox = super::resources::rect_of(&font.key(&FONT_BBOX));
+    if super::resources::subtype_of(font)? != Some(TYPE_THREE) {
+        return Ok(false);
+    }
+    let procs = font.key(&CHAR_PROCS);
+    if procs.type_code() != object_type::DICTIONARY {
+        return Ok(false);
+    }
+    let font_bbox = super::resources::rect_of(&font.key(&FONT_BBOX));
+    let mut draws_image = false;
+    {
         for key in crate::pdfsyntax::dict::top_level_keys(&procs.unparse())? {
+            watch.tick()?;
             let entry = procs.key(&Name::from_stripped(&key)?);
             if entry.type_code() != object_type::STREAM {
                 continue;
             }
-            // A STREAM IS ALWAYS INDIRECT, so its identity is never the direct-object `(0, 0)`
-            // that would make two different procedures look like one.
             // A `/MATRIX` ON THE PROCEDURE IS REFUSED (#125's security review). PDFium reads a glyph
             // procedure as it reads a form, so a `/Matrix` on its stream moves everything it draws
             // before the procedure's own `cm` -- an image this scan judged inside its box drew
@@ -1950,6 +1985,8 @@ fn check_type_three<O: PdfObject>(
                         .to_owned(),
                 ));
             }
+            // A STREAM IS ALWAYS INDIRECT, so its identity is never the direct-object `(0, 0)`
+            // that would make two different procedures look like one.
             let identity = pack(entry.object()?);
             let image = if let Some(&cached) = scanned.get(&identity) {
                 cached
@@ -1957,10 +1994,10 @@ fn check_type_three<O: PdfObject>(
                 let Some(procedure) = entry.stream_data()? else {
                     // Undecodable, so what it draws is unknown, and unknown is not "no text".
                     return Err(Error::Malformed(
-                    "pdf redaction [type-three-unreadable]: a Type 3 glyph procedure whose data \
-                     burrow could not decode"
-                        .to_owned(),
-                ));
+                        "pdf redaction [type-three-unreadable]: a Type 3 glyph procedure whose \
+                         data burrow could not decode"
+                            .to_owned(),
+                    ));
                 };
                 let draws = check_type_three_procedure(&procedure, watch)?;
                 scanned.insert(identity, draws.image);
@@ -1969,11 +2006,11 @@ fn check_type_three<O: PdfObject>(
             // PER FONT, EVERY TIME: the box is this font's, whoever scanned the procedure.
             if let Some(extent) = image {
                 check_type_three_image_inside(extent, font_bbox)?;
-                image_fonts.insert(font_name.clone());
+                draws_image = true;
             }
         }
     }
-    Ok(image_fonts)
+    Ok(draws_image)
 }
 
 /// Every `/Font` resource name on the page.

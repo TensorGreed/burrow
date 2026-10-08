@@ -908,12 +908,19 @@ impl Walk<'_> {
                 if let Some(inner) = self.dictionary_key(&font, &RESOURCES)? {
                     self.resources(&inner, depth + 1)?;
                 }
-            }
-            for proc_name in self.keys_of(&procs)? {
-                let procedure = procs.key(&proc_name);
-                procs.drained()?;
-                // A glyph procedure is not itself a form, so it is descended but not counted.
-                self.drawable(&procedure, false, depth)?;
+                // AND ITS PROCEDURES, ONCE PER FONT OBJECT TOO (#125's second security review).
+                // They were walked once per NAME: 4,000 names for one Type 3 font of 4,000
+                // `/CharProcs` keys is 16 million descents, 7.3 s against a 50 ms budget, measured,
+                // with no deadline read inside. A procedure is descended uncounted and `descend`
+                // memoises by object, so walking it once per font changes no count -- only the
+                // cost. The deadline is read per key besides.
+                for proc_name in self.keys_of(&procs)? {
+                    self.deadline.checkpoint(self.clock.as_ref())?;
+                    let procedure = procs.key(&proc_name);
+                    procs.drained()?;
+                    // A glyph procedure is not itself a form, so it is descended but not counted.
+                    self.drawable(&procedure, false, depth)?;
+                }
             }
         }
         Ok(())

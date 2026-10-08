@@ -162,7 +162,8 @@ def evade_inline_image_outside_type3_box() -> bytes:
 
     The walk boxes the glyph by its advance and its ten-point `/FontBBox`, so no region over the
     image reaches the glyph: before #125 refused it, the redaction returned `Ok` with the image
-    drawn on (5,309 dark pixels, measured by the specification review). Refused by
+    drawn on -- the same shape measured at 5,309 dark pixels in the specification review's own
+    file, not this one. Refused by
     `[type-three-image-outside-its-box]`. Unfiltered, so `[inline-image-filtered]` is not what
     refuses it. Its twin is `nearmiss-type3-procedure-that-only-shows-its-own-glyph`, a bitmap
     glyph inside its box and outside the region.
@@ -193,6 +194,83 @@ def evade_inline_image_outside_type3_box() -> bytes:
         b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
     )
     return simple_page(pdf, content, res)
+
+
+def _type3_showing_text_under_a_string_subtype() -> bytes:
+    """A Type 3 font whose `/Subtype` is the STRING `(Type3)`, its procedure showing the text.
+
+    PDFium reads `/Subtype` by its bytes, so this is a Type 3 font to it. burrow compared a name,
+    found none, and read the font as "not Type 3": every Type 3 rule skipped it -- the procedure's
+    shown text, a painted path, an inline image. Measured by #125's second security review: `Ok`,
+    879 dark pixels in the region before and after, the secret in plain text in the output. That
+    leak was on main before the Type 3 slice. Refused `[subtype-not-a-name]`. The glyph is far
+    from the region; the procedure draws into it.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, y0, x1, y1 = REGION
+    gx, gy = PAGE_W - 20, 10
+    proc = pdf.stream(
+        b"",
+        b"10 0 d0\nBT /Helv 20 Tf " + f"{x0 - gx} {y0 - gy + 5}".encode() + b" Td "
+        + literal(secret("TYPE3-STRING-SUBTYPE")) + b" Tj ET\n",
+    )
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3 = pdf.add(
+        b"<< /Type /Font /Subtype (Type3) /FontBBox [0 0 10 10]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [10]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >> >>"
+    )
+    content = b"BT /T3 1 Tf " + f"{gx} {gy} Td ".encode() + literal("a") + b" Tj ET\n" + keep_line_ops()
+    res = (
+        b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_type3_subtype_as_a_string() -> bytes:
+    """See `_type3_showing_text_under_a_string_subtype`."""
+    return _type3_showing_text_under_a_string_subtype()
+
+
+def _form_holding_text(subtype: bytes, canary: str) -> bytes:
+    """A page whose only content is `/X1 Do`, the form holding the text in the region."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, y0, _x1, _y1 = REGION
+    form = pdf.stream(
+        b"/Type /XObject /Subtype " + subtype + b" /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode()
+        + b"] /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv 20 Tf " + f"{x0} {y0 + 5}".encode() + b" Td " + literal(secret(canary))
+        + b" Tj ET\n",
+    )
+    content = b"q /X1 Do Q\n" + keep_line_ops()
+    res = (
+        b"/XObject << /X1 " + str(form).encode() + b" 0 R >> /Font << /Helv "
+        + str(helv).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_form_subtype_as_a_string() -> bytes:
+    """A Form XObject whose `/Subtype` is the STRING `(Form)`, holding the text in the region.
+
+    The walk read a non-name `/Subtype` as "not a form" and never entered it; PDFium reads the
+    bytes and draws it. Measured by #125's second security review: `Ok`, 879 dark pixels before
+    and after, the text still in the output -- on main before the Type 3 slice. Refused
+    `[subtype-not-a-name]`. Its twin, `nearmiss-form-subtype-as-a-name`, is byte for byte the same
+    shape with the name `/Form`, and redacts.
+    """
+    return _form_holding_text(b"(Form)", "FORM-STRING-SUBTYPE")
+
+
+def nearmiss_form_subtype_as_a_name() -> bytes:
+    """The twin of `evade-form-subtype-as-a-string`: `/Subtype /Form`, so the rule must not fire."""
+    return _form_holding_text(b"/Form", "FORM-NAME-SUBTYPE")
 
 
 def evade_image_in_type3_glyph() -> bytes:
@@ -2688,6 +2766,9 @@ CASES: list[tuple[str, str]] = [
     ("evade-image-as-pattern", "image"),
     ("evade-image-in-type3-glyph", "image"),
     ("evade-inline-image-outside-type3-box", "image"),
+    ("evade-type3-subtype-as-a-string", "/Subtype not a name"),
+    ("evade-form-subtype-as-a-string", "/Subtype not a name"),
+    ("nearmiss-form-subtype-as-a-name", "/Subtype not a name"),
     ("evade-text-in-type3-via-form", "Type 3 procedure"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
     ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
@@ -2801,6 +2882,9 @@ CASES: list[tuple[str, str]] = [
 
 BUILDERS = {
     "evade-inline-image-outside-type3-box": evade_inline_image_outside_type3_box,
+    "evade-type3-subtype-as-a-string": evade_type3_subtype_as_a_string,
+    "evade-form-subtype-as-a-string": evade_form_subtype_as_a_string,
+    "nearmiss-form-subtype-as-a-name": nearmiss_form_subtype_as_a_name,
     "evade-image-in-form": evade_image_in_form,
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,

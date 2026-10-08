@@ -128,6 +128,8 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a `gs` whose ExtGState sets **`/LW` or `/ML` to anything but one number both readers agree on** -- a string, an array, a name, a magnitude past 2^24 | **refuse**, `[ext-gstate-line-unreadable]` — added 2026-10-08 ([#278]). An indirect reference to a number is read, as PDFium reads it. **Over-refuses**: PDFium draws a string or array width thin |
 | a page drawing with a **Type 3 font whose glyph procedures paint** — any of `f F f* S s B B* b b*`, or `sh` | **refuse**, `[type-three-procedure-paints]` — added 2026-10-08 (#125). **Page-wide**, by the owner's decision: the walk boxes a Type 3 glyph by its advance and `/FontBBox` and never looks at what the procedure draws, so a procedure painting into the region from a glyph far outside it returned `Ok` over 2,276 dark pixels (14,960 for a bare `sh`). A glyph drawn with fills is legitimate, so this **over-refuses**: matplotlib's default PDF output draws every glyph that way, and any page carrying such a figure refuses wherever the region is. 0 of #227's 99 readable real documents are refused by it; matplotlib output is not in that set |
 | a Type 3 glyph procedure that draws an **inline image outside its font's `/FontBBox`**, or a font with no box | **refuse**, `[type-three-image-outside-its-box]` — added 2026-10-08 (#125). **Page-wide**, like the paint rule: every Type 3 font the page draws with is checked, wherever the region is. The image's extent is the unit square through the procedure's own `cm`s, and it is judged against **each** font that names the procedure, since two fonts can share one with different boxes. Outside the box no region over the image reaches the glyph: `Ok` over 5,309 dark pixels, measured. A TeX bitmap font draws each image inside its box and is not refused by this |
+| a **Type 3 glyph procedure carrying a `/Matrix`** of its own | **refuse**, `[type-three-procedure-matrix]` — added 2026-10-08 (#125, security review). PDFium applies it as it applies a form's, before the procedure's own `cm`; no producer is known to write one, so it is refused rather than modelled. Page-wide, like the rows beside it |
+| a **`/Subtype` that is not a name** -- on a font, a Form XObject, or an image -- wherever burrow branches on it | **refuse**, `[subtype-not-a-name]` — added 2026-10-08 (#125, second security review). PDFium reads `/Subtype` by its bytes, so `(Type3)` is a Type 3 font and `(Form)` a form to it; burrow read "not a name" as "not this" and skipped every Type 3 rule and the form's content. Measured `Ok` with a procedure's shown text, painted path and image, and a form's text, all left in the region (879 and 6,000 dark pixels before and after). The text and form cases were on `main` before this slice; the redaction page is not reachable by visitors. The post-run read-back re-runs burrow's walk, so it shared the blind spot. 0 of 4,824 census tiles refuse by it |
 | a region reaching a glyph of a **Type 3 font that draws an inline image** | **refuse**, `[type-three-image-cut]` — added 2026-10-08 (#125), owner's decision. Removing the glyph would leave its bitmap in `/CharProcs`. Keyed on the font, not the code. 1 of #227's 99 readable documents newly refused (a pdfTeX bitmap-font test file, 4 of 72 tiles), at the 1% bar; the committed `producer-latex` fixture refuses on the regions that reach its bitmap-font text |
 | a document with an **`/AcroForm`** | **refuse**, `[acroform-field]` — landed #125. Two signals: the catalogue's **`/AcroForm`**, resolved through the trailer's `/Root` (which may be a *direct* dictionary — qpdf accepts one, and then the catalogue is in no reference set — so `/Root` is resolved, not scanned for), which catches the form however its fields are laid out (including a field written *inline* inside `/AcroForm /Fields`); and a top-level **`/FT`** on any referenced object (a field object with no catalogue `/AcroForm`). A **deliberate over-refusal**: it refuses every document with a form, not only one whose field reaches the region; the narrowing is [#274] |
 | a document with a **`/StructTreeRoot`** reaching the region | **refuse** — see §5, the signal is owed |
@@ -5038,8 +5040,9 @@ measured four leaks on `main`, each an `Ok`:
   a glyph of a font that draws one refuses `[type-three-image-cut]`, since the bitmap would stay in
   the file.
 
-**What both post-code reviews found, before anything was pushed.** Four leaks, each `Ok` with
-6,000 to 6,200 dark pixels left in the region, all in the image rule:
+**What both post-code reviews found, before anything was pushed.** Three leaks, each `Ok` with
+6,000 dark pixels left in the region, all in the image rule, and one composition order no test
+pinned:
 
 - a procedure shared by two fonts was judged against the first font's box only, so a second
   font with a ten-point box inherited "inside" (the code review). The procedure's image extent
@@ -5050,7 +5053,28 @@ measured four leaks on `main`, each an `Ok`:
 - padded `cm` operands -- `1 0 0 1 0 0 200 0 0 30 -280 245 cm` -- which PDFium reads from the end
   and the scan read from the front. The procedure scan now counts operands as the page walk does,
   `[operand-count-mismatch]`;
-- a reversed composition of two `cm`s was untested and leaked under mutation; it has a fixture.
+- the order two `cm`s compose in was pinned by no test: a mutation reversing it returned `Ok` over
+  6,200 dark pixels. A test gap, not a shipped leak; it has a fixture now.
+
+**What the second security review found.** Every fix above held. Two things did not:
+
+- **A `/Subtype` written as a string** -- `(Type3)` on the font, `(Form)` on a form -- read as
+  "not this", so every Type 3 rule skipped the font and the walk never entered the form. PDFium
+  reads the bytes and draws both. `Ok` with the procedure's text, painted path and image, and the
+  form's text, all still in the region; the text and form cases were on `main` before this slice.
+  Every place redaction branches on `/Subtype` -- `read_font`, form resolution, the Type 3 check,
+  `is_image` -- now goes through one reader, `resources::subtype_of`, and a non-name refuses
+  `[subtype-not-a-name]` (the row in §3). A numeric `/Subtype` on a drawn XObject, which
+  #224 round 3 pinned as redacting, refuses too; its differential test now requires both engines
+  to refuse by that name.
+- **Many names for one Type 3 font** were judged once per name, and the sharing walk descended
+  every procedure once per name: 4,000 names over one font of 4,000 `/CharProcs` keys took 7.3 s
+  against a 50 ms budget, measured, the deadline read on none of it. The sharing walk now descends
+  a font's procedures once per font object and reads the deadline per key; the Type 3 check judges
+  each font object once (an inline font, whose identity is the shared `(0, 0)`, every time), and
+  reads the deadline per name and per key. Any one of those three stops the case; a mutation
+  removing all three is red at 12.5 s, and one moving the sharing walk's procedures back out of
+  its once-per-font guard is red on its own.
 
 **What else now refuses through a procedure.** The scan tracks a transform, so a procedure with a
 `Q` that has no `q`, a `cm` whose operands are not numbers or compose past finite values, or a
@@ -5061,14 +5085,17 @@ string, in a comment or inside an image's data is not an operator: the scan toke
 refused only by the two rules above, because refusing every image-drawn Type 3 font would refuse
 TeX bitmap-font documents wherever the region is.
 
-**Shown to fail.** `core/burrow-engines/tests/type_three_ink.rs` (12 tests: each leak drawing into
+**Shown to fail.** `core/burrow-engines/tests/type_three_ink.rs` (15 tests: each leak drawing into
 the region on the input, measured by PDFium, and refusing by name; the clip and the uncut bitmap
 glyph redacting), unit probes per operator in `geometry.rs`, and a fuzz call of the procedure scan
 from `pdfsyntax_geometry`. Eleven mutations, each asserted applied and rebuilt, are red: `sh`
 dropped; `f` dropped; the image test widened from containment to intersection; the image check
 removed; the cut refusal removed; `Q` not restoring; a cached procedure skipping the per-font check
 (the shared-procedure leak back); a cache hit not recording the font as drawing an image; the
-`/Matrix` refusal removed; the operand count skipped; and the two `cm`s composed in reverse.
+`/Matrix` refusal removed; the operand count skipped; and the two `cm`s composed in reverse. After
+the second security review, two more: a non-name `/Subtype` read as absent (both string-subtype
+tests and the numeric differential red), and the sharing walk's procedures per name (the deadline
+test red).
 
 **The corpus.** `evade-paths-in-type3-glyph` refuses and leaves #125's owed set (owed markers 4 to
 3). `producer-latex` refuses `[type-three-image-cut]` on the regions that reach its bitmap-font text
@@ -5076,11 +5103,14 @@ and redacts on the others. `nearmiss-type3-procedure-that-only-shows-its-own-gly
 with a fill, which the page-wide rule now refuses; it draws a bitmap inside its box instead, the
 Type 3 font the rules still let through where the region does not reach it, and its whole-page
 region now refuses `[type-three-image-cut]`. A new fixture, `evade-inline-image-outside-type3-box`, puts the image rule's leak in the corpus
-the web differential replays; its twin is the near-miss. `outcomes.tsv` changed in exactly those
-lines.
+the web differential replays; its twin is the near-miss. `evade-type3-subtype-as-a-string` and
+`evade-form-subtype-as-a-string` put the second review's leak there, with
+`nearmiss-form-subtype-as-a-name` -- the same form under the name -- as the twin that redacts.
+`outcomes.tsv` changed in exactly those lines.
 
 **The census** (bar 1%, registered first): #227's 100 real documents, 4,824 tile-grid redactions on
 `main` and on this change. **1 of 99 readable documents newly refused** — a pdfTeX bitmap-font test
 file, in 4 of its 72 tiles, all `[type-three-image-cut]` — at the bar. 0 by the paint rule, on a
-set with no matplotlib output.
+set with no matplotlib output. Re-run on the head after the second security review: the same, and
+0 tiles refused `[subtype-not-a-name]`.
 

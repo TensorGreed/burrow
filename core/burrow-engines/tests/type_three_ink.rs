@@ -61,6 +61,7 @@ fn page(
         content,
         procedure,
         "",
+        "<< /g 7 0 R >>",
         bbox,
         width,
         font_resources,
@@ -75,6 +76,7 @@ fn page_with_procedure_dict(
     content: &str,
     procedure: &[u8],
     procedure_dict: &str,
+    char_procs: &str,
     bbox: &str,
     width: u32,
     font_resources: &str,
@@ -111,7 +113,7 @@ fn page_with_procedure_dict(
              /FirstChar 97 /LastChar 97 /Widths [{width}] /Resources {font_resources} >>"
         )
         .into_bytes(),
-        b"<< /g 7 0 R >>".to_vec(),
+        char_procs.as_bytes().to_vec(),
         stream(procedure_dict, procedure),
     ];
     objects.extend(extra.iter().map(|e| e.as_bytes().to_vec()));
@@ -379,6 +381,7 @@ fn a_glyph_procedure_carrying_its_own_matrix_refuses() {
         &show(FAR),
         procedure,
         "/Matrix [1 0 0 1 -280 245]",
+        "<< /g 7 0 R >>",
         "0 0 200 30",
         200,
         "<< >>",
@@ -455,4 +458,121 @@ fn a_cut_glyph_of_the_second_font_sharing_an_image_procedure_refuses() {
             "type-three-image-cut",
         );
     }
+}
+
+/// `/Subtype (Type3)`: A STRING WHERE A NAME BELONGS (#125's second security review). PDFium reads
+/// `/Subtype` by its bytes, so the font is Type 3 to it; read as "not a name", every Type 3 rule
+/// skipped it -- a procedure painting, drawing an image or SHOWING TEXT into the region returned
+/// `Ok` with all of it still there (the text case is older than this slice, on main). Refused.
+#[test]
+fn a_type_three_font_whose_subtype_is_a_string_refuses() {
+    for (what, procedure) in [
+        (
+            "a fill",
+            format!("10 0 d0\n{INTO_REGION} re f\n").into_bytes(),
+        ),
+        (
+            "an image",
+            b"10 0 d0\nq 200 0 0 30 -280 245 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n".to_vec(),
+        ),
+    ] {
+        let pdf = page(&show(FAR), &procedure, "0 0 10 10", 10, "<< >>", "", &[]);
+        let pdf = with_string_subtype(&pdf);
+        reaches_and_refuses(what, &pdf, "subtype-not-a-name");
+    }
+}
+
+/// The same for a Form XObject (`/Subtype (Form)`), which the walk read as "not a form" and never
+/// entered: its text in the region stayed, 879 dark pixels before and after (older than this slice).
+#[test]
+fn a_form_whose_subtype_is_a_string_refuses() {
+    let draw = "BT /F1 20 Tf 110 260 Td (SECRETS) Tj ET";
+    let font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+    let form = |subtype: &str| {
+        format!(
+            "<< /Type /XObject /Subtype {subtype} /BBox [0 0 400 400] \
+             /Resources << /Font << /F1 9 0 R >> >> /Length {} >>\nstream\n{draw}\nendstream",
+            draw.len()
+        )
+    };
+    let build = |subtype: &str| {
+        page(
+            "/Fm0 Do",
+            b"10 0 d0\n",
+            "0 0 10 10",
+            10,
+            "<< >>",
+            "/XObject << /Fm0 8 0 R >>",
+            &[&form(subtype), font],
+        )
+    };
+    reaches_and_refuses("(Form)", &build("(Form)"), "subtype-not-a-name");
+    // THE TWIN: the same form under a name redacts, and its text is gone.
+    let named = build("/Form");
+    assert!(dark_in_region(&named) > 0);
+    let (out, _) = redact(&named).expect("a named form redacts");
+    assert_eq!(dark_in_region(&out), 0);
+}
+
+/// `/Subtype /Type3` rewritten in place as `(Type3)`, the same length so the cross-reference holds.
+fn with_string_subtype(pdf: &[u8]) -> Vec<u8> {
+    let from = b"/Subtype /Type3";
+    let to = b"/Subtype(Type3)";
+    let at = pdf
+        .windows(from.len())
+        .position(|w| w == from)
+        .expect("the Type 3 font's subtype");
+    let (head, rest) = pdf.split_at(at);
+    let tail = rest.get(from.len()..).expect("the subtype's own bytes");
+    let out = [head, to.as_slice(), tail].concat();
+    assert!(
+        out.windows(to.len()).any(|w| w == to),
+        "the subtype was rewritten"
+    );
+    out
+}
+
+/// 4,000 NAMES FOR ONE TYPE 3 FONT OF 4,000 PROCEDURE KEYS (#125's second security review): the
+/// font was judged once per name and the deadline read on no cache hit -- 7.4 s against 500 ms.
+/// Judged once per font object, the deadline read per key, it stops at the budget instead: the
+/// refusal must be `LimitExceeded`, so a test that stopped for any other reason fails.
+#[test]
+fn many_names_for_one_type_three_font_stop_at_the_deadline() {
+    let keys: String = (0..4000).map(|i| format!("/g{i} 7 0 R ")).collect();
+    let names: String = (0..4000).map(|i| format!("/T{i} 5 0 R ")).collect();
+    let shows: String = (0..4000)
+        .map(|i| format!("BT /T{i} 1 Tf 380 10 Td (a) Tj ET\n"))
+        .collect();
+    let pdf = page_with_procedure_dict(
+        &shows,
+        b"10 0 d0\n",
+        "",
+        &format!("<< {keys}>>"),
+        "0 0 10 10",
+        10,
+        "<< >>",
+        &format!("/Font << {names}>>"),
+        &[],
+    );
+    let started = std::time::Instant::now();
+    let covered: BTreeSet<usize> = [0].into_iter().collect();
+    let outcome = support::redact_page_with(
+        &pdf,
+        0,
+        covered,
+        REGION,
+        burrow_types::Limits::with(|l| l.max_duration_ms = 50),
+    );
+    let elapsed = started.elapsed();
+    match outcome {
+        Err(burrow_types::Error::LimitExceeded { .. }) => {}
+        other => panic!(
+            "expected the deadline to stop it, got {:?}",
+            other.map(|_| ())
+        ),
+    }
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "took {elapsed:?}"
+    );
 }
