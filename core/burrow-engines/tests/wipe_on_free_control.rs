@@ -26,4 +26,10 @@ fn without_the_wipe_a_redaction_frees_blocks_that_still_hold_the_canary() {
          wiping allocator from a blind one",
         seen.freed
     );
+    assert!(
+        seen.largest_canary_block > 64 * 1024,
+        "the largest freed block holding the canary was {} bytes; the padded content stream should \
+         put one past 64 KiB, or a wipe that skips large blocks is never examined",
+        seen.largest_canary_block
+    );
 }

@@ -22,6 +22,8 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 static FREED: AtomicUsize = AtomicUsize::new(0);
 static FREED_BYTES: AtomicUsize = AtomicUsize::new(0);
 static HELD_CANARY: AtomicUsize = AtomicUsize::new(0);
+static DIRTY: AtomicUsize = AtomicUsize::new(0);
+static LARGEST_CANARY_BLOCK: AtomicUsize = AtomicUsize::new(0);
 
 /// What the witness saw while armed.
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +34,14 @@ pub struct Seen {
     pub freed_bytes: usize,
     /// How many of them still held [`CANARY`] when they were freed.
     pub held_canary: usize,
+    /// How many held any non-zero byte at all. Under `WipeOnFree` this must be zero whatever the
+    /// canary's encoding and whatever the block's size: the canary count alone let a wipe that
+    /// skipped blocks over 4 KiB pass (#199's review), because every canary block here was small
+    /// until the document was padded.
+    pub dirty: usize,
+    /// The size of the largest freed block that held the canary. The control requires it past
+    /// 64 KiB, so a size-dependent wipe is examined at a size it would skip.
+    pub largest_canary_block: usize,
 }
 
 /// Run `f` with the witness armed, and report what it saw.
@@ -39,6 +49,8 @@ pub fn watch<T>(f: impl FnOnce() -> T) -> (T, Seen) {
     FREED.store(0, Ordering::SeqCst);
     FREED_BYTES.store(0, Ordering::SeqCst);
     HELD_CANARY.store(0, Ordering::SeqCst);
+    DIRTY.store(0, Ordering::SeqCst);
+    LARGEST_CANARY_BLOCK.store(0, Ordering::SeqCst);
     ARMED.store(true, Ordering::SeqCst);
     let out = f();
     ARMED.store(false, Ordering::SeqCst);
@@ -46,6 +58,8 @@ pub fn watch<T>(f: impl FnOnce() -> T) -> (T, Seen) {
         freed: FREED.load(Ordering::SeqCst),
         freed_bytes: FREED_BYTES.load(Ordering::SeqCst),
         held_canary: HELD_CANARY.load(Ordering::SeqCst),
+        dirty: DIRTY.load(Ordering::SeqCst),
+        largest_canary_block: LARGEST_CANARY_BLOCK.load(Ordering::SeqCst),
     };
     (out, seen)
 }
@@ -64,6 +78,10 @@ impl<A> Witness<A> {
         let block = unsafe { std::slice::from_raw_parts(ptr, len) };
         if block.windows(CANARY.len()).any(|window| window == CANARY) {
             HELD_CANARY.fetch_add(1, Ordering::Relaxed);
+            LARGEST_CANARY_BLOCK.fetch_max(len, Ordering::Relaxed);
+        }
+        if block.iter().any(|&byte| byte != 0) {
+            DIRTY.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -95,6 +113,11 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Witness<A> {
     }
 }
 
+/// How far the content stream is padded: past 64 KiB, so the decoded content -- and every copy of
+/// it that holds the canary -- is a large block. A wipe that skipped large blocks would otherwise
+/// pass, since an unpadded page's copies are all under 1 KiB.
+const PADDING: usize = 80 * 1024;
+
 /// One page: the canary inside the region, and a kept word outside it.
 pub fn canary_document() -> Vec<u8> {
     use crate::support::pdf_builder::Builder;
@@ -111,7 +134,10 @@ pub fn canary_document() -> Vec<u8> {
     let canary = std::str::from_utf8(CANARY).unwrap();
     let content = pdf.stream(
         "",
-        &format!("BT /F1 24 Tf 72 700 Td ({canary}) Tj ET\nBT /F1 24 Tf 72 300 Td (KEPT) Tj ET\n"),
+        &format!(
+            "BT /F1 24 Tf 72 700 Td ({canary}) Tj ET\nBT /F1 24 Tf 72 300 Td (KEPT) Tj ET\n{}\n",
+            "q Q ".repeat(PADDING.div_euclid(4))
+        ),
     );
     pdf.put(
         page,
@@ -152,8 +178,9 @@ pub fn redact_watched() -> (Vec<u8>, Seen) {
         Err(error) => panic!("the canary document must redact, and it refused: {error:?}"),
     };
     println!(
-        "witness: {} blocks freed ({} bytes) during the redaction, {} still holding the canary",
-        seen.freed, seen.freed_bytes, seen.held_canary
+        "witness: {} blocks freed ({} bytes) during the redaction; {} still holding the canary \
+         (largest {} bytes), {} holding any non-zero byte",
+        seen.freed, seen.freed_bytes, seen.held_canary, seen.largest_canary_block, seen.dirty
     );
     (output, seen)
 }

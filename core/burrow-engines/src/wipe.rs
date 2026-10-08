@@ -20,16 +20,24 @@
 //!   it is still in use; that is a leak to fix where it is, and the wasm-heap canary is what
 //!   would see it.
 //! - **The engines' own heaps.** qpdf and PDFium allocate with their own `malloc`, in a separate
-//!   Emscripten module on the web and in C++ natively. This allocator sees none of it.
-//!   `bridge-qpdf.js` zeroes the buffers qpdf hands across; qpdf's internal object cache is
-//!   out of the C API's reach, which is why the worker is recycled.
+//!   Emscripten module on the web and in C++ natively. This allocator sees none of it. The
+//!   buffers of decoded content qpdf hands to the caller are zeroed before they are freed, by
+//!   `bridge-qpdf.js` on the web and by `qpdf::handle`'s `take_malloced_buffer` natively, which
+//!   calls [`wipe`] directly. qpdf's internal object cache is out of the C API's reach on both:
+//!   on the web the worker is recycled; natively it is freed unwiped when the document closes.
 //! - **The stack and registers.** Not heap, and not addressed here.
 //!
 //! # Cost
 //!
 //! One pass of writes over every block freed, and `realloc` loses the in-place growth path:
 //! it always allocates, copies, wipes and frees, because an in-place `realloc` that moves the
-//! block frees the old one inside the inner allocator, where nothing can wipe it.
+//! block frees the old one inside the inner allocator, where nothing can wipe it. Measured on
+//! wasm (#199's review, a standalone build in node): growing 256 MiB in 64 KiB steps took 285 ms
+//! against 183 ms; two million small allocations 115 ms against 96 ms. **Shrinking** a large
+//! block in place is no longer possible either, so a shrink of N bytes peaks at about 2N where
+//! `dlmalloc` alone would not; nothing on the shipped path shrinks a large buffer today. And
+//! freeing one very large block is one uninterruptible wipe -- about 100 ms for several hundred
+//! MiB -- which adds to `max_duration_ms`'s overshoot by that much at most.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{Ordering, compiler_fence};
@@ -73,7 +81,7 @@ impl<A> WipeOnFree<A> {
 /// # Safety
 ///
 /// `ptr` must be valid for writes of `len` bytes.
-unsafe fn wipe(ptr: *mut u8, len: usize) {
+pub(crate) unsafe fn wipe(ptr: *mut u8, len: usize) {
     const WORD: usize = core::mem::size_of::<u64>();
     // Bytes up to the first word boundary, then words, then the tail. Word writes because a
     // byte-at-a-time volatile loop is the slowest correct way to do this, and it runs on
@@ -221,10 +229,23 @@ mod tests {
             shrunk.write_bytes(0xCC, 3);
             allocator.dealloc(shrunk, Layout::from_size_align(3, 8).unwrap());
         }
+        // A LARGE BLOCK TOO: a wipe that skipped big blocks "for performance" is the plausible
+        // regression, and every size above is small (#199's review: such a mutation passed).
+        let big = Layout::from_size_align(1 << 20, 8).unwrap();
+        // SAFETY: as above.
+        unsafe {
+            let ptr = allocator.alloc(big);
+            assert!(!ptr.is_null());
+            ptr.write_bytes(0xDD, 1 << 20);
+            let grown = allocator.realloc(ptr, big, 2 << 20);
+            assert!(!grown.is_null());
+            grown.write_bytes(0xEE, 2 << 20);
+            allocator.dealloc(grown, Layout::from_size_align(2 << 20, 8).unwrap());
+        }
         assert_eq!(
             allocator.inner.freed.load(Ordering::SeqCst),
-            3,
-            "three blocks handed back"
+            5,
+            "five blocks handed back"
         );
         assert_eq!(
             allocator.inner.freed_dirty.load(Ordering::SeqCst),

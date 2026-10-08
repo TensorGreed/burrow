@@ -644,6 +644,14 @@ fn take_malloced_buffer(
         unsafe { core::slice::from_raw_parts(buffer, length) }.to_vec()
     };
     if !buffer.is_null() {
+        // WIPED BEFORE IT IS FREED (#199): this is decoded content -- the text a redaction
+        // removes -- and `free` leaves it in the C allocator's free lists for the life of the
+        // process. `bridge-qpdf.js` does the same on the web; `WipeOnFree` cannot, because this
+        // block is qpdf's `malloc`, not Rust's.
+        if length > 0 {
+            // SAFETY: qpdf reports `length` bytes at `buffer`, still allocated until the next line.
+            unsafe { crate::wipe::wipe(buffer, length) };
+        }
         // SAFETY: `buffer` was allocated by qpdf with `malloc` and has not been freed. The
         // function nulls it out, and nothing reads it afterwards. Untrapped and argued in
         // `engines/qpdf-untrapped-accepted.toml`: its body is a `free`.

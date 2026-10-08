@@ -24,10 +24,11 @@ use wipe_witness::Witness;
 static ALLOCATOR: WipeOnFree<Witness<std::alloc::System>> =
     WipeOnFree::new(Witness(std::alloc::System));
 
-/// A floor on what is examined. Both binaries measured **813** frees during this redaction when
-/// the test was written, and the control found the canary in **16** of them; a count far below
-/// 813 means the witness has stopped seeing the operation, not that the operation got cleaner.
-const MIN_FREES: usize = 500;
+/// A floor on what is examined. Both binaries measured **369,541** frees during this redaction
+/// when the test was written -- the padding's tokens are most of them -- and the control found the
+/// canary in **9**, the largest 82,838 bytes. A count far below that means the witness has stopped
+/// seeing the operation, not that the operation got cleaner.
+const MIN_FREES: usize = 100_000;
 
 #[test]
 fn a_redaction_frees_no_block_that_still_holds_the_canary() {
@@ -36,6 +37,11 @@ fn a_redaction_frees_no_block_that_still_holds_the_canary() {
         seen.freed >= MIN_FREES,
         "only {} frees were examined; the witness is not seeing the redaction",
         seen.freed
+    );
+    assert_eq!(
+        seen.dirty, 0,
+        "{} of {} freed blocks held a non-zero byte",
+        seen.dirty, seen.freed
     );
     assert_eq!(
         seen.held_canary, 0,
