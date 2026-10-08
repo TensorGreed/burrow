@@ -191,31 +191,35 @@ async function runOperation(request) {
     return null;
   }
 
-  const buffers = [];
-  for (const blob of inputs) {
-    buffers.push(new Uint8Array(await blob.arrayBuffer()));
-  }
-  const bytes = buffers[0];
-  const password = request.password ? new Uint8Array(request.password) : undefined;
-  // NOT freed here, and that is not an oversight. wasm-bindgen passes a struct argument
-  // BY VALUE: the generated glue calls `limits.__destroy_into_raw()` and hands the raw
-  // pointer to Rust, which then owns it. Calling `.free()` afterwards is a double free
-  // and throws "null pointer passed to rust" -- which manifests as the worker never
-  // replying at all, because the throw escapes the message handler.
-  //
-  // `Reply` is the other way round: it comes back owned, so `drainReply` frees it.
-  const limits = new wasm_bindgen.WebLimits(
-    BigInt(request.limits.maxInputBytes),
-    BigInt(request.limits.maxMemoryBytes),
-    BigInt(request.limits.maxDurationMs),
-    BigInt(request.limits.maxPages),
-    BigInt(request.limits.maxPixels),
-  );
-
-  // #199: what holds the person's bytes in this heap, zeroed in `finally` once Rust has copied it.
+  // #199: everything that holds the person's bytes in this heap, recorded as it is read and
+  // zeroed in `finally` -- after Rust has copied it, or after a later read fails.
   /** @type {(Uint8Array | undefined)[]} */
-  const held = [bytes, password];
+  const held = [];
+  const buffers = [];
   try {
+    for (const blob of inputs) {
+      const read = new Uint8Array(await blob.arrayBuffer());
+      held.push(read);
+      buffers.push(read);
+    }
+    const bytes = buffers[0];
+    const password = request.password ? new Uint8Array(request.password) : undefined;
+    held.push(password);
+    // NOT freed here, and that is not an oversight. wasm-bindgen passes a struct argument
+    // BY VALUE: the generated glue calls `limits.__destroy_into_raw()` and hands the raw
+    // pointer to Rust, which then owns it. Calling `.free()` afterwards is a double free
+    // and throws "null pointer passed to rust" -- which manifests as the worker never
+    // replying at all, because the throw escapes the message handler.
+    //
+    // `Reply` is the other way round: it comes back owned, so `drainReply` frees it.
+    const limits = new wasm_bindgen.WebLimits(
+      BigInt(request.limits.maxInputBytes),
+      BigInt(request.limits.maxMemoryBytes),
+      BigInt(request.limits.maxDurationMs),
+      BigInt(request.limits.maxPages),
+      BigInt(request.limits.maxPixels),
+    );
+
     if (request.op === "merge") {
       // ONE FLAT BUFFER PLUS A LENGTH TABLE, not an array of arrays. wasm-bindgen can
       // marshal `Vec<Vec<u8>>` and doing so copies every document twice. A merge is the
@@ -236,7 +240,8 @@ async function runOperation(request) {
       // engine heap rather than both plus the originals. Zeroed first (#199).
       for (const b of buffers) b.fill(0);
       buffers.length = 0;
-      held[0] = flat;
+      held.length = 0;
+      held.push(flat, password);
       reply = wasm_bindgen.merge(flat, lengths, limits);
     } else if (request.op === "rotate") {
       // ONE INPUT, ONE OUTPUT, and no new reply shape: `merge` made `Reply` carry bytes and

@@ -133,6 +133,27 @@ describe("#199: the base worker zeroes the input and the password once Rust has 
   });
 });
 
+describe("#199: a read that fails part-way still wipes what was read", () => {
+  it("merge: the second file cannot be read, so the first is zeroed", async () => {
+    const w = load(MAIN);
+    w.releaseQpdf();
+    const first = blob([83, 69, 67]);
+    const unreadable = {
+      size: 3,
+      arrayBuffer: async () => {
+        throw new Error("NotReadableError: the file changed on disk");
+      },
+    };
+    await w.send({ id: 1, op: "merge", blobs: [first.blob, unreadable], limits });
+
+    expect(w.posted.some((m) => m["kind"] === "Internal")).toBe(true);
+    expect(
+      first.view().every((b) => b === 0),
+      "the file read before the failure survived",
+    ).toBe(true);
+  });
+});
+
 describe("#199: the redaction worker zeroes the document and the password", () => {
   it("once the redaction has returned", async () => {
     const w = load(REDACT_MAIN);
@@ -159,6 +180,31 @@ describe("#199: the redaction worker zeroes the document and the password", () =
     expect(zero(seen[0]!.args[4]), "the password survived").toBe(true);
     expect(w.wipes()).toBe(1);
   });
+
+  it("when the redaction throws", async () => {
+    const w = load(REDACT_MAIN);
+    w.releaseQpdf();
+    capture(w.scope, "redact", () => {
+      throw new Error("a trap");
+    });
+    const input = blob([83, 69, 67, 82, 69, 84]);
+    await w.send({
+      id: 1,
+      op: "redact",
+      blob: input.blob,
+      page: 1,
+      covered: [1],
+      region: { left: 0, top: 0, width: 1, height: 1 },
+      limits,
+    });
+
+    expect(w.posted.some((m) => m["kind"] === "Internal")).toBe(true);
+    expect(
+      input.view().every((b) => b === 0),
+      "a throwing redaction left the document intact",
+    ).toBe(true);
+    expect(w.wipes()).toBe(1);
+  });
 });
 
 describe("#199: the qpdf bridge wipes decoded content", () => {
@@ -173,15 +219,21 @@ describe("#199: the qpdf bridge wipes decoded content", () => {
     const secret = [83, 69, 67, 82, 69, 84];
     let next = 64;
     const atFree: { ptr: number; bytes: number[] }[] = [];
+    const sizes = new Map<number, number>();
+    const freed: number[][] = [];
     const module = {
       HEAPU8: u8,
       HEAPU32: new Uint32Array(heap),
       _malloc: (n: number) => {
         const at = next;
         next += n + 8;
+        sizes.set(at, n);
         return at;
       },
-      _free: () => {},
+      _free: (ptr: number) => {
+        freed.push([...u8.slice(ptr, ptr + (sizes.get(ptr) ?? 0))]);
+      },
+      _qpdf_oh_replace_stream_data: () => {},
       _qpdf_oh_get_page_content_data: (_d: number, _p: number, bufp: number, lenp: number) => {
         const buf = module._malloc(secret.length);
         u8.set(secret, buf);
@@ -220,8 +272,23 @@ describe("#199: the qpdf bridge wipes decoded content", () => {
           secret.length,
         );
       },
+      cString: () => {
+        u8.set([...secret, 0], 3072);
+        return (scope["__burrow_qpdf_copy_c_string"] as (p: number) => Uint8Array)(3072);
+      },
+      replaceStreamData: () =>
+        (
+          scope["__burrow_qpdf_oh_replace_stream_data"] as (
+            d: number,
+            s: number,
+            b: Uint8Array,
+            f: number,
+            p: number,
+          ) => boolean
+        )(1, 1, new Uint8Array(secret), 0, 0),
       wipe: () => (scope["__burrow_wipe_handed_out"] as () => void)(),
       atFree,
+      freed,
     };
   }
 
@@ -246,6 +313,24 @@ describe("#199: the qpdf bridge wipes decoded content", () => {
       b.wipe();
       expect(zero(second), "the last hand-out survived the operation's end").toBe(true);
     });
+  });
+
+  it("zeroes an unparsed object's copy, which can carry document text", () => {
+    const b = bridge();
+    const text = b.cString();
+    expect([...text]).toEqual([83, 69, 67, 82, 69, 84]);
+    b.wipe();
+    expect(zero(text), "copy_c_string's hand-out survived the operation's end").toBe(true);
+  });
+
+  it("zeroes the stream data it copied into qpdf before freeing it", () => {
+    const b = bridge();
+    expect(b.replaceStreamData()).toBe(true);
+    expect(b.freed).toHaveLength(1);
+    expect(
+      b.freed[0]!.every((x) => x === 0),
+      "replace_stream_data freed its buffer with the content in it",
+    ).toBe(true);
   });
 
   it("zeroes the written document's copy too", () => {
