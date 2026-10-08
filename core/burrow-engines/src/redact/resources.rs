@@ -49,6 +49,9 @@ const WIDTHS: Name = Name::literal(b"/Widths\0");
 const FONT_MATRIX: Name = Name::literal(b"/FontMatrix\0");
 const FONT_BBOX: Name = Name::literal(b"/FontBBox\0");
 const FONT_DESCRIPTOR: Name = Name::literal(b"/FontDescriptor\0");
+const FONT_FILE: Name = Name::literal(b"/FontFile\0");
+const FONT_FILE_2: Name = Name::literal(b"/FontFile2\0");
+const FONT_FILE_3: Name = Name::literal(b"/FontFile3\0");
 const MISSING_WIDTH: Name = Name::literal(b"/MissingWidth\0");
 const DESCENDANT_FONTS: Name = Name::literal(b"/DescendantFonts\0");
 const ENCODING: Name = Name::literal(b"/Encoding\0");
@@ -69,12 +72,17 @@ pub(crate) struct PageResources<O> {
     dictionary: O,
     /// Cached per-font facts, so a page of a thousand glyphs does not re-resolve its font a
     /// thousand times. Keyed by resource name, which is what the content stream selects by.
-    fonts: std::cell::RefCell<BTreeMap<Vec<u8>, FontFacts>>,
+    fonts: std::cell::RefCell<BTreeMap<Vec<u8>, std::rc::Rc<FontFacts>>>,
     /// The same facts by the font's OBJECT, so many names for one font read it once (#125's sixth
     /// security review): 3,000 names over one costly font were read once each, between the
     /// walk's deadline checks -- 7.7 s against a 2 s budget. A direct font, `(0, 0)`, is never
     /// keyed here.
-    fonts_by_object: std::cell::RefCell<BTreeMap<(std::ffi::c_int, std::ffi::c_int), FontFacts>>,
+    ///
+    /// SHARED, NOT COPIED (#125's seventh security review): each entry is an `Rc`, so a name and the
+    /// object hold one `FontFacts` -- which can carry a decoded CMap of tens of MiB -- not one
+    /// each. Copies had put 20 fonts over one 32 MiB CMap at 1.4 GB.
+    fonts_by_object:
+        std::cell::RefCell<BTreeMap<(std::ffi::c_int, std::ffi::c_int), std::rc::Rc<FontFacts>>>,
 }
 
 /// Everything the walk needs about one font, read once.
@@ -278,7 +286,7 @@ impl<O: PdfObject> PageResources<O> {
         })
     }
 
-    fn font_facts(&self, name: &[u8]) -> Result<FontFacts> {
+    fn font_facts(&self, name: &[u8]) -> Result<std::rc::Rc<FontFacts>> {
         if let Some(cached) = self.fonts.borrow().get(name) {
             return Ok(cached.clone());
         }
@@ -298,7 +306,7 @@ impl<O: PdfObject> PageResources<O> {
         let facts = match by_object {
             Some(facts) => facts,
             None => {
-                let facts = read_font(&font)?;
+                let facts = std::rc::Rc::new(read_font(&font)?);
                 if object != (0, 0) {
                     self.fonts_by_object
                         .borrow_mut()
@@ -538,8 +546,10 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 /// # Errors
 ///
 /// [`Error::Unsupported`] naming `subtype-not-a-name`, `number-unreadable` (any of the number
-/// keys), `base-encoding-not-a-name`, or `width-out-of-range` (a simple font's width or
-/// `/MissingWidth` outside 0..65,535, #292); [`Error::Malformed`] naming `type3-matrix`, or
+/// keys), `base-encoding-not-a-name`, `width-out-of-range` (a simple font's width or
+/// `/MissingWidth` outside 0..65,535, #292), or `width-source` (a `/Widths` that is a number or an
+/// empty array, a `/MissingWidth` with no `/Widths`, or a Type 3 font with no `/Widths` or with a
+/// `/MissingWidth`); [`Error::Malformed`] naming `type3-matrix`, or
 /// `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths` declared; and whatever
 /// [`read_composite`] refuses for a Type 0 font.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
@@ -592,6 +602,20 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     facts.widths = numbers_strict_up_to(&font.key(&WIDTHS), codes_left)?.unwrap_or_default();
 
     let descriptor = font.key(&FONT_DESCRIPTOR);
+    // A `/FontDescriptor` THAT IS NOT A DICTIONARY REFUSES (#125's seventh security review): PDFium
+    // reads a stream's dictionary there, `/MissingWidth` and embedded programs included, and this
+    // skipped it.
+    let descriptor_kind = descriptor.type_code();
+    if descriptor_kind != object_type::NULL && descriptor_kind != object_type::DICTIONARY {
+        return Err(width_source_refusal());
+    }
+    // AN EMBEDDED PROGRAM is where PDFium takes widths from when `/Widths` is absent, whatever the
+    // `/BaseFont` says -- not the bundled standard-14 table (#125's seventh security review: a
+    // Helvetica embedding a monospace program, `Ok` with the secret in the region, four subtypes).
+    let embeds_program = descriptor_kind == object_type::DICTIONARY
+        && [&FONT_FILE, &FONT_FILE_2, &FONT_FILE_3]
+            .iter()
+            .any(|key| descriptor.key(key).type_code() != object_type::NULL);
     if descriptor.type_code() == object_type::DICTIONARY {
         facts.missing_width = number_strict(&descriptor.key(&MISSING_WIDTH))?;
     }
@@ -599,17 +623,11 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     // WHERE THE WIDTHS COME FROM, chosen as PDFium chooses it, and refused wherever burrow would
     // choose otherwise (#125's sixth security review, each `Ok` over the secret). PDFium decides by
     // what `/Widths` IS, not by what reading it produced: an array, of any length, means the array
-    // and then `/MissingWidth` -- never the standard-14 table; no `/Widths` means the table, with
+    // and then `/MissingWidth` -- never the standard-14 table; no `/Widths` means an embedded program's widths if one is embedded, and only otherwise the table, with
     // `/MissingWidth` ignored; and a Type 3 font never uses either the table or `/MissingWidth`.
     // Each disagreement refuses `[width-source]`; nothing here is modelled.
     let widths_kind = declared.type_code();
-    let width_source = || {
-        Error::Unsupported(
-            "pdf resources [width-source]: a font whose glyph widths a renderer takes from a \
-             different source than burrow would"
-                .to_owned(),
-        )
-    };
+    let width_source = width_source_refusal;
     if subtype != Some(SUBTYPE_TYPE0) {
         let empty_array = widths_kind == object_type::ARRAY && declared.array_len() == 0;
         if widths_kind != object_type::NULL && widths_kind != object_type::ARRAY {
@@ -617,7 +635,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
             return Err(width_source());
         }
         if empty_array {
-            // `/Widths []`: every code is 0 to PDFium; here it fell to the bundled table.
+            // `/Widths []`: PDFium takes no width from it, and here it fell to the bundled table.
             return Err(width_source());
         }
         if subtype == Some(SUBTYPE_TYPE3) {
@@ -627,6 +645,10 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
             }
         } else if widths_kind == object_type::NULL && facts.missing_width.is_some() {
             // No `/Widths`: PDFium ignores `/MissingWidth`, and burrow applied it before the table.
+            return Err(width_source());
+        } else if widths_kind == object_type::NULL && embeds_program {
+            // No `/Widths` and an embedded program: PDFium takes the program's widths, and the
+            // bundled table is not that program's.
             return Err(width_source());
         }
     }
@@ -981,6 +1003,15 @@ pub(crate) fn whole(value: f64) -> Option<i64> {
         let converted = value as i64;
         converted
     })
+}
+
+/// The refusal for a font whose widths PDFium takes from a different source than burrow would.
+fn width_source_refusal() -> Error {
+    Error::Unsupported(
+        "pdf resources [width-source]: a font whose glyph widths a renderer takes from a \
+         different source than burrow would"
+            .to_owned(),
+    )
 }
 
 /// A simple font's width, or `/MissingWidth`, inside the range PDFium stores it in (#292).

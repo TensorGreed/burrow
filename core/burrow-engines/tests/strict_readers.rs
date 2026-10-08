@@ -23,8 +23,8 @@
 //! WHAT EACH TEST MEASURES, said rather than implied. The tests built on `reaches_and_refuses` /
 //! `reaches_and_redacts` measure PDFium's ink in the region on the input and, for a twin, on the
 //! output; the clamp test also requires no character to survive, since a glyph moved off the
-//! region reads as clean ink. The other CID-width tests, the width-range test and the
-//! `/FirstChar` tests built on `refuses_by` pin the outcome only. The `/FontMatrix` and `/FontBBox` twins refuse `[type-three-image-cut]`
+//! region reads as clean ink. The other CID-width tests, the width-range test, the `/FirstChar`
+//! tests (their `/FirstChar 0` twin too) and the width-source test's refusals pin the outcome only. The `/FontMatrix` and `/FontBBox` twins refuse `[type-three-image-cut]`
 //! deliberately: the identity reading reaches the image, which is the rule those shapes hid from.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
@@ -795,10 +795,12 @@ fn a_simple_font_width_out_of_sixteen_bits_refuses() {
 /// WHERE THE WIDTHS COME FROM (#125's sixth security review): PDFium decides by what `/Widths`
 /// IS. An array of any length means the array and `/MissingWidth`, never the standard-14 table; no
 /// `/Widths` means the table, with `/MissingWidth` ignored; a Type 3 font never uses the table or
-/// `/MissingWidth`. burrow decided by what reading produced, and each shape here returned `Ok` with
-/// the secret drawn in the region (110 dark pixels before and after, measured by the review).
-/// Each refuses `[width-source]`; the plain standard-14 font with no `/Widths` and no descriptor
-/// redacts.
+/// `/MissingWidth`. burrow decided by what reading produced, and the review's own fixtures for each
+/// shape returned `Ok` with the secret drawn in the region (110 dark pixels before and after). The
+/// shapes here pin the OUTCOME only -- the Type 3 procedure paints nothing -- and each refuses
+/// `[width-source]`; the plain standard-14 font with no `/Widths` and no descriptor redacts, and
+/// so does a Type 3 font with `/Widths [10]` and no descriptor, so a rule refusing every Type 3
+/// font fails here too.
 #[test]
 fn a_font_whose_widths_pdfium_takes_from_another_source_refuses() {
     let content = b"BT /F1 20 Tf 110 260 Td (SECRET) Tj ET";
@@ -872,9 +874,73 @@ fn a_font_whose_widths_pdfium_takes_from_another_source_refuses() {
         );
         refuses_by(what, &pdf, "width-source");
     }
+    // THE TYPE 3 TWIN: `/Widths [10]`, no descriptor, which PDFium and burrow read alike.
+    let accepted = document(
+        "/Font << /T3 5 0 R >>",
+        b"BT /T3 20 Tf 110 260 Td (a) Tj ET",
+        &[
+            &type3("/FirstChar 97 /LastChar 97 /Widths [10]", ""),
+            b"<< /g 7 0 R >>",
+            &proc_stream,
+        ],
+    );
+    redact(&accepted).expect("a Type 3 font with /Widths [10] redacts");
     // THE TWIN: the standard-14 font as the specification writes it, no `/Widths`, no descriptor.
     reaches_and_redacts(
         "Helvetica, no /Widths",
         &document("/Font << /F1 5 0 R >>", content, &[&simple("")]),
+    );
+}
+
+/// AN EMBEDDED PROGRAM UNDER A STANDARD-14 NAME, with no `/Widths` (#125's seventh security
+/// review): PDFium takes the widths from the program, burrow took them from the bundled table, and
+/// a Helvetica embedding a monospace program kept the secret in the region (`Ok`, 110 dark pixels
+/// before and after, in the review's own fixtures). Refused `[width-source]` for each of the
+/// three program keys and four subtypes; a `/FontDescriptor` that is a stream refuses too. The
+/// outcome only is pinned here -- the program is a stub -- and the non-embedded twin, the same
+/// font with a descriptor that embeds nothing, redacts.
+#[test]
+fn an_embedded_program_under_a_standard_fourteen_name_refuses() {
+    let content = b"BT /F1 20 Tf 110 260 Td (SECRET) Tj ET";
+    let program: &[u8] = b"<< /Length 0 >>\nstream\n\nendstream";
+    for subtype in ["/Type1", "/TrueType", "/MMType1"] {
+        for key in ["/FontFile", "/FontFile2", "/FontFile3"] {
+            let font = format!(
+                "<< /Type /Font /Subtype {subtype} /BaseFont /Helvetica /FontDescriptor 6 0 R >>"
+            );
+            let descriptor =
+                format!("<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 {key} 7 0 R >>");
+            let pdf = document(
+                "/Font << /F1 5 0 R >>",
+                content,
+                &[font.as_bytes(), descriptor.as_bytes(), program],
+            );
+            refuses_by(&format!("{subtype} {key}"), &pdf, "width-source");
+        }
+    }
+    let stream_descriptor = document(
+        "/Font << /F1 5 0 R >>",
+        content,
+        &[
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FontDescriptor 6 0 R >>",
+            b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /Length 0 >>\nstream\n\nendstream",
+        ],
+    );
+    refuses_by(
+        "a stream /FontDescriptor",
+        &stream_descriptor,
+        "width-source",
+    );
+    // THE TWIN: a descriptor that embeds nothing, read alike by both.
+    reaches_and_redacts(
+        "Helvetica, descriptor, nothing embedded",
+        &document(
+            "/Font << /F1 5 0 R >>",
+            content,
+            &[
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FontDescriptor 6 0 R >>",
+                b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 >>",
+            ],
+        ),
     );
 }
