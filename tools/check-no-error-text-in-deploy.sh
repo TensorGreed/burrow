@@ -16,7 +16,11 @@
 #      qpdf.wasm's export allowlist (`engines/build-wasm.sh`, `check-wasm-exports.sh`), and the wasm
 #      half of this check is defence in depth. The `burrow-ffi` half is the one that will bound
 #      something: the day a mobile app links qpdf natively, the cfg widens, and a feature edge into
-#      that graph would compile the accessor in. A positive control runs every time: the same
+#      that graph would compile the accessor in. It covers burrow-ffi AT ITS DEFAULT FEATURES on
+#      aarch64-linux-android and aarch64-apple-ios only -- not the emulator and simulator targets
+#      (x86_64-linux-android, armv7-linux-androideabi, aarch64-apple-ios-sim) and not a feature
+#      the app build might pass. Nothing in burrow-ffi's manifest varies by either today; the
+#      day it does, they join the loop. A positive control runs every time: the same
 #      query, asked of a wasm graph that does enable `fuzzing`, must see it, so a query that went
 #      blind cannot read as a clean graph. Every query excludes dev-dependencies, so the control
 #      resolves from the crates a wasm build already fetched (`--offline`).
@@ -100,6 +104,12 @@ seen_control=0
 if [ ! -d "$engines" ]; then
   fail "no $engines -- build the web app first; a scan of nothing is not a scan"
 else
+  # THE LIST FIRST, AND ITS STATUS: `done < <(find …)` loses find's exit status, so a find that
+  # failed part-way would have ended the loop early, a partial scan reading as a whole one.
+  listing="$(mktemp)"
+  if ! find "$dist" -type f -print0 >"$listing"; then
+    fail "find over $dist failed; the scan would be partial"
+  fi
   while IFS= read -r -d '' artifact; do
     examined=$((examined + 1))
     base="$(basename "$artifact")"
@@ -110,11 +120,19 @@ else
       "$engines"/qpdf.*.wasm) grep -aqF qpdf_get_error_code "$artifact" && seen_control=1 ;;
     esac
     for needle in "${NEEDLES[@]}"; do
-      if grep -aqF "$needle" "$artifact"; then
-        fail "$base carries '$needle': qpdf's error text is reachable from a shipped artifact"
-      fi
+      # THREE OUTCOMES, not two: grep's 2 (an unreadable file) is not "clean".
+      set +e
+      grep -aqF "$needle" "$artifact"
+      found=$?
+      set -e
+      case "$found" in
+        0) fail "$base carries '$needle': qpdf's error text is reachable from a shipped artifact" ;;
+        1) ;;
+        *) fail "could not read $base; a file the scan cannot read is not clean" ;;
+      esac
     done
-  done < <(find "$dist" -type f -print0)
+  done <"$listing"
+  rm -f "$listing"
   if [ "$seen_control" -ne 1 ]; then
     fail "the scan cannot see qpdf_get_error_code in qpdf.*.wasm, which exports it; it is blind, so a clean scan means nothing"
   fi

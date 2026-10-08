@@ -28,7 +28,7 @@ restore() {
 }
 trap restore EXIT
 
-EXPECTED_CASES=6
+EXPECTED_CASES=7
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -63,6 +63,18 @@ victim="$(ls "$work/dist-planted/engines/"burrow_wasm_bg.*.wasm)"
 printf 'qpdf_get_error_message_detail' >> "$victim"
 expect "an artifact carrying qpdf_get_error_message_detail is refused by name" 1 \
   "carries 'qpdf_get_error_message_detail'" "$work/dist-planted"
+
+# 2b. THE WIDENED SCAN: a name planted OUTSIDE engines/, nested, is refused -- so the scan covers
+# all of dist/, as the header says, and a revert to engines/ alone would turn this red.
+cp -r "$dist" "$work/dist-astro"
+mkdir -p "$work/dist-astro/_astro/nested"
+printf 'qpdf_get_error_full_text' >"$work/dist-astro/_astro/nested/x.js"
+if ! grep -qF qpdf_get_error_full_text "$work/dist-astro/_astro/nested/x.js"; then
+  bad "the plant outside engines/ did not apply, so this case measured nothing"
+else
+  expect "a name planted outside engines/ is refused by name" 1 \
+    "x.js carries 'qpdf_get_error_full_text'" "$work/dist-astro"
+fi
 
 # 3. A build missing one production module is refused: a scan of fewer files is not the build's.
 cp -r "$dist" "$work/dist-short"
@@ -121,7 +133,7 @@ if cmp -s "$manifest" "$work/Cargo.toml.orig"; then
   bad "the fuzzing mutation did not apply, so this case measured nothing"
 else
   expect "fuzzing switched on in the deploy build is refused by name" 1 \
-    "enables burrow-engines' 'fuzzing' feature" "$dist"
+    "burrow-wasm [default (documents)] enables burrow-engines' 'fuzzing' feature" "$dist"
 fi
 restore
 trap - EXIT
