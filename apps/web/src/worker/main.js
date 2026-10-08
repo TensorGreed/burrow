@@ -202,7 +202,7 @@ async function runOperation(request) {
       held.push(read);
       buffers.push(read);
     }
-    const bytes = buffers[0];
+    let bytes = buffers[0];
     const password = request.password ? new Uint8Array(request.password) : undefined;
     held.push(password);
     // NOT freed here, and that is not an oversight. wasm-bindgen passes a struct argument
@@ -240,7 +240,9 @@ async function runOperation(request) {
       // engine heap rather than both plus the originals. Zeroed first (#199).
       for (const b of buffers) b.fill(0);
       buffers.length = 0;
+      // Also what lets the zeroed copies go: `held` must not keep them through the call.
       held.length = 0;
+      bytes = new Uint8Array(0);
       held.push(flat, password);
       reply = wasm_bindgen.merge(flat, lengths, limits);
     } else if (request.op === "rotate") {

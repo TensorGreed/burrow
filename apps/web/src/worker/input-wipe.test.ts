@@ -151,6 +151,7 @@ describe("#199: a read that fails part-way still wipes what was read", () => {
       first.view().every((b) => b === 0),
       "the file read before the failure survived",
     ).toBe(true);
+    expect(w.wipes(), "the bridge's hand-outs were not wiped").toBe(1);
   });
 });
 
