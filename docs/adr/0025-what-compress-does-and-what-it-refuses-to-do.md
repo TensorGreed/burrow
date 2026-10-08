@@ -302,6 +302,10 @@ the replay used — #62 entered, #119 absent — "no longer exists". It does: #1
 deliberately removed, so the committed ledger is now exactly the state the replay describes. Only
 the logs are missing, which is the half that cannot be fixed without publishing reproducers.]*
 
+*[Amended 2026-10-08: historical again. The owner listed #119 in `fuzz/known-crashes.toml` on
+2026-10-08, so the committed ledger is no longer the state this replay used. Under it, a
+symbolised #119 report now classifies as #119 rather than UNMATCHED.]*
+
 With the ledger as it stood on
 2026-09-17 — #62 entered, #119 not yet filed — the three crash inputs from the 2026-09-18 nightly
 classify as: `merge` known (#62), `reorder` known (#62), **`rotate` UNMATCHED, exit 1**. That is
