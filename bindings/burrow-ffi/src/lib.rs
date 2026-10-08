@@ -23,6 +23,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use burrow_core::{Error, Result};
 
+/// Every Rust heap block is zeroed before it is freed (#199), as on the web. A document's
+/// decoded content passes through the Rust heap here too, and an app process outlives the
+/// operation that read it. `burrow_engines::wipe` says what it does not reach.
+#[global_allocator]
+static ALLOCATOR: burrow_core::engines::wipe::WipeOnFree =
+    burrow_core::engines::wipe::WipeOnFree::system();
+
 /// The message every caught panic reports. Deliberately fixed and content-free.
 const CAUGHT_PANIC: &str = "caught panic";
 

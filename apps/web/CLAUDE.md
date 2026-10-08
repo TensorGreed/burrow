@@ -356,10 +356,17 @@ The binding zeroes the copies it owns: redaction's input and merge's buffer (`Ze
 every password's `Box`. Only the password's wipe has a test (`bindings/burrow-wasm/src/lib.rs`).
 The two `Zeroizing` wrappers are held by review.
 
+**Every Rust heap block is zeroed when it is freed.** `burrow-wasm` declares
+`burrow_engines::wipe::WipeOnFree` as its global allocator, so every copy core makes of decoded
+content or of the input — the policy's buffers, the lexer's tokens, the edited stream, a `Vec`'s
+old block after it grew — is wiped on its way back to `dlmalloc`, without anyone having to list
+it. `core/burrow-engines/tests/wipe_on_free.rs` holds it natively, under the same type, with a
+witness beneath it and a control binary (`wipe_on_free_control.rs`) that must find the canary in
+freed blocks when nothing wipes. It does not reach **live** memory or **qpdf's** heap, which is a
+separate module; those are the canary's and the recycling's.
+
 **Still not true of the code:**
 
-- the Rust side's copies of decoded content, and of the input wherever an operation takes
-  ownership of it, are core's to wipe;
 - the canary test over both wasm heaps, and recycling the worker, are not written yet;
 - the render worker (`render-main.js`, `bridge-pdfium.js`) zeroes neither its input nor its
   password, and the pixels it posts are the page as drawn.

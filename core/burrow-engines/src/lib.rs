@@ -102,6 +102,9 @@ pub mod redact;
 /// `ClearedWitness` trait, which `redact::witness` implements over `redact::graph`, so the web
 /// engine verifies through it as the native one does (#191).
 pub mod redact_verify;
+/// Zeroing every Rust heap block on free, for the bindings to declare as their global allocator
+/// (#199). Ungated: the web and native builds both use it.
+pub mod wipe;
 
 /// Every glyph the walk places on a document's first page.
 ///
