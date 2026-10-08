@@ -532,16 +532,16 @@ function heapScanPrologue(canary) {
   };
   WebAssembly.Instance.prototype = Instance.prototype;
   let qpdf = null;
-  // THE PEAK WHILE THE OPERATION RUNS, per memory: the witness. Scanned on entry to each of the
-  // first SCANS bridge calls -- the input copied into qpdf's heap is there until the session
-  // ends, and the decoded page Rust holds is in burrow's from the first hand-out -- so a scan
-  // that cannot see a heap shows a peak of zero there and the test refuses to trust its final 0.
-  const SCANS = 64;
-  let scansTaken = 0;
+  // THE PEAK WHILE THE OPERATION RUNS, per memory: the witness. Sampled on entry to every
+  // STRIDE-th bridge call, all the way through -- a redaction makes about 1,400, and a Flate
+  // page's decoded text first appears around the 445th, so the first version's cap of 64 calls
+  // saw none of it and the compressed case was dropped for a property of the scanner (#199's
+  // review). A heap whose peak is zero is one this scan cannot vouch for.
+  const STRIDE = 8;
+  let calls = 0;
   const peak = new Map();
   const sample = () => {
-    if (scansTaken >= SCANS) return;
-    scansTaken++;
+    if (calls++ % STRIDE !== 0) return;
     for (const memory of memories) {
       const hits = count(new Uint8Array(memory.buffer));
       peak.set(memory, Math.max(peak.get(memory) || 0, hits));

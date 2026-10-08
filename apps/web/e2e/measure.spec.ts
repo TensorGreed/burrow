@@ -66,8 +66,12 @@ test("respawn cost, including compiling the engines", async ({ page }, testInfo)
   // expensive enough to matter.
   //
   // The bound below is what "does not matter" means here: a respawn happens after a crash, a
-  // watchdog kill, or a recycle, all of which are rare and none of which is on a hot path. If
-  // this ever fails, ADR 0014 §1a needs revisiting rather than the bound relaxing.
+  // watchdog kill, or a recycle, all of which are rare and none of which is on a hot path --
+  // EXCEPT REDACTION, whose worker is recycled after every redaction (#199), so every redaction
+  // after the first pays a cold respawn: 72-145 ms per redaction across the three browsers,
+  // measured by #199's review. That is on redaction's path, not off it; the bound still holds
+  // with room to spare, and ADR 0014 §1a's premise is true of every other bundle. If this ever
+  // fails, ADR 0014 §1a needs revisiting rather than the bound relaxing.
   expect(median, `median respawn ${median}ms`).toBeLessThan(15_000);
 });
 
