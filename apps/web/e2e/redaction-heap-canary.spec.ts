@@ -164,6 +164,9 @@ for (const { name, bytes, ok } of PAGES) {
     // AND QPDF'S HEAP IS NOT REUSED: the reply asks for recycling, refusal or not, and the host
     // acts on it -- one termination of this worker, asked for after the reply.
     expect(reply.recycle, "a redaction must ask for its worker to be recycled").toBe(true);
+    // NOT FATAL, so the termination counted below can only be the recycle: a fatal discard counts
+    // one too, and would also cost the crash breaker on every redaction (review).
+    expect(reply.fatal, "a redaction that completed must not be fatal").toBe(false);
     expect(
       await page.evaluate(() => window.burrowHarness.redactTerminations()),
       "the host did not discard the worker it was asked to recycle",

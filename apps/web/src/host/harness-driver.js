@@ -445,6 +445,9 @@ function recordRedaction(worker) {
   const terminate = worker.terminate.bind(worker);
   worker.terminate = () => {
     redactTerminations++;
+    // A HOLD ALREADY IN THE SLOT IS RELEASED, never overwritten: one host terminates only its
+    // current worker today, but an overwrite would leak a worker if that ever changed (review).
+    redactPendingTerminate?.();
     redactPendingTerminate = () => terminate();
   };
   worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
@@ -1294,7 +1297,12 @@ const harness = {
    * @param {number} ms
    */
   async settleRedaction(ms = 500) {
-    if (redactRaw === null) return { settled: false, nonce: 0 };
+    if (redactRaw === null) {
+      // NOTHING TO SETTLE, but a worker the host already let go is released all the same.
+      redactPendingTerminate?.();
+      redactPendingTerminate = null;
+      return { settled: false, nonce: 0 };
+    }
     const { worker, send } = redactRaw;
     const nonce = 1 + Math.floor(Math.random() * 2 ** 31);
     const deadline = performance.now() + 2 * ms;
