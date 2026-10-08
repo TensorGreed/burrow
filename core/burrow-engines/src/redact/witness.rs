@@ -275,7 +275,9 @@ fn orphans_of<O: PdfObject>(
                     continue;
                 }
                 if item.type_code() != object_type::NAME {
-                    continue;
+                    // FAIL CLOSED, as the narrowing does: a renderer reads this as a code, and
+                    // every name after it would be counted at the wrong one.
+                    return Err(super::steps::differences_item_unreadable());
                 }
                 let counted_already = map.as_ref().is_some_and(|m| m.maps(code));
                 if !still.contains(&code) && !counted_already {

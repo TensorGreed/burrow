@@ -792,6 +792,74 @@ pages = 1
   notes = "The twin: the same form under the name /Form. The rule must not fire, and the text must be gone."
 
 [[fixture]]
+name = "evade-widths-holding-a-string"
+file = "generated/evade-widths-holding-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-WIDTHS-STRING"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "A string where code 32's width belongs in /Widths. PDFium reads items one by one, so `!` is 1,000 wide and the secret is in the region; burrow read the array's text, dropped the string, and placed the secret 360 points left. Refused [number-unreadable] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "evade-differences-item-neither-code-nor-name"
+file = "generated/evade-differences-item-neither-code-nor-name.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-DIFFERENCES-ITEM"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "/Differences [65 (x) /B /U ...]: PDFium reads the string as code 0, so the names spell the secret on the codes the page draws; burrow skipped it and kept every name. Refused [differences-item-unreadable] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "evade-base-encoding-as-a-string"
+file = "generated/evade-base-encoding-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-BASE-ENCODING-STRING"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "/BaseEncoding (WinAnsiEncoding): WinAnsi to PDFium, Standard to burrow, so a standard-14 font's glyphs were placed outside the region. Refused [base-encoding-not-a-name] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "nearmiss-base-encoding-as-a-name"
+file = "generated/nearmiss-base-encoding-as-a-name.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-BASE-NAME"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin: the same file under /BaseEncoding /WinAnsiEncoding. Both readers agree, and the secret is removed."
+
+[[fixture]]
 name = "evade-inline-image"
 file = "generated/evade-inline-image.pdf"
 kind = "hand-built"

@@ -273,6 +273,102 @@ def nearmiss_form_subtype_as_a_name() -> bytes:
     return _form_holding_text(b"/Form", "FORM-NAME-SUBTYPE")
 
 
+def evade_widths_holding_a_string() -> bytes:
+    """`/Widths` with a string where code 32's width belongs, read item by item by PDFium.
+
+    PDFium reads the string as 0 and code 33 (`!`) as 1,000, so forty-five `!` at size 20 carry the
+    secret into the region. burrow read the array's unparsed text, dropped the string, and read `!`
+    as 600 -- the secret 360 points to the left, outside the region, and `Ok` with it on the page.
+    Refused `[number-unreadable]` since #125's third security review.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 126"
+        b" /Widths [(x) 1000 " + b"600 " * 93 + b"] >>"
+    )
+    bangs = 45
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{x0 - bangs * SECRET_SIZE} {SECRET_Y} Td ".encode()
+        + literal("!" * bangs + secret("WIDTHS-STRING")) + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+#: Glyph names for the characters a canary uses.
+_GLYPH_NAMES = {"-": "hyphen", **{c: c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}}
+
+
+def evade_differences_item_neither_code_nor_name() -> bytes:
+    """`/Differences [65 (x) /B /U …]`: the string is a code to PDFium, and burrow skipped it.
+
+    PDFium reads any non-name item as an anchor at its integer value, so the names land on codes 0
+    onwards, which the page draws in the region: PDFium extracts the secret. burrow skipped the
+    item, narrowed the names as codes 65 onwards, and kept every one -- `Ok`, `cut: true`, and the
+    secret spelled in the font. Refused `[differences-item-unreadable]` since #125's third
+    security review.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    canary = secret("DIFFERENCES-ITEM")
+    names = b" ".join(b"/" + _GLYPH_NAMES[c].encode() for c in canary)
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 0 /LastChar 255"
+        b" /Widths [" + b"600 " * 256 + b"] /Encoding << /Type /Encoding /Differences [65 (x) "
+        + names + b"] >> >>"
+    )
+    codes = "".join(f"{i:02X}" for i in range(len(canary))).encode()
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf " + f"{x0 + 4} {SECRET_Y} Td ".encode()
+        + b"<" + codes + b"> Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def _standard_14_under_base_encoding(base: bytes, canary: str) -> bytes:
+    """Code-96 glyphs then the secret in Helvetica with no `/Widths`, under `base`.
+
+    WinAnsi's code 96 is 333 wide and Standard's 222, so sixty of them at size 20 put the secret
+    at the region's left edge under WinAnsi and 133 points short of it under Standard.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding "
+        + base + b" >> >>"
+    )
+    graves = 60
+    start = x0 + 2 - graves * 333 * SECRET_SIZE / 1000
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf " + f"{start:.2f} {SECRET_Y} Td ".encode()
+        + literal("`" * graves + secret(canary)) + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def evade_base_encoding_as_a_string() -> bytes:
+    """`/BaseEncoding (WinAnsiEncoding)`: WinAnsi to PDFium by its bytes, Standard to burrow.
+
+    The secret sits in the region under WinAnsi's widths and outside it under Standard's, so
+    burrow kept it: `Ok`, 385 dark pixels before and after, in the security review's own file.
+    Refused `[base-encoding-not-a-name]` since #125's third security review. Its twin,
+    `nearmiss-base-encoding-as-a-name`, is the same file under the name, and redacts.
+    """
+    return _standard_14_under_base_encoding(b"(WinAnsiEncoding)", "BASE-ENCODING-STRING")
+
+
+def nearmiss_base_encoding_as_a_name() -> bytes:
+    """The twin: `/BaseEncoding /WinAnsiEncoding`, read alike by both, so the secret is removed."""
+    return _standard_14_under_base_encoding(b"/WinAnsiEncoding", "BASE-NAME")
+
+
 def evade_image_in_type3_glyph() -> bytes:
     """The image is drawn by a Type 3 glyph procedure — one level further than a Form XObject."""
     pdf = Pdf()
@@ -2100,15 +2196,19 @@ def evade_junk_kid_over_null_resources() -> bytes:
 
 
 def evade_font_repaired_during_the_walk() -> bytes:
-    """A font whose `/Widths` holds a stray `)`, which qpdf repairs only when the walk reads it.
+    """A font carrying a stray `)`, which qpdf repairs only when the walk reads the font.
 
     The repair comes after the open's warning check, so it needs the second one, just before the
-    write (#224, round 2). PDFium ends the array at the `)` and places the glyphs otherwise.
+    write (#224, round 2). #224 put the `)` in `/Widths`, where PDFium ends the array and places
+    the glyphs otherwise. Since #125's third security review the strict number reader refuses that
+    shape first, `[number-unreadable]`, and this fixture would no longer reach the warning check it
+    exists for -- so the `)` now sits in a key no reader interprets, and only the repair is left
+    to refuse it.
     """
     pdf = Pdf()
     font = pdf.add(
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv /FirstChar 31"
-        b" /LastChar 126 /Widths [0 ) 9000 " + b"556 " * 94 + b"] >>"
+        b" /LastChar 126 /Widths [0 9000 " + b"556 " * 94 + b"] /BurrowUnread [0 ) 1] >>"
     )
     return _page_under_a_tree(
         pdf,
@@ -2769,6 +2869,10 @@ CASES: list[tuple[str, str]] = [
     ("evade-type3-subtype-as-a-string", "/Subtype not a name"),
     ("evade-form-subtype-as-a-string", "/Subtype not a name"),
     ("nearmiss-form-subtype-as-a-name", "/Subtype not a name"),
+    ("evade-widths-holding-a-string", "a value read item by item"),
+    ("evade-differences-item-neither-code-nor-name", "a value read item by item"),
+    ("evade-base-encoding-as-a-string", "a value read item by item"),
+    ("nearmiss-base-encoding-as-a-name", "a value read item by item"),
     ("evade-text-in-type3-via-form", "Type 3 procedure"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
     ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
@@ -2885,6 +2989,10 @@ BUILDERS = {
     "evade-type3-subtype-as-a-string": evade_type3_subtype_as_a_string,
     "evade-form-subtype-as-a-string": evade_form_subtype_as_a_string,
     "nearmiss-form-subtype-as-a-name": nearmiss_form_subtype_as_a_name,
+    "evade-widths-holding-a-string": evade_widths_holding_a_string,
+    "evade-differences-item-neither-code-nor-name": evade_differences_item_neither_code_nor_name,
+    "evade-base-encoding-as-a-string": evade_base_encoding_as_a_string,
+    "nearmiss-base-encoding-as-a-name": nearmiss_base_encoding_as_a_name,
     "evade-image-in-form": evade_image_in_form,
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,

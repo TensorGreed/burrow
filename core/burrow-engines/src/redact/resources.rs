@@ -384,7 +384,7 @@ impl<O: PdfObject> Resources for PageResources<O> {
                     .to_owned(),
             ));
         };
-        let matrix = numbers_of(&dictionary.key(&MATRIX));
+        let matrix = numbers_strict(&dictionary.key(&MATRIX))?.unwrap_or_default();
         let matrix = match matrix.as_slice() {
             [a, b, c, d, e, f] => Matrix {
                 a: *a,
@@ -468,13 +468,21 @@ fn width_of(facts: &FontFacts, code: u32) -> Option<f64> {
 /// A name, or the `/BaseEncoding` inside an `/Encoding` dictionary. Anything else — including a
 /// dictionary with only `/Differences` — is `Standard`, which is what PDF 32000-1 §9.6.6.1 says
 /// a font with no stated base encoding uses for a non-symbolic font.
-fn base_encoding<O: PdfObject>(font: &O) -> crate::pdfsyntax::standard14::BaseEncoding {
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `base-encoding-not-a-name` for a `/BaseEncoding` that is present
+/// and not a name (#125's third security review). PDFium reads it by its bytes, so
+/// `(WinAnsiEncoding)` is WinAnsi to it and was Standard here: 50 codes of 96 then SECRET, placed
+/// with Standard's widths, sat outside the region and stayed -- `Ok`, 385 dark pixels before and
+/// after. A top-level `/Encoding` string is not honoured by PDFium, and is Standard in both.
+fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14::BaseEncoding> {
     use crate::pdfsyntax::standard14::BaseEncoding;
     const BASE_ENCODING: Name = Name::literal(b"/BaseEncoding\0");
     const WIN_ANSI: Name = Name::literal(b"/WinAnsiEncoding\0");
 
     let encoding = font.key(&ENCODING);
-    match encoding.type_code() {
+    Ok(match encoding.type_code() {
         object_type::NAME => {
             if names(&encoding, &WIN_ANSI) {
                 BaseEncoding::WinAnsi
@@ -483,26 +491,34 @@ fn base_encoding<O: PdfObject>(font: &O) -> crate::pdfsyntax::standard14::BaseEn
             }
         }
         object_type::DICTIONARY => {
-            if names(&encoding.key(&BASE_ENCODING), &WIN_ANSI) {
-                BaseEncoding::WinAnsi
-            } else {
-                BaseEncoding::Standard
+            let base = encoding.key(&BASE_ENCODING);
+            match base.type_code() {
+                object_type::NULL => BaseEncoding::Standard,
+                object_type::NAME if names(&base, &WIN_ANSI) => BaseEncoding::WinAnsi,
+                object_type::NAME => BaseEncoding::Standard,
+                _ => {
+                    return Err(Error::Unsupported(
+                        "pdf resources [base-encoding-not-a-name]: an /Encoding whose \
+                         /BaseEncoding is not a name, which a renderer reads by its bytes"
+                            .to_owned(),
+                    ));
+                }
             }
         }
         _ => BaseEncoding::Standard,
-    }
+    })
 }
 
 /// Read one font dictionary.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
-        first_char: integer_or(&font.key(&FIRST_CHAR), 0),
-        widths: numbers_of(&font.key(&WIDTHS)),
+        first_char: integer_or(&font.key(&FIRST_CHAR), 0)?,
+        widths: numbers_strict(&font.key(&WIDTHS))?.unwrap_or_default(),
         missing_width: None,
         // 0.001 for every font but Type 3, which declares its own.
         font_matrix: Matrix::scale(0.001, 0.001),
-        font_bbox: rect_of(&font.key(&FONT_BBOX)),
+        font_bbox: rect_of(&font.key(&FONT_BBOX))?,
         bytes_per_code: 1,
         encoding: Encoding::Simple,
         cid_widths: BTreeMap::new(),
@@ -514,12 +530,14 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
 
     let descriptor = font.key(&FONT_DESCRIPTOR);
     if descriptor.type_code() == object_type::DICTIONARY {
-        let missing = numbers_of(&descriptor.key(&MISSING_WIDTH));
-        facts.missing_width = missing.first().copied();
+        facts.missing_width = number_strict(&descriptor.key(&MISSING_WIDTH))?;
     }
 
     if subtype == Some(SUBTYPE_TYPE3) {
-        match numbers_of(&font.key(&FONT_MATRIX)).as_slice() {
+        match numbers_strict(&font.key(&FONT_MATRIX))?
+            .unwrap_or_default()
+            .as_slice()
+        {
             [a, b, c, d, e, f] => {
                 facts.font_matrix = Matrix {
                     a: *a,
@@ -554,7 +572,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         // place every glyph where the file does not.
         let base = font.key(&BASE_FONT).name();
         facts.standard_14 = base.as_ref().ok().map(|name| name.plain().to_vec());
-        facts.base_encoding = base_encoding(font);
+        facts.base_encoding = base_encoding(font)?;
         // SET EVEN WHEN A TABLE IS FOUND, because the table may not carry the particular code
         // the page draws -- an untabulated font, a code outside 32..=126, or one of the pairs
         // the calibration found the two sources disagreeing on. `width_of` falls back to this
@@ -584,14 +602,12 @@ fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
         },
         object_type::STREAM => {
             let dictionary = encoding.stream_dict();
-            let wmode = numbers_of(&dictionary.key(&WMODE))
-                .first()
-                .and_then(|value| {
-                    // `as` TRUNCATES SILENTLY and this crate denies it. A `/WMode` that is not
-                    // a whole small number is not a writing mode; refusing to read one is the
-                    // conservative direction, and `writing_mode_of` refuses it by name.
-                    whole(*value)
-                });
+            let wmode = number_strict(&dictionary.key(&WMODE))?.and_then(|value| {
+                // `as` TRUNCATES SILENTLY and this crate denies it. A `/WMode` that is not
+                // a whole small number is not a writing mode; refusing to read one is the
+                // conservative direction, and `writing_mode_of` refuses it by name.
+                whole(value)
+            });
             match encoding.stream_data()? {
                 Some(program) => Encoding::Embedded {
                     dictionary_wmode: wmode,
@@ -614,10 +630,7 @@ fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
         ));
     }
     let descendant = descendants.array_item(0);
-    facts.default_width = numbers_of(&descendant.key(&DW))
-        .first()
-        .copied()
-        .or(Some(1000.0));
+    facts.default_width = number_strict(&descendant.key(&DW))?.or(Some(1000.0));
     facts.cid_widths = parse_w(&descendant.key(&W))?;
     Ok(())
 }
@@ -658,13 +671,21 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
         Ok(())
     };
     let length = array.array_len();
+    // ITEM BY ITEM, AND A NON-NUMBER REFUSES (#125's third security review): through `numbers_of`
+    // an inner `6 0 R` read as two numbers and a string vanished, shifting every later width. An
+    // array that ENDS mid-entry still stops where it ends, as before (#224, round 3).
     let mut at = 0;
     while at < length {
-        let first = numbers_of(&array.array_item(at)).first().copied();
-        let Some(start) = first else { break };
+        let Some(start) = number_strict(&array.array_item(at))? else {
+            return Err(number_unreadable());
+        };
+        if at + 1 >= length {
+            break;
+        }
         let next = array.array_item(at + 1);
         if next.type_code() == object_type::ARRAY {
-            for (offset, width) in numbers_of(&next).into_iter().enumerate() {
+            let widths_here = numbers_strict(&next)?.unwrap_or_default();
+            for (offset, width) in widths_here.into_iter().enumerate() {
                 let Some(base) = whole(start) else { break };
                 let Ok(offset) = i64::try_from(offset) else {
                     break;
@@ -675,11 +696,14 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
             }
             at += 2;
         } else {
-            let Some(end) = numbers_of(&next).first().copied() else {
-                break;
+            let Some(end) = number_strict(&next)? else {
+                return Err(number_unreadable());
             };
-            let Some(width) = numbers_of(&array.array_item(at + 2)).first().copied() else {
+            if at + 2 >= length {
                 break;
+            }
+            let Some(width) = number_strict(&array.array_item(at + 2))? else {
+                return Err(number_unreadable());
             };
             let (Some(start), Some(end)) = (whole(start), whole(end)) else {
                 break;
@@ -787,36 +811,101 @@ pub(crate) fn whole(value: f64) -> Option<i64> {
     })
 }
 
-/// Every number in a handle, whether it is one number or an array of them.
+/// The most items [`numbers_strict`] reads from one array. A simple font's `/Widths` has at most
+/// 256, a matrix six, a box four; a CID font's `/W` inner array is the long one, and `parse_w`
+/// bounds what it assigns separately.
+const MAX_NUMBER_ARRAY: std::ffi::c_int = 65_536;
+
+/// The refusal for a number-valued key holding something [`numbers_strict`] will not read.
+fn number_unreadable() -> Error {
+    Error::Unsupported(
+        "pdf resources [number-unreadable]: a number, or an array of numbers, holding something \
+         else -- a string, a name, an array -- which a renderer reads differently"
+            .to_owned(),
+    )
+}
+
+/// A number-valued key, or an array of numbers, read ITEM BY ITEM as PDFium reads it (#125's
+/// third security review). `None` when the key is absent.
 ///
-/// Through `unparse` and the content-stream lexer, because there is no trapped accessor for a
-/// real: `qpdf_oh_get_int_value` truncates and says nothing about it.
-fn numbers_of<O: PdfObject>(handle: &O) -> Vec<f64> {
-    let code = handle.type_code();
-    if code == object_type::NULL {
-        return Vec::new();
+/// The reader it replaced tokenised the array's unparsed text, which resolves only the array itself: an
+/// inner `6 0 R` came out as the two numbers 6 and 0, and a string or a name was dropped, so every
+/// later item shifted. PDFium reads each item, resolving a reference, and reads a matrix that is
+/// not six numbers as the identity. Measured: `/Widths [6 0 R 600 …]` placed SECRET's glyphs
+/// where the region was not and returned `Ok` with all of it on the page; a form `/Matrix` with a
+/// string in it, and a Type 3 `/FontMatrix` likewise, `Ok` over 374 and 7,500 dark pixels. Each
+/// item here is one integer or real both readers agree on ([`super::frame::reading_of`]) -- a
+/// reference resolves to its number, as PDFium resolves it -- and anything else refuses:
+/// DECISIONS.md rule 1, one reader's repair is not the other's.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `number-unreadable` for a value that is neither a number nor an
+/// array, an item that is not a number, a number past `reading_of`'s range, or an array longer
+/// than [`MAX_NUMBER_ARRAY`].
+fn numbers_strict<O: PdfObject>(handle: &O) -> Result<Option<Vec<f64>>> {
+    use super::frame::{Reading, reading_of};
+    match handle.type_code() {
+        object_type::NULL => Ok(None),
+        object_type::INTEGER | object_type::REAL => match reading_of(handle) {
+            Reading::Number(value) => Ok(Some(vec![value])),
+            _ => Err(number_unreadable()),
+        },
+        object_type::ARRAY => {
+            let length = handle.array_len();
+            if length > MAX_NUMBER_ARRAY {
+                return Err(number_unreadable());
+            }
+            let mut values = Vec::new();
+            for at in 0..length {
+                match reading_of(&handle.array_item(at)) {
+                    Reading::Number(value) => values.push(value),
+                    _ => return Err(number_unreadable()),
+                }
+            }
+            Ok(Some(values))
+        }
+        _ => Err(number_unreadable()),
     }
-    let text = handle.unparse();
-    crate::pdfsyntax::ops::numbers_in(&text)
 }
 
-fn integer_or<O: PdfObject>(handle: &O, fallback: i64) -> i64 {
-    numbers_of(handle)
-        .first()
-        .and_then(|value| whole(*value))
-        .unwrap_or(fallback)
+/// One number-valued key, strictly: `None` when absent, the number when it is one, and a refusal
+/// for anything else -- an array included, which PDFium reads as 0 where a number belongs.
+///
+/// # Errors
+///
+/// As [`numbers_strict`], and for an array.
+fn number_strict<O: PdfObject>(handle: &O) -> Result<Option<f64>> {
+    if handle.type_code() == object_type::ARRAY {
+        return Err(number_unreadable());
+    }
+    Ok(numbers_strict(handle)?.and_then(|values| values.first().copied()))
 }
 
-pub(super) fn rect_of<O: PdfObject>(handle: &O) -> Option<Rect> {
-    match numbers_of(handle).as_slice() {
-        [left, bottom, right, top] => Some(Rect {
+/// An integer-valued key with a fallback for absent, refusing a value that is not a number.
+///
+/// # Errors
+///
+/// As [`number_strict`].
+fn integer_or<O: PdfObject>(handle: &O, fallback: i64) -> Result<i64> {
+    Ok(number_strict(handle)?.and_then(whole).unwrap_or(fallback))
+}
+
+/// A box: `None` when absent or not four numbers, and a refusal when an item is not a number.
+///
+/// # Errors
+///
+/// As [`numbers_strict`].
+pub(super) fn rect_of<O: PdfObject>(handle: &O) -> Result<Option<Rect>> {
+    Ok(match numbers_strict(handle)?.as_deref() {
+        Some([left, bottom, right, top]) => Some(Rect {
             left: left.min(*right),
             bottom: bottom.min(*top),
             right: left.max(*right),
             top: bottom.max(*top),
         }),
         _ => None,
-    }
+    })
 }
 
 /// The dictionary an ExtGState entry's keys are read from: the entry itself, or **a stream's own
