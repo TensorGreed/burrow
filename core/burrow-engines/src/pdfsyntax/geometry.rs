@@ -161,6 +161,9 @@ pub enum Refusal {
     ExtGStateSetsFont,
     /// A `gs` whose operand is not a name.
     GraphicsStateOperandNotAName,
+    /// A `gs` whose ExtGState sets `/LW` or `/ML` to something that is not one number both
+    /// readers agree on (#278).
+    ExtGStateLineUnreadable,
     /// A shown string that does not divide into whole codes.
     StringNotWholeCodes,
     /// Glyphs cut from one string disagreeing on the font's code width.
@@ -293,6 +296,7 @@ impl Refusal {
         Self::FontSelectedInAnotherScope,
         Self::ExtGStateSetsFont,
         Self::GraphicsStateOperandNotAName,
+        Self::ExtGStateLineUnreadable,
         Self::StringNotWholeCodes,
         Self::MixedCodeWidths,
         Self::FormCycle,
@@ -341,6 +345,7 @@ impl Refusal {
             Self::FontSelectedInAnotherScope => "font-selected-in-another-scope",
             Self::ExtGStateSetsFont => "ext-gstate-sets-font",
             Self::GraphicsStateOperandNotAName => "gs-operand-not-a-name",
+            Self::ExtGStateLineUnreadable => "ext-gstate-line-unreadable",
             Self::StringNotWholeCodes => "string-not-whole-codes",
             Self::MixedCodeWidths => "mixed-code-widths",
             Self::FormCycle => "form-cycle",
@@ -717,6 +722,12 @@ pub struct Glyph {
     /// cancel exactly when a removal converts one into an adjustment, and two expressions that
     /// are meant to agree, written twice, is how they stop agreeing.
     pub scaled_font_size: f64,
+    /// How far a stroked outline inks past the glyph's box, in page space: half-extents added on
+    /// each side horizontally and vertically (#278). `(0.0, 0.0)` unless the text rendering mode
+    /// strokes (`Tr` 1, 2, 5 or 6). A stroked glyph is still text, so it is **removed** where this
+    /// reach brings it into the region, not refused as ink: refusing would have turned away every
+    /// faux-bold run a producer draws with `2 Tr`.
+    pub stroke_reach: (f64, f64),
     /// The text-space displacement this glyph caused, **including** `Tc`, `Tw` and `Tz`.
     ///
     /// # Why this is carried rather than recomputed
@@ -883,9 +894,17 @@ impl Glyph {
             top: self.font_size,
         }
         .transformed(&self.text_to_page);
-        match self.font_bbox {
+        let ink = match self.font_bbox {
             Some(bbox) => advance.union(&bbox.transformed(&self.to_page)),
             None => advance,
+        };
+        // A STROKED OUTLINE (#278), widened by the reach the walk derived from the line width.
+        let (dx, dy) = self.stroke_reach;
+        Rect {
+            left: ink.left - dx,
+            bottom: ink.bottom - dy,
+            right: ink.right + dx,
+            top: ink.top + dy,
         }
     }
 
@@ -2448,7 +2467,7 @@ const fn arity(operator: &[u8]) -> Option<usize> {
         // `w` (line width) and `sh` (a shading name) join them (#125): a padded `w` would let a
         // reader take a different width than the one this walk inflates a stroke box by.
         b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Ts" | b"Do" | b"Tj" | b"TJ" | b"'" | b"BMC" | b"MP"
-        | b"gs" | b"w" | b"sh" | b"M" => 1,
+        | b"gs" | b"w" | b"sh" | b"M" | b"Tr" => 1,
         // THE MARKED-CONTENT OPERATORS, which had no count. A reader takes a `BDC`'s tag and
         // property list from its LAST TWO operands; this walk read the tag from the FIRST, so
         // `/Pad /OC /OC1 BDC` hid a layer from the `/OC` mark refusal -- measured by the #166
@@ -2683,6 +2702,22 @@ pub trait Resources {
     /// Whatever resolving the object failed with.
     fn ext_gstate_sets_font(&self, name: &[u8]) -> Result<bool>;
 
+    /// What the ExtGState named `name` says about the line width (`/LW`) and the miter limit
+    /// (`/ML`) **in this scope** (#278).
+    ///
+    /// `gs` sets both as `w` and `M` do, so a stroke whose width comes only from an ExtGState was
+    /// boxed at the width before it: `Ok` over 3,168 dark pixels in the region, measured. Each
+    /// parameter is [`LineParameter::UNSET`] where this scope does not set it -- no category, no
+    /// such name, an entry that is not a dictionary (PDFium ignores one written as a stream,
+    /// measured), or no such key -- and unreadable where the key holds anything but one number
+    /// both readers agree on. No default, for [`Self::ext_gstate_sets_font`]'s reason: an
+    /// implementor that forgot it would box every such stroke at the old width.
+    ///
+    /// # Errors
+    ///
+    /// Whatever resolving the object failed with.
+    fn ext_gstate_line(&self, name: &[u8]) -> Result<ExtGStateLine>;
+
     /// The resources the Form XObject named `name` draws against, or `None` when it declares
     /// none and inherits the enclosing ones.
     ///
@@ -2711,6 +2746,111 @@ pub trait Resources {
     fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>>;
 }
 
+/// What the scopes a `gs` might resolve in say about one stroke parameter (#278).
+///
+/// # Why a merge, and not the scope PDFium picks
+///
+/// PDFium resolves a form's `gs` in the form's own `/ExtGState`, and in the page's only when the
+/// form has no `/ExtGState` category at all; an entry that does not set `/LW` leaves the width in
+/// force. Both measured by #278's specification review. Modelling that choice is the
+/// divergence-tracking DECISIONS.md rule 1 says not to do, so every scope that might supply the
+/// value is a candidate, and the stroke is boxed at the **largest** of them -- including the width
+/// already in force whenever some candidate does not set it. Taking only the largest value
+/// found would have under-covered: a form entry with no `/LW` over a page `/LW 2` leaves PDFium
+/// drawing at the `120 w` set before the `Do` (7,128 dark pixels), and would have set 2.
+///
+/// The cost is over-refusal where the scopes disagree and PDFium picks the thinner, recorded
+/// rather than narrowed (rule 4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineParameter {
+    /// The largest magnitude any candidate scope sets, if any sets one.
+    pub largest: Option<f64>,
+    /// Some candidate scope does not set it, so the value in force may be the one drawn with.
+    pub unset_somewhere: bool,
+    /// Some candidate scope sets it to something that is not one number both readers agree on.
+    pub unreadable: bool,
+}
+
+impl LineParameter {
+    /// A scope that does not set the parameter.
+    pub const UNSET: Self = Self {
+        largest: None,
+        unset_somewhere: true,
+        unreadable: false,
+    };
+
+    /// A scope that sets it to something that is not one agreed number.
+    pub const UNREADABLE: Self = Self {
+        largest: None,
+        unset_somewhere: false,
+        unreadable: true,
+    };
+
+    /// A scope that sets it to `value`. Its magnitude: a negative width or limit cannot shrink a
+    /// box, which over-refuses the thin line PDFium draws for one (recorded, rule 4).
+    #[must_use]
+    pub fn set(value: f64) -> Self {
+        Self {
+            largest: Some(value.abs()),
+            unset_somewhere: false,
+            unreadable: false,
+        }
+    }
+
+    /// Both scopes as candidates.
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            largest: match (self.largest, other.largest) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            },
+            unset_somewhere: self.unset_somewhere || other.unset_somewhere,
+            unreadable: self.unreadable || other.unreadable,
+        }
+    }
+
+    /// The value to box with after the `gs`, given the one in force before it.
+    fn after(self, current: f64) -> f64 {
+        match self.largest {
+            None => current,
+            Some(value) if self.unset_somewhere => value.max(current.abs()),
+            Some(value) => value,
+        }
+    }
+}
+
+/// [`LineParameter`] for each of the two ExtGState keys that move a stroke's ink (#278).
+///
+/// Only these two. #278's specification review went through every other key: `/LC`, `/LJ` and
+/// `J`/`j` cannot reach past a miter join once the miter multiplier is floored at the square
+/// root of two (see [`stroke_box`]), dashes only remove ink, and the transparency, halftone and
+/// transfer keys change colour, not extent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtGStateLine {
+    /// `/LW`.
+    pub width: LineParameter,
+    /// `/ML`.
+    pub miter: LineParameter,
+}
+
+impl ExtGStateLine {
+    /// A scope that sets neither.
+    pub const UNSET: Self = Self {
+        width: LineParameter::UNSET,
+        miter: LineParameter::UNSET,
+    };
+
+    /// Both scopes as candidates, key by key.
+    #[must_use]
+    pub fn merge(self, other: Self) -> Self {
+        Self {
+            width: self.width.merge(other.width),
+            miter: self.miter.merge(other.miter),
+        }
+    }
+}
+
 /// Everything `q` saves and `Q` restores.
 ///
 /// **The text state is in here, and that is the part that is easy to get wrong.** `Tc`, `Tw`,
@@ -2731,10 +2871,14 @@ struct GraphicsState {
     /// The miter limit set by `M`, default 10.0 (§8.4.3.5). A miter join reaches up to this times
     /// the half line width past a sharp corner, so a stroke box is inflated by that worst case;
     /// reading it from the file means a document raising it cannot ink past the box. `q`/`Q` carry
-    /// it. An ExtGState's `/LW`/`/ML` are NOT yet read ([#278]), noted in ADR 0029 §5 as owed.
-    ///
-    /// [#278]: https://github.com/TensorGreed/burrow/issues/278
+    /// it. An ExtGState's `/ML` sets it too, through `gs` (#278), as its `/LW` sets the width.
     miter_limit: f64,
+    /// The text rendering mode set by `Tr`, default 0 (§9.3.6). Modes 1, 2, 5 and 6 stroke each
+    /// glyph's outline with the line width, which inks past the glyph's box: #278's review
+    /// measured a glyph outside the region, stroked at `240 w`, drawing 2,772 dark pixels inside
+    /// it after an `Ok`. Kept as the number read, since any value that is not one of the four
+    /// non-stroking modes is treated as stroking (see [`strokes_text`]).
+    text_render_mode: f64,
     /// The selected font's writing mode, computed once and cached. `writing_mode_of` lexes the
     /// whole embedded CMap program, so computing it per shown glyph was quadratic in the input --
     /// a legitimate large-CMap document with many shows hit `max_duration_ms`, and the fuzz
@@ -2849,6 +2993,7 @@ pub fn glyphs_and_ink_in(
             font_selected_along: Arc::from(Vec::new()),
             line_width: 1.0,
             miter_limit: 10.0,
+            text_render_mode: 0.0,
             writing_mode: None,
         },
         &mut budget,
@@ -2911,7 +3056,7 @@ fn points_box(points: &[(f64, f64)]) -> Option<Rect> {
 /// does not ink the interior the border encloses. `|line_width|`/`|miter_limit|` so a negative
 /// value cannot shrink the box.
 fn stroke_box(segment: &[(f64, f64); 2], line_width: f64, miter_limit: f64, ctm: &Matrix) -> Rect {
-    let reach = (line_width.abs() / 2.0) * miter_limit.abs().max(1.0);
+    let reach = stroke_reach(line_width, miter_limit);
     let [(ax, ay), (bx, by)] = *segment;
     Rect {
         left: ax.min(bx) - reach,
@@ -2920,6 +3065,27 @@ fn stroke_box(segment: &[(f64, f64); 2], line_width: f64, miter_limit: f64, ctm:
         top: ay.max(by) + reach,
     }
     .transformed(ctm)
+}
+
+/// How far a stroke can ink from its centreline, in user space (#125, #278).
+///
+/// Half the line width times the miter multiplier, **floored at the square root of two**, not at
+/// one. A projecting square cap (`J 2`, or an ExtGState's `/LC 2`) puts its corner half the width
+/// times that from a 45-degree segment's end, so a miter limit below it -- legal, and settable by
+/// `M` or `/ML` -- boxed the segment short: `Ok` over 20 dark pixels, measured by #278's review.
+/// With the floor no cap or join shape reaches further than the box, so `/LC`, `/LJ`, `J` and `j`
+/// need no modelling of their own.
+fn stroke_reach(line_width: f64, miter_limit: f64) -> f64 {
+    (line_width.abs() / 2.0) * miter_limit.abs().max(core::f64::consts::SQRT_2)
+}
+
+/// Whether text rendering mode `mode` strokes glyph outlines (#278).
+///
+/// Modes 1, 2, 5 and 6 do. Anything that is not exactly 0, 3, 4 or 7 is treated as stroking:
+/// an out-of-range or fractional mode is a reader's guess, and the guess that inks more is the
+/// one that keeps the box covering.
+fn strokes_text(mode: f64) -> bool {
+    ![0.0, 3.0, 4.0, 7.0].contains(&mode)
 }
 
 /// The image space an image `Do` or inline `BI` paints into, before the CTM places it.
@@ -3092,6 +3258,9 @@ fn walk(
             b"Tz" => state.text.horizontal_scale = number(0)?,
             b"TL" => state.text.leading = number(0)?,
             b"Ts" => state.text.rise = number(0)?,
+            // THE RENDERING MODE (#278): a stroking mode inks each glyph's outline at the line
+            // width, past the glyph's box. Graphics state, carried by `q`/`Q`.
+            b"Tr" => state.text_render_mode = number(0)?,
             b"Tf" => {
                 state.text.font_size = number(1)?;
                 state.font = match operation.operands.first() {
@@ -3131,6 +3300,18 @@ fn walk(
                          their own metrics rather than the ones this walk measured",
                     );
                 }
+                // THE LINE WIDTH AND MITER LIMIT IT SETS (#278), as `w` and `M` set them. Asked of
+                // every scope the name might resolve in; see `LineParameter` for why the largest
+                // candidate, the width already in force among them, is the one boxed with.
+                let line = resources.ext_gstate_line(value)?;
+                if line.width.unreadable || line.miter.unreadable {
+                    return Refusal::ExtGStateLineUnreadable.refuse(
+                        "a 'gs' whose graphics state sets the line width or miter limit to \
+                         something that is not one number",
+                    );
+                }
+                state.line_width = line.width.after(state.line_width);
+                state.miter_limit = line.miter.after(state.miter_limit);
             }
             // The text-placing and text-showing operators, which need a text object.
             b"Tm" | b"Td" | b"TD" | b"T*" | b"Tj" | b"TJ" | b"'" | b"\"" => {
@@ -3417,6 +3598,15 @@ impl Resources for ScopeChain<'_> {
         Ok(self.own.ext_gstate_sets_font(name)? || self.outer.ext_gstate_sets_font(name)?)
     }
 
+    fn ext_gstate_line(&self, name: &[u8]) -> Result<ExtGStateLine> {
+        // EVERY ENCLOSING SCOPE A CANDIDATE, for the font question's reason: which one PDFium
+        // picks is not modelled. `outer` may itself be a chain, so this merges all the way out.
+        Ok(self
+            .own
+            .ext_gstate_line(name)?
+            .merge(self.outer.ext_gstate_line(name)?))
+    }
+
     fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         self.own.within(name)
     }
@@ -3699,6 +3889,20 @@ fn show(
         };
         let displacement = (width * state.text.font_size + state.text.char_spacing + word) * scale;
 
+        // THE STROKE'S REACH, in page space (#278): a user-space distance `r` in any direction
+        // maps to at most `r(|a|+|c|)` horizontally and `r(|b|+|d|)` vertically under the CTM.
+        // The line width is in user space, so the CTM is the transform that applies, not the
+        // text matrix.
+        let stroke_reach = if strokes_text(state.text_render_mode) {
+            let reach = stroke_reach(state.line_width, state.miter_limit);
+            let ctm = &state.ctm;
+            (
+                reach * (ctm.a.abs() + ctm.c.abs()),
+                reach * (ctm.b.abs() + ctm.d.abs()),
+            )
+        } else {
+            (0.0, 0.0)
+        };
         let glyph = Glyph {
             origin,
             to_page,
@@ -3707,6 +3911,7 @@ fn show(
             font_bbox: metrics.font_bbox,
             font_size: state.text.font_size,
             scaled_font_size: state.text.font_size * scale,
+            stroke_reach,
             displacement,
             source: GlyphSource {
                 font: ScopedFont::new(Arc::clone(shown.route), font.clone()),
@@ -3749,12 +3954,12 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        CMap, Encoding, Form, FormUses, FormsReached, Glyph, GlyphMetrics, InkKind, MAX_FORM_DEPTH,
-        MAX_GLYPHS, MAX_INK, Matrix, NamedProperties, Operand, PropertyList, RAISED, Rect, Refusal,
-        Resources, TextPosition, TextState, WATCH_EVERY, Watch, WritingMode, carried_text_edits,
-        check_form_sharing, check_type_three_procedure, check_writing_mode, glyphs_and_ink_in,
-        glyphs_in, remove_glyphs, remove_glyphs_and_carried_text, takes_word_spacing,
-        writing_mode_of,
+        CMap, Encoding, ExtGStateLine, Form, FormUses, FormsReached, Glyph, GlyphMetrics, InkKind,
+        LineParameter, MAX_FORM_DEPTH, MAX_GLYPHS, MAX_INK, Matrix, NamedProperties, Operand,
+        PropertyList, RAISED, Rect, Refusal, Resources, TextPosition, TextState, WATCH_EVERY,
+        Watch, WritingMode, carried_text_edits, check_form_sharing, check_type_three_procedure,
+        check_writing_mode, glyphs_and_ink_in, glyphs_in, remove_glyphs,
+        remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
     };
 
     /// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
@@ -3775,6 +3980,8 @@ mod tests {
         forms: Vec<(Vec<u8>, Form)>,
         /// ExtGState names that carry a `/Font` (#152).
         font_states: Vec<Vec<u8>>,
+        /// ExtGState names and what they set of `/LW` and `/ML` (#278).
+        line_states: Vec<(Vec<u8>, ExtGStateLine)>,
         encoding: Encoding,
         bytes_per_code: u8,
         width: f64,
@@ -3786,6 +3993,7 @@ mod tests {
             Self {
                 forms: Vec::new(),
                 font_states: Vec::new(),
+                line_states: Vec::new(),
                 encoding: Encoding::Simple,
                 bytes_per_code: 1,
                 width: 500.0,
@@ -3809,6 +4017,14 @@ mod tests {
     impl Resources for Fake {
         fn ext_gstate_sets_font(&self, name: &[u8]) -> Result<bool> {
             Ok(self.font_states.iter().any(|state| state == name))
+        }
+
+        fn ext_gstate_line(&self, name: &[u8]) -> Result<ExtGStateLine> {
+            Ok(self
+                .line_states
+                .iter()
+                .find(|(n, _)| n == name)
+                .map_or(ExtGStateLine::UNSET, |(_, line)| *line))
         }
 
         fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
@@ -3886,7 +4102,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 42,
+            total, 43,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -4462,6 +4678,17 @@ mod tests {
                 let mut resources = Fake::new();
                 resources.font_states.push(b"GS1".to_vec());
                 walk_with("/F1 10 Tf /GS1 gs BT 0 0 Td (A) Tj ET", &resources)
+            })],
+            Refusal::ExtGStateLineUnreadable => vec![(Content, || {
+                let mut resources = Fake::new();
+                resources.line_states.push((
+                    b"GS1".to_vec(),
+                    ExtGStateLine {
+                        width: LineParameter::UNREADABLE,
+                        miter: LineParameter::UNSET,
+                    },
+                ));
+                walk_with("/GS1 gs 0 0 m 10 10 l S", &resources)
             })],
             Refusal::FontSelectedInAnotherScope => vec![(Content, || {
                 // `Tf` on the page, the text shown in a form: PDFium draws it with the page's

@@ -27,8 +27,8 @@
 mod support;
 
 use burrow_engines::pdfsyntax::geometry::{
-    Encoding, Form, FormUses, Glyph, GlyphMetrics, Matrix, Rect as GeometryRect, Refusal,
-    Resources, Watch, check_form_sharing, glyphs_in, remove_glyphs,
+    Encoding, ExtGStateLine, Form, FormUses, Glyph, GlyphMetrics, Matrix, Rect as GeometryRect,
+    Refusal, Resources, Watch, check_form_sharing, glyphs_in, remove_glyphs,
 };
 use burrow_engines::pdfsyntax::region::Region;
 use burrow_types::{Deadline, Limits, ManualClock, Result};
@@ -499,6 +499,11 @@ impl Resources for Helvetica {
         Ok(false)
     }
 
+    fn ext_gstate_line(&self, _name: &[u8]) -> Result<ExtGStateLine> {
+        // No ExtGStates, as above (#278).
+        Ok(ExtGStateLine::UNSET)
+    }
+
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
         // ONE FLAT RESOURCE SET. This fake models a page whose forms declare no `/Resources`
         // of their own, so every name resolves outwards -- which is what `None` means. It is
@@ -723,6 +728,11 @@ impl Resources for CidFont {
     fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
         // No ExtGStates: this fake's pages draw with `Tf` alone (#152).
         Ok(false)
+    }
+
+    fn ext_gstate_line(&self, _name: &[u8]) -> Result<ExtGStateLine> {
+        // No ExtGStates, as above (#278).
+        Ok(ExtGStateLine::UNSET)
     }
 
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
@@ -995,6 +1005,11 @@ impl Resources for DeclaredWidths {
     fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
         // No ExtGStates: this fake's pages draw with `Tf` alone (#152).
         Ok(false)
+    }
+
+    fn ext_gstate_line(&self, _name: &[u8]) -> Result<ExtGStateLine> {
+        // No ExtGStates, as above (#278).
+        Ok(ExtGStateLine::UNSET)
     }
 
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
@@ -1384,6 +1399,11 @@ impl Resources for TestResources {
     fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
         // No ExtGStates: this fake's pages draw with `Tf` alone (#152).
         Ok(false)
+    }
+
+    fn ext_gstate_line(&self, _name: &[u8]) -> Result<ExtGStateLine> {
+        // No ExtGStates, as above (#278).
+        Ok(ExtGStateLine::UNSET)
     }
 
     fn within(&self, _name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
