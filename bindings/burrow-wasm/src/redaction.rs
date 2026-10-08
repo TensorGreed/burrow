@@ -94,11 +94,15 @@ pub fn redact(
         indexes.insert(covered_index);
     }
 
+    // RECYCLED AFTER EVERY REDACTION THAT READ THE DOCUMENT, success or refusal alike (#199):
+    // qpdf's object cache holds the decoded page content -- the text being removed -- and is
+    // freed unwiped. A refusal has read it too. The page-number refusals above opened nothing.
     match burrow_core::ops::redact::page(&qpdf(), &bytes, index, &indexes, region.0, &options) {
         Ok(done) => Reply::redacted(done.document, &done.report),
         Err(error) => Reply::failure(&error),
     }
     .with_lifecycle(&limits)
+    .recycled()
 }
 
 /// A region on the displayed page, as JavaScript hands it over.

@@ -725,6 +725,20 @@ impl Reply {
         self
     }
 
+    /// Recycle this worker after the result is delivered, whatever its heaps measure (#199).
+    ///
+    /// For an operation that reads the text it removes. Every Rust heap block is wiped when it is
+    /// freed (`burrow_engines::wipe`), and the bridge wipes each buffer qpdf hands across, but
+    /// qpdf's own object cache holds decoded content for the life of the document and
+    /// `qpdf_cleanup` frees it unwiped; the C API offers no way in. Discarding the worker discards
+    /// the qpdf module's heap with it, which is the only lever there is. Not a failure, and the
+    /// host does not count it as a crash -- see `Reply::recycle`.
+    #[cfg(any(feature = "redact", test))]
+    pub(crate) fn recycled(mut self) -> Self {
+        self.recycle = true;
+        self
+    }
+
     fn failure(error: &Error) -> Self {
         // THROUGH THE WRAPPER, for the same reason `is_fatal` and `inner_kind` look through
         // it: `InputFailed` says WHICH input, never WHAT. A per-input ceiling arrives here

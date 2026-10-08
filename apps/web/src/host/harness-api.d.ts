@@ -54,6 +54,12 @@ export interface Reply {
   outputSha256?: string | null;
 }
 
+/**
+ * One reply's heap scan: every WebAssembly memory redaction's worker held, how often the canary is
+ * in it at the reply (`hits`), and the most it held while the operation ran (`peak`, the witness).
+ */
+export type HeapScan = { heap: "qpdf" | "burrow"; bytes: number; hits: number; peak: number }[];
+
 /** One message redaction's worker posted to the page, as the harness recorded it (#137). */
 export interface RedactionMessage {
   /**
@@ -249,7 +255,12 @@ export interface BurrowHarness {
   armRedaction(options?: {
     stubSideChannels?: boolean;
     mutate?: { from: string; to: string } | null;
+    heapCanary?: string;
   }): Promise<{ applied: boolean }>;
+  /** What the heap canary saw since the last arming: one scan per reply (#199). */
+  redactHeapScans(): HeapScan[];
+  /** How many times the host asked to terminate a redaction worker since the last arming. */
+  redactTerminations(): number;
   /** Every message between the page and redaction's worker since the last arming, in order. */
   redactMessages(): RedactionMessage[];
   /**
