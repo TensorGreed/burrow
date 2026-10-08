@@ -1035,6 +1035,15 @@ jobs:
           tools/check-redaction-not-in-base.sh
           tools/test-check-redaction-not-in-base.sh
 
+      # DECISIONS.md rule 13 (#285): no shipped build can read qpdf's error text. The one
+      # declaration that can is behind `burrow-engines`' `fuzzing` feature; this refuses a deploy
+      # feature set that turns it on, and a shipped artifact that carries any error-text name.
+      # Here because it reads the production `dist/` this job built.
+      - name: No shipped build can read qpdf's error text
+        run: |
+          tools/check-no-error-text-in-deploy.sh
+          tools/test-check-no-error-text-in-deploy.sh
+
       # THE DEPLOY GATE'S SELF-TEST, NOT THE GATE. `check-deployable-build.sh` asks whether a
       # build is for the origin you MEANT, and CI builds for the development default -- so
       # invoking it here would either be a gate that cannot fail (`|| true`, which this

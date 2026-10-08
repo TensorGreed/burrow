@@ -159,6 +159,9 @@ jobs:
       - name: PDFium reaches the render bundle and nothing else (ADR 0026)
         run: tools/check-pdfium-is-render-only.sh
 
+      - name: No shipped build can read qpdf's error text (DECISIONS.md rule 13)
+        run: tools/check-no-error-text-in-deploy.sh
+
       - name: Record what is about to be uploaded
         run: |
           echo "### Payload" >> "$GITHUB_STEP_SUMMARY"

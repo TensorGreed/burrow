@@ -61,6 +61,9 @@ mod sharing_tests;
 // The web engine over real qpdf, held to this one case for case (#191).
 #[cfg(test)]
 mod web_differential_tests;
+// qpdf's error text, read in fuzz builds only, against the pinned qpdf (#285).
+#[cfg(all(test, feature = "fuzzing"))]
+mod error_text_tests;
 
 #[cfg(feature = "fuzzing")]
 pub use limits::enable_fuzz_mode;
@@ -196,10 +199,31 @@ impl Document {
         // valid `qpdf_error` for it. The pointer is used immediately, before any other
         // qpdf call can invalidate it (`qpdf-c.h:180-183`), and only its *code* is read --
         // never its text, filename or byte offset. See `errors.rs`.
-        let code = unsafe {
+        let (error, code) = unsafe {
             let error = ffi::qpdf_get_error(data);
-            ffi::qpdf_get_error_code(data, error)
+            (error, ffi::qpdf_get_error_code(data, error))
         };
+        // FUZZ BUILDS ONLY (#285): two internal errors told apart by qpdf's fixed text, so the
+        // nightly can name each. A shipped build has no way to read the text at all.
+        #[cfg(feature = "fuzzing")]
+        if code == crate::codes::qpdf::code::INTERNAL {
+            // SAFETY: `error` is the live `qpdf_error` just returned for `data`, used before any
+            // other qpdf call; qpdf returns a NUL-terminated string owned by the error, read and
+            // dropped here and never stored.
+            let detail = unsafe {
+                let text = ffi::qpdf_get_error_message_detail(data, error);
+                if text.is_null() {
+                    None
+                } else {
+                    Some(core::ffi::CStr::from_ptr(text).to_bytes())
+                }
+            };
+            if let Some(known) = detail.and_then(crate::codes::qpdf::internal_from_detail) {
+                return Some(known);
+            }
+        }
+        #[cfg(not(feature = "fuzzing"))]
+        let _ = error;
         Some(crate::codes::qpdf::map_code(code))
     }
 }

@@ -14,7 +14,7 @@ work="$(mktemp -d)"
 mutant="$here/check-known-crashes.MUTANT.py"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=20
+EXPECTED_CASES=21
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -344,6 +344,27 @@ panic_mutant "the probe gate refuses a panic pattern without the thread id" \
   "(?: \\(\\d+\\))?" \
   "" \
   "WITH A THREAD ID"
+
+# 17. THE REAL LEDGER DOES NOT ABSORB BURROW'S OWN HANDLE MISUSE (#285). In a fuzz build, a
+#    `qpdf_oh` qpdf does not hold panics with its own message; the #285 entries key on the
+#    invariant failure's. A compress panic carrying the handle message must match nothing. Against
+#    the real file on purpose: it is a claim about today's entries, and it stays true -- as an
+#    unmatched crash -- when #285 closes and its entries go.
+printf '%s\n' \
+  "thread '<unnamed>' (1) panicked at fuzz_targets/compress.rs:179:13:" \
+  "compress reported an internal error: qpdf was handed an object handle it does not hold (a burrow defect)" \
+  "==1== ERROR: libFuzzer: deadly signal" \
+  "    #0 0x1 in rust_panic" > "$work/handle.log"
+set +e
+out="$(python3 "$here/check-known-crashes.py" --log "$work/handle.log" 2>&1)"
+status=$?
+set -e
+if [ "$status" -ne 0 ] && ! grep -qF "KNOWN" <<<"$out"; then
+  ok "burrow's own handle misuse is not absorbed by the real #285 entries"
+else
+  bad "burrow's own handle misuse is not absorbed by the real #285 entries (exit $status)"
+  sed 's/^/         /' <<<"$out" >&2
+fi
 
 echo
 echo "$pass passed, $fail failed"

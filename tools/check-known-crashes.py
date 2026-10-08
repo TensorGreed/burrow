@@ -429,12 +429,12 @@ def main() -> int:
                 "under the same verdict would be absorbed here."
             )
         else:
-            # A PANIC KEY'S RESIDUAL IS WIDER, and says so (#285): the message carries no engine
-            # text, so any engine failure the target reports the same way is absorbed.
+            # A PANIC KEY'S RESIDUAL, where the reader meets it (#285): whatever else produces the
+            # same message is absorbed, and what that is depends on the entry.
             print(
                 "  This means the target panicked with the listed message -- not that it is that "
-                "defect. The message carries no engine detail, so ANY internal error the engine "
-                "reports through this target would be absorbed here."
+                "defect. Anything else that makes the target panic with the same message is "
+                "absorbed too; fuzz/known-crashes.toml's header says what that is for this entry."
             )
         return 0
 

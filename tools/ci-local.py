@@ -563,6 +563,18 @@ JOBS: list[dict] = [
         "why": "redaction's code reaches no part of the base web payload (ADR 0029)",
     },
     {
+        # AFTER `web`, for the same reason as the two above: it reads the production `dist/`.
+        "name": "no-error-text-in-deploy",
+        "run": (
+            "tools/check-no-error-text-in-deploy.sh && tools/test-check-no-error-text-in-deploy.sh"
+        ),
+        "covers": [
+            "tools/check-no-error-text-in-deploy.sh",
+            "tools/test-check-no-error-text-in-deploy.sh",
+        ],
+        "why": "no shipped build can read qpdf's error text (DECISIONS.md rule 13, #285)",
+    },
+    {
         # AFTER `web`, BECAUSE IT READS `apps/web/dist`. It was in `checker-self-tests` for one
         # commit, which builds nothing and runs BEFORE `web` -- so on a fresh clone the whole
         # sweep refused with "no build at apps/web/dist" before reaching the job that would
