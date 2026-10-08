@@ -2752,7 +2752,7 @@ fn walk_differences<O: PdfObject>(
 /// names as codes 65 to 70, and the output kept `/S /E /C /R /E /T` with `Ok` and `cut: true`
 /// beside it. The same with `0.5` or `true` in place of `(x)`. Refused, not modelled
 /// (DECISIONS.md rule 1).
-pub(super) fn differences_item_unreadable() -> Error {
+fn differences_item_unreadable() -> Error {
     Error::Unsupported(
         "pdf redaction [differences-item-unreadable]: a /Differences item that is neither a \
          code nor a glyph name, which a renderer reads as a code and burrow would not"

@@ -1531,6 +1531,21 @@ fn the_real_resolver_agrees_with_pdfium_on_producer_documents() {
             .join(name);
         let pdf = std::fs::read(&path).expect("the committed fixture");
 
+        // THE KNOWN COST OF #292 (the owner's decision, 2026-10-08): LibreOffice's vertical CJK
+        // output writes `/Widths [0 -1000 …]`, which PDFium wraps in 16 bits and burrow refuses.
+        // So this comparison no longer covers vertical writing; it is required to refuse by that
+        // rule, and #294 is the narrowing that would bring it back.
+        if name == "producer-vertical-writing.pdf" {
+            match burrow_engines::glyphs_on_first_page(&pdf, &support::walk_options()) {
+                Err(error) => assert!(
+                    format!("{error:?}").contains("[width-out-of-range]"),
+                    "{name}: refused, but not by #292's rule: {error:?}"
+                ),
+                Ok(_) => panic!("{name}: walked, where #292 refuses its /Widths"),
+            }
+            continue;
+        }
+
         let walked = burrow_engines::glyphs_on_first_page(&pdf, &support::walk_options())
             .unwrap_or_else(|error| panic!("{name}: the real resolver refused: {error:?}"));
         let chars = chars_on_page(&pdf, 0);
@@ -1580,7 +1595,8 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
     // COUNTED, because every assertion below is inside the `Ok` arm and a refusal `continue`s.
     // A mutation that refused unconditionally left this test green over all three fixtures.
     let mut redacted_documents = 0usize;
-    // THE ONE THAT REFUSES, BY NAME (#125, 2026-10-08): `producer-latex`'s region reaches glyphs of
+    // THE TWO THAT REFUSE, BY NAME. `producer-vertical-writing` by #292's rule, LibreOffice's
+    // `/Widths [0 -1000 …]`, the owner's accepted cost (#294 to narrow). And (#125, 2026-10-08): `producer-latex`'s region reaches glyphs of
     // a TeX bitmap Type 3 font, and removing one would leave its bitmap in `/CharProcs`. That is a
     // decided cost, and it costs this test its only real-typesetter document -- the kerning-split
     // `TJ` run pdfTeX writes. Pinned by name so the coverage loss is visible: a refusal for any
@@ -1633,10 +1649,17 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
                     "{name}: refused without naming a rule: {text}"
                 );
                 eprintln!("  {name:<34} refused: {text}");
-                assert_eq!(
-                    (name, text.contains("[type-three-image-cut]")),
-                    ("producer-latex.pdf", true),
-                    "only producer-latex refuses, and only as [type-three-image-cut]: {text}"
+                // TWO KNOWN REFUSALS, each by its own rule: producer-latex's bitmap glyphs, and
+                // LibreOffice's vertical widths -- #292's accepted cost, #294 to narrow.
+                let expected = match name {
+                    "producer-latex.pdf" => "[type-three-image-cut]",
+                    "producer-vertical-writing.pdf" => "[width-out-of-range]",
+                    _ => "",
+                };
+                assert!(
+                    !expected.is_empty() && text.contains(expected),
+                    "{name}: only producer-latex [type-three-image-cut] and \
+                     producer-vertical-writing [width-out-of-range] refuse: {text}"
                 );
                 refused_as_decided += 1;
                 continue;
@@ -1720,12 +1743,14 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
         eprintln!("  {name:<34} region reached {reached}, removed {extra} more");
     }
 
+    // ONE NOW, NOT TWO: #292's accepted cost moves producer-vertical-writing from the redacted
+    // count to the decided refusals, and this test with it loses its vertical document until #294.
     assert_eq!(
         (redacted_documents, refused_as_decided),
-        (2, 1),
-        "two real-producer documents must redact and producer-latex must refuse as decided; a \
-         refusal that covered them would leave every assertion above unexecuted and this test \
-         still green"
+        (1, 2),
+        "producer-writer must redact, and producer-latex and producer-vertical-writing must \
+         refuse as decided; a refusal that covered them all would leave every assertion above \
+         unexecuted and this test still green"
     );
 }
 

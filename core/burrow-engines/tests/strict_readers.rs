@@ -16,8 +16,16 @@
 //!   Standard, so a standard-14 font's glyphs were placed outside the region. Refused
 //!   `[base-encoding-not-a-name]`.
 //!
-//! Each leaking shape inks the region on the input, measured by PDFium, and refuses by name; each
-//! twin is the same document written as the specification writes it, and redacts.
+//! Also the fourth and fifth reviews' width readers: `/FirstChar` that is not whole or is negative,
+//! `/W` overlaps, fractional and negative bounds, the cost of reading `/W`, and #292's widths outside
+//! 16 bits (the owner's decision: refused, LibreOffice's vertical CJK output with them).
+//!
+//! WHAT EACH TEST MEASURES, said rather than implied. The tests built on `reaches_and_refuses` /
+//! `reaches_and_redacts` measure PDFium's ink in the region on the input and, for a twin, on the
+//! output; the clamp test also requires no character to survive, since a glyph moved off the
+//! region reads as clean ink. The CID-width tests and the width-range test built on `refuses_by`
+//! pin the outcome only. The `/FontMatrix` and `/FontBBox` twins refuse `[type-three-image-cut]`
+//! deliberately: the identity reading reaches the image, which is the rule those shapes hid from.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -340,19 +348,36 @@ fn a_differences_item_that_is_neither_code_nor_name_refuses_and_the_twin_narrows
     assert!(twin.windows(names.len()).any(|w| w == names));
     let out = reaches_and_redacts("[0 /S /E /C /R /E /T]", &twin);
     // EACH NAME, not the run: a narrowing that replaced only `/S` would pass a contiguous check.
-    let expanded = String::from_utf8_lossy(&decompressed(&out)).into_owned();
-    let start = expanded
-        .find("/Differences")
-        .expect("the twin keeps a /Differences");
-    let array = expanded
-        .get(start..)
-        .and_then(|rest| rest.find(']').and_then(|end| rest.get(..end)))
-        .expect("the /Differences array closes");
-    for name in ["/S", "/E", "/C", "/R", "/T"] {
-        let standing = array
+    // The tokeniser splits a name off its neighbour too (`/S/E`), and is shown to see every name
+    // in the INPUT's array first, so a reading that sees nothing cannot pass as "all removed".
+    let names_in = |pdf: &[u8]| -> Vec<String> {
+        let text = String::from_utf8_lossy(pdf).into_owned();
+        let start = text.find("/Differences").expect("a /Differences");
+        let array = text
+            .get(start + "/Differences".len()..)
+            .and_then(|rest| rest.find(']').and_then(|end| rest.get(..end)))
+            .expect("the /Differences array closes")
+            .to_owned();
+        array
+            .replace('/', " /")
             .split(|c: char| c.is_whitespace() || c == '[')
-            .any(|token| token == name);
-        assert!(!standing, "{name} still stands in the twin's {array}");
+            .filter(|token| token.starts_with('/'))
+            .map(str::to_owned)
+            .collect()
+    };
+    let before = names_in(&decompressed(&twin));
+    for name in ["/S", "/E", "/C", "/R", "/T"] {
+        assert!(
+            before.iter().any(|n| n == name),
+            "the control cannot see {name} in {before:?}"
+        );
+    }
+    let after = names_in(&decompressed(&out));
+    for name in ["/S", "/E", "/C", "/R", "/T"] {
+        assert!(
+            !after.iter().any(|n| n == name),
+            "{name} still stands in the twin's {after:?}"
+        );
     }
 }
 
@@ -537,4 +562,203 @@ fn a_font_bbox_with_a_nested_item_refuses() {
         "number-unreadable",
     );
     refuses_by("[0 0 10 10]", &build("[0 0 10 10]"), "type-three-image-cut");
+}
+
+/// A Type 0 font over Identity-H with a font descriptor and an identity `/CIDToGIDMap`, so PDFium
+/// draws substitute glyphs: `pads` copies of CID 1, then six glyphs, at size 10 from (110, 260).
+fn cid_ink_document(dw: &str, w: &str, pads: usize) -> Vec<u8> {
+    let mut content = b"BT /C0 10 Tf 110 260 Td <".to_vec();
+    content.extend_from_slice("0001".repeat(pads).as_bytes());
+    content.extend_from_slice(b"003600460044005500480057> Tj ET");
+    document(
+        "/Font << /C0 5 0 R >>",
+        &content,
+        &[
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /Helvetica /Encoding /Identity-H \
+              /DescendantFonts [6 0 R] >>",
+            format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Helvetica /CIDSystemInfo \
+                 << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor \
+                 7 0 R {dw} {w} /CIDToGIDMap /Identity >>"
+            )
+            .as_bytes(),
+            b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /FontBBox [0 -200 1000 900] \
+              /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>",
+        ],
+    )
+}
+
+/// A RANGE STARTING BELOW 0 (#125's fifth security review): `[-70000 5 0]` gives codes 0..5 width
+/// 0 to PDFium. Without the clamp the 65,536-code bound was spent below 0, codes 0..5 took `/DW`
+/// 1,000, and twenty pads put the glyphs 200 points right, off the region -- `Ok` over them. With
+/// it the pads are 0 wide, the glyphs sit at 110, and they are removed, as from the `[0 5 0]` twin.
+///
+/// INK IN THE REGION IS NOT ENOUGH HERE, and the first version of this test showed it: without
+/// the clamp burrow removed the pads by its own widths, so PDFium redrew the six glyphs 200 points
+/// right, off the region -- clean region, glyphs still in the file. So the output must carry no
+/// characters at all, as PDFium reads them.
+#[test]
+fn a_cid_width_range_starting_below_zero_is_clamped_and_redacts() {
+    for w in ["/W [-70000 5 0]", "/W [0 5 0]"] {
+        let out = reaches_and_redacts(w, &cid_ink_document("/DW 1000", w, 20));
+        let left = support::char_box_oracle::chars_on_page(&out, 0);
+        assert!(
+            left.is_empty(),
+            "{w}: {} characters survive, moved",
+            left.len()
+        );
+    }
+}
+
+/// `/W` CHARGED FOR EVERY ITEM IT READS (#125's fifth security review): runs below 0 assign
+/// nothing, and 4,000 of them over one 65,535-item array took 83.8 s against a 2 s budget. Each run
+/// now costs its items, so the read ceiling refuses within a few runs. The same with empty runs,
+/// which cost one item each.
+#[test]
+fn a_cid_width_array_that_reads_too_much_is_refused_quickly() {
+    let inner = format!("[{}]", "1 ".repeat(65_535));
+    let runs = "-70000 8 0 R ".repeat(4_000);
+    let pdf = document(
+        "/Font << /C0 5 0 R >>",
+        b"BT /C0 10 Tf 110 260 Td <0001> Tj ET",
+        &[
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /Helvetica /Encoding /Identity-H \
+              /DescendantFonts [6 0 R] >>",
+            format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Helvetica /CIDSystemInfo \
+                 << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor \
+                 7 0 R /DW 600 /W [{runs}] /CIDToGIDMap /Identity >>"
+            )
+            .as_bytes(),
+            b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /FontBBox [0 -200 1000 900] \
+              /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>",
+            inner.as_bytes(),
+        ],
+    );
+    let started = std::time::Instant::now();
+    refuses_by("4,000 runs below 0", &pdf, "widths-too-long");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "took {:?}",
+        started.elapsed()
+    );
+
+    let empty_runs = format!("/W [{}]", "0 [] ".repeat(300_000));
+    refuses_by(
+        "300,000 empty runs",
+        &cid_document("/DW 1000", &empty_runs),
+        "widths-too-long",
+    );
+}
+
+/// A range END that is not whole refuses as its start does (#125's fifth code review): the only
+/// earlier fixture had a bad start, so a weakened end check would have survived.
+#[test]
+fn a_cid_width_range_end_that_is_not_whole_refuses() {
+    refuses_by(
+        "[1 6.5 500]",
+        &cid_document("/DW 1000", "/W [1 6.5 500]"),
+        "number-unreadable",
+    );
+}
+
+/// THE SAME WIDTH TWICE is read alike by both readers, so it is not an overlap to refuse.
+#[test]
+fn a_cid_code_given_the_same_width_twice_redacts() {
+    redact(&cid_document("/DW 1000", "/W [1 [100] 1 [100]]"))
+        .expect("a repeated equal width redacts");
+}
+
+/// A NEGATIVE `/FirstChar` ON A FONT SHARED WITH ANOTHER PAGE (#125's fifth security review).
+/// PDFium loads no `/Widths` for it; burrow indexed them from -1. `steps::first_char` refused it
+/// only for a font that is cut, and a shared font is not. Refused where every font is read.
+#[test]
+fn a_negative_first_char_refuses_even_on_a_shared_font() {
+    let widths = vec!["600"; 95].join(" ");
+    let font = format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar -1 /LastChar 93 \
+         /Widths [{widths}] >>"
+    );
+    // Two pages, both drawing with the font, so redacting page 0 does not cut it.
+    let page0 = b"BT /F1 20 Tf 110 260 Td (SECRET) Tj ET";
+    let page1 = b"BT /F1 20 Tf 50 50 Td (other page) Tj ET";
+    let stream = |content: &[u8]| -> Vec<u8> {
+        [
+            format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(),
+            content,
+            b"\nendstream",
+        ]
+        .concat()
+    };
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources << /Font << /F1 7 0 R \
+          >> >> /Contents 4 0 R >>"
+            .to_vec(),
+        stream(page0),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources << /Font << /F1 7 0 R \
+          >> >> /Contents 6 0 R >>"
+            .to_vec(),
+        stream(page1),
+        font.into_bytes(),
+    ];
+    let mut out = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    refuses_by("/FirstChar -1, shared", &out, "first-char");
+}
+
+/// #292, THE OWNER'S DECISION (2026-10-08): a simple font's width below 0 or at 65,535 and above,
+/// which PDFium wraps in 16 bits (-1000 is 64,536), refuses -- accepting that LibreOffice Writer's
+/// vertical CJK output, which writes `/Widths [0 -1000 …]`, refuses with it. The in-range twin
+/// redacts.
+#[test]
+fn a_simple_font_width_out_of_sixteen_bits_refuses() {
+    let content = b"BT /F1 10 Tf 0 260 Td (          SECRET) Tj ET";
+    for (what, space) in [("-1000", "-1000"), ("65536", "65536"), ("65535", "65535")] {
+        let pdf = document(
+            "/Font << /F1 5 0 R >>",
+            content,
+            &[&helvetica_with_space(space)],
+        );
+        refuses_by(what, &pdf, "width-out-of-range");
+    }
+    let missing = document(
+        "/Font << /F1 5 0 R >>",
+        content,
+        &[
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 33 /LastChar 33 \
+              /Widths [600] /FontDescriptor 6 0 R >>",
+            b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /MissingWidth 65536 >>",
+        ],
+    );
+    refuses_by("/MissingWidth 65536", &missing, "width-out-of-range");
+    reaches_and_redacts(
+        "in range",
+        &document(
+            "/Font << /F1 5 0 R >>",
+            content,
+            &[&helvetica_with_space("1000")],
+        ),
+    );
 }

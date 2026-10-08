@@ -1218,6 +1218,10 @@ Its subject is the **writing mode**, not a canary: six Japanese glyphs set `tb-r
 canary to witness, and inventing one would change the file this fixture exists to be. Its
 assertion lives in `core/burrow-engines/tests/redaction_corpus.rs` and the geometry calibration,
 which read its glyph origins rather than its strings.
+
+SINCE 2026-10-08 IT REFUSES `[width-out-of-range]`: LibreOffice writes `/Widths [0 -1000 …]`,
+which PDFium wraps in 16 bits, and #292 refuses such a width. The owner accepted this cost; #294
+is the post-launch narrowing for vertical writing.
 """
 
 [[fixture]]

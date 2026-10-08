@@ -2296,7 +2296,7 @@ fn a_cid_widths_array_that_assigns_too_much_is_refused_by_name() {
             format!("{error:?}").contains("[widths-too-many]"),
             "refused, but not by the /W ceiling: {error:?}"
         ),
-        Ok(()) => panic!("a /W assigning 6.5 billion widths must be refused"),
+        Ok(()) => panic!("a /W assigning 13 million widths must be refused"),
     }
     assert!(took < STEP_CEILING, "the /W refusal took {took:?}");
 
