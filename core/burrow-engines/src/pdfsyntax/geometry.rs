@@ -2759,16 +2759,19 @@ pub trait Resources {
 /// found would have under-covered: a form entry with no `/LW` over a page `/LW 2` leaves PDFium
 /// drawing at the `120 w` set before the `Do` (7,128 dark pixels), and would have set 2.
 ///
-/// The cost is over-refusal where the scopes disagree and PDFium picks the thinner, recorded
-/// rather than narrowed (rule 4).
+/// The cost is over-refusal, recorded rather than narrowed (rule 4), and it is wider than "where
+/// PDFium picks the thinner": an enclosing scope that merely lacks the name is a scope that does
+/// not set it, so a form whose own `/GS0` sets `/LW 0.5` is boxed at the larger width already in
+/// force whenever the page has no `/GS0` -- although PDFium certainly draws 0.5. Unmeasured on real
+/// documents: none of #227's 100 carries `/LW` or `/ML`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineParameter {
     /// The largest magnitude any candidate scope sets, if any sets one.
-    pub largest: Option<f64>,
+    largest: Option<f64>,
     /// Some candidate scope does not set it, so the value in force may be the one drawn with.
-    pub unset_somewhere: bool,
+    unset_somewhere: bool,
     /// Some candidate scope sets it to something that is not one number both readers agree on.
-    pub unreadable: bool,
+    unreadable: bool,
 }
 
 impl LineParameter {

@@ -326,15 +326,25 @@ fn a_width_or_limit_that_is_not_one_agreed_number_refuses() {
     }
 }
 
+/// PINNED OVER-REFUSAL (rule 4): PDFium ignores an ExtGState written as a stream, and draws thin.
+/// A reader that resolves keys through the stream's dictionary would not, so which one draws is
+/// reader-dependent and burrow reads it as though it applied (DECISIONS.md rule 1). Its `/Font`
+/// refuses the same way (#152's rule, now reaching a stream entry too).
 #[test]
-fn an_ext_gstate_written_as_a_stream_is_ignored_as_pdfium_ignores_it() {
+fn an_ext_gstate_written_as_a_stream_is_read_as_though_it_applied() {
     let pdf = page(
         &format!("/GS0 gs {LINE}"),
         "<< /ExtGState << /GS0 6 0 R >> >>",
         &["<< /LW 120 /Length 0 >>\nstream\n\nendstream"],
     );
     assert_eq!(dark_in_region(&pdf), 0, "PDFium ignores the stream entry");
-    redacts_clean("stream entry", &pdf);
+    refuses("stream entry with /LW 120", &pdf, "vector-in-region");
+    let font = page(
+        "/GS0 gs 0 G 0 g BT /F1 20 Tf 190 120 Td (I) Tj ET",
+        "<< /Font << /F1 5 0 R >> /ExtGState << /GS0 6 0 R >> >>",
+        &["<< /Font [5 0 R 20] /Length 0 >>\nstream\n\nendstream"],
+    );
+    refuses("stream entry with /Font", &font, "ext-gstate-sets-font");
 }
 
 #[test]
@@ -454,6 +464,8 @@ fn a_glyph_drawn_in_a_stroking_mode_is_removed_where_its_outline_reaches() {
         ),
     ] {
         let pdf = page(&content, &resources, &[]);
+        // THE OUT-OF-RANGE MODE pins burrow's conservative reading of a mode a reader may draw any
+        // way, not a measured leak, so its input is not required to ink the region.
         if what != "an out-of-range mode is treated as stroking" {
             assert!(
                 dark_in_region(&pdf) > 0,
@@ -486,4 +498,148 @@ fn a_glyph_drawn_in_a_stroking_mode_is_removed_where_its_outline_reaches() {
         1,
         "the filled glyph outside the region is kept"
     );
+}
+
+/// THE REACH ITSELF, under a CTM that stretches the page vertically, so it is the CTM -- not the
+/// text matrix, and not the wrong column of it -- that carries the user-space reach to the page.
+///
+/// The glyph sits at page y=120 with its outline to about 149. A `1 M` limit floors the reach at
+/// half the width times root two, doubled vertically by the CTM. At `120 w` PDFium inks to about
+/// 269, through the region's floor at 250, and the box reaches 330: removed. At `60 w` PDFium inks
+/// to about 209 and the box tops out near 245: kept, the twin that a reach too large would remove
+/// (#278's code review: every other stroked case covered the whole page, so no reach was tested).
+#[test]
+fn a_stroked_glyphs_reach_is_the_strokes_and_no_more() {
+    let text = |width: u32| {
+        page(
+            &format!(
+                "q 1 0 0 2 0 0 cm 0 G 0 g {width} w 1 M BT /F1 20 Tf 2 Tr 190 60 Td (I) Tj ET Q"
+            ),
+            "<< /Font << /F1 5 0 R >> >>",
+            &[],
+        )
+    };
+    let crossing = text(120);
+    assert!(dark_in_region(&crossing) > 0, "120 w must ink the region");
+    let (out, _) = redact(&crossing).expect("the stroked glyph is removed, not refused");
+    assert_eq!(glyphs(&out), 0, "the crossing glyph is removed");
+    assert_eq!(dark_in_region(&out), 0);
+
+    let short = text(60);
+    assert_eq!(dark_in_region(&short), 0, "60 w stays below the region");
+    let (out, _) = redact(&short).expect("redacts");
+    assert_eq!(
+        glyphs(&out),
+        1,
+        "a glyph whose stroke stops short of the region is kept"
+    );
+}
+
+/// `Tr` takes one operand, counted like `w`'s: a padded run is read differently by a reader that
+/// takes the last operand, and a name is not a mode.
+#[test]
+fn a_rendering_mode_that_is_not_one_number_refuses() {
+    let fonts = "<< /Font << /F1 5 0 R >> >>";
+    refuses(
+        "padded Tr",
+        &page("BT /F1 20 Tf 0 2 Tr 190 120 Td (I) Tj ET", fonts, &[]),
+        "operand-count-mismatch",
+    );
+    refuses(
+        "a name as the mode",
+        &page("BT /F1 20 Tf /X Tr 190 120 Td (I) Tj ET", fonts, &[]),
+        "numeric-operand-not-a-number",
+    );
+}
+
+/// THE MITER, for text: a sharp glyph vertex spikes as far as a path's does. A `V` stroked at
+/// `30 w`, its vertex at y=330, 30 points above the region: under the default miter limit of 10
+/// PDFium inks 72 dark pixels into the region, and under `1 M` none (measured while writing this),
+/// so the spike alone carries it in. A text reach of half the width without the miter multiplier
+/// stopped at 311 and kept this glyph and its ink (#278's code review asked for the reach to be
+/// tested; this is the case where only the multiplier decides it).
+#[test]
+fn a_stroked_glyphs_vertex_spikes_as_far_as_the_miter_limit_allows() {
+    let fonts = "<< /Font << /F1 5 0 R >> >>";
+    let pdf = page(
+        "0 G 0 g 30 w BT /F1 20 Tf 1 Tr 190 330 Td (V) Tj ET",
+        fonts,
+        &[],
+    );
+    assert!(
+        dark_in_region(&pdf) > 0,
+        "the vertex's miter spike must ink the region"
+    );
+    let (out, _) = redact(&pdf).expect("the stroked glyph is removed, not refused");
+    assert_eq!(
+        glyphs(&out),
+        0,
+        "the glyph whose spike reaches the region is removed"
+    );
+    assert_eq!(dark_in_region(&out), 0);
+
+    let blunt = page(
+        "0 G 0 g 30 w 1 M BT /F1 20 Tf 1 Tr 190 330 Td (V) Tj ET",
+        fonts,
+        &[],
+    );
+    assert_eq!(dark_in_region(&blunt), 0, "under 1 M the spike is gone");
+}
+
+/// HOW FAR A RENDERING MODE LASTS, as PDFium measured it in #278's security review: `Tr` is
+/// graphics state, so it survives `ET`/`BT`, is carried into a form by `Do`, and an out-of-range
+/// mode after a stroking one leaves it stroking. And a rotated CTM carries the reach through its
+/// off-diagonal terms. Each of these drew 176 to 806 dark pixels in the region after an `Ok` under
+/// a mutation the rest of this file did not catch: the reach from the diagonal only, `Tr` reset on
+/// entering a form, `Tr` reset at `BT`, and only 1, 2, 5 and 6 treated as stroking.
+#[test]
+fn a_stroking_mode_lasts_as_long_as_the_graphics_state_does() {
+    let fonts = "<< /Font << /F1 5 0 R >> >>";
+    let form_resources = "<< /XObject << /Fm0 6 0 R >> /Font << /F1 5 0 R >> >>";
+    let fm0 = form(fonts, "BT /F1 20 Tf 190 220 Td (I) Tj ET");
+    for (what, pdf) in [
+        (
+            "rotated a quarter turn",
+            page(
+                "q 0 1 -1 0 210 236 cm 0 g 0 G 30 w 2 Tr BT /F1 20 Tf 0 0 Td (I) Tj ET Q",
+                fonts,
+                &[],
+            ),
+        ),
+        (
+            "carried into a form",
+            page("0 g 0 G 2 Tr 60 w /Fm0 Do", form_resources, &[&fm0]),
+        ),
+        (
+            "surviving ET and BT",
+            page(
+                "0 g 0 G 60 w BT 2 Tr ET BT /F1 20 Tf 190 220 Td (I) Tj ET",
+                fonts,
+                &[],
+            ),
+        ),
+        (
+            "an out-of-range mode after a stroking one",
+            page(
+                "0 g 0 G 60 w BT /F1 20 Tf 2 Tr -3 Tr 190 220 Td (I) Tj ET",
+                fonts,
+                &[],
+            ),
+        ),
+    ] {
+        assert!(
+            dark_in_region(&pdf) > 0,
+            "{what}: the stroke must reach the region"
+        );
+        let (out, _) = match redact(&pdf) {
+            Ok(done) => done,
+            Err(error) => panic!("{what}: expected the glyph removed, refused: {error}"),
+        };
+        assert_eq!(glyphs(&out), 0, "{what}: the stroked glyph was not removed");
+        assert_eq!(
+            dark_in_region(&out),
+            0,
+            "{what}: the output still inks the region"
+        );
+    }
 }

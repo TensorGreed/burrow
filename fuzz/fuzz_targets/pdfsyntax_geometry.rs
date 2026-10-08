@@ -184,7 +184,8 @@ fuzz_target!(|data: &[u8]| {
             miter: match control[4] >> 6 {
                 0 => LineParameter::UNSET,
                 1 => LineParameter::UNREADABLE,
-                _ => LineParameter::set(pick(control[4] >> 3)),
+                2 => LineParameter::set(pick(control[4] >> 3)),
+                _ => LineParameter::set(pick(control[4] >> 3)).merge(LineParameter::UNSET),
             },
         },
         // THE HIGH BIT OF THE SECOND, which `pick` also reads only modulo 8.

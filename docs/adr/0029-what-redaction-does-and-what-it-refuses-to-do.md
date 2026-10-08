@@ -4883,14 +4883,23 @@ need no `gs` at all, also measured on `main`:
     then a form whose `/GS0` sets nothing, over a page `/GS0 /LW 2`. PDFium draws 120 (7,128
     dark pixels); the proposal would have boxed at 2.
   - Modelling which scope PDFium picks is what DECISIONS.md rule 1 says not to do. So the box
-    takes the largest candidate, and the cost is over-refusal where PDFium picks the thinner.
-    That cost is pinned: a form category lacking the name, over a page `/LW 120`.
+    takes the largest candidate, and the cost is over-refusal. That cost is pinned: a form
+    category lacking the name, over a page `/LW 120`.
+  - **The over-refusal is wider than "where PDFium picks the thinner"** (the code review). An
+    enclosing scope that merely lacks the name is a scope that does not set it. So a form whose
+    own `/GS0` sets `/LW 0.5` is boxed at the larger width already in force whenever the page has
+    no `/GS0`, although PDFium certainly draws 0.5.
 - **An indirect `/LW` is read,** as PDFium reads it: 7,128 dark pixels on `main` from `/LW 6 0 R`.
 - **A value that is not one number both readers agree on refuses** `[ext-gstate-line-unreadable]`:
   a string, an array, a name, or a magnitude past 2^24. This over-refuses, because PDFium draws a
   string or array width thin. A negative width is boxed at its magnitude, which over-refuses the
   same way; that is pinned too.
-- **An ExtGState entry written as a stream is ignored,** as PDFium ignores it.
+- **An ExtGState entry written as a stream is read as though it applied:** its dictionary's
+  `/LW`, `/ML` and `/Font` count. PDFium and poppler ignore such an entry. A reader that resolves
+  keys through a stream's dictionary would apply it. Which one draws is reader-dependent, so rule 1
+  applies (the code review's correction; the first version modelled PDFium and ignored it). It
+  over-refuses for PDFium, and that is pinned. #152's `/Font` refusal reaches a stream entry too,
+  for the same reason.
 - **The miter multiplier is floored at the square root of two.** With that floor no cap or join
   shape reaches past the box, so `/LC`, `/LJ`, `J` and `j` need no modelling. The review went
   through every other ExtGState key: dashes only remove ink, and the transparency, transfer and
@@ -4899,8 +4908,23 @@ need no `gs` at all, also measured on `main`:
   the region removes a glyph whose outline reaches it.
   - It is **handled as text, not refused as ink:** refusing would have turned away every faux-bold
     run a producer draws with `2 Tr`.
-  - Any mode that is not exactly 0, 3, 4 or 7 counts as stroking.
-  - `Tr` is now in the arity table, so a padded `Tr` refuses like a padded `w`.
+  - Any mode that is not exactly 0, 3, 4 or 7 counts as stroking. PDFium ignores an out-of-range
+    mode and keeps the one in force, so `2 Tr -3 Tr` still strokes (806 dark pixels, the security
+    review). Counting `-3` as stroking covers it.
+  - `Tr` is graphics state: `q`/`Q` carry it; it survives `ET`/`BT`; a form inherits it at `Do`.
+  - `Tr` is now in the arity table, so a padded `Tr` (`0 2 Tr`, which PDFium reads as 2) refuses
+    `[operand-count-mismatch]`. A name as the mode refuses `[numeric-operand-not-a-number]`.
+    Before, both were walked past.
+  - **What it costs, unmeasured:** a removal wider than the ink.
+    - The reach is the worst case: half the width times the miter limit. Real outlines rarely
+      spike that far, so a stroked line just outside the region can be removed with the
+      `Ok` unchanged. The security review measured it: a `2 Tr 0.3 w` paragraph lost the line
+      whose ink tops out at 247.3, under a region from 250.
+    - Verification checks no text outside the region, so this is invisible to it, and so is an
+      outcome census.
+    - A removed-glyph comparison over the 5 real documents with a stroking `Tr` covers one
+      document. The other four refuse their first page under other rules. That document showed
+      no difference, which is not a rate.
 
 **The residual, stated.** A zero width is PDFium's thinnest line: one device pixel, which the
 walk boxes at zero. At y=249.8, against a region whose edge is at 250, PDFium leaves faint
@@ -4908,8 +4932,8 @@ pixels on the edge row, none of them dark. The same is true of `0 w`, and of a C
 stroke below a pixel. The walk has no device scale to do better. It is pinned in
 `a_zero_width_line_at_the_edge_is_the_recorded_residual`.
 
-**Shown to fail.** `core/burrow-engines/tests/stroke_extent.rs` holds 17 tests over the review's
-fixtures:
+**Shown to fail.** `core/burrow-engines/tests/stroke_extent.rs` holds 18 tests over the
+reviews' fixtures:
 
 - every reaching shape draws into the region, measured by PDFium on the input, and refuses, or,
   for stroked text, has its glyph removed with no dark pixel left;
@@ -4927,13 +4951,30 @@ rebuilt, and each went red on its fixtures:
 7. `Tr` never stroking (1);
 8. the reach left out of the glyph box (1).
 
+The two post-code reviews found ten more mutations that survived that suite. Two were lifted from
+the code review, five from the security review, and three are new. Each now has a test, and each
+is red. The security review's five each drew 176 to 806 dark pixels in the region after an `Ok`:
+
+- the reach multiplied by 1,000, which would remove visible text outside the region;
+- the reach from the wrong CTM column;
+- the reach from the diagonal only, which leaks text rotated a quarter turn;
+- the miter multiplier dropped from the text reach. A `V`'s vertex at `30 w` inks 72 dark pixels
+  under the default limit and none under `1 M`, so only the multiplier decides it;
+- `Tr` reset on entering a form;
+- `Tr` reset at `BT`;
+- only 1, 2, 5 and 6 treated as stroking;
+- `Tr` dropped from the arity table;
+- a stream entry ignored.
+
 **The census.** The bar was registered first: 1% of real documents newly refused.
 - **The run:** #227's 100 real documents, the first three pages of each, a 4×6 tile grid per
   page, so 4,824 redactions on `main` and on this change.
 - **The result:** **0 outcomes changed.** That is 0 documents newly refused, and 0 new `Ok`s to
   check for pixels.
-- **What that zero is worth:** it measures the `Tr` half only. **None of the 100 documents carries
-  `/LW` or `/ML` at all.** 5 carry a stroking `Tr`, and none changed outcome.
+- **What that zero is worth:** neither half. **None of the 100 documents carries `/LW` or `/ML`
+  at all.** 5 carry a stroking `Tr`, and none changed outcome. But `Tr`'s cost is extra removal
+  under an unchanged `Ok`, which an outcome census cannot see (above). The first version of this
+  paragraph said it measured the `Tr` half, and the security review corrected it.
   - The ExtGState half's rate is therefore **unmeasured**. The set is TeX-heavy, and the
     producers that write `/LW` and `/ML` into ExtGStates (Illustrator, InDesign, office suites)
     are not in it.
