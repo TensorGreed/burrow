@@ -235,21 +235,41 @@ pub(crate) mod code {
 
 /// qpdf's fixed detail for handle misuse: the C API looked up a `qpdf_oh` it does not hold
 /// (`qpdf-c.cc`, `do_with_oh`). Thrown as `qpdf_e_internal`, so it never reaches a sanitiser.
-#[cfg(feature = "fuzzing")]
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
 pub(crate) const QPDF_UNKNOWN_HANDLE: &[u8] = b"attempted access to unknown object handle";
 
 /// qpdf's fixed `std::logic_error` text for #285 (`QPDF_objects.cc`, `makeIndirectObject`).
-#[cfg(feature = "fuzzing")]
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
 pub(crate) const QPDF_UNINITIALIZED_INDIRECT: &[u8] =
     b"attempted to make an uninitialized QPDFObjectHandle indirect";
 
 /// burrow's message for a `qpdf_oh` qpdf does not hold: a defect in burrow, never the file.
-#[cfg(feature = "fuzzing")]
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
 pub(crate) const INTERNAL_UNKNOWN_HANDLE: &str =
     "qpdf was handed an object handle it does not hold (a burrow defect)";
 
 /// burrow's message for #285's qpdf invariant failure.
-#[cfg(feature = "fuzzing")]
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
 pub(crate) const INTERNAL_UNINITIALIZED_INDIRECT: &str =
     "qpdf reported an internal error: an uninitialized object made indirect";
 
@@ -261,7 +281,12 @@ pub(crate) const INTERNAL_UNINITIALIZED_INDIRECT: &str =
 /// through exist only behind the `fuzzing` feature (DECISIONS.md rule 13). Exact comparison against
 /// constants; the text is never copied, formatted or returned. Anything else is `None`, and the
 /// caller falls back to [`map_code`].
-#[cfg(feature = "fuzzing")]
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
 #[must_use]
 pub(crate) fn internal_from_detail(detail: &[u8]) -> Option<Error> {
     if detail == QPDF_UNKNOWN_HANDLE {

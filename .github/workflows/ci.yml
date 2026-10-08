@@ -644,7 +644,9 @@ jobs:
       # `check`, not `build`: this needs no Xcode SDK and no Android NDK, so it runs on
       # a Linux runner years before M3/M4 can build the apps. The point is that a core
       # change which breaks a mobile target fails now rather than at the start of M3.
-      - run: cargo check --workspace --all-features --target ${{ matrix.target }}
+      # A SCRIPT, so tools/ci-local.py can see and run the same gate (#293: as a bare `cargo
+      # check` line it was invisible to the parity extractor, and a push went red here only).
+      - run: tools/check-mobile-targets.sh ${{ matrix.target }}
 
   deny:
     name: cargo-deny (licenses, advisories, bans, sources)

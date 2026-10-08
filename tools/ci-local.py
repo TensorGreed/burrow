@@ -91,7 +91,9 @@ PATTERNS: list[tuple[str, str]] = [
     # matched as the literal `$suite`, because a token nobody can cover is noise -- such a step
     # belongs in a script, which is how this one was fixed.
     (r"\bcargo test\b[^\n|&;]*?--test \"?([a-z_][\w-]*)", r"test:\1"),
-    (r"\bcargo (fmt|clippy|test|deny|audit|build|doc|install)\b", r"cargo:\1"),
+    # `check` TOO (#293): CI's mobile job ran `cargo check --target …`, the extractor produced no
+    # token for it, and parity reported full coverage over a gate nothing local ran.
+    (r"\bcargo (fmt|clippy|test|deny|audit|build|doc|install|check)\b", r"cargo:\1"),
     # `wasm-pack build`, which is NOT a cargo subcommand and so matched nothing above. It
     # produced the fifth miss of the class this tool exists for: `bindings/burrow-wasm/pkg/`
     # is gitignored, `stage-web-engines.mjs` copies whatever is in it, and CI builds it
@@ -561,6 +563,12 @@ JOBS: list[dict] = [
             "tools/test-check-redaction-not-in-base.sh",
         ],
         "why": "redaction's code reaches no part of the base web payload (ADR 0029)",
+    },
+    {
+        "name": "mobile-check",
+        "run": "tools/check-mobile-targets.sh",
+        "covers": ["tools/check-mobile-targets.sh"],
+        "why": "cargo check --all-features on the mobile targets CI checks (#293)",
     },
     {
         # AFTER `web`, for the same reason as the two above: it reads the production `dist/`.
