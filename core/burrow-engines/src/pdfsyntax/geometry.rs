@@ -601,8 +601,9 @@ impl Rect {
         out
     }
 
-    /// Whether `other` lies wholly inside this rectangle, edges included. A NaN anywhere makes
-    /// every comparison false, so a non-finite box is never inside anything.
+    /// Whether `other` lies wholly inside this rectangle, edges included. A NaN edge on either
+    /// side makes it false; an infinite box contains every finite one, so callers that care check
+    /// `is_finite` first.
     #[must_use]
     pub fn contains(&self, other: &Self) -> bool {
         self.left <= other.left
@@ -1269,13 +1270,13 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 ///   drawn with fills is legitimate, so this over-refuses; matplotlib's default PDF output
 ///   (`pdf.fonttype 3`) draws every glyph that way, and any page carrying such a figure refuses
 ///   wherever the region is. A clip alone (`re W n`) paints nothing and is not refused.
-/// - **An inline image drawn outside the font's `/FontBBox` is refused**: its glyph's box misses
-///   it, so a region over the image reached no glyph and the operation returned `Ok` over 5,309
+/// - **An inline image drawn outside the font's `/FontBBox` is refused**, by the caller through
+///   [`check_type_three_image_inside`], once per font: its glyph's box misses it, so a region over the image reached no glyph and the operation returned `Ok` over 5,309
 ///   dark pixels (the same review). The image's extent is the unit square through the
 ///   procedure's own `cm`s, in glyph space, which is the space `/FontBBox` is written in. A TeX
 ///   bitmap font draws each image exactly inside its box and is not refused by this.
-/// - **An inline image inside its box is reported** ([`ProcedureDraws::image`]): its glyph's box
-///   covers it, but removing the glyph leaves the procedure -- the bitmap -- in `/CharProcs`, so
+/// - **An inline image inside its box is kept, and reported** ([`ProcedureDraws::image`]): its
+///   glyph's box covers it, but removing the glyph leaves the procedure -- the bitmap -- in `/CharProcs`, so
 ///   the caller refuses when the region reaches a glyph of a font that draws one (owner's
 ///   decision, 2026-10-08).
 ///
@@ -1283,17 +1284,15 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
 ///
 /// [`Refusal::TypeThreeProcedureShowsText`] if the procedure shows text or draws an XObject;
 /// [`Refusal::TypeThreeProcedurePaints`] if it paints a path or a shading;
-/// [`Refusal::TypeThreeImageOutsideItsBox`] if it draws an inline image that `font_bbox` does
-/// not contain, or the font declares no box; [`Refusal::UnmatchedRestore`] for a `Q` with no
-/// `q`, since the transform after it is a reader's guess. Whatever [`super::ops::operations`]
+/// [`Refusal::UnmatchedRestore`] for a `Q` with no `q`, since the transform after it is a
+/// reader's guess; [`Refusal::NonFiniteGeometry`] for a `cm` that composes to a non-finite
+/// transform; whatever a `cm` operand that is not a number refuses. An image is reported in
+/// [`ProcedureDraws::image`], and judged against each font's box by
+/// [`check_type_three_image_inside`]. Whatever [`super::ops::operations`]
 /// refuses, since a procedure burrow cannot tokenise is one whose contents it cannot rule on.
 /// [`Error::LimitExceeded`] once `watch`'s deadline has passed: a Type 3 font's `/CharProcs`
 /// may hold thousands of procedures, and the caller scans them all.
-pub fn check_type_three_procedure(
-    procedure: &[u8],
-    font_bbox: Option<Rect>,
-    watch: &Watch<'_>,
-) -> Result<ProcedureDraws> {
+pub fn check_type_three_procedure(procedure: &[u8], watch: &Watch<'_>) -> Result<ProcedureDraws> {
     let operations = super::ops::operations(procedure)?;
     // READ ONCE THE PROCEDURE IS LEXED, and per operation after, as every walk here is (#175).
     watch.now()?;
@@ -1305,6 +1304,17 @@ pub fn check_type_three_procedure(
     for operation in operations {
         watch.tick()?;
         let number = |at: usize| number_operand(&operation.operands, at);
+        // THE COUNT, BEFORE ANYTHING READS AN OPERAND, as the page walk counts (#125's security
+        // review). `200 0 0 30 -280 245` padded in front with `1 0 0 1 0 0` read as the identity
+        // here, where PDFium takes the last six -- an image this scan judged inside its box drew
+        // 6,000 dark pixels in the region after an `Ok`.
+        if let Some(expected) = arity(&operation.operator)
+            && operation.operands.len() != expected
+        {
+            return Refusal::OperandCountMismatch.refuse(
+                "an operator in a Type 3 glyph procedure given more or fewer operands than it takes",
+            );
+        }
         match operation.operator.as_slice() {
             // `Do` COUNTS, and it did not. A procedure that shows no text of its own but draws a
             // Form XObject shows the form's text, and this walk enters neither.
@@ -1349,18 +1359,19 @@ pub fn check_type_three_procedure(
                     f: number(5)?,
                 };
                 ctm = m.then(&ctm);
+                // REFUSED AT THE `cm`, as the page walk refuses (#125's code review): a transform
+                // that composed to a non-finite value has no extent to compare, so nothing past it
+                // is argued about.
+                if !ctm.is_finite() {
+                    return Refusal::NonFiniteGeometry.refuse(
+                        "a Type 3 glyph procedure whose transform composes to a value that is not \
+                         finite",
+                    );
+                }
             }
             b"BI" => {
                 let extent = UNIT_SQUARE.transformed(&ctm);
-                // `contains` is false for a non-finite extent, so a transform that composed to
-                // NaN refuses here rather than slipping inside.
-                if !font_bbox.is_some_and(|bbox| extent.is_finite() && bbox.contains(&extent)) {
-                    return Refusal::TypeThreeImageOutsideItsBox.refuse(
-                        "a Type 3 glyph procedure that draws an image outside its font's box, \
-                         where no region over the image reaches the glyph",
-                    );
-                }
-                draws.image = true;
+                draws.image = Some(draws.image.map_or(extent, |seen| seen.union(&extent)));
             }
             _ => {}
         }
@@ -1369,12 +1380,40 @@ pub fn check_type_three_procedure(
 }
 
 /// What a Type 3 glyph procedure drew that its caller must rule on (#125).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[non_exhaustive]
 pub struct ProcedureDraws {
-    /// It draws an inline image -- inside its font's box, or it would have been refused. Its
-    /// glyph's box covers the image, but the bitmap stays in `/CharProcs` when the glyph is
-    /// removed, so the caller refuses a region that reaches a glyph of this font.
-    pub image: bool,
+    /// The extent of every inline image it draws, unioned, in glyph space -- `None` if it draws
+    /// none. **Judged per font, by the caller** ([`check_type_three_image_inside`]): the same
+    /// procedure stream can be named by two fonts with two different boxes, and a verdict cached
+    /// with the procedure was a verdict for whichever font was scanned first. #125's code review
+    /// measured that: two fonts sharing one procedure, the first with a box wide enough for the
+    /// image, the second with a ten-point box, returned `Ok` over 6,000 dark pixels.
+    pub image: Option<Rect>,
+}
+
+/// Refuse a Type 3 font whose procedure draws an inline image its `/FontBBox` does not contain
+/// (#125).
+///
+/// Outside the box no region over the image reaches the glyph, so the glyph is never cut and the
+/// image is never removed: `Ok` over 5,309 dark pixels in the region, measured. A font with no box
+/// has nothing to contain the image, and refuses too. Called for every font that draws with the
+/// procedure, since the box is the font's and the procedure may be shared.
+///
+/// # Errors
+///
+/// [`Refusal::TypeThreeImageOutsideItsBox`] if `font_bbox` is absent or does not contain `image`,
+/// or `image` is not finite.
+pub fn check_type_three_image_inside(image: Rect, font_bbox: Option<Rect>) -> Result<()> {
+    // `contains` is false when either side carries a NaN, and `is_finite` rules out an infinite
+    // extent that an infinite box would otherwise contain.
+    if font_bbox.is_some_and(|bbox| image.is_finite() && bbox.contains(&image)) {
+        return Ok(());
+    }
+    Refusal::TypeThreeImageOutsideItsBox.refuse(
+        "a Type 3 glyph procedure that draws an image outside its font's box, where no region \
+         over the image reaches the glyph",
+    )
 }
 
 /// How many places in the document draw a given Form XObject.
@@ -4068,9 +4107,9 @@ mod tests {
         CMap, Encoding, ExtGStateLine, Form, FormUses, FormsReached, Glyph, GlyphMetrics, InkKind,
         LineParameter, MAX_FORM_DEPTH, MAX_GLYPHS, MAX_INK, Matrix, NamedProperties, Operand,
         PropertyList, RAISED, Rect, Refusal, Resources, TextPosition, TextState, WATCH_EVERY,
-        Watch, WritingMode, carried_text_edits, check_form_sharing, check_type_three_procedure,
-        check_writing_mode, glyphs_and_ink_in, glyphs_in, remove_glyphs,
-        remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
+        Watch, WritingMode, carried_text_edits, check_form_sharing, check_type_three_image_inside,
+        check_type_three_procedure, check_writing_mode, glyphs_and_ink_in, glyphs_in,
+        remove_glyphs, remove_glyphs_and_carried_text, takes_word_spacing, writing_mode_of,
     };
 
     /// A watch that never expires: a STOPPED clock, so the walk's checkpoints are inert.
@@ -4586,7 +4625,7 @@ mod tests {
             Refusal::UnmatchedRestore => vec![
                 (Content, || walk("Q /F1 10 Tf BT 0 0 Td (A) Tj ET")),
                 (Entry("check_type_three_procedure"), || {
-                    check_type_three_procedure(b"500 0 d0\nQ\n", None, &unwatched()).map(drop)
+                    check_type_three_procedure(b"500 0 d0\nQ\n", &unwatched()).map(drop)
                 }),
             ],
             Refusal::UnbalancedSave => vec![(Content, || walk("q /F1 10 Tf BT 0 0 Td (A) Tj ET"))],
@@ -4641,10 +4680,28 @@ mod tests {
             Refusal::NumericOperandNotANumber => {
                 vec![(Content, || walk("/F1 10 Tf /Bogus Tz BT 0 0 Td (A) Tj ET"))]
             }
-            Refusal::OperandCountMismatch => vec![(Content, || {
-                walk("/F1 12 Tf BT 0 0 0 0 0 0 1 0 0 1 100 700 Tm (A) Tj ET")
-            })],
+            Refusal::OperandCountMismatch => vec![
+                (Content, || {
+                    walk("/F1 12 Tf BT 0 0 0 0 0 0 1 0 0 1 100 700 Tm (A) Tj ET")
+                }),
+                // A padded `cm` in a Type 3 procedure, which PDFium reads from the end (#125).
+                (Entry("check_type_three_procedure"), || {
+                    check_type_three_procedure(
+                        b"10 0 d0\nq 1 0 0 1 0 0 200 0 0 30 -280 245 cm Q\n",
+                        &unwatched(),
+                    )
+                    .map(drop)
+                }),
+            ],
             Refusal::NonFiniteGeometry => vec![
+                // A Type 3 procedure whose `cm`s compose past `f64::MAX` (#125).
+                (Entry("check_type_three_procedure"), || {
+                    check_type_three_procedure(
+                        b"48 0 d0\n1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm \n",
+                        &unwatched(),
+                    )
+                    .map(drop)
+                }),
                 // A width and a font matrix, each finite, whose advance is not.
                 (Content, || {
                     let mut wild = Fake::new();
@@ -4821,7 +4878,6 @@ mod tests {
                 vec![(Entry("check_type_three_procedure"), || {
                     check_type_three_procedure(
                         b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n",
-                        None,
                         &unwatched(),
                     )
                     .map(drop)
@@ -4829,18 +4885,26 @@ mod tests {
             }
             Refusal::TypeThreeProcedurePaints => {
                 vec![(Entry("check_type_three_procedure"), || {
-                    check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n", None, &unwatched())
+                    check_type_three_procedure(b"500 0 d0\n0 0 500 500 re f\n", &unwatched())
                         .map(drop)
                 })]
             }
             Refusal::TypeThreeImageOutsideItsBox => {
-                vec![(Entry("check_type_three_procedure"), || {
-                    check_type_three_procedure(
-                        b"500 0 d0\nq 100 0 0 100 0 -300 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
-                        Some(Rect { left: 0.0, bottom: 0.0, right: 500.0, top: 500.0 }),
-                        &unwatched(),
+                vec![(Entry("check_type_three_image_inside"), || {
+                    check_type_three_image_inside(
+                        Rect {
+                            left: 0.0,
+                            bottom: -300.0,
+                            right: 100.0,
+                            top: -200.0,
+                        },
+                        Some(Rect {
+                            left: 0.0,
+                            bottom: 0.0,
+                            right: 500.0,
+                            top: 500.0,
+                        }),
                     )
-                    .map(drop)
                 })]
             }
             Refusal::StringNotWholeCodes => vec![
@@ -6496,12 +6560,8 @@ mod tests {
         // redaction that removed this page's Type 3 glyphs would leave the procedure's own
         // text in the font. An `Ok` over text nothing observed is what §8 forbids.
         assert_refused_unit(
-            check_type_three_procedure(
-                b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n",
-                None,
-                &unwatched(),
-            )
-            .map(drop),
+            check_type_three_procedure(b"500 0 d0\nBT /F2 1 Tf (SECRET) Tj ET\n", &unwatched())
+                .map(drop),
             Refusal::TypeThreeProcedureShowsText,
         );
         for shape in [
@@ -6510,7 +6570,7 @@ mod tests {
             b"500 0 d0 BT 1 1 (A) \" ET".as_slice(),
         ] {
             assert_refused_unit(
-                check_type_three_procedure(shape, None, &unwatched()).map(drop),
+                check_type_three_procedure(shape, &unwatched()).map(drop),
                 Refusal::TypeThreeProcedureShowsText,
             );
         }
@@ -6531,17 +6591,13 @@ mod tests {
         for operator in ["f", "F", "f*", "S", "s", "B", "B*", "b", "b*"] {
             let procedure = format!("500 0 d0\n0 0 500 500 re {operator}\n");
             assert_refused_unit(
-                check_type_three_procedure(procedure.as_bytes(), None, &unwatched()).map(drop),
+                check_type_three_procedure(procedure.as_bytes(), &unwatched()).map(drop),
                 Refusal::TypeThreeProcedurePaints,
             );
         }
         assert_refused_unit(
-            check_type_three_procedure(
-                b"500 0 d0\n0 0 500 500 re W n /Sh1 sh\n",
-                None,
-                &unwatched(),
-            )
-            .map(drop),
+            check_type_three_procedure(b"500 0 d0\n0 0 500 500 re W n /Sh1 sh\n", &unwatched())
+                .map(drop),
             Refusal::TypeThreeProcedurePaints,
         );
     }
@@ -6557,62 +6613,85 @@ mod tests {
             b"500 0 d0\n(f) pop\n".as_slice(),
         ] {
             let draws =
-                check_type_three_procedure(procedure, None, &unwatched()).unwrap_or_else(|error| {
+                check_type_three_procedure(procedure, &unwatched()).unwrap_or_else(|error| {
                     panic!("{:?}: {error}", String::from_utf8_lossy(procedure))
                 });
-            assert!(!draws.image);
+            assert!(draws.image.is_none());
         }
     }
 
     #[test]
-    fn an_inline_image_inside_its_font_box_is_reported_and_one_outside_is_refused() {
+    fn an_inline_image_is_reported_by_its_extent_and_judged_against_each_fonts_box() {
         // THE TEX SHAPE: `44 0 0 64 3 -1 cm` under `/FontBBox [1 -20 73 64]` (producer-latex.pdf).
-        // Inside the box, so the glyph's box covers it; reported, so the caller can refuse a cut.
-        let inside = check_type_three_procedure(
+        let tex = check_type_three_procedure(
             b"48 0 3 -1 48 63 d1\nq 44 0 0 64 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
-            Some(BITMAP_BOX),
             &unwatched(),
         )
-        .expect("an image inside its font's box is not refused");
-        assert!(inside.image, "an image drawn inside the box is reported");
+        .expect("an image is reported, not refused, by the procedure scan");
+        let extent = tex.image.expect("the image is reported");
+        assert_eq!(
+            (extent.left, extent.bottom, extent.right, extent.top),
+            (3.0, -1.0, 47.0, 63.0),
+            "the unit square through the procedure's cm"
+        );
+        check_type_three_image_inside(extent, Some(BITMAP_BOX)).expect("inside its box");
         // `f` INSIDE THE IMAGE DATA is not an operator.
         check_type_three_procedure(
             b"48 0 3 -1 48 63 d1\nq 44 0 0 64 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID f EI Q\n",
-            Some(BITMAP_BOX),
             &unwatched(),
         )
         .expect("the byte 'f' in image data is not a fill");
         // ONE POINT OUT (`66` from `-1` tops out at 65, past the box's 64 -- `65` would touch the
         // edge, which `contains` counts as inside), and no box at all: refused.
-        for (procedure, bbox) in [
-            (
-                b"48 0 3 -1 48 63 d1\nq 44 0 0 66 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n"
-                    .as_slice(),
-                Some(BITMAP_BOX),
-            ),
-            (
-                b"48 0 3 -1 48 63 d1\nq 44 0 0 64 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n"
-                    .as_slice(),
-                None,
-            ),
-        ] {
-            assert_refused_unit(
-                check_type_three_procedure(procedure, bbox, &unwatched()).map(drop),
-                Refusal::TypeThreeImageOutsideItsBox,
-            );
-        }
+        let tall = check_type_three_procedure(
+            b"48 0 3 -1 48 63 d1\nq 44 0 0 66 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
+            &unwatched(),
+        )
+        .unwrap()
+        .image
+        .unwrap();
+        assert_refused_unit(
+            check_type_three_image_inside(tall, Some(BITMAP_BOX)),
+            Refusal::TypeThreeImageOutsideItsBox,
+        );
+        assert_refused_unit(
+            check_type_three_image_inside(extent, None),
+            Refusal::TypeThreeImageOutsideItsBox,
+        );
+        // TWO IMAGES ARE UNIONED: an in-box one cannot hide a second outside it.
+        let two = check_type_three_procedure(
+            b"48 0 3 -1 48 63 d1\nq 44 0 0 64 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\nq 10 0 0 10 0 -300 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
+            &unwatched(),
+        )
+        .unwrap()
+        .image
+        .unwrap();
+        assert_refused_unit(
+            check_type_three_image_inside(two, Some(BITMAP_BOX)),
+            Refusal::TypeThreeImageOutsideItsBox,
+        );
         // `Q` RESTORES the transform: an outside `cm` undone before the image is inside again.
         let restored = check_type_three_procedure(
             b"48 0 3 -1 48 63 d1\nq 1 0 0 1 0 -500 cm Q q 44 0 0 64 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
-            Some(BITMAP_BOX),
             &unwatched(),
         )
-        .expect("a transform restored by Q no longer applies");
-        assert!(restored.image);
+        .unwrap()
+        .image
+        .unwrap();
+        check_type_three_image_inside(restored, Some(BITMAP_BOX))
+            .expect("a transform restored by Q no longer applies");
         assert_refused_unit(
-            check_type_three_procedure(b"48 0 3 -1 48 63 d1\nQ\n", Some(BITMAP_BOX), &unwatched())
-                .map(drop),
+            check_type_three_procedure(b"48 0 3 -1 48 63 d1\nQ\n", &unwatched()).map(drop),
             Refusal::UnmatchedRestore,
+        );
+        // A NON-FINITE `cm` refuses at the `cm`.
+        assert_refused_unit(
+            check_type_three_procedure(
+                b"48 0 d0\n1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm 1000000000000000000000000000000 0 0 1000000000000000000000000000000 0 0 cm \n",
+                &unwatched(),
+            )
+            .map(drop),
+            Refusal::NonFiniteGeometry,
         );
     }
 
@@ -7427,7 +7506,7 @@ mod tests {
         // A PROCEDURE, WITH ITS OWN STREAMS: `SHORT` shows text, which a Type 3 procedure
         // refuses at the first operation, before any per-operation read could come due.
         ("check_type_three_procedure", |content, watch| {
-            check_type_three_procedure(procedure_of(content), None, watch).map(drop)
+            check_type_three_procedure(procedure_of(content), watch).map(drop)
         }),
         ("glyphs_in", |content, watch| {
             glyphs_in(content, &Fake::new(), watch).map(drop)

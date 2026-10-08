@@ -34,8 +34,8 @@ use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::pdfsyntax::geometry::{
     FormsReached, Glyph, InkKind, NamedProperties, PropertyList, ScopedFont, Watch,
-    carried_text_edits, check_form_sharing, check_type_three_procedure, glyphs_and_ink_in,
-    glyphs_in, remove_glyphs_and_carried_text,
+    carried_text_edits, check_form_sharing, check_type_three_image_inside,
+    check_type_three_procedure, glyphs_and_ink_in, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -1901,9 +1901,11 @@ fn check_contents_sharing<O: PdfObject>(
 /// # What it returns
 ///
 /// The fonts, of those drawn, with a procedure that draws an inline image inside the font's box
-/// (#125): the caller refuses a region that reaches one of their glyphs. Each procedure is judged
-/// against its own font's `/FontBBox`; a procedure shared by two fonts is scanned under the first
-/// and counted for both.
+/// (#125): the caller refuses a region that reaches one of their glyphs. A procedure is scanned
+/// once, and the extent of its images cached with it; that extent is judged against the `/FontBBox`
+/// of **every** font that names the procedure, cached or not. The first version cached the verdict
+/// instead, so a second font sharing the procedure with a smaller box inherited the first font's
+/// "inside" -- `Ok` over 6,000 dark pixels, measured by #125's code review.
 fn check_type_three<O: PdfObject>(
     resources: &PageResources<O>,
     drawn: &BTreeSet<ScopedFont>,
@@ -1914,8 +1916,9 @@ fn check_type_three<O: PdfObject>(
     const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
 
     const FONT_BBOX: Name = Name::literal(b"/FontBBox\0");
+    const MATRIX: Name = Name::literal(b"/Matrix\0");
 
-    let mut scanned: BTreeMap<u64, bool> = BTreeMap::new();
+    let mut scanned: BTreeMap<u64, Option<crate::pdfsyntax::geometry::Rect>> = BTreeMap::new();
     let mut image_fonts = BTreeSet::new();
     for font_name in drawn {
         let font = resources.font_in_scope(font_name)?;
@@ -1935,24 +1938,37 @@ fn check_type_three<O: PdfObject>(
             }
             // A STREAM IS ALWAYS INDIRECT, so its identity is never the direct-object `(0, 0)`
             // that would make two different procedures look like one.
-            let identity = pack(entry.object()?);
-            if let Some(&image) = scanned.get(&identity) {
-                if image {
-                    image_fonts.insert(font_name.clone());
-                }
-                continue;
+            // A `/MATRIX` ON THE PROCEDURE IS REFUSED (#125's security review). PDFium reads a glyph
+            // procedure as it reads a form, so a `/Matrix` on its stream moves everything it draws
+            // before the procedure's own `cm` -- an image this scan judged inside its box drew
+            // 6,000 dark pixels in the region after an `Ok`. No producer is known to write one, so
+            // it is refused rather than modelled (DECISIONS.md rule 1).
+            if entry.stream_dict().key(&MATRIX).type_code() != object_type::NULL {
+                return Err(Error::Unsupported(
+                    "pdf redaction [type-three-procedure-matrix]: a Type 3 glyph procedure carrying \
+                     a /Matrix of its own, which moves what it draws in a way burrow does not model"
+                        .to_owned(),
+                ));
             }
-            let Some(procedure) = entry.stream_data()? else {
-                // Undecodable, so what it draws is unknown, and unknown is not "no text".
-                return Err(Error::Malformed(
+            let identity = pack(entry.object()?);
+            let image = if let Some(&cached) = scanned.get(&identity) {
+                cached
+            } else {
+                let Some(procedure) = entry.stream_data()? else {
+                    // Undecodable, so what it draws is unknown, and unknown is not "no text".
+                    return Err(Error::Malformed(
                     "pdf redaction [type-three-unreadable]: a Type 3 glyph procedure whose data \
                      burrow could not decode"
                         .to_owned(),
                 ));
+                };
+                let draws = check_type_three_procedure(&procedure, watch)?;
+                scanned.insert(identity, draws.image);
+                draws.image
             };
-            let draws = check_type_three_procedure(&procedure, font_bbox, watch)?;
-            scanned.insert(identity, draws.image);
-            if draws.image {
+            // PER FONT, EVERY TIME: the box is this font's, whoever scanned the procedure.
+            if let Some(extent) = image {
+                check_type_three_image_inside(extent, font_bbox)?;
                 image_fonts.insert(font_name.clone());
             }
         }

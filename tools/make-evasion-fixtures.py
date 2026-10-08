@@ -157,6 +157,44 @@ def evade_image_as_pattern() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_inline_image_outside_type3_box() -> bytes:
+    """A Type 3 glyph far from the region whose procedure draws an unfiltered inline image INTO it.
+
+    The walk boxes the glyph by its advance and its ten-point `/FontBBox`, so no region over the
+    image reaches the glyph: before #125 refused it, the redaction returned `Ok` with the image
+    drawn on (5,309 dark pixels, measured by the specification review). Refused by
+    `[type-three-image-outside-its-box]`. Unfiltered, so `[inline-image-filtered]` is not what
+    refuses it. Its twin is `nearmiss-type3-procedure-that-only-shows-its-own-glyph`, a bitmap
+    glyph inside its box and outside the region.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    w, h, pixels = raster(secret("IMG-T3-OUTSIDE"), scale=1)
+    x0, y0, x1, y1 = REGION
+    gx, gy = PAGE_W - 20, 10
+    proc = pdf.stream(
+        b"",
+        b"10 0 d0\nq " + f"{x1 - x0} 0 0 {y1 - y0} {x0 - gx} {y0 - gy}".encode() + b" cm\n"
+        b"BI /W " + str(w).encode() + b" /H " + str(h).encode() + b" /CS /G /BPC 8 ID "
+        + pixels + b"\nEI Q\n",
+    )
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3 = pdf.add(
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 10 10]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [10]"
+        b" /Resources << >> >>"
+    )
+    content = b"BT /T3 1 Tf " + f"{gx} {gy} Td ".encode() + literal("a") + b" Tj ET\n" + keep_line_ops()
+    res = (
+        b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
 def evade_image_in_type3_glyph() -> bytes:
     """The image is drawn by a Type 3 glyph procedure — one level further than a Form XObject."""
     pdf = Pdf()
@@ -373,7 +411,8 @@ def nearmiss_form_carrying_its_own_font() -> bytes:
 
 def nearmiss_type3_procedure_that_only_shows_its_own_glyph() -> bytes:
     """A Type 3 glyph procedure that draws an IMAGE inside its own box, and nothing else. MUST
-    NOT be refused.
+    NOT be refused WHERE THE REGION MISSES THE TYPE 3 GLYPH -- the `pdfbuild` and `band` regions.
+    The `whole`-page region reaches it, and refuses `[type-three-image-cut]` by design.
 
     The twin for `evade-text-in-type3-via-form`. `check_type_three_procedure` refuses a procedure
     containing `Tj`/`TJ`/`'`/`"`/`Do`; this one contains none of them. A rule that refused every
@@ -2648,6 +2687,7 @@ CASES: list[tuple[str, str]] = [
     ("evade-inline-image", "image"),
     ("evade-image-as-pattern", "image"),
     ("evade-image-in-type3-glyph", "image"),
+    ("evade-inline-image-outside-type3-box", "image"),
     ("evade-text-in-type3-via-form", "Type 3 procedure"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
     ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
@@ -2760,6 +2800,7 @@ CASES: list[tuple[str, str]] = [
 ]
 
 BUILDERS = {
+    "evade-inline-image-outside-type3-box": evade_inline_image_outside_type3_box,
     "evade-image-in-form": evade_image_in_form,
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,

@@ -724,6 +724,23 @@ pages = 1
   notes = "A `Do` inside a Form XObject. The page's content stream says only `/X1 Do`."
 
 [[fixture]]
+name = "evade-inline-image-outside-type3-box"
+file = "generated/evade-inline-image-outside-type3-box.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-T3-OUTSIDE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "inline-image"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "A Type 3 glyph ten points square, far from the region, whose procedure draws an unfiltered inline image into it. No region over the image reaches the glyph's box. Refused [type-three-image-outside-its-box] (#125, 2026-10-08)."
+
+[[fixture]]
 name = "evade-inline-image"
 file = "generated/evade-inline-image.pdf"
 kind = "hand-built"

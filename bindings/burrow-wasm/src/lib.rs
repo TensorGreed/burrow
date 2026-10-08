@@ -153,7 +153,7 @@ pub fn __burrow_redaction_probe(input: Box<[u8]>) -> u32 {
         &clock,
     );
     let mut refused = 0u32;
-    refused += u32::from(geometry::check_type_three_procedure(&input, None, &watch).is_err());
+    refused += u32::from(geometry::check_type_three_procedure(&input, &watch).is_err());
     refused += u32::from(strings::decode_string(&input).is_err());
     refused += u32::from(tounicode::ToUnicode::parse(&input).is_err());
     if let Ok(parts) = contents::Contents::concatenate(&[&input]) {

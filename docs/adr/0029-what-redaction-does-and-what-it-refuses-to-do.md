@@ -126,8 +126,8 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a region intersecting **vector path content** | **refuse**, `[vector-in-region]` — landed #125 (slice 2). The walk boxes a fill by its enclosed path, and a stroke per segment inflated by half the line width with miter joins at worst case, the miter multiplier floored at the square root of two for projecting caps; the width and limit are read from `w`/`M` **and from an ExtGState's `/LW`/`/ML` through `gs`** (#278, every scope the name might resolve in a candidate, the width in force among them); a bare `sh` shading is treated as the whole page. **A Type 3 glyph procedure's own paths remain owed** — a glyph is legitimately drawn with fills, so they cannot be blanket-refused; and the refusal is to **refuse any ink reaching the region**, with removing ink wholly inside it still owed (slice 2b) |
 | text drawn in a **stroking rendering mode** (`Tr` 1, 2, 5 or 6, or any mode that is not 0, 3, 4 or 7) | **handle** — added 2026-10-08 ([#278]). The outline is stroked at the line width, so the glyph's box grows by the stroke's reach and the region removes a glyph whose outline reaches it, as it removes any text there. Before, a glyph outside the region stroked at `240 w` drew 2,772 dark pixels inside it after an `Ok`, measured. Refusing it as ink instead would have refused every faux-bold run drawn with `2 Tr` |
 | a `gs` whose ExtGState sets **`/LW` or `/ML` to anything but one number both readers agree on** -- a string, an array, a name, a magnitude past 2^24 | **refuse**, `[ext-gstate-line-unreadable]` — added 2026-10-08 ([#278]). An indirect reference to a number is read, as PDFium reads it. **Over-refuses**: PDFium draws a string or array width thin |
-| a page drawing with a **Type 3 font whose glyph procedures paint** — any of `f F f* S s B B* b b*`, or `sh` | **refuse**, `[type-three-procedure-paints]` — added 2026-10-08 (#125). **Page-wide**, by the owner's decision: the walk boxes a Type 3 glyph by its advance and `/FontBBox` and never looks at what the procedure draws, so a procedure painting into the region from a glyph far outside it returned `Ok` over 2,276 dark pixels (14,960 for a bare `sh`). A glyph drawn with fills is legitimate, so this **over-refuses**: matplotlib's default PDF output draws every glyph that way, and any page carrying such a figure refuses wherever the region is. 0 of #227's 100 real documents carry one; matplotlib output is not in that set |
-| a Type 3 glyph procedure that draws an **inline image outside its font's `/FontBBox`**, or a font with no box | **refuse**, `[type-three-image-outside-its-box]` — added 2026-10-08 (#125). The image's extent is the unit square through the procedure's own `cm`s. Outside the box no region over the image reaches the glyph: `Ok` over 5,309 dark pixels, measured. A TeX bitmap font draws each image inside its box and is not refused by this |
+| a page drawing with a **Type 3 font whose glyph procedures paint** — any of `f F f* S s B B* b b*`, or `sh` | **refuse**, `[type-three-procedure-paints]` — added 2026-10-08 (#125). **Page-wide**, by the owner's decision: the walk boxes a Type 3 glyph by its advance and `/FontBBox` and never looks at what the procedure draws, so a procedure painting into the region from a glyph far outside it returned `Ok` over 2,276 dark pixels (14,960 for a bare `sh`). A glyph drawn with fills is legitimate, so this **over-refuses**: matplotlib's default PDF output draws every glyph that way, and any page carrying such a figure refuses wherever the region is. 0 of #227's 99 readable real documents are refused by it; matplotlib output is not in that set |
+| a Type 3 glyph procedure that draws an **inline image outside its font's `/FontBBox`**, or a font with no box | **refuse**, `[type-three-image-outside-its-box]` — added 2026-10-08 (#125). **Page-wide**, like the paint rule: every Type 3 font the page draws with is checked, wherever the region is. The image's extent is the unit square through the procedure's own `cm`s, and it is judged against **each** font that names the procedure, since two fonts can share one with different boxes. Outside the box no region over the image reaches the glyph: `Ok` over 5,309 dark pixels, measured. A TeX bitmap font draws each image inside its box and is not refused by this |
 | a region reaching a glyph of a **Type 3 font that draws an inline image** | **refuse**, `[type-three-image-cut]` — added 2026-10-08 (#125), owner's decision. Removing the glyph would leave its bitmap in `/CharProcs`. Keyed on the font, not the code. 1 of #227's 99 readable documents newly refused (a pdfTeX bitmap-font test file, 4 of 72 tiles), at the 1% bar; the committed `producer-latex` fixture refuses on the regions that reach its bitmap-font text |
 | a document with an **`/AcroForm`** | **refuse**, `[acroform-field]` — landed #125. Two signals: the catalogue's **`/AcroForm`**, resolved through the trailer's `/Root` (which may be a *direct* dictionary — qpdf accepts one, and then the catalogue is in no reference set — so `/Root` is resolved, not scanned for), which catches the form however its fields are laid out (including a field written *inline* inside `/AcroForm /Fields`); and a top-level **`/FT`** on any referenced object (a field object with no catalogue `/AcroForm`). A **deliberate over-refusal**: it refuses every document with a form, not only one whose field reaches the region; the narrowing is [#274] |
 | a document with a **`/StructTreeRoot`** reaching the region | **refuse** — see §5, the signal is owed |
@@ -5038,24 +5038,46 @@ measured four leaks on `main`, each an `Ok`:
   a glyph of a font that draws one refuses `[type-three-image-cut]`, since the bitmap would stay in
   the file.
 
+**What both post-code reviews found, before anything was pushed.** Four leaks, each `Ok` with
+6,000 to 6,200 dark pixels left in the region, all in the image rule:
+
+- a procedure shared by two fonts was judged against the first font's box only, so a second
+  font with a ten-point box inherited "inside" (the code review). The procedure's image extent
+  is now cached with it and judged against every font that names it;
+- a `/Matrix` on the procedure's stream moves what it draws, as a form's does, before its own
+  `cm`. It is refused, `[type-three-procedure-matrix]`, rather than modelled: no producer is
+  known to write one;
+- padded `cm` operands -- `1 0 0 1 0 0 200 0 0 30 -280 245 cm` -- which PDFium reads from the end
+  and the scan read from the front. The procedure scan now counts operands as the page walk does,
+  `[operand-count-mismatch]`;
+- a reversed composition of two `cm`s was untested and leaked under mutation; it has a fixture.
+
+**What else now refuses through a procedure.** The scan tracks a transform, so a procedure with a
+`Q` that has no `q`, a `cm` whose operands are not numbers or compose past finite values, or a
+padded operand run refuses the page where it did not before. Each is the safe direction.
+
 **What is not refused, deliberately.** A clip alone (`re W n`) paints nothing. `f` as a name, in a
 string, in a comment or inside an image's data is not an operator: the scan tokenises. Images are
 refused only by the two rules above, because refusing every image-drawn Type 3 font would refuse
 TeX bitmap-font documents wherever the region is.
 
-**Shown to fail.** `core/burrow-engines/tests/type_three_ink.rs` (10 tests: each leak drawing into
+**Shown to fail.** `core/burrow-engines/tests/type_three_ink.rs` (12 tests: each leak drawing into
 the region on the input, measured by PDFium, and refusing by name; the clip and the uncut bitmap
-glyph redacting) and unit probes per operator in `geometry.rs`. Six mutations, each asserted applied
-and rebuilt, are red: `sh` dropped from the list; `f` dropped; the image test widened from
-containment to intersection; the image check removed; the cut refusal removed; `Q` not restoring the
-procedure's transform.
+glyph redacting), unit probes per operator in `geometry.rs`, and a fuzz call of the procedure scan
+from `pdfsyntax_geometry`. Eleven mutations, each asserted applied and rebuilt, are red: `sh`
+dropped; `f` dropped; the image test widened from containment to intersection; the image check
+removed; the cut refusal removed; `Q` not restoring; a cached procedure skipping the per-font check
+(the shared-procedure leak back); a cache hit not recording the font as drawing an image; the
+`/Matrix` refusal removed; the operand count skipped; and the two `cm`s composed in reverse.
 
 **The corpus.** `evade-paths-in-type3-glyph` refuses and leaves #125's owed set (owed markers 4 to
 3). `producer-latex` refuses `[type-three-image-cut]` on the regions that reach its bitmap-font text
 and redacts on the others. `nearmiss-type3-procedure-that-only-shows-its-own-glyph` drew its glyph
 with a fill, which the page-wide rule now refuses; it draws a bitmap inside its box instead, the
 Type 3 font the rules still let through where the region does not reach it, and its whole-page
-region now refuses `[type-three-image-cut]`. `outcomes.tsv` changed in exactly those lines.
+region now refuses `[type-three-image-cut]`. A new fixture, `evade-inline-image-outside-type3-box`, puts the image rule's leak in the corpus
+the web differential replays; its twin is the near-miss. `outcomes.tsv` changed in exactly those
+lines.
 
 **The census** (bar 1%, registered first): #227's 100 real documents, 4,824 tile-grid redactions on
 `main` and on this change. **1 of 99 readable documents newly refused** — a pdfTeX bitmap-font test

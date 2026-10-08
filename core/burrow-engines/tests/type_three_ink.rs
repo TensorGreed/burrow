@@ -57,6 +57,30 @@ fn page(
     page_resources: &str,
     extra: &[&str],
 ) -> Vec<u8> {
+    page_with_procedure_dict(
+        content,
+        procedure,
+        "",
+        bbox,
+        width,
+        font_resources,
+        page_resources,
+        extra,
+    )
+}
+
+/// As [`page`], with `procedure_dict` written into the glyph procedure's stream dictionary.
+#[allow(clippy::too_many_arguments)]
+fn page_with_procedure_dict(
+    content: &str,
+    procedure: &[u8],
+    procedure_dict: &str,
+    bbox: &str,
+    width: u32,
+    font_resources: &str,
+    page_resources: &str,
+    extra: &[&str],
+) -> Vec<u8> {
     let stream = |dict: &str, data: &[u8]| -> Vec<u8> {
         [
             format!("<< {dict} /Length {} >>\nstream\n", data.len()).as_bytes(),
@@ -65,12 +89,19 @@ fn page(
         ]
         .concat()
     };
+    // A CALLER NAMING ITS OWN `/Font` replaces the default, rather than adding a second key --
+    // which the engine would repair, and redaction would refuse for that reason instead.
+    let fonts = if page_resources.contains("/Font") {
+        ""
+    } else {
+        "/Font << /T3 5 0 R >>"
+    };
     let mut objects: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         format!(
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] \
-             /Resources << /Font << /T3 5 0 R >> {page_resources} >> /Contents 4 0 R >>"
+             /Resources << {fonts} {page_resources} >> /Contents 4 0 R >>"
         )
         .into_bytes(),
         stream("", content.as_bytes()),
@@ -81,7 +112,7 @@ fn page(
         )
         .into_bytes(),
         b"<< /g 7 0 R >>".to_vec(),
-        stream("", procedure),
+        stream(procedure_dict, procedure),
     ];
     objects.extend(extra.iter().map(|e| e.as_bytes().to_vec()));
 
@@ -295,4 +326,133 @@ fn a_painting_font_named_only_inside_a_form_refuses_too() {
         &[&form],
     );
     reaches_and_refuses("through a form", &pdf, "type-three-procedure-paints");
+}
+
+/// TWO FONTS, ONE PROCEDURE (#125's code review). `/CharProcs` is shared, so the procedure is
+/// scanned once -- and its image was judged against whichever font was scanned first. With the
+/// wide-boxed font first, the small-boxed one inherited "inside" and the page returned `Ok` over
+/// 6,000 dark pixels. The verdict is per font now; both name orders, and a second font with no box
+/// at all, must refuse.
+#[test]
+fn a_procedure_shared_by_two_fonts_is_judged_against_each_fonts_box() {
+    let procedure = b"10 0 d0\nq 200 0 0 30 -280 245 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n";
+    let font = |bbox: Option<&str>| {
+        format!(
+            "<< /Type /Font /Subtype /Type3 {} /FontMatrix [1 0 0 1 0 0] /CharProcs 6 0 R \
+             /Encoding << /Type /Encoding /Differences [97 /g] >> /FirstChar 97 /LastChar 97 \
+             /Widths [10] /Resources << >> >>",
+            bbox.map_or(String::new(), |b| format!("/FontBBox [{b}]"))
+        )
+    };
+    let wide = font(Some("-300 0 10 300"));
+    for (what, first, second, small) in [
+        ("wide font named first", "A", "B", font(Some("0 0 10 10"))),
+        ("wide font named second", "Z", "B", font(Some("0 0 10 10"))),
+        ("small font with no box", "A", "B", font(None)),
+    ] {
+        // The wide font (object 8) under `first`, the small one (object 9) under `second`; the
+        // page draws the small one at FAR, where its procedure's image lands in the region.
+        let content = format!(
+            "BT /{first} 1 Tf 500 500 Td (a) Tj ET BT /{second} 1 Tf {} {} Td (a) Tj ET",
+            FAR.0, FAR.1
+        );
+        let pdf = page(
+            &content,
+            procedure,
+            "0 0 10 10",
+            10,
+            "<< >>",
+            &format!("/Font << /{first} 8 0 R /{second} 9 0 R >>"),
+            &[&wide, &small],
+        );
+        reaches_and_refuses(what, &pdf, "type-three-image-outside-its-box");
+    }
+}
+
+/// A `/MATRIX` ON THE PROCEDURE (#125's security review): PDFium applies it before the procedure's
+/// own `cm`, so an image the scan judged inside its box lands in the region. Refused rather than
+/// modelled; its twin is the same procedure without the `/Matrix`, which the box contains.
+#[test]
+fn a_glyph_procedure_carrying_its_own_matrix_refuses() {
+    let procedure = b"200 0 d0\nq 200 0 0 30 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n";
+    let moved = page_with_procedure_dict(
+        &show(FAR),
+        procedure,
+        "/Matrix [1 0 0 1 -280 245]",
+        "0 0 200 30",
+        200,
+        "<< >>",
+        "",
+        &[],
+    );
+    reaches_and_refuses(
+        "/Matrix on the procedure",
+        &moved,
+        "type-three-procedure-matrix",
+    );
+    let plain = page(&show(FAR), procedure, "0 0 200 30", 200, "<< >>", "", &[]);
+    assert_eq!(
+        dark_in_region(&plain),
+        0,
+        "without /Matrix the image stays at the glyph"
+    );
+    redact(&plain).expect("an image inside its box, its glyph outside the region, is kept");
+}
+
+/// PADDED `cm` OPERANDS (#125's security review): PDFium takes the last six, and a scan taking the
+/// first six read the identity. Refused by count, as the page walk refuses one.
+#[test]
+fn a_padded_cm_in_a_glyph_procedure_refuses() {
+    let procedure =
+        b"10 0 d0\nq 1 0 0 1 0 0 200 0 0 30 -280 245 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n";
+    reaches_and_refuses(
+        "padded cm",
+        &page(&show(FAR), procedure, "0 0 10 10", 10, "<< >>", "", &[]),
+        "operand-count-mismatch",
+    );
+}
+
+/// TWO `cm`s COMPOSE IN ORDER (#125's security review): the second applies inside the first. In the
+/// right order this image lands in the region, outside a box that the wrong order would put it
+/// inside -- so a composition reversed returned `Ok` over 6,200 dark pixels.
+#[test]
+fn two_cms_in_a_glyph_procedure_compose_in_order() {
+    let procedure = b"10 0 d0\nq 200 0 0 30 0 0 cm 1 0 0 1 -1.4 8.1667 cm \
+                      BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n";
+    reaches_and_refuses(
+        "two cms",
+        &page(&show(FAR), procedure, "-2 0 200 40", 10, "<< >>", "", &[]),
+        "type-three-image-outside-its-box",
+    );
+}
+
+/// THE CUT RULE THROUGH A SHARED PROCEDURE (#125's security review). Two fonts name one image
+/// procedure, each box containing the image; the region cuts a glyph of whichever font is scanned
+/// second. A cache hit that did not record the font as drawing an image let that cut go through,
+/// with the bitmap left in `/CharProcs`. Both name orders.
+#[test]
+fn a_cut_glyph_of_the_second_font_sharing_an_image_procedure_refuses() {
+    let procedure = b"200 0 d0\nq 200 0 0 30 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n";
+    let font = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 200 30] /FontMatrix [1 0 0 1 0 0] \
+                /CharProcs 6 0 R /Encoding << /Type /Encoding /Differences [97 /g] >> \
+                /FirstChar 97 /LastChar 97 /Widths [200] /Resources << >> >>";
+    for (first, second) in [("A", "B"), ("Z", "B")] {
+        // `first` is drawn far from the region; `second`, the one the region cuts, at (100, 255).
+        let content =
+            format!("BT /{first} 1 Tf 380 10 Td (a) Tj ET BT /{second} 1 Tf 100 255 Td (a) Tj ET");
+        let pdf = page(
+            &content,
+            procedure,
+            "0 0 200 30",
+            200,
+            "<< >>",
+            &format!("/Font << /{first} 8 0 R /{second} 9 0 R >>"),
+            &[font, font],
+        );
+        reaches_and_refuses(
+            &format!("{first} then {second}"),
+            &pdf,
+            "type-three-image-cut",
+        );
+    }
 }
