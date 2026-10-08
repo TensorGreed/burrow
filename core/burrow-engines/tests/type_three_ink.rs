@@ -463,7 +463,8 @@ fn a_cut_glyph_of_the_second_font_sharing_an_image_procedure_refuses() {
 /// `/Subtype (Type3)`: A STRING WHERE A NAME BELONGS (#125's second security review). PDFium reads
 /// `/Subtype` by its bytes, so the font is Type 3 to it; read as "not a name", every Type 3 rule
 /// skipped it -- a procedure painting, drawing an image or SHOWING TEXT into the region returned
-/// `Ok` with all of it still there (the text case is older than this slice, on main). Refused.
+/// `Ok` with all of it still there (the text case is older than this slice, on main). Refused. The
+/// fill and the image are here; the text is the corpus fixture `evade-type3-subtype-as-a-string`.
 #[test]
 fn a_type_three_font_whose_subtype_is_a_string_refuses() {
     for (what, procedure) in [
@@ -526,16 +527,17 @@ fn with_string_subtype(pdf: &[u8]) -> Vec<u8> {
     let tail = rest.get(from.len()..).expect("the subtype's own bytes");
     let out = [head, to.as_slice(), tail].concat();
     assert!(
-        out.windows(to.len()).any(|w| w == to),
-        "the subtype was rewritten"
+        !out.windows(from.len()).any(|w| w == from),
+        "exactly one Type 3 subtype, and it was rewritten"
     );
     out
 }
 
 /// 4,000 NAMES FOR ONE TYPE 3 FONT OF 4,000 PROCEDURE KEYS (#125's second security review): the
-/// font was judged once per name and the deadline read on no cache hit -- 7.4 s against 500 ms.
-/// Judged once per font object, the deadline read per key, it stops at the budget instead: the
-/// refusal must be `LimitExceeded`, so a test that stopped for any other reason fails.
+/// font was judged once per name and the deadline read on no cache hit -- 7.4 s against 500 ms in
+/// the review's measurement, 7.3 s against this test's 50 ms in ours. Judged once per font object,
+/// the deadline read per key, it stops at the budget instead: the refusal must be the DURATION
+/// limit, so a test that stopped for any other reason, or on any other ceiling, fails.
 #[test]
 fn many_names_for_one_type_three_font_stop_at_the_deadline() {
     let keys: String = (0..4000).map(|i| format!("/g{i} 7 0 R ")).collect();
@@ -565,7 +567,10 @@ fn many_names_for_one_type_three_font_stop_at_the_deadline() {
     );
     let elapsed = started.elapsed();
     match outcome {
-        Err(burrow_types::Error::LimitExceeded { .. }) => {}
+        Err(burrow_types::Error::LimitExceeded {
+            limit: "max_duration_ms",
+            ..
+        }) => {}
         other => panic!(
             "expected the deadline to stop it, got {:?}",
             other.map(|_| ())
@@ -575,4 +580,32 @@ fn many_names_for_one_type_three_font_stop_at_the_deadline() {
         elapsed < std::time::Duration::from_secs(3),
         "took {elapsed:?}"
     );
+}
+
+/// A TYPE 3 FONT WHOSE OWN `/Resources` NAMES THE FONT AGAIN redacts (#125's third code review).
+///
+/// The review predicted that the old sharing walk -- procedures walked per name, outside the
+/// once-per-font guard -- refused this as `[resource-graph-cycle]`. Run against that shape, it did
+/// not: the procedures are not yet on the open path when the inner reach walks them. It redacts
+/// in both shapes. Pinned so a change to that guard changes this outcome on purpose: the procedure
+/// draws nothing and is far from the region, so `Ok` is right.
+#[test]
+fn a_type_three_font_naming_itself_in_its_own_resources_redacts() {
+    let pdf = page(
+        &show(FAR),
+        b"10 0 d0\n",
+        "0 0 10 10",
+        10,
+        "<< /Font << /T3 5 0 R >> >>",
+        "",
+        &[],
+    );
+    assert!(
+        pdf.windows(b"/Font << /T3 5 0 R >>".len())
+            .filter(|w| *w == b"/Font << /T3 5 0 R >>")
+            .count()
+            >= 2,
+        "the font's own resources name it, as the page's do"
+    );
+    redact(&pdf).expect("a self-naming Type 3 font far from the region redacts");
 }

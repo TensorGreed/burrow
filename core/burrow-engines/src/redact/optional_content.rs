@@ -74,8 +74,11 @@ const IMAGE: Name = Name::literal(b"/Image\0");
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] naming `optional-content`; `max_duration_ms` through the deadline; and
-/// whatever reading a dictionary's keys failed with.
+/// [`Error::Unsupported`] naming `optional-content`; [`Error::Unsupported`] naming
+/// `subtype-not-a-name` for ANY stream the walk reaches whose `/Subtype` is not a name -- a form,
+/// a pattern, an appearance stream, a glyph procedure -- since `is_image` reads it through
+/// `resources::subtype_of`; `max_duration_ms` through the deadline; and whatever reading a
+/// dictionary's keys failed with.
 pub(crate) fn refuse_optional_content<O: PdfObject>(
     page: &O,
     resources: &O,

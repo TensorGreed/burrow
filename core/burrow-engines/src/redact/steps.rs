@@ -1914,17 +1914,17 @@ fn check_type_three<O: PdfObject>(
     let mut scanned: BTreeMap<u64, Option<Rect>> = BTreeMap::new();
     // EACH FONT OBJECT ONCE, whatever names it is drawn under (#125's security review): 4,000 names
     // for one Type 3 font re-parsed its `/CharProcs` 4,000 times and read the deadline on none of
-    // the cache hits -- 7.4 s against a 500 ms budget, measured. The verdict is the font's, so it is
-    // computed once and given to every name. Fonts are never written inline here (`[direct-font]`
-    // refuses them first), so the object identity is the font's.
+    // the cache hits -- 7.4 s against a 500 ms budget, the review's measurement. The verdict is the
+    // font's, so it is computed once and given to every name.
     let mut fonts_judged: BTreeMap<u64, bool> = BTreeMap::new();
     let mut image_fonts = BTreeSet::new();
     for font_name in drawn {
         watch.tick()?;
         let font = resources.font_in_scope(font_name)?;
         // A FONT WRITTEN INLINE has the identity `(0, 0)`, shared by every direct object, so it is
-        // judged every time rather than cached: two inline fonts must never share a verdict, even
-        // though `[direct-font]` should have refused them before this runs.
+        // judged every time rather than cached: two inline fonts must never share a verdict. This
+        // is load-bearing, not belt and braces: `check_type_three` runs inside `affected_streams`,
+        // BEFORE `cut_fonts` raises `[direct-font]`, so an inline Type 3 font reaches here.
         let object = font.object()?;
         let font_identity = (object != (0, 0)).then(|| pack(object));
         if let Some(&draws_image) = font_identity.and_then(|id| fonts_judged.get(&id)) {

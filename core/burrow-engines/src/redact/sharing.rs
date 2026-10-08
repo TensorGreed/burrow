@@ -912,8 +912,12 @@ impl Walk<'_> {
                 // They were walked once per NAME: 4,000 names for one Type 3 font of 4,000
                 // `/CharProcs` keys is 16 million descents, 7.3 s against a 50 ms budget, measured,
                 // with no deadline read inside. A procedure is descended uncounted and `descend`
-                // memoises by object, so walking it once per font changes no count -- only the
-                // cost. The deadline is read per key besides.
+                // memoises by object, so walking it once per font changes no count. Nor, measured,
+                // an outcome: a Type 3 font whose own `/Resources` names it again was predicted to
+                // refuse `[resource-graph-cycle]` in the old shape, but its procedures are not yet
+                // on the open path when the inner reach walks them, so it redacted before and
+                // redacts now -- pinned by `type_three_ink.rs`, and run against the old shape. The
+                // deadline is read per key besides.
                 for proc_name in self.keys_of(&procs)? {
                     self.deadline.checkpoint(self.clock.as_ref())?;
                     let procedure = procs.key(&proc_name);
