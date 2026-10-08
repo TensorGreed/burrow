@@ -18,10 +18,8 @@
 # Keyed on the verdict alone, every use-after-free anywhere in qpdf would match. Only the pair
 # distinguishes them.
 #
-# THAT IS STILL LIVE, EVEN THOUGH #119 IS NOT LISTED HERE. #119 is deliberately absent -- see the
-# note at the end of this header -- so the frame is currently shared between a listed entry and
-# an unlisted defect, which is the more dangerous direction: it is the #62 entry's job NOT to
-# absorb a stack overflow, and only the verdict half stops it. Do not "simplify" the matching.
+# BOTH ARE LISTED NOW (2026-10-08), each under its own verdict, so the frame is shared between two
+# entries and only the verdict half tells them apart. Do not "simplify" the matching.
 #
 # NOT KEYED ON THE INPUT. Hashing reproducers would match nothing: every night's mutation
 # produces different bytes for the same defect. The pair is stable across nights; the bytes are
@@ -47,17 +45,16 @@
 # ADDING AN ENTRY IS A DECISION. It means "this crash is understood, filed, and owned". It is not
 # a way to make a red nightly go green.
 #
-# WHY #119 IS NOT HERE, THOUGH IT IS FILED AND OWNED. Being filed makes an entry PERMISSIBLE, not
-# required. #119 is an unfixed defect in a library the shipped web build embeds, and it has not
-# yet reached upstream; listing it would make the nightly green over a live defect nobody has
-# acted on. Decided deliberately: it stays out until it is fixed, or until upstream has it and
-# the exposure is a known quantity.
+# #119 WAS LEFT OUT UNTIL 2026-10-08, deliberately: an unfixed defect in a library the shipped
+# web build embeds, not yet acted on. The owner reversed that on 2026-10-08, when it was handled
+# privately. It had recurred on 2026-10-05 and 2026-10-06.
 #
-# The cost is accepted and stated: on any night `rotate` reproduces it, this nightly is RED. That
-# is not the old permanently-red problem -- the run now says which crash and where, the #62
-# entries keep `merge` and `reorder` green, and a new defect in any target still flips that
-# target from green to red. What is lost is only the ability to ignore rotate's red, which is
-# the point of leaving it out.
+# WHAT LISTING DOES NOT FIX. An entry matches a report's frames. A #119 night whose sanitiser
+# report carries no frames at all -- 2026-10-05's rotate run was exactly that -- matches no entry
+# and stays red as a classifier failure. That is the fail-closed direction, and it is correct.
+#
+# The note on an upstream entry is neutral by decision, and says nothing of the shape. The issue
+# is where an owner reads more.
 
 [[known]]
 issue = 62
@@ -76,3 +73,9 @@ note = """The page-tree caching use-after-free, reached by OPENING a document --
 qpdf-driving target can hit it, which is why the failing set shifts from night to night. The
 stack recorded in ADR 0025 is this one."""
 
+[[known]]
+issue = 119
+verdict = "stack-overflow"
+frame = "QPDF::Doc::Pages::pushInheritedAttributesToPageInternal"
+reached_from = ["reorder", "rotate"]
+note = """upstream, handled privately"""
