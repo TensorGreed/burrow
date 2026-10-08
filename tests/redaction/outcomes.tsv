@@ -3,9 +3,9 @@
 # see its header for what each line means and when to re-bless.
 INPUT	tests/redaction/fixtures/producer-latex.pdf	b08bdf191f96edc35e796a6ac477fd7fba220dd9d4013b7a86e9384cd5fd7ffa
 CASE	tests/redaction/fixtures/producer-latex.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	manifest	OK cf06781c818c55c03e977f92afea3f041e6670bfc951427cbdd150f6f8509319 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
+CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	manifest	ERR Unsupported("pdf redaction [type-three-image-cut]: the region reaches a Type 3 glyph drawn as an image, whose bitmap would stay in the font after the glyph is removed")
 CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	pdfbuild	OK 73570d2d11a0e33d192c0427cdfb9e14454f76b263210b80a8c1d5b72be4a677 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
-CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	whole	OK b5937ded480deaebe2ef747f0622dbdf1853ffdddd174689ee984b07c401d335 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
+CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	whole	ERR Unsupported("pdf redaction [type-three-image-cut]: the region reaches a Type 3 glyph drawn as an image, whose bitmap would stay in the font after the glyph is removed")
 CASE	tests/redaction/fixtures/producer-latex.pdf	0	0	band	OK 73570d2d11a0e33d192c0427cdfb9e14454f76b263210b80a8c1d5b72be4a677 report f4455fce007c0d2a50cc42d331c5b8027f2893f62e0a4cd7dc2e8f1eaaf30138
 INPUT	tests/redaction/fixtures/producer-ocr-scan.pdf	27d43eb68ecfbcd929f0c5f0ca3dfd10ba252dcdaebd22ca7823956d6feef31b
 CASE	tests/redaction/fixtures/producer-ocr-scan.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
@@ -465,9 +465,9 @@ CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	whole	ERR Unsupported
 CASE	tests/redaction/generated/evade-paths-in-form.pdf	0	0	band	OK e65242b05252bb9c9f2a71630a3d1ade6d3c1079d617f89d252d0b7d45b702f8 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 INPUT	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0732d533f2c7b248f056b37969dba91897f2438b1ea4c90919370d82e212b0f2
 CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	pdfbuild	OK b4abc218538bad2fb8889f4623b5e5d369758ce3f40b3f0092a4e899c6276c09 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
-CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	whole	OK 06572f982b002519cbb2cb28f99355e3ed208b900f547c3b5217fe84926ebce0 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
-CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	band	OK d64051a3d512fe7836c2a5cf1894ff4e5115fc7dc7190d000e435a7f9df520a9 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	pdfbuild	ERR Unsupported("pdf geometry [type-three-procedure-paints]: a Type 3 font on this page draws its glyphs with paths or a shading, whose ink burrow's walk does not box")
+CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	whole	ERR Unsupported("pdf geometry [type-three-procedure-paints]: a Type 3 font on this page draws its glyphs with paths or a shading, whose ink burrow's walk does not box")
+CASE	tests/redaction/generated/evade-paths-in-type3-glyph.pdf	0	0	band	ERR Unsupported("pdf geometry [type-three-procedure-paints]: a Type 3 font on this page draws its glyphs with paths or a shading, whose ink burrow's walk does not box")
 INPUT	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	5d3a4f136a22a06597063377d80882413f56ad0f70efa69dd837c7eba7a23292
 CASE	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-properties-as-a-stream-holding-a-layer.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [not-a-dictionary-where-one-belongs]: a page whose resources put something other than a dictionary where one belongs, which PDF readers do not agree how to read")
@@ -717,11 +717,11 @@ CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	1	1	whole	E
 CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	pdfbuild	OK 209d6595c6f1e84a62d4af1351b4f5c06ab17db46281c25b6ac082017d37a340 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
 CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	whole	OK 560f7d0c7fd7cb7b37617095bbe368877a224e96624bc0bc7e4195d07e92b208 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
 CASE	tests/redaction/generated/nearmiss-tounicode-on-a-page-font.pdf	0	0	band	OK ebe9057182cbdd82e7e77fad0d7903b759e000542ef259ec7c7070da3a364c91 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
-INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	faa504db0f53dc4aea80e6074f1e9efaa5561c13ab8d9d68eeda383f7bc566d3
+INPUT	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	46a09022d9169d91b21e100a3147f02f6bd69e1325078b34beadf118890328c4
 CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	pdfbuild	OK 089f6d82bccfe963042ed3b43b622d99bbb51feb5ee03360c9c9fef14a17a8bb report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
-CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	whole	OK 630e0ce786dfdac86ca5cdb40859b04013ddb72c77777557d458c8ea7aa645d9 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
-CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	band	OK f12baf404f5b9f58c3f33646ca9a0e2b10da8c5aa74a2d0f9170748421828cf0 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	pdfbuild	OK 9e26e0af22e771f33ba4940dad5f8a22f1dc21536ff31754f2687bfcdffa04bb report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	whole	ERR Unsupported("pdf redaction [type-three-image-cut]: the region reaches a Type 3 glyph drawn as an image, whose bitmap would stay in the font after the glyph is removed")
+CASE	tests/redaction/generated/nearmiss-type3-procedure-that-only-shows-its-own-glyph.pdf	0	0	band	OK 41c39116bb76a4067024a50b284b9ab94b24ee802bcbd6c15b5fc0cf4dc25524 report 9d9a228a4a39e87017414fafd1e3aa4ad3d2040e86af57dfdaf37a9731c0fcae
 INPUT	tests/conformance/fixtures/blank-1page.pdf	bd5f9b66edb616fc72e9cbcd480c2e000904a9c7c7edc62f69877443bb0cd9a0
 CASE	tests/conformance/fixtures/blank-1page.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/conformance/fixtures/blank-1page.pdf	0	0	pdfbuild	OK 7686b46cd6897f34732e68207acc189451ccbbec1f74cf9dbea7ca7aa63cd27a report 02b77842b29eac42fac12c81ef61da194121b68c7f52144ea8eda0f00fdd10f0

@@ -1075,7 +1075,9 @@ def after(manifest: dict, qpdf: Path, scratch: Path) -> int:
 # The owed markers per issue, committed. Changing a marker changes this, on purpose.
 # #125 dropped from 12 to 10 when the /AcroForm `[acroform-field]` refusal landed and its two
 # evade placements (`evade-widget-on-another-page`, `evade-field-with-no-widget`) stopped being owed.
-OWED_EXPECTED = {125: 4, 131: 1}
+# #125 dropped from 4 to 3 on 2026-10-08, when `evade-paths-in-type3-glyph` began refusing
+# `[type-three-procedure-paints]`.
+OWED_EXPECTED = {125: 3, 131: 1}
 # The fixtures whose owed placements still disclose their canary or carrier after a redaction
 # that returned Ok: ADR 0029 §5's four signals, not yet built (#125). A set, not a count.
 # `acroform-field` and the two `/AcroForm` evades left it in #125: all three now refuse by
@@ -1084,8 +1086,8 @@ OWED_EXPECTED = {125: 4, 131: 1}
 OWED_LEAKS_EXPECTED = {
     # Image/vector/shading now refuse in-region (#125, slice 2): evade-image-in-form,
     # evade-paths-in-form, image-pixels, producer-ocr-scan and vector-outlines left this set.
-    # Type-3-glyph paths and the /StructTreeRoot channels remain owed.
-    "evade-paths-in-type3-glyph",
+    # Type-3-glyph paths left it on 2026-10-08 ([type-three-procedure-paints]); the
+    # /StructTreeRoot channels remain owed.
     "evade-struct-without-structparents",
     "producer-writer",
     "structure-tree",

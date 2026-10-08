@@ -372,18 +372,26 @@ def nearmiss_form_carrying_its_own_font() -> bytes:
 
 
 def nearmiss_type3_procedure_that_only_shows_its_own_glyph() -> bytes:
-    """A Type 3 glyph procedure that draws a PATH and nothing else. MUST NOT be refused.
+    """A Type 3 glyph procedure that draws an IMAGE inside its own box, and nothing else. MUST
+    NOT be refused.
 
     The twin for `evade-text-in-type3-via-form`. `check_type_three_procedure` refuses a procedure
-    containing `Tj`/`TJ`/`'`/`"`/`Do`, and a procedure that fills its own outline contains none of
-    them — which is what a Type 3 font is normally *for*. A rule that refused every Type 3 font
-    would pass the evasion and refuse a whole legitimate font type.
+    containing `Tj`/`TJ`/`'`/`"`/`Do`; this one contains none of them. A rule that refused every
+    Type 3 font would pass the evasion and refuse a whole legitimate font type.
+
+    IT FILLED ITS OUTLINE until 2026-10-08, when a procedure that paints became a refusal of its
+    own, page-wide (#125, owner's decision: `[type-three-procedure-paints]`). A bitmap glyph -- an
+    inline image inside its font's box, the TeX shape -- is the Type 3 font that rule still lets
+    through when the region does not reach it, so it is the honest near-miss now.
 
     The canary is drawn by Helvetica inside the region; the Type 3 glyph sits outside it.
     """
     pdf = Pdf()
     helv = helvetica(pdf)
-    proc = pdf.stream(b"", b"20 0 0 0 20 20 d1\n0 0 18 18 re f\n")
+    proc = pdf.stream(
+        b"",
+        b"20 0 0 0 20 20 d1\nq 18 0 0 18 0 0 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
+    )
     charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
     encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
     t3 = pdf.add(

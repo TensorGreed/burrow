@@ -781,7 +781,7 @@ fn integer_or<O: PdfObject>(handle: &O, fallback: i64) -> i64 {
         .unwrap_or(fallback)
 }
 
-fn rect_of<O: PdfObject>(handle: &O) -> Option<Rect> {
+pub(super) fn rect_of<O: PdfObject>(handle: &O) -> Option<Rect> {
     match numbers_of(handle).as_slice() {
         [left, bottom, right, top] => Some(Rect {
             left: left.min(*right),

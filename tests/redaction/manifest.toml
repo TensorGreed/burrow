@@ -155,8 +155,12 @@ Measured in the qdf expansion:
   adr = "§1, §3"
   witness_before = "pdfium-text"
   witness_observes = "canary"
-  expect_after = "gone"
-  notes = "A literal scan does NOT witness this one; that is the point of the placement."
+  expect_after = "refused"
+  notes = """A literal scan does NOT witness this one; that is the point of the placement.
+REFUSED SINCE 2026-10-08 (#125, owner's decision): the region reaches glyphs of a TeX bitmap Type 3
+font, drawn as inline images, and removing one would leave its bitmap in /CharProcs --
+`[type-three-image-cut]`. The recorded cost of that rule; the page redacts where the region misses
+bitmap-font text."""
 
   [[fixture.placement]]
   channel = "font /Differences for the removed run"
@@ -165,7 +169,8 @@ Measured in the qdf expansion:
   adr = "§1"
   witness_before = "font-mapping"
   witness_observes = "alphabet"
-  expect_after = "gone"
+  expect_after = "refused"
+  notes = "Refused with the page since 2026-10-08: see the placement above."
 
 # ---------------------------------------------------------------------------------------
 
@@ -817,7 +822,6 @@ pages = 1
   witness_before = "vector-fills"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
 [[fixture]]
 name = "nearmiss-paths-outside-region"

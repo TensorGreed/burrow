@@ -690,7 +690,10 @@ fn a_differences_naming_one_code_twice_does_not_hide_a_type_three_procedure() {
     let catalog = pdf.reserve();
     let pages = pdf.reserve();
     let page = pdf.reserve();
-    let harmless = pdf.stream("", "10 0 0 0 0 0 d0\n0 0 1 1 re f\n");
+    // THE DECOY PAINTS NOTHING: a fill became a refusal of its own on 2026-10-08
+    // (`[type-three-procedure-paints]`), and a decoy that refused first would no longer test that
+    // the shadowed procedure is found. A clip is the harmless procedure now.
+    let harmless = pdf.stream("", "10 0 0 0 0 0 d0\n0 0 1 1 re W n\n");
     let procedure = pdf.stream("", "10 0 0 0 0 0 d0\nBT /F9 30 Tf 0 0 Td (SECRET) Tj ET\n");
     let inner_font = pdf.add(&helvetica_with_widths());
     let font = pdf.add(&format!(

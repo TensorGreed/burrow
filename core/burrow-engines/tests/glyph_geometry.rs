@@ -1580,6 +1580,12 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
     // COUNTED, because every assertion below is inside the `Ok` arm and a refusal `continue`s.
     // A mutation that refused unconditionally left this test green over all three fixtures.
     let mut redacted_documents = 0usize;
+    // THE ONE THAT REFUSES, BY NAME (#125, 2026-10-08): `producer-latex`'s region reaches glyphs of
+    // a TeX bitmap Type 3 font, and removing one would leave its bitmap in `/CharProcs`. That is a
+    // decided cost, and it costs this test its only real-typesetter document -- the kerning-split
+    // `TJ` run pdfTeX writes. Pinned by name so the coverage loss is visible: a refusal for any
+    // other reason, or this one redacting again, is a change somebody has to look at.
+    let mut refused_as_decided = 0usize;
     for name in [
         "producer-writer.pdf",
         "producer-latex.pdf",
@@ -1627,6 +1633,12 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
                     "{name}: refused without naming a rule: {text}"
                 );
                 eprintln!("  {name:<34} refused: {text}");
+                assert_eq!(
+                    (name, text.contains("[type-three-image-cut]")),
+                    ("producer-latex.pdf", true),
+                    "only producer-latex refuses, and only as [type-three-image-cut]: {text}"
+                );
+                refused_as_decided += 1;
                 continue;
             }
         };
@@ -1709,9 +1721,11 @@ fn a_real_redaction_removes_the_region_and_moves_nothing_else() {
     }
 
     assert_eq!(
-        redacted_documents, 3,
-        "all three real-producer documents must redact; a refusal that covered them would \
-         leave every assertion above unexecuted and this test still green"
+        (redacted_documents, refused_as_decided),
+        (2, 1),
+        "two real-producer documents must redact and producer-latex must refuse as decided; a \
+         refusal that covered them would leave every assertion above unexecuted and this test \
+         still green"
     );
 }
 

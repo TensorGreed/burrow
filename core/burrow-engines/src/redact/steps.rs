@@ -698,7 +698,22 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
             .iter()
             .map(|glyph| glyph.source.font.clone())
             .collect();
-        check_type_three(&resources, &drawn_fonts, &self.watch())?;
+        let image_fonts = check_type_three(&resources, &drawn_fonts, &self.watch())?;
+        // A TYPE 3 GLYPH DRAWN AS AN IMAGE, cut (#125, owner's decision 2026-10-08). Its box
+        // covers the image, so the region removes it -- and its procedure, the bitmap, stays in
+        // `/CharProcs`. Refused when the region reaches any glyph of a font that draws one.
+        // Keyed on the font, not the code: resolving a code to its procedure is the name
+        // resolution `check_type_three`'s header says was wrong twice.
+        if cut
+            .iter()
+            .any(|glyph| image_fonts.contains(&glyph.source.font))
+        {
+            return Err(Error::Unsupported(
+                "pdf redaction [type-three-image-cut]: the region reaches a Type 3 glyph drawn as \
+                 an image, whose bitmap would stay in the font after the glyph is removed"
+                    .to_owned(),
+            ));
+        }
 
         // THE MARKED-CONTENT RULE, per stream, because a `Span` indexes the stream it was read
         // from. The page's own content first, then each form the removal reaches -- a form
@@ -1882,16 +1897,26 @@ fn check_contents_sharing<O: PdfObject>(
 /// stream. Scanned per name, a 52 KB file of 4,000 keys over one 100,000-operation procedure
 /// took **9.9 s** against a 100 ms budget -- a security review found it, and it was measured.
 /// So procedures are scanned once per object identity, and `watch` is read inside every scan.
+///
+/// # What it returns
+///
+/// The fonts, of those drawn, with a procedure that draws an inline image inside the font's box
+/// (#125): the caller refuses a region that reaches one of their glyphs. Each procedure is judged
+/// against its own font's `/FontBBox`; a procedure shared by two fonts is scanned under the first
+/// and counted for both.
 fn check_type_three<O: PdfObject>(
     resources: &PageResources<O>,
     drawn: &BTreeSet<ScopedFont>,
     watch: &Watch<'_>,
-) -> Result<()> {
+) -> Result<BTreeSet<ScopedFont>> {
     const SUBTYPE: Name = Name::literal(b"/Subtype\0");
     const TYPE_THREE: Name = Name::literal(b"/Type3\0");
     const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
 
-    let mut scanned: BTreeSet<u64> = BTreeSet::new();
+    const FONT_BBOX: Name = Name::literal(b"/FontBBox\0");
+
+    let mut scanned: BTreeMap<u64, bool> = BTreeMap::new();
+    let mut image_fonts = BTreeSet::new();
     for font_name in drawn {
         let font = resources.font_in_scope(font_name)?;
         let subtype = font.key(&SUBTYPE);
@@ -1902,6 +1927,7 @@ fn check_type_three<O: PdfObject>(
         if procs.type_code() != object_type::DICTIONARY {
             continue;
         }
+        let font_bbox = super::resources::rect_of(&font.key(&FONT_BBOX));
         for key in crate::pdfsyntax::dict::top_level_keys(&procs.unparse())? {
             let entry = procs.key(&Name::from_stripped(&key)?);
             if entry.type_code() != object_type::STREAM {
@@ -1909,7 +1935,11 @@ fn check_type_three<O: PdfObject>(
             }
             // A STREAM IS ALWAYS INDIRECT, so its identity is never the direct-object `(0, 0)`
             // that would make two different procedures look like one.
-            if !scanned.insert(pack(entry.object()?)) {
+            let identity = pack(entry.object()?);
+            if let Some(&image) = scanned.get(&identity) {
+                if image {
+                    image_fonts.insert(font_name.clone());
+                }
                 continue;
             }
             let Some(procedure) = entry.stream_data()? else {
@@ -1920,10 +1950,14 @@ fn check_type_three<O: PdfObject>(
                         .to_owned(),
                 ));
             };
-            check_type_three_procedure(&procedure, watch)?;
+            let draws = check_type_three_procedure(&procedure, font_bbox, watch)?;
+            scanned.insert(identity, draws.image);
+            if draws.image {
+                image_fonts.insert(font_name.clone());
+            }
         }
     }
-    Ok(())
+    Ok(image_fonts)
 }
 
 /// Every `/Font` resource name on the page.

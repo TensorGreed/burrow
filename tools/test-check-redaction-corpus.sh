@@ -286,7 +286,7 @@ after_case() {
 }
 
 # The baseline for every case below: the real manifest's after-half holds.
-if BURROW_AFTER_ONLY="evade-paths-in-type3-glyph,plain-tj,cid-without-tounicode,17-incremental-update" python3 "$checker" --after >/dev/null 2>&1; then
+if BURROW_AFTER_ONLY="evade-struct-without-structparents,plain-tj,cid-without-tounicode,17-incremental-update" python3 "$checker" --after >/dev/null 2>&1; then
   echo "  ok   the after-half holds on the real manifest for the fixtures the cases plant into"
   pass=$((pass + 1))
 else
@@ -295,7 +295,7 @@ else
 fi
 
 after_case "an owed refusal with its marker removed is refused: redacted where the manifest says refused" \
-  evade-paths-in-type3-glyph $'  owed_by = 125' '' "redacted where the manifest says refused"
+  evade-struct-without-structparents $'  owed_by = 125' '' "redacted where the manifest says refused"
 after_case "an owed marker on a document that refuses now is stale" \
   evade-oc-outside-the-region $'expect_after = "refused"' $'expect_after = "refused"\n  owed_by = 125' \
   "outlived the work it waited for"
@@ -355,7 +355,7 @@ after_case_before() {
 after_case_before "an expect_after outside gone, refused and present is refused" \
   plain-tj $'expect_after = "gone"' $'expect_after = "vanished"' "must be gone, refused or present"
 after_case_before "an owed_by that is not an issue number is refused" \
-  evade-paths-in-type3-glyph $'owed_by = 125' $'owed_by = "soon"' "must name one of the issues"
+  evade-struct-without-structparents $'owed_by = 125' $'owed_by = "soon"' "must name one of the issues"
 after_case_before "an owed marker added is a change to the pinned count" \
   evade-oc-outside-the-region $'expect_after = "refused"' $'expect_after = "refused"\n  owed_by = 125' \
   "owed markers per issue are"
@@ -367,12 +367,13 @@ after_case_before "a witness_after that cannot see the canary before the run is 
   "BEFORE the run"
 
 # AND THE LEAK PIN, which only a full run can reach: a copy of the checker, beside the original,
-# whose pinned set has lost one name -- so a real leak reads as a new one.
+# whose pinned set has lost one name -- so a real leak reads as a new one. `structure-tree` since
+# 2026-10-08, when `evade-paths-in-type3-glyph` stopped leaking (#125).
 copy="$here/.redaction-corpus-leaks.py"
 python3 - "$checker" "$copy" <<'PYEOF'
 import sys
 text = open(sys.argv[1]).read()
-line = '    "evade-paths-in-type3-glyph",\n'
+line = '    "structure-tree",\n'
 assert text.count(line) == 1, "the pinned leak set is not where this expects it"
 open(sys.argv[2], "w").write(text.replace(line, "", 1))
 PYEOF
@@ -381,7 +382,7 @@ if cmp -s "$checker" "$copy"; then
   fail=$((fail + 1))
 else
   expect_refusal "a change in how many owed placements leak is refused" \
-    "newly disclosing \['evade-paths-in-type3-glyph'\]" \
+    "newly disclosing \['structure-tree'\]" \
     env -u BURROW_AFTER_ONLY python3 "$copy" --after
 fi
 rm -f "$copy"
