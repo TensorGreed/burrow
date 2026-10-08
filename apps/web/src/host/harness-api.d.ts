@@ -259,6 +259,8 @@ export interface BurrowHarness {
   }): Promise<{ applied: boolean }>;
   /** What the heap canary saw since the last arming: one scan per reply (#199). */
   redactHeapScans(): HeapScan[];
+  /** How many times the host asked to terminate a redaction worker since the last arming. */
+  redactTerminations(): number;
   /** Every message between the page and redaction's worker since the last arming, in order. */
   redactMessages(): RedactionMessage[];
   /**

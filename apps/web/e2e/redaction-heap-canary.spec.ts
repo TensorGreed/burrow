@@ -6,8 +6,8 @@
 // content stream is absent, after a redaction and before the worker is reused, from both wasm
 // heaps". qpdf's object cache holds the decoded page for the life of the document and the C API
 // cannot reach it, so "absent before reuse" is met there by there being no reuse: the reply asks
-// for recycling, and the host discards the worker on that flag (`src/host/worker-host.test.ts`
-// holds the discard; this spec holds the flag).
+// for recycling, and the host discards the worker on that flag: this spec holds the flag and that
+// the host asked to terminate the worker; `src/host/worker-host.test.ts` holds the host's rule.
 //
 // HOW IT LOOKS. The heap canary is a harness prologue (`heapScanPrologue` in
 // `src/host/harness-driver.js`): it records every WebAssembly memory the worker instantiates and,
@@ -161,7 +161,12 @@ for (const { name, bytes, ok } of PAGES) {
     );
     expect(qpdf.hits, `qpdf's heap (${qpdf.bytes} bytes) still holds the removed text`).toBe(0);
 
-    // AND QPDF'S HEAP IS NOT REUSED: the reply asks for recycling, refusal or not.
+    // AND QPDF'S HEAP IS NOT REUSED: the reply asks for recycling, refusal or not, and the host
+    // acts on it -- one termination of this worker, asked for after the reply.
     expect(reply.recycle, "a redaction must ask for its worker to be recycled").toBe(true);
+    expect(
+      await page.evaluate(() => window.burrowHarness.redactTerminations()),
+      "the host did not discard the worker it was asked to recycle",
+    ).toBe(1);
   });
 }

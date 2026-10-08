@@ -255,6 +255,18 @@ let redactLog = [];
  */
 let redactRaw = null;
 /**
+ * The host's `terminate()` for a redaction worker it has discarded, HELD until the settle
+ * handshake has run (#199). Every redaction now recycles its worker, so the host terminates it
+ * straight after the reply -- and R8's "posted once, nothing after" needs the worker alive for the
+ * settle window, or the handshake never answers. Held, not skipped: it runs when the settle
+ * completes, or when the next redaction worker starts, so at most one deferred worker is alive.
+ *
+ * @type {(() => void) | null}
+ */
+let redactPendingTerminate = null;
+/** How many times the host asked to terminate a redaction worker since the last arming. */
+let redactTerminations = 0;
+/**
  * What the heap canary saw (#199): one entry per reply redaction's worker posted while armed with
  * `heapCanary`, each listing every WebAssembly memory the worker had instantiated.
  *
@@ -427,6 +439,14 @@ function recordRedaction(worker) {
     return transfer === undefined ? send(message) : send(message, transfer);
   };
   redactRaw = { worker, send };
+  // A PREVIOUS WORKER STILL HELD is let go now: a new one is starting, so nothing waits on it.
+  redactPendingTerminate?.();
+  redactPendingTerminate = null;
+  const terminate = worker.terminate.bind(worker);
+  worker.terminate = () => {
+    redactTerminations++;
+    redactPendingTerminate = () => terminate();
+  };
   worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const data = event.data;
     redactLog.push({ sent: null, ...describe(data, event.ports.length) });
@@ -1261,6 +1281,7 @@ const harness = {
     if (existing) (await existing).dispose();
     redactLog = [];
     redactRaw = null;
+    redactTerminations = 0;
     return { applied };
   },
 
@@ -1299,7 +1320,19 @@ const harness = {
         setTimeout(resolve, Math.max(0, deadline - performance.now())),
       );
     }
+    // THE SETTLE IS DONE, so a termination the host asked for in the meantime happens now.
+    redactPendingTerminate?.();
+    redactPendingTerminate = null;
     return { settled: Boolean(echoed), nonce };
+  },
+
+  /**
+   * How many times the host asked to terminate a redaction worker since the last arming -- a
+   * recycle or a discard. The termination itself is held until a settle (see
+   * `redactPendingTerminate`).
+   */
+  redactTerminations() {
+    return redactTerminations;
   },
 
   /** What the heap canary saw since the last arming: one scan per reply (#199). */
