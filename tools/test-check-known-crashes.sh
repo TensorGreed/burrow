@@ -14,7 +14,7 @@ work="$(mktemp -d)"
 mutant="$here/check-known-crashes.MUTANT.py"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=16
+EXPECTED_CASES=20
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -254,9 +254,9 @@ python3 - "$here/check-known-crashes.py" "$mutant" <<'PY'
 import sys
 from pathlib import Path
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
-old = 'matches = [e for e in entries if e["verdict"] == verdict and e["frame"] in frames]'
+old = '        if e["verdict"] == verdict\n        and (\n'
 assert old in source, "the matching rule moved; update this meta-test rather than deleting it"
-mutated = source.replace(old, 'matches = [e for e in entries if e["frame"] in frames]', 1)
+mutated = source.replace(old, '        if (\n', 1)
 assert mutated != source, "the mutation did not apply"
 Path(sys.argv[2]).write_text(mutated, encoding="utf-8")
 PY
@@ -275,6 +275,75 @@ else
   bad "the probe gate refuses a frame-only match, naming the conflation (exit $status)"
   sed 's/^/         /' <<<"$out" >&2
 fi
+
+# 13-14. A PANIC KEY IS ONE OR THE OTHER, AND WHOLE (#285): an entry carrying both a frame and a
+#    panic is ambiguous, and a panic with only its message would absorb every target's.
+cat > "$work/both.toml" <<'LEDGER'
+[[known]]
+issue = 8
+verdict = "deadly-signal"
+frame = "Some::Frame"
+panic_at = "fuzz_targets/compress.rs"
+panic = "a message"
+note = "both keys"
+LEDGER
+out="$(python3 "$here/check-known-crashes.py" --ledger "$work/both.toml" --check 2>&1 || true)"
+if grep -qF "exactly one" <<<"$out"; then
+  ok "an entry keyed on both a frame and a panic is refused"
+else
+  bad "an entry keyed on both a frame and a panic is refused"
+  sed 's/^/         /' <<<"$out" >&2
+fi
+cat > "$work/half.toml" <<'LEDGER'
+[[known]]
+issue = 9
+verdict = "deadly-signal"
+panic = "a message"
+note = "a message with no file"
+LEDGER
+out="$(python3 "$here/check-known-crashes.py" --ledger "$work/half.toml" --check 2>&1 || true)"
+if grep -qF "either alone would absorb" <<<"$out"; then
+  ok "a panic entry with no target file is refused"
+else
+  bad "a panic entry with no target file is refused"
+  sed 's/^/         /' <<<"$out" >&2
+fi
+
+# 15-16. THE PANIC KEY'S OWN META-TESTS, each a copy beside the original whose probe gate must
+#    refuse naming the probe it breaks: matching on the message alone (the file dropped), and a
+#    pattern that does not allow the thread id current Rust prints -- the shape the first version
+#    of this key was written in, which matched nothing in the real nightly log.
+panic_mutant() {
+  local name="$1" old="$2" new="$3" needle="$4"
+  python3 - "$here/check-known-crashes.py" "$mutant" "$old" "$new" <<'PY'
+import sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+old, new = sys.argv[3], sys.argv[4]
+assert source.count(old) == 1, f"the panic rule moved ({source.count(old)} matches); update this meta-test"
+mutated = source.replace(old, new, 1)
+assert mutated != source, "the mutation did not apply"
+Path(sys.argv[2]).write_text(mutated, encoding="utf-8")
+PY
+  set +e
+  out="$(python3 "$mutant" --check 2>&1)"
+  status=$?
+  set -e
+  if [ "$status" -eq 3 ] && grep -qF "$needle" <<<"$out"; then
+    ok "$name"
+  else
+    bad "$name (exit $status)"
+    sed 's/^/         /' <<<"$out" >&2
+  fi
+}
+panic_mutant "the probe gate refuses a panic key that ignores the target file" \
+  'else (e["panic_at"], e["panic"]) in panics' \
+  'else e["panic"] in {message for _, message in panics}' \
+  "the same message from another target is a new finding"
+panic_mutant "the probe gate refuses a panic pattern without the thread id" \
+  "(?: \\(\\d+\\))?" \
+  "" \
+  "WITH A THREAD ID"
 
 echo
 echo "$pass passed, $fail failed"
