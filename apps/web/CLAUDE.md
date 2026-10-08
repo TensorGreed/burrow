@@ -365,13 +365,23 @@ witness beneath it and a control binary (`wipe_on_free_control.rs`) that must fi
 freed blocks when nothing wipes. It does not reach **live** memory or **qpdf's** heap, which is a
 separate module; those are the canary's and the recycling's.
 
-**Still not true of the code:**
+**A redaction's worker is recycled after every redaction that read the document**, success or
+refusal (`Reply::recycled`, in `bindings/burrow-wasm`). qpdf's object cache holds decoded content
+for the life of the document and `qpdf_cleanup` frees it unwiped; the C API offers no way in, so
+discarding the worker -- and the qpdf module's heap with it -- is the lever.
 
-- the canary test over both wasm heaps, and recycling the worker, are not written yet;
-- the render worker (`render-main.js`, `bridge-pdfium.js`) zeroes neither its input nor its
-  password, and the pixels it posts are the page as drawn.
+**The wasm heaps are held by a canary** (`e2e/redaction-heap-canary.spec.ts`), through a
+harness-only prologue that scans every WebAssembly memory the worker holds as it posts its reply:
+the canary must be seen in each heap while the redaction runs (the witness) and in neither at the
+reply, and the reply must ask for recycling. What it can fail on, and what it cannot, is in its
+header: the recycle and `Session::drop`'s input wipe are red under mutation; **the allocator is
+not** -- burrow's freed copies are overwritten by the redaction's own output before the reply,
+wipe or no wipe -- so `WipeOnFree` is held natively (`core/burrow-engines/tests/wipe_on_free.rs`),
+not here.
 
-All three are #199's remaining work. The render worker is in scope if the redaction page previews through it. Until they land, this rule is not yet true of the code.
+**Still not true of the code:** the render worker (`render-main.js`, `bridge-pdfium.js`) zeroes
+neither its input nor its password, and the pixels it posts are the page as drawn. It is in #199's
+scope only if the redaction page previews through it, which #136's plan decides.
 
 ## Design
 

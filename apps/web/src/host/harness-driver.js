@@ -254,6 +254,13 @@ let redactLog = [];
  * @type {{ worker: Worker, send: (message: unknown) => void } | null}
  */
 let redactRaw = null;
+/**
+ * What the heap canary saw (#199): one entry per reply redaction's worker posted while armed with
+ * `heapCanary`, each listing every WebAssembly memory the worker had instantiated.
+ *
+ * @type {import("./harness-api").HeapScan[]}
+ */
+let redactHeapScans = [];
 
 /**
  * How many byte-carrying values a message holds -- each `ArrayBuffer`, typed array or `Blob`,
@@ -423,6 +430,10 @@ function recordRedaction(worker) {
   worker.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const data = event.data;
     redactLog.push({ sent: null, ...describe(data, event.ports.length) });
+    if (data?.__burrowHeapScan) {
+      redactHeapScans.push(data.__burrowHeapScan);
+      return;
+    }
     if (data?.__burrowSideChannel || data?.__burrowSideChannelArmed || data?.__burrowSettled) {
       return;
     }
@@ -463,6 +474,127 @@ const SETTLE = `
   );
 })();
 `;
+
+/**
+ * The heap canary (#199): count `canary`'s occurrences in every WebAssembly memory redaction's
+ * worker holds, at the moment it posts a reply -- after the Rust call has returned and the
+ * worker's `finally` has wiped its own copies, and before the page can recycle the worker.
+ *
+ * HARNESS-ONLY BY CONSTRUCTION, like every prologue here: it is text this driver prepends to the
+ * integrity-checked bundle, and the production host never builds a prologue at all.
+ *
+ * WHICH MEMORY IS WHICH. Every memory the worker instantiates is recorded -- exported or imported,
+ * through `WebAssembly.instantiate`, `instantiateStreaming` or `new WebAssembly.Instance` -- and the
+ * one behind the qpdf module the bridge holds (`__burrow_attach`) is labelled `qpdf`; every other
+ * is `burrow`. A scan reports how many it examined, so a capture that missed one says so rather
+ * than reading as clean.
+ *
+ * @param {string} canary
+ */
+function heapScanPrologue(canary) {
+  return `
+(() => {
+  const needle = new TextEncoder().encode(${JSON.stringify(canary)});
+  const memories = [];
+  const keep = (value) => {
+    if (value instanceof WebAssembly.Memory && !memories.includes(value)) memories.push(value);
+  };
+  const fromImports = (imports) => {
+    for (const space of Object.values(imports || {})) {
+      for (const value of Object.values(space || {})) keep(value);
+    }
+  };
+  const fromExports = (exports) => {
+    for (const value of Object.values(exports || {})) keep(value);
+  };
+  const instantiate = WebAssembly.instantiate.bind(WebAssembly);
+  WebAssembly.instantiate = async (source, imports) => {
+    fromImports(imports);
+    const made = await instantiate(source, imports);
+    fromExports((made.instance || made).exports);
+    return made;
+  };
+  if (WebAssembly.instantiateStreaming) {
+    const streaming = WebAssembly.instantiateStreaming.bind(WebAssembly);
+    WebAssembly.instantiateStreaming = async (source, imports) => {
+      fromImports(imports);
+      const made = await streaming(source, imports);
+      fromExports(made.instance.exports);
+      return made;
+    };
+  }
+  const Instance = WebAssembly.Instance;
+  WebAssembly.Instance = function (module, imports) {
+    fromImports(imports);
+    const made = new Instance(module, imports);
+    fromExports(made.exports);
+    return made;
+  };
+  WebAssembly.Instance.prototype = Instance.prototype;
+  let qpdf = null;
+  // THE PEAK WHILE THE OPERATION RUNS, per memory: the witness. Scanned on entry to each of the
+  // first SCANS bridge calls -- the input copied into qpdf's heap is there until the session
+  // ends, and the decoded page Rust holds is in burrow's from the first hand-out -- so a scan
+  // that cannot see a heap shows a peak of zero there and the test refuses to trust its final 0.
+  const SCANS = 64;
+  let scansTaken = 0;
+  const peak = new Map();
+  const sample = () => {
+    if (scansTaken >= SCANS) return;
+    scansTaken++;
+    for (const memory of memories) {
+      const hits = count(new Uint8Array(memory.buffer));
+      peak.set(memory, Math.max(peak.get(memory) || 0, hits));
+    }
+  };
+  self.addEventListener("message", () => {
+    const attach = self.__burrow_attach;
+    if (typeof attach !== "function" || attach.__heapScan) return;
+    const wrapped = (module) => {
+      qpdf = module;
+      return attach(module);
+    };
+    wrapped.__heapScan = true;
+    self.__burrow_attach = wrapped;
+    for (const name of Object.keys(self)) {
+      const original = self[name];
+      if (!name.startsWith("__burrow_qpdf_") || typeof original !== "function") continue;
+      self[name] = function (...args) {
+        sample();
+        return original.apply(this, args);
+      };
+    }
+  }, { once: true, capture: true });
+  const count = (heap) => {
+    let hits = 0;
+    const first = needle[0];
+    for (let at = heap.indexOf(first); at !== -1 && at <= heap.length - needle.length; at = heap.indexOf(first, at + 1)) {
+      let match = true;
+      for (let i = 1; i < needle.length; i++) {
+        if (heap[at + i] !== needle[i]) { match = false; break; }
+      }
+      if (match) hits++;
+    }
+    return hits;
+  };
+  const post = self.postMessage.bind(self);
+  self.postMessage = (message, transfer) => {
+    if (message && typeof message === "object" && typeof message.ok === "boolean" && "kind" in message) {
+      const qpdfBuffer = qpdf && qpdf.HEAPU8 ? qpdf.HEAPU8.buffer : null;
+      post({
+        __burrowHeapScan: memories.map((memory) => ({
+          heap: memory.buffer === qpdfBuffer ? "qpdf" : "burrow",
+          bytes: memory.buffer.byteLength,
+          hits: count(new Uint8Array(memory.buffer)),
+          peak: peak.get(memory) || 0,
+        })),
+      });
+    }
+    return transfer === undefined ? post(message) : post(message, transfer);
+  };
+})();
+`;
+}
 
 /**
  * Stubs for R9's exits, installed in the worker's scope before the bundle runs.
@@ -1093,7 +1225,10 @@ const harness = {
    * catch. Returns whether the replacement applied, because a mutation that matched nothing
    * leaves the real worker in place and measures nothing. Clears the message log.
    *
-   * @param {{ stubSideChannels?: boolean, mutate?: { from: string, to: string } | null }} options
+   * `heapCanary` installs the heap canary (#199): every reply is preceded by a scan of every
+   * WebAssembly memory in the worker for that text, read back with `redactHeapScans`.
+   *
+   * @param {{ stubSideChannels?: boolean, mutate?: { from: string, to: string } | null, heapCanary?: string }} options
    */
   async armRedaction(options = {}) {
     let source = null;
@@ -1114,9 +1249,13 @@ const harness = {
       // THE ARMED LIST IS ALWAYS POSTED, EMPTY WHEN NOTHING IS ARMED: R8 admits it only as the
       // worker's first message, and with no prologue list there a bundle's own post was first --
       // and a forged list then vouched for any number of forged reports (review of #137).
-      prologue: SETTLE + (options.stubSideChannels ? SIDE_CHANNEL_STUBS : NO_STUBS),
+      prologue:
+        SETTLE +
+        (options.stubSideChannels ? SIDE_CHANNEL_STUBS : NO_STUBS) +
+        (options.heapCanary ? heapScanPrologue(options.heapCanary) : ""),
       source,
     };
+    redactHeapScans = [];
     const existing = lazyHosts.redactWorker;
     delete lazyHosts.redactWorker;
     if (existing) (await existing).dispose();
@@ -1161,6 +1300,11 @@ const harness = {
       );
     }
     return { settled: Boolean(echoed), nonce };
+  },
+
+  /** What the heap canary saw since the last arming: one scan per reply (#199). */
+  redactHeapScans() {
+    return redactHeapScans.map((scan) => scan.map((entry) => ({ ...entry })));
   },
 
   /** Every message between the page and redaction's worker since the last arming, in order. */
