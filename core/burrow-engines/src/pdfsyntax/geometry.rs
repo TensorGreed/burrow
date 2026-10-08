@@ -2829,7 +2829,7 @@ impl LineParameter {
 ///
 /// Only these two. #278's specification review went through every other key: `/LC`, `/LJ` and
 /// `J`/`j` cannot reach past a miter join once the miter multiplier is floored at the square
-/// root of two (see [`stroke_box`]), dashes only remove ink, and the transparency, halftone and
+/// root of two (see `stroke_reach`), dashes only remove ink, and the transparency, halftone and
 /// transfer keys change colour, not extent.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExtGStateLine {
