@@ -26,7 +26,9 @@ use burrow_types::{Error, Result};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::pdfsyntax::geometry::ScopedFont;
-use crate::pdfsyntax::geometry::{Encoding, Form, GlyphMetrics, Matrix, Rect, Resources};
+use crate::pdfsyntax::geometry::{
+    Encoding, ExtGStateLine, Form, GlyphMetrics, LineParameter, Matrix, Rect, Resources,
+};
 use crate::redact::graph::PdfObject;
 
 const RESOURCES: Name = Name::literal(b"/Resources\0");
@@ -40,6 +42,8 @@ const SUBTYPE: Name = Name::literal(b"/Subtype\0");
 const MATRIX: Name = Name::literal(b"/Matrix\0");
 const FONT: Name = Name::literal(b"/Font\0");
 const EXT_G_STATE: Name = Name::literal(b"/ExtGState\0");
+const LINE_WIDTH: Name = Name::literal(b"/LW\0");
+const MITER_LIMIT: Name = Name::literal(b"/ML\0");
 const FIRST_CHAR: Name = Name::literal(b"/FirstChar\0");
 const WIDTHS: Name = Name::literal(b"/Widths\0");
 const FONT_MATRIX: Name = Name::literal(b"/FontMatrix\0");
@@ -297,10 +301,9 @@ impl<O: PdfObject> Resources for PageResources<O> {
         if category.type_code() != object_type::DICTIONARY {
             return Ok(false);
         }
-        let state = category.key(&key);
-        if state.type_code() != object_type::DICTIONARY {
+        let Some(state) = state_dictionary(category.key(&key)) else {
             return Ok(false);
-        }
+        };
         // PRESENT, WHATEVER ITS VALUE, and that is the conservative reading rather than the
         // measured one: PDFium drops the `Tf` font for a `/Font [font size]` array, measured even
         // where it names the `Tf`'s own object (#152), and ignores a bare font reference there.
@@ -309,6 +312,23 @@ impl<O: PdfObject> Resources for PageResources<O> {
         // scopes too, because PDFium falls back to the page's `/ExtGState` when a form has none
         // (`geometry::ScopeChain`).
         Ok(state.key(&FONT).type_code() != object_type::NULL)
+    }
+
+    fn ext_gstate_line(&self, name: &[u8]) -> Result<ExtGStateLine> {
+        let key = Name::from_stripped(name)?;
+        // THE CATEGORY'S TYPE FIRST, for `ext_gstate_sets_font`'s reason: `key` on anything but a
+        // dictionary costs a retained qpdf warning per call.
+        let category = self.category(&EXT_G_STATE);
+        if category.type_code() != object_type::DICTIONARY {
+            return Ok(ExtGStateLine::UNSET);
+        }
+        let Some(state) = state_dictionary(category.key(&key)) else {
+            return Ok(ExtGStateLine::UNSET);
+        };
+        Ok(ExtGStateLine {
+            width: line_parameter(&state.key(&LINE_WIDTH)),
+            miter: line_parameter(&state.key(&MITER_LIMIT)),
+        })
     }
 
     fn within(&self, name: &[u8]) -> Result<Option<Box<dyn Resources + '_>>> {
@@ -770,5 +790,41 @@ fn rect_of<O: PdfObject>(handle: &O) -> Option<Rect> {
             top: bottom.max(*top),
         }),
         _ => None,
+    }
+}
+
+/// The dictionary an ExtGState entry's keys are read from: the entry itself, or **a stream's own
+/// dictionary** when the entry is written as a stream (#278's code review).
+///
+/// PDFium and poppler ignore a stream entry -- measured for PDFium by #278's specification review,
+/// a stream whose dictionary held `/LW 120` drew a thin line -- and a reader that resolves keys
+/// through a stream's dictionary would apply it. Which one draws is reader-dependent, so it is
+/// read as though it applied (DECISIONS.md rule 1): its `/Font` refuses and its `/LW` widens the
+/// box, an over-refusal for PDFium and the safe direction for the rest. Anything else is no
+/// state at all.
+fn state_dictionary<O: PdfObject>(entry: O) -> Option<O> {
+    match entry.type_code() {
+        object_type::DICTIONARY => Some(entry),
+        object_type::STREAM => Some(entry.stream_dict()),
+        _ => None,
+    }
+}
+
+/// One `/LW` or `/ML` value as both readers would take it (#278).
+///
+/// Absent (or `null`) is unset; one integer or real both readers agree on, within the page frame's
+/// magnitude bound, is that value -- an indirect reference to one included, since qpdf resolves it
+/// and PDFium applies it (#278's review measured 7,128 dark pixels from `/LW 6 0 R`); anything else
+/// is unreadable. A string or array draws thin in PDFium, so refusing it over-refuses: recorded,
+/// and taken rather than guessing what another reader makes of it.
+fn line_parameter<O: PdfObject>(value: &O) -> LineParameter {
+    if value.type_code() == object_type::NULL {
+        return LineParameter::UNSET;
+    }
+    match super::frame::reading_of(value) {
+        super::frame::Reading::Number(number) => LineParameter::set(number),
+        super::frame::Reading::NotANumber | super::frame::Reading::OutOfRange => {
+            LineParameter::UNREADABLE
+        }
     }
 }

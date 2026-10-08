@@ -482,6 +482,7 @@ mod tests {
             font_bbox: None,
             font_size: 1.0,
             scaled_font_size: 1.0,
+            stroke_reach: (0.0, 0.0),
             displacement: 1.0,
             source: GlyphSource {
                 font: crate::pdfsyntax::geometry::ScopedFont::on_page(b"F1".to_vec()),

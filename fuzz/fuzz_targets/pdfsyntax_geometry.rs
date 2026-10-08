@@ -34,7 +34,7 @@
 #![no_main]
 
 use burrow_engines::pdfsyntax::geometry::{
-    Encoding, Form, Glyph, GlyphMetrics, MAX_GLYPHS, Matrix, Rect, Refusal, Resources, Watch, glyphs_in,
+    Encoding, ExtGStateLine, Form, Glyph, GlyphMetrics, LineParameter, MAX_GLYPHS, Matrix, Rect, Refusal, Resources, Watch, glyphs_in,
 };
 use burrow_types::{Deadline, Error, Limits, ManualClock, Result};
 use libfuzzer_sys::fuzz_target;
@@ -50,6 +50,9 @@ struct Hostile {
     /// Whether every ExtGState the body names sets the font (#152), so the walk's `gs` refusal
     /// is a bit away rather than unreachable.
     font_states: bool,
+    /// What every ExtGState the body names sets of `/LW` and `/ML` (#278): degenerate widths
+    /// included, so a non-finite stroke reach is a byte away.
+    line: ExtGStateLine,
     /// Whether a form gets its own copy of these resources rather than inheriting them, so the
     /// walk's `ScopeChain` is a bit away too.
     own_scopes: bool,
@@ -70,6 +73,7 @@ impl Resources for Hostile {
                 encoding: self.encoding.clone(),
                 forms: self.forms.clone(),
                 font_states: self.font_states,
+                line: self.line,
                 own_scopes: self.own_scopes,
             })));
         }
@@ -100,6 +104,10 @@ impl Resources for Hostile {
 
     fn ext_gstate_sets_font(&self, _name: &[u8]) -> Result<bool> {
         Ok(self.font_states)
+    }
+
+    fn ext_gstate_line(&self, _name: &[u8]) -> Result<ExtGStateLine> {
+        Ok(self.line)
     }
 }
 
@@ -164,6 +172,22 @@ fuzz_target!(|data: &[u8]| {
             .collect(),
         // THE HIGH BIT OF THE FIRST CONTROL BYTE, which `pick` reads only modulo 8.
         font_states: control[0] & 0x80 != 0,
+        // THE HIGH BITS OF THE FOURTH AND FIFTH, which the box reads only modulo 4 and 8 (#278):
+        // a degenerate `/LW` or `/ML`, a merge with the width in force, or an unreadable one.
+        line: ExtGStateLine {
+            width: match control[3] >> 6 {
+                0 => LineParameter::UNSET,
+                1 => LineParameter::UNREADABLE,
+                2 => LineParameter::set(pick(control[3] >> 3)),
+                _ => LineParameter::set(pick(control[3] >> 3)).merge(LineParameter::UNSET),
+            },
+            miter: match control[4] >> 6 {
+                0 => LineParameter::UNSET,
+                1 => LineParameter::UNREADABLE,
+                2 => LineParameter::set(pick(control[4] >> 3)),
+                _ => LineParameter::set(pick(control[4] >> 3)).merge(LineParameter::UNSET),
+            },
+        },
         // THE HIGH BIT OF THE SECOND, which `pick` also reads only modulo 8.
         own_scopes: control[1] & 0x80 != 0,
     };

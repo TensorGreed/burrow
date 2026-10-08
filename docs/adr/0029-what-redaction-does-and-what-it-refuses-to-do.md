@@ -123,7 +123,9 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | the font's **`/ToUnicode`** and **`/Differences`** | **handle** — §1 |
 | **optional content** referenced by a kept page | **refuse** |
 | a region intersecting an **image** | **refuse**, `[image-in-region]` — landed #125 (slice 2). The region-aware geometry walk boxes every image `Do` and inline `BI` as the bounding box of the transformed unit square under the full CTM (nesting and rotation included, clipping ignored, fail closed); the caller refuses when a box reaches the region |
-| a region intersecting **vector path content** | **refuse**, `[vector-in-region]` — landed #125 (slice 2). The walk boxes a fill by its enclosed path, and a stroke per segment inflated by half the line width with miter joins at worst case; a bare `sh` shading is treated as the whole page. **A Type 3 glyph procedure's own paths remain owed** — a glyph is legitimately drawn with fills, so they cannot be blanket-refused; and the refusal is to **refuse any ink reaching the region**, with removing ink wholly inside it still owed (slice 2b) |
+| a region intersecting **vector path content** | **refuse**, `[vector-in-region]` — landed #125 (slice 2). The walk boxes a fill by its enclosed path, and a stroke per segment inflated by half the line width with miter joins at worst case, the miter multiplier floored at the square root of two for projecting caps; the width and limit are read from `w`/`M` **and from an ExtGState's `/LW`/`/ML` through `gs`** (#278, every scope the name might resolve in a candidate, the width in force among them); a bare `sh` shading is treated as the whole page. **A Type 3 glyph procedure's own paths remain owed** — a glyph is legitimately drawn with fills, so they cannot be blanket-refused; and the refusal is to **refuse any ink reaching the region**, with removing ink wholly inside it still owed (slice 2b) |
+| text drawn in a **stroking rendering mode** (`Tr` 1, 2, 5 or 6, or any mode that is not 0, 3, 4 or 7) | **handle** — added 2026-10-08 ([#278]). The outline is stroked at the line width, so the glyph's box grows by the stroke's reach and the region removes a glyph whose outline reaches it, as it removes any text there. Before, a glyph outside the region stroked at `240 w` drew 2,772 dark pixels inside it after an `Ok`, measured. Refusing it as ink instead would have refused every faux-bold run drawn with `2 Tr` |
+| a `gs` whose ExtGState sets **`/LW` or `/ML` to anything but one number both readers agree on** -- a string, an array, a name, a magnitude past 2^24 | **refuse**, `[ext-gstate-line-unreadable]` — added 2026-10-08 ([#278]). An indirect reference to a number is read, as PDFium reads it. **Over-refuses**: PDFium draws a string or array width thin |
 | a document with an **`/AcroForm`** | **refuse**, `[acroform-field]` — landed #125. Two signals: the catalogue's **`/AcroForm`**, resolved through the trailer's `/Root` (which may be a *direct* dictionary — qpdf accepts one, and then the catalogue is in no reference set — so `/Root` is resolved, not scanned for), which catches the form however its fields are laid out (including a field written *inline* inside `/AcroForm /Fields`); and a top-level **`/FT`** on any referenced object (a field object with no catalogue `/AcroForm`). A **deliberate over-refusal**: it refuses every document with a form, not only one whose field reaches the region; the narrowing is [#274] |
 | a document with a **`/StructTreeRoot`** reaching the region | **refuse** — see §5, the signal is owed |
 | catalogue **`/Metadata`** and the trailer's **`/Info`** | **disclose** |
@@ -194,7 +196,7 @@ owed.**
 |---|---|---|
 | optional content | a page's resources reference an OCG, **followed transitively over the resource graph** | **MEASURED, and to this section's bar.** `prune/mod.rs` calls `refuse_optional_content_in` from inside `follow_resources`, so it descends nested forms and Type 3 `/CharProcs`; ADR 0019's 2026-09-14 amendment records the defect where it read the page's `/Resources` only, and the fix. The evade fixture exists and passes: `oc-nested.pdf`, an OCG one level down inside a form's own resources, and `split_no_leak.rs::a_layer_one_level_down_is_refused_like_one_on_the_page`. **One level is what is measured**; deeper nesting is walked by the code and not pinned by a fixture |
 | an image in the region | the region-aware geometry walk's ink boxes | **LANDED #125 (slice 2), `[image-in-region]`.** The under-scoped "page's own content stream" signal is replaced by the geometry walk, which boxes an image `Do` or inline `BI` wherever it is drawn — inside a Form XObject, nested, rotated — as the transformed unit square's bounding box. A tiling or shading **pattern** fill (`scn`/`SCN`) is still refused globally by `[pattern-may-draw-text]`, and a filtered inline image by `[inline-image-filtered]` (#228). `evade-image-in-form` refuses; `nearmiss-image-outside-region` redacts |
-| vector paths in the region | the region-aware geometry walk's ink boxes | **LANDED #125 (slice 2), `[vector-in-region]`.** The walk boxes a fill by its enclosed path and a stroke per segment, inflated by half the line width (`w`) times the miter limit (`M`) worst case; a curve is boxed by its control-point hull; a `cm` that shifts the CTM mid-path, and a box non-finite after the CTM, fall back to the whole page; `sh` is the whole page. `evade-paths-in-form` refuses; `nearmiss-paths-outside-region` (a page border) redacts. **Still owed:** paths inside a **Type 3 glyph procedure** (a glyph is drawn with fills, so they cannot be blanket-refused — `evade-paths-in-type3-glyph`); an ExtGState's `/LW`/`/ML` through `gs`, which the walk does not yet read so a stroke box may under-cover ([#278]); and the refinement from refuse-any-reaching to remove-wholly-inside/refuse-only-crossing (slice 2b) |
+| vector paths in the region | the region-aware geometry walk's ink boxes | **LANDED #125 (slice 2), `[vector-in-region]`.** The walk boxes a fill by its enclosed path and a stroke per segment, inflated by half the line width (`w`) times the miter limit (`M`) worst case; a curve is boxed by its control-point hull; a `cm` that shifts the CTM mid-path, and a box non-finite after the CTM, fall back to the whole page; `sh` is the whole page. `evade-paths-in-form` refuses; `nearmiss-paths-outside-region` (a page border) redacts. An ExtGState's `/LW`/`/ML` are read since [#278] (`tests/stroke_extent.rs`), with the cap floor and stroked text beside them. **Still owed:** paths inside a **Type 3 glyph procedure** (a glyph is drawn with fills, so they cannot be blanket-refused — `evade-paths-in-type3-glyph`); and the refinement from refuse-any-reaching to remove-wholly-inside/refuse-only-crossing (slice 2b) |
 | `/AcroForm` | the catalogue's `/AcroForm` (via the trailer's `/Root`), or a top-level `/FT` on any referenced object | **LANDED #125, `[acroform-field]`.** The proposed page-side proxy — an `/Annots` entry with `/Subtype /Widget` — was abandoned: a field whose widget sits on a *different* page, a field with no widget, and a widget whose `/FT` is inherited from a `/Parent` all walk straight through it (`evade-widget-on-another-page`, `evade-field-with-no-widget`). Two security-review rounds then corrected the landed signal. The first scanned only a top-level `/FT` and missed a field written *inline* inside `/AcroForm /Fields`, whose `/FT` is a key of the array element, not a top-level key of any referenced object (`PdfObject::key` reads one top-level key, it does not descend) — `evade-acroform-inline-field`. The second found that reading `/AcroForm` as a top-level key of a *referenced* object missed a **direct (inline) `/Root`** catalogue, which qpdf accepts and which has no object number and so is in no reference set — the `/V` survived a region redaction (`evade-acroform-direct-root`, `evade-acroform-direct-root-indirect-acroform`). The landed signal is therefore: `/AcroForm` read off the catalogue **resolved through `/Root`** (direct or indirect), plus a top-level `/FT` on any referenced object for a field object with no catalogue `/AcroForm` (`evade-field-without-acroform`). A **deliberate over-refusal** — it refuses every document with a form; narrowing to fields reaching the region is [#274] |
 | `/StructTreeRoot` | proposed: the page's `/StructParents` | **OWED.** A `/StructElem` reaching this page's MCIDs without the page carrying `/StructParents` walks straight through |
 
@@ -4853,3 +4855,154 @@ two places -- and the read-back cannot see it, because it re-lexes the output wi
 The review recommended an independent check, PDFium's own text in the region after the write; that
 changes ADR 0022's verification design and is the owner's decision, not taken here. Until it is,
 each shape in this class is closed only once it has been measured, and the class itself is not.
+
+## Amendment, 2026-10-08 — #278: a stroke inks as wide as the graphics state says, and stroked text is text
+
+**What was missing.** The geometry walk read a stroke's width from `w` and its miter limit from
+`M`, and nothing else. An ExtGState sets both too, through `gs` (`/LW`, `/ML`), and a stroke whose
+width came only from one was boxed at the width before it. #278 recorded that as reasoned. Its
+specification review measured it on `main`: `Ok` over **3,168** dark pixels in the region from a
+line whose centreline was 50 points below it. The same review found two leaks beside it that
+need no `gs` at all, also measured on `main`:
+
+- **a projecting square cap under a miter limit below the square root of two:** `Ok` over 20
+  dark pixels. `stroke_box` floored the multiplier at 1, and a cap's corner on a 45-degree end
+  sits half the width times root two from the endpoint.
+- **text in a stroking rendering mode:** `Ok` over 2,772 dark pixels. The walk never read `Tr`,
+  so a glyph outside the region, stroked at `240 w`, inked inside it.
+
+**The rule.**
+
+- **`gs` sets the width and the limit as `w` and `M` do.** Each scope the name might resolve in
+  is a candidate: the form's own, and every enclosing one, through `ScopeChain`. **So is the
+  value already in force, whenever some candidate does not set the key.**
+  - The second half is the review's correction to the first proposal. PDFium falls back to the
+    page's `/ExtGState` only when a form has no category at all. A form entry with no `/LW`
+    leaves the width in force. A form category that lacks the name ignores the `gs`.
+  - "The largest value any scope sets" therefore turned a current refusal into a leak: `120 w`
+    then a form whose `/GS0` sets nothing, over a page `/GS0 /LW 2`. PDFium draws 120 (7,128
+    dark pixels); the proposal would have boxed at 2.
+  - Modelling which scope PDFium picks is what DECISIONS.md rule 1 says not to do. So the box
+    takes the largest candidate, and the cost is over-refusal. That cost is pinned: a form
+    category lacking the name, over a page `/LW 120`.
+  - **The over-refusal is wider than "where PDFium picks the thinner"** (the code review). An
+    enclosing scope that merely lacks the name is a scope that does not set it. So a form whose
+    own `/GS0` sets `/LW 0.5` is boxed at the larger width already in force whenever the page has
+    no `/GS0`, although PDFium certainly draws 0.5.
+- **An indirect `/LW` is read,** as PDFium reads it: 7,128 dark pixels on `main` from `/LW 6 0 R`.
+- **A value that is not one number both readers agree on refuses** `[ext-gstate-line-unreadable]`:
+  a string, an array, a name, or a magnitude past 2^24. This over-refuses, because PDFium draws a
+  string or array width thin. A negative width is boxed at its magnitude, which over-refuses the
+  same way; that is pinned too.
+- **An ExtGState entry written as a stream is read as though it applied:** its dictionary's
+  `/LW`, `/ML` and `/Font` count. The first version ignored it because PDFium does, which models
+  PDFium (the code review). The second security review measured what that cost: a stream `/GS0`
+  with `/LW 120` draws nothing in PDFium, poppler or Ghostscript, and **1,782 dark pixels in
+  MuPDF**. So ignoring it was a real leak against MuPDF, and this fixes it.
+  - It over-refuses for PDFium, and that is pinned.
+  - #152's `/Font` refusal reaches a stream entry too, for the same reason.
+  - Its cost on real documents is **0, measured**: none of the 1,725 ExtGState entries in #227's
+    99 readable documents is a stream.
+- **The miter multiplier is floored at the square root of two.** With that floor no cap or join
+  shape reaches past the box, so `/LC`, `/LJ`, `J` and `j` need no modelling. The review went
+  through every other ExtGState key: dashes only remove ink, and the transparency, transfer and
+  halftone keys change colour, not extent.
+- **A stroking `Tr` grows the glyph's own box** by the stroke's reach, so the region removes a
+  glyph whose outline reaches it. **The reach is the same on both axes: the CTM's greatest row or
+  column sum.** PDFium and poppler stroke text with the pen the CTM transforms. MuPDF strokes it
+  with a round pen sized by the CTM's scale. Under `10 0 0 1 cm`, a glyph that PDFium's pen bounds
+  14 points short of the region inked 290 dark pixels inside it in MuPDF after an `Ok` (the second
+  security review). The isotropic bound covers both pens and any row-for-column slip; the cost is
+  extra removal of stroked text under a stretched CTM only.
+  - It is **handled as text, not refused as ink:** refusing would have turned away every faux-bold
+    run a producer draws with `2 Tr`.
+  - Any mode that is not exactly 0, 3, 4 or 7 counts as stroking. PDFium ignores an out-of-range
+    mode and keeps the one in force, so `2 Tr -3 Tr` still strokes (806 dark pixels, the security
+    review). Counting `-3` as stroking covers it.
+  - `Tr` is graphics state: `q`/`Q` carry it; it survives `ET`/`BT`; a form inherits it at `Do`.
+  - `Tr` is now in the arity table, so a padded `Tr` (`0 2 Tr`, which PDFium reads as 2) refuses
+    `[operand-count-mismatch]`. A name as the mode refuses `[numeric-operand-not-a-number]`.
+    Before, both were walked past.
+  - **What it costs, unmeasured:** a removal wider than the ink.
+    - The reach is the worst case: half the width times the miter limit. Real outlines rarely
+      spike that far, so a stroked line just outside the region can be removed with the
+      `Ok` unchanged. The security review measured it: a `2 Tr 0.3 w` paragraph lost the line
+      whose ink tops out at 247.3, under a region from 250.
+    - Verification checks no text outside the region, so this is invisible to it, and so is an
+      outcome census.
+    - A removed-glyph comparison over the 5 real documents with a stroking `Tr` covers one
+      document. The other four refuse their first page under other rules. That document showed
+      no difference, which is not a rate.
+
+**The residual, stated.** A zero width is PDFium's thinnest line: one device pixel, which the
+walk boxes at zero. At y=249.8, against a region whose edge is at 250, PDFium leaves faint
+pixels on the edge row, none of them dark. The same is true of `0 w`, and of a CTM that scales a
+stroke below a pixel. The walk has no device scale to do better. It is pinned in
+`a_zero_width_line_at_the_edge_is_the_recorded_residual`.
+
+**Shown to fail.** `core/burrow-engines/tests/stroke_extent.rs` holds 20 tests over the
+reviews' fixtures:
+
+- every reaching shape draws into the region, measured by PDFium on the input, and refuses, or,
+  for stroked text, has its glyph removed with no dark pixel left;
+- every near-miss twin returns `Ok` with no dark pixel in the region of the output.
+
+Eight mutations were run against a green baseline. Each was asserted applied and confirmed
+rebuilt, and each went red on its fixtures:
+
+1. the width from `gs` dropped (10 tests);
+2. the limit from `gs` dropped (3);
+3. the enclosing scopes ignored (2);
+4. the width in force no longer a candidate (1);
+5. the floor back at 1 (1);
+6. the unreadable check removed (1);
+7. `Tr` never stroking (1);
+8. the reach left out of the glyph box (1).
+
+Round 1 of the post-code reviews found nine more mutations that the suite did not pin. Four of
+them survived it outright and each leaked 176 to 806 dark pixels in the region after an `Ok`,
+measured by the security review:
+
+- the reach from the diagonal only, which leaks text rotated a quarter turn;
+- `Tr` reset on entering a form;
+- `Tr` reset at `BT`;
+- `Tr` dropped from the arity table.
+
+Five more were named by the code review or written alongside the fixes:
+
+- the reach multiplied by 1,000, which would remove visible text outside the region;
+- the vertical reach taken from the wrong CTM column;
+- the miter multiplier dropped from the text reach. A `V`'s vertex at `30 w` inks 72 dark pixels
+  under the default limit and none under `1 M`, so only the multiplier decides it;
+- a stream entry ignored;
+- only 1, 2, 5 and 6 treated as stroking. The round-1 security review measured this one leaking
+  806 dark pixels, but it had already been caught by the `9 Tr` case, so it was not a survivor.
+
+Each now has a test, and each is red.
+
+Round 2 of the security review, with 20 mutations against the result, found two more survivors:
+
+- **The `/ML` merge across scopes dropped.** Every scope test was about `/LW`. Under this mutation,
+  a form with no `/ExtGState`, falling back to the page's `/ML 50`, left 76 dark pixels in the
+  region after an `Ok`. It now has a fixture and a twin, and it is red.
+- **The CTM's rows and columns transposed in the reach.** It leaked nothing: every fixture's CTM
+  was diagonal or a quarter turn, where the two agree. It is moot now that the reach is the
+  greatest row or column sum on both axes, and the mutation back to a per-axis reach is red on the
+  MuPDF shape.
+
+**The census.** The bar was registered first: 1% of real documents newly refused.
+- **The run:** #227's 100 real documents, the first three pages of each, a 4×6 tile grid per
+  page, so 4,824 redactions on `main` and on this change.
+- **The result:** **0 outcomes changed.** That is 0 documents newly refused, and 0 new `Ok`s to
+  check for pixels.
+- **What that zero is worth:** neither half. **None of the 100 documents carries `/LW` or `/ML`
+  at all.** 5 carry a stroking `Tr`, and none changed outcome. But `Tr`'s cost is extra removal
+  under an unchanged `Ok`, which an outcome census cannot see (above). The first version of this
+  paragraph said it measured the `Tr` half, and the security review corrected it.
+  - The ExtGState half's rate is therefore **unmeasured**. The set is TeX-heavy, and the
+    producers that write `/LW` and `/ML` into ExtGStates (Illustrator, InDesign, office suites)
+    are not in it.
+  - It joins #228 and #242 in being re-measured on the owner's producer set, against the same
+    bar.
+- **The golden:** `tests/redaction/outcomes.tsv` regenerated byte-identical (rule 12), so no
+  corpus fixture changes outcome.
