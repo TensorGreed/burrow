@@ -24,7 +24,8 @@
 //! `reaches_and_redacts` measure PDFium's ink in the region on the input and, for a twin, on the
 //! output; the clamp test also requires no character to survive, since a glyph moved off the
 //! region reads as clean ink. The other CID-width tests, the width-range test, the `/FirstChar`
-//! tests (their `/FirstChar 0` twin too) and the width-source test's refusals pin the outcome only. The `/FontMatrix` and `/FontBBox` twins refuse `[type-three-image-cut]`
+//! tests (their `/FirstChar 0` twin too), and the width-source and embedded-program tests'
+//! refusals pin the outcome only. The `/FontMatrix` and `/FontBBox` twins refuse `[type-three-image-cut]`
 //! deliberately: the identity reading reaches the image, which is the rule those shapes hid from.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
@@ -896,7 +897,7 @@ fn a_font_whose_widths_pdfium_takes_from_another_source_refuses() {
 /// review): PDFium takes the widths from the program, burrow took them from the bundled table, and
 /// a Helvetica embedding a monospace program kept the secret in the region (`Ok`, 110 dark pixels
 /// before and after, in the review's own fixtures). Refused `[width-source]` for each of the
-/// three program keys and four subtypes; a `/FontDescriptor` that is a stream refuses too. The
+/// three program keys and three subtypes; a `/FontDescriptor` that is a stream refuses too. The
 /// outcome only is pinned here -- the program is a stub -- and the non-embedded twin, the same
 /// font with a descriptor that embeds nothing, redacts.
 #[test]

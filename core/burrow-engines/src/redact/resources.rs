@@ -86,7 +86,11 @@ pub(crate) struct PageResources<O> {
 }
 
 /// Everything the walk needs about one font, read once.
-#[derive(Debug, Clone)]
+///
+/// NOT `Clone` (#125's eighth code review): the caches share it through an `Rc`, and a deep copy
+/// -- it can carry a decoded CMap of tens of MiB -- is what put 20 fonts at 1.4 GB. Without the
+/// derive a future copy is a compile error rather than a measurement.
+#[derive(Debug)]
 struct FontFacts {
     first_char: i64,
     widths: Vec<f64>,
@@ -548,7 +552,8 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 /// [`Error::Unsupported`] naming `subtype-not-a-name`, `number-unreadable` (any of the number
 /// keys), `base-encoding-not-a-name`, `width-out-of-range` (a simple font's width or
 /// `/MissingWidth` outside 0..65,535, #292), or `width-source` (a `/Widths` that is a number or an
-/// empty array, a `/MissingWidth` with no `/Widths`, or a Type 3 font with no `/Widths` or with a
+/// empty array, a `/MissingWidth` or an embedded `/FontFile*` with no `/Widths`, a
+/// `/FontDescriptor` that is not a dictionary, or a Type 3 font with no `/Widths` or with a
 /// `/MissingWidth`); [`Error::Malformed`] naming `type3-matrix`, or
 /// `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths` declared; and whatever
 /// [`read_composite`] refuses for a Type 0 font.
@@ -611,7 +616,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     }
     // AN EMBEDDED PROGRAM is where PDFium takes widths from when `/Widths` is absent, whatever the
     // `/BaseFont` says -- not the bundled standard-14 table (#125's seventh security review: a
-    // Helvetica embedding a monospace program, `Ok` with the secret in the region, four subtypes).
+    // Helvetica embedding a monospace program, `Ok` with the secret in the region, three subtypes).
     let embeds_program = descriptor_kind == object_type::DICTIONARY
         && [&FONT_FILE, &FONT_FILE_2, &FONT_FILE_3]
             .iter()

@@ -70,7 +70,7 @@ tests/conformance/fixtures/font-program-with-a-paren.pdf	reorder	ok reversed: in
 tests/conformance/fixtures/font-program-with-a-paren.pdf	split	ok cuts [1]: parts 1 page(s) + 1 page(s)
 tests/conformance/fixtures/font-program-with-a-paren.pdf	compress	ok smaller: output 2 page(s)
 tests/conformance/fixtures/font-program-with-a-paren.pdf	merge	ok two copies: output 4 page(s)
-tests/conformance/fixtures/font-program-with-a-paren.pdf	redact	refused malformed input: pdf resources [no-widths]: a font with no `/Widths` array whose `/BaseFont` (19 bytes) is not one burrow carries metrics for, at least not for every code this page draws -- see `pdfsyntax::standard14` for what is carried and why
+tests/conformance/fixtures/font-program-with-a-paren.pdf	redact	refused unsupported: pdf resources [width-source]: a font whose glyph widths a renderer takes from a different source than burrow would
 tests/conformance/fixtures/font-program-with-a-paren.pdf	render	ok [1] into 200x200: page 1 at 200x200
 tests/conformance/fixtures/inherited-rotation-6page.pdf	open	ok 6 page(s)
 tests/conformance/fixtures/inherited-rotation-6page.pdf	check	ok strict ok 6 page(s); recover ok 6 page(s)
@@ -223,7 +223,7 @@ tests/redaction/fixtures/producer-latex.pdf	reorder	ok reversed: input rotations
 tests/redaction/fixtures/producer-latex.pdf	split	ok cuts []: parts 1 page(s)
 tests/redaction/fixtures/producer-latex.pdf	compress	ok smaller: output 1 page(s)
 tests/redaction/fixtures/producer-latex.pdf	merge	ok two copies: output 2 page(s)
-tests/redaction/fixtures/producer-latex.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 3 of 3, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-latex.pdf	redact	refused unsupported: pdf redaction [type-three-image-cut]: the region reaches a Type 3 glyph drawn as an image, whose bitmap would stay in the font after the glyph is removed
 tests/redaction/fixtures/producer-latex.pdf	render	ok [1] into 200x200: page 1 at 141x200
 tests/redaction/fixtures/producer-ocr-scan.pdf	open	ok 1 page(s)
 tests/redaction/fixtures/producer-ocr-scan.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
@@ -241,7 +241,7 @@ tests/redaction/fixtures/producer-vertical-writing.pdf	reorder	ok reversed: inpu
 tests/redaction/fixtures/producer-vertical-writing.pdf	split	ok cuts []: parts 1 page(s)
 tests/redaction/fixtures/producer-vertical-writing.pdf	compress	ok smaller: output 1 page(s)
 tests/redaction/fixtures/producer-vertical-writing.pdf	merge	ok two copies: output 2 page(s)
-tests/redaction/fixtures/producer-vertical-writing.pdf	redact	ok page index 0 of {0}, region 0 0 100000x100000: fonts cut 1 of 1, carried text dropped 0, ink left on the page none; output 1 page(s)
+tests/redaction/fixtures/producer-vertical-writing.pdf	redact	refused unsupported: pdf resources [width-out-of-range]: a glyph width a renderer stores in 16 bits and wraps, so it places the glyph somewhere else
 tests/redaction/fixtures/producer-vertical-writing.pdf	render	ok [1] into 200x200: page 1 at 141x200
 tests/redaction/fixtures/producer-writer.pdf	open	ok 1 page(s)
 tests/redaction/fixtures/producer-writer.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)
