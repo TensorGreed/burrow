@@ -23,6 +23,14 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use burrow_core::{Error, Result};
 
+/// Every Rust heap block is zeroed before it is freed (#199). A document's decoded content passes
+/// through the Rust heap here too, and an app process outlives the operation that read it. Unlike
+/// the web, nothing recycles the process: qpdf's internal object cache is freed unwiped when a
+/// document closes. `burrow_engines::wipe` says what it does and does not reach.
+#[global_allocator]
+static ALLOCATOR: burrow_core::engines::wipe::WipeOnFree =
+    burrow_core::engines::wipe::WipeOnFree::system();
+
 /// The message every caught panic reports. Deliberately fixed and content-free.
 const CAUGHT_PANIC: &str = "caught panic";
 

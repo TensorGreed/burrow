@@ -101,6 +101,17 @@ use burrow_core::{Clock, Error, Limits};
 use wasm_bindgen::prelude::wasm_bindgen;
 use zeroize::Zeroize;
 
+/// Every Rust heap block is zeroed before it is freed (#199).
+///
+/// A worker serves many documents in one session, and a block freed with its bytes intact stays
+/// in the allocator's free list for whatever allocates next. Redaction's decoded page content is
+/// the text being removed, and every copy the policy derives from it (tokens, operands, the edited
+/// stream, a narrowed `/ToUnicode`) is freed through here. See `burrow_engines::wipe` for what it
+/// does not reach: qpdf's heap is a separate module, and live memory is not freed.
+#[global_allocator]
+static ALLOCATOR: burrow_core::engines::wipe::WipeOnFree =
+    burrow_core::engines::wipe::WipeOnFree::system();
+
 /// A password from the bytes JavaScript handed over, with that copy wiped (#199).
 ///
 /// [`burrow_core::Password`] zeroizes its own copy when dropped. The `Box` it is copied FROM is
