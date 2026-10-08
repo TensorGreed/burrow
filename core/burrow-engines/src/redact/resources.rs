@@ -510,11 +510,17 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 }
 
 /// Read one font dictionary.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `subtype-not-a-name`, `number-unreadable` (any of the number
+/// keys), or `base-encoding-not-a-name`; [`Error::Malformed`] naming `type3-matrix`; and whatever
+/// [`read_composite`] refuses for a Type 0 font.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
         first_char: integer_or(&font.key(&FIRST_CHAR), 0)?,
-        widths: numbers_strict(&font.key(&WIDTHS))?.unwrap_or_default(),
+        widths: numbers_strict_up_to(&font.key(&WIDTHS), SIMPLE_FONT_CODES)?.unwrap_or_default(),
         missing_width: None,
         // 0.001 for every font but Type 3, which declares its own.
         font_matrix: Matrix::scale(0.001, 0.001),
@@ -589,6 +595,12 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
 }
 
 /// A Type 0 font: the descendant's `/W` and `/DW`, and the `/Encoding` CMap.
+///
+/// # Errors
+///
+/// [`Error::Malformed`] naming `descendant-fonts`; [`Error::Unsupported`] naming
+/// `number-unreadable` for a `/DW` or `/WMode` that is not a number, and whatever [`parse_w`]
+/// refuses.
 fn read_composite<O: PdfObject>(font: &O, facts: &mut FontFacts) -> Result<()> {
     facts.bytes_per_code = 2;
 
@@ -650,7 +662,9 @@ pub(crate) const MAX_W_ASSIGNMENTS: usize = 131_072;
 /// # Errors
 ///
 /// [`Error::Unsupported`] naming `widths-too-many` once the array assigns more than
-/// [`MAX_W_ASSIGNMENTS`] codes. Refused, not truncated: a width map that stopped growing places
+/// [`MAX_W_ASSIGNMENTS`] codes -- or takes that many steps, counting each entry as one so an array
+/// of empty runs cannot walk unbounded -- and `number-unreadable` for an item where a number
+/// belongs that is not one. A truncated tail stops where it ends. Refused, not truncated: a width map that stopped growing places
 /// the rest of the font's glyphs with the default width, which is a box in the wrong place.
 fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
     let mut widths = BTreeMap::new();
@@ -667,6 +681,17 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
                     .to_owned(),
             ));
         }
+        // THE FIRST ENTRY FOR A CODE IS THE ONE PDFIUM USES (#125's fourth security review):
+        // `LoadMetricsArray` stops at the first match, and this map kept the last -- `[5 [100] 5
+        // [3000]]` put SECRET 180 points from where PDFium drew it, `Ok`. Refused rather than
+        // modelled: 0 of 99 real documents overlap.
+        if widths.contains_key(&code) {
+            return Err(Error::Unsupported(
+                "pdf resources [widths-overlap]: a CID font's /W gives one code two widths, and \
+                 renderers disagree on which one counts"
+                    .to_owned(),
+            ));
+        }
         widths.insert(code, width);
         Ok(())
     };
@@ -675,7 +700,16 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
     // an inner `6 0 R` read as two numbers and a string vanished, shifting every later width. An
     // array that ENDS mid-entry still stops where it ends, as before (#224, round 3).
     let mut at = 0;
+    let mut steps: usize = 0;
     while at < length {
+        steps += 1;
+        if steps > MAX_W_ASSIGNMENTS {
+            return Err(Error::Unsupported(
+                "pdf resources [widths-too-many]: a CID font's /W assigns more widths than \
+                 there are CIDs to assign them to"
+                    .to_owned(),
+            ));
+        }
         let Some(start) = number_strict(&array.array_item(at))? else {
             return Err(number_unreadable());
         };
@@ -685,8 +719,10 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
         let next = array.array_item(at + 1);
         if next.type_code() == object_type::ARRAY {
             let widths_here = numbers_strict(&next)?.unwrap_or_default();
+            // A START THAT IS NOT WHOLE REFUSES: it was skipped, where PDFium truncates `5.5` to 5
+            // and reads on (#125's fourth security review).
+            let base = whole(start).ok_or_else(number_unreadable)?;
             for (offset, width) in widths_here.into_iter().enumerate() {
-                let Some(base) = whole(start) else { break };
                 let Ok(offset) = i64::try_from(offset) else {
                     break;
                 };
@@ -705,11 +741,14 @@ fn parse_w<O: PdfObject>(array: &O) -> Result<BTreeMap<u32, f64>> {
             let Some(width) = number_strict(&array.array_item(at + 2))? else {
                 return Err(number_unreadable());
             };
-            let (Some(start), Some(end)) = (whole(start), whole(end)) else {
-                break;
-            };
+            // NOT WHOLE REFUSES, where it used to stop the whole array: PDFium truncates `0.5` to 0
+            // and reads every entry after it (#125's fourth security review).
+            let start = whole(start).ok_or_else(number_unreadable)?;
+            let end = whole(end).ok_or_else(number_unreadable)?;
             // A RANGE THE FILE CHOOSES. Bounded so a `/W` of `[0 4294967295 500]` does not
-            // materialise four billion entries in a map.
+            // materialise four billion entries in a map -- from the first code that exists, so a
+            // negative start does not spend the bound on codes no font has.
+            let start = start.max(0);
             for code in start..=end.min(start + 65_535) {
                 if let Ok(code) = u32::try_from(code) {
                     assign(&mut widths, code, width)?;
@@ -811,6 +850,11 @@ pub(crate) fn whole(value: f64) -> Option<i64> {
     })
 }
 
+/// The codes a simple font has: one byte each. `/Widths` is read no further, as PDFium reads it no
+/// further, so a 65,536-item `/Widths` costs 256 reads, and an item past code 255 is never judged
+/// (#125's fourth code review).
+const SIMPLE_FONT_CODES: std::ffi::c_int = 256;
+
 /// The most items [`numbers_strict`] reads from one array. A simple font's `/Widths` has at most
 /// 256, a matrix six, a box four; a CID font's `/W` inner array is the long one, and `parse_w`
 /// bounds what it assigns separately.
@@ -820,7 +864,8 @@ const MAX_NUMBER_ARRAY: std::ffi::c_int = 65_536;
 fn number_unreadable() -> Error {
     Error::Unsupported(
         "pdf resources [number-unreadable]: a number, or an array of numbers, holding something \
-         else -- a string, a name, an array -- which a renderer reads differently"
+         else -- a string, a name, an array, a number past the range both readers hold -- which \
+         a renderer reads differently"
             .to_owned(),
     )
 }
@@ -834,9 +879,19 @@ fn number_unreadable() -> Error {
 /// not six numbers as the identity. Measured: `/Widths [6 0 R 600 …]` placed SECRET's glyphs
 /// where the region was not and returned `Ok` with all of it on the page; a form `/Matrix` with a
 /// string in it, and a Type 3 `/FontMatrix` likewise, `Ok` over 374 and 7,500 dark pixels. Each
-/// item here is one integer or real both readers agree on ([`super::frame::reading_of`]) -- a
+/// item here is one integer or real both readers PARSE alike ([`super::frame::reading_of`]) -- a
 /// reference resolves to its number, as PDFium resolves it -- and anything else refuses:
 /// DECISIONS.md rule 1, one reader's repair is not the other's.
+///
+/// **Parse alike, not use alike.** PDFium stores a simple or CID font's widths as integers,
+/// truncating a fraction, and rounds a Type 3 font's; this keeps the fraction. **That leaks**:
+/// over enough padding glyphs the drift carries the secret past the region's edge while PDFium
+/// still draws it inside -- measured by #125's fourth security review for all three font kinds.
+/// #291, a ship blocker. (A first probe with 0.99 over 4,000 glyphs found no leak; it was the wrong
+/// shape, and the claim it supported is withdrawn.)
+///
+/// Also refused, and new with this reader: a number past `reading_of`'s range (2^24, where a
+/// 32-bit float stops holding every whole number), and an array longer than [`MAX_NUMBER_ARRAY`].
 ///
 /// # Errors
 ///
@@ -869,6 +924,29 @@ fn numbers_strict<O: PdfObject>(handle: &O) -> Result<Option<Vec<f64>>> {
     }
 }
 
+/// As [`numbers_strict`], reading at most the first `up_to` items of an array.
+///
+/// # Errors
+///
+/// As [`numbers_strict`], for the items read.
+fn numbers_strict_up_to<O: PdfObject>(
+    handle: &O,
+    up_to: std::ffi::c_int,
+) -> Result<Option<Vec<f64>>> {
+    use super::frame::{Reading, reading_of};
+    if handle.type_code() != object_type::ARRAY {
+        return numbers_strict(handle);
+    }
+    let mut values = Vec::new();
+    for at in 0..handle.array_len().min(up_to) {
+        match reading_of(&handle.array_item(at)) {
+            Reading::Number(value) => values.push(value),
+            _ => return Err(number_unreadable()),
+        }
+    }
+    Ok(Some(values))
+}
+
 /// One number-valued key, strictly: `None` when absent, the number when it is one, and a refusal
 /// for anything else -- an array included, which PDFium reads as 0 where a number belongs.
 ///
@@ -888,7 +966,13 @@ fn number_strict<O: PdfObject>(handle: &O) -> Result<Option<f64>> {
 ///
 /// As [`number_strict`].
 fn integer_or<O: PdfObject>(handle: &O, fallback: i64) -> Result<i64> {
-    Ok(number_strict(handle)?.and_then(whole).unwrap_or(fallback))
+    // A NUMBER THAT IS NOT WHOLE REFUSES (#125's fourth code review): `/FirstChar 65.5` fell back to
+    // 0 here while PDFium truncates it to 65, so every width sat 65 codes out. `steps::first_char`
+    // refuses it too, but only for a font that is cut -- and a font misplaced off the region is not.
+    match number_strict(handle)? {
+        None => Ok(fallback),
+        Some(value) => whole(value).ok_or_else(number_unreadable),
+    }
 }
 
 /// A box: `None` when absent or not four numbers, and a refusal when an item is not a number.

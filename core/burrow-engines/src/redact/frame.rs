@@ -343,8 +343,9 @@ pub(super) enum BoxReading {
 /// [`reading_of`] reads it, normalised. **The one reader for the page's boxes and an annotation's**
 /// -- a page's `/MediaBox` and `/CropBox`, an annotation's `/Rect` (#224) and an appearance
 /// stream's `/BBox` (#229) -- so those cannot drift apart; each caller refuses under its own code.
-/// Not every box redaction reads: a font's `/FontBBox` and a form's `/Matrix` are still read by
-/// scanning their text, as `/Rect` was before #224's round 4, which is #241.
+/// A font's `/FontBBox` and a form's `/Matrix` are read item by item too, through the same
+/// [`reading_of`], by `resources::numbers_strict` (#241, closed by #125's Type 3 slice): a nested or
+/// non-number item refuses `[number-unreadable]` there.
 pub(super) fn four_numbers<O: PdfObject>(value: &O) -> BoxReading {
     if value.type_code() != object_type::ARRAY || value.array_len() != 4 {
         return BoxReading::NotFour;

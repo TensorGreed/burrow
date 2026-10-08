@@ -43,6 +43,16 @@ const PIXELS: (i32, i32, i32, i32) = (100, 100, 200, 50);
 /// A one-page document: catalog 1, pages 2, page 3 with `page_resources`, content 4, then
 /// `objects` from 5.
 fn document(page_resources: &str, content: &[u8], objects: &[&[u8]]) -> Vec<u8> {
+    document_with("", page_resources, content, objects)
+}
+
+/// As [`document`], with `page_extra` written into the page dictionary.
+fn document_with(
+    page_extra: &str,
+    page_resources: &str,
+    content: &[u8],
+    objects: &[&[u8]],
+) -> Vec<u8> {
     let stream = [
         format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(),
         content,
@@ -50,8 +60,8 @@ fn document(page_resources: &str, content: &[u8], objects: &[&[u8]]) -> Vec<u8> 
     ]
     .concat();
     let page = format!(
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources << {page_resources} >> \
-         /Contents 4 0 R >>"
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] {page_extra} \
+         /Resources << {page_resources} >> /Contents 4 0 R >>"
     );
     let mut all: Vec<&[u8]> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -210,6 +220,13 @@ fn a_reference_inside_widths_resolves_and_a_string_refuses() {
         &[&helvetica_with_space("1000"), b"1000"],
     );
     reaches_and_redacts("/Widths [1000 …]", &twin);
+    // THE CLOSEST TWIN: the string leak written as PDFium reads it, `/Widths [0 1000 …]`.
+    let as_read = document(
+        "/Font << /F1 5 0 R >>",
+        b"BT /F1 10 Tf 0 260 Td (!!!!!!!!!!SECRET) Tj ET",
+        &[&helvetica_with_space("0 1000"), b"1000"],
+    );
+    reaches_and_redacts("/Widths [0 1000 …]", &as_read);
 }
 
 /// A form drawing SECRET in the region under a `/Matrix` of seven items: PDFium reads the
@@ -290,7 +307,8 @@ fn a_type_three_font_matrix_holding_a_string_refuses() {
 }
 
 /// Codes 0..5 drawn in the region, spelled S E C R E T by `/Differences`. An item that is neither
-/// a code nor a name is a code to PDFium (its integer value), so the names land on 0..5; burrow
+/// a code nor a name is a code to PDFium (its integer value), so the names land on 0..5 (1..6 after
+/// `true`, whose integer value is 1); burrow
 /// skipped it, narrowed codes 65..70, and kept every name.
 #[test]
 fn a_differences_item_that_is_neither_code_nor_name_refuses_and_the_twin_narrows() {
@@ -321,11 +339,41 @@ fn a_differences_item_that_is_neither_code_nor_name_refuses_and_the_twin_narrows
     );
     assert!(twin.windows(names.len()).any(|w| w == names));
     let out = reaches_and_redacts("[0 /S /E /C /R /E /T]", &twin);
-    let expanded = decompressed(&out);
-    assert!(
-        !expanded.windows(names.len()).any(|w| w == names),
-        "the twin's names spelling the secret were narrowed"
-    );
+    // EACH NAME, not the run: a narrowing that replaced only `/S` would pass a contiguous check.
+    let expanded = String::from_utf8_lossy(&decompressed(&out)).into_owned();
+    let start = expanded
+        .find("/Differences")
+        .expect("the twin keeps a /Differences");
+    let array = expanded
+        .get(start..)
+        .and_then(|rest| rest.find(']').and_then(|end| rest.get(..end)))
+        .expect("the /Differences array closes");
+    for name in ["/S", "/E", "/C", "/R", "/T"] {
+        let standing = array
+            .split(|c: char| c.is_whitespace() || c == '[')
+            .any(|token| token == name);
+        assert!(!standing, "{name} still stands in the twin's {array}");
+    }
+}
+
+/// `/FirstChar 65.5`: PDFium truncates to 65 and the old reader fell back to 0, so every width
+/// sat 65 codes out -- and `steps::first_char`'s own refusal runs only for a font that is cut.
+/// Refused; `/FirstChar 65` redacts.
+#[test]
+fn a_first_char_that_is_not_whole_refuses() {
+    let font = |first: &str| -> Vec<u8> {
+        let widths = vec!["600"; 26].join(" ");
+        format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar {first} \
+             /LastChar 90 /Widths [{widths}] >>"
+        )
+        .into_bytes()
+    };
+    let content = b"BT /F1 20 Tf 110 260 Td (SECRET) Tj ET";
+    let leak = document("/Font << /F1 5 0 R >>", content, &[&font("65.5")]);
+    reaches_and_refuses("/FirstChar 65.5", &leak, "number-unreadable");
+    let twin = document("/Font << /F1 5 0 R >>", content, &[&font("65")]);
+    reaches_and_redacts("/FirstChar 65", &twin);
 }
 
 /// Fifty code-96 glyphs then SECRET, from x = -230 at size 20, in a standard-14 font with no
@@ -356,4 +404,137 @@ fn a_base_encoding_written_as_a_string_refuses_and_the_name_redacts() {
         &[&font("/WinAnsiEncoding")],
     );
     reaches_and_redacts("/WinAnsiEncoding", &twin);
+}
+
+/// A Type 0 font over Identity-H with `dw` and `w`, drawing CIDs 1..6 at (110, 260).
+fn cid_document(dw: &str, w: &str) -> Vec<u8> {
+    document(
+        "/Font << /F2 5 0 R >>",
+        b"BT /F2 20 Tf 110 260 Td <000100020003000400050006> Tj ET",
+        &[
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /Helvetica /Encoding /Identity-H \
+              /DescendantFonts [6 0 R] >>",
+            format!(
+                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Helvetica /CIDSystemInfo \
+                 << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> {dw} {w} >>"
+            )
+            .as_bytes(),
+        ],
+    )
+}
+
+/// `/DW [500]`: an ARRAY where a number belongs, which PDFium reads as 0 and the old reader read
+/// as its first number, 500. Refused; `/DW 500` redacts. Neither reaches the region through ink
+/// PDFium is guaranteed to draw without a font program, so these assert the outcome only.
+#[test]
+fn a_default_width_written_as_an_array_refuses_and_the_number_redacts() {
+    match redact(&cid_document("/DW [500]", "")) {
+        Err(error) => assert!(error.to_string().contains("[number-unreadable]"), "{error}"),
+        Ok(_) => panic!("/DW [500] redacted"),
+    }
+    redact(&cid_document("/DW 500", "")).expect("/DW 500 redacts");
+}
+
+/// `/W [1 (x) 500]`: a string where a CID range's end belongs. The old reader stopped there and
+/// placed every glyph at the default width; refused now. `/W [1 6 500]` redacts.
+#[test]
+fn a_cid_width_array_holding_a_string_refuses_and_the_numbers_redact() {
+    match redact(&cid_document("/DW 1000", "/W [1 (x) 500]")) {
+        Err(error) => assert!(error.to_string().contains("[number-unreadable]"), "{error}"),
+        Ok(_) => panic!("/W [1 (x) 500] redacted"),
+    }
+    redact(&cid_document("/DW 1000", "/W [1 6 500]")).expect("/W [1 6 500] redacts");
+}
+
+/// #181's `/CropBox` half: an indirect item in the page's box. The text scan read
+/// `[0 0 400 6 0 R]` as five numbers and dropped the box, measuring the region from the
+/// `/MediaBox`'s top, 50 points above where PDFium measures it from the 350-point crop -- so the
+/// region missed SECRET at y 210. The page frame has read item by item since #224, through the
+/// same `reading_of`: the reference resolves to 350 and the page redacts as its direct twin does.
+#[test]
+fn an_indirect_crop_box_item_resolves_as_its_direct_twin_does() {
+    let content = b"BT /F1 20 Tf 110 210 Td (SECRET) Tj ET";
+    let with_crop = |crop: &str| -> Vec<u8> {
+        document_with(
+            &format!("/CropBox {crop}"),
+            "/Font << /F1 5 0 R >>",
+            content,
+            &[&helvetica_with_space("600"), b"350"],
+        )
+    };
+    let indirect = with_crop("[0 0 400 6 0 R]");
+    reaches_and_redacts("/CropBox [0 0 400 6 0 R]", &indirect);
+    let direct = with_crop("[0 0 400 350]");
+    reaches_and_redacts("/CropBox [0 0 400 350]", &direct);
+}
+
+/// Refused by `rule`, whatever PDFium draws -- for shapes whose ink these tests do not measure.
+#[track_caller]
+fn refuses_by(what: &str, pdf: &[u8], rule: &str) {
+    match redact(pdf) {
+        Err(error) => assert!(
+            error.to_string().contains(&format!("[{rule}]")),
+            "{what}: {error}"
+        ),
+        Ok(_) => panic!("{what}: redacted, where [{rule}] must refuse"),
+    }
+}
+
+/// `/W` read as PDFium's `LoadMetricsArray` reads it (#125's fourth security review): a code given
+/// two widths took the LAST here and the first there; a start that is not whole was skipped, or
+/// stopped the whole array, where PDFium truncates it and reads on. Each `Ok` over the secret,
+/// moved 180 points. Refused; the plain twin redacts.
+#[test]
+fn a_cid_width_array_read_otherwise_than_pdfium_refuses() {
+    refuses_by(
+        "[1 [100] 1 [3000]]",
+        &cid_document("/DW 1000", "/W [1 [100] 1 [3000]]"),
+        "widths-overlap",
+    );
+    refuses_by(
+        "[0.5 0.5 1000 1 6 100]",
+        &cid_document("/DW 1000", "/W [0.5 0.5 1000 1 6 100]"),
+        "number-unreadable",
+    );
+    refuses_by(
+        "[1.5 [100]]",
+        &cid_document("/DW 1000", "/W [1.5 [100]]"),
+        "number-unreadable",
+    );
+    redact(&cid_document("/DW 1000", "/W [1 [100] 2 6 100]")).expect("a plain /W redacts");
+}
+
+/// #241's `/FontBBox` half: `[[0 0] 10 10 []]` scanned as text was four numbers, `0 0 10 10`; PDFium
+/// reads it item by item. Read item by item here, a nested item refuses. The plain box is the
+/// Type 3 font the image test draws, whose glyph the region cuts.
+#[test]
+fn a_font_bbox_with_a_nested_item_refuses() {
+    let procedure = b"10 0 d0\nq 10 0 0 10 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI Q\n";
+    let proc_stream = [
+        format!("<< /Length {} >>\nstream\n", procedure.len()).as_bytes(),
+        procedure,
+        b"\nendstream",
+    ]
+    .concat();
+    let font = |bbox: &str| -> Vec<u8> {
+        format!(
+            "<< /Type /Font /Subtype /Type3 /FontBBox {bbox} /FontMatrix [1 0 0 1 0 0] \
+             /CharProcs 6 0 R /Encoding << /Type /Encoding /Differences [97 /g] >> \
+             /FirstChar 97 /LastChar 97 /Widths [10] /Resources << >> >>"
+        )
+        .into_bytes()
+    };
+    let build = |bbox: &str| {
+        document(
+            "/Font << /T3 5 0 R >>",
+            b"BT /T3 20 Tf 50 200 Td (a) Tj ET",
+            &[&font(bbox), b"<< /g 7 0 R >>", &proc_stream],
+        )
+    };
+    refuses_by(
+        "[[0 0] 10 10 []]",
+        &build("[[0 0] 10 10 []]"),
+        "number-unreadable",
+    );
+    refuses_by("[0 0 10 10]", &build("[0 0 10 10]"), "type-three-image-cut");
 }

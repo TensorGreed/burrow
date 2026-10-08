@@ -1906,6 +1906,10 @@ fn check_contents_sharing<O: PdfObject>(
 /// of **every** font that names the procedure, cached or not. The first version cached the verdict
 /// instead, so a second font sharing the procedure with a smaller box inherited the first font's
 /// "inside" -- `Ok` over 6,000 dark pixels, measured by #125's code review.
+///
+/// # Errors
+///
+/// Whatever [`judge_type_three_font`] refuses, the deadline, and reading the fonts' keys.
 fn check_type_three<O: PdfObject>(
     resources: &PageResources<O>,
     drawn: &BTreeSet<ScopedFont>,
@@ -1961,6 +1965,12 @@ struct TypeThreeScans {
 /// One Type 3 font, judged once: whether any procedure it names draws an image (inside its box,
 /// or this refuses), after every procedure has passed `check_type_three_procedure` -- cached per
 /// procedure and per `/CharProcs` across fonts, with the deadline read on every key.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `subtype-not-a-name`, `number-unreadable` (the `/FontBBox`),
+/// `type-three-procedure-matrix`, or `type-three-image-outside-its-box`; [`Error::Malformed`]
+/// naming `type-three-unreadable`; whatever [`check_type_three_procedure`] refuses; the deadline.
 fn judge_type_three_font<O: PdfObject>(
     font: &O,
     scans: &mut TypeThreeScans,

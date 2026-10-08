@@ -823,7 +823,7 @@ pages = 1
   witness_before = "pdfium-text"
   witness_observes = "canary"
   expect_after = "refused"
-  notes = "/Differences [65 (x) /B /U ...]: PDFium reads the string as code 0, so the names spell the secret on the codes the page draws; burrow skipped it and kept every name. Refused [differences-item-unreadable] (#125, 2026-10-08)."
+  notes = "/Differences [65 (x) /B /U ...]: PDFium reads the string as code 0, so the names spell the secret on the codes the page draws; burrow skipped it and kept every name (an ABCDEF string outside the region keeps codes 65 onwards in use). Refused [differences-item-unreadable] (#125, 2026-10-08)."
 
 [[fixture]]
 name = "evade-base-encoding-as-a-string"
@@ -858,6 +858,40 @@ pages = 1
   witness_observes = "canary"
   expect_after = "gone"
   notes = "The twin: the same file under /BaseEncoding /WinAnsiEncoding. Both readers agree, and the secret is removed."
+
+[[fixture]]
+name = "nearmiss-widths-as-pdfium-reads-them"
+file = "generated/nearmiss-widths-as-pdfium-reads-them.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-WIDTHS-READ"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin of evade-widths-holding-a-string: /Widths [0 1000 ...], the leak as PDFium reads it. Both readers agree, and the secret is removed."
+
+[[fixture]]
+name = "nearmiss-differences-codes-and-names"
+file = "generated/nearmiss-differences-codes-and-names.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-DIFFERENCES-NAMES"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin of evade-differences-item-neither-code-nor-name: /Differences [0 /B /U ...]. The names on the removed codes are narrowed away."
 
 [[fixture]]
 name = "evade-inline-image"

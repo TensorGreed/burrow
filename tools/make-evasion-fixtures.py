@@ -273,6 +273,31 @@ def nearmiss_form_subtype_as_a_name() -> bytes:
     return _form_holding_text(b"/Form", "FORM-NAME-SUBTYPE")
 
 
+def _bangs_then_secret(first_widths: bytes, canary: str) -> bytes:
+    """Forty-five `!` then the secret at size 20, in Helvetica from code 32 with `first_widths`."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 126"
+        b" /Widths [" + first_widths + b" " + b"600 " * 93 + b"] >>"
+    )
+    bangs = 45
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{x0 - bangs * SECRET_SIZE} {SECRET_Y} Td ".encode()
+        + literal("!" * bangs + secret(canary)) + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_widths_as_pdfium_reads_them() -> bytes:
+    """The twin of `evade-widths-holding-a-string`: `/Widths [0 1000 …]`, the leak as PDFium reads
+    it. Both readers agree, and the secret is removed."""
+    return _bangs_then_secret(b"0 1000", "WIDTHS-READ")
+
+
 def evade_widths_holding_a_string() -> bytes:
     """`/Widths` with a string where code 32's width belongs, read item by item by PDFium.
 
@@ -281,21 +306,7 @@ def evade_widths_holding_a_string() -> bytes:
     as 600 -- the secret 360 points to the left, outside the region, and `Ok` with it on the page.
     Refused `[number-unreadable]` since #125's third security review.
     """
-    pdf = Pdf()
-    helv = helvetica(pdf)
-    x0, _y0, _x1, _y1 = REGION
-    font = pdf.add(
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 126"
-        b" /Widths [(x) 1000 " + b"600 " * 93 + b"] >>"
-    )
-    bangs = 45
-    content = (
-        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf "
-        + f"{x0 - bangs * SECRET_SIZE} {SECRET_Y} Td ".encode()
-        + literal("!" * bangs + secret("WIDTHS-STRING")) + b" Tj ET\n" + keep_line_ops()
-    )
-    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
-    return simple_page(pdf, content, res)
+    return _bangs_then_secret(b"(x) 1000", "WIDTHS-STRING")
 
 
 #: Glyph names for the characters a canary uses.
@@ -311,20 +322,39 @@ def evade_differences_item_neither_code_nor_name() -> bytes:
     secret spelled in the font. Refused `[differences-item-unreadable]` since #125's third
     security review.
     """
+    return _differences_spelling(b"65 (x)", "DIFFERENCES-ITEM")
+
+
+def nearmiss_differences_codes_and_names() -> bytes:
+    """The twin: `/Differences [0 /B /U …]`, a code and names, read alike. The names on the codes
+    the region removes are narrowed away, and the secret is gone."""
+    return _differences_spelling(b"0", "DIFFERENCES-NAMES")
+
+
+def _differences_spelling(head: bytes, canary_tag: str) -> bytes:
+    """Codes 0.. drawn in the region, spelled as the secret by `/Differences [<head> names…]`.
+
+    A second `/F1` string, `ABCDEF` outside the region, keeps codes 65..70 in use after the cut --
+    so the old narrowing, which read the names as codes 65 onwards, KEPT them, as the unit test
+    measured. Without it nothing would be kept and the old code would have narrowed every name
+    away, and the fixture would pin only the refusal (#125's fourth code review).
+    """
     pdf = Pdf()
     helv = helvetica(pdf)
     x0, _y0, _x1, _y1 = REGION
-    canary = secret("DIFFERENCES-ITEM")
+    canary = secret(canary_tag)
     names = b" ".join(b"/" + _GLYPH_NAMES[c].encode() for c in canary)
     font = pdf.add(
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 0 /LastChar 255"
-        b" /Widths [" + b"600 " * 256 + b"] /Encoding << /Type /Encoding /Differences [65 (x) "
-        + names + b"] >> >>"
+        b" /Widths [" + b"600 " * 256 + b"] /Encoding << /Type /Encoding /Differences ["
+        + head + b" " + names + b"] >> >>"
     )
     codes = "".join(f"{i:02X}" for i in range(len(canary))).encode()
     content = (
         b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf " + f"{x0 + 4} {SECRET_Y} Td ".encode()
-        + b"<" + codes + b"> Tj ET\n" + keep_line_ops()
+        + b"<" + codes + b"> Tj ET\n"
+        + b"BT /F1 14 Tf 40 160 Td (ABCDEF) Tj ET\n"
+        + keep_line_ops()
     )
     res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
     return simple_page(pdf, content, res)
@@ -2873,6 +2903,8 @@ CASES: list[tuple[str, str]] = [
     ("evade-differences-item-neither-code-nor-name", "a value read item by item"),
     ("evade-base-encoding-as-a-string", "a value read item by item"),
     ("nearmiss-base-encoding-as-a-name", "a value read item by item"),
+    ("nearmiss-widths-as-pdfium-reads-them", "a value read item by item"),
+    ("nearmiss-differences-codes-and-names", "a value read item by item"),
     ("evade-text-in-type3-via-form", "Type 3 procedure"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
     ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
@@ -2993,6 +3025,8 @@ BUILDERS = {
     "evade-differences-item-neither-code-nor-name": evade_differences_item_neither_code_nor_name,
     "evade-base-encoding-as-a-string": evade_base_encoding_as_a_string,
     "nearmiss-base-encoding-as-a-name": nearmiss_base_encoding_as_a_name,
+    "nearmiss-widths-as-pdfium-reads-them": nearmiss_widths_as_pdfium_reads_them,
+    "nearmiss-differences-codes-and-names": nearmiss_differences_codes_and_names,
     "evade-image-in-form": evade_image_in_form,
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,

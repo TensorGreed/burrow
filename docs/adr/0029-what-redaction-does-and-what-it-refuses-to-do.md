@@ -130,8 +130,8 @@ rows — a channel with no bucket is how the spike's own bar caught two omission
 | a Type 3 glyph procedure that draws an **inline image outside its font's `/FontBBox`**, or a font with no box | **refuse**, `[type-three-image-outside-its-box]` — added 2026-10-08 (#125). **Page-wide**, like the paint rule: every Type 3 font the page draws with is checked, wherever the region is. The image's extent is the unit square through the procedure's own `cm`s, and it is judged against **each** font that names the procedure, since two fonts can share one with different boxes. Outside the box no region over the image reaches the glyph: `Ok` over 5,309 dark pixels, measured. A TeX bitmap font draws each image inside its box and is not refused by this |
 | a **Type 3 glyph procedure carrying a `/Matrix`** of its own | **refuse**, `[type-three-procedure-matrix]` — added 2026-10-08 (#125, security review). PDFium applies it as it applies a form's, before the procedure's own `cm`; no producer is known to write one, so it is refused rather than modelled. Page-wide, like the rows beside it |
 | a **`/Subtype` that is not a name** -- on a font, on a Form XObject, and on ANY stream the optional-content walk reaches (a form, a pattern, an appearance stream, a glyph procedure), which reads it to ask "is this an image" | **refuse**, `[subtype-not-a-name]` — added 2026-10-08 (#125, second security review). PDFium reads `/Subtype` by its bytes, so `(Type3)` is a Type 3 font and `(Form)` a form to it; burrow read "not a name" as "not this" and skipped every Type 3 rule and the form's content. Measured `Ok` with a procedure's shown text, painted path and image, and a form's text, all left in the region (879 and 6,000 dark pixels before and after). The text and form cases were on `main` before this slice; the redaction page is not reachable by visitors. The post-run read-back re-runs burrow's walk, so it shared the blind spot. One branch keeps its own reading on purpose: an annotation's markup test (#229) counts a non-name `/Subtype` as markup, which fails safe. 0 of 4,824 census tiles refuse by it |
-| a **number-valued key, or array of numbers, holding something that is not a number** -- `/Widths`, `/W`, `/FirstChar`, `/MissingWidth`, `/DW`, `/WMode`, `/FontBBox`, `/FontMatrix`, a form's `/Matrix` | **refuse**, `[number-unreadable]` — added 2026-10-08 (#125, third security review). These were read by tokenising the array's unparsed text, which resolves only the array: an inner reference became two numbers, a string or name vanished, and every later item shifted. PDFium reads item by item. Measured `Ok` over the secret: `/Widths` with a string placed it outside the region; a form `/Matrix` and a Type 3 `/FontMatrix` with a string in them, 374 and 7,500 dark pixels left. Now read item by item: a reference resolves, as PDFium resolves it, and anything else refuses. On `main` before this slice |
-| a **`/Differences` item that is neither a code nor a glyph name** -- a string, a real, a boolean | **refuse**, `[differences-item-unreadable]` — added 2026-10-08 (#125, third security review). PDFium reads it as a code at its integer value, so the names after it move; burrow skipped it, narrowed the wrong codes, and kept the names spelling the secret, with `Ok` and `cut: true`. Refused in the walk, the narrowing, and the post-run witness. On `main` before this slice |
+| a **number-valued key, or array of numbers, holding something that is not a number** -- `/Widths`, `/W`, `/FirstChar`, `/MissingWidth`, `/DW`, `/WMode`, `/FontBBox`, `/FontMatrix`, a form's `/Matrix` | **refuse**, `[number-unreadable]` — added 2026-10-08 (#125, third security review). These were read by tokenising the array's unparsed text, which resolves only the array: an inner reference became two numbers, a string or name vanished, and every later item shifted. PDFium reads item by item. Measured `Ok` over the secret: `/Widths` with a string placed it outside the region; a form `/Matrix` and a Type 3 `/FontMatrix` with a string in them, 374 and 7,500 dark pixels left. Now read item by item: a reference resolves, as PDFium resolves it, and anything else refuses -- an array where one number belongs (`/DW [500]`, which PDFium reads as 0), a `/FirstChar` that is not whole (PDFium truncates; the old reader fell back to 0), a number past 2^24, and an array past 65,536 items. `/Widths` is read only as far as code 255. A `/W` code given two widths refuses `[widths-overlap]` (PDFium takes the first, the map kept the last); a `/W` start or end that is not whole refuses, where it was skipped or stopped the array. **A fraction is parsed, not truncated or rounded as PDFium stores widths -- and that leaks, measured, over enough padding: #291, a ship blocker, not fixed here.** This discharges #181 and #241 (`/Widths`, `/W`; its `/CropBox` half was already read item by item by the page frame since #224, now pinned). On `main` before this slice |
+| a **`/Differences` item that is neither a code nor a glyph name** -- a string, a real, a boolean | **refuse**, `[differences-item-unreadable]` — added 2026-10-08 (#125, third security review). PDFium reads it as a code at its integer value, so the names after it move; burrow skipped it, narrowed the wrong codes, and kept the names spelling the secret, with `Ok` and `cut: true`. Refused twice in the narrowing (its first pass, and a guard in its second) and once in the post-run witness, as `OutputRejected`. On `main` before this slice |
 | a **`/BaseEncoding` that is not a name** | **refuse**, `[base-encoding-not-a-name]` — added 2026-10-08 (#125, third security review). `(WinAnsiEncoding)` is WinAnsi to PDFium and was Standard here, so a standard-14 font's glyphs were placed with the wrong widths, outside the region: `Ok`, 385 dark pixels before and after. A top-level `/Encoding` string is honoured by neither, and is not refused. On `main` before this slice |
 | a region reaching a glyph of a **Type 3 font that draws an inline image** | **refuse**, `[type-three-image-cut]` — added 2026-10-08 (#125), owner's decision. Removing the glyph would leave its bitmap in `/CharProcs`. Keyed on the font, not the code. 1 of #227's 99 readable documents newly refused (a pdfTeX bitmap-font test file, 4 of 72 tiles), at the 1% bar; the committed `producer-latex` fixture refuses on the regions that reach its bitmap-font text |
 | a document with an **`/AcroForm`** | **refuse**, `[acroform-field]` — landed #125. Two signals: the catalogue's **`/AcroForm`**, resolved through the trailer's `/Root` (which may be a *direct* dictionary — qpdf accepts one, and then the catalogue is in no reference set — so `/Root` is resolved, not scanned for), which catches the form however its fields are laid out (including a field written *inline* inside `/AcroForm /Fields`); and a top-level **`/FT`** on any referenced object (a field object with no catalogue `/AcroForm`). A **deliberate over-refusal**: it refuses every document with a form, not only one whose field reaches the region; the narrowing is [#274] |
@@ -5099,14 +5099,37 @@ deadline held at 500 ms). Nothing pins that cache; it is cost, not correctness.
 
 **Mutations for those, asserted applied and rebuilt.** The strict reader skipping a non-number --
 the old reading -- turns three tests red; a string `/BaseEncoding` read as Standard turns its test
-red. The `/Differences` refusal sits in three places, and only removing all three -- the walk, the
-narrowing, the post-run witness -- is red; removing the walk's and the narrowing's together is
-still refused, by the witness.
+red. The `/Differences` refusal sits in three places, and only removing all three -- the narrowing's
+first pass, its second, and the post-run witness -- is red; removing both narrowing checks is
+still refused, by the witness. With all three removed, the corpus fixture redacts where it must
+refuse; that pins the refusal, and does not by itself show the old code kept the names in that
+file -- the unit test is what measured that. After the fourth code review, more, each red: an
+array accepted where one number belongs; a non-whole `/FirstChar` falling back to 0; the page
+frame dropping its crop (the indirect `/CropBox` test); and the strict reader reverted to the
+text scan (three tests).
 
 **Not fixed here, filed.** The sharing walk credits a Type 3 font's `/Resources`, and what its
 procedures' own `/Resources` name, to the first page that reached the font, or to no page: a font
 on two pages lost page 1's glyphs and reported `also_used_by: 0`. Over-removal and an inaccurate
-report, not a leak; older than this slice. #289.
+report, not a leak; older than this slice. #289. Prune reading a string `/Subtype` as not a form,
+on split's path: #288. **And two leaks in spec-legal input, measured, each a ship blocker that needs its own rule,
+spec-reviewed first, and neither fixed here.** A standard-14 font with no `/Widths` under
+`/Differences` or `/MacRomanEncoding` takes its widths from the wrong table -- `Ok` over 385 dark
+pixels (#290; refusing it would refuse 3 of 99 real documents). And fractional widths, which PDFium
+truncates or rounds, drift the secret out of the region over enough padding glyphs (#291; 25 of 99
+real documents carry fractional widths, so refusing is not an option).
+
+**What the fourth security review found, and what this slice fixed of it.** Five leaks, each on
+`main` before this slice and each `Ok` over the secret: a fractional `/FirstChar` on a shared font
+(the font is never cut, so `[first-char]` never ran); a width outside 16 bits, which PDFium wraps;
+`/W` overlaps and fractional starts; fractional widths (#291); and #290's shape. The first and third
+refuse here, by name, each with a mutation that is red. **The second is not fixed here, and why is
+the owner's question:** refusing a width outside 16 bits refuses LibreOffice Writer's vertical
+CJK output, which writes `/Widths [0 -1000 …]` -- the committed `producer-vertical-writing` fixture
+went from redacting to refusing. That changes the conformance corpus, so it is #292, not a refusal
+slipped in here. One earlier claim is withdrawn: this ADR
+and #290 said a fractional width did not leak, from a probe whose drift could not reach the
+region's edge.
 
 **What else now refuses through a procedure.** The scan tracks a transform, so a procedure with a
 `Q` that has no `q`, a `cm` whose operands are not numbers or compose past finite values, or a
@@ -5117,7 +5140,7 @@ string, in a comment or inside an image's data is not an operator: the scan toke
 refused only by the two rules above, because refusing every image-drawn Type 3 font would refuse
 TeX bitmap-font documents wherever the region is.
 
-**Shown to fail.** `core/burrow-engines/tests/type_three_ink.rs` (16 tests, and `strict_readers.rs`, 5: each leak drawing into
+**Shown to fail.** `core/burrow-engines/tests/type_three_ink.rs` (16 tests, and `strict_readers.rs`, 11: each leak drawing into
 the region on the input, measured by PDFium, and refusing by name; the clip and the uncut bitmap
 glyph redacting), unit probes per operator in `geometry.rs`, and a fuzz call of the procedure scan
 from `pdfsyntax_geometry`. Eleven mutations, each asserted applied and rebuilt, are red: `sh`
