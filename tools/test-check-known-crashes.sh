@@ -14,7 +14,7 @@ work="$(mktemp -d)"
 mutant="$here/check-known-crashes.MUTANT.py"
 trap 'rm -rf "$work" "$mutant"' EXIT
 
-EXPECTED_CASES=21
+EXPECTED_CASES=22
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -344,6 +344,10 @@ panic_mutant "the probe gate refuses a panic pattern without the thread id" \
   "(?: \\(\\d+\\))?" \
   "" \
   "WITH A THREAD ID"
+panic_mutant "the probe gate refuses a panic key that ignores the verdict" \
+  $'if e["verdict"] == verdict\n        and (' \
+  $'if (e["verdict"] == verdict or not e.get("frame"))\n        and (' \
+  "a panic entry keys on its verdict too"
 
 # 17. THE REAL LEDGER DOES NOT ABSORB BURROW'S OWN HANDLE MISUSE (#285). In a fuzz build, a
 #    `qpdf_oh` qpdf does not hold panics with its own message; the #285 entries key on the

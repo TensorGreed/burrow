@@ -15,17 +15,20 @@ check="$here/check-no-error-text-in-deploy.sh"
 dist="$repo/apps/web/dist"
 work="$(mktemp -d)"
 manifest="$repo/bindings/burrow-wasm/Cargo.toml"
+ffi_manifest="$repo/bindings/burrow-ffi/Cargo.toml"
 lock="$repo/Cargo.lock"
 cp "$manifest" "$work/Cargo.toml.orig"
+cp "$ffi_manifest" "$work/ffi-Cargo.toml.orig"
 cp "$lock" "$work/Cargo.lock.orig"
 restore() {
   cp "$work/Cargo.toml.orig" "$manifest"
+  cp "$work/ffi-Cargo.toml.orig" "$ffi_manifest"
   cp "$work/Cargo.lock.orig" "$lock"
   rm -rf "$work"
 }
 trap restore EXIT
 
-EXPECTED_CASES=4
+EXPECTED_CASES=6
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -52,7 +55,7 @@ expect() {
 echo "check-no-error-text-in-deploy.sh:"
 
 # 1. The real build passes, and says what it examined.
-expect "the deploy build as it is passes" 0 "4 of 4 production wasm module(s) present" "$dist"
+expect "the deploy build as it is passes" 0 "5 of 5 shipped graph(s) checked for 'fuzzing' (positive control: 1)" "$dist"
 
 # 2. A shipped artifact carrying an error-text name is refused, naming the file and the name.
 cp -r "$dist" "$work/dist-planted"
@@ -67,7 +70,44 @@ rm "$work/dist-short/engines/"pdfium.*.wasm
 expect "a build missing a production module is refused" 1 "expected exactly one pdfium.*.wasm" \
   "$work/dist-short"
 
-# 4. THE OWNER'S MUTATION: `fuzzing` switched on in the deploy build's graph.
+# 4. A SCAN THAT WENT BLIND: qpdf.wasm with its exported `qpdf_get_error_code` unreadable -- as a
+# compressed artifact would be -- must be refused for blindness, not passed as clean.
+cp -r "$dist" "$work/dist-blind"
+blind="$(ls "$work/dist-blind/engines/"qpdf.*.wasm)"
+python3 - "$blind" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1]); b = p.read_bytes()
+assert b"qpdf_get_error_code" in b, "the control name is not in qpdf.wasm; update this case"
+p.write_bytes(b.replace(b"qpdf_get_error_code", b"qpdf_get_errox_code"))
+PY
+if grep -aqF qpdf_get_error_code "$blind"; then
+  bad "the blinding did not apply, so this case measured nothing"
+else
+  expect "a scan that cannot see qpdf's exported error code is refused as blind" 1 \
+    "it is blind, so a clean scan means nothing" "$work/dist-blind"
+fi
+
+# 5. `fuzzing` switched on in the mobile graph: burrow-ffi, as the day a native app links qpdf.
+python3 - "$ffi_manifest" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1]); s = p.read_text()
+anchor = "[dependencies]\nburrow-core.workspace = true\n"
+assert s.count(anchor) == 1, "burrow-ffi's dependency table moved; update this case"
+s = s.replace(anchor, anchor + 'burrow-engines = { workspace = true, features = ["fuzzing"] }\n', 1)
+p.write_text(s)
+PY
+if cmp -s "$ffi_manifest" "$work/ffi-Cargo.toml.orig"; then
+  bad "the burrow-ffi mutation did not apply, so this case measured nothing"
+else
+  expect "fuzzing switched on in burrow-ffi's graph is refused by name" 1 \
+    "burrow-ffi [aarch64-linux-android] enables burrow-engines' 'fuzzing' feature" "$dist"
+fi
+cp "$work/ffi-Cargo.toml.orig" "$ffi_manifest"
+cp "$work/Cargo.lock.orig" "$lock"
+
+# 6. THE OWNER'S MUTATION: `fuzzing` switched on in the deploy build's graph.
 python3 - "$manifest" <<'PY'
 import sys
 from pathlib import Path
@@ -85,7 +125,7 @@ else
 fi
 restore
 trap - EXIT
-git -C "$repo" diff --quiet -- bindings/burrow-wasm/Cargo.toml Cargo.lock \
+git -C "$repo" diff --quiet -- bindings/burrow-wasm/Cargo.toml bindings/burrow-ffi/Cargo.toml Cargo.lock \
   || { echo "FAILED -- the mutation was not restored" >&2; exit 1; }
 
 echo

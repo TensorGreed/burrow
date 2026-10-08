@@ -309,10 +309,12 @@ PROBE_LEDGER = [
 ]
 
 #: A libFuzzer report of a Rust panic: the panic's two lines, then the banner and one frame.
-def _panic_report(at: str, message: str, between: str = "", thread: str = "") -> str:
+def _panic_report(
+    at: str, message: str, between: str = "", thread: str = "", verdict: str = "deadly signal"
+) -> str:
     return (
         f"thread '<unnamed>'{thread} panicked at {at}:179:13:\n{between}{message}\n"
-        "==1== ERROR: libFuzzer: deadly signal\n"
+        f"==1== ERROR: libFuzzer: {verdict}\n"
         "    #0 0x1 in rust_panic\n"
     )
 
@@ -346,6 +348,10 @@ PROBES = [
      _panic_report("fuzz_targets/compress.rs",
                    "compress reported an internal error: qpdf reported an internal error: more"),
      None),
+    ("THE LISTED PANIC under another verdict is a new finding: a panic entry keys on its verdict too",
+     _panic_report("fuzz_targets/compress.rs",
+                   "compress reported an internal error: qpdf reported an internal error",
+                   verdict="out-of-memory (malloc(1))"), None),
     ("the message not directly after its panicked-at line is not that panic",
      _panic_report("fuzz_targets/compress.rs",
                    "compress reported an internal error: qpdf reported an internal error",

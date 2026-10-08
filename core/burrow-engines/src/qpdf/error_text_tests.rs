@@ -56,6 +56,7 @@ fn a_handle_qpdf_issued_is_not_an_error_at_all() {
     let document = opened();
     // SAFETY: `document.data` is live; the trailer handle is issued by qpdf for this document.
     let trailer = unsafe { ffi::qpdf_get_trailer(document.data) };
+    // SAFETY: `document.data` is live and `trailer` is a handle qpdf issued for it just above.
     let _ = unsafe { ffi::qpdf_oh_get_type_code(document.data, trailer) };
     assert!(document.take_error().is_none());
 }

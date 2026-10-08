@@ -9,16 +9,23 @@
 # this check, on the build that ships:
 #
 #   1. THE FEATURE. For each of the three wasm feature sets the deploy builds -- `documents` (the
-#      default), `render`, `redact` -- `cargo tree` must show `burrow-engines` WITHOUT its
-#      `fuzzing` feature. A dependency edge that switched it on would compile the declaration into
-#      a shipped module; this refuses that before anything is built from it. A positive control
-#      runs every time: the same query, asked of a graph that does enable `fuzzing`, must see it,
-#      so a query that went blind cannot read as a clean graph.
-#   2. THE ARTIFACTS. Every shipped engine artifact in `dist/engines/` must carry none of qpdf's four
-#      error-text function names -- as an import, an export or any other string. Measured against
-#      the four production wasm modules by name (base, render, qpdf, pdfium) plus the worker
-#      bundles; a build missing one of the four is refused, since a scan of fewer files than ship
-#      is not a scan of the build (CLAUDE.md, "4 of 15 reads as success").
+#      default), `render`, `redact` -- and for `burrow-ffi` on each mobile target, `cargo tree`
+#      must show `burrow-engines` WITHOUT its `fuzzing` feature. WHAT THIS BOUNDS, said exactly
+#      (the review of #285): the declaration sits inside `qpdf`, which compiles only natively on
+#      Linux, so on wasm32 it cannot exist whatever the feature says -- there the real bound is
+#      qpdf.wasm's export allowlist (`engines/build-wasm.sh`, `check-wasm-exports.sh`), and the wasm
+#      half of this check is defence in depth. The `burrow-ffi` half is the one that will bound
+#      something: the day a mobile app links qpdf natively, the cfg widens, and a feature edge into
+#      that graph would compile the accessor in. A positive control runs every time: the same
+#      query, asked of a wasm graph that does enable `fuzzing`, must see it, so a query that went
+#      blind cannot read as a clean graph. Every query excludes dev-dependencies, so the control
+#      resolves from the crates a wasm build already fetched (`--offline`).
+#   2. THE ARTIFACTS. Every file under `dist/` must carry none of qpdf's four error-text function
+#      names -- as an import, an export or any other string. A positive control: qpdf's
+#      `qpdf_get_error_code`, which is exported, must be FOUND in `qpdf.*.wasm`, so a scan that went
+#      blind (compressed artifacts, a moved tree) cannot read as clean. The four production wasm
+#      modules (base, render, qpdf, pdfium) must each be present exactly once; a scan of fewer files
+#      than ship is not a scan of the build (CLAUDE.md, "4 of 15 reads as success").
 #
 # Usage: tools/check-no-error-text-in-deploy.sh [dist-dir]   (default apps/web/dist)
 # Self-test: tools/test-check-no-error-text-in-deploy.sh.
@@ -50,7 +57,7 @@ fuzzing_on() {
   # feature is enabled in that graph. Read with grep -c so a zero count is a value, not a failed
   # pipeline (CLAUDE.md: never put a command whose status you need on the left of a pipe).
   local out
-  out="$(cd "$repo" && cargo tree --offline -e features -i burrow-engines "$@" 2>/dev/null)" || {
+  out="$(cd "$repo" && cargo tree --offline -e features,no-dev -i burrow-engines "$@" 2>/dev/null)" || {
     echo "unresolvable"
     return
   }
@@ -58,7 +65,7 @@ fuzzing_on() {
 }
 
 # THE POSITIVE CONTROL: a graph that does enable `fuzzing` must be seen to.
-control="$(fuzzing_on -p burrow-engines --features fuzzing)"
+control="$(fuzzing_on -p burrow-engines --target wasm32-unknown-unknown --features fuzzing)"
 if [ "$control" = "unresolvable" ] || [ "$control" -lt 1 ]; then
   fail "the feature query cannot see 'fuzzing' even where it is enabled (got: $control); it is blind, so no deploy graph below can be judged"
 fi
@@ -75,27 +82,42 @@ for features in "" "--no-default-features --features render" "--no-default-featu
     fail "burrow-wasm [$label] enables burrow-engines' 'fuzzing' feature, which compiles qpdf's error text into a shipped build"
   fi
 done
+for target in aarch64-linux-android aarch64-apple-ios; do
+  found="$(fuzzing_on -p burrow-ffi --target "$target")"
+  sets=$((sets + 1))
+  if [ "$found" = "unresolvable" ]; then
+    fail "the graph for burrow-ffi [$target] could not be resolved"
+  elif [ "$found" -ne 0 ]; then
+    fail "burrow-ffi [$target] enables burrow-engines' 'fuzzing' feature, which compiles qpdf's error text into a shipped build"
+  fi
+done
 
 # --- 2. the artifacts ----------------------------------------------------------------------------
 engines="$dist/engines"
 examined=0
 modules_found=()
+seen_control=0
 if [ ! -d "$engines" ]; then
   fail "no $engines -- build the web app first; a scan of nothing is not a scan"
 else
-  for artifact in "$engines"/*.wasm "$engines"/*.js; do
-    [ -e "$artifact" ] || continue
+  while IFS= read -r -d '' artifact; do
     examined=$((examined + 1))
     base="$(basename "$artifact")"
     for module in "${EXPECTED_WASM[@]}"; do
-      case "$base" in "$module".*.wasm) modules_found+=("$module") ;; esac
+      case "$artifact" in "$engines/$module".*.wasm) modules_found+=("$module") ;; esac
     done
+    case "$artifact" in
+      "$engines"/qpdf.*.wasm) grep -aqF qpdf_get_error_code "$artifact" && seen_control=1 ;;
+    esac
     for needle in "${NEEDLES[@]}"; do
       if grep -aqF "$needle" "$artifact"; then
         fail "$base carries '$needle': qpdf's error text is reachable from a shipped artifact"
       fi
     done
-  done
+  done < <(find "$dist" -type f -print0)
+  if [ "$seen_control" -ne 1 ]; then
+    fail "the scan cannot see qpdf_get_error_code in qpdf.*.wasm, which exports it; it is blind, so a clean scan means nothing"
+  fi
   for module in "${EXPECTED_WASM[@]}"; do
     count=0
     for seen in "${modules_found[@]:-}"; do [ "$seen" = "$module" ] && count=$((count + 1)); done
@@ -105,7 +127,7 @@ else
   done
 fi
 
-echo "check-no-error-text-in-deploy: $sets of 3 deploy feature set(s) checked for 'fuzzing' (positive control: $control), $examined engine artifact(s) scanned for ${#NEEDLES[@]} name(s), ${#modules_found[@]} of ${#EXPECTED_WASM[@]} production wasm module(s) present"
+echo "check-no-error-text-in-deploy: $sets of 5 shipped graph(s) checked for 'fuzzing' (positive control: $control), $examined file(s) under dist scanned for ${#NEEDLES[@]} name(s) (positive control seen: $seen_control), ${#modules_found[@]} of ${#EXPECTED_WASM[@]} production wasm module(s) present"
 if [ "$problems" -ne 0 ]; then
   echo "FAILED -- $problems problem(s)" >&2
   exit 1

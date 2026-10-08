@@ -233,9 +233,6 @@ pub(crate) mod code {
     pub(crate) const LINEARIZATION: c_int = 9;
 }
 
-/// Map a qpdf error code to a typed error.
-///
-/// Call only when the call's own return value has already established failure.
 /// qpdf's fixed detail for handle misuse: the C API looked up a `qpdf_oh` it does not hold
 /// (`qpdf-c.cc`, `do_with_oh`). Thrown as `qpdf_e_internal`, so it never reaches a sanitiser.
 #[cfg(feature = "fuzzing")]
@@ -276,6 +273,9 @@ pub(crate) fn internal_from_detail(detail: &[u8]) -> Option<Error> {
     }
 }
 
+/// Map a qpdf error code to a typed error.
+///
+/// Call only when the call's own return value has already established failure.
 pub(crate) fn map_code(code: c_int) -> Error {
     match code {
         // The engine contradicted itself: the call failed, yet it reports no error. Same

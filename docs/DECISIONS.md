@@ -94,8 +94,11 @@ one is decided in an issue, with the same three parts.
     one function that compares it to fixed constants and returns a fixed burrow message, so the
     nightly can tell #285's qpdf invariant failure from burrow's own handle misuse. The exception is
     bounded by `tools/check-no-error-text-in-deploy.sh`, which fails a deploy build where any of the
-    three wasm feature sets turns `fuzzing` on, or where a shipped artifact carries any error-text
-    function name. *Decided:* owner, 2026-10-08, #285. *Does not cover:* reading any other qpdf
+    three wasm feature sets, or `burrow-ffi` on a mobile target, turns `fuzzing` on, or where any
+    file under `dist/` carries an error-text function name. On wasm the declaration cannot compile
+    at all (`qpdf` is native Linux only), so there the real bound is qpdf.wasm's export allowlist
+    and the check is defence in depth; the `burrow-ffi` half is what bounds a future native mobile
+    build. *Decided:* owner, 2026-10-08, #285. *Does not cover:* reading any other qpdf
     text, or reading this one in a shipped build -- each is a new decision, not an extension.
 
 ## Spec review first (the practice that uses rule 10)
