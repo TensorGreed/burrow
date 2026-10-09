@@ -72,6 +72,16 @@ We will keep the obligations by construction rather than by care:
   derived from them (glyph names and advance widths), and a header saying it is generated output.
   Nothing in a shipped build parses an AFM.
 - `THIRD_PARTY_NOTICES.md` records the files, the licence and the notice text.
+- **The derived data ships, and is treated as a modified extract** (the license-auditor's
+  reading, the stricter of two). The generated table carries glyph names and widths, not AFM files,
+  and whether that is a modification of the AFMs or uncopyrightable fact is not ours to settle, so
+  we keep the obligation either way: its header carries every used AFM's Notice line and the
+  accompanying paragraph verbatim, and says prominently that it is a modified extract and of what.
+  It ships in the redaction wasm module only. **Before `/redact-pdf` reaches visitors (#136), Adobe
+  needs an entry on `/credits` and the apps' licence screens** -- a Rust comment does not survive
+  into a wasm binary. `/credits` is generated from `engines/licenses.toml`, which has no slot for
+  data files, so that is a small new mechanism, and it changes what visitors see: the owner's call,
+  at #136.
 
 ## Consequences
 

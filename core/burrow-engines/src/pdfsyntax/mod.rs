@@ -66,6 +66,10 @@ pub mod ops;
 pub mod references;
 pub mod region;
 pub mod standard14;
+/// GENERATED: the standard-14 widths by glyph name, the intersection of Adobe's AFM files and the
+/// pinned PDFium's measured advances (#290, ADR 0030). See `tools/make-standard14-table.py`.
+#[rustfmt::skip]
+pub mod standard14_table;
 pub mod strings;
 pub mod tounicode;
 

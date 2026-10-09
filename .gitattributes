@@ -1,0 +1,3 @@
+# ADR 0030: Adobe's Core 14 AFM files are committed exactly as published (CRLF and bare-CR line
+# endings included), and their licence forbids an unmarked modification. Never convert them.
+third_party/adobe-core14-afm/** -text

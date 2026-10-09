@@ -246,9 +246,18 @@ Rights Reserved.` The notice that accompanies them, verbatim:
 > file(s); and that this paragraph is not modified. Adobe Systems has no responsibility or
 > obligation to support the use of the AFM files.
 
-**What uses them:** only the test that generates `core/burrow-engines/src/pdfsyntax/
-standard14_table.rs` (#290), whose glyph names and advance widths are derived from them. No AFM
-file is parsed by, or shipped in, any build.
+**What uses them:** `tools/make-standard14-table.py`, which generates
+`core/burrow-engines/src/pdfsyntax/standard14_table.rs` (#290): a **modified extract** of the twelve
+Latin AFMs -- glyph names and advance widths only, intersected with a measurement of the pinned
+PDFium. That **derived data ships** in the redaction wasm module (`burrow_wasm_redact_bg.wasm`),
+which no visitor loads until `/redact-pdf` exists (#136). No AFM file is parsed by, or shipped in,
+any build. The generated file's header carries, verbatim, the Notice line of each of the twelve
+AFMs it is drawn from and the paragraph above. Those Notice lines are Adobe's copyright statements
+for Courier, Courier-Bold, Courier-BoldOblique, Courier-Oblique (1989-1997), Helvetica and its three
+variants (1985-1997, with "Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries."),
+and Times-Roman and its three variants (1985-1997, with "Times is a trademark of Linotype-Hell AG
+and/or its subsidiaries."). Symbol and ZapfDingbats are committed, as the notice requires the
+fourteen to travel together, and are not used.
 
 ## Fonts
 
