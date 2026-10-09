@@ -116,6 +116,20 @@ one is decided in an issue, with the same three parts.
     `FPDF_SetSystemFontInfo` (making PDFium see none) at M3/M4 as its own decision; and any other
     font class.
 
+15. **Review is at most two post-code rounds, scoped to the diff.** Round 0 (the spec review) fixes
+    the slice's scope; a finding outside the diff, including a leak already on `main`, is filed (a
+    ROADMAP *Ship blockers* row if it leaks; a private advisory per `SECURITY.md` once redaction has
+    shipped), never folded in -- unless the diff makes it newly reachable or it makes the diff's own
+    rule unsound, which counts as introduced by the diff. Round 1 reviews the diff; round 2 checks
+    round 1's findings against the fix and reads the fix diff for new Critical or High findings,
+    without hunting beyond it. After round 2 only a Critical, High or Blocking finding introduced
+    by the diff, or a non-negotiable violation, blocks the push; a blocker still open then goes to
+    the owner. Wording corrections (docs, comments, rustdoc, commit claims) go in a follow-up commit
+    on the same PR, checked by the `code-reviewer` alone. *Decided:* owner, 2026-10-09, after the
+    Type 3 slice (#296) took eight rounds of both reviewers. *Does not cover:* which reviewers a
+    change gets; and the final pre-launch spec-review round in ROADMAP's exit rule, which hunts the
+    whole class by design.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new rule from here: **before writing code**, give the `security-reviewer` the proposed

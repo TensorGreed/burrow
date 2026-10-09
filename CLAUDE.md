@@ -147,6 +147,32 @@ is still local. **Which reviewer depends on what the change decides** (2026-09-2
 
 When a change is both, it gets both.
 
+**How many rounds, and what a round may find** (owner, 2026-10-09; DECISIONS.md rule 15). Review is
+bounded, so a small increment does not turn into an open-ended loop:
+
+- **The scope is set at round 0.** The spec review (*Spec review first*) fixes what the slice
+  covers. Anything a reviewer finds **outside the diff** -- a leak already on `main`, an unrelated
+  reader with the same bug -- is **filed** (a row in ROADMAP's *Ship blockers* table if it leaks;
+  once redaction has shipped, a private advisory per `SECURITY.md`, not a public issue), never
+  folded into the PR. It is sequenced, not lost. **A pre-existing defect counts as introduced by
+  the diff** when the diff makes it newly reachable, or when it makes the diff's own rule unsound.
+- **At most two post-code rounds.** Round 1 reviews the diff in full. Round 2 checks round 1's
+  findings against the fix, and reads the fix diff for new Critical or High findings, but does not
+  hunt beyond it. After round 2, only these block the push: a Critical or High (`security-reviewer`)
+  or Blocking (`code-reviewer`) finding introduced by the diff, or any non-negotiable violation.
+  Anything else is filed, or fixed in a follow-up commit on the same PR. **A blocker still open
+  after round 2 goes to the owner**, rather than into a third round.
+- **Wording does not reopen a review.** Corrections to docs, comments, rustdoc or commit-message
+  claims land in a follow-up commit that the `code-reviewer` alone checks. They are not sent back
+  through both reviewers.
+- **Keep slices small.** Leaks found outside a slice become slices of their own, so each PR stays
+  at one or two rounds.
+
+Why: the Type 3 slice (#296) took eight rounds of both reviewers, and #290 three, almost all of
+it because reviewers hunted the whole bug class, found leaks already on `main`, and those were
+fixed inside the PR -- new code that needed another round. The leaks were real; folding them in is
+what made the loop open-ended.
+
 Why before the push: In M1 PR 4a-ii they ran after the branch was pushed
 and found two things that had already reached a commit: a reachable bug that took a page
 offline after three long operations, and a regression that silently disabled two CSP tests by
@@ -233,8 +259,10 @@ writing code, give the `security-reviewer` the proposed rule, the ADR 0029 §3 /
 accept-vs-refuse table (DECISIONS.md rule 10), and the census plan, and ask for (a) the inputs the
 rule would accept that the table says to refuse, and (b) the fixture list it would demand. Build
 from that list. The post-code reviews (*Conventions*: both reviewers for redaction-deciding code)
-still run — the aim is that round 2 finds nothing a round 0 could have. This does not change the
-reviewers, the sweep, the bar, or any test; it adds a round 0 before them.
+still run, at most two rounds (rule 15) — the aim is that round 2 finds nothing a round 0 could
+have. Round 0 is also where the slice's **scope** is fixed: what is outside it is filed, not
+built. This does not change the reviewers, the sweep, or any test; the bar after round 2 is rule
+15's.
 
 ### When to proceed, and when to stop and ask
 
@@ -248,7 +276,8 @@ paid too often on changes nobody would have answered differently.
 - Corrections to documentation, comments or stale notes you find to be wrong.
 - Refactors within the scope of the PR you are already writing, **including ones that go
   slightly beyond the literal ask when the narrower change would leave something broken or
-  rotting**. Say so in the summary.
+  rotting** -- except a finding outside a redaction or split slice's scope, which rule 15 files
+  rather than folds in. Say so in the summary.
 - Filing issues, setting milestones, and fixing your own defects.
 
 **Stop and ask:**
