@@ -4,9 +4,9 @@
 //!
 //! The fix is a BOUND, not a replica (the owner's decision): each glyph whose width is not whole in
 //! thousandths of an em adds under one thousandth of the font size to a drift that resets at every
-//! absolute positioning operator, and a glyph's box is widened by it. Each shape here inks the
+//! absolute positioning operator, and a glyph's box is widened by it. Each leak shape here inks the
 //! region on the input and must leave none of SECRET's letters on the page; the twins show the
-//! bound is scoped -- whole widths add nothing, and `Td` resets it.
+//! bound is scoped -- whole widths add nothing, and `Td`, `'` and `Tm` reset it.
 //!
 //! And two refusals the measurement found: a Type 3 width that rounds to 0 (PDFium then advances
 //! by the procedure's `d0` width), and a simple width that a 32-bit float rounds to 65,535.
@@ -146,10 +146,6 @@ fn fractional_simple_widths_drift_the_secret_and_the_bound_catches_it() {
         "250 pads of 0.9",
         &document(&padded(b"42", 250, ""), &simple("0.9"), &[]),
     );
-    redacts_clean(
-        "250 pads of 0 (whole)",
-        &document(&padded(b"42", 250, ""), &simple("0"), &[]),
-    );
     // RESET BY `Td`: the pads end, the position moves 300 points right by `Td`, and SECRET is drawn
     // there, far outside the region to both readers. Nothing reaches the region, and SECRET stays.
     let reset = document(&padded(b"42", 250, "300 0 Td"), &simple("0.9"), &[]);
@@ -193,16 +189,27 @@ fn type_three(b: &str, d: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     (font, procs, a, b_proc)
 }
 
-/// TYPE 3: PDFium ROUNDS -- 0.6 to 1, so 250 pads put SECRET 150 points LEFT of where burrow drew
-/// it; the bound catches it. A width that rounds to 0 refuses `[type-three-width-zero]`: PDFium then
-/// advances by the procedure's `d0` width, measured 1,000 for `/Widths [0]` over `1000 0 d0`.
+/// TYPE 3: PDFium ROUNDS -- 1.6 to 2 -- so it draws the pen AHEAD of burrow's, and the bound's
+/// RIGHT-hand widening is the one that matters. 250 pads from x = -420 put burrow's SECRET at about
+/// -20..60, left of the region, and PDFium's at about 80..160, inside it. A width under a thousandth
+/// refuses `[type-three-width-zero]` -- PDFium may round it to 0 and then advance by the procedure's
+/// `d0` width, measured 1,000 for `/Widths [0]` over `1000 0 d0`.
 #[test]
-fn type_three_widths_round_and_a_width_rounding_to_zero_refuses() {
-    let (font, procs, a, b) = type_three("0.6", "0");
-    let pdf = document(&padded(b"42", 250, ""), &font, &[&procs, &a, &b]);
-    let (out, _) = redact(&pdf).expect("Type 3 pads of 0.6 redact");
-    assert_eq!(secret_letters(&out), 0, "SECRET's letters survive, moved");
-    for (w, d) in [("0", "1000"), ("0.4", "0"), ("0.4", "1000")] {
+fn type_three_widths_round_and_a_width_under_a_thousandth_refuses() {
+    let (font, procs, a, b) = type_three("1.6", "0");
+    let mut content = b"BT /F1 10 Tf 10000 Tz -420 260 Td <".to_vec();
+    content.extend_from_slice(&b"42".repeat(250));
+    content.extend_from_slice(b"> Tj 100 Tz /F2 20 Tf (SECRET) Tj ET");
+    redacts_clean(
+        "Type 3 pads of 1.6, SECRET drawn ahead of burrow's pen",
+        &document(&content, &font, &[&procs, &a, &b]),
+    );
+    for (w, d) in [
+        ("0", "1000"),
+        ("0.4", "0"),
+        ("0.4", "1000"),
+        ("0.9", "1000"),
+    ] {
         let (font, procs, a, b) = type_three(w, d);
         refuses(
             &format!("/Widths [.. {w}] over {d} 0 d0"),
@@ -210,6 +217,45 @@ fn type_three_widths_round_and_a_width_rounding_to_zero_refuses() {
             "type-three-width-zero",
         );
     }
+}
+
+/// THE FLOAT32 EDGE OF THE ZERO REFUSAL: PDFium computes the stored width as
+/// `roundf(f32(f32(w) x f32(a)) x 1000)`, so `w = 5` at `a = 0.0001` -- 0.5 in f64 -- is 0.49999997
+/// and rounds to 0, and PDFium advances by the procedure's `100000 0 d0` (measured, `Ok` over the
+/// secret when the edge was 0.5). The near-miss, `w = 10`, is one thousandth and is a width.
+#[test]
+fn a_type_three_width_at_the_float32_rounding_edge_refuses() {
+    let font = |w: &str| {
+        format!(
+            "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [0.0001 0 0 0.0001 0 0] \
+             /CharProcs 7 0 R /Encoding << /Type /Encoding /Differences [65 /A] >> /FirstChar 65 \
+             /LastChar 65 /Widths [{w}] /Resources << >> >>"
+        )
+    };
+    let procs: &[u8] = b"<< /A 8 0 R >>";
+    let procedure: &[u8] = b"<< /Length 11 >>\nstream\n100000 0 d0\nendstream";
+    let content = b"BT /F1 10 Tf 10 260 Td (A) Tj /F2 20 Tf (SECRET) Tj ET";
+    let at = |a: &str, w: &str| font(w).replace("0.0001 0 0 0.0001", &format!("{a} 0 0 {a}"));
+    refuses(
+        "w = 0.7142857142857143 at a = 0.0007 (0.5 in f64, 0.49999997 in f32)",
+        &document(
+            content,
+            at("0.0007", "0.7142857142857143").as_bytes(),
+            &[procs, procedure],
+        ),
+        "type-three-width-zero",
+    );
+    refuses(
+        "w = 5 at a = 0.0001",
+        &document(content, font("5").as_bytes(), &[procs, procedure]),
+        "type-three-width-zero",
+    );
+    redact(&document(
+        content,
+        font("10").as_bytes(),
+        &[procs, procedure],
+    ))
+    .expect("w = 10 at a = 0.0001 is one thousandth, a width");
 }
 
 /// THE FLOAT32 EDGE: 65,534.999 is 65,535 as a 32-bit float -- PDFium's "not set" -- and PDFium
@@ -225,21 +271,52 @@ fn a_width_a_float_rounds_to_65535_refuses() {
     redact(&document(content, &simple("65534.4"), &[])).expect("65534.4 is a width");
 }
 
-/// A TYPE 3 WIDTH PAST 2^31 thousandths of an em is outside the integer PDFium keeps it in. The
-/// width alone cannot get there -- the strict reader refuses a number that large first
-/// `[number-unreadable]` -- so it is a readable width under a large `/FontMatrix`: 3e6 at `a = 1`.
+/// A TYPE 3 WIDTH OF 2^20 THOUSANDTHS OR MORE refuses: past about 2^21, f32's steps exceed a
+/// thousandth, so a width burrow calls whole is stored a step away and adds no drift. Measured:
+/// `/Widths [1073741.856 -1073741.824]` under a matrix of 1 is stored as 2^30 and -2^30, so each pair
+/// moves PDFium's pen by 0 and burrow's by 0.032 em, and 600 pairs returned `Ok` over the secret.
+/// The width alone cannot reach the edge under the usual matrix -- the strict reader refuses a
+/// number that large first, `[number-unreadable]` -- so these use a matrix of 1. The near-miss,
+/// 1,048.575 em, is a width.
 #[test]
-fn a_type_three_width_past_the_integer_refuses() {
-    let (font, procs, a, b) = type_three("3000000", "0");
-    let font = String::from_utf8(font).unwrap().replace(
-        "/FontMatrix [0.001 0 0 0.001 0 0]",
-        "/FontMatrix [1 0 0 1 0 0]",
+fn a_type_three_width_past_float32_precision_refuses() {
+    let font = |widths: &str| {
+        format!(
+            "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0] \
+             /CharProcs 7 0 R /Encoding << /Type /Encoding /Differences [65 /A /B] >> /FirstChar 65 \
+             /LastChar 66 /Widths [{widths}] /Resources << >> >>"
+        )
+    };
+    let procs: &[u8] = b"<< /A 8 0 R /B 8 0 R >>";
+    let procedure: &[u8] = b"<< /Length 7 >>\nstream\n0 0 d0\nendstream";
+    let content = format!(
+        "BT /F1 12 Tf 110 260 Td ({}) Tj /F2 20 Tf (SECRET) Tj ET",
+        "AB".repeat(600)
     );
     refuses(
-        "Type 3 width 3e6 at a font matrix of 1 (3e9 thousandths)",
-        &document(&padded(b"42", 1, ""), font.as_bytes(), &[&procs, &a, &b]),
+        "the 2^30 pair",
+        &document(
+            content.as_bytes(),
+            font("1073741.856 -1073741.824").as_bytes(),
+            &[procs, procedure],
+        ),
         "width-out-of-range",
     );
+    refuses(
+        "3e6 at a matrix of 1",
+        &document(
+            b"BT /F1 1 Tf 110 260 Td (A) Tj ET",
+            font("3000000 1").as_bytes(),
+            &[procs, procedure],
+        ),
+        "width-out-of-range",
+    );
+    redact(&document(
+        b"BT /F1 1 Tf 110 260 Td (A) Tj ET",
+        font("1048.575 1").as_bytes(),
+        &[procs, procedure],
+    ))
+    .expect("1,048.575 em is under 2^20 thousandths, a width");
 }
 
 /// ROTATED: under `Tm [0 1 -1 0 ..]` the advance runs up the page, so the drift must widen the box
@@ -271,4 +348,62 @@ fn a_quote_operator_resets_the_drift() {
         6,
         "after `'` the SECRET right of the region is not removed"
     );
+}
+
+/// `Tm` RESETS THE DRIFT, the same witness as the `'` one: both readers draw SECRET at x = 320, right
+/// of the region, and only an unreset drift would widen its box back over it.
+#[test]
+fn a_text_matrix_resets_the_drift() {
+    let mut content = b"BT /F1 10 Tf 10000 Tz 320 260 Td <".to_vec();
+    content.extend_from_slice(&b"42".repeat(250));
+    content.extend_from_slice(b"> Tj 100 Tz /F2 20 Tf 1 0 0 1 320 260 Tm (SECRET) Tj ET");
+    let pdf = document(&content, &simple("0.9"), &[]);
+    let (out, _) = redact(&pdf).expect("the Tm twin redacts");
+    assert_eq!(
+        secret_letters(&out),
+        6,
+        "after `Tm` the SECRET right of the region is not removed"
+    );
+}
+
+/// THE DRIFT IS A SUM OF MAGNITUDES. Truncation errs in glyph space, and `Tz` carries the sign: 250
+/// pads of 0.9 at `Tz` 10000 put burrow 225 points ahead of PDFium, and 250 of 0.1 at `Tz` -10000
+/// bring it back only 25. Burrow draws SECRET at 310, right of the region; PDFium at 110, inside.
+/// A drift that added the signed increments would be 0 here.
+#[test]
+fn the_drift_does_not_cancel_across_a_negative_horizontal_scale() {
+    let font: &[u8] =
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 65 /LastChar 66 \
+                        /Widths [0.9 0.1] >>";
+    let mut content = b"BT /F1 10 Tf 10000 Tz 110 260 Td <".to_vec();
+    content.extend_from_slice(&b"41".repeat(250));
+    content.extend_from_slice(b"> Tj -10000 Tz <");
+    content.extend_from_slice(&b"42".repeat(250));
+    content.extend_from_slice(b"> Tj 100 Tz /F2 20 Tf (SECRET) Tj ET");
+    redacts_clean(
+        "+Tz pads of 0.9, then -Tz pads of 0.1",
+        &document(&content, font, &[]),
+    );
+}
+
+/// WHOLE WIDTHS ADD NOTHING, including one whose f64 product is not exactly whole: 9 x 0.001 x 1000
+/// is 9.000000000000002. 22 pads of 9 at `Tz` 10000 put SECRET at x = 308 for both readers, just
+/// right of the region; a drift of 22 points, added for widths that are whole, would widen its box
+/// back over the region and remove it.
+#[test]
+fn whole_widths_add_no_drift() {
+    let pdf = document(&padded(b"42", 22, ""), &simple("9"), &[]);
+    let (out, _) = redact(&pdf).expect("whole pads redact");
+    assert_eq!(
+        secret_letters(&out),
+        6,
+        "SECRET, right of the region, is not removed"
+    );
+}
+
+/// THE SIMPLE-WIDTH EDGE, from below: 65,534.998 is still a width -- measured, PDFium draws it.
+#[test]
+fn a_width_just_under_the_float32_edge_is_a_width() {
+    let content = b"BT /F1 10 Tf 110 260 Td (AB) Tj ET";
+    redact(&document(content, &simple("65534.998"), &[])).expect("65534.998 is a width");
 }
