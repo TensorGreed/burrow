@@ -182,6 +182,15 @@ JOBS: list[dict] = [
         "covers": ["cargo:clippy"],
     },
     {
+        "name": "mobile-check",
+        "run": "tools/check-mobile-targets.sh",
+        "covers": ["tools/check-mobile-targets.sh"],
+        # NARROWED TO THE WORKSPACE, as `doc` is: the script runs exactly this cargo command per
+        # target, so a web- or docs-only change does not pay two cold --all-features checks.
+        "paths_as": "cargo check --workspace --all-features",
+        "why": "cargo check --all-features on the mobile targets CI checks (#293)",
+    },
+    {
         # BEFORE `test`, and in this order deliberately: `redaction_corpus.rs` reads
         # `tests/redaction/generated/`, which is gitignored and regenerated rather than stored.
         # Nothing regenerated it until this job existed, so the sweep passed on machines where
@@ -378,6 +387,7 @@ JOBS: list[dict] = [
                 # matrix. A gate in a script is a gate this table can track.
                 "tools/check-fuzz-target-registration.sh",
                 "tools/test-check-fuzz-target-registration.sh",
+                "tools/test-check-mobile-targets.sh",
                 "python3 tools/check-proptest-regressions.py",
                 "tools/test-check-proptest-regressions.sh",
                 "tools/test-name-requires-slash.sh",
@@ -419,6 +429,7 @@ JOBS: list[dict] = [
             "tools/test-check-release-notes.sh",
             "tools/check-fuzz-target-registration.sh",
             "tools/test-check-fuzz-target-registration.sh",
+            "tools/test-check-mobile-targets.sh",
             "tools/check-proptest-regressions.py",
             "tools/test-check-proptest-regressions.sh",
             "tools/test-name-requires-slash.sh",
@@ -563,12 +574,6 @@ JOBS: list[dict] = [
             "tools/test-check-redaction-not-in-base.sh",
         ],
         "why": "redaction's code reaches no part of the base web payload (ADR 0029)",
-    },
-    {
-        "name": "mobile-check",
-        "run": "tools/check-mobile-targets.sh",
-        "covers": ["tools/check-mobile-targets.sh"],
-        "why": "cargo check --all-features on the mobile targets CI checks (#293)",
     },
     {
         # AFTER `web`, for the same reason as the two above: it reads the production `dist/`.
