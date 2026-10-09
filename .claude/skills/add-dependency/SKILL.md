@@ -34,7 +34,8 @@ anything else.
 **Allowed:** MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0 (incl. WITH LLVM-exception),
 ISC, Zlib, MPL-2.0, OFL-1.1 (fonts), Unicode-3.0, CC0-1.0, Unlicense. For **bundled
 native engine components only**, ADR 0008 also allows `FTL`, `IJG`, `libpng-2.0` and
-`LicenseRef-AGG-2.3`, and ADR 0010 adds `MIT-Modern-Variant` and `ICU`.
+`LicenseRef-AGG-2.3`, and ADR 0010 adds `MIT-Modern-Variant` and `ICU`. ADR 0030 allows `APAFML`
+for Adobe's Core 14 AFM files only, committed unmodified with their notice.
 
 **Forbidden:** GPL, LGPL, AGPL, SSPL, any non-commercial or field-of-use restriction, and
 **anything you cannot determine**. Unclear means forbidden.

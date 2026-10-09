@@ -227,6 +227,29 @@ least one to need another ADR; jbig2enc is the most likely.
 None yet; the web app is scaffolded in this milestone. Astro, Svelte, and Vite are all
 MIT.
 
+## Data files
+
+### Adobe Core 14 AFM files — APAFML
+
+`third_party/adobe-core14-afm/`: the fourteen AFM files for the PDF standard 14 fonts and their
+accompanying `MustRead.html`, from Adobe's `Core14_AFMs.zip`
+(`https://download.macromedia.com/pub/developer/opentype/tech-notes/Core14_AFMs.zip`, sha256
+`8c892c3c49553cfd2d2a27c4495b4bb12e2875115be7fd127ed3876df19d8654`), committed **unmodified** and
+held to that by `tools/check-afm-provenance.sh` (ADR 0030). Each AFM carries Adobe's copyright
+notice, for example `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated. All
+Rights Reserved.` The notice that accompanies them, verbatim:
+
+> This file and the 14 PostScript(R) AFM files it accompanies may be used, copied, and distributed
+> for any purpose and without charge, with or without modification, provided that all copyright
+> notices are retained; that the AFM files are not distributed without this file; that all
+> modifications to this file or any of the AFM files are prominently noted in the modified
+> file(s); and that this paragraph is not modified. Adobe Systems has no responsibility or
+> obligation to support the use of the AFM files.
+
+**What uses them:** only the test that generates `core/burrow-engines/src/pdfsyntax/
+standard14_table.rs` (#290), whose glyph names and advance widths are derived from them. No AFM
+file is parsed by, or shipped in, any build.
+
 ## Fonts
 
 Any bundled font must be OFL-1.1 or a permissive alternative. There are **two classes**, and

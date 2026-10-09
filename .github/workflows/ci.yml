@@ -892,6 +892,15 @@ jobs:
           tools/check-no-generated-files.sh
           tools/test-check-no-generated-files.sh
 
+      # ADR 0030: Adobe's Core 14 AFM files are committed exactly as published, with their notice,
+      # which is what their licence asks. Here, in the job that fetches nothing, because the check
+      # reads only the committed files and their record. The network re-fetch (--fetch) is not a
+      # per-PR gate: a dead mirror must not block a merge, and the checksums already pin the bytes.
+      - name: Adobe's AFM files are the published ones, with their notice
+        run: |
+          tools/check-afm-provenance.sh
+          tools/test-check-afm-provenance.sh
+
       # The crypto checker's adversarial self-test, HERE rather than beside the checker in
       # `test`, by the rule in CLAUDE.md: it reads only committed files and needs only cc and
       # ar, so a job that fetches nothing is where it belongs -- and running it on a clean
