@@ -894,6 +894,91 @@ pages = 1
   notes = "The twin of evade-differences-item-neither-code-nor-name: /Differences [0 /B /U ...]. The names on the removed codes are narrowed away."
 
 [[fixture]]
+name = "handle-std14-differences-remap"
+file = "generated/handle-std14-differences-remap.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a standard-14 font with no /Widths, placed by glyph name"
+  canary = "BURROW-EVADE-STD14-DIFF"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "#290: /Differences [96 /grave] padding in a no-/Widths Helvetica. Placed by the Standard glyph's width it kept the secret; placed by name, it is removed."
+
+[[fixture]]
+name = "handle-std14-macroman"
+file = "generated/handle-std14-macroman.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a standard-14 font with no /Widths, placed by glyph name"
+  canary = "BURROW-EVADE-STD14-MACROMAN"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "#290: /MacRomanEncoding read as Standard kept the secret; read as MacRoman, it is removed."
+
+[[fixture]]
+name = "evade-std14-symbolic-flags"
+file = "generated/evade-std14-symbolic-flags.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a standard-14 font with no /Widths, placed by glyph name"
+  canary = "BURROW-EVADE-STD14-SYMBOLIC"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "#290: a symbolic /Flags on a no-/Widths font changes PDFium's code-to-glyph mapping. Refused [font-flags]."
+
+[[fixture]]
+name = "evade-allcaps-flag"
+file = "generated/evade-allcaps-flag.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a standard-14 font with no /Widths, placed by glyph name"
+  canary = "BURROW-EVADE-STD14-ALLCAPS"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "#297: AllCaps on a font with no embedded program draws lowercase as capitals at the capitals' widths. Refused [font-flags]."
+
+[[fixture]]
+name = "nearmiss-std14-neutral-flags"
+file = "generated/nearmiss-std14-neutral-flags.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a standard-14 font with no /Widths, placed by glyph name"
+  canary = "BURROW-EVADE-STD14-NEUTRAL"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin of the flag fixtures: /Flags 32, measured neutral. Redacts."
+
+[[fixture]]
 name = "evade-inline-image"
 file = "generated/evade-inline-image.pdf"
 kind = "hand-built"

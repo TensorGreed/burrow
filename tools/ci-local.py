@@ -205,6 +205,20 @@ JOBS: list[dict] = [
         ],
     },
     {
+        # Needs the native PDFium, as `test` does (#290, ADR 0030).
+        "name": "standard14-table",
+        "run": (
+            "tools/check-standard14-table.sh && tools/test-check-standard14-table.sh "
+            "&& tools/test-standard14-face-gate.sh"
+        ),
+        "covers": [
+            "tools/check-standard14-table.sh",
+            "tools/test-check-standard14-table.sh",
+            "tools/test-standard14-face-gate.sh",
+        ],
+        "why": "the standard-14 table is regenerated from the AFMs and the pinned PDFium and diffed",
+    },
+    {
         "name": "test",
         "run": "cargo test --workspace --all-features",
         "covers": ["cargo:test"],

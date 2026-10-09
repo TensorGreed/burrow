@@ -39,27 +39,11 @@
 mod support;
 
 use burrow_engines::pdfsyntax::standard14::{
-    ACCEPTED, BaseEncoding, DISPUTED, FIRST_CODE, LAST_CODE, width_of,
+    ACCEPTED, BaseEncoding, FIRST_CODE, LAST_CODE, width_of,
 };
 use support::char_box_oracle::chars_on_page;
 
 /// The fonts this module tabulates, by `/BaseFont` name.
-/// How many `(spelling, code)` pairs `DISPUTED` excludes across every spelling in `ACCEPTED`.
-///
-/// Not `DISPUTED.len()`: it is keyed on the style, and several spellings share one style, so a
-/// single disputed pair excludes `@` under `Helvetica-Bold` **and** under `Arial-Bold`.
-fn disputed_spellings() -> usize {
-    ACCEPTED
-        .iter()
-        .map(|(_, style)| {
-            DISPUTED
-                .iter()
-                .filter(|(disputed, _)| disputed == style)
-                .count()
-        })
-        .sum()
-}
-
 /// Every `/BaseFont` spelling `width_of` answers for, taken from the module itself.
 ///
 /// **Not written out here.** This was a hand-written list of the twelve canonical names while
@@ -76,15 +60,6 @@ fn fonts() -> Vec<String> {
         .collect()
 }
 
-/// A one-page document drawing `code` twice at 100 pt, with **no `/Widths`**.
-///
-/// Twice, because the advance is the distance between the two origins. One glyph would give an
-/// origin and nothing to measure against, and PDFium's box functions carry metric
-/// interpretation the origin does not.
-fn page_drawing(base: &str, encoding: &str, code: u32) -> Vec<u8> {
-    page_drawing_with_encoding(base, &format!("/Encoding /{encoding}"), code)
-}
-
 /// As [`page_drawing`], with the whole `/Encoding` entry written out.
 ///
 /// The `/Encoding` **dictionary** form needs it: `base_encoding` has a `DICTIONARY` arm reading
@@ -93,9 +68,14 @@ fn page_drawing(base: &str, encoding: &str, code: u32) -> Vec<u8> {
 /// same thing, one of them measured.
 fn page_drawing_with_encoding(base: &str, encoding: &str, code: u32) -> Vec<u8> {
     let byte = u8::try_from(code).expect("a code in 32..=126");
+    page_drawing_bytes(base, encoding, &[byte, byte])
+}
+
+/// As [`page_drawing_with_encoding`], drawing exactly `bytes`.
+fn page_drawing_bytes(base: &str, encoding: &str, bytes: &[u8]) -> Vec<u8> {
     // Escaped, because `(`, `)` and `\` are the three bytes a literal string cannot carry raw.
     let mut text = Vec::new();
-    for _ in 0..2 {
+    for &byte in bytes {
         if matches!(byte, b'(' | b')' | b'\\') {
             text.push(b'\\');
         }
@@ -141,16 +121,21 @@ fn page_drawing_with_encoding(base: &str, encoding: &str, code: u32) -> Vec<u8> 
 /// PDFium's advance for `code` in `base` at 100 pt, in glyph-space units, or `None` if PDFium
 /// does not give two characters to measure between.
 fn pdfium_advance(base: &str, encoding: &str, code: u32) -> Option<f64> {
-    let pdf = page_drawing(base, encoding, code);
-    let chars: Vec<_> = chars_on_page(&pdf, 0)
-        .into_iter()
-        .filter(|char| !char.generated)
-        .collect();
-    if chars.len() < 2 {
-        return None;
-    }
-    // 100 pt font, so the advance in glyph space is the point distance times ten.
-    Some((chars[1].origin.0 - chars[0].origin.0) * 10.0)
+    // BETWEEN TWO `A`s (#290): PDFium does not report the space as a character, so a code is not
+    // measured between two copies of itself. span(A code A) - span(A A); `A` is code 65 under every
+    // base encoding measured here.
+    let byte = u8::try_from(code).ok()?;
+    let span = |bytes: &[u8]| -> Option<f64> {
+        let pdf = page_drawing_bytes(base, &format!("/Encoding /{encoding}"), bytes);
+        let chars: Vec<_> = chars_on_page(&pdf, 0)
+            .into_iter()
+            .filter(|char| !char.generated)
+            .collect();
+        let (first, last) = (chars.first()?, chars.last()?);
+        // 100 pt font, so the advance in glyph space is the point distance times ten.
+        (chars.len() >= 2).then_some((last.origin.0 - first.origin.0) * 10.0)
+    };
+    Some(span(&[65, byte, 65])? - span(&[65, 65])?)
 }
 
 #[test]
@@ -170,12 +155,13 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
         for (encoding_name, encoding) in [
             ("WinAnsiEncoding", BaseEncoding::WinAnsi),
             ("StandardEncoding", BaseEncoding::Standard),
+            ("MacRomanEncoding", BaseEncoding::MacRoman),
         ] {
             for code in FIRST_CODE..=LAST_CODE {
                 let Some(mine) = width_of(base.as_bytes(), code, encoding) else {
-                    // A pair the module deliberately does not carry -- see `DISPUTED`. Counted
-                    // so the excluded set cannot grow silently: if it ever covers the whole
-                    // table, the count gate below fails rather than the run printing `OK`.
+                    // A pair the generated table does not carry: the AFM and PDFium disagree on the
+                    // glyph (#290). Counted so the excluded set cannot grow silently: the gate
+                    // below pins it to what the table records.
                     excluded.push(format!("{base}/{encoding_name} code {code}"));
                     continue;
                 };
@@ -198,7 +184,7 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
     }
 
     eprintln!(
-        "\n  standard-14 calibration: {} font(s) x 2 encoding(s) x {} code(s); \
+        "\n  standard-14 calibration: {} font(s) x 3 encoding(s) x {} code(s); \
          {compared} width(s) compared against PDFium, {} unmeasurable, {} deliberately not \
          carried",
         all_fonts.len(),
@@ -207,7 +193,7 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
         excluded.len()
     );
     if !excluded.is_empty() {
-        eprintln!("  not carried, because the two sources disagree (see `DISPUTED`):");
+        eprintln!("  not carried, because the AFM and PDFium disagree (the generated table):");
         for what in &excluded {
             eprintln!("    {what}");
         }
@@ -222,36 +208,44 @@ fn every_bundled_width_agrees_with_pdfiums_own_metrics() {
         }
     }
 
-    // THE EXACT COUNT, and every residual accounted for by name. This was a 95 %% tolerance,
-    // and a mutation that made `width_of` return `None` for sixty Helvetica codes passed it —
-    // the slack was about 114 widths wide. Both residuals are derivable, so neither needs slack:
-    //
-    //   - `excluded` is exactly the `DISPUTED` pairs, seen once per encoding;
-    //   - `unmeasurable` is exactly code 32, the space, which PDFium does not report as a
-    //     character, seen once per font per encoding.
-    //
-    // With both pinned, `compared` is forced and a silently uncarried width has nowhere to hide.
-    let expected = all_fonts.len() * 2 * usize::try_from(LAST_CODE - FIRST_CODE + 1).unwrap();
+    // THE EXACT COUNT, and every residual accounted for. `excluded` is exactly the codes the
+    // generated table leaves unaccepted, per spelling and encoding -- derived from the table's own
+    // bits, so a silently uncarried width has nowhere to hide -- and `unmeasurable` must be empty:
+    // the space used to be, until the measurement moved to "between two A's" (#290).
+    let expected = all_fonts.len() * 3 * usize::try_from(LAST_CODE - FIRST_CODE + 1).unwrap();
+    let table_excludes: usize = ACCEPTED
+        .iter()
+        .map(|(_, style)| {
+            let index = burrow_engines::pdfsyntax::standard14_table::STYLES
+                .iter()
+                .position(|s| s == style)
+                .expect("every accepted style is in the table");
+            burrow_engines::pdfsyntax::standard14_table::ACCEPTED_CODES[index]
+                .iter()
+                .map(|bits| {
+                    (FIRST_CODE..=LAST_CODE)
+                        .filter(|code| {
+                            bits[usize::try_from(*code >> 6).unwrap()] & (1_u64 << (code & 63)) == 0
+                        })
+                        .count()
+                })
+                .sum::<usize>()
+        })
+        .sum();
     assert_eq!(
         excluded.len(),
-        disputed_spellings() * 2,
-        "the not-carried set is exactly `DISPUTED`, once per encoding:\n  {}",
+        table_excludes,
+        "the not-carried set is exactly what the generated table leaves out:\n  {}",
         excluded.join("\n  ")
     );
-    assert_eq!(
-        unmeasurable.len(),
-        all_fonts.len() * 2,
-        "the unmeasurable set is exactly code 32 once per font per encoding:\n  {}",
-        unmeasurable.join("\n  ")
-    );
     assert!(
-        unmeasurable.iter().all(|what| what.ends_with("code 32")),
-        "something other than the space was unmeasurable:\n  {}",
+        unmeasurable.is_empty(),
+        "PDFium gave fewer than two characters for:\n  {}",
         unmeasurable.join("\n  ")
     );
     assert_eq!(
         compared,
-        expected - excluded.len() - unmeasurable.len(),
+        expected - excluded.len(),
         "only {compared} of {expected} widths were measurable against PDFium, and the \
          residuals do not account for the difference"
     );

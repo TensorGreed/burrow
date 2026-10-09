@@ -223,14 +223,24 @@ fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", sha2::Sha256::digest(data))
 }
 
-/// The advance of `codes[0]`, in glyph-space units, from a page drawing it twice.
-fn advance(subtype: &str, base: &str, encoding: &str, code: u8) -> Option<f64> {
-    let drawn = draw(&page(subtype, base, encoding, &[code, code]));
-    match drawn.origins.as_slice() {
-        // 100 pt font, so the advance in glyph space is the point distance times ten.
-        [first, second, ..] => Some(((second - first) * 10.0 * 1000.0).round() / 1000.0),
+/// The distance from the first drawn origin to the last, in glyph-space units at 100 pt.
+fn span(subtype: &str, base: &str, encoding: &str, codes: &[u8]) -> Option<f64> {
+    let drawn = draw(&page(subtype, base, encoding, codes));
+    match (drawn.origins.first(), drawn.origins.last()) {
+        (Some(first), Some(last)) if drawn.origins.len() >= 2 => Some((last - first) * 10.0),
         _ => None,
     }
+}
+
+/// The advance of `code`, measured BETWEEN TWO `A`s (code 65): span(A code A) - span(A A).
+///
+/// PDFium does not report every code as a character -- the space is the one that matters -- so a
+/// code is never measured between two copies of itself. `A` is code 65 under all three base
+/// encodings, and a `/Differences` remapping puts the measured name at code 66, never at 65.
+fn advance(subtype: &str, base: &str, encoding: &str, code: u8) -> Option<f64> {
+    let with = span(subtype, base, encoding, &[65, code, 65])?;
+    let without = span(subtype, base, encoding, &[65, 65])?;
+    Some(((with - without) * 1000.0).round() / 1000.0)
 }
 
 /// The twelve styles, each by its canonical `/BaseFont` name.
@@ -318,11 +328,11 @@ fn measure_into_a_file() {
             .face
             .expect("PDFium drew text to ask the face of");
         faces.insert(style.to_owned(), face);
-        // EACH NAME THROUGH `/Differences`, at code 65 over StandardEncoding.
+        // EACH NAME THROUGH `/Differences`, at code 66 over StandardEncoding, between two `A`s.
         let by_name = names.entry(style.to_owned()).or_default();
         for name in afm_names(style) {
-            let encoding = format!("/Encoding << /Differences [65 /{name}] >>");
-            by_name.insert(name, advance("Type1", style, &encoding, 65));
+            let encoding = format!("/Encoding << /Differences [66 /{name}] >>");
+            by_name.insert(name, advance("Type1", style, &encoding, 66));
         }
         // EACH CODE under each base encoding burrow may admit.
         let by_encoding = codes.entry(style.to_owned()).or_default();

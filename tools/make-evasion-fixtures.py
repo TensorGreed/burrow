@@ -399,6 +399,65 @@ def nearmiss_base_encoding_as_a_name() -> bytes:
     return _standard_14_under_base_encoding(b"/WinAnsiEncoding", "BASE-NAME")
 
 
+def _standard14_padded(encoding: bytes, descriptor: bytes | None, canary: str, pad: int = 0x60,
+                       count: int = 60, pad_width: int = 333, subtype: bytes = b"/Type1") -> bytes:
+    """Helvetica with no /Widths, `count` x code `pad` then the secret, under `encoding`.
+
+    The padding is advanced by the width of the glyph PDFium draws for `pad` -- `pad_width` --
+    and starts far enough left that the secret begins at the region's left edge under that width.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    extra = b""
+    if descriptor is not None:
+        desc = pdf.add(b"<< /Type /FontDescriptor /FontName /Helvetica " + descriptor + b" >>")
+        extra = b" /FontDescriptor " + str(desc).encode() + b" 0 R"
+    font = pdf.add(
+        b"<< /Type /Font /Subtype " + subtype + b" /BaseFont /Helvetica " + encoding + extra + b" >>"
+    )
+    start = x0 + 2 - count * pad_width * SECRET_SIZE / 1000
+    codes = (f"{pad:02X}" * count).encode() + secret(canary).encode("latin-1").hex().upper().encode()
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf " + f"{start:.2f} {SECRET_Y} Td ".encode()
+        + b"<" + codes + b"> Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def handle_std14_differences_remap() -> bytes:
+    """#290: `/Differences [96 /grave]` padding, placed by the code's Standard glyph (`quoteleft`,
+    222) where PDFium draws `grave` (333), left the secret in the region with `Ok`. Placed by name
+    since #290, it is removed."""
+    return _standard14_padded(b"/Encoding << /Differences [96 /grave] >>", None, "STD14-DIFF")
+
+
+def handle_std14_macroman() -> bytes:
+    """#290: `/MacRomanEncoding` read as Standard put code 96 at `quoteleft` (222) where PDFium
+    draws `grave` (333); `Ok` with the secret in the region. Read as MacRoman since #290 (the
+    owner admitted it), it is removed."""
+    return _standard14_padded(b"/Encoding /MacRomanEncoding", None, "STD14-MACROMAN")
+
+
+def evade_std14_symbolic_flags() -> bytes:
+    """#290: a symbolic `/Flags` on a font with no /Widths changes PDFium's code-to-glyph mapping.
+    Refused `[font-flags]`."""
+    return _standard14_padded(b"", b"/Flags 4", "STD14-SYMBOLIC")
+
+
+def evade_allcaps_flag() -> bytes:
+    """#297: AllCaps on a font with no embedded program -- PDFium draws each lowercase code as the
+    capital AT THE CAPITAL'S WIDTH -- left the secret in the region with `Ok`. Refused
+    `[font-flags]`."""
+    return _standard14_padded(b"", b"/Flags 65568", "STD14-ALLCAPS", pad=0x61, pad_width=667)
+
+
+def nearmiss_std14_neutral_flags() -> bytes:
+    """The twin of the flag fixtures: `/Flags 32` (nonsymbolic), measured neutral. Redacts."""
+    return _standard14_padded(b"/Encoding /WinAnsiEncoding", b"/Flags 32", "STD14-NEUTRAL")
+
+
 def evade_image_in_type3_glyph() -> bytes:
     """The image is drawn by a Type 3 glyph procedure — one level further than a Form XObject."""
     pdf = Pdf()
@@ -2905,6 +2964,11 @@ CASES: list[tuple[str, str]] = [
     ("nearmiss-base-encoding-as-a-name", "a value read item by item"),
     ("nearmiss-widths-as-pdfium-reads-them", "a value read item by item"),
     ("nearmiss-differences-codes-and-names", "a value read item by item"),
+    ("handle-std14-differences-remap", "standard-14 by name"),
+    ("handle-std14-macroman", "standard-14 by name"),
+    ("evade-std14-symbolic-flags", "standard-14 by name"),
+    ("evade-allcaps-flag", "standard-14 by name"),
+    ("nearmiss-std14-neutral-flags", "standard-14 by name"),
     ("evade-text-in-type3-via-form", "Type 3 procedure"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
     ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
@@ -3027,6 +3091,11 @@ BUILDERS = {
     "nearmiss-base-encoding-as-a-name": nearmiss_base_encoding_as_a_name,
     "nearmiss-widths-as-pdfium-reads-them": nearmiss_widths_as_pdfium_reads_them,
     "nearmiss-differences-codes-and-names": nearmiss_differences_codes_and_names,
+    "handle-std14-differences-remap": handle_std14_differences_remap,
+    "handle-std14-macroman": handle_std14_macroman,
+    "evade-std14-symbolic-flags": evade_std14_symbolic_flags,
+    "evade-allcaps-flag": evade_allcaps_flag,
+    "nearmiss-std14-neutral-flags": nearmiss_std14_neutral_flags,
     "evade-image-in-form": evade_image_in_form,
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,
