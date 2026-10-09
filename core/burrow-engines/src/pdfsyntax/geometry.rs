@@ -3309,9 +3309,11 @@ fn walk(
     // that is safe only because a `q` or `Q` while this is `Some` REFUSES (#300). PDFium DOES save
     // them with the graphics state, measured: `BT 50 400 Td q (AAAA) Tj Q (B) Tj` draws B back at
     // 50, the saved position crosses `ET`/`BT`, and a `Q` inside `BT` whose `q` came before it
-    // restores the previous text object's pen. A `Q` outside a text object is followed by a `BT`,
-    // which resets both, so the refusal inside is the whole of it. A form's walk starts with its
-    // own `None`: PDFium keeps a form's text position apart from the caller's, measured.
+    // restores the previous text object's pen. Outside a text object a restored position places
+    // nothing: every text operator there refuses `[text-outside-text-object]`, so the next glyph
+    // follows a `BT`, which resets both. The refusal inside is therefore the whole of it -- and it
+    // rests on that refusal. A form's walk starts with its own `None`: PDFium keeps a form's text
+    // position apart from the caller's, measured.
     let mut position: Option<TextPosition> = None;
     // THE CURRENT PATH, in USER SPACE, built by `m`/`l`/`c`/`v`/`y`/`re` and consumed by a paint
     // operator (#125). User space, so the stroke inflation is applied before the CTM and so scales
@@ -5634,7 +5636,7 @@ mod tests {
     }
 
     #[test]
-    fn a_q_or_q_inside_a_text_object_is_refused_before_the_stack_is_read() {
+    fn a_save_or_restore_inside_a_text_object_is_refused_before_the_stack_is_read() {
         // Each half alone, and `BT Q ET` with NOTHING saved: the open text object is checked
         // first, so it names this rule and not `q-without-save` (#300's round 0).
         refusing(

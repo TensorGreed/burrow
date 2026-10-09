@@ -6,7 +6,8 @@
 //! The rule (DECISIONS rules 1 and 4): a `q` or `Q` while a text object is open refuses
 //! `[graphics-state-in-text]`. 0 of 99 real documents carry one (#300's round 0, every stream).
 //! Each leak shape here is first shown to be a leak -- PDFium draws SECRET inside the region -- and
-//! then shown to refuse; each twin moves the `q`/`Q` outside the text object and redacts clean. The
+//! then shown to refuse; each test's twin keeps the `q`/`Q` but moves them outside the text object,
+//! and redacts clean. Where a comment states where PDFium draws SECRET, the test asserts it. The
 //! list is round 0's: the `Q` half alone, the `q` half alone, the canonical shape and its variants,
 //! a text object boundary, a `/Contents` array, a form, marked content, and the guard that a form's
 //! own `q`/`Q` is not judged against its caller's open text object.
@@ -140,6 +141,17 @@ fn refuses(what: &str, pdf: &[u8]) {
     }
 }
 
+/// PDFium draws SECRET's `S` at `(x, y)`, to within a point.
+#[track_caller]
+fn secret_drawn_at(what: &str, pdf: &[u8], x: f64, y: f64) {
+    let (at_x, at_y) =
+        secret_origin(pdf).unwrap_or_else(|| panic!("{what}: PDFium draws no SECRET"));
+    assert!(
+        (at_x - x).abs() < 1.0 && (at_y - y).abs() < 1.0,
+        "{what}: PDFium draws SECRET at ({at_x}, {at_y}), not ({x}, {y})"
+    );
+}
+
 /// The twin redacts, and leaves no ink in the region.
 #[track_caller]
 fn redacts_clean(what: &str, pdf: &[u8]) {
@@ -152,7 +164,10 @@ const FIFTEEN_W: &str = "(WWWWWWWWWWWWWWW) Tj";
 /// THE CANONICAL SHAPE: fifteen W's inside `q`/`Q` put SECRET past the region to burrow; PDFium
 /// restores the pen and draws it at x = 110. And the same with each position operator inside the
 /// `q` instead -- `Tm`, `Td`, `T*`, `'`, `"`, a `TJ` adjustment, a nested `q`/`Q` -- all measured to
-/// be undone by the `Q`. The twin drops the `q`/`Q`, so both readers draw SECRET at x = 393.
+/// be undone by the `Q`. The rule refuses at the `q`, before any variant's operator is read, so the
+/// variants are evidence about PDFium -- each draws SECRET in the region -- not eight tests of the
+/// walk. The twin wraps the whole text object in the `q`/`Q`, and both readers draw SECRET at
+/// x = 393, past the region.
 #[test]
 fn a_q_inside_a_text_object_refuses_in_every_shape_that_moves_the_pen() {
     for inside in [
@@ -172,12 +187,11 @@ fn a_q_inside_a_text_object_refuses_in_every_shape_that_moves_the_pen() {
             )),
         );
     }
-    redacts_clean(
-        "the twin, with no q/Q",
-        &page(&format!(
-            "BT /F2 20 Tf 110 260 Td {FIFTEEN_W} (SECRET) Tj ET"
-        )),
-    );
+    let twin = page(&format!(
+        "q BT /F2 20 Tf 110 260 Td {FIFTEEN_W} (SECRET) Tj ET Q"
+    ));
+    secret_drawn_at("the twin", &twin, 393.2, 260.0);
+    redacts_clean("the twin, q BT..ET Q", &twin);
 }
 
 /// THE `Q` HALF ALONE, which is the half that matters: a `q` outside any text object and its `Q`
@@ -205,10 +219,11 @@ fn a_q_restored_inside_a_text_object_refuses() {
 /// census cost of 0. The twin moves the `q` before the `BT`.
 #[test]
 fn a_q_saved_inside_a_text_object_refuses_though_its_q_is_outside() {
-    refuses(
-        "q inside, Q outside",
-        &page("BT /F2 20 Tf 110 260 Td q (WW) Tj ET Q BT /F2 20 Tf 110 60 Td (SECRET) Tj ET"),
-    );
+    let shape =
+        page("BT /F2 20 Tf 110 260 Td q (WW) Tj ET Q BT /F2 20 Tf 110 60 Td (SECRET) Tj ET");
+    // MEASURED, not stated: PDFium draws SECRET where burrow does, outside the region.
+    secret_drawn_at("q inside, Q outside", &shape, 110.0, 60.0);
+    refuses("q inside, Q outside", &shape);
     redacts_clean(
         "q before the BT",
         &page("q BT /F2 20 Tf 110 260 Td (WW) Tj ET Q BT /F2 20 Tf 110 60 Td (SECRET) Tj ET"),
@@ -216,7 +231,8 @@ fn a_q_saved_inside_a_text_object_refuses_though_its_q_is_outside() {
 }
 
 /// ACROSS A TEXT OBJECT BOUNDARY: the `q` in one text object, its `Q` in the next. PDFium restores
-/// the first object's pen inside the second, measured.
+/// the first object's pen inside the second, measured. The twin wraps both text objects in the
+/// `q`/`Q`.
 #[test]
 fn a_saved_position_restored_in_a_later_text_object_refuses() {
     refuses_a_leak(
@@ -224,6 +240,13 @@ fn a_saved_position_restored_in_a_later_text_object_refuses() {
         &page(
             "BT /F2 20 Tf 110 260 Td q (WW) Tj ET BT /F2 20 Tf 110 60 Td (WWWWWWWW) Tj Q (SECRET) \
              Tj ET",
+        ),
+    );
+    redacts_clean(
+        "q BT..ET BT..ET Q",
+        &page(
+            "q BT /F2 20 Tf 110 260 Td (WW) Tj ET BT /F2 20 Tf 110 60 Td (WWWWWWWW) Tj (SECRET) \
+             Tj ET Q",
         ),
     );
 }
@@ -263,27 +286,35 @@ fn a_q_inside_a_text_object_in_a_form_refuses() {
 }
 
 /// THE GUARD AGAINST OVER-REACH: a form drawn INSIDE the page's text object, whose own content is a
-/// `q`/`Q`. PDFium keeps a form's text position apart from its caller's (round 0, measured: nothing
-/// in a form moves the caller's pen), so the form's walk starts with no text object open and this
-/// redacts. A walk that carried the caller's open text object into the form would refuse it.
+/// `q`/`Q` around a text object of its own that moves its pen 200 points down and fifteen W's along.
+/// PDFium keeps a form's text position apart from its caller's -- asserted here: the caller's SECRET
+/// stays at (110, 260) -- so the form's walk starts with no text object open and this redacts. A
+/// walk that carried the caller's open text object into the form would refuse it.
 #[test]
 fn a_forms_own_q_is_not_judged_against_its_callers_text_object() {
-    redacts_clean(
-        "BT .. /Fm0 Do (SECRET) Tj ET, Fm0 = q Q",
-        &document(
-            &[b"BT /F2 20 Tf 110 260 Td /Fm0 Do (SECRET) Tj ET"],
-            Some(b"q 1 0 0 1 0 0 cm Q"),
-        ),
+    let form = format!("q BT /F2 20 Tf 0 -200 Td {FIFTEEN_W} ET Q");
+    let pdf = document(
+        &[b"BT /F2 20 Tf 110 260 Td /Fm0 Do (SECRET) Tj ET"],
+        Some(form.as_bytes()),
     );
+    secret_drawn_at("a form that moves its own pen", &pdf, 110.0, 260.0);
+    redacts_clean("BT .. /Fm0 Do (SECRET) Tj ET, Fm0 = q BT..ET Q", &pdf);
 }
 
-/// MARKED CONTENT around the `q` changes nothing, measured.
+/// MARKED CONTENT around the `q` changes nothing, measured. The twin moves the `q`/`Q` outside the
+/// text object, keeping the marked content inside it.
 #[test]
 fn a_q_inside_marked_content_inside_a_text_object_refuses() {
     refuses_a_leak(
         "BT /P BMC q .. EMC Q",
         &page(&format!(
             "BT /F2 20 Tf 110 260 Td /P BMC q {FIFTEEN_W} EMC Q (SECRET) Tj ET"
+        )),
+    );
+    redacts_clean(
+        "q BT /P BMC .. EMC ET Q",
+        &page(&format!(
+            "q BT /F2 20 Tf 110 260 Td /P BMC {FIFTEEN_W} EMC (SECRET) Tj ET Q"
         )),
     );
 }
