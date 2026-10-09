@@ -514,7 +514,8 @@ def nearmiss_allcaps_neutral_flags() -> bytes:
 def nearmiss_std14_neutral_flags() -> bytes:
     """The twin of the flag fixtures: `/Flags 32` (nonsymbolic), measured neutral. Redacts."""
     # THE MINIMAL PAIR of `evade-std14-symbolic-flags`: no `/Encoding`, as there, so code 96 is
-    # `quoteleft` (222), and only the flag differs (#290's round-1 code review).
+    # `quoteleft` (222). The flag differs, and so does where the text starts: each fixture puts the
+    # secret at the region's edge under the width PDFium really draws (#290's round-1 code review).
     return _standard14_padded(b"", b"/Flags 32", "STD14-NEUTRAL", pad_width=222)
 
 

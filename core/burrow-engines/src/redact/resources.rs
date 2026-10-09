@@ -745,7 +745,8 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     } else {
         None
     };
-    // ALLCAPS ON EVERY SIMPLE FONT (#297, and the owner's decision of 2026-10-09). PDFium leaves it
+    // ALLCAPS ON EVERY TYPE1, MMTYPE1 AND TRUETYPE FONT (#297, and the owner's decision of
+    // 2026-10-09); Type 3 and Type 0 are measured unaffected. PDFium leaves it
     // inert only when an embedded program LOADS, and burrow cannot predict that: the first version
     // exempted any font naming a `/FontFile*`, and an empty, garbage, null or dangling program left
     // SECRET in the region with `Ok`, 32 of 32 shapes (#290's round-1 security review). The accepted

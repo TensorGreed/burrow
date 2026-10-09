@@ -8,8 +8,8 @@
 //! - `/MacRomanEncoding`, read as Standard, so code 96 was `quoteleft` (222) where PDFium draws
 //!   `grave` (333);
 //! - a symbolic `/Flags`, which changes PDFium's code-to-glyph mapping;
-//! - AllCaps (#297), on any simple font without an embedded program: lowercase codes drawn as
-//!   capitals at the capitals' widths.
+//! - AllCaps (#297), on a Type1, MMType1 or TrueType font unless an embedded program loads:
+//!   lowercase codes drawn as capitals at the capitals' widths.
 //!
 //! The first two now redact, and the redacted page carries no character at all -- ink in the region
 //! is not enough, because a glyph placed wrongly is MOVED by the redaction, not removed. The rest
@@ -302,7 +302,7 @@ fn a_symbolic_font_with_no_widths_refuses() {
 /// Refused `[font-flags]` on every simple font, written as 65568 or 65568.9 (4294967295 refuses as
 /// a number first). The twin that redacts is `/Flags 32`.
 #[test]
-fn allcaps_on_a_font_without_an_embedded_program_refuses() {
+fn allcaps_on_any_simple_font_refuses() {
     let content = b"BT /F1 20 Tf 110 260 Td (aaaaSECRET) Tj ET";
     let descriptor = |flags: &str, extra: &str| {
         format!("<< /Type /FontDescriptor /FontName /Helvetica /Flags {flags} {extra} >>")

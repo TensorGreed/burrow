@@ -174,7 +174,8 @@ fn draw(pdf: &[u8]) -> Drawn {
     let mut face = None;
     // SAFETY: every handle is used only between its open and its close below, under the lock, and
     // every buffer is sized from PDFium's own answer for it. A null page or text page is passed on
-    // to PDFium, which answers a null handle with zero characters and closes nothing.
+    // to PDFium, whose `FPDFText_CountChars` answers a null handle with -1 -- an empty range here --
+    // and whose close functions accept null.
     unsafe {
         let doc = FPDF_LoadMemDocument64(pdf.as_ptr().cast(), pdf.len(), std::ptr::null());
         assert!(!doc.is_null(), "PDFium refused a document this test built");

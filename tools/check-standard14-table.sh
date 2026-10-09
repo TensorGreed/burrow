@@ -22,14 +22,6 @@ committed="$repo/core/burrow-engines/src/pdfsyntax/standard14_table.rs"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-(cd "$repo" && BURROW_STANDARD14_MEASURE="$work/measure.json" cargo test --quiet -p burrow-engines \
-  --features native-engines --test standard14_measure measure_into_a_file -- --nocapture --exact)
-if [ ! -s "$work/measure.json" ]; then
-  echo "FAILED -- the measurement wrote nothing; a table cannot be checked against no measurement" >&2
-  exit 1
-fi
-python3 "$here/make-standard14-table.py" "$work/measure.json" --out "$work/standard14_table.rs"
-
 # THE NOTICES TRAVEL WITH THE EXTRACT (ADR 0030, the license-auditor's condition): every AFM Notice
 # line the table is drawn from must appear in THIRD_PARTY_NOTICES.md byte for byte, so the two
 # cannot drift apart. A Rust comment does not survive into the wasm; this file does.
@@ -53,6 +45,15 @@ if missing:
     print("FAILED -- THIRD_PARTY_NOTICES.md lacks the verbatim Notice line of: " + ", ".join(missing), file=sys.stderr)
     sys.exit(1)
 PY
+
+(cd "$repo" && BURROW_STANDARD14_MEASURE="$work/measure.json" cargo test --quiet -p burrow-engines \
+  --features native-engines --test standard14_measure measure_into_a_file -- --nocapture --exact)
+if [ ! -s "$work/measure.json" ]; then
+  echo "FAILED -- the measurement wrote nothing; a table cannot be checked against no measurement" >&2
+  exit 1
+fi
+python3 "$here/make-standard14-table.py" "$work/measure.json" --out "$work/standard14_table.rs"
+
 
 if [ "${1:-}" = "--bless" ]; then
   cp "$work/standard14_table.rs" "$committed"
