@@ -677,6 +677,13 @@ pub struct TextPosition {
     pub text: Matrix,
     /// The line matrix `Td`, `TD` and `T*` are relative to.
     pub line: Matrix,
+    /// THE WIDTH DRIFT (#291), in text space along the advance: how far PDFium's pen may stand
+    /// from this one, because PDFium stores a glyph width as an integer -- truncated for a simple
+    /// or CID font, rounded for a Type 3 -- and burrow keeps the fraction. Bounded per glyph, not
+    /// replicated: each fractional width adds one thousandth of the font size times the horizontal
+    /// scaling (`Tz / 100`), which exceeds the error PDFium's integer makes. Reset by every
+    /// operator that sets the position absolutely, since the error is in the advances alone.
+    pub drift: f64,
 }
 
 impl Default for TextPosition {
@@ -684,6 +691,7 @@ impl Default for TextPosition {
         Self {
             text: Matrix::IDENTITY,
             line: Matrix::IDENTITY,
+            drift: 0.0,
         }
     }
 }
@@ -697,6 +705,8 @@ impl TextPosition {
     pub fn next_line_at(&mut self, tx: f64, ty: f64) {
         self.line = Matrix::translate(tx, ty).then(&self.line);
         self.text = self.line;
+        // The line matrix is untouched by advances, so a new line starts with no drift.
+        self.drift = 0.0;
     }
 }
 
@@ -749,6 +759,10 @@ pub struct Glyph {
     /// reach brings it into the region, not refused as ink: refusing would have turned away every
     /// faux-bold run a producer draws with `2 Tr`.
     pub stroke_reach: (f64, f64),
+    /// The width drift at this glyph's end (#291), in text space along the advance: the box is
+    /// widened by it on both sides, so a glyph PDFium draws up to that far away still reaches the
+    /// region. See [`TextPosition::drift`].
+    pub drift: f64,
     /// The text-space displacement this glyph caused, **including** `Tc`, `Tw` and `Tz`.
     ///
     /// # Why this is carried rather than recomputed
@@ -921,11 +935,17 @@ impl Glyph {
         };
         // A STROKED OUTLINE (#278), widened by the reach the walk derived from the line width.
         let (dx, dy) = self.stroke_reach;
+        // THE WIDTH DRIFT (#291): the glyph may sit up to `drift` either way along the advance,
+        // which in page space is that distance along the text matrix's first column.
+        let (drift_x, drift_y) = (
+            (self.drift * self.text_to_page.a).abs(),
+            (self.drift * self.text_to_page.b).abs(),
+        );
         Rect {
-            left: ink.left - dx,
-            bottom: ink.bottom - dy,
-            right: ink.right + dx,
-            top: ink.top + dy,
+            left: ink.left - dx - drift_x,
+            bottom: ink.bottom - dy - drift_y,
+            right: ink.right + dx + drift_x,
+            top: ink.top + dy + drift_y,
         }
     }
 
@@ -3783,6 +3803,7 @@ fn text_operator(
             };
             place.text = m;
             place.line = m;
+            place.drift = 0.0;
         }
         b"Td" => place.next_line_at(number(0)?, number(1)?),
         b"TD" => {
@@ -4035,6 +4056,21 @@ fn show(
             0.0
         };
         let displacement = (width * state.text.font_size + state.text.char_spacing + word) * scale;
+        // THE DRIFT THIS GLYPH ADDS (#291): none when PDFium's stored width is exact -- the width
+        // in thousandths of an em is whole -- and otherwise one thousandth of the font size times
+        // `Tz / 100`, which bounds truncation (simple, CID: under 1 thousandth) and Type 3's float32
+        // rounding (at most about 0.75 below the 2^20 cap `glyph()` enforces; see there).
+        // WHOLE WITHIN A RELATIVE 1e-12, which absorbs f64's own noise (`9 x 0.001 x 1000` is
+        // 9.000000000000002, pinned by `whole_widths_add_no_drift`). It was 1e-9, which is a
+        // sizeable fraction of a thousandth at the widths the caps admit (0.016 at 2^24) and more
+        // than one past 1e9 (#291's security review). A width within 1e-12 of whole errs by under
+        // 1e-12 of itself per glyph -- far below the rounding PDFium's own 32-bit pen does, which
+        // is #298's territory, not this bound's.
+        let thousandths = width * 1000.0;
+        let whole = (thousandths - thousandths.round()).abs() <= 1e-12 * thousandths.abs().max(1.0);
+        if !whole {
+            place.drift += (state.text.font_size * scale / 1000.0).abs();
+        }
 
         // THE STROKE'S REACH, in page space (#278), the SAME ON BOTH AXES. A pen transformed by the
         // CTM reaches `r(|a|+|c|)` across and `r(|b|+|d|)` up -- PDFium's reading -- but MuPDF
@@ -4064,6 +4100,7 @@ fn show(
             font_size: state.text.font_size,
             scaled_font_size: state.text.font_size * scale,
             stroke_reach,
+            drift: place.drift,
             displacement,
             source: GlyphSource {
                 font: ScopedFont::new(Arc::clone(shown.route), font.clone()),

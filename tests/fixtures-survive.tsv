@@ -241,7 +241,7 @@ tests/redaction/fixtures/producer-vertical-writing.pdf	reorder	ok reversed: inpu
 tests/redaction/fixtures/producer-vertical-writing.pdf	split	ok cuts []: parts 1 page(s)
 tests/redaction/fixtures/producer-vertical-writing.pdf	compress	ok smaller: output 1 page(s)
 tests/redaction/fixtures/producer-vertical-writing.pdf	merge	ok two copies: output 2 page(s)
-tests/redaction/fixtures/producer-vertical-writing.pdf	redact	refused unsupported: pdf resources [width-out-of-range]: a glyph width a renderer stores in 16 bits and wraps, so it places the glyph somewhere else
+tests/redaction/fixtures/producer-vertical-writing.pdf	redact	refused unsupported: pdf resources [width-out-of-range]: a glyph width outside what a renderer stores in 16 bits -- negative, which it wraps, or one it reads as its not-set value -- so it places the glyph somewhere else
 tests/redaction/fixtures/producer-vertical-writing.pdf	render	ok [1] into 200x200: page 1 at 141x200
 tests/redaction/fixtures/producer-writer.pdf	open	ok 1 page(s)
 tests/redaction/fixtures/producer-writer.pdf	check	ok strict ok 1 page(s); recover ok 1 page(s)

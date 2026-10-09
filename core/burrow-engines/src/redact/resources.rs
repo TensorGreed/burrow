@@ -112,6 +112,8 @@ struct FontFacts {
     /// The glyph NAME `/Differences` gives each code it remaps, for a font with no `/Widths`
     /// (#290): its width is looked up by that name, as PDFium draws that glyph.
     differences: BTreeMap<u32, Vec<u8>>,
+    /// Whether this is a Type 3 font, whose widths PDFium ROUNDS rather than truncates (#291).
+    type_three: bool,
 }
 
 impl<O: PdfObject> PageResources<O> {
@@ -461,6 +463,43 @@ impl<O: PdfObject> Resources for PageResources<O> {
                     .to_owned()
             }))
         })?;
+        // TYPE 3 WIDTHS, AS PDFIUM STORES THEM (#291): in thousandths of an em, ROUNDED, and computed
+        // in 32-BIT FLOAT -- `roundf(f32(f32(w) x f32(a)) x 1000)`, measured by #291's security
+        // review. The edges below are set where that float chain cannot move them, not at the f64
+        // values: no `as f32` replica, which the cast lints would rightly question.
+        //
+        // UNDER 1 THOUSANDTH, REFUSED. One that rounds to 0 makes PDFium advance by the procedure's
+        // `d0`/`d1` width instead -- measured: `/Widths [0]` with `1000 0 d0` advanced 1,000 where
+        // burrow advanced 0. The edge is 1, not 0.5, because 0.5 is where f32 decides: `w = 5`,
+        // `a = 0.0001` is 0.5 in f64 and 0.49999997 in f32, which rounds to 0 (measured, `Ok` over
+        // the secret). From 1 up, f32's relative error cannot carry a value below 0.5.
+        //
+        // 2^20 THOUSANDTHS AND UP, REFUSED. Above about 2^21, f32's steps exceed a thousandth, so a
+        // width burrow calls whole is stored a step away and the drift bound adds nothing for it:
+        // `/Widths [1073741.856 -1073741.824]` under a matrix of 1 is stored as 2^30 and -2^30, a
+        // pair that moves PDFium's pen by 0 and burrow's by 0.032 em (measured, `Ok` over the
+        // secret). Below 2^20 the float chain's error is at most 0.5 + 4 x 2^-24 x 2^20, about 0.75
+        // of a thousandth (analytic; 0.64 the worst in a 300,000-sample simulation), which the
+        // bound's one thousandth per glyph covers. No real
+        // glyph is a thousand ems wide.
+        if facts.type_three {
+            let thousandths = (width * facts.font_matrix.a * 1000.0).abs();
+            if thousandths < 1.0 {
+                return Err(Error::Unsupported(
+                    "pdf resources [type-three-width-zero]: a Type 3 glyph whose width is under a \
+                     thousandth of an em, which a renderer may round to nothing and then advance by \
+                     the glyph procedure's own width instead"
+                        .to_owned(),
+                ));
+            }
+            if thousandths >= 1_048_576.0 {
+                return Err(Error::Unsupported(
+                    "pdf resources [width-out-of-range]: a Type 3 glyph width so large that the \
+                     precision a renderer stores it at is coarser than a thousandth of an em"
+                        .to_owned(),
+                ));
+            }
+        }
         Ok(GlyphMetrics {
             width,
             bytes_per_code: facts.bytes_per_code,
@@ -650,7 +689,8 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 ///
 /// [`Error::Unsupported`] naming `subtype-not-a-name`, `number-unreadable` (any of the number
 /// keys), `base-encoding-not-a-name`, `width-out-of-range` (a simple font's width or
-/// `/MissingWidth` outside 0..65,535, #292), or `width-source` (a `/Widths` that is a number or an
+/// `/MissingWidth` below 0 or from 65,534.998046875, where a 32-bit float reaches 65,535 -- #292,
+/// #291), or `width-source` (a `/Widths` that is a number or an
 /// empty array, a `/MissingWidth` or an embedded `/FontFile*` with no `/Widths`, a
 /// `/FontDescriptor` that is not a dictionary, or a Type 3 font with no `/Widths` or with a
 /// `/MissingWidth`, or a base encoding other than Standard, WinAnsi or MacRoman), or `font-flags`
@@ -678,6 +718,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         standard_14: None,
         base_encoding: crate::pdfsyntax::standard14::BaseEncoding::Standard,
         differences: BTreeMap::new(),
+        type_three: subtype == Some(SUBTYPE_TYPE3),
     };
 
     // A NEGATIVE `/FirstChar` REFUSES HERE, where every font is read (#125's fifth security review).
@@ -794,8 +835,10 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
 
     // A SIMPLE FONT'S WIDTHS ARE UNSIGNED 16-BIT TO PDFIUM, which wraps the rest: -1000 is 64,536
     // and 65,536 is 0 (#125's fourth security review, `Ok` over the secret both ways). Refused
-    // outside 0..65,535 rather than wrapped (#292, the owner's decision of 2026-10-08). Type 3
-    // widths are in glyph space and Type 0 has none here, so neither is judged. THE KNOWN COST:
+    // outside that range rather than wrapped (#292, the owner's decision of 2026-10-08), with the
+    // upper edge at the float32 one (#291, `simple_width_in_range`). Type 3 widths are in glyph
+    // space and are judged per glyph in `glyph()`, under the same rule name with their own edges;
+    // Type 0 has none here. THE KNOWN COST:
     // LibreOffice Writer's vertical CJK output writes `/Widths [0 -1000 …]`, so the committed
     // `producer-vertical-writing` fixture refuses where it redacted; a vertical-writing narrowing
     // is a post-launch issue.
@@ -1163,14 +1206,20 @@ fn width_source_refusal() -> Error {
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] naming `width-out-of-range` below 0 or at 65,535 and above.
+/// [`Error::Unsupported`] naming `width-out-of-range` below 0, or from 65,534.998046875 up -- the
+/// value a 32-bit float rounds to 65,535.
 fn simple_width_in_range(width: f64) -> Result<()> {
-    if (0.0..65_535.0).contains(&width) {
+    // THE UPPER EDGE IS WHERE A 32-BIT FLOAT ROUNDS TO 65,535 (#291), not 65,535 itself: PDFium
+    // parses the width as a float, and 65,534.999 becomes 65,535 -- its "not set" value -- and was
+    // drawn at width 0, measured, while this kept 65,534.999. 65,534.998046875 is the midpoint
+    // between the two largest floats below and at 65,535; refused from there up.
+    if (0.0..65_534.998_046_875).contains(&width) {
         Ok(())
     } else {
         Err(Error::Unsupported(
-            "pdf resources [width-out-of-range]: a glyph width a renderer stores in 16 bits and \
-             wraps, so it places the glyph somewhere else"
+            "pdf resources [width-out-of-range]: a glyph width outside what a renderer stores in 16 \
+             bits -- negative, which it wraps, or one it reads as its not-set value -- so it places \
+             the glyph somewhere else"
                 .to_owned(),
         ))
     }
