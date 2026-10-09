@@ -109,6 +109,9 @@ struct FontFacts {
     standard_14: Option<Vec<u8>>,
     /// Which base encoding the font names, for the two codes whose width depends on it.
     base_encoding: crate::pdfsyntax::standard14::BaseEncoding,
+    /// The glyph NAME `/Differences` gives each code it remaps, for a font with no `/Widths`
+    /// (#290): its width is looked up by that name, as PDFium draws that glyph.
+    differences: BTreeMap<u32, Vec<u8>>,
 }
 
 impl<O: PdfObject> PageResources<O> {
@@ -496,17 +499,104 @@ fn width_of(facts: &FontFacts, code: u32) -> Option<f64> {
         return declared;
     }
     let base = facts.standard_14.as_deref()?;
+    // A CODE `/Differences` REMAPS is drawn as the glyph it names, at that glyph's width (#290):
+    // looked up by NAME, where it used to be looked up by code under the base encoding.
+    if let Some(name) = facts.differences.get(&code) {
+        return crate::pdfsyntax::standard14::width_of_name(base, name);
+    }
     crate::pdfsyntax::standard14::width_of(base, code, facts.base_encoding)
 }
 
-/// Which base encoding a simple font's `/Encoding` names.
+/// The glyph name `/Differences` gives each code, read as PDFium reads it, for a font with no
+/// `/Widths` (#290).
 ///
-/// A name, or the `/BaseEncoding` inside an `/Encoding` dictionary. Anything else — including a
-/// dictionary with only `/Differences` — is `Standard`, which is what PDF 32000-1 §9.6.6.1 says
-/// a font with no stated base encoding uses for a non-symbolic font.
+/// Only an `/Encoding` DICTIONARY carries `/Differences` to PDFium -- a stream's are ignored,
+/// measured (#125's third security review) -- so nothing else is read. An integer is the next
+/// code; a name is the glyph at it, and the code advances; a later name for a code wins, as PDFium's
+/// does. qpdf hands names back decoded, so `/#57` is `W`, as PDFium reads it.
 ///
 /// # Errors
 ///
+/// [`Error::Unsupported`] naming `differences-item-unreadable` for an item that is neither an
+/// integer nor a name, and [`Error::Malformed`] naming `differences-anchor` for an anchor outside
+/// a character code -- the refusals the narrowing applies, here where every such font is read;
+/// [`Error::Unsupported`] naming `number-unreadable` for an array past [`MAX_NUMBER_ARRAY`] items.
+fn differences_by_code<O: PdfObject>(font: &O) -> Result<BTreeMap<u32, Vec<u8>>> {
+    const DIFFERENCES: Name = Name::literal(b"/Differences\0");
+    let mut by_code = BTreeMap::new();
+    let encoding = font.key(&ENCODING);
+    if encoding.type_code() != object_type::DICTIONARY {
+        return Ok(by_code);
+    }
+    let differences = encoding.key(&DIFFERENCES);
+    if differences.type_code() != object_type::ARRAY {
+        return Ok(by_code);
+    }
+    let length = differences.array_len();
+    if length > MAX_NUMBER_ARRAY {
+        return Err(number_unreadable());
+    }
+    let mut code: u32 = 0;
+    for at in 0..length {
+        let item = differences.array_item(at);
+        match item.type_code() {
+            object_type::INTEGER => {
+                code = u32::try_from(item.integer_value()).map_err(|_| {
+                    Error::Malformed(
+                        "pdf redaction [differences-anchor]: a /Differences array anchored at a \
+                         code outside the range a character code can take"
+                            .to_owned(),
+                    )
+                })?;
+            }
+            object_type::NAME => {
+                by_code.insert(code, item.name()?.plain().to_vec());
+                code = code.saturating_add(1);
+            }
+            _ => {
+                return Err(Error::Unsupported(
+                    "pdf redaction [differences-item-unreadable]: a /Differences item that is \
+                     neither a code nor a glyph name, which a renderer reads as a code and burrow \
+                     would not"
+                        .to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(by_code)
+}
+
+/// The refusal for descriptor `/Flags` that change how PDFium maps codes to glyphs (#290, #297).
+fn font_flags_refusal() -> Error {
+    Error::Unsupported(
+        "pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer \
+         draws for a code, or are not a whole number"
+            .to_owned(),
+    )
+}
+
+/// The descriptor `/Flags` bits measured to leave PDFium's code-to-glyph mapping and widths alone
+/// on its bundled standard-14 faces (#290's round-0 spec review): FixedPitch, Serif, Script,
+/// Nonsymbolic, Italic, SmallCaps, ForceBold. Symbolic (4) and AllCaps (65,536) change them, and
+/// any other bit is unmeasured; both refuse on a font with no `/Widths`.
+const NEUTRAL_FLAGS: u32 = 1 | 2 | 8 | 32 | 64 | (1 << 17) | (1 << 18);
+
+/// The AllCaps bit (bit 17). PDFium draws a lowercase code as the uppercase glyph AT THE UPPERCASE
+/// CODE'S WIDTH unless an embedded program loads, with or without `/Widths` (#297); refused on every
+/// simple font, since whether a program loads is not burrow's to predict.
+const ALL_CAPS: u32 = 1 << 16;
+
+/// Which base encoding a simple font's `/Encoding` names.
+///
+/// A name, or the `/BaseEncoding` inside an `/Encoding` dictionary: StandardEncoding,
+/// WinAnsiEncoding or MacRomanEncoding (#290). An `/Encoding` that is neither a name nor a
+/// dictionary, or a dictionary with no `/BaseEncoding`, is `Standard` -- what PDF 32000-1 §9.6.6.1
+/// says a font with no stated base encoding uses for a non-symbolic font, and what PDFium does.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `width-source` for a base-encoding name other than the three
+/// above (#290: PDFium's MacExpert behaves as WinAnsi and its PDFDoc differs by subtype, measured);
 /// [`Error::Unsupported`] naming `base-encoding-not-a-name` for a `/BaseEncoding` that is present
 /// and not a name (#125's third security review). PDFium reads it by its bytes, so
 /// `(WinAnsiEncoding)` is WinAnsi to it and was Standard here: 50 codes of 96 then SECRET, placed
@@ -517,21 +607,30 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
     const BASE_ENCODING: Name = Name::literal(b"/BaseEncoding\0");
     const WIN_ANSI: Name = Name::literal(b"/WinAnsiEncoding\0");
 
+    const MAC_ROMAN: Name = Name::literal(b"/MacRomanEncoding\0");
+    const STANDARD: Name = Name::literal(b"/StandardEncoding\0");
+    // ONLY THE THREE BASE ENCODINGS THE TABLE IS MEASURED UNDER (#290): another name --
+    // MacExpertEncoding, PDFDocEncoding, anything unknown -- maps codes in ways PDFium's own tables
+    // do not share with the specification's (measured), and refuses rather than reading as Standard.
+    let named = |handle: &O| -> Result<BaseEncoding> {
+        if names(handle, &WIN_ANSI) {
+            Ok(BaseEncoding::WinAnsi)
+        } else if names(handle, &MAC_ROMAN) {
+            Ok(BaseEncoding::MacRoman)
+        } else if names(handle, &STANDARD) {
+            Ok(BaseEncoding::Standard)
+        } else {
+            Err(width_source_refusal())
+        }
+    };
     let encoding = font.key(&ENCODING);
     Ok(match encoding.type_code() {
-        object_type::NAME => {
-            if names(&encoding, &WIN_ANSI) {
-                BaseEncoding::WinAnsi
-            } else {
-                BaseEncoding::Standard
-            }
-        }
+        object_type::NAME => named(&encoding)?,
         object_type::DICTIONARY => {
             let base = encoding.key(&BASE_ENCODING);
             match base.type_code() {
                 object_type::NULL => BaseEncoding::Standard,
-                object_type::NAME if names(&base, &WIN_ANSI) => BaseEncoding::WinAnsi,
-                object_type::NAME => BaseEncoding::Standard,
+                object_type::NAME => named(&base)?,
                 _ => {
                     return Err(Error::Unsupported(
                         "pdf resources [base-encoding-not-a-name]: an /Encoding whose \
@@ -554,9 +653,14 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 /// `/MissingWidth` outside 0..65,535, #292), or `width-source` (a `/Widths` that is a number or an
 /// empty array, a `/MissingWidth` or an embedded `/FontFile*` with no `/Widths`, a
 /// `/FontDescriptor` that is not a dictionary, or a Type 3 font with no `/Widths` or with a
-/// `/MissingWidth`); [`Error::Malformed`] naming `type3-matrix`, or
-/// `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths` declared; and whatever
-/// [`read_composite`] refuses for a Type 0 font.
+/// `/MissingWidth`, or a base encoding other than Standard, WinAnsi or MacRoman), or `font-flags`
+/// (AllCaps on any simple font, #297; any bit not measured neutral on a font with no `/Widths`,
+/// #290; a `/Flags` that is not a whole number in 0..2^32); [`Error::Unsupported`] naming
+/// `differences-item-unreadable`, and [`Error::Malformed`] naming `differences-anchor`, for a
+/// `/Differences` read as [`differences_by_code`] reads it, and `number-unreadable` for a `/Flags`
+/// past 2^24 or a `/Differences` past [`MAX_NUMBER_ARRAY`] items; [`Error::Malformed`] naming
+/// `type3-matrix`, or `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths`
+/// declared; and whatever [`read_composite`] refuses for a Type 0 font.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
@@ -573,6 +677,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         no_metrics: None,
         standard_14: None,
         base_encoding: crate::pdfsyntax::standard14::BaseEncoding::Standard,
+        differences: BTreeMap::new(),
     };
 
     // A NEGATIVE `/FirstChar` REFUSES HERE, where every font is read (#125's fifth security review).
@@ -623,6 +728,35 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
             .any(|key| descriptor.key(key).type_code() != object_type::NULL);
     if descriptor.type_code() == object_type::DICTIONARY {
         facts.missing_width = number_strict(&descriptor.key(&MISSING_WIDTH))?;
+    }
+    // `/Flags`, READ AS PDFIUM READS IT -- a reference resolved, a whole number -- and refused where
+    // it changes the glyph a code draws (#290, #297). A non-whole or out-of-range value refuses too:
+    // PDFium truncates it, and `-1` or 4294967295 set every bit.
+    const FLAGS: Name = Name::literal(b"/Flags\0");
+    let flags = if descriptor_kind == object_type::DICTIONARY {
+        match number_strict(&descriptor.key(&FLAGS))? {
+            None => None,
+            Some(value) => Some(
+                whole(value)
+                    .and_then(|whole| u32::try_from(whole).ok())
+                    .ok_or_else(font_flags_refusal)?,
+            ),
+        }
+    } else {
+        None
+    };
+    // ALLCAPS ON EVERY TYPE1, MMTYPE1 AND TRUETYPE FONT (#297, and the owner's decision of
+    // 2026-10-09); Type 3 and Type 0 are measured unaffected. PDFium leaves it
+    // inert only when an embedded program LOADS, and burrow cannot predict that: the first version
+    // exempted any font naming a `/FontFile*`, and an empty, garbage, null or dangling program left
+    // SECRET in the region with `Ok`, 32 of 32 shapes (#290's round-1 security review). The accepted
+    // cost: 5 of 99 census documents (TeX, Latin Modern and Computer Modern), until a measured
+    // narrowing.
+    if subtype != Some(SUBTYPE_TYPE0)
+        && subtype != Some(SUBTYPE_TYPE3)
+        && flags.is_some_and(|bits| bits & ALL_CAPS != 0)
+    {
+        return Err(font_flags_refusal());
     }
 
     // WHERE THE WIDTHS COME FROM, chosen as PDFium chooses it, and refused wherever burrow would
@@ -715,6 +849,12 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         let base = font.key(&BASE_FONT).name();
         facts.standard_14 = base.as_ref().ok().map(|name| name.plain().to_vec());
         facts.base_encoding = base_encoding(font)?;
+        facts.differences = differences_by_code(font)?;
+        // ONLY THE MEASURED-NEUTRAL FLAGS on the bundled-table path (#290): Symbolic changes which
+        // glyph a code draws, and no other bit has been measured to leave it alone.
+        if flags.is_some_and(|bits| bits & !NEUTRAL_FLAGS != 0) {
+            return Err(font_flags_refusal());
+        }
         // SET EVEN WHEN A TABLE IS FOUND, because the table may not carry the particular code
         // the page draws -- an untabulated font, a code outside 32..=126, or one of the pairs
         // the calibration found the two sources disagreeing on. `width_of` falls back to this

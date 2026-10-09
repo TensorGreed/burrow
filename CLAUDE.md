@@ -13,7 +13,8 @@ These are not preferences. A change that violates one is wrong, however well it 
 2. **Permissive licenses only.** Allowed: MIT, BSD-2/3, Apache-2.0, ISC, Zlib, MPL-2.0,
    OFL (fonts), Unicode-3.0, CC0-1.0, Unlicense — plus, for bundled native engine
    components, FTL, IJG, libpng-2.0, LicenseRef-AGG-2.3, MIT-Modern-Variant and ICU —
-   plus NCSA, for libFuzzer (ADR 0012).
+   plus NCSA, for libFuzzer (ADR 0012) — plus APAFML, for Adobe's Core 14 AFM files only,
+   committed unmodified with their notice and checked byte for byte (ADR 0030).
    Forbidden: GPL, LGPL, AGPL,
    SSPL, non-commercial, and anything unclear. CI enforces this in two halves:
    `cargo-deny` for Rust crates, `tools/check-engine-licences.py` against

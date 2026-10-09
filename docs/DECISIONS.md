@@ -102,6 +102,20 @@ one is decided in an issue, with the same three parts.
     build. *Decided:* owner, 2026-10-08, #285. *Does not cover:* reading any other qpdf
     text, or reading this one in a shipped build -- each is a new decision, not an extension.
 
+14. **A standard-14 width is accepted only where the AFM and PDFium's bundled face agree; the
+    system-font residual is accepted and recorded.** For a font with no `/Widths`, burrow places a
+    glyph by NAME from `core/burrow-engines/src/pdfsyntax/standard14_table.rs`, generated (never
+    edited) from Adobe's Core 14 AFMs (ADR 0030) intersected with the pinned PDFium's measured
+    advances, per style; `tools/check-standard14-table.sh` regenerates and diffs it, and a face gate
+    requires PDFium to have loaded exactly the measured face. **The residual, stated:** the accepted
+    widths are exact for viewers that use the AFM metrics, and for PDFium drawing from its bundled
+    faces. A viewer that substitutes a system font for a standard-14 name -- desktop Chrome's PDFium
+    among them, when a matching face is installed -- may lay text out differently. This is the same
+    residual the hand-transcribed table already had, not a new one. *Decided:* owner, 2026-10-09,
+    #290. *Does not cover:* native mobile builds, which will see system fonts: revisit
+    `FPDF_SetSystemFontInfo` (making PDFium see none) at M3/M4 as its own decision; and any other
+    font class.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new rule from here: **before writing code**, give the `security-reviewer` the proposed

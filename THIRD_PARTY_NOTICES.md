@@ -227,6 +227,48 @@ least one to need another ADR; jbig2enc is the most likely.
 None yet; the web app is scaffolded in this milestone. Astro, Svelte, and Vite are all
 MIT.
 
+## Data files
+
+### Adobe Core 14 AFM files — APAFML
+
+`third_party/adobe-core14-afm/`: the fourteen AFM files for the PDF standard 14 fonts and their
+accompanying `MustRead.html`, from Adobe's `Core14_AFMs.zip`
+(`https://download.macromedia.com/pub/developer/opentype/tech-notes/Core14_AFMs.zip`, sha256
+`8c892c3c49553cfd2d2a27c4495b4bb12e2875115be7fd127ed3876df19d8654`), committed **unmodified** and
+held to that by `tools/check-afm-provenance.sh` (ADR 0030). Each AFM carries Adobe's copyright
+notice; the twelve used are listed verbatim below. The notice that accompanies them, verbatim:
+
+> This file and the 14 PostScript(R) AFM files it accompanies may be used, copied, and distributed
+> for any purpose and without charge, with or without modification, provided that all copyright
+> notices are retained; that the AFM files are not distributed without this file; that all
+> modifications to this file or any of the AFM files are prominently noted in the modified
+> file(s); and that this paragraph is not modified. Adobe Systems has no responsibility or
+> obligation to support the use of the AFM files.
+
+**What uses them:** `tools/make-standard14-table.py`, which generates
+`core/burrow-engines/src/pdfsyntax/standard14_table.rs` (#290): a **modified extract** of the twelve
+Latin AFMs -- glyph names, advance widths, and the StandardEncoding code each AFM assigns over
+32..=126 -- intersected with a measurement of the pinned PDFium. That **derived data ships** in the
+redaction wasm module (`burrow_wasm_redact_bg.wasm`), which no visitor loads until `/redact-pdf`
+exists (#136). No AFM file is parsed by, or shipped in, any build. Symbol and ZapfDingbats are
+committed, as the notice requires the fourteen to travel together, and are not used.
+
+The Notice line of each AFM the extract is drawn from, verbatim (`tools/check-standard14-table.sh`
+requires every one of them here, byte for byte):
+
+- Courier: `Copyright (c) 1989, 1990, 1991, 1992, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Courier-Bold: `Copyright (c) 1989, 1990, 1991, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Courier-BoldOblique: `Copyright (c) 1989, 1990, 1991, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Courier-Oblique: `Copyright (c) 1989, 1990, 1991, 1992, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Helvetica: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Helvetica-Bold: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Helvetica-BoldOblique: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Helvetica-Oblique: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-Bold: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-BoldItalic: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-Italic: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-Roman: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+
 ## Fonts
 
 Any bundled font must be OFL-1.1 or a permissive alternative. There are **two classes**, and

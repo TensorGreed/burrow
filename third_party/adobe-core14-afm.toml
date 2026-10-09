@@ -1,0 +1,33 @@
+# Provenance of third_party/adobe-core14-afm/ (ADR 0030). That directory holds Adobe's Core 14 AFM
+# files EXACTLY as published -- the fourteen .afm files and their accompanying MustRead.html,
+# unmodified, as the notice requires -- so this record lives beside it, not in it.
+#
+# tools/check-afm-provenance.sh verifies every file against the checksums below on every run, and
+# with --fetch re-downloads the archive from the pinned URL and checks it against this record too.
+# The files are read only by tools/make-standard14-table.py, which GENERATES
+# core/burrow-engines/src/pdfsyntax/standard14_table.rs (#290). No shipped build parses them; the
+# derived data -- glyph names, widths, StandardEncoding codes -- ships in the redaction wasm.
+
+[archive]
+url = "https://download.macromedia.com/pub/developer/opentype/tech-notes/Core14_AFMs.zip"
+sha256 = "8c892c3c49553cfd2d2a27c4495b4bb12e2875115be7fd127ed3876df19d8654"
+licence = "APAFML"
+notice = "MustRead.html"
+fetched = "2026-10-09"
+
+[files]
+"Courier.afm" = "521e0d7c7521efd4be78a5a9c5398e4c67d0771e396115b0346bc4ef74ada53d"
+"Courier-Bold.afm" = "ad0150d4bedcc8877742bf94251fcec13e348dd599d4603f679d92027d1e6e99"
+"Courier-BoldOblique.afm" = "cb82e69ef5f6d421e8f404fe00bb0d993425aae79725331d0ebf847e94e97e92"
+"Courier-Oblique.afm" = "b27103b2a2ef6030c110626597e2ab47bb8279075a039ab9170facb0aa1f70e1"
+"Helvetica.afm" = "da33f1870474c8e68bfe3e2353ff107ab6c6eea1f9836ce2aaf1e1a07b17982f"
+"Helvetica-Bold.afm" = "b880d96baf56d0cc059f258f60b4d764ef49b555ab9db294b959c0016dee41f2"
+"Helvetica-BoldOblique.afm" = "69984a35ca26973a39f261cf83e0d367ea2e6517c590b0b030d4d4a219d9c269"
+"Helvetica-Oblique.afm" = "b4609b71b660a392ac09df35060271a876c2ce66617dd83bf826f742bb9d9721"
+"Symbol.afm" = "3d2128a820375a10de9bc8bf6cfb15ded482c01ca0f95cc0b3277f37ec8bde66"
+"Times-Bold.afm" = "b4a000ed85cb22c6cdd985aa0fd3f6f78ed5079b7c6860dc4f0234e0d0e3c522"
+"Times-BoldItalic.afm" = "93c4744ba955215de02c4aae0b777133442ada2f7ab5a2af30a040b792b3c55d"
+"Times-Italic.afm" = "ed37fa2e6a67b5b17dfd47f36fc7e90df32891a4408860dbc8d4cbbe9959e242"
+"Times-Roman.afm" = "768e1cabea085d489a63da3e80b96bc5abf0ec98d3073c9b4d6ba76e7bccba64"
+"ZapfDingbats.afm" = "a32565c90afd1b57a7008fc567b78d95cf1c22adff5e086094d666d88b039859"
+"MustRead.html" = "be71e055bb2551a6fc8b60dcf094bf40357858980abde86f76cc9a3c144d5403"

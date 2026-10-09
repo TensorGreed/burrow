@@ -169,6 +169,16 @@ jobs:
 
       - run: cargo test --workspace --all-features
 
+      # THE STANDARD-14 TABLE IS WHAT THE AFMs AND THIS PDFium PRODUCE (#290, ADR 0030; the owner's
+      # conditions 1 and 2). Here, where the native PDFium is: the table is re-measured, regenerated
+      # and diffed, so a PDFium bump that moves a bundled width is red rather than stale; the face
+      # gate is shown to refuse a substituted face; and the diff is shown to refuse a moved width.
+      - name: The standard-14 table is current, and its gates refuse what they exist for
+        run: |
+          tools/check-standard14-table.sh
+          tools/test-check-standard14-table.sh
+          tools/test-standard14-face-gate.sh
+
       # THE RSS MEASUREMENT, IN A PROCESS OF ITS OWN.
       # `peak_rss_kb` reads `/proc/self/status`, which is process-wide, so the measurement is
       # only meaningful when nothing else in the binary is allocating. `#[ignore]` keeps it out
@@ -891,6 +901,15 @@ jobs:
         run: |
           tools/check-no-generated-files.sh
           tools/test-check-no-generated-files.sh
+
+      # ADR 0030: Adobe's Core 14 AFM files are committed exactly as published, with their notice,
+      # which is what their licence asks. Here, in the job that fetches nothing, because the check
+      # reads only the committed files and their record. The network re-fetch (--fetch) is not a
+      # per-PR gate: a dead mirror must not block a merge, and the checksums already pin the bytes.
+      - name: Adobe's AFM files are the published ones, with their notice
+        run: |
+          tools/check-afm-provenance.sh
+          tools/test-check-afm-provenance.sh
 
       # The crypto checker's adversarial self-test, HERE rather than beside the checker in
       # `test`, by the rule in CLAUDE.md: it reads only committed files and needs only cc and

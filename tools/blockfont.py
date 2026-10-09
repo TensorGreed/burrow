@@ -175,7 +175,7 @@ def _checksum(table: bytes) -> int:
     return total & 0xFFFFFFFF
 
 
-def build(characters: str) -> tuple[bytes, dict[str, int]]:
+def build(characters: str, family: str = "BurrowSpikeBlock") -> tuple[bytes, dict[str, int]]:
     """A TrueType font covering `characters`, plus the character to glyph-id map.
 
     Glyph 0 is `.notdef` (empty). The rest follow `characters` in order, so the caller can
@@ -375,11 +375,14 @@ def build(characters: str) -> tuple[bytes, dict[str, int]]:
     )
     assert len(os2) == 96, f"OS/2 v4 is 96 bytes, built {len(os2)}"
 
+    # `family` is for tools/test-standard14-face-gate.sh, which needs a face that NAMES itself
+    # after a standard-14 font so PDFium substitutes it; every other caller takes the default, and
+    # the default's bytes are unchanged.
     name_records = [
-        (1, "BurrowSpikeBlock"),
+        (1, family),
         (2, "Regular"),
-        (4, "BurrowSpikeBlock"),
-        (6, "BurrowSpikeBlock"),
+        (4, family),
+        (6, family),
     ]
     strings = b""
     record_data = b""

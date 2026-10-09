@@ -205,6 +205,20 @@ JOBS: list[dict] = [
         ],
     },
     {
+        # Needs the native PDFium, as `test` does (#290, ADR 0030).
+        "name": "standard14-table",
+        "run": (
+            "tools/check-standard14-table.sh && tools/test-check-standard14-table.sh "
+            "&& tools/test-standard14-face-gate.sh"
+        ),
+        "covers": [
+            "tools/check-standard14-table.sh",
+            "tools/test-check-standard14-table.sh",
+            "tools/test-standard14-face-gate.sh",
+        ],
+        "why": "the standard-14 table is regenerated from the AFMs and the pinned PDFium and diffed",
+    },
+    {
         "name": "test",
         "run": "cargo test --workspace --all-features",
         "covers": ["cargo:test"],
@@ -320,6 +334,7 @@ JOBS: list[dict] = [
                 "python3 tools/check-referenced-paths.py",
                 "python3 tools/check-python-syntax.py",
                 "tools/check-no-generated-files.sh",
+                "tools/check-afm-provenance.sh",
                 "tools/check-no-network-deps.sh",
                 "tools/check-wasm-exports.sh",
                 "tools/check-qpdf-crypto.sh",
@@ -334,6 +349,7 @@ JOBS: list[dict] = [
             "tools/check-referenced-paths.py",
             "tools/check-python-syntax.py",
             "tools/check-no-generated-files.sh",
+            "tools/check-afm-provenance.sh",
             "tools/check-no-network-deps.sh",
             "tools/check-wasm-exports.sh",
             "tools/check-qpdf-crypto.sh",
@@ -349,6 +365,7 @@ JOBS: list[dict] = [
                 "tools/test-check-qpdf-trapped.sh",
                 "tools/test-check-handle-identity.sh",
                 "tools/test-check-no-generated-files.sh",
+                "tools/test-check-afm-provenance.sh",
                 "tools/test-check-wasm-exports.sh",
                 "tools/test-check-qpdf-crypto.sh",
                 "tools/test-detect-engine-components.sh",
@@ -400,6 +417,7 @@ JOBS: list[dict] = [
             "tools/test-check-qpdf-trapped.sh",
             "tools/test-check-handle-identity.sh",
             "tools/test-check-no-generated-files.sh",
+            "tools/test-check-afm-provenance.sh",
             "tools/test-check-wasm-exports.sh",
             "tools/test-check-qpdf-crypto.sh",
             "tools/test-detect-engine-components.sh",

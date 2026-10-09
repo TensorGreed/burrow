@@ -23,6 +23,11 @@ Anti-Grain Geometry **2.3**, whose grant text is committed at
 version, not just the name. Plus `MIT-Modern-Variant` (HarfBuzz) and `ICU` (ICU's legacy
 1.8.1–57.1 section), added by ADR 0010.
 
+**Also allowed, for Adobe's Core 14 AFM files only:** `APAFML` (ADR 0030). The fourteen AFMs and
+`MustRead.html` must sit together, unmodified, in `third_party/adobe-core14-afm/`;
+`tools/check-afm-provenance.sh` holds them to the recorded checksums. Any other file under
+`APAFML` needs its own ADR.
+
 **HarfBuzz is the case to learn from.** It was linked into PDFium for a whole ADR cycle
 with **no licence file in the artifact** and no manifest entry, because upstream's
 `08-licenses.sh` derives its set from `build.ninja` and misses it. Reading licence files
