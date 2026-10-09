@@ -236,8 +236,7 @@ accompanying `MustRead.html`, from Adobe's `Core14_AFMs.zip`
 (`https://download.macromedia.com/pub/developer/opentype/tech-notes/Core14_AFMs.zip`, sha256
 `8c892c3c49553cfd2d2a27c4495b4bb12e2875115be7fd127ed3876df19d8654`), committed **unmodified** and
 held to that by `tools/check-afm-provenance.sh` (ADR 0030). Each AFM carries Adobe's copyright
-notice, for example `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All
-Rights Reserved.` The notice that accompanies them, verbatim:
+notice; the twelve used are listed verbatim below. The notice that accompanies them, verbatim:
 
 > This file and the 14 PostScript(R) AFM files it accompanies may be used, copied, and distributed
 > for any purpose and without charge, with or without modification, provided that all copyright

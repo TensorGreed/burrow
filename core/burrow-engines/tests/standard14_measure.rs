@@ -14,7 +14,8 @@
 //!
 //! 2. **The measurement.** With `BURROW_STANDARD14_MEASURE=<path>`, `measure_into_a_file` writes
 //!    PDFium's advance for every glyph name in every AFM (drawn through `/Differences`) and for every
-//!    code 1..=255 under each base encoding, per style, and the faces it loaded. That file and the
+//!    code 32..=126 under each base encoding, per style -- under `/Subtype /Type1` AND `/TrueType`,
+//!    and each name at two codes -- and the faces it loaded. That file and the
 //!    AFMs are all `tools/make-standard14-table.py` reads; `tools/check-standard14-table.sh` runs
 //!    both and diffs the result against the committed table, so a PDFium bump that moves a bundled
 //!    width goes red rather than stale (the owner's condition 2).
@@ -172,7 +173,8 @@ fn draw(pdf: &[u8]) -> Drawn {
     let mut origins = Vec::new();
     let mut face = None;
     // SAFETY: every handle is used only between its open and its close below, under the lock, and
-    // every buffer is sized from PDFium's own answer for it.
+    // every buffer is sized from PDFium's own answer for it. A null page or text page is passed on
+    // to PDFium, which answers a null handle with zero characters and closes nothing.
     unsafe {
         let doc = FPDF_LoadMemDocument64(pdf.as_ptr().cast(), pdf.len(), std::ptr::null());
         assert!(!doc.is_null(), "PDFium refused a document this test built");
@@ -206,6 +208,13 @@ fn draw(pdf: &[u8]) -> Drawn {
                     let mut written = 0_usize;
                     FPDFFont_GetFontData(font, data.as_mut_ptr(), data.len(), &mut written);
                     data.truncate(written);
+                    // A FACE THAT CANNOT BE NAMED OR READ IS NOT A FACE: recorded as `("", sha256 of
+                    // nothing)` it would let the gate compare equal against itself (#290's round-1
+                    // code review).
+                    assert!(
+                        !family.is_empty() && !data.is_empty(),
+                        "PDFium gave no family name or no font data for the face it loaded"
+                    );
                     face = Some((family, sha256_hex(&data)));
                 }
             }
@@ -328,11 +337,24 @@ fn measure_into_a_file() {
             .face
             .expect("PDFium drew text to ask the face of");
         faces.insert(style.to_owned(), face);
-        // EACH NAME THROUGH `/Differences`, at code 66 over StandardEncoding, between two `A`s.
+        // EACH NAME THROUGH `/Differences`, between two `A`s, at TWO codes (66 and 200) and under
+        // BOTH subtypes the resolver reads it under (#290's round-1 code review): a name is
+        // recorded with a width only when all four agree, so a PDFium whose TrueType path or a
+        // code-dependent fallback diverged would drop the name rather than keep a wrong width.
         let by_name = names.entry(style.to_owned()).or_default();
         for name in afm_names(style) {
-            let encoding = format!("/Encoding << /Differences [66 /{name}] >>");
-            by_name.insert(name, advance("Type1", style, &encoding, 66));
+            let mut seen = Vec::new();
+            for subtype in ["Type1", "TrueType"] {
+                for code in [66_u8, 200] {
+                    let encoding = format!("/Encoding << /Differences [{code} /{name}] >>");
+                    seen.push(advance(subtype, style, &encoding, code));
+                }
+            }
+            let agreed = seen.first().copied().flatten().filter(|first| {
+                seen.iter()
+                    .all(|other| other.is_some_and(|w| (w - first).abs() < 1e-6))
+            });
+            by_name.insert(name, agreed);
         }
         // EACH CODE under each base encoding burrow may admit.
         let by_encoding = codes.entry(style.to_owned()).or_default();
@@ -340,7 +362,14 @@ fn measure_into_a_file() {
             let encoding = format!("/Encoding /{base}");
             let measured = by_encoding.entry(base.to_owned()).or_default();
             for code in 32..=126_u8 {
-                measured.insert(code, advance("Type1", style, &encoding, code));
+                // Both subtypes, as for names: recorded only where they agree.
+                let type1 = advance("Type1", style, &encoding, code);
+                let truetype = advance("TrueType", style, &encoding, code);
+                let agreed = match (type1, truetype) {
+                    (Some(a), Some(b)) if (a - b).abs() < 1e-6 => Some(a),
+                    _ => None,
+                };
+                measured.insert(code, agreed);
             }
         }
     }

@@ -16,7 +16,7 @@ cp "$table" "$work/original.rs"
 cp "$notices" "$work/original.md"
 trap 'cp "$work/original.rs" "$table"; cp "$work/original.md" "$notices"; rm -rf "$work"' EXIT
 
-EXPECTED_CASES=3
+EXPECTED_CASES=4
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -82,6 +82,35 @@ else
     ok "a Notice line missing from THIRD_PARTY_NOTICES.md is refused by name"
   else
     bad "a Notice line missing from THIRD_PARTY_NOTICES.md is refused by name (exit $status)"
+    sed 's/^/         /' <<<"$out" >&2
+  fi
+fi
+cp "$work/original.md" "$notices"
+cmp -s "$notices" "$work/original.md" || { echo "FAILED -- the notices were not restored" >&2; exit 1; }
+
+# ANOTHER STYLE'S TEXT UNDER COURIER'S LABEL is refused: Courier's line carries Times-Roman's
+# notice. That swap is what the per-style match exists for -- a text-only match would not see it.
+python3 - "$notices" <<'PY'
+import sys, re
+p = sys.argv[1]; s = open(p).read()
+courier = re.search(r"^- Courier: `(.*)`$", s, re.M)
+times = re.search(r"^- Times-Roman: `(.*)`$", s, re.M)
+assert courier and times, "the Courier or Times-Roman line moved; update this case"
+swapped = s.replace(courier.group(0), "- Courier: `" + times.group(1) + "`", 1)
+assert swapped != s
+open(p, "w").write(swapped)
+PY
+if cmp -s "$notices" "$work/original.md"; then
+  bad "the label swap did not apply, so this case measured nothing"
+else
+  set +e
+  out="$("$here/check-standard14-table.sh" 2>&1)"
+  status=$?
+  set -e
+  if [ "$status" -ne 0 ] && grep -qF "lacks the verbatim Notice line of: Courier" <<<"$out"; then
+    ok "another style's notice under Courier's label is refused by name"
+  else
+    bad "another style's notice under Courier's label is refused by name (exit $status)"
     sed 's/^/         /' <<<"$out" >&2
   fi
 fi

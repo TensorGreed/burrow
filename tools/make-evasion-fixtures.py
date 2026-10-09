@@ -453,9 +453,69 @@ def evade_allcaps_flag() -> bytes:
     return _standard14_padded(b"", b"/Flags 65568", "STD14-ALLCAPS", pad=0x61, pad_width=667)
 
 
+def _allcaps_with_program(program: bytes | None, flags: bytes, canary: str, pad_width: int = 700) -> bytes:
+    """A TrueType font declaring `/Widths` (`a` 300, `A` 700, the rest 600) with `flags` and
+    `program` as its `/FontFile2`: forty `a` then the secret in Helvetica, from where the secret
+    begins at the region's left edge if each `a` advances 700 -- as PDFium draws AllCaps when no
+    program loads. burrow, reading 300, placed the secret 160 points left, outside the region."""
+    import blockfont  # noqa: E402 -- the generated face; its outlines are drawn here
+
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    widths = ["600"] * 95
+    widths[ord("a") - 32] = "300"
+    widths[ord("A") - 32] = "700"
+    extra = b""
+    if program is not None:
+        data = blockfont.build("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ")[0] if program == b"blockfont" else program
+        stream = pdf.stream(b"", data)
+        extra = b" /FontFile2 " + str(stream).encode() + b" 0 R"
+    desc = pdf.add(b"<< /Type /FontDescriptor /FontName /FooSans /Flags " + flags + extra + b" >>")
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /FooSans /FirstChar 32 /LastChar 126"
+        b" /Widths [" + " ".join(widths).encode() + b"] /FontDescriptor " + str(desc).encode()
+        + b" 0 R >>"
+    )
+    pads = 40
+    # From where the secret begins at the region's left edge under the advance PDFium uses for `a`:
+    # 700 under AllCaps with no program loaded, 300 otherwise.
+    start = x0 + 2 - pads * pad_width * 10 / 1000
+    content = (
+        b"BT /F1 10 Tf " + f"{start:.2f} {SECRET_Y} Td ".encode() + literal("a" * pads)
+        + b" Tj /Helv " + str(SECRET_SIZE).encode() + b" Tf " + literal(secret(canary))
+        + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def evade_allcaps_program_not_loading() -> bytes:
+    """#297's second shape, found by #290's round-1 security review: AllCaps with a `/FontFile2`
+    that does not load (here, empty) and declared `/Widths`. PDFium treats the font as not
+    embedded and draws `a` at `A`'s 700; the first fix exempted any font naming a program, so it
+    returned `Ok` with the secret kept (32 of 32 shapes). Refused `[font-flags]` on every simple
+    font since."""
+    return _allcaps_with_program(b"", b"65568", "ALLCAPS-NO-PROGRAM")
+
+
+def evade_allcaps_program_loads() -> bytes:
+    """The twin whose program LOADS (a generated block face): PDFium leaves AllCaps inert there,
+    but burrow cannot predict whether a program loads, so it refuses `[font-flags]` too -- the
+    owner's accepted cost (5 of 99 census documents), which a measured narrowing may lift."""
+    return _allcaps_with_program(b"blockfont", b"65568", "ALLCAPS-PROGRAM-LOADS", pad_width=300)
+
+
+def nearmiss_allcaps_neutral_flags() -> bytes:
+    """The twin that redacts: the same font and empty program with `/Flags 32`."""
+    return _allcaps_with_program(b"", b"32", "ALLCAPS-NEUTRAL", pad_width=300)
+
+
 def nearmiss_std14_neutral_flags() -> bytes:
     """The twin of the flag fixtures: `/Flags 32` (nonsymbolic), measured neutral. Redacts."""
-    return _standard14_padded(b"/Encoding /WinAnsiEncoding", b"/Flags 32", "STD14-NEUTRAL")
+    # THE MINIMAL PAIR of `evade-std14-symbolic-flags`: no `/Encoding`, as there, so code 96 is
+    # `quoteleft` (222), and only the flag differs (#290's round-1 code review).
+    return _standard14_padded(b"", b"/Flags 32", "STD14-NEUTRAL", pad_width=222)
 
 
 def evade_image_in_type3_glyph() -> bytes:
@@ -2969,6 +3029,9 @@ CASES: list[tuple[str, str]] = [
     ("evade-std14-symbolic-flags", "standard-14 by name"),
     ("evade-allcaps-flag", "standard-14 by name"),
     ("nearmiss-std14-neutral-flags", "standard-14 by name"),
+    ("evade-allcaps-program-not-loading", "standard-14 by name"),
+    ("evade-allcaps-program-loads", "standard-14 by name"),
+    ("nearmiss-allcaps-neutral-flags", "standard-14 by name"),
     ("evade-text-in-type3-via-form", "Type 3 procedure"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
     ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
@@ -3096,6 +3159,9 @@ BUILDERS = {
     "evade-std14-symbolic-flags": evade_std14_symbolic_flags,
     "evade-allcaps-flag": evade_allcaps_flag,
     "nearmiss-std14-neutral-flags": nearmiss_std14_neutral_flags,
+    "evade-allcaps-program-not-loading": evade_allcaps_program_not_loading,
+    "evade-allcaps-program-loads": evade_allcaps_program_loads,
+    "nearmiss-allcaps-neutral-flags": nearmiss_allcaps_neutral_flags,
     "evade-image-in-form": evade_image_in_form,
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,

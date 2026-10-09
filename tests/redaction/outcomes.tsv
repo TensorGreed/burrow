@@ -214,6 +214,16 @@ CASE	tests/redaction/generated/evade-allcaps-flag.pdf	1	1	whole	ERR InvalidArgum
 CASE	tests/redaction/generated/evade-allcaps-flag.pdf	0	0	pdfbuild	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
 CASE	tests/redaction/generated/evade-allcaps-flag.pdf	0	0	whole	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
 CASE	tests/redaction/generated/evade-allcaps-flag.pdf	0	0	band	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
+INPUT	tests/redaction/generated/evade-allcaps-program-loads.pdf	d1cc8acc7c7d901b79c6d22ed99aa760819464313b843e0608ced0cca22b6e80
+CASE	tests/redaction/generated/evade-allcaps-program-loads.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-allcaps-program-loads.pdf	0	0	pdfbuild	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
+CASE	tests/redaction/generated/evade-allcaps-program-loads.pdf	0	0	whole	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
+CASE	tests/redaction/generated/evade-allcaps-program-loads.pdf	0	0	band	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
+INPUT	tests/redaction/generated/evade-allcaps-program-not-loading.pdf	49052467b0a5454e7945a05b3cb2daa6e491cfeca3feaa2ce02650c9ad2bfbee
+CASE	tests/redaction/generated/evade-allcaps-program-not-loading.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/evade-allcaps-program-not-loading.pdf	0	0	pdfbuild	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
+CASE	tests/redaction/generated/evade-allcaps-program-not-loading.pdf	0	0	whole	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
+CASE	tests/redaction/generated/evade-allcaps-program-not-loading.pdf	0	0	band	ERR Unsupported("pdf resources [font-flags]: a font whose descriptor /Flags change which glyph a renderer draws for a code, or are not a whole number")
 INPUT	tests/redaction/generated/evade-annotation-appearance-without-bbox.pdf	dca0aeb96a98161efee0004e7863442431b29d04e8f904aa4bf63e01ce034417
 CASE	tests/redaction/generated/evade-annotation-appearance-without-bbox.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/evade-annotation-appearance-without-bbox.pdf	0	0	pdfbuild	ERR Unsupported("pdf redaction [annotation-appearance-unbounded]: an annotation whose appearance has no bounding box the renderer fits to its rectangle, so where it draws is not where its rectangle is")
@@ -632,6 +642,11 @@ CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	
 CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	0	pdfbuild	OK 28177c5f4ed5ea6aa18fd3258250c0d2283af5944694080afc2abaa356814c71 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	0	whole	OK 1e55f86821fb419be14165e1ebc3315a1417d79751d5e25b44aaf6530cf5b3c2 report 9effa4daf9d36af50b7bc194d03cc6453f6047b53f7ec9f7304c95e61f21fe3a
 CASE	tests/redaction/generated/nearmiss-actualtext-around-an-untouched-form.pdf	0	0	band	OK 0440f9e8d2a8cea38aa1ca3885ea109b2281be32710b0fc0f8d92dff46a1c478 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
+INPUT	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	e58dc0cda12677671efa00da7760718b183642d446cc586071d0837bdf5966b2
+CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
+CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	pdfbuild	OK 838985274f5b404aa6a533913d3995e6dde43db84547f4c35917e896ebb9017c report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	whole	OK c5625f22d0f5cb7802d2a60a6da02ee439b42fbd291df0583f06fdc45b2f828e report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
+CASE	tests/redaction/generated/nearmiss-allcaps-neutral-flags.pdf	0	0	band	OK c65e53f79d74b678aee9c88ab41b6071e0e6475dfb9567cbad67e8484cb6faa6 report 7e06cc691f079f62cb2142f7b5b08ade990425750dd351075f811f5fbb7b3202
 INPUT	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	16ebf128f834e3a72021be1dfa3812a96c52995cbe805da07afc39f14668720e
 CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/nearmiss-annotation-bounded-on-a-turned-page.pdf	0	0	manifest	OK 7628db6a23c32e14c4d7cf41d2e529ea2ba09b35e82c67cd7e6db2ad9f014ea2 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
@@ -772,11 +787,11 @@ CASE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	1	1	w
 CASE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	0	0	pdfbuild	OK 8e5cbe10240529dd0cca069eb0475c93e03280ca97a8d6e8e4e782e926090840 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	0	0	whole	OK edb2893200a2a0959488b9d79aad7374222190dfc880d87f6373f8bb4eb0fc55 report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
 CASE	tests/redaction/generated/nearmiss-rotate-at-the-right-generation.pdf	0	0	band	OK 92d278005335ff4c5111fdba80b4f7bd1114e5c5e4cde9986c3f6a8387cf592f report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540
-INPUT	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	b1d5e015ce8024023003517e2aad31ec0d28b5d59bbd7099e0e92f4037cc5e9d
+INPUT	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	ade3a89fd4049ec784e46f6ccb7058d5e4c2919522124d26872059c733e17357
 CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
-CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	pdfbuild	OK b7754df5ccf20b492f5f202b21ffd6f513c4be20d30977aea48757a777b54b7a report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
-CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	whole	OK feb97cc392d6e4ef3aaebf847e9f05a00da341486885c69e077a7cf99d08a121 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
-CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	band	OK 2e2bec4906fc931beee463cfcd5daa1c320253db6ef34f4a84836d51570f56ad report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	pdfbuild	OK c3b500a3de3c270ea1c6ed6a50cfdda438f1062f892339b258cf8edbd349db49 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	whole	OK a2b7e35b359d4566a6a4d1ecfa6b1495c59902663415fdc7067835ebcd899683 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
+CASE	tests/redaction/generated/nearmiss-std14-neutral-flags.pdf	0	0	band	OK c56a7490ea32144f55ebc9acd0b7d3134cd2f451d95b35b4699d88763f5d64f1 report 18cbb258971e8d7f82b84dcce4d6028c74c9b044cbb354c53fe6fdcb319fc77c
 INPUT	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	92d53744029a168d8b9d035a3418a2a6f996951aea39cb153395bde28ff3afad
 CASE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	1	1	whole	ERR InvalidArgument("pdf redaction [page-out-of-range]: a page index past the end of the document")
 CASE	tests/redaction/generated/nearmiss-structparents-but-nothing-in-region.pdf	0	0	pdfbuild	OK 7f974c8d55748b81b6946d4fdad3c94012a4f1238cf043491a4ab2b78a457bee report 8cb42e9b500d4f0d082f1ae5387e4f081dd2f18a2222834e6303de6fd909d540

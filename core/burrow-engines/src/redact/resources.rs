@@ -519,7 +519,8 @@ fn width_of(facts: &FontFacts, code: u32) -> Option<f64> {
 ///
 /// [`Error::Unsupported`] naming `differences-item-unreadable` for an item that is neither an
 /// integer nor a name, and [`Error::Malformed`] naming `differences-anchor` for an anchor outside
-/// a character code -- the refusals the narrowing applies, here where every such font is read.
+/// a character code -- the refusals the narrowing applies, here where every such font is read;
+/// [`Error::Unsupported`] naming `number-unreadable` for an array past [`MAX_NUMBER_ARRAY`] items.
 fn differences_by_code<O: PdfObject>(font: &O) -> Result<BTreeMap<u32, Vec<u8>>> {
     const DIFFERENCES: Name = Name::literal(b"/Differences\0");
     let mut by_code = BTreeMap::new();
@@ -581,17 +582,21 @@ fn font_flags_refusal() -> Error {
 const NEUTRAL_FLAGS: u32 = 1 | 2 | 8 | 32 | 64 | (1 << 17) | (1 << 18);
 
 /// The AllCaps bit (bit 17). PDFium draws a lowercase code as the uppercase glyph AT THE UPPERCASE
-/// CODE'S WIDTH on a font with no embedded program, with or without `/Widths` (#297).
+/// CODE'S WIDTH unless an embedded program loads, with or without `/Widths` (#297); refused on every
+/// simple font, since whether a program loads is not burrow's to predict.
 const ALL_CAPS: u32 = 1 << 16;
 
 /// Which base encoding a simple font's `/Encoding` names.
 ///
-/// A name, or the `/BaseEncoding` inside an `/Encoding` dictionary. Anything else — including a
-/// dictionary with only `/Differences` — is `Standard`, which is what PDF 32000-1 §9.6.6.1 says
-/// a font with no stated base encoding uses for a non-symbolic font.
+/// A name, or the `/BaseEncoding` inside an `/Encoding` dictionary: StandardEncoding,
+/// WinAnsiEncoding or MacRomanEncoding (#290). An `/Encoding` that is neither a name nor a
+/// dictionary, or a dictionary with no `/BaseEncoding`, is `Standard` -- what PDF 32000-1 §9.6.6.1
+/// says a font with no stated base encoding uses for a non-symbolic font, and what PDFium does.
 ///
 /// # Errors
 ///
+/// [`Error::Unsupported`] naming `width-source` for a base-encoding name other than the three
+/// above (#290: PDFium's MacExpert behaves as WinAnsi and its PDFDoc differs by subtype, measured);
 /// [`Error::Unsupported`] naming `base-encoding-not-a-name` for a `/BaseEncoding` that is present
 /// and not a name (#125's third security review). PDFium reads it by its bytes, so
 /// `(WinAnsiEncoding)` is WinAnsi to it and was Standard here: 50 codes of 96 then SECRET, placed
@@ -648,9 +653,14 @@ fn base_encoding<O: PdfObject>(font: &O) -> Result<crate::pdfsyntax::standard14:
 /// `/MissingWidth` outside 0..65,535, #292), or `width-source` (a `/Widths` that is a number or an
 /// empty array, a `/MissingWidth` or an embedded `/FontFile*` with no `/Widths`, a
 /// `/FontDescriptor` that is not a dictionary, or a Type 3 font with no `/Widths` or with a
-/// `/MissingWidth`); [`Error::Malformed`] naming `type3-matrix`, or
-/// `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths` declared; and whatever
-/// [`read_composite`] refuses for a Type 0 font.
+/// `/MissingWidth`, or a base encoding other than Standard, WinAnsi or MacRoman), or `font-flags`
+/// (AllCaps on any simple font, #297; any bit not measured neutral on a font with no `/Widths`,
+/// #290; a `/Flags` that is not a whole number in 0..2^32); [`Error::Unsupported`] naming
+/// `differences-item-unreadable`, and [`Error::Malformed`] naming `differences-anchor`, for a
+/// `/Differences` read as [`differences_by_code`] reads it, and `number-unreadable` for a `/Flags`
+/// past 2^24 or a `/Differences` past [`MAX_NUMBER_ARRAY`] items; [`Error::Malformed`] naming
+/// `type3-matrix`, or `first-char` for a `/FirstChar` below 0, or past 255 with `/Widths`
+/// declared; and whatever [`read_composite`] refuses for a Type 0 font.
 fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
@@ -735,11 +745,14 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     } else {
         None
     };
-    // ALLCAPS ON ANY SIMPLE FONT WITHOUT AN EMBEDDED PROGRAM (#297): measured `Ok` with SECRET left
-    // in the region for Helvetica, Arial, Times-Roman and a non-standard font with declared widths.
+    // ALLCAPS ON EVERY SIMPLE FONT (#297, and the owner's decision of 2026-10-09). PDFium leaves it
+    // inert only when an embedded program LOADS, and burrow cannot predict that: the first version
+    // exempted any font naming a `/FontFile*`, and an empty, garbage, null or dangling program left
+    // SECRET in the region with `Ok`, 32 of 32 shapes (#290's round-1 security review). The accepted
+    // cost: 5 of 99 census documents (TeX, Latin Modern and Computer Modern), until a measured
+    // narrowing.
     if subtype != Some(SUBTYPE_TYPE0)
         && subtype != Some(SUBTYPE_TYPE3)
-        && !embeds_program
         && flags.is_some_and(|bits| bits & ALL_CAPS != 0)
     {
         return Err(font_flags_refusal());

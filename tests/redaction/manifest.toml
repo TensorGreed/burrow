@@ -979,6 +979,57 @@ pages = 1
   notes = "The twin of the flag fixtures: /Flags 32, measured neutral. Redacts."
 
 [[fixture]]
+name = "evade-allcaps-program-not-loading"
+file = "generated/evade-allcaps-program-not-loading.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "AllCaps over a program that may not load"
+  canary = "BURROW-EVADE-ALLCAPS-NO-PROGRAM"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "#297: AllCaps with a /FontFile2 that does not load and declared /Widths. PDFium draws a at A's width; the first fix exempted any font naming a program and returned Ok with the secret kept. Refused [font-flags]."
+
+[[fixture]]
+name = "evade-allcaps-program-loads"
+file = "generated/evade-allcaps-program-loads.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "AllCaps over a program that may not load"
+  canary = "BURROW-EVADE-ALLCAPS-PROGRAM-LOADS"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "The twin whose program loads: PDFium leaves AllCaps inert, but burrow cannot predict loading, so it refuses too -- the owner's accepted cost, 5 of 99 census documents."
+
+[[fixture]]
+name = "nearmiss-allcaps-neutral-flags"
+file = "generated/nearmiss-allcaps-neutral-flags.pdf"
+kind = "hand-built"
+probes_refusal = "standard-14 by name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "AllCaps over a program that may not load"
+  canary = "BURROW-EVADE-ALLCAPS-NEUTRAL"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin that redacts: the same font and empty program with /Flags 32."
+
+[[fixture]]
 name = "evade-inline-image"
 file = "generated/evade-inline-image.pdf"
 kind = "hand-built"

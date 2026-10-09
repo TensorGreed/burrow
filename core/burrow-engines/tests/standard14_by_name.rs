@@ -282,12 +282,25 @@ fn a_symbolic_font_with_no_widths_refuses() {
     }
     let font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FontDescriptor 6 0 R >>";
     redacts_clean("/Flags 32", &document(content, &[font, &descriptor("32")]));
+    // AN UNMEASURED BIT refuses too: the rule is an allowlist, not a list of known-bad bits. Bit 5
+    // (16) has not been measured on the bundled faces.
+    refuses(
+        "/Flags 48 (an unmeasured bit)",
+        &document(content, &[font, &descriptor("48")]),
+        "font-flags",
+    );
+    // EVERY MEASURED-NEUTRAL BIT AT ONCE redacts: FixedPitch, Serif, Script, Nonsymbolic, Italic,
+    // SmallCaps and ForceBold -- so an allowlist that shrank would over-refuse here.
+    redacts_clean(
+        "/Flags 393323 (every neutral bit)",
+        &document(content, &[font, &descriptor("393323")]),
+    );
 }
 
-/// ALLCAPS (#297): on a simple font with no embedded program, with or without `/Widths`, PDFium
-/// draws a lowercase code as the capital at the capital's width. Refused `[font-flags]`, whether
-/// written as 65568, 65568.9 or 4294967295. The twins: `/Flags 32`, and AllCaps on a font with an
-/// embedded program, which PDFium leaves alone (measured).
+/// ALLCAPS (#297): on a simple font, with or without `/Widths`, PDFium
+/// draws a lowercase code as the capital at the capital's width unless an embedded program loads.
+/// Refused `[font-flags]` on every simple font, written as 65568 or 65568.9 (4294967295 refuses as
+/// a number first). The twin that redacts is `/Flags 32`.
 #[test]
 fn allcaps_on_a_font_without_an_embedded_program_refuses() {
     let content = b"BT /F1 20 Tf 110 260 Td (aaaaSECRET) Tj ET";
@@ -325,12 +338,17 @@ fn allcaps_on_a_font_without_an_embedded_program_refuses() {
         "/Flags 32",
         &document(content, &[no_widths, &descriptor("32", "")]),
     );
-    // AN EMBEDDED PROGRAM: the AllCaps rule does not fire; with declared `/Widths` the font redacts
-    // on its own numbers (the stub program draws nothing, so this pins the outcome only).
+    // A `/FontFile2` THAT DOES NOT LOAD -- empty here -- is not an embedded program to PDFium, which
+    // then draws `a` at `A`'s width. The first fix exempted any font naming a program and returned
+    // `Ok` with SECRET kept (#290's round-1 security review); AllCaps now refuses on every simple
+    // font, the owner's decision, so a program that does load refuses too (the accepted cost).
     let program: &[u8] = b"<< /Length 0 >>\nstream\n\nendstream";
-    let pdf = document(
-        content,
-        &[&widths, &descriptor("65568", "/FontFile2 7 0 R"), program],
+    refuses(
+        "AllCaps over a /FontFile2 that does not load",
+        &document(
+            content,
+            &[&widths, &descriptor("65568", "/FontFile2 7 0 R"), program],
+        ),
+        "font-flags",
     );
-    redact(&pdf).expect("AllCaps over an embedded program is not refused for its flags");
 }

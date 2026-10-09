@@ -67,8 +67,9 @@ We will keep the obligations by construction rather than by care:
   published ones. So we never ship an AFM without its notice, and never modify one. With
   `--fetch` it re-downloads the archive from the pinned URL and compares every file byte for byte.
   Its self-test plants each defect and requires the refusal by name.
-- The files are read only by the test that generates
-  `core/burrow-engines/src/pdfsyntax/standard14_table.rs`. The generated table carries data
+- The files are read by `tools/make-standard14-table.py`, which generates
+  `core/burrow-engines/src/pdfsyntax/standard14_table.rs`, and by the measurement test, which
+  takes the glyph names to measure from them. The generated table carries data
   derived from them (glyph names, advance widths, and the StandardEncoding code each AFM assigns
   over 32..=126), and a header saying it is generated output.
   Nothing in a shipped build parses an AFM.
@@ -87,8 +88,8 @@ We will keep the obligations by construction rather than by care:
 ## Consequences
 
 - The standard-14 table can cover every glyph name the fonts carry, not just ASCII, and it can be
-  regenerated rather than retyped. That retyping is what produced the `DISPUTED` rows: names
-  where PDFium's bundled face disagrees with the published metrics.
+  regenerated rather than retyped. The `DISPUTED` rows the old calibration found by hand -- names
+  where PDFium's bundled face disagrees with the published metrics -- become a measured result.
 - We carry 0.6 MB of third-party data that must never be edited. A tidy-up, a line-ending
   normalisation or an editor's trailing-whitespace pass would breach the licence. The check makes
   any of those a red build rather than a silent breach.

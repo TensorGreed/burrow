@@ -2,10 +2,12 @@
 //!
 //! # Why this exists, and why PDFium is the right instrument
 //!
-//! `pdfsyntax::standard14` is **hand-transcribed data**. The vendored PDFium is a prebuilt
-//! binary with no source tables, so there was nothing in this tree to copy from — which is what
-//! makes this a cross-check rather than a tautology: two independent expressions of the same
-//! published metrics, compared.
+//! `pdfsyntax::standard14` reads a table GENERATED (#290) as the intersection of Adobe's AFMs and
+//! PDFium's measured advances -- so it admits a width only where PDFium, measured the same way,
+//! already agreed. This file is therefore largely a RE-CHECK, not an independent cross-check: what
+//! it adds is that it measures through burrow's own resolver (`width_of`), under every accepted
+//! spelling and base encoding, so a lookup error between the table and the walk is caught. The
+//! table's own currency against PDFium is `tools/check-standard14-table.sh`.
 //!
 //! A transcription is a thing that can be wrong, and a wrong width is not a crash. It moves
 //! every glyph after it along the line, so a region test lands somewhere else and a redaction
@@ -14,11 +16,11 @@
 //!
 //! # How it measures
 //!
-//! For each tabulated font and each code in `32..=126`, a one-page document draws that single
-//! character with **no `/Widths`** — so burrow must use the bundled table and PDFium must use
-//! its built-in one. The advance is read as the distance between two consecutive origins:
-//! `FPDFText_GetCharOrigin` on a two-glyph string, which is the same instrument
-//! `glyph_geometry.rs` calibrates the walk with and carries no font-metric interpretation.
+//! For each tabulated font and each code in `32..=126`, a one-page document draws that character
+//! with **no `/Widths`** -- so burrow must use the bundled table and PDFium its built-in face -- BETWEEN
+//! TWO `A`s: the advance is span(A code A) - span(A A), each span the distance between the first
+//! and last `FPDFText_GetCharOrigin`. Between two `A`s because PDFium does not report the space as
+//! a character (#290), which a code drawn twice over could not measure.
 //!
 //! # What disagreement means
 //!
@@ -439,8 +441,9 @@ fn a_code_outside_the_tabulated_range_refuses() {
 #[test]
 fn a_disputed_pair_refuses_rather_than_picking_a_side() {
     // `Helvetica-Bold` code 64 is where the published metrics say 975 and PDFium measures 1072.
-    // Neither is drawn with; the page refuses. Without this, shrinking `DISPUTED` to nothing
-    // would silently start drawing with one of two numbers that disagree by 10%.
+    // Neither is drawn with; the page refuses. It was `DISPUTED`; since #290 the generated table
+    // excludes the name, and without this a table that admitted it would draw with one of two
+    // numbers that disagree by 10%.
     let pdf = page_with("Helvetica-Bold", "");
     // The `A` this fixture draws is not disputed, so the page walks.
     assert!(burrow_advance(&pdf) > 0.0);
