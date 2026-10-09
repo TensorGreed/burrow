@@ -478,8 +478,9 @@ impl<O: PdfObject> Resources for PageResources<O> {
         // width burrow calls whole is stored a step away and the drift bound adds nothing for it:
         // `/Widths [1073741.856 -1073741.824]` under a matrix of 1 is stored as 2^30 and -2^30, a
         // pair that moves PDFium's pen by 0 and burrow's by 0.032 em (measured, `Ok` over the
-        // secret). Below 2^20 the float chain's error stays under 0.64 of a thousandth (the review's
-        // simulation, 300,000 samples), which the bound's one thousandth per glyph covers. No real
+        // secret). Below 2^20 the float chain's error is at most 0.5 + 4 x 2^-24 x 2^20, about 0.75
+        // of a thousandth (analytic; 0.64 the worst in a 300,000-sample simulation), which the
+        // bound's one thousandth per glyph covers. No real
         // glyph is a thousand ems wide.
         if facts.type_three {
             let thousandths = (width * facts.font_matrix.a * 1000.0).abs();

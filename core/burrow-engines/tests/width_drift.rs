@@ -3,13 +3,14 @@
 //! over enough padding the secret drifts: burrow places it outside the region, PDFium draws it in.
 //!
 //! The fix is a BOUND, not a replica (the owner's decision): each glyph whose width is not whole in
-//! thousandths of an em adds under one thousandth of the font size to a drift that resets at every
-//! absolute positioning operator, and a glyph's box is widened by it. Each leak shape here inks the
-//! region on the input and must leave none of SECRET's letters on the page; the twins show the
-//! bound is scoped -- whole widths add nothing, and `Td`, `'` and `Tm` reset it.
+//! thousandths of an em adds one thousandth of the font size times `Tz / 100` to a drift that
+//! resets at every absolute positioning operator, and a glyph's box is widened by it. Each leak
+//! shape here inks the region on the input and must leave none of SECRET's letters on the page;
+//! the twins show the bound is scoped -- whole widths add nothing, and `Td`, `'` and `Tm` reset it.
 //!
-//! And two refusals the measurement found: a Type 3 width that rounds to 0 (PDFium then advances
-//! by the procedure's `d0` width), and a simple width that a 32-bit float rounds to 65,535.
+//! And the refusals the measurement found: a Type 3 width under one thousandth (PDFium may round it
+//! to 0 and then advance by the procedure's `d0` width), a Type 3 width of 2^20 thousandths or more
+//! (past float32's precision), and a simple width that a 32-bit float rounds to 65,535.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

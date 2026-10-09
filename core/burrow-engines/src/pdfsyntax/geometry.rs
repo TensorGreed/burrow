@@ -4059,12 +4059,13 @@ fn show(
         // THE DRIFT THIS GLYPH ADDS (#291): none when PDFium's stored width is exact -- the width
         // in thousandths of an em is whole -- and otherwise one thousandth of the font size times
         // `Tz / 100`, which bounds truncation (simple, CID: under 1 thousandth) and Type 3's float32
-        // rounding (under 0.64 below the 2^20 cap `glyph()` enforces).
+        // rounding (at most about 0.75 below the 2^20 cap `glyph()` enforces; see there).
         // WHOLE WITHIN A RELATIVE 1e-12, which absorbs f64's own noise (`9 x 0.001 x 1000` is
-        // 9.000000000000002, pinned by `whole_widths_add_no_drift`). It was 1e-9, which is a sizeable fraction of a thousandth at the widths the
-        // caps admit (0.016 at 2^24) and more than one past 1e9 (#291's security review). A width
-        // within 1e-12 of whole errs by under 1e-12 of itself per glyph, which no page's glyph
-        // count turns into a visible distance.
+        // 9.000000000000002, pinned by `whole_widths_add_no_drift`). It was 1e-9, which is a
+        // sizeable fraction of a thousandth at the widths the caps admit (0.016 at 2^24) and more
+        // than one past 1e9 (#291's security review). A width within 1e-12 of whole errs by under
+        // 1e-12 of itself per glyph -- far below the rounding PDFium's own 32-bit pen does, which
+        // is #298's territory, not this bound's.
         let thousandths = width * 1000.0;
         let whole = (thousandths - thousandths.round()).abs() <= 1e-12 * thousandths.abs().max(1.0);
         if !whole {
