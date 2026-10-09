@@ -134,6 +134,16 @@ Reads the integer code off a stored error. `qpdf_error_code_e`'s numbering is gu
 across major releases (`Constants.h`), which is why the crate matches on codes and does not \
 declare the message accessors at all -- a function that cannot be called cannot leak."""
 
+[[function]]
+name = "qpdf_get_error_message_detail"
+reason = """\
+FUZZ BUILDS ONLY (DECISIONS.md rule 13, #285): declared behind `burrow-engines`' `fuzzing` \
+feature, and `tools/check-no-error-text-in-deploy.sh` refuses a deploy build that enables it. \
+Its body (`qpdf-c.cc`) returns `""` for a null error and otherwise \
+`e->exc->getMessageDetail().c_str()` -- a const accessor on a stored `QPDFExc`'s `std::string`, \
+which allocates nothing and cannot throw. Called once, right after `qpdf_get_error` returns the \
+error it reads, and the text is compared with fixed constants, never copied out."""
+
 # ---------------------------------------------------------------------------------
 # The logger C binding. A DIFFERENT acceptance, and weaker -- say so rather than reuse the
 # paragraph above.

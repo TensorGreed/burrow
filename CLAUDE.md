@@ -378,6 +378,7 @@ those at full candour is working and is not what "summarise" is asking you to sh
   | #63 | the fuzz target list | `reorder` was in `Cargo.toml` and in no run list |
   | #63 | `pnpm check` | `lint` and `test` were run; `check` was not |
   | #54 | the subsetting gate | **the runner said it was covered** — see below |
+  | #293 | `cargo check` on the mobile targets | the extractor had no `check` token, so parity saw no gate at all and `--changed` ran clean |
 
   **A habit that has failed four times is not a control** — the same conclusion this file
   already reached about `git add -A`, and the same answer. Writing the rule down more firmly

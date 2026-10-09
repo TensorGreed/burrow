@@ -233,6 +233,71 @@ pub(crate) mod code {
     pub(crate) const LINEARIZATION: c_int = 9;
 }
 
+/// qpdf's fixed detail for handle misuse: the C API looked up a `qpdf_oh` it does not hold
+/// (`qpdf-c.cc`, `do_with_oh`). Thrown as `qpdf_e_internal`, so it never reaches a sanitiser.
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+pub(crate) const QPDF_UNKNOWN_HANDLE: &[u8] = b"attempted access to unknown object handle";
+
+/// qpdf's fixed `std::logic_error` text for #285 (`QPDF_objects.cc`, `makeIndirectObject`).
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+pub(crate) const QPDF_UNINITIALIZED_INDIRECT: &[u8] =
+    b"attempted to make an uninitialized QPDFObjectHandle indirect";
+
+/// burrow's message for a `qpdf_oh` qpdf does not hold: a defect in burrow, never the file.
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+pub(crate) const INTERNAL_UNKNOWN_HANDLE: &str =
+    "qpdf was handed an object handle it does not hold (a burrow defect)";
+
+/// burrow's message for #285's qpdf invariant failure.
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+pub(crate) const INTERNAL_UNINITIALIZED_INDIRECT: &str =
+    "qpdf reported an internal error: an uninitialized object made indirect";
+
+/// FUZZ BUILDS ONLY (#285): an internal error qpdf describes with one of two fixed texts, as
+/// burrow's own fixed message -- so the nightly ledger can key #285 on its own panic, and a
+/// burrow handle defect panics differently from it instead of being absorbed.
+///
+/// Rule 3 above is unchanged for every shipped build: this function and the declaration it reads
+/// through exist only behind the `fuzzing` feature (DECISIONS.md rule 13). Exact comparison against
+/// constants; the text is never copied, formatted or returned. Anything else is `None`, and the
+/// caller falls back to [`map_code`].
+#[cfg(all(
+    feature = "fuzzing",
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+#[must_use]
+pub(crate) fn internal_from_detail(detail: &[u8]) -> Option<Error> {
+    if detail == QPDF_UNKNOWN_HANDLE {
+        Some(Error::Internal(INTERNAL_UNKNOWN_HANDLE.to_owned()))
+    } else if detail == QPDF_UNINITIALIZED_INDIRECT {
+        Some(Error::Internal(INTERNAL_UNINITIALIZED_INDIRECT.to_owned()))
+    } else {
+        None
+    }
+}
+
 /// Map a qpdf error code to a typed error.
 ///
 /// Call only when the call's own return value has already established failure.

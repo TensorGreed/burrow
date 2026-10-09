@@ -86,6 +86,22 @@ one is decided in an issue, with the same three parts.
     alter any fixture outcome — then the regenerated file is identical and there is nothing to
     reconcile.
 
+13. **No shipped build can read qpdf's error text; fuzz builds may, bounded by a check.** Rule 3 of
+    `core/burrow-engines/src/codes/qpdf.rs` -- burrow does not declare the functions that return
+    qpdf's error text, because that text quotes the file, and "a function that cannot be called
+    cannot leak" -- holds for every shipped build. The one exception is
+    `qpdf_get_error_message_detail`, declared behind `burrow-engines`' `fuzzing` feature and read by
+    one function that compares it to fixed constants and returns a fixed burrow message, so the
+    nightly can tell #285's qpdf invariant failure from burrow's own handle misuse. The exception is
+    bounded by `tools/check-no-error-text-in-deploy.sh`, which fails a deploy build where any of the
+    three wasm feature sets, or `burrow-ffi` at its default features on aarch64 Android or iOS
+    (not the emulator or simulator targets, named in the check), turns `fuzzing` on, or where any
+    file under `dist/` carries an error-text function name. On wasm the declaration cannot compile
+    at all (`qpdf` is native Linux only), so there the real bound is qpdf.wasm's export allowlist
+    and the check is defence in depth; the `burrow-ffi` half is what bounds a future native mobile
+    build. *Decided:* owner, 2026-10-08, #285. *Does not cover:* reading any other qpdf
+    text, or reading this one in a shipped build -- each is a new decision, not an extension.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new rule from here: **before writing code**, give the `security-reviewer` the proposed

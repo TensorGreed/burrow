@@ -55,6 +55,26 @@
 #
 # The note on an upstream entry is neutral by decision, and says nothing of the shape. The issue
 # is where an owner reads more.
+#
+# A PANIC KEY, FOR A DEFECT THAT LEAVES NO SANITISER FRAME (#285, 2026-10-08). qpdf can trap an
+# internal error itself and report it, which burrow maps to `Error::Internal`; a fuzz target
+# panics on that deliberately, so the report is a libFuzzer `deadly-signal` whose frames are the
+# target's panic, not qpdf's. Such an entry carries `panic_at` -- the target FILE, since its line
+# moves with every edit -- and `panic`, the EXACT message line, which must directly follow the
+# `panicked at` line for that file. The classifier refuses an entry with both a frame and a panic,
+# or a panic with only one half.
+#
+# WHAT #285'S ENTRIES ABSORB, stated where an owner adding one reads it. A shipped burrow's
+# `Internal` error carries no qpdf text, by design (DECISIONS.md rule 13). In a FUZZ build only,
+# two qpdf internal errors are told apart by qpdf's fixed text and given burrow's own fixed
+# messages (`codes::qpdf::internal_from_detail`): #285's invariant failure, which these entries
+# key on, and a `qpdf_oh` qpdf does not hold -- burrow's own defect, which now panics with its own
+# message and is never absorbed here. So these entries match **any input that drives qpdf to that
+# same invariant failure** under compress or rotate -- the same check, perhaps a different cause --
+# and nothing else: every other qpdf internal error still panics with the generic message, which
+# matches no entry and turns the nightly red. If a qpdf upgrade rewords either text, the mapping
+# falls back to the generic message and the nightly goes red rather than silent;
+# `qpdf::error_text_tests` goes red first. The entries expire with #285 like every entry here.
 
 [[known]]
 issue = 62
@@ -78,4 +98,20 @@ issue = 119
 verdict = "stack-overflow"
 frame = "QPDF::Doc::Pages::pushInheritedAttributesToPageInternal"
 reached_from = ["reorder", "rotate"]
-note = """upstream, handled privately"""
+note = """upstream, reported privately"""
+
+[[known]]
+issue = 285
+verdict = "deadly-signal"
+panic_at = "fuzz_targets/compress.rs"
+panic = "compress reported an internal error: qpdf reported an internal error: an uninitialized object made indirect"
+reached_from = ["compress"]
+note = """upstream, reported privately"""
+
+[[known]]
+issue = 285
+verdict = "deadly-signal"
+panic_at = "fuzz_targets/rotate.rs"
+panic = "rotate reported an internal error: qpdf reported an internal error: an uninitialized object made indirect"
+reached_from = ["rotate"]
+note = """upstream, reported privately"""

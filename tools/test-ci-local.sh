@@ -97,6 +97,17 @@ check "a new Python checker with no local counterpart is refused" \
 " \
   "tools/check-something-else.py" 1
 
+# #293: AN INLINE `cargo check`. CI's mobile job ran `cargo check --workspace --all-features
+# --target …` as a bare `run:` line; the extractor had no `check` token, so parity reported full
+# coverage, `--changed` ran clean, and the PR went red on both mobile targets. It is a script now;
+# this re-plants the inline shape, which must be refused by its token.
+check "an inline cargo check with no local counterpart is refused" \
+  "||
+      - name: A cargo check gate
+        run: cargo check --workspace --all-features --target x86_64-unknown-freebsd
+" \
+  "cargo:check" 1
+
 # A GATE OUTSIDE `tools/`. The extractor matched only `tools/*.sh` until the force-push hook's
 # self-test needed wiring in, and `.claude/hooks/` is where a hook's self-test has to live --
 # a hook path is what `.claude/settings.json` names. Parity REFUSED that wiring, correctly and

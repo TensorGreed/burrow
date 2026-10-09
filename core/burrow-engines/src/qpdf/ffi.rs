@@ -204,6 +204,17 @@ unsafe extern "C" {
     /// `burrow::Error`. Not declaring them is the cheapest way to guarantee that.
     pub(super) fn qpdf_get_error_code(qpdf: QpdfData, error: QpdfError) -> c_int;
 
+    /// `char const* qpdf_get_error_message_detail(qpdf_data, qpdf_error)` — `qpdf-c.h:214`.
+    ///
+    /// **FUZZ BUILDS ONLY** (#285, the owner's decision of 2026-10-08), and the one exception to
+    /// the paragraph above. Behind the `fuzzing` feature, which only `fuzz/Cargo.toml` and
+    /// `--all-features` test builds turn on; no shipped build can call it, and
+    /// `tools/check-no-error-text-in-deploy.sh` fails a deploy build where that stops being true.
+    /// Read by exactly one function, `codes::qpdf::internal_from_detail`, which compares it to
+    /// fixed constants and returns a fixed message: the text itself reaches nothing.
+    #[cfg(feature = "fuzzing")]
+    pub(super) fn qpdf_get_error_message_detail(qpdf: QpdfData, error: QpdfError) -> *const c_char;
+
     /// `QPDF_BOOL qpdf_more_warnings(qpdf_data)` — `qpdf-c.h:191`.
     ///
     /// Whether qpdf has recorded a warning not yet handed out (#224). qpdf records every warning

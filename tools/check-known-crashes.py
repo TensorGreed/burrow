@@ -73,6 +73,24 @@ VERDICT_ENDS = (" on ", " after", " (", " in ", ":")
 #: and inflate the count of frames considered.
 SYMBOL = re.compile(r"^\s*#\d+\s+0x[0-9a-f]+\s+in\s+([A-Za-z_][A-Za-z0-9_:~]*)", re.M)
 
+#: A RUST PANIC, AS THE STANDARD LIBRARY PRINTS IT: `thread '<name>' panicked at <file>:<line>:<col>:`
+#: on one line and the message on THE NEXT, both anchored to line starts (#285). A fuzz target
+#: panics on purpose when an operation reports `Error::Internal`, and a defect qpdf traps and
+#: reports as internal leaves no sanitiser frame naming it -- only the target's own panic. So such
+#: an entry is keyed on the panic instead: the target FILE (the line number moves with every edit
+#: to the target) and the EXACT message line. Adjacency is part of the key: a message line that
+#: does not directly follow a `panicked at` line for that file is not this panic, so a target
+#: printing the same words anywhere else in its log matches nothing. The residual: a target whose
+#: panic message prints input with a RAW newline (Display, not Debug) could forge the pair; the
+#: same residual as the banner's above, and no target does that today.
+#: THE THREAD ID IS OPTIONAL, AND THAT WAS MEASURED: current Rust prints
+#: `thread '<unnamed>' (539272) panicked at …` -- the nightly's own report of #285 -- where older
+#: releases print no id. A pattern written from memory without it matched nothing, and the probes
+#: passed only because they were written the same way; one probe below is the real line, verbatim.
+PANIC = re.compile(
+    r"^thread '[^'\n]*'(?: \(\d+\))? panicked at ([^\s:]+):\d+:\d+:\n([^\n]*)$", re.M
+)
+
 #: The shape a ledger `verdict` must have once normalised, so an entry the classifier could never
 #: resolve is a refusal rather than silence.
 VERDICT_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*$")
@@ -133,9 +151,23 @@ def load(path: Path | None = None) -> list[dict]:
     with ledger.open("rb") as handle:
         entries = tomllib.load(handle).get("known", [])
     for index, entry in enumerate(entries):
-        for field in ("issue", "verdict", "frame", "note"):
+        for field in ("issue", "verdict", "note"):
             if not entry.get(field):
                 raise Problem(f"entry {index} has no {field!r}; an unexplained entry is a mute button")
+        # A FRAME OR A PANIC, EXACTLY ONE (#285). An entry with neither matches nothing and
+        # reads as coverage; one with both would be ambiguous about which half it claims.
+        keyed_on_frame = bool(entry.get("frame"))
+        keyed_on_panic = bool(entry.get("panic")) or bool(entry.get("panic_at"))
+        if keyed_on_frame == keyed_on_panic:
+            raise Problem(
+                f"entry {index}: key it on a sanitiser `frame` or on a Rust `panic` (with "
+                f"`panic_at`), exactly one"
+            )
+        if keyed_on_panic and not (entry.get("panic") and entry.get("panic_at")):
+            raise Problem(
+                f"entry {index}: a panic entry names both the target file (`panic_at`) and the "
+                f"exact message (`panic`); either alone would absorb more than one panic"
+            )
         if not isinstance(entry["issue"], int):
             raise Problem(f"entry {index}: issue must be a number, not {entry['issue']!r}")
         # AN ENTRY THE CLASSIFIER COULD NEVER RESOLVE IS A REFUSAL, NOT SILENCE. Verdicts are
@@ -207,7 +239,17 @@ def classify(log: str, entries: list[dict], binary: Path | None, target: str | N
         )
     verdict = normalise_verdict(verdict_match.group(1))
     frames, how = frames_in(log, binary, target)
-    matches = [e for e in entries if e["verdict"] == verdict and e["frame"] in frames]
+    panics = set(PANIC.findall(log))
+    matches = [
+        e
+        for e in entries
+        if e["verdict"] == verdict
+        and (
+            e["frame"] in frames
+            if e.get("frame")
+            else (e["panic_at"], e["panic"]) in panics
+        )
+    ]
     return verdict, frames, matches, how
 
 
@@ -261,7 +303,20 @@ PROBE_LEDGER = [
     {"issue": 1, "verdict": "heap-use-after-free", "frame": "Shared::Frame", "note": "x"},
     {"issue": 2, "verdict": "stack-overflow", "frame": "Shared::Frame", "note": "x"},
     {"issue": 3, "verdict": "heap-use-after-free", "frame": "Other::Frame", "note": "x"},
+    # A PANIC KEY (#285): the target file and the exact message, under `deadly-signal`.
+    {"issue": 4, "verdict": "deadly-signal", "panic_at": "fuzz_targets/compress.rs",
+     "panic": "compress reported an internal error: qpdf reported an internal error", "note": "x"},
 ]
+
+#: A libFuzzer report of a Rust panic: the panic's two lines, then the banner and one frame.
+def _panic_report(
+    at: str, message: str, between: str = "", thread: str = "", verdict: str = "deadly signal"
+) -> str:
+    return (
+        f"thread '<unnamed>'{thread} panicked at {at}:179:13:\n{between}{message}\n"
+        f"==1== ERROR: libFuzzer: {verdict}\n"
+        "    #0 0x1 in rust_panic\n"
+    )
 
 #: Each rule against a report it must classify and one it must not.
 PROBES = [
@@ -277,6 +332,30 @@ PROBES = [
     ("an UPPERCASE verdict is not dropped",
      "==1==ERROR: AddressSanitizer: SEGV on unknown address 0x0\n"
      "    #0 0x1 in Other::Frame(Thing)\n", None),
+    ("a listed panic matches its own entry",
+     _panic_report("fuzz_targets/compress.rs",
+                   "compress reported an internal error: qpdf reported an internal error"), 4),
+    ("a listed panic printed WITH A THREAD ID, as the nightly printed it, matches",
+     _panic_report("fuzz_targets/compress.rs",
+                   "compress reported an internal error: qpdf reported an internal error",
+                   thread=" (539272)"), 4),
+    ("A DIFFERENT PANIC in the same target is a new finding",
+     _panic_report("fuzz_targets/compress.rs", "NotSmaller reported a saving: 5 < 6"), None),
+    ("the same message from another target is a new finding",
+     _panic_report("fuzz_targets/merge.rs",
+                   "compress reported an internal error: qpdf reported an internal error"), None),
+    ("the message with anything appended is a new finding",
+     _panic_report("fuzz_targets/compress.rs",
+                   "compress reported an internal error: qpdf reported an internal error: more"),
+     None),
+    ("THE LISTED PANIC under another verdict is a new finding: a panic entry keys on its verdict too",
+     _panic_report("fuzz_targets/compress.rs",
+                   "compress reported an internal error: qpdf reported an internal error",
+                   verdict="out-of-memory (malloc(1))"), None),
+    ("the message not directly after its panicked-at line is not that panic",
+     _panic_report("fuzz_targets/compress.rs",
+                   "compress reported an internal error: qpdf reported an internal error",
+                   between="note: run with `RUST_BACKTRACE=1`\n"), None),
 ]
 
 #: A report that must match NOTHING: a real defect we do not own yet.
@@ -344,15 +423,25 @@ def main() -> int:
 
     if matches:
         owners = ", ".join(sorted({f"#{m['issue']}" for m in matches}))
-        print(f"KNOWN -- owned by {owners} ({matches[0]['frame']}).")
+        key = matches[0].get("frame") or f"panic in {matches[0]['panic_at']}"
+        print(f"KNOWN -- owned by {owners} ({key}).")
         # THE RESIDUAL, WHERE THE READER MEETS IT. A green nightly's summary is the one place a
         # person sees this conclusion, so the limit of the evidence belongs beside it and not
         # only in an ADR.
-        print(
-            "  This means the report is CONSISTENT WITH that defect -- the same verdict in the "
-            "same function -- not that it is that defect. A second defect in the same function "
-            "under the same verdict would be absorbed here."
-        )
+        if matches[0].get("frame"):
+            print(
+                "  This means the report is CONSISTENT WITH that defect -- the same verdict in the "
+                "same function -- not that it is that defect. A second defect in the same function "
+                "under the same verdict would be absorbed here."
+            )
+        else:
+            # A PANIC KEY'S RESIDUAL, where the reader meets it (#285): whatever else produces the
+            # same message is absorbed, and what that is depends on the entry.
+            print(
+                "  This means the target panicked with the listed message -- not that it is that "
+                "defect. Anything else that makes the target panic with the same message is "
+                "absorbed too; fuzz/known-crashes.toml's header says what that is for this entry."
+            )
         return 0
 
     # NOT A FINDING IF NOTHING WAS RESOLVED. With no frames, no entry can match, and calling that

@@ -91,7 +91,9 @@ PATTERNS: list[tuple[str, str]] = [
     # matched as the literal `$suite`, because a token nobody can cover is noise -- such a step
     # belongs in a script, which is how this one was fixed.
     (r"\bcargo test\b[^\n|&;]*?--test \"?([a-z_][\w-]*)", r"test:\1"),
-    (r"\bcargo (fmt|clippy|test|deny|audit|build|doc|install)\b", r"cargo:\1"),
+    # `check` TOO (#293): CI's mobile job ran `cargo check --target …`, the extractor produced no
+    # token for it, and parity reported full coverage over a gate nothing local ran.
+    (r"\bcargo (fmt|clippy|test|deny|audit|build|doc|install|check)\b", r"cargo:\1"),
     # `wasm-pack build`, which is NOT a cargo subcommand and so matched nothing above. It
     # produced the fifth miss of the class this tool exists for: `bindings/burrow-wasm/pkg/`
     # is gitignored, `stage-web-engines.mjs` copies whatever is in it, and CI builds it
@@ -178,6 +180,15 @@ JOBS: list[dict] = [
         "name": "clippy",
         "run": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
         "covers": ["cargo:clippy"],
+    },
+    {
+        "name": "mobile-check",
+        "run": "tools/check-mobile-targets.sh",
+        "covers": ["tools/check-mobile-targets.sh"],
+        # NARROWED TO THE WORKSPACE, as `doc` is: the script runs exactly this cargo command per
+        # target, so a web- or docs-only change does not pay two cold --all-features checks.
+        "paths_as": "cargo check --workspace --all-features",
+        "why": "cargo check --all-features on the mobile targets CI checks (#293)",
     },
     {
         # BEFORE `test`, and in this order deliberately: `redaction_corpus.rs` reads
@@ -376,6 +387,7 @@ JOBS: list[dict] = [
                 # matrix. A gate in a script is a gate this table can track.
                 "tools/check-fuzz-target-registration.sh",
                 "tools/test-check-fuzz-target-registration.sh",
+                "tools/test-check-mobile-targets.sh",
                 "python3 tools/check-proptest-regressions.py",
                 "tools/test-check-proptest-regressions.sh",
                 "tools/test-name-requires-slash.sh",
@@ -417,6 +429,7 @@ JOBS: list[dict] = [
             "tools/test-check-release-notes.sh",
             "tools/check-fuzz-target-registration.sh",
             "tools/test-check-fuzz-target-registration.sh",
+            "tools/test-check-mobile-targets.sh",
             "tools/check-proptest-regressions.py",
             "tools/test-check-proptest-regressions.sh",
             "tools/test-name-requires-slash.sh",
@@ -561,6 +574,18 @@ JOBS: list[dict] = [
             "tools/test-check-redaction-not-in-base.sh",
         ],
         "why": "redaction's code reaches no part of the base web payload (ADR 0029)",
+    },
+    {
+        # AFTER `web`, for the same reason as the two above: it reads the production `dist/`.
+        "name": "no-error-text-in-deploy",
+        "run": (
+            "tools/check-no-error-text-in-deploy.sh && tools/test-check-no-error-text-in-deploy.sh"
+        ),
+        "covers": [
+            "tools/check-no-error-text-in-deploy.sh",
+            "tools/test-check-no-error-text-in-deploy.sh",
+        ],
+        "why": "no shipped build can read qpdf's error text (DECISIONS.md rule 13, #285)",
     },
     {
         # AFTER `web`, BECAUSE IT READS `apps/web/dist`. It was in `checker-self-tests` for one

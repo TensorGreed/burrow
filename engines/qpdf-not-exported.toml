@@ -215,3 +215,21 @@ trapping_adr = "docs/adr/0013-qpdf-c-api-and-prescan.md"
 # Neither links anything new: a map lookup and a trailer accessor, beside code already inside
 # the members `qpdf_write` dragged in. The range on record stays +195 to +53,456. Measure.
 
+
+# =================================================================================
+# THE ONE PERMANENT ENTRY (#285, DECISIONS.md rule 13)
+# =================================================================================
+#
+# Every entry above this paragraph's kind is temporary: it waits for the web to gain the
+# operation. This one is the opposite, and must never be exported: it is qpdf's error text, which
+# quotes the file. It is declared natively only behind `burrow-engines`' `fuzzing` feature, so the
+# nightly can tell #285's qpdf invariant failure from burrow's own handle misuse; no shipped build,
+# native or web, may call it. `tools/check-no-error-text-in-deploy.sh` holds the shipped side.
+
+[[function]]
+name = "qpdf_get_error_message_detail"
+reason = """\
+Fuzz builds only, and never to the web: qpdf's error text quotes the file (object numbers, byte \
+offsets), and rule 3 of `codes/qpdf.rs` keeps it uncallable in every shipped build. Declared \
+natively behind the `fuzzing` feature for the nightly's #285 classification; exporting it from \
+qpdf.wasm would put the text one JavaScript call from a worker that serves a person's file."""

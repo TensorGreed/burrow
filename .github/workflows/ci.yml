@@ -644,7 +644,9 @@ jobs:
       # `check`, not `build`: this needs no Xcode SDK and no Android NDK, so it runs on
       # a Linux runner years before M3/M4 can build the apps. The point is that a core
       # change which breaks a mobile target fails now rather than at the start of M3.
-      - run: cargo check --workspace --all-features --target ${{ matrix.target }}
+      # A SCRIPT, so tools/ci-local.py can see and run the same gate (#293: as a bare `cargo
+      # check` line it was invisible to the parity extractor, and a push went red here only).
+      - run: tools/check-mobile-targets.sh ${{ matrix.target }}
 
   deny:
     name: cargo-deny (licenses, advisories, bans, sources)
@@ -806,6 +808,9 @@ jobs:
 
       - name: That guard refuses when a target is registered in only one place
         run: tools/test-check-fuzz-target-registration.sh
+
+      - name: The mobile check reads CI's matrix and refuses a target it cannot check (#293)
+        run: tools/test-check-mobile-targets.sh
       # A REGRESSION SEED WITH NO DEFECT BEHIND IT IS A FALSE RECORD. Twice a seed has been
       # written by a test failing for an ENVIRONMENTAL reason -- the `qpdf` CLI absent from the
       # shell's PATH, which `tools/ci-local.py` supplies and a bare `cargo test` does not -- and
@@ -1034,6 +1039,15 @@ jobs:
         run: |
           tools/check-redaction-not-in-base.sh
           tools/test-check-redaction-not-in-base.sh
+
+      # DECISIONS.md rule 13 (#285): no shipped build can read qpdf's error text. The one
+      # declaration that can is behind `burrow-engines`' `fuzzing` feature; this refuses a deploy
+      # feature set that turns it on, and a shipped artifact that carries any error-text name.
+      # Here because it reads the production `dist/` this job built.
+      - name: No shipped build can read qpdf's error text
+        run: |
+          tools/check-no-error-text-in-deploy.sh
+          tools/test-check-no-error-text-in-deploy.sh
 
       # THE DEPLOY GATE'S SELF-TEST, NOT THE GATE. `check-deployable-build.sh` asks whether a
       # build is for the origin you MEANT, and CI builds for the development default -- so
