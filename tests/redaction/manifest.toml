@@ -155,8 +155,12 @@ Measured in the qdf expansion:
   adr = "§1, §3"
   witness_before = "pdfium-text"
   witness_observes = "canary"
-  expect_after = "gone"
-  notes = "A literal scan does NOT witness this one; that is the point of the placement."
+  expect_after = "refused"
+  notes = """A literal scan does NOT witness this one; that is the point of the placement.
+REFUSED SINCE 2026-10-08 (#125, owner's decision): the region reaches glyphs of a TeX bitmap Type 3
+font, drawn as inline images, and removing one would leave its bitmap in /CharProcs --
+`[type-three-image-cut]`. The recorded cost of that rule; the page redacts where the region misses
+bitmap-font text."""
 
   [[fixture.placement]]
   channel = "font /Differences for the removed run"
@@ -165,7 +169,8 @@ Measured in the qdf expansion:
   adr = "§1"
   witness_before = "font-mapping"
   witness_observes = "alphabet"
-  expect_after = "gone"
+  expect_after = "refused"
+  notes = "Refused with the page since 2026-10-08: see the placement above."
 
 # ---------------------------------------------------------------------------------------
 
@@ -719,6 +724,176 @@ pages = 1
   notes = "A `Do` inside a Form XObject. The page's content stream says only `/X1 Do`."
 
 [[fixture]]
+name = "evade-inline-image-outside-type3-box"
+file = "generated/evade-inline-image-outside-type3-box.pdf"
+kind = "hand-built"
+probes_refusal = "image"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "image — evasion"
+  canary = "BURROW-EVADE-IMG-T3-OUTSIDE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "inline-image"
+  witness_observes = "carrier"
+  expect_after = "refused"
+  notes = "A Type 3 glyph ten points square, far from the region, whose procedure draws an unfiltered inline image into it. No region over the image reaches the glyph's box. Refused [type-three-image-outside-its-box] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "evade-type3-subtype-as-a-string"
+file = "generated/evade-type3-subtype-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "/Subtype not a name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Subtype written as a string"
+  canary = "BURROW-EVADE-TYPE3-STRING-SUBTYPE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "A Type 3 font whose /Subtype is the string (Type3), far from the region, its procedure showing the text into it. PDFium reads the bytes; burrow read 'not a name' as 'not Type 3' and skipped every Type 3 rule. Refused [subtype-not-a-name] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "evade-form-subtype-as-a-string"
+file = "generated/evade-form-subtype-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "/Subtype not a name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Subtype written as a string"
+  canary = "BURROW-EVADE-FORM-STRING-SUBTYPE"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "A Form XObject whose /Subtype is the string (Form), holding the text in the region. The walk read it as 'not a form' and never entered it. Refused [subtype-not-a-name] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "nearmiss-form-subtype-as-a-name"
+file = "generated/nearmiss-form-subtype-as-a-name.pdf"
+kind = "hand-built"
+probes_refusal = "/Subtype not a name"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a /Subtype written as a string"
+  canary = "BURROW-EVADE-FORM-NAME-SUBTYPE"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "raw-utf16-hex"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin: the same form under the name /Form. The rule must not fire, and the text must be gone."
+
+[[fixture]]
+name = "evade-widths-holding-a-string"
+file = "generated/evade-widths-holding-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-WIDTHS-STRING"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "A string where code 32's width belongs in /Widths. PDFium reads items one by one, so `!` is 1,000 wide and the secret is in the region; burrow read the array's text, dropped the string, and placed the secret 360 points left. Refused [number-unreadable] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "evade-differences-item-neither-code-nor-name"
+file = "generated/evade-differences-item-neither-code-nor-name.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-DIFFERENCES-ITEM"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "/Differences [65 (x) /B /U ...]: PDFium reads the string as code 0, so the names spell the secret on the codes the page draws; burrow skipped it and kept every name (an ABCDEF string outside the region keeps codes 65 onwards in use). Refused [differences-item-unreadable] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "evade-base-encoding-as-a-string"
+file = "generated/evade-base-encoding-as-a-string.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-BASE-ENCODING-STRING"
+  verdict = "refuse"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "refused"
+  notes = "/BaseEncoding (WinAnsiEncoding): WinAnsi to PDFium, Standard to burrow, so a standard-14 font's glyphs were placed outside the region. Refused [base-encoding-not-a-name] (#125, 2026-10-08)."
+
+[[fixture]]
+name = "nearmiss-base-encoding-as-a-name"
+file = "generated/nearmiss-base-encoding-as-a-name.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-BASE-NAME"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin: the same file under /BaseEncoding /WinAnsiEncoding. Both readers agree, and the secret is removed."
+
+[[fixture]]
+name = "nearmiss-widths-as-pdfium-reads-them"
+file = "generated/nearmiss-widths-as-pdfium-reads-them.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-WIDTHS-READ"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin of evade-widths-holding-a-string: /Widths [0 1000 ...], the leak as PDFium reads it. Both readers agree, and the secret is removed."
+
+[[fixture]]
+name = "nearmiss-differences-codes-and-names"
+file = "generated/nearmiss-differences-codes-and-names.pdf"
+kind = "hand-built"
+probes_refusal = "a value read item by item"
+pages = 1
+
+  [[fixture.placement]]
+  channel = "a value a renderer reads item by item, or by its bytes"
+  canary = "BURROW-EVADE-DIFFERENCES-NAMES"
+  verdict = "handle"
+  adr = "§3"
+  witness_before = "pdfium-text"
+  witness_observes = "canary"
+  expect_after = "gone"
+  notes = "The twin of evade-differences-item-neither-code-nor-name: /Differences [0 /B /U ...]. The names on the removed codes are narrowed away."
+
+[[fixture]]
 name = "evade-inline-image"
 file = "generated/evade-inline-image.pdf"
 kind = "hand-built"
@@ -817,7 +992,6 @@ pages = 1
   witness_before = "vector-fills"
   witness_observes = "carrier"
   expect_after = "refused"
-  owed_by = 125  # the refusal signal is owed (ADR 0029 §5); redacting is allowed until #125 lands
 
 [[fixture]]
 name = "nearmiss-paths-outside-region"
@@ -1044,6 +1218,10 @@ Its subject is the **writing mode**, not a canary: six Japanese glyphs set `tb-r
 canary to witness, and inventing one would change the file this fixture exists to be. Its
 assertion lives in `core/burrow-engines/tests/redaction_corpus.rs` and the geometry calibration,
 which read its glyph origins rather than its strings.
+
+SINCE 2026-10-08 IT REFUSES `[width-out-of-range]`: LibreOffice writes `/Widths [0 -1000 …]`,
+which PDFium wraps in 16 bits, and #292 refuses such a width. The owner accepted this cost; #294
+is the post-launch narrowing for vertical writing.
 """
 
 [[fixture]]

@@ -1521,25 +1521,42 @@ mod wiring {
 
     #[test]
     fn a_repair_during_the_walk_is_refused() {
-        // #224, security review round 2: qpdf reads a font lazily, so a stray `)` in its
-        // `/Widths` is repaired -- and warned about -- during the walk, after the open's check;
-        // the check after the write sees the warning, which persists.
-        // PDFium ends the array at the `)` instead, and the two placed the glyphs differently.
-        let bytes = pdf(&[
-            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-            "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
-            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
-            stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
-            format!(
-                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
-                 /FirstChar 31 /LastChar 94 /Widths [0 ) 9000 {}] >>",
-                "556 ".repeat(62)
-            ),
-        ]);
+        // #224, security review round 2: qpdf reads a font lazily, so a stray `)` in it is
+        // repaired -- and warned about -- during the walk, after the open's check; the check
+        // after the write sees the warning, which persists.
+        //
+        // The stray `)` sits in a key NO reader interprets (#125's third security review): in
+        // `/Widths`, where #224 put it, the strict number reader now refuses first, and the
+        // warning check would no longer be what this pins.
+        let font = |widths: &str, unread: &str| {
+            pdf(&[
+                "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+                "<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_owned(),
+                format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {BOX} {RESOURCES} >>"),
+                stream("BT /F1 12 Tf 20 350 Td (SECRET) Tj ET\n"),
+                format!(
+                    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                     /WinAnsiEncoding /FirstChar 31 /LastChar 94 /Widths [{widths}] \
+                     /BurrowUnread [{unread}] >>"
+                ),
+            ])
+        };
+        let widths = format!("0 9000 {}", "556 ".repeat(62));
         refused_by(
-            redact_in(&bytes, UPPER_BAND),
+            redact_in(&font(&widths, "0 ) 1"), UPPER_BAND),
             "engine-repaired-input",
             "a font qpdf repaired while the walk read it",
+        );
+        // THE NEAR-MISS: the same font with nothing to repair redacts.
+        redact_in(&font(&widths, "0 1"), UPPER_BAND).expect("nothing repaired, so it redacts");
+        // #224'S OWN SHAPE still refuses, now by the reader that meets it first.
+        refused_by(
+            redact_in(
+                &font(&format!("0 ) 9000 {}", "556 ".repeat(62)), "0 1"),
+                UPPER_BAND,
+            ),
+            "number-unreadable",
+            "a stray `)` inside /Widths",
         );
     }
 

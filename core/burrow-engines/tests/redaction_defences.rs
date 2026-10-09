@@ -690,7 +690,10 @@ fn a_differences_naming_one_code_twice_does_not_hide_a_type_three_procedure() {
     let catalog = pdf.reserve();
     let pages = pdf.reserve();
     let page = pdf.reserve();
-    let harmless = pdf.stream("", "10 0 0 0 0 0 d0\n0 0 1 1 re f\n");
+    // THE DECOY PAINTS NOTHING: a fill became a refusal of its own on 2026-10-08
+    // (`[type-three-procedure-paints]`), and a decoy that refused first would no longer test that
+    // the shadowed procedure is found. A clip is the harmless procedure now.
+    let harmless = pdf.stream("", "10 0 0 0 0 0 d0\n0 0 1 1 re W n\n");
     let procedure = pdf.stream("", "10 0 0 0 0 0 d0\nBT /F9 30 Tf 0 0 Td (SECRET) Tj ET\n");
     let inner_font = pdf.add(&helvetica_with_widths());
     let font = pdf.add(&format!(
@@ -2276,7 +2279,15 @@ fn a_cid_widths_array_that_assigns_too_much_is_refused_by_name() {
             "<< /Type /FontDescriptor /FontName /X /Flags 4 /FontBBox [0 0 1000 1000] \
              /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>"
                 .to_owned(),
-            format!("[{}]", "0 65535 500 ".repeat(100_000)),
+            // DISTINCT RANGES, each 65,536 codes: a range repeated with a different width is refused
+            // first as `[widths-overlap]` (#125's fourth security review), which is not the
+            // ceiling this kills. Every bound stays under 2^24, so `[number-unreadable]` does not fire either.
+            format!(
+                "[{}]",
+                (0..200u32)
+                    .map(|i| format!("{} {} 500 ", i * 65_536, i * 65_536 + 65_535))
+                    .collect::<String>()
+            ),
         ],
     );
     let (outcome, took) = timed(&pdf, burrow_types::Limits::DEFAULT.max_duration_ms);
@@ -2285,7 +2296,7 @@ fn a_cid_widths_array_that_assigns_too_much_is_refused_by_name() {
             format!("{error:?}").contains("[widths-too-many]"),
             "refused, but not by the /W ceiling: {error:?}"
         ),
-        Ok(()) => panic!("a /W assigning 6.5 billion widths must be refused"),
+        Ok(()) => panic!("a /W assigning 13 million widths must be refused"),
     }
     assert!(took < STEP_CEILING, "the /W refusal took {took:?}");
 

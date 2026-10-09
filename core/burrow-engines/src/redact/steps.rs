@@ -33,9 +33,9 @@ use super::sharing::{FormUseCounts, count_form_uses};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
 use crate::pdfsyntax::geometry::{
-    FormsReached, Glyph, InkKind, NamedProperties, PropertyList, ScopedFont, Watch,
-    carried_text_edits, check_form_sharing, check_type_three_procedure, glyphs_and_ink_in,
-    glyphs_in, remove_glyphs_and_carried_text,
+    FormsReached, Glyph, InkKind, NamedProperties, PropertyList, Rect, ScopedFont, Watch,
+    carried_text_edits, check_form_sharing, check_type_three_image_inside,
+    check_type_three_procedure, glyphs_and_ink_in, glyphs_in, remove_glyphs_and_carried_text,
 };
 use crate::pdfsyntax::region::{PageFrame, Region};
 use crate::pdfsyntax::tounicode::ToUnicode;
@@ -698,7 +698,22 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
             .iter()
             .map(|glyph| glyph.source.font.clone())
             .collect();
-        check_type_three(&resources, &drawn_fonts, &self.watch())?;
+        let image_fonts = check_type_three(&resources, &drawn_fonts, &self.watch())?;
+        // A TYPE 3 GLYPH DRAWN AS AN IMAGE, cut (#125, owner's decision 2026-10-08). Its box
+        // covers the image, so the region removes it -- and its procedure, the bitmap, stays in
+        // `/CharProcs`. Refused when the region reaches any glyph of a font that draws one.
+        // Keyed on the font, not the code: resolving a code to its procedure is the name
+        // resolution `check_type_three`'s header says was wrong twice.
+        if cut
+            .iter()
+            .any(|glyph| image_fonts.contains(&glyph.source.font))
+        {
+            return Err(Error::Unsupported(
+                "pdf redaction [type-three-image-cut]: the region reaches a Type 3 glyph drawn as \
+                 an image, whose bitmap would stay in the font after the glyph is removed"
+                    .to_owned(),
+            ));
+        }
 
         // THE MARKED-CONTENT RULE, per stream, because a `Span` indexes the stream it was read
         // from. The page's own content first, then each form the removal reaches -- a form
@@ -1882,48 +1897,154 @@ fn check_contents_sharing<O: PdfObject>(
 /// stream. Scanned per name, a 52 KB file of 4,000 keys over one 100,000-operation procedure
 /// took **9.9 s** against a 100 ms budget -- a security review found it, and it was measured.
 /// So procedures are scanned once per object identity, and `watch` is read inside every scan.
+///
+/// # What it returns
+///
+/// The fonts, of those drawn, with a procedure that draws an inline image inside the font's box
+/// (#125): the caller refuses a region that reaches one of their glyphs. A procedure is scanned
+/// once, and the extent of its images cached with it; that extent is judged against the `/FontBBox`
+/// of **every** font that names the procedure, cached or not. The first version cached the verdict
+/// instead, so a second font sharing the procedure with a smaller box inherited the first font's
+/// "inside" -- `Ok` over 6,000 dark pixels, measured by #125's code review.
+///
+/// # Errors
+///
+/// Whatever [`judge_type_three_font`] refuses, the deadline, and reading the fonts' keys.
 fn check_type_three<O: PdfObject>(
     resources: &PageResources<O>,
     drawn: &BTreeSet<ScopedFont>,
     watch: &Watch<'_>,
-) -> Result<()> {
-    const SUBTYPE: Name = Name::literal(b"/Subtype\0");
+) -> Result<BTreeSet<ScopedFont>> {
+    let mut scans = TypeThreeScans::default();
+    // EACH FONT OBJECT ONCE, whatever names it is drawn under (#125's security review): 4,000 names
+    // for one Type 3 font re-parsed its `/CharProcs` 4,000 times and read the deadline on none of
+    // the cache hits -- 7.4 s against a 500 ms budget, the review's measurement. The verdict is the
+    // font's, so it is computed once and given to every name.
+    let mut fonts_judged: BTreeMap<u64, bool> = BTreeMap::new();
+    let mut image_fonts = BTreeSet::new();
+    for font_name in drawn {
+        watch.tick()?;
+        let font = resources.font_in_scope(font_name)?;
+        // A FONT WRITTEN INLINE has the identity `(0, 0)`, shared by every direct object, so it is
+        // judged every time rather than cached: two inline fonts must never share a verdict. This
+        // is load-bearing, not belt and braces: `check_type_three` runs inside `affected_streams`,
+        // BEFORE `cut_fonts` raises `[direct-font]`, so an inline Type 3 font reaches here.
+        let object = font.object()?;
+        let font_identity = (object != (0, 0)).then(|| pack(object));
+        if let Some(&draws_image) = font_identity.and_then(|id| fonts_judged.get(&id)) {
+            if draws_image {
+                image_fonts.insert(font_name.clone());
+            }
+            continue;
+        }
+        let draws_image = judge_type_three_font(&font, &mut scans, watch)?;
+        if let Some(id) = font_identity {
+            fonts_judged.insert(id, draws_image);
+        }
+        if draws_image {
+            image_fonts.insert(font_name.clone());
+        }
+    }
+    Ok(image_fonts)
+}
+
+/// What `check_type_three` has already learned, across fonts: each procedure's image extent, and
+/// each `/CharProcs` dictionary's image extents.
+#[derive(Default)]
+struct TypeThreeScans {
+    /// Per procedure stream: the extent of the image it draws, if any.
+    procedures: BTreeMap<u64, Option<Rect>>,
+    /// Per indirect `/CharProcs` dictionary: the extents of every image its procedures draw.
+    /// SEPARATE FONT OBJECTS SHARING ONE (#125's third security review): 4,000 fonts over one
+    /// 4,000-key `/CharProcs` re-read every key per font, 20.5 s under the default budget -- the
+    /// font memo cannot help when the identities differ. The extents are the dictionary's; each
+    /// font's box is still judged against them, per font.
+    char_procs: BTreeMap<u64, Vec<Rect>>,
+}
+
+/// One Type 3 font, judged once: whether any procedure it names draws an image (inside its box,
+/// or this refuses), after every procedure has passed `check_type_three_procedure` -- cached per
+/// procedure and per `/CharProcs` across fonts, with the deadline read on every key.
+///
+/// # Errors
+///
+/// [`Error::Unsupported`] naming `subtype-not-a-name`, `number-unreadable` (the `/FontBBox`),
+/// `type-three-procedure-matrix`, or `type-three-image-outside-its-box`; [`Error::Malformed`]
+/// naming `type-three-unreadable`; whatever [`check_type_three_procedure`] refuses; the deadline.
+fn judge_type_three_font<O: PdfObject>(
+    font: &O,
+    scans: &mut TypeThreeScans,
+    watch: &Watch<'_>,
+) -> Result<bool> {
     const TYPE_THREE: Name = Name::literal(b"/Type3\0");
     const CHAR_PROCS: Name = Name::literal(b"/CharProcs\0");
+    const FONT_BBOX: Name = Name::literal(b"/FontBBox\0");
+    const MATRIX: Name = Name::literal(b"/Matrix\0");
 
-    let mut scanned: BTreeSet<u64> = BTreeSet::new();
-    for font_name in drawn {
-        let font = resources.font_in_scope(font_name)?;
-        let subtype = font.key(&SUBTYPE);
-        if subtype.type_code() != object_type::NAME || subtype.name()? != TYPE_THREE {
-            continue;
-        }
-        let procs = font.key(&CHAR_PROCS);
-        if procs.type_code() != object_type::DICTIONARY {
-            continue;
-        }
+    if super::resources::subtype_of(font)? != Some(TYPE_THREE) {
+        return Ok(false);
+    }
+    let procs = font.key(&CHAR_PROCS);
+    if procs.type_code() != object_type::DICTIONARY {
+        return Ok(false);
+    }
+    let font_bbox = super::resources::rect_of(&font.key(&FONT_BBOX))?;
+    // A DIRECT `/CharProcs` has the shared identity `(0, 0)`, so it is never cached.
+    let procs_object = procs.object()?;
+    let procs_identity = (procs_object != (0, 0)).then(|| pack(procs_object));
+    let extents = if let Some(cached) = procs_identity.and_then(|id| scans.char_procs.get(&id)) {
+        cached.clone()
+    } else {
+        let mut extents = Vec::new();
         for key in crate::pdfsyntax::dict::top_level_keys(&procs.unparse())? {
+            watch.tick()?;
             let entry = procs.key(&Name::from_stripped(&key)?);
             if entry.type_code() != object_type::STREAM {
                 continue;
             }
-            // A STREAM IS ALWAYS INDIRECT, so its identity is never the direct-object `(0, 0)`
-            // that would make two different procedures look like one.
-            if !scanned.insert(pack(entry.object()?)) {
-                continue;
-            }
-            let Some(procedure) = entry.stream_data()? else {
-                // Undecodable, so what it draws is unknown, and unknown is not "no text".
-                return Err(Error::Malformed(
-                    "pdf redaction [type-three-unreadable]: a Type 3 glyph procedure whose data \
-                     burrow could not decode"
+            // A `/MATRIX` ON THE PROCEDURE IS REFUSED (#125's security review). PDFium reads a glyph
+            // procedure as it reads a form, so a `/Matrix` on its stream moves everything it draws
+            // before the procedure's own `cm` -- an image this scan judged inside its box drew
+            // 6,000 dark pixels in the region after an `Ok`. No producer is known to write one, so
+            // it is refused rather than modelled (DECISIONS.md rule 1).
+            if entry.stream_dict().key(&MATRIX).type_code() != object_type::NULL {
+                return Err(Error::Unsupported(
+                    "pdf redaction [type-three-procedure-matrix]: a Type 3 glyph procedure carrying \
+                     a /Matrix of its own, which moves what it draws in a way burrow does not model"
                         .to_owned(),
                 ));
+            }
+            // A STREAM IS ALWAYS INDIRECT, so its identity is never the direct-object `(0, 0)`
+            // that would make two different procedures look like one.
+            let identity = pack(entry.object()?);
+            let image = if let Some(&cached) = scans.procedures.get(&identity) {
+                cached
+            } else {
+                let Some(procedure) = entry.stream_data()? else {
+                    // Undecodable, so what it draws is unknown, and unknown is not "no text".
+                    return Err(Error::Malformed(
+                        "pdf redaction [type-three-unreadable]: a Type 3 glyph procedure whose \
+                         data burrow could not decode"
+                            .to_owned(),
+                    ));
+                };
+                let draws = check_type_three_procedure(&procedure, watch)?;
+                scans.procedures.insert(identity, draws.image);
+                draws.image
             };
-            check_type_three_procedure(&procedure, watch)?;
+            extents.extend(image);
         }
+        if let Some(id) = procs_identity {
+            scans.char_procs.insert(id, extents.clone());
+        }
+        extents
+    };
+    // PER FONT, EVERY TIME: the box is this font's, whoever scanned the procedures.
+    for extent in &extents {
+        watch.tick()?;
+        check_type_three_image_inside(*extent, font_bbox)?;
     }
-    Ok(())
+    Ok(!extents.is_empty())
 }
 
 /// Every `/Font` resource name on the page.
@@ -2587,7 +2708,8 @@ fn narrow_differences<O: PdfObject>(font: &O, keeps: &BTreeSet<u32>) -> Result<(
             continue;
         }
         if item.type_code() != object_type::NAME {
-            continue;
+            // `walk_differences` above refused this already; kept so the two loops cannot drift.
+            return Err(differences_item_unreadable());
         }
         let survives = keeps.contains(&code) && last_at.get(&code) == Some(&at);
         if !survives {
@@ -2613,12 +2735,29 @@ fn walk_differences<O: PdfObject>(
             continue;
         }
         if item.type_code() != object_type::NAME {
-            continue;
+            return Err(differences_item_unreadable());
         }
         seen(code, at);
         code = code.saturating_add(1);
     }
     Ok(())
+}
+
+/// The refusal for a `/Differences` item that is neither an integer anchor nor a name (#125's
+/// third security review).
+///
+/// These loops SKIPPED one. PDFium reads any non-name item as an anchor -- its integer value, so
+/// a string, a real, a boolean -- which moves every name after it to another code. Measured with
+/// `[65 (x) /S /E /C /R /E /T]`: PDFium extracted SECRET from codes 0 to 5, burrow narrowed the
+/// names as codes 65 to 70, and the output kept `/S /E /C /R /E /T` with `Ok` and `cut: true`
+/// beside it. The same with `0.5` or `true` in place of `(x)`. Refused, not modelled
+/// (DECISIONS.md rule 1).
+fn differences_item_unreadable() -> Error {
+    Error::Unsupported(
+        "pdf redaction [differences-item-unreadable]: a /Differences item that is neither a \
+         code nor a glyph name, which a renderer reads as a code and burrow would not"
+            .to_owned(),
+    )
 }
 
 /// A `/Differences` anchor, refused rather than folded onto zero.

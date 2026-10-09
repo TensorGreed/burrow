@@ -220,7 +220,10 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
 ///
 /// [`burrow_types::Error::OutputRejected`] for a `/ToUnicode` whose program cannot be read: a
 /// domain that cannot be established cannot be checked. [`burrow_types::Error::Malformed`] from
-/// parsing it. Whatever reading the font refused.
+/// parsing it. [`burrow_types::Error::OutputRejected`] naming `differences-item-unreadable` for a
+/// `/Differences` item that is neither a code nor a name, which the narrowing refuses before it
+/// writes -- so reaching it here means the narrowing let one through. Whatever reading the font
+/// refused.
 fn orphans_of<O: PdfObject>(
     font: &O,
     still: &BTreeSet<u32>,
@@ -275,7 +278,14 @@ fn orphans_of<O: PdfObject>(
                     continue;
                 }
                 if item.type_code() != object_type::NAME {
-                    continue;
+                    // FAIL CLOSED, as the narrowing does: a renderer reads this as a code, and
+                    // every name after it would be counted at the wrong one.
+                    return Err(burrow_types::Error::OutputRejected(
+                        "redact: the region is not cleared -- [differences-item-unreadable] a \
+                         /Differences item that is neither a code nor a glyph name reached the \
+                         output"
+                            .to_owned(),
+                    ));
                 }
                 let counted_already = map.as_ref().is_some_and(|m| m.maps(code));
                 if !still.contains(&code) && !counted_already {

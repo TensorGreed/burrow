@@ -68,15 +68,17 @@ const PATTERN: Name = Name::literal(b"/Pattern\0");
 const FONT: Name = Name::literal(b"/Font\0");
 const OCG: Name = Name::literal(b"/OCG\0");
 const OCMD: Name = Name::literal(b"/OCMD\0");
-const SUBTYPE: Name = Name::literal(b"/Subtype\0");
 const IMAGE: Name = Name::literal(b"/Image\0");
 
 /// Refuse if `page`, drawing against `resources`, references optional content anywhere it reaches.
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] naming `optional-content`; `max_duration_ms` through the deadline; and
-/// whatever reading a dictionary's keys failed with.
+/// [`Error::Unsupported`] naming `optional-content`; [`Error::Unsupported`] naming
+/// `subtype-not-a-name` for ANY stream the walk reaches whose `/Subtype` is not a name -- a form,
+/// a pattern, an appearance stream, a glyph procedure -- since `is_image` reads it through
+/// `resources::subtype_of`; `max_duration_ms` through the deadline; and whatever reading a
+/// dictionary's keys failed with.
 pub(crate) fn refuse_optional_content<O: PdfObject>(
     page: &O,
     resources: &O,
@@ -323,11 +325,8 @@ fn has_oc<O: PdfObject>(dictionary: &O) -> bool {
 
 /// Whether a stream dictionary is an image XObject's.
 fn is_image<O: PdfObject>(dictionary: &O) -> Result<bool> {
-    let subtype = dictionary.key(&SUBTYPE);
-    if subtype.type_code() != object_type::NAME {
-        return Ok(false);
-    }
-    Ok(subtype.name()? == IMAGE)
+    // A NON-NAME `/Subtype` REFUSES, as everywhere burrow branches on it (#125).
+    Ok(super::resources::subtype_of(dictionary)? == Some(IMAGE))
 }
 
 /// Whether `entry` is an optional-content group or membership dictionary.

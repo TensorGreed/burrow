@@ -30,11 +30,14 @@
 //! 4. **No box is built from a non-finite number.** An infinity composes to a NaN and
 //!    `Rect::transformed` folds NaN corners into an inverted rectangle, which intersects
 //!    nothing — a glyph a redaction silently skips.
+//! 5. **The same bytes as a Type 3 glyph procedure** (#125): every refusal the procedure scan
+//!    raises names a rule, and a reported image extent is judged against a box without panicking.
 
 #![no_main]
 
 use burrow_engines::pdfsyntax::geometry::{
-    Encoding, ExtGStateLine, Form, Glyph, GlyphMetrics, LineParameter, MAX_GLYPHS, Matrix, Rect, Refusal, Resources, Watch, glyphs_in,
+    Encoding, ExtGStateLine, Form, Glyph, GlyphMetrics, LineParameter, MAX_GLYPHS,
+    check_type_three_image_inside, check_type_three_procedure, Matrix, Rect, Refusal, Resources, Watch, glyphs_in,
 };
 use burrow_types::{Deadline, Error, Limits, ManualClock, Result};
 use libfuzzer_sys::fuzz_target;
@@ -225,6 +228,33 @@ fuzz_target!(|data: &[u8]| {
             assert!(
                 named || !claims_this_layer,
                 "an unnamed refusal escaped the geometry walk: {error:?}"
+            );
+        }
+    }
+
+    // (5) THE SAME BYTES AS A TYPE 3 GLYPH PROCEDURE (#125): it now tracks a transform and reports
+    // an image's extent, arithmetic on file data. Every refusal names a rule, and a reported extent
+    // is judged against the fuzzer's own box without panicking.
+    match check_type_three_procedure(body, &unwatched()) {
+        Ok(draws) => {
+            if let Some(extent) = draws.image {
+                if let Err(error) = check_type_three_image_inside(extent, resources.bbox) {
+                    assert!(
+                        Refusal::ALL.iter().any(|rule| rule.caught(&error)),
+                        "an unnamed refusal from the image check: {error:?}"
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            let claims_this_layer = matches!(
+                &error,
+                Error::Malformed(message) | Error::Unsupported(message)
+                    if message.starts_with("pdf geometry")
+            );
+            assert!(
+                Refusal::ALL.iter().any(|rule| rule.caught(&error)) || !claims_this_layer,
+                "an unnamed refusal escaped the Type 3 procedure scan: {error:?}"
             );
         }
     }

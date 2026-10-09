@@ -157,6 +157,248 @@ def evade_image_as_pattern() -> bytes:
     return simple_page(pdf, content, res)
 
 
+def evade_inline_image_outside_type3_box() -> bytes:
+    """A Type 3 glyph far from the region whose procedure draws an unfiltered inline image INTO it.
+
+    The walk boxes the glyph by its advance and its ten-point `/FontBBox`, so no region over the
+    image reaches the glyph: before #125 refused it, the redaction returned `Ok` with the image
+    drawn on -- the same shape measured at 5,309 dark pixels in the specification review's own
+    file, not this one. Refused by
+    `[type-three-image-outside-its-box]`. Unfiltered, so `[inline-image-filtered]` is not what
+    refuses it. Its twin is `nearmiss-type3-procedure-that-only-shows-its-own-glyph`, a bitmap
+    glyph inside its box and outside the region.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    w, h, pixels = raster(secret("IMG-T3-OUTSIDE"), scale=1)
+    x0, y0, x1, y1 = REGION
+    gx, gy = PAGE_W - 20, 10
+    proc = pdf.stream(
+        b"",
+        b"10 0 d0\nq " + f"{x1 - x0} 0 0 {y1 - y0} {x0 - gx} {y0 - gy}".encode() + b" cm\n"
+        b"BI /W " + str(w).encode() + b" /H " + str(h).encode() + b" /CS /G /BPC 8 ID "
+        + pixels + b"\nEI Q\n",
+    )
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3 = pdf.add(
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 10 10]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [10]"
+        b" /Resources << >> >>"
+    )
+    content = b"BT /T3 1 Tf " + f"{gx} {gy} Td ".encode() + literal("a") + b" Tj ET\n" + keep_line_ops()
+    res = (
+        b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def _type3_showing_text_under_a_string_subtype() -> bytes:
+    """A Type 3 font whose `/Subtype` is the STRING `(Type3)`, its procedure showing the text.
+
+    PDFium reads `/Subtype` by its bytes, so this is a Type 3 font to it. burrow compared a name,
+    found none, and read the font as "not Type 3": every Type 3 rule skipped it -- the procedure's
+    shown text, a painted path, an inline image. Measured by #125's second security review: `Ok`,
+    879 dark pixels in the region before and after, the secret in plain text in the output. That
+    leak was on main before the Type 3 slice. Refused `[subtype-not-a-name]`. The glyph is far
+    from the region; the procedure draws into it.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, y0, x1, y1 = REGION
+    gx, gy = PAGE_W - 20, 10
+    proc = pdf.stream(
+        b"",
+        b"10 0 d0\nBT /Helv 20 Tf " + f"{x0 - gx} {y0 - gy + 5}".encode() + b" Td "
+        + literal(secret("TYPE3-STRING-SUBTYPE")) + b" Tj ET\n",
+    )
+    charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
+    encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
+    t3 = pdf.add(
+        b"<< /Type /Font /Subtype (Type3) /FontBBox [0 0 10 10]"
+        b" /FontMatrix [1 0 0 1 0 0]"
+        b" /CharProcs " + str(charprocs).encode() + b" 0 R"
+        b" /Encoding " + str(encoding).encode() + b" 0 R"
+        b" /FirstChar 97 /LastChar 97 /Widths [10]"
+        b" /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >> >>"
+    )
+    content = b"BT /T3 1 Tf " + f"{gx} {gy} Td ".encode() + literal("a") + b" Tj ET\n" + keep_line_ops()
+    res = (
+        b"/Font << /T3 " + str(t3).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_type3_subtype_as_a_string() -> bytes:
+    """See `_type3_showing_text_under_a_string_subtype`."""
+    return _type3_showing_text_under_a_string_subtype()
+
+
+def _form_holding_text(subtype: bytes, canary: str) -> bytes:
+    """A page whose only content is `/X1 Do`, the form holding the text in the region."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, y0, _x1, _y1 = REGION
+    form = pdf.stream(
+        b"/Type /XObject /Subtype " + subtype + b" /BBox [0 0 " + f"{PAGE_W} {PAGE_H}".encode()
+        + b"] /Resources << /Font << /Helv " + str(helv).encode() + b" 0 R >> >>",
+        b"BT /Helv 20 Tf " + f"{x0} {y0 + 5}".encode() + b" Td " + literal(secret(canary))
+        + b" Tj ET\n",
+    )
+    content = b"q /X1 Do Q\n" + keep_line_ops()
+    res = (
+        b"/XObject << /X1 " + str(form).encode() + b" 0 R >> /Font << /Helv "
+        + str(helv).encode() + b" 0 R >>"
+    )
+    return simple_page(pdf, content, res)
+
+
+def evade_form_subtype_as_a_string() -> bytes:
+    """A Form XObject whose `/Subtype` is the STRING `(Form)`, holding the text in the region.
+
+    The walk read a non-name `/Subtype` as "not a form" and never entered it; PDFium reads the
+    bytes and draws it. Measured by #125's second security review: `Ok`, 879 dark pixels before
+    and after, the text still in the output -- on main before the Type 3 slice. Refused
+    `[subtype-not-a-name]`. Its twin, `nearmiss-form-subtype-as-a-name`, is byte for byte the same
+    shape with the name `/Form`, and redacts.
+    """
+    return _form_holding_text(b"(Form)", "FORM-STRING-SUBTYPE")
+
+
+def nearmiss_form_subtype_as_a_name() -> bytes:
+    """The twin of `evade-form-subtype-as-a-string`: `/Subtype /Form`, so the rule must not fire."""
+    return _form_holding_text(b"/Form", "FORM-NAME-SUBTYPE")
+
+
+def _bangs_then_secret(first_widths: bytes, canary: str) -> bytes:
+    """Forty-five `!` then the secret at size 20, in Helvetica from code 32 with `first_widths`."""
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 126"
+        b" /Widths [" + first_widths + b" " + b"600 " * 93 + b"] >>"
+    )
+    bangs = 45
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf "
+        + f"{x0 - bangs * SECRET_SIZE} {SECRET_Y} Td ".encode()
+        + literal("!" * bangs + secret(canary)) + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def nearmiss_widths_as_pdfium_reads_them() -> bytes:
+    """The twin of `evade-widths-holding-a-string`: `/Widths [0 1000 …]`, the leak as PDFium reads
+    it. Both readers agree, and the secret is removed."""
+    return _bangs_then_secret(b"0 1000", "WIDTHS-READ")
+
+
+def evade_widths_holding_a_string() -> bytes:
+    """`/Widths` with a string where code 32's width belongs, read item by item by PDFium.
+
+    PDFium reads the string as 0 and code 33 (`!`) as 1,000, so forty-five `!` at size 20 carry the
+    secret into the region. burrow read the array's unparsed text, dropped the string, and read `!`
+    as 600 -- the secret 360 points to the left, outside the region, and `Ok` with it on the page.
+    Refused `[number-unreadable]` since #125's third security review.
+    """
+    return _bangs_then_secret(b"(x) 1000", "WIDTHS-STRING")
+
+
+#: Glyph names for the characters a canary uses.
+_GLYPH_NAMES = {"-": "hyphen", **{c: c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}}
+
+
+def evade_differences_item_neither_code_nor_name() -> bytes:
+    """`/Differences [65 (x) /B /U …]`: the string is a code to PDFium, and burrow skipped it.
+
+    PDFium reads any non-name item as an anchor at its integer value, so the names land on codes 0
+    onwards, which the page draws in the region: PDFium extracts the secret. burrow skipped the
+    item, narrowed the names as codes 65 onwards, and kept every one -- `Ok`, `cut: true`, and the
+    secret spelled in the font. Refused `[differences-item-unreadable]` since #125's third
+    security review.
+    """
+    return _differences_spelling(b"65 (x)", "DIFFERENCES-ITEM")
+
+
+def nearmiss_differences_codes_and_names() -> bytes:
+    """The twin: `/Differences [0 /B /U …]`, a code and names, read alike. The names on the codes
+    the region removes are narrowed away, and the secret is gone."""
+    return _differences_spelling(b"0", "DIFFERENCES-NAMES")
+
+
+def _differences_spelling(head: bytes, canary_tag: str) -> bytes:
+    """Codes 0.. drawn in the region, spelled as the secret by `/Differences [<head> names…]`.
+
+    A second `/F1` string, `ABCDEF` outside the region, keeps codes 65..70 in use after the cut --
+    so the old narrowing, which read the names as codes 65 onwards, KEPT them, as the unit test
+    measured. Without it nothing would be kept and the old code would have narrowed every name
+    away, and the fixture would pin only the refusal (#125's fourth code review).
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    canary = secret(canary_tag)
+    names = b" ".join(b"/" + _GLYPH_NAMES[c].encode() for c in canary)
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 0 /LastChar 255"
+        b" /Widths [" + b"600 " * 256 + b"] /Encoding << /Type /Encoding /Differences ["
+        + head + b" " + names + b"] >> >>"
+    )
+    codes = "".join(f"{i:02X}" for i in range(len(canary))).encode()
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf " + f"{x0 + 4} {SECRET_Y} Td ".encode()
+        + b"<" + codes + b"> Tj ET\n"
+        + b"BT /F1 14 Tf 40 160 Td (ABCDEF) Tj ET\n"
+        + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def _standard_14_under_base_encoding(base: bytes, canary: str) -> bytes:
+    """Code-96 glyphs then the secret in Helvetica with no `/Widths`, under `base`.
+
+    WinAnsi's code 96 is 333 wide and Standard's 222, so sixty of them at size 20 put the secret
+    at the region's left edge under WinAnsi and 133 points short of it under Standard.
+    """
+    pdf = Pdf()
+    helv = helvetica(pdf)
+    x0, _y0, _x1, _y1 = REGION
+    font = pdf.add(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding "
+        + base + b" >> >>"
+    )
+    graves = 60
+    start = x0 + 2 - graves * 333 * SECRET_SIZE / 1000
+    content = (
+        b"BT /F1 " + str(SECRET_SIZE).encode() + b" Tf " + f"{start:.2f} {SECRET_Y} Td ".encode()
+        + literal("`" * graves + secret(canary)) + b" Tj ET\n" + keep_line_ops()
+    )
+    res = b"/Font << /F1 " + str(font).encode() + b" 0 R /Helv " + str(helv).encode() + b" 0 R >>"
+    return simple_page(pdf, content, res)
+
+
+def evade_base_encoding_as_a_string() -> bytes:
+    """`/BaseEncoding (WinAnsiEncoding)`: WinAnsi to PDFium by its bytes, Standard to burrow.
+
+    The secret sits in the region under WinAnsi's widths and outside it under Standard's, so
+    burrow kept it: `Ok`, 385 dark pixels before and after, in the security review's own file.
+    Refused `[base-encoding-not-a-name]` since #125's third security review. Its twin,
+    `nearmiss-base-encoding-as-a-name`, is the same file under the name, and redacts.
+    """
+    return _standard_14_under_base_encoding(b"(WinAnsiEncoding)", "BASE-ENCODING-STRING")
+
+
+def nearmiss_base_encoding_as_a_name() -> bytes:
+    """The twin: `/BaseEncoding /WinAnsiEncoding`, read alike by both, so the secret is removed."""
+    return _standard_14_under_base_encoding(b"/WinAnsiEncoding", "BASE-NAME")
+
+
 def evade_image_in_type3_glyph() -> bytes:
     """The image is drawn by a Type 3 glyph procedure — one level further than a Form XObject."""
     pdf = Pdf()
@@ -372,18 +614,27 @@ def nearmiss_form_carrying_its_own_font() -> bytes:
 
 
 def nearmiss_type3_procedure_that_only_shows_its_own_glyph() -> bytes:
-    """A Type 3 glyph procedure that draws a PATH and nothing else. MUST NOT be refused.
+    """A Type 3 glyph procedure that draws an IMAGE inside its own box, and nothing else. MUST
+    NOT be refused WHERE THE REGION MISSES THE TYPE 3 GLYPH -- the `pdfbuild` and `band` regions.
+    The `whole`-page region reaches it, and refuses `[type-three-image-cut]` by design.
 
     The twin for `evade-text-in-type3-via-form`. `check_type_three_procedure` refuses a procedure
-    containing `Tj`/`TJ`/`'`/`"`/`Do`, and a procedure that fills its own outline contains none of
-    them — which is what a Type 3 font is normally *for*. A rule that refused every Type 3 font
-    would pass the evasion and refuse a whole legitimate font type.
+    containing `Tj`/`TJ`/`'`/`"`/`Do`; this one contains none of them. A rule that refused every
+    Type 3 font would pass the evasion and refuse a whole legitimate font type.
+
+    IT FILLED ITS OUTLINE until 2026-10-08, when a procedure that paints became a refusal of its
+    own, page-wide (#125, owner's decision: `[type-three-procedure-paints]`). A bitmap glyph -- an
+    inline image inside its font's box, the TeX shape -- is the Type 3 font that rule still lets
+    through when the region does not reach it, so it is the honest near-miss now.
 
     The canary is drawn by Helvetica inside the region; the Type 3 glyph sits outside it.
     """
     pdf = Pdf()
     helv = helvetica(pdf)
-    proc = pdf.stream(b"", b"20 0 0 0 20 20 d1\n0 0 18 18 re f\n")
+    proc = pdf.stream(
+        b"",
+        b"20 0 0 0 20 20 d1\nq 18 0 0 18 0 0 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
+    )
     charprocs = pdf.add(b"<< /g " + str(proc).encode() + b" 0 R >>")
     encoding = pdf.add(b"<< /Type /Encoding /Differences [97 /g] >>")
     t3 = pdf.add(
@@ -1975,15 +2226,19 @@ def evade_junk_kid_over_null_resources() -> bytes:
 
 
 def evade_font_repaired_during_the_walk() -> bytes:
-    """A font whose `/Widths` holds a stray `)`, which qpdf repairs only when the walk reads it.
+    """A font carrying a stray `)`, which qpdf repairs only when the walk reads the font.
 
     The repair comes after the open's warning check, so it needs the second one, just before the
-    write (#224, round 2). PDFium ends the array at the `)` and places the glyphs otherwise.
+    write (#224, round 2). #224 put the `)` in `/Widths`, where PDFium ends the array and places
+    the glyphs otherwise. Since #125's third security review the strict number reader refuses that
+    shape first, `[number-unreadable]`, and this fixture would no longer reach the warning check it
+    exists for -- so the `)` now sits in a key no reader interprets, and only the repair is left
+    to refuse it.
     """
     pdf = Pdf()
     font = pdf.add(
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Name /Helv /FirstChar 31"
-        b" /LastChar 126 /Widths [0 ) 9000 " + b"556 " * 94 + b"] >>"
+        b" /LastChar 126 /Widths [0 9000 " + b"556 " * 94 + b"] /BurrowUnread [0 ) 1] >>"
     )
     return _page_under_a_tree(
         pdf,
@@ -2640,6 +2895,16 @@ CASES: list[tuple[str, str]] = [
     ("evade-inline-image", "image"),
     ("evade-image-as-pattern", "image"),
     ("evade-image-in-type3-glyph", "image"),
+    ("evade-inline-image-outside-type3-box", "image"),
+    ("evade-type3-subtype-as-a-string", "/Subtype not a name"),
+    ("evade-form-subtype-as-a-string", "/Subtype not a name"),
+    ("nearmiss-form-subtype-as-a-name", "/Subtype not a name"),
+    ("evade-widths-holding-a-string", "a value read item by item"),
+    ("evade-differences-item-neither-code-nor-name", "a value read item by item"),
+    ("evade-base-encoding-as-a-string", "a value read item by item"),
+    ("nearmiss-base-encoding-as-a-name", "a value read item by item"),
+    ("nearmiss-widths-as-pdfium-reads-them", "a value read item by item"),
+    ("nearmiss-differences-codes-and-names", "a value read item by item"),
     ("evade-text-in-type3-via-form", "Type 3 procedure"),
     ("nearmiss-type3-procedure-that-only-shows-its-own-glyph", "Type 3 procedure"),
     ("evade-type3-font-named-only-inside-a-form", "Type 3 procedure"),
@@ -2752,6 +3017,16 @@ CASES: list[tuple[str, str]] = [
 ]
 
 BUILDERS = {
+    "evade-inline-image-outside-type3-box": evade_inline_image_outside_type3_box,
+    "evade-type3-subtype-as-a-string": evade_type3_subtype_as_a_string,
+    "evade-form-subtype-as-a-string": evade_form_subtype_as_a_string,
+    "nearmiss-form-subtype-as-a-name": nearmiss_form_subtype_as_a_name,
+    "evade-widths-holding-a-string": evade_widths_holding_a_string,
+    "evade-differences-item-neither-code-nor-name": evade_differences_item_neither_code_nor_name,
+    "evade-base-encoding-as-a-string": evade_base_encoding_as_a_string,
+    "nearmiss-base-encoding-as-a-name": nearmiss_base_encoding_as_a_name,
+    "nearmiss-widths-as-pdfium-reads-them": nearmiss_widths_as_pdfium_reads_them,
+    "nearmiss-differences-codes-and-names": nearmiss_differences_codes_and_names,
     "evade-image-in-form": evade_image_in_form,
     "evade-inline-image": evade_inline_image,
     "evade-image-as-pattern": evade_image_as_pattern,
