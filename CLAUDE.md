@@ -147,6 +147,27 @@ is still local. **Which reviewer depends on what the change decides** (2026-09-2
 
 When a change is both, it gets both.
 
+**How many rounds, and what a round may find** (owner, 2026-10-09; DECISIONS.md rule 15). Review is
+bounded, so a small increment does not turn into an open-ended loop:
+
+- **The scope is set at round 0.** The spec review (*Spec review first*) fixes what the slice
+  covers. Anything a reviewer finds **outside the diff** -- a leak already on `main`, a neighbouring
+  reader with the same bug -- is **filed as an issue** (a ship-blocker row if it is a leak), never
+  folded into the PR. It is sequenced, not lost.
+- **At most two post-code rounds.** Round 1 reviews the diff in full. Round 2 checks only round 1's
+  findings against the fix diff, and does not hunt for new ones. After round 2, **only a Critical
+  or High introduced by the diff blocks the push**; anything else is filed or goes in a follow-up.
+- **Wording does not reopen a review.** Corrections to docs, comments, rustdoc or commit-message
+  claims land in a follow-up commit that the author, or the `code-reviewer` alone, checks. They
+  are not sent back through both reviewers.
+- **Keep slices small.** Leaks found outside a slice become slices of their own, so each PR stays
+  at one or two rounds.
+
+Why: the Type 3 slice (#296) took eight rounds of both reviewers, and #290 three, almost all of
+it because reviewers hunted the whole bug class, found leaks already on `main`, and those were
+fixed inside the PR -- new code that needed another round. The leaks were real; folding them in is
+what made the loop open-ended.
+
 Why before the push: In M1 PR 4a-ii they ran after the branch was pushed
 and found two things that had already reached a commit: a reachable bug that took a page
 offline after three long operations, and a regression that silently disabled two CSP tests by
@@ -233,7 +254,8 @@ writing code, give the `security-reviewer` the proposed rule, the ADR 0029 §3 /
 accept-vs-refuse table (DECISIONS.md rule 10), and the census plan, and ask for (a) the inputs the
 rule would accept that the table says to refuse, and (b) the fixture list it would demand. Build
 from that list. The post-code reviews (*Conventions*: both reviewers for redaction-deciding code)
-still run — the aim is that round 2 finds nothing a round 0 could have. This does not change the
+still run, at most two rounds (rule 15) — the aim is that round 2 finds nothing a round 0 could
+have. Round 0 is also where the slice's **scope** is fixed: what is outside it is filed, not built. This does not change the
 reviewers, the sweep, the bar, or any test; it adds a round 0 before them.
 
 ### When to proceed, and when to stop and ask
