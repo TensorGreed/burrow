@@ -112,6 +112,8 @@ struct FontFacts {
     /// The glyph NAME `/Differences` gives each code it remaps, for a font with no `/Widths`
     /// (#290): its width is looked up by that name, as PDFium draws that glyph.
     differences: BTreeMap<u32, Vec<u8>>,
+    /// Whether this is a Type 3 font, whose widths PDFium ROUNDS rather than truncates (#291).
+    type_three: bool,
 }
 
 impl<O: PdfObject> PageResources<O> {
@@ -461,6 +463,27 @@ impl<O: PdfObject> Resources for PageResources<O> {
                     .to_owned()
             }))
         })?;
+        // TYPE 3 WIDTHS, AS PDFIUM STORES THEM (#291): in thousandths of an em, ROUNDED. One that
+        // rounds to 0 makes PDFium advance by the procedure's `d0`/`d1` width instead -- measured:
+        // `/Widths [0]` with `1000 0 d0` advanced 1,000 where burrow advanced 0 -- so it refuses
+        // rather than reading the procedure. One past 2^31 is outside the integer PDFium keeps.
+        if facts.type_three {
+            let thousandths = (width * facts.font_matrix.a * 1000.0).abs();
+            if thousandths < 0.5 {
+                return Err(Error::Unsupported(
+                    "pdf resources [type-three-width-zero]: a Type 3 glyph whose width rounds to \
+                     nothing, where a renderer advances by the glyph procedure's own width instead"
+                        .to_owned(),
+                ));
+            }
+            if thousandths >= 2_147_483_648.0 {
+                return Err(Error::Unsupported(
+                    "pdf resources [width-out-of-range]: a Type 3 glyph width past the integer a \
+                     renderer stores it in"
+                        .to_owned(),
+                ));
+            }
+        }
         Ok(GlyphMetrics {
             width,
             bytes_per_code: facts.bytes_per_code,
@@ -678,6 +701,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         standard_14: None,
         base_encoding: crate::pdfsyntax::standard14::BaseEncoding::Standard,
         differences: BTreeMap::new(),
+        type_three: subtype == Some(SUBTYPE_TYPE3),
     };
 
     // A NEGATIVE `/FirstChar` REFUSES HERE, where every font is read (#125's fifth security review).
@@ -1165,7 +1189,11 @@ fn width_source_refusal() -> Error {
 ///
 /// [`Error::Unsupported`] naming `width-out-of-range` below 0 or at 65,535 and above.
 fn simple_width_in_range(width: f64) -> Result<()> {
-    if (0.0..65_535.0).contains(&width) {
+    // THE UPPER EDGE IS WHERE A 32-BIT FLOAT ROUNDS TO 65,535 (#291), not 65,535 itself: PDFium
+    // parses the width as a float, and 65,534.999 becomes 65,535 -- its "not set" value -- and was
+    // drawn at width 0, measured, while this kept 65,534.999. 65,534.998046875 is the midpoint
+    // between the two largest floats below and at 65,535; refused from there up.
+    if (0.0..65_534.998_046_875).contains(&width) {
         Ok(())
     } else {
         Err(Error::Unsupported(
