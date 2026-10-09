@@ -7,7 +7,8 @@
 //!
 //! # Source, and notice
 //!
-//! A MODIFIED EXTRACT of Adobe's Core 14 AFM files -- glyph names and advance widths only --
+//! A MODIFIED EXTRACT of Adobe's Core 14 AFM files -- glyph names, advance widths, and the
+//! StandardEncoding code each AFM assigns over 32..=126 --
 //! from `third_party/adobe-core14-afm/` (`Core14_AFMs.zip`, sha256
 //! `8c892c3c49553cfd2d2a27c4495b4bb12e2875115be7fd127ed3876df19d8654`),
 //! intersected with a measurement of the vendored PDFium

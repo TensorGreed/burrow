@@ -10,11 +10,13 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 table="$repo/core/burrow-engines/src/pdfsyntax/standard14_table.rs"
+notices="$repo/THIRD_PARTY_NOTICES.md"
 work="$(mktemp -d)"
 cp "$table" "$work/original.rs"
-trap 'cp "$work/original.rs" "$table"; rm -rf "$work"' EXIT
+cp "$notices" "$work/original.md"
+trap 'cp "$work/original.rs" "$table"; cp "$work/original.md" "$notices"; rm -rf "$work"' EXIT
 
-EXPECTED_CASES=2
+EXPECTED_CASES=3
 pass=0
 fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
@@ -59,6 +61,32 @@ else
 fi
 cp "$work/original.rs" "$table"
 cmp -s "$table" "$work/original.rs" || { echo "FAILED -- the table was not restored" >&2; exit 1; }
+
+# THE NOTICES (ADR 0030): Courier's Notice line removed from THIRD_PARTY_NOTICES.md is refused by
+# name -- the extract ships, and that file is where its copyright notice survives.
+python3 - "$notices" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+lines = [l for l in s.splitlines(keepends=True) if not l.startswith("- Courier: `")]
+assert len(lines) == len(s.splitlines(keepends=True)) - 1, "Courier's notice line moved; update this case"
+open(p, "w").write("".join(lines))
+PY
+if cmp -s "$notices" "$work/original.md"; then
+  bad "the notice removal did not apply, so this case measured nothing"
+else
+  set +e
+  out="$("$here/check-standard14-table.sh" 2>&1)"
+  status=$?
+  set -e
+  if [ "$status" -ne 0 ] && grep -qF "lacks the verbatim Notice line of: Courier" <<<"$out"; then
+    ok "a Notice line missing from THIRD_PARTY_NOTICES.md is refused by name"
+  else
+    bad "a Notice line missing from THIRD_PARTY_NOTICES.md is refused by name (exit $status)"
+    sed 's/^/         /' <<<"$out" >&2
+  fi
+fi
+cp "$work/original.md" "$notices"
+cmp -s "$notices" "$work/original.md" || { echo "FAILED -- the notices were not restored" >&2; exit 1; }
 
 echo
 echo "$pass passed, $fail failed"

@@ -4,8 +4,9 @@
 #
 # tools/check-afm-provenance.sh verifies every file against the checksums below on every run, and
 # with --fetch re-downloads the archive from the pinned URL and checks it against this record too.
-# The files are read only by the test that GENERATES core/burrow-engines/src/pdfsyntax/
-# standard14_table.rs (#290); nothing in a shipped build parses them.
+# The files are read only by tools/make-standard14-table.py, which GENERATES
+# core/burrow-engines/src/pdfsyntax/standard14_table.rs (#290). No shipped build parses them; the
+# derived data -- glyph names, widths, StandardEncoding codes -- ships in the redaction wasm.
 
 [archive]
 url = "https://download.macromedia.com/pub/developer/opentype/tech-notes/Core14_AFMs.zip"

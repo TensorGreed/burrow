@@ -30,6 +30,30 @@ if [ ! -s "$work/measure.json" ]; then
 fi
 python3 "$here/make-standard14-table.py" "$work/measure.json" --out "$work/standard14_table.rs"
 
+# THE NOTICES TRAVEL WITH THE EXTRACT (ADR 0030, the license-auditor's condition): every AFM Notice
+# line the table is drawn from must appear in THIRD_PARTY_NOTICES.md byte for byte, so the two
+# cannot drift apart. A Rust comment does not survive into the wasm; this file does.
+python3 - "$repo" <<'PY'
+import pathlib, sys
+repo = pathlib.Path(sys.argv[1])
+notices = (repo / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+styles = ["Courier", "Courier-Bold", "Courier-BoldOblique", "Courier-Oblique", "Helvetica",
+          "Helvetica-Bold", "Helvetica-BoldOblique", "Helvetica-Oblique", "Times-Bold",
+          "Times-BoldItalic", "Times-Italic", "Times-Roman"]
+missing = []
+for style in styles:
+    afm = (repo / "third_party" / "adobe-core14-afm" / f"{style}.afm").read_text(encoding="latin-1")
+    notice = next(l[len("Notice "):].strip() for l in afm.splitlines() if l.startswith("Notice "))
+    # PER STYLE: several AFMs carry identical Notice text (Courier and Courier-Oblique), so the
+    # text alone would let one style's line stand in for another's.
+    if f"- {style}: `{notice}`" not in notices:
+        missing.append(style)
+print(f"check-standard14-table: {len(styles) - len(missing)} of {len(styles)} AFM Notice lines found verbatim in THIRD_PARTY_NOTICES.md")
+if missing:
+    print("FAILED -- THIRD_PARTY_NOTICES.md lacks the verbatim Notice line of: " + ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+PY
+
 if [ "${1:-}" = "--bless" ]; then
   cp "$work/standard14_table.rs" "$committed"
   echo "check-standard14-table: wrote $committed"

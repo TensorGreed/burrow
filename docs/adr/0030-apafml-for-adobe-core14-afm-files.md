@@ -68,12 +68,13 @@ We will keep the obligations by construction rather than by care:
   `--fetch` it re-downloads the archive from the pinned URL and compares every file byte for byte.
   Its self-test plants each defect and requires the refusal by name.
 - The files are read only by the test that generates
-  `core/burrow-engines/src/pdfsyntax/standard14_table.rs`. The generated table carries numbers
-  derived from them (glyph names and advance widths), and a header saying it is generated output.
+  `core/burrow-engines/src/pdfsyntax/standard14_table.rs`. The generated table carries data
+  derived from them (glyph names, advance widths, and the StandardEncoding code each AFM assigns
+  over 32..=126), and a header saying it is generated output.
   Nothing in a shipped build parses an AFM.
 - `THIRD_PARTY_NOTICES.md` records the files, the licence and the notice text.
 - **The derived data ships, and is treated as a modified extract** (the license-auditor's
-  reading, the stricter of two). The generated table carries glyph names and widths, not AFM files,
+  reading, the stricter of two). The generated table carries glyph names, widths and StandardEncoding codes, not AFM files,
   and whether that is a modification of the AFMs or uncopyrightable fact is not ours to settle, so
   we keep the obligation either way: its header carries every used AFM's Notice line and the
   accompanying paragraph verbatim, and says prominently that it is a modified extract and of what.

@@ -236,7 +236,7 @@ accompanying `MustRead.html`, from Adobe's `Core14_AFMs.zip`
 (`https://download.macromedia.com/pub/developer/opentype/tech-notes/Core14_AFMs.zip`, sha256
 `8c892c3c49553cfd2d2a27c4495b4bb12e2875115be7fd127ed3876df19d8654`), committed **unmodified** and
 held to that by `tools/check-afm-provenance.sh` (ADR 0030). Each AFM carries Adobe's copyright
-notice, for example `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated. All
+notice, for example `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All
 Rights Reserved.` The notice that accompanies them, verbatim:
 
 > This file and the 14 PostScript(R) AFM files it accompanies may be used, copied, and distributed
@@ -248,16 +248,27 @@ Rights Reserved.` The notice that accompanies them, verbatim:
 
 **What uses them:** `tools/make-standard14-table.py`, which generates
 `core/burrow-engines/src/pdfsyntax/standard14_table.rs` (#290): a **modified extract** of the twelve
-Latin AFMs -- glyph names and advance widths only, intersected with a measurement of the pinned
-PDFium. That **derived data ships** in the redaction wasm module (`burrow_wasm_redact_bg.wasm`),
-which no visitor loads until `/redact-pdf` exists (#136). No AFM file is parsed by, or shipped in,
-any build. The generated file's header carries, verbatim, the Notice line of each of the twelve
-AFMs it is drawn from and the paragraph above. Those Notice lines are Adobe's copyright statements
-for Courier, Courier-Bold, Courier-BoldOblique, Courier-Oblique (1989-1997), Helvetica and its three
-variants (1985-1997, with "Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries."),
-and Times-Roman and its three variants (1985-1997, with "Times is a trademark of Linotype-Hell AG
-and/or its subsidiaries."). Symbol and ZapfDingbats are committed, as the notice requires the
-fourteen to travel together, and are not used.
+Latin AFMs -- glyph names, advance widths, and the StandardEncoding code each AFM assigns over
+32..=126 -- intersected with a measurement of the pinned PDFium. That **derived data ships** in the
+redaction wasm module (`burrow_wasm_redact_bg.wasm`), which no visitor loads until `/redact-pdf`
+exists (#136). No AFM file is parsed by, or shipped in, any build. Symbol and ZapfDingbats are
+committed, as the notice requires the fourteen to travel together, and are not used.
+
+The Notice line of each AFM the extract is drawn from, verbatim (`tools/check-standard14-table.sh`
+requires every one of them here, byte for byte):
+
+- Courier: `Copyright (c) 1989, 1990, 1991, 1992, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Courier-Bold: `Copyright (c) 1989, 1990, 1991, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Courier-BoldOblique: `Copyright (c) 1989, 1990, 1991, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Courier-Oblique: `Copyright (c) 1989, 1990, 1991, 1992, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.`
+- Helvetica: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Helvetica-Bold: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Helvetica-BoldOblique: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Helvetica-Oblique: `Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.Helvetica is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-Bold: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-BoldItalic: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-Italic: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
+- Times-Roman: `Copyright (c) 1985, 1987, 1989, 1990, 1993, 1997 Adobe Systems Incorporated.  All Rights Reserved.Times is a trademark of Linotype-Hell AG and/or its subsidiaries.`
 
 ## Fonts
 
