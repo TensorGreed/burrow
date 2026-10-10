@@ -107,6 +107,9 @@ pub enum Refusal {
     UnbalancedSave,
     /// A `BT` inside a text object.
     NestedTextObject,
+    /// A `q` or `Q` while a text object is open (#300): PDFium saves the text position with the
+    /// graphics state, so a `Q` there moves the pen where burrow's walk does not.
+    GraphicsStateInTextObject,
     /// A `BT` the stream ends without closing.
     UnterminatedTextObject,
     /// An `ET` with no `BT`.
@@ -273,6 +276,7 @@ impl Refusal {
         Self::UnmatchedRestore,
         Self::UnbalancedSave,
         Self::NestedTextObject,
+        Self::GraphicsStateInTextObject,
         Self::UnterminatedTextObject,
         Self::UnmatchedEndText,
         Self::TextOutsideTextObject,
@@ -324,6 +328,7 @@ impl Refusal {
             Self::UnmatchedRestore => "q-without-save",
             Self::UnbalancedSave => "q-unbalanced",
             Self::NestedTextObject => "bt-nested",
+            Self::GraphicsStateInTextObject => "graphics-state-in-text",
             Self::UnterminatedTextObject => "bt-unterminated",
             Self::UnmatchedEndText => "et-without-bt",
             Self::TextOutsideTextObject => "text-outside-text-object",
@@ -3300,8 +3305,15 @@ fn walk(
 
     let mut state = initial;
     let mut stack: Vec<GraphicsState> = Vec::new();
-    // `Some` between `BT` and `ET`. The matrices live here rather than in `GraphicsState`
-    // because `q`/`Q` do NOT save them -- they are reset by `BT` and nothing else touches them.
+    // `Some` between `BT` and `ET`. The matrices live here rather than in `GraphicsState`, and
+    // that is safe only because a `q` or `Q` while this is `Some` REFUSES (#300). PDFium DOES save
+    // them with the graphics state, measured: `BT 50 400 Td q (AAAA) Tj Q (B) Tj` draws B back at
+    // 50, the saved position crosses `ET`/`BT`, and a `Q` inside `BT` whose `q` came before it
+    // restores the previous text object's pen. Outside a text object a restored position places
+    // nothing: every text operator there refuses `[text-outside-text-object]`, so the next glyph
+    // follows a `BT`, which resets both. The refusal inside is therefore the whole of it -- and it
+    // rests on that refusal. A form's walk starts with its own `None`: PDFium keeps a form's text
+    // position apart from the caller's, measured.
     let mut position: Option<TextPosition> = None;
     // THE CURRENT PATH, in USER SPACE, built by `m`/`l`/`c`/`v`/`y`/`re` and consumed by a paint
     // operator (#125). User space, so the stroke inflation is applied before the CTM and so scales
@@ -3372,6 +3384,13 @@ fn walk(
                 return Refusal::OptionalContentMarked.refuse(
                     "this page marks some of its content as belonging to a layer (optional \
                      content), which can hide it from view",
+                );
+            }
+            // CHECKED BEFORE THE STACK, so `BT Q ET` names this rule rather than `q-without-save`.
+            b"q" | b"Q" if position.is_some() => {
+                return Refusal::GraphicsStateInTextObject.refuse(
+                    "a 'q' or 'Q' inside a text object, where a renderer saves and restores the \
+                     text position with it",
                 );
             }
             b"q" => stack.push(state.clone()),
@@ -4291,7 +4310,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 45,
+            total, 46,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -4670,6 +4689,9 @@ mod tests {
             Refusal::UnbalancedSave => vec![(Content, || walk("q /F1 10 Tf BT 0 0 Td (A) Tj ET"))],
             Refusal::NestedTextObject => {
                 vec![(Content, || walk("/F1 10 Tf BT BT 0 0 Td (A) Tj ET ET"))]
+            }
+            Refusal::GraphicsStateInTextObject => {
+                vec![(Content, || walk("/F1 10 Tf BT 0 0 Td q (A) Tj Q ET"))]
             }
             Refusal::UnterminatedTextObject => {
                 vec![(Content, || walk("/F1 10 Tf BT 0 0 Td (A) Tj"))]
@@ -5611,6 +5633,23 @@ mod tests {
             "/F1 10 Tf BT 0 0 Td (A) Tj",
             Refusal::UnterminatedTextObject,
         );
+    }
+
+    #[test]
+    fn a_save_or_restore_inside_a_text_object_is_refused_before_the_stack_is_read() {
+        // Each half alone, and `BT Q ET` with NOTHING saved: the open text object is checked
+        // first, so it names this rule and not `q-without-save` (#300's round 0).
+        refusing(
+            "/F1 10 Tf BT 0 0 Td q (A) Tj ET Q",
+            Refusal::GraphicsStateInTextObject,
+        );
+        refusing(
+            "/F1 10 Tf q BT 0 0 Td (A) Tj Q ET",
+            Refusal::GraphicsStateInTextObject,
+        );
+        refusing("/F1 10 Tf BT Q ET", Refusal::GraphicsStateInTextObject);
+        // The near-miss: the same pair outside the text object is a graphics state, not a pen.
+        walk("/F1 10 Tf q BT 0 0 Td (A) Tj ET Q").expect("q/Q around a text object");
     }
 
     #[test]
