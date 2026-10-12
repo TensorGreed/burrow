@@ -180,7 +180,9 @@ pub enum Refusal {
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
     FormDepth,
     /// An operator that is not one of PDF's content operators (#307): readers split such a word
-    /// differently (`100Ts`, `TsBT`), so one may apply an operator this walk did not.
+    /// differently (`100Ts`, `TsBT`), so one may apply an operator this walk did not. Unsupported
+    /// rather than malformed, because it also refuses an unknown operator inside `BX`...`EX`, which
+    /// the specification allows.
     UnknownOperator,
     /// A Form XObject drawn while `Ts`, `Tz` or `TL` is not at its default (#304): PDFium starts
     /// a form with all three at their defaults, and the other readers carry the caller's in.
@@ -1344,17 +1346,17 @@ pub fn check_type_three_procedure(procedure: &[u8], watch: &Watch<'_>) -> Result
     for operation in operations {
         watch.tick()?;
         let number = |at: usize| number_operand(&operation.operands, at);
-        // THE COUNT, BEFORE ANYTHING READS AN OPERAND, as the page walk counts (#125's security
-        // review). `200 0 0 30 -280 245` padded in front with `1 0 0 1 0 0` read as the identity
-        // here, where PDFium takes the last six -- an image this scan judged inside its box drew
-        // 6,000 dark pixels in the region after an `Ok`.
-        // AND THE SAME OPERATORS AS THE PAGE (#307): a glued `0f` or `4500cm` here is a paint or a
+        // THE SAME OPERATORS AS THE PAGE (#307): a glued `0f` or `4500cm` here is a paint or a
         // transform to Ghostscript and Poppler, and nothing to this scan.
         if !is_operator_here(&operation.operator, &mut in_image_dictionary) {
             return Refusal::UnknownOperator.refuse(
                 "a Type 3 glyph procedure holds a word that is not a PDF content operator",
             );
         }
+        // THE COUNT, BEFORE ANYTHING READS AN OPERAND, as the page walk counts (#125's security
+        // review). `200 0 0 30 -280 245` padded in front with `1 0 0 1 0 0` read as the identity
+        // here, where PDFium takes the last six -- an image this scan judged inside its box drew
+        // 6,000 dark pixels in the region after an `Ok`.
         if let Some(expected) = arity(&operation.operator)
             && operation.operands.len() != expected
         {
@@ -1422,6 +1424,11 @@ pub fn check_type_three_procedure(procedure: &[u8], watch: &Watch<'_>) -> Result
             }
             _ => {}
         }
+    }
+    // AN IMAGE DICTIONARY LEFT OPEN would have let a `true` pass to the end. See `is_operator_here`.
+    if in_image_dictionary {
+        return Refusal::UnknownOperator
+            .refuse("a Type 3 glyph procedure ends inside an inline image's dictionary");
     }
     Ok(draws)
 }
@@ -2680,10 +2687,11 @@ const fn arity(operator: &[u8]) -> Option<usize> {
 /// unknown word on the longest operator it begins with (`TsBT`, `Tsx`). Measured by #304's round-1
 /// and #307's round-0 security reviews: `100Ts` over page text, and over a form `Do`, returned `Ok`
 /// with SECRET drawn in the region by three of them; `100 Tsx` did the same in pdf.js. Neither
-/// reading is modelled (DECISIONS rule 1). Any word not listed here refuses, which is the wider
-/// rule (rule 4): it also refuses an unknown operator inside `BX`...`EX`, where the specification
-/// lets a reader skip it, and a stray `true`, `false` or `null` at the top level. 0 of 99 real
-/// documents carry one, in 3,256 content streams.
+/// reading is modelled (DECISIONS rule 1). Any word not listed here refuses, inside `BX`...`EX`
+/// too, where the specification lets a reader skip one: pdf.js splits it there as anywhere, and
+/// `BX 100 Tsx EX` put SECRET in the region in pdf.js after an `Ok` (#307's round 1). The only
+/// narrower rule would model pdf.js's operator table. A stray `true`, `false` or `null` at the
+/// top level refuses too. 0 of 99 real documents carry one, in 3,256 content streams.
 ///
 /// `ID` is listed and `EI` is not: an inline image arrives as `BI` then `ID`, whose span runs
 /// through its `EI`, so an `EI` on its own is not the end of any image.
@@ -2769,8 +2777,11 @@ fn is_content_operator(operator: &[u8]) -> bool {
 ///
 /// [`super::ops::operations`] ends an operand run at every bare word, so `BI /IM true ID` arrives
 /// as `BI`, then `true` carrying `/IM`, then `ID`. Those three are values every reader reads as
-/// values there, and nowhere else: anything else unknown inside the dictionary still refuses.
-/// `in_image_dictionary` is the caller's, set by `BI` and cleared by `ID`.
+/// values there, and nowhere else. Any other word inside the dictionary never arrives here: the
+/// lexer refuses it first -- `[inline-image-nested-value]` where a value belongs, and as a key that
+/// is not a name where a key belongs. `in_image_dictionary` is the caller's, set by `BI` and
+/// cleared by `ID`; a stream that ends with it still set is refused by the caller (#307's round 1:
+/// `BI /IM true` with no `ID` let a later `true` pass to the end of the stream).
 fn is_operator_here(operator: &[u8], in_image_dictionary: &mut bool) -> bool {
     match operator {
         b"BI" => *in_image_dictionary = true,
@@ -3797,6 +3808,11 @@ fn walk(
         }
     }
 
+    // AN IMAGE DICTIONARY LEFT OPEN would have let a `true` pass to the end. See `is_operator_here`.
+    if in_image_dictionary {
+        return Refusal::UnknownOperator
+            .refuse("a content stream ends inside an inline image's dictionary");
+    }
     if !stack.is_empty() {
         return Refusal::UnbalancedSave.refuse(&format!(
             "{} unbalanced 'q' at the end of a content stream",
@@ -5166,8 +5182,14 @@ mod tests {
             })],
             Refusal::UnknownOperator => vec![
                 (Content, || walk("100Ts /F1 10 Tf BT 0 0 Td (A) Tj ET")),
+                (Content, || {
+                    walk("/F1 10 Tf BT 0 0 Td (A) Tj ET BI /IM true")
+                }),
                 (Entry("check_type_three_procedure"), || {
                     check_type_three_procedure(b"500 0 d0 0 0 10 10 re 0f", &unwatched()).map(drop)
+                }),
+                (Entry("check_type_three_procedure"), || {
+                    check_type_three_procedure(b"500 0 d0 BI /IM true", &unwatched()).map(drop)
                 }),
             ],
             Refusal::TextStateIntoForm => vec![(Content, || {
@@ -5715,7 +5737,7 @@ mod tests {
     {
         // #307: a number glued to an operator, operators glued together, an operator with a
         // suffix, a byte only pdf.js splits on, a stray value, and an unknown operator inside
-        // `BX`...`EX` (the wider rule's recorded over-refusal).
+        // `BX`...`EX` -- which pdf.js splits there too, so it is refused for the same reason.
         for content in [
             "100Ts /F1 10 Tf BT 0 0 Td (A) Tj ET",
             "/F1 10 Tf BT 0 0 Td (A) Tj ET 100Ts",
@@ -5741,11 +5763,19 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{content}: {error:?}"));
             assert_eq!(glyphs.len(), 1, "{content}");
         }
-        // A VALUE ONLY INSIDE THE DICTIONARY: after its `ID` it refuses. Any other word inside
-        // the dictionary never reaches this rule -- the lexer refuses it first, as
-        // `[inline-image-nested-value]` (#228).
+        // A VALUE ONLY INSIDE THE DICTIONARY: after its `ID` it refuses, and a dictionary the
+        // stream never closes refuses at the end. Any other word inside the dictionary never
+        // reaches this rule -- the lexer refuses it first (#228).
         refusing(
             "BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI true /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            Refusal::UnknownOperator,
+        );
+        refusing(
+            "/F1 10 Tf BT 0 0 Td (A) Tj ET BI /IM true",
+            Refusal::UnknownOperator,
+        );
+        assert_refused(
+            check_type_three_procedure(b"500 0 d0 BI /IM true", &unwatched()).map(|_| Vec::new()),
             Refusal::UnknownOperator,
         );
         // THE TYPE 3 SCAN, which has its own loop: a glued paint and a glued transform.

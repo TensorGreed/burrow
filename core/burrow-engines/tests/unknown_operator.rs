@@ -157,10 +157,11 @@ fn redacts_clean(what: &str, pdf: &[u8]) {
 
 const BELOW: &str = "BT /F2 20 Tf 110 160 Td (SECRET) Tj ET";
 
-/// THE GLUED NUMBER, the issue's shape: before the text, after it, and before a form `Do`. PDFium
-/// skips `100Ts` and draws SECRET below the region, where the other three readers raise it into
-/// it. The twin spells `100 Ts`: every reader raises SECRET into the region, and it is removed;
-/// before a form, the same spelling refuses for #304's reason instead.
+/// THE GLUED NUMBER, the issue's shape: before the text, after it, before a form `Do`, and inside
+/// the form's own content. PDFium skips `100Ts` and draws SECRET below the region (asserted);
+/// round 0 measured Ghostscript, Poppler and pdf.js raising it into it. The twin spells `100 Ts`:
+/// PDFium raises SECRET into the region (asserted, as round 0 measured for the other four), and it
+/// is removed; before a form, the same spelling refuses for #304's reason instead.
 #[test]
 fn a_number_glued_to_an_operator_refuses_wherever_it_stands() {
     let before = page(format!("100Ts {BELOW}").as_bytes());
@@ -173,6 +174,10 @@ fn a_number_glued_to_an_operator_refuses_wherever_it_stands() {
     refuses(
         "100Ts before a form",
         &document(b"100Ts /Fm0 Do", BOX, Some(BELOW)),
+    );
+    refuses(
+        "100Ts inside the form",
+        &document(b"/Fm0 Do", BOX, Some(&format!("100Ts {BELOW}"))),
     );
 
     let twin = page(format!("100 Ts {BELOW}").as_bytes());
@@ -206,8 +211,9 @@ fn a_word_pdf_js_alone_splits_refuses() {
     );
 }
 
-/// AN UNKNOWN WORD WITH OPERANDS AFTER IT: pdf.js carries `100` across it to the `Ts`, the others
-/// clear it. The word refuses before the `Ts`'s count is read, so the rule is named.
+/// AN UNKNOWN WORD WITH OPERANDS AFTER IT: round 0 measured pdf.js carrying `100` across it to the
+/// `Ts`, and the others clearing it. This shape refused before #307 too, as a `Ts` with no
+/// operand, so what is tested is the name: the word is judged before the `Ts`'s count is read.
 #[test]
 fn an_unknown_word_between_operands_and_their_operator_refuses_by_this_rule() {
     for word in ["null", "foo"] {
@@ -242,11 +248,15 @@ fn a_glued_operator_in_a_type_three_procedure_refuses() {
     }
 }
 
-/// THE RECORDED OVER-REFUSAL (DECISIONS rule 4): an unknown operator inside `BX`...`EX`, which the
-/// specification lets a reader skip, refuses too. The twin's compatibility section holds only
-/// known operators, and redacts clean.
+/// INSIDE `BX`...`EX`, which the specification lets a reader skip: pdf.js splits a word there as
+/// anywhere, and round 1 measured `BX 100 Tsx EX` putting SECRET in the region in pdf.js after an
+/// `Ok`, where PDFium draws it below (asserted). The twin's compatibility section holds only known
+/// operators, and redacts clean.
 #[test]
 fn an_unknown_operator_inside_a_compatibility_section_refuses() {
+    let pdf = page(format!("BX 100 Tsx EX {BELOW}").as_bytes());
+    secret_drawn_at("BX 100 Tsx EX", &pdf, 110.0, 160.0);
+    refuses("BX 100 Tsx EX", &pdf);
     let raised = "BT /F2 20 Tf 110 260 Td (SECRET) Tj ET";
     refuses(
         "BX foo EX",
