@@ -182,7 +182,8 @@ pub enum Refusal {
     /// An operator that is not one of PDF's content operators (#307): readers split such a word
     /// differently (`100Ts`, `TsBT`), so one may apply an operator this walk did not. Unsupported
     /// rather than malformed, because it also refuses an unknown operator inside `BX`...`EX`, which
-    /// the specification allows.
+    /// the specification allows. Also raised for a stream that ends between a `BI` and its `ID`,
+    /// the one place a `true`, `false` or `null` is admitted as a value.
     UnknownOperator,
     /// A Form XObject drawn while `Ts`, `Tz` or `TL` is not at its default (#304): PDFium starts
     /// a form with all three at their defaults, and the other readers carry the caller's in.
