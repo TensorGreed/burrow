@@ -54,7 +54,7 @@ fn stream(content: &[u8], dictionary: &str) -> Vec<u8> {
 /// A one-page document drawing `content`, with `/F2` Helvetica and `/F3` a Type 3 font, and each
 /// of `forms` as a chain: the page's resources name `/Fm0`, `/Fm0`'s name `/Fm1`, and so on, so
 /// each form is reached from one scope only -- one named twice is a template the redaction refuses
-/// to edit for one page.
+/// to edit for one page. The page also names `/Im0`, a one-pixel black image.
 fn document(content: &str, forms: &[&str]) -> Vec<u8> {
     let first_form = 8;
     let resources = |from: usize| {
@@ -63,7 +63,9 @@ fn document(content: &str, forms: &[&str]) -> Vec<u8> {
             .collect();
         format!("<< /Font << /F2 4 0 R /F3 5 0 R >> /XObject << {xobjects}>> >>")
     };
-    let page_resources = resources(0);
+    let image = first_form + forms.len();
+    let page_resources =
+        resources(0).replacen("/XObject << ", &format!("/XObject << /Im0 {image} 0 R "), 1);
     let page = format!(
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources {page_resources} /Contents 7 \
          0 R >>"
@@ -86,6 +88,11 @@ fn document(content: &str, forms: &[&str]) -> Vec<u8> {
             ),
         ));
     }
+    all.push(stream(
+        b"\x00",
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+         /BitsPerComponent 8",
+    ));
     let mut out = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec();
     let mut offsets = Vec::new();
     for (i, body) in all.iter().enumerate() {
@@ -120,9 +127,14 @@ fn dark_in_region(pdf: &[u8]) -> u64 {
 
 /// Where PDFium draws SECRET's `S`, by its origin.
 fn secret_origin(pdf: &[u8]) -> Option<(f64, f64)> {
+    origin_of(pdf, 'S')
+}
+
+/// Where PDFium draws the first `character` on the page, by its origin.
+fn origin_of(pdf: &[u8], character: char) -> Option<(f64, f64)> {
     chars_on_page(pdf, 0)
         .into_iter()
-        .find(|c| !c.generated && c.unicode == u32::from('S'))
+        .find(|c| !c.generated && c.unicode == u32::from(character))
         .map(|c| c.origin)
 }
 
@@ -283,8 +295,9 @@ fn a_type_three_glyph_in_a_form_under_the_callers_rise_refuses() {
 }
 
 /// THE TWINS THAT KEEP THE VALUE OUT OF THE FORM: set inside a `q`/`Q` that closes before the
-/// `Do`, or set after it. And `Tc`, which all five readers carry into a form, measured, so it is
-/// not refused: the form still draws SECRET in the region, and the redaction removes it.
+/// `Do`, or set after it. And `Tc` and `Tw`, which all five readers carry into a form (round 0
+/// measured the other four), so they are not refused: PDFium moves the form's next glyph by each
+/// -- asserted, since the rule rests on it -- and the redaction removes SECRET.
 #[test]
 fn a_value_closed_off_before_the_do_or_set_after_it_redacts() {
     redacts_clean(
@@ -295,9 +308,35 @@ fn a_value_closed_off_before_the_do_or_set_after_it_redacts() {
         "after the Do",
         &document("/Fm0 Do 100 Ts 1000 Tz 200 TL", &[IN_REGION]),
     );
-    let spaced = document("50 Tc /Fm0 Do", &[IN_REGION]);
-    secret_drawn_at("50 Tc", &spaced, 110.0, 260.0);
-    redacts_clean("50 Tc", &spaced);
+    for (caller, form, next) in [
+        ("50 Tc", IN_REGION, 'E'),
+        ("50 Tw", "BT /F2 20 Tf 110 260 Td (S ECRET) Tj ET", 'E'),
+    ] {
+        let set = document(&format!("{caller} /Fm0 Do"), &[form]);
+        let plain = document("/Fm0 Do", &[form]);
+        let (moved, at) = (
+            origin_of(&set, next).unwrap(),
+            origin_of(&plain, next).unwrap(),
+        );
+        assert!(
+            (moved.0 - at.0 - 50.0).abs() < 0.01 && (moved.1 - at.1).abs() < 0.01,
+            "{caller}: PDFium does not carry it into the form: {next} at {moved:?}, not {at:?} + 50"
+        );
+        redacts_clean(caller, &set);
+    }
+}
+
+/// AN IMAGE IS NOT A FORM: it draws no text, so no reading of the three reaches it, and an image
+/// `Do` under all three is not refused. SECRET is page text, which every reader raises alike.
+#[test]
+fn an_image_drawn_under_the_callers_rise_scale_or_leading_redacts() {
+    let pdf = document(
+        "100 Ts 1000 Tz 200 TL q 10 0 0 10 20 20 cm /Im0 Do Q BT /F2 20 Tf 110 160 Td (SECRET) \
+         Tj ET",
+        &[],
+    );
+    secret_drawn_at("the page's own SECRET, raised", &pdf, 110.0, 260.0);
+    redacts_clean("an image Do", &pdf);
 }
 
 /// THE RECORDED OVER-REFUSAL (DECISIONS rule 4). The rule reads the caller's state at the `Do`, not
@@ -305,8 +344,9 @@ fn a_value_closed_off_before_the_do_or_set_after_it_redacts() {
 /// sets its own rise before showing, a caller's leading under a form that moves only by `Td`, and a
 /// form that paints no text. The last is the one real documents carry: #304's census found it on 1
 /// of 99, `tug2003-slides.pdf` (dvipdfmx), whose image and shading forms are drawn after a `TD` has
-/// left the leading set -- 48 tiles over two pages, each already refused for the shading's ink. A narrower rule would carry a second text state through every form
-/// in step with PDFium's; #304's census measured what the wider one costs instead.
+/// left the leading set -- 48 tiles over two pages, each already refused `[vector-in-region]` and now
+/// reporting `[text-state-into-form]` first. A narrower rule would carry a second text state
+/// through every form in step with PDFium's; #304's census measured what the wider one costs.
 #[test]
 fn a_form_that_never_reads_the_callers_value_still_refuses() {
     for (caller, form) in [

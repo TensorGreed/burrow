@@ -3720,8 +3720,8 @@ fn draw_form(
     // region for PDFium alone, and a form placed to dodge the region under that rise puts it there
     // for the other four. So neither reading is modelled (DECISIONS rule 1): a form drawn while any
     // of the three is off its default refuses, and one drawn with all three at it starts the same
-    // in every reader. The wider rule (rule 4) -- it refuses a form that shows no text, or that
-    // sets its own values first -- because it then needs no second text state carried in step.
+    // in every reader. The rule is the wider one (rule 4): it refuses a form that shows no text, or
+    // that sets its own values first, because it then needs no second text state carried in step.
     // `Tc`, `Tw`, `Tr`, the font size and the line state are inherited by all five, and stay so.
     if !text_state_starts_every_form_alike(&state.text) {
         return Refusal::TextStateIntoForm.refuse(
@@ -3773,11 +3773,8 @@ fn draw_form(
 
 /// Whether `Ts`, `Tz` and `TL` are all at their defaults, the one state in which PDFium's reset at
 /// a form and the other readers' inheritance agree (#304). Exact comparisons: any other value is a
-/// value one reader carries in and PDFium drops. `-0 Ts` equals `0` here, and draws the same.
-#[allow(
-    clippy::float_cmp,
-    reason = "an exact default is the one state the readers agree on; a tolerance would admit a rise they place apart"
-)]
+/// value one reader carries in and PDFium drops, and a tolerance would admit a rise they place
+/// apart. `-0 Ts` (and the `-0` leading `0 0 TD` sets) equals `0` here, and draws the same.
 fn text_state_starts_every_form_alike(text: &TextState) -> bool {
     let initial = TextState::default();
     text.rise == initial.rise
