@@ -179,6 +179,9 @@ pub enum Refusal {
     FormCycle,
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
     FormDepth,
+    /// An operator that is not one of PDF's content operators (#307): readers split such a word
+    /// differently (`100Ts`, `TsBT`), so one may apply an operator this walk did not.
+    UnknownOperator,
     /// A Form XObject drawn while `Ts`, `Tz` or `TL` is not at its default (#304): PDFium starts
     /// a form with all three at their defaults, and the other readers carry the caller's in.
     TextStateIntoForm,
@@ -314,6 +317,7 @@ impl Refusal {
         Self::MixedCodeWidths,
         Self::FormCycle,
         Self::FormDepth,
+        Self::UnknownOperator,
         Self::TextStateIntoForm,
         Self::VerticalWriting,
         Self::UndeterminedWritingMode,
@@ -367,6 +371,7 @@ impl Refusal {
             Self::MixedCodeWidths => "mixed-code-widths",
             Self::FormCycle => "form-cycle",
             Self::FormDepth => "form-depth",
+            Self::UnknownOperator => "unknown-operator",
             Self::TextStateIntoForm => "text-state-into-form",
             Self::VerticalWriting => "vertical-writing",
             Self::UndeterminedWritingMode => "writing-mode-undetermined",
@@ -387,6 +392,7 @@ impl Refusal {
             self,
             Self::FormCycle
                 | Self::FormDepth
+                | Self::UnknownOperator
                 | Self::TextStateIntoForm
                 | Self::VerticalWriting
                 | Self::TooManyGlyphs
@@ -1334,6 +1340,7 @@ pub fn check_type_three_procedure(procedure: &[u8], watch: &Watch<'_>) -> Result
     // set no transform; only `cm`, saved and restored by `q`/`Q`.
     let mut ctm = Matrix::IDENTITY;
     let mut saved: Vec<Matrix> = Vec::new();
+    let mut in_image_dictionary = false;
     for operation in operations {
         watch.tick()?;
         let number = |at: usize| number_operand(&operation.operands, at);
@@ -1341,6 +1348,13 @@ pub fn check_type_three_procedure(procedure: &[u8], watch: &Watch<'_>) -> Result
         // review). `200 0 0 30 -280 245` padded in front with `1 0 0 1 0 0` read as the identity
         // here, where PDFium takes the last six -- an image this scan judged inside its box drew
         // 6,000 dark pixels in the region after an `Ok`.
+        // AND THE SAME OPERATORS AS THE PAGE (#307): a glued `0f` or `4500cm` here is a paint or a
+        // transform to Ghostscript and Poppler, and nothing to this scan.
+        if !is_operator_here(&operation.operator, &mut in_image_dictionary) {
+            return Refusal::UnknownOperator.refuse(
+                "a Type 3 glyph procedure holds a word that is not a PDF content operator",
+            );
+        }
         if let Some(expected) = arity(&operation.operator)
             && operation.operands.len() != expected
         {
@@ -2656,6 +2670,117 @@ const fn arity(operator: &[u8]) -> Option<usize> {
     })
 }
 
+/// Whether `operator` is one of PDF's content operators (PDF 32000-1 Annex A), as
+/// [`super::ops::operations`] emits them (#307).
+///
+/// # Why a word outside this list refuses
+///
+/// Readers do not agree on where a word ends. burrow's lexer, PDFium and MuPDF read `100Ts` as one
+/// unknown keyword; Ghostscript, Poppler and pdf.js read `100` and `Ts`, and pdf.js also splits an
+/// unknown word on the longest operator it begins with (`TsBT`, `Tsx`). Measured by #304's round-1
+/// and #307's round-0 security reviews: `100Ts` over page text, and over a form `Do`, returned `Ok`
+/// with SECRET drawn in the region by three of them; `100 Tsx` did the same in pdf.js. Neither
+/// reading is modelled (DECISIONS rule 1). Any word not listed here refuses, which is the wider
+/// rule (rule 4): it also refuses an unknown operator inside `BX`...`EX`, where the specification
+/// lets a reader skip it, and a stray `true`, `false` or `null` at the top level. 0 of 99 real
+/// documents carry one, in 3,256 content streams.
+///
+/// `ID` is listed and `EI` is not: an inline image arrives as `BI` then `ID`, whose span runs
+/// through its `EI`, so an `EI` on its own is not the end of any image.
+fn is_content_operator(operator: &[u8]) -> bool {
+    matches!(
+        operator,
+        b"b" | b"B"
+            | b"b*"
+            | b"B*"
+            | b"BDC"
+            | b"BI"
+            | b"BMC"
+            | b"BT"
+            | b"BX"
+            | b"c"
+            | b"cm"
+            | b"CS"
+            | b"cs"
+            | b"d"
+            | b"d0"
+            | b"d1"
+            | b"Do"
+            | b"DP"
+            | b"EMC"
+            | b"ET"
+            | b"EX"
+            | b"f"
+            | b"F"
+            | b"f*"
+            | b"G"
+            | b"g"
+            | b"gs"
+            | b"h"
+            | b"i"
+            | b"ID"
+            | b"j"
+            | b"J"
+            | b"K"
+            | b"k"
+            | b"l"
+            | b"m"
+            | b"M"
+            | b"MP"
+            | b"n"
+            | b"q"
+            | b"Q"
+            | b"re"
+            | b"RG"
+            | b"rg"
+            | b"ri"
+            | b"s"
+            | b"S"
+            | b"SC"
+            | b"sc"
+            | b"SCN"
+            | b"scn"
+            | b"sh"
+            | b"T*"
+            | b"Tc"
+            | b"Td"
+            | b"TD"
+            | b"Tf"
+            | b"Tj"
+            | b"TJ"
+            | b"TL"
+            | b"Tm"
+            | b"Tr"
+            | b"Ts"
+            | b"Tw"
+            | b"Tz"
+            | b"v"
+            | b"w"
+            | b"W"
+            | b"W*"
+            | b"y"
+            | b"'"
+            | b"\""
+    )
+}
+
+/// Whether `operator` may stand where it does: a content operator, or -- between a `BI` and its
+/// `ID` -- the `true`, `false` or `null` of the inline image's dictionary (#307).
+///
+/// [`super::ops::operations`] ends an operand run at every bare word, so `BI /IM true ID` arrives
+/// as `BI`, then `true` carrying `/IM`, then `ID`. Those three are values every reader reads as
+/// values there, and nowhere else: anything else unknown inside the dictionary still refuses.
+/// `in_image_dictionary` is the caller's, set by `BI` and cleared by `ID`.
+fn is_operator_here(operator: &[u8], in_image_dictionary: &mut bool) -> bool {
+    match operator {
+        b"BI" => *in_image_dictionary = true,
+        b"ID" => *in_image_dictionary = false,
+        _ => {}
+    }
+    is_content_operator(operator)
+        || (*in_image_dictionary && matches!(operator, b"true" | b"false" | b"null"))
+}
+
 /// How many operations a walk goes between readings of the clock.
 ///
 /// Reading it per operation would cost a clock call per `q`; reading it per stream is what
@@ -3346,6 +3471,8 @@ fn walk(
     // paint is not enough (a second security review found that leak).
     let mut path_ctm: Option<Matrix> = None;
     let mut path_ctm_shifted = false;
+    // Between a `BI` and its `ID`. See `is_operator_here`.
+    let mut in_image_dictionary = false;
 
     for operation in &operations {
         // THE DEADLINE, INSIDE THE WALK (#175). Before it, a form drawn 4,000 times walked for
@@ -3364,6 +3491,12 @@ fn walk(
         // redaction over it removes almost nothing. The operand-shape rules already refuse a
         // `Do` or a `TJ` of the wrong shape; a number is no different.
         let number = |at: usize| number_operand(&operation.operands, at);
+        // AN OPERATOR EVERY READER KNOWS, BEFORE ITS OPERANDS ARE COUNTED (#307). See
+        // `is_content_operator`.
+        if !is_operator_here(&operation.operator, &mut in_image_dictionary) {
+            return Refusal::UnknownOperator
+                .refuse("a content stream holds a word that is not a PDF content operator");
+        }
         // THE COUNT, BEFORE ANYTHING READS AN OPERAND. See `arity`.
         if let Some(expected) = arity(&operation.operator)
             && operation.operands.len() != expected
@@ -4341,7 +4474,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 47,
+            total, 48,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -5031,6 +5164,12 @@ mod tests {
                 let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "/Fm0 Do");
                 walk_with("/Fm0 Do", &resources)
             })],
+            Refusal::UnknownOperator => vec![
+                (Content, || walk("100Ts /F1 10 Tf BT 0 0 Td (A) Tj ET")),
+                (Entry("check_type_three_procedure"), || {
+                    check_type_three_procedure(b"500 0 d0 0 0 10 10 re 0f", &unwatched()).map(drop)
+                }),
+            ],
             Refusal::TextStateIntoForm => vec![(Content, || {
                 let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "");
                 walk_with("7 Ts /Fm0 Do", &resources)
@@ -5569,6 +5708,62 @@ mod tests {
             "form matrix composed in the wrong order: {:?}",
             glyphs[0].origin
         );
+    }
+
+    #[test]
+    fn a_word_that_is_not_a_content_operator_is_refused_on_the_page_and_in_a_type_three_procedure()
+    {
+        // #307: a number glued to an operator, operators glued together, an operator with a
+        // suffix, a byte only pdf.js splits on, a stray value, and an unknown operator inside
+        // `BX`...`EX` (the wider rule's recorded over-refusal).
+        for content in [
+            "100Ts /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            "/F1 10 Tf BT 0 0 Td (A) Tj ET 100Ts",
+            "100 TsBT /F1 10 Tf 0 0 Td (A) Tj ET",
+            "100 Tsx /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            "100\u{b}Ts /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            "100 null Ts /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            "BX 100 foo EX /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            "/F1 10 Tf BT 0 0 Td (A) Tj ET EI",
+        ] {
+            refusing(content, Refusal::UnknownOperator);
+        }
+        // THE TWINS: each of those spelled as operators, and an inline image whose dictionary
+        // holds `true` -- a value there, which `ops::operations` hands over as a bare word.
+        for content in [
+            "100 Ts /F1 10 Tf BT 0 0 Td (A) Tj ET 0 Ts",
+            "BX 100 Ts EX /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            "+100 Ts 100. Ts -.5 Ts 00000100 Ts /F1 10 Tf BT . 100 Td (A) Tj ET",
+            "q 10 0 0 10 200 50 cm BI /W 1 /H 1 /BPC 1 /IM true /I false ID \x00 EI Q \
+             /F1 10 Tf BT 0 0 Td (A) Tj ET",
+        ] {
+            let glyphs = glyphs_in(content.as_bytes(), &Fake::new(), &unwatched())
+                .unwrap_or_else(|error| panic!("{content}: {error:?}"));
+            assert_eq!(glyphs.len(), 1, "{content}");
+        }
+        // A VALUE ONLY INSIDE THE DICTIONARY: after its `ID` it refuses. Any other word inside
+        // the dictionary never reaches this rule -- the lexer refuses it first, as
+        // `[inline-image-nested-value]` (#228).
+        refusing(
+            "BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI true /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            Refusal::UnknownOperator,
+        );
+        // THE TYPE 3 SCAN, which has its own loop: a glued paint and a glued transform.
+        for procedure in [
+            b"500 0 d0 0 0 10 10 re 0f".as_slice(),
+            b"500 0 d0 q 10 0 0 10 4500cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q".as_slice(),
+        ] {
+            assert_refused(
+                check_type_three_procedure(procedure, &unwatched()).map(|_| Vec::new()),
+                Refusal::UnknownOperator,
+            );
+        }
+        let draws = check_type_three_procedure(
+            b"500 0 d0 q 10 0 0 10 0 0 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q",
+            &unwatched(),
+        )
+        .expect("an image dictionary's `true` is a value");
+        assert!(draws.image.is_some());
     }
 
     #[test]
@@ -6759,9 +6954,9 @@ mod tests {
         // or inside an inline image's data is not an operator.
         for procedure in [
             b"500 0 d0\n0 0 500 500 re W n\n".as_slice(),
-            b"500 0 d0\n/f pop\n".as_slice(),
+            b"500 0 d0\n/f MP\n".as_slice(),
             b"500 0 d0\n% f in a comment\n".as_slice(),
-            b"500 0 d0\n(f) pop\n".as_slice(),
+            b"500 0 d0\n[(f)] 0 d\n".as_slice(),
         ] {
             let draws =
                 check_type_three_procedure(procedure, &unwatched()).unwrap_or_else(|error| {
