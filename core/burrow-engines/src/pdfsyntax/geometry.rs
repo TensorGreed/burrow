@@ -2366,7 +2366,10 @@ pub fn remove_glyphs_and_carried_text(
     edits.sort_unstable_by_key(|edit| edit.span);
     let rewritten = contents.apply(&edits)?;
     // THE OUTPUT TO THE SAME RULE AS THE INPUT (#312's round 0). See `check_contents_boundaries`.
-    check_contents_boundaries(&rewritten.iter().map(Vec::as_slice).collect::<Vec<_>>())?;
+    check_contents_boundaries(
+        &rewritten.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+        watch,
+    )?;
     Ok((rewritten, dropped))
 }
 
@@ -2825,15 +2828,31 @@ fn is_operator_here(operator: &[u8], in_image_dictionary: &mut bool) -> bool {
 /// leaks (rule 4): a delimiter-adjacent boundary such as `)` | `Tj`, which every reader reads
 /// alike, refuses too. 0 of 915 boundaries in the 99 real documents are refused; every one ends in
 /// a line feed or a space. The rewriter's output is held to the same rule
-/// (`remove_glyphs_and_carried_text`), because rewriting a `'` at the start of an element can turn
-/// a boundary that passed into one that does not.
+/// (`remove_glyphs_and_carried_text`) as defence in depth: an edit never takes an element's
+/// trailing white space, and no input that passes here is known to reach it.
+///
+/// An element that does not lex on its own may be refused for its own reason rather than for its
+/// boundary -- a filtered inline image, a second `BI` -- so the joined stream is lexed then, and
+/// its refusal, if it has one, is the one returned. That lex runs only on that path.
 ///
 /// # Errors
 ///
-/// [`Refusal::ContentsBoundary`] for an element that does not end between tokens.
-pub fn check_contents_boundaries(parts: &[&[u8]]) -> Result<()> {
-    let mut followed = parts.iter().filter(|part| !part.is_empty()).rev().skip(1);
-    if followed.any(|part| !ends_between_tokens(part)) {
+/// [`Refusal::ContentsBoundary`] for an element that does not end between tokens; the joined
+/// stream's own refusal where it has one; and [`Error::LimitExceeded`] once `watch`'s deadline
+/// has passed, read before each element, since each is a lex of up to the decoded page.
+pub fn check_contents_boundaries(parts: &[&[u8]], watch: &Watch<'_>) -> Result<()> {
+    for part in parts.iter().filter(|part| !part.is_empty()).rev().skip(1) {
+        watch.now()?;
+        let between = match ends_between_tokens(part) {
+            Some(between) => between,
+            None => {
+                lexes(super::contents::Contents::concatenate(parts)?.bytes())?;
+                false
+            }
+        };
+        if between {
+            continue;
+        }
         return Refusal::ContentsBoundary.refuse(
             "a /Contents element that ends inside a token or without white space, which readers \
              join to the next element differently",
@@ -2842,16 +2861,23 @@ pub fn check_contents_boundaries(parts: &[&[u8]]) -> Result<()> {
     Ok(())
 }
 
+/// Lex `content` to its end, for the refusal it raises if it has one.
+fn lexes(content: &[u8]) -> Result<()> {
+    let mut lexer = super::lexer::Lexer::new(content, super::lexer::InlineImages::REDACTION);
+    while lexer.next_token()?.is_some() {}
+    Ok(())
+}
+
 /// PDF's white space (PDF 32000-1 Table 1), without the 0x80 and 0xFF the lexer also skips.
 const fn is_pdf_whitespace(byte: u8) -> bool {
     matches!(byte, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
 }
 
-/// Whether `element`, lexed alone, ends between tokens and in white space. See
-/// [`check_contents_boundaries`].
-fn ends_between_tokens(element: &[u8]) -> bool {
+/// Whether `element`, lexed alone, ends between tokens and in white space, or `None` when it does
+/// not lex alone. See [`check_contents_boundaries`].
+fn ends_between_tokens(element: &[u8]) -> Option<bool> {
     if !element.last().is_some_and(|byte| is_pdf_whitespace(*byte)) {
-        return false;
+        return Some(false);
     }
     // LEXED ALONE: an element that leaves a string, a hex string or an inline image's data open
     // does not lex on its own, and one that leaves a `BI` dictionary open ends before its `ID`.
@@ -2871,11 +2897,11 @@ fn ends_between_tokens(element: &[u8]) -> bool {
                 }
             }
             Ok(None) => break,
-            Err(_) => return false,
+            Err(_) => return None,
         }
     }
     if in_image_dictionary {
-        return false;
+        return Some(false);
     }
     // WHAT FOLLOWS THE LAST TOKEN is white space and comments only. A comment ends at a line
     // end; one the element does not end is one the boundary would, and readers disagree on that.
@@ -2883,13 +2909,13 @@ fn ends_between_tokens(element: &[u8]) -> bool {
     while let Some(&byte) = trailing.next() {
         if byte == b'%' {
             if !trailing.any(|&after| after == b'\n' || after == b'\r') {
-                return false;
+                return Some(false);
             }
         } else if !is_pdf_whitespace(byte) {
-            return false;
+            return Some(false);
         }
     }
-    true
+    Some(true)
 }
 
 /// How many operations a walk goes between readings of the clock.
@@ -5282,7 +5308,7 @@ mod tests {
                 walk_with("/Fm0 Do", &resources)
             })],
             Refusal::ContentsBoundary => vec![(Entry("check_contents_boundaries"), || {
-                check_contents_boundaries(&[b"/G0 g".as_slice(), b"s"])
+                check_contents_boundaries(&[b"/G0 g".as_slice(), b"s"], &unwatched())
             })],
             Refusal::UnknownOperator => vec![
                 (Content, || walk("100Ts /F1 10 Tf BT 0 0 Td (A) Tj ET")),
@@ -5859,14 +5885,28 @@ mod tests {
             ),
             ("a split `>>`", &[b"<</MCID 0>", b"> BDC"]),
             ("a split `<<`", &[b"/P <", b"</MCID 0>> BDC"]),
+            // THE SAME SHAPES ENDING IN A SPACE, which pass the last-byte half and reach the lexer.
+            ("an escaped space in a string", &[b"(A\\ ", b") Tj"]),
+            (
+                "a comment after a token, then a space",
+                &[b"0 g %c ", b"200 Ts"],
+            ),
             ("0x80 is not PDF white space", &[b"100 Ts\x80", b"BT"]),
+            (
+                "0x80 among the trailing white space",
+                &[b"100 Ts\x80\n", b"BT"],
+            ),
+            (
+                "a whitespace-only element after a word, the recorded over-refusal",
+                &[b"100 T", b" ", b"s"],
+            ),
             (
                 "delimiter-adjacent, the recorded over-refusal",
                 &[b"(A)", b"Tj"],
             ),
         ];
         for (what, parts) in refused {
-            match check_contents_boundaries(parts) {
+            match check_contents_boundaries(parts, &unwatched()) {
                 Err(error) => assert!(
                     Refusal::ContentsBoundary.caught(&error),
                     "{what}: refused, but not by this rule: {error:?}"
@@ -5898,7 +5938,35 @@ mod tests {
             ("one element", &[b"%c"]),
         ];
         for (what, parts) in accepted {
-            check_contents_boundaries(parts).unwrap_or_else(|error| panic!("{what}: {error:?}"));
+            check_contents_boundaries(parts, &unwatched())
+                .unwrap_or_else(|error| panic!("{what}: {error:?}"));
+        }
+        // A SPLIT `<<` OR `>>` ENDING IN A SPACE: the joined stream does not lex either -- a lone
+        // `>`, an unterminated hex string -- so the lexer's own refusal is the one returned.
+        for parts in [
+            [b"<</MCID 0> ".as_slice(), b"> BDC"],
+            [b"/P < ".as_slice(), b"</MCID 0>> BDC"],
+        ] {
+            assert!(
+                check_contents_boundaries(&parts, &unwatched()).is_err(),
+                "{parts:?} accepted"
+            );
+        }
+        // AN ELEMENT REFUSED FOR ITS OWN REASON keeps that reason: a filtered inline image wholly
+        // inside the first element is `[inline-image-filtered]`, as it is in one element.
+        let filtered = check_contents_boundaries(
+            &[
+                b"q 1 0 0 1 0 0 cm BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 00> EI Q\n".as_slice(),
+                b"BT ET",
+            ],
+            &unwatched(),
+        );
+        match filtered {
+            Err(error) => assert!(
+                error.to_string().contains("[inline-image-filtered]"),
+                "refused, but not for the image: {error:?}"
+            ),
+            Ok(()) => panic!("a filtered inline image was accepted"),
         }
         // THE OUTPUT HELD TO THE SAME RULE. No input that passes reaches it -- an edit never takes
         // an element's trailing white space -- so a `Contents` built without the input check
@@ -8132,6 +8200,21 @@ mod tests {
                 panic!("{what}: expected max_duration_ms to expire inside the walk, got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn the_contents_boundary_check_reads_the_clock_before_each_element() {
+        // KILLS: deleting the read (#312's round 1). Each element is a lex of up to the decoded
+        // page, so the check reads the deadline before each, as the walks do after their lex.
+        let parts = [b"BT\n".as_slice(), b"0 Ts\n", b"ET"];
+        let run = |ms: u64| {
+            let clock = Ticking::default();
+            let deadline =
+                Deadline::start(&clock, &Limits::with(|limits| limits.max_duration_ms = ms));
+            check_contents_boundaries(&parts, &Watch::new(deadline, &clock))
+        };
+        assert!(run(1_000).is_ok(), "the control must pass");
+        assert_expired(run(0), "check_contents_boundaries");
     }
 
     #[test]

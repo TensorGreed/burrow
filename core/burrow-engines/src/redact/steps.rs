@@ -605,7 +605,7 @@ impl<D: PdfDocument> PageRedaction<D> {
         }
         let borrowed: Vec<&[u8]> = bodies.iter().map(Vec::as_slice).collect();
         // BEFORE THEY ARE JOINED, because the join is where readers part ways (#312).
-        crate::pdfsyntax::geometry::check_contents_boundaries(&borrowed)?;
+        crate::pdfsyntax::geometry::check_contents_boundaries(&borrowed, &self.watch())?;
         let map = crate::pdfsyntax::contents::Contents::concatenate(&borrowed)?;
         Ok(Some((map, handles)))
     }

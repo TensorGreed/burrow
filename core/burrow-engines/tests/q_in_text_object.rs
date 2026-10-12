@@ -253,17 +253,18 @@ fn a_saved_position_restored_in_a_later_text_object_refuses() {
 
 /// A `/Contents` ARRAY: the text object opens in one stream and the `q`/`Q` are in the next. The
 /// walk reads the page's streams joined, as PDFium does, so the text object is still open. The twin
-/// splits a `q` ... `Q` around a whole text object across the same two streams.
+/// splits a `q` ... `Q` around a whole text object across the same two streams. Each first stream
+/// ends in white space, or the page refuses for its boundary instead (#312).
 #[test]
 fn a_q_in_the_next_content_stream_of_an_open_text_object_refuses() {
     let second = format!("q {FIFTEEN_W} Q (SECRET) Tj ET");
     refuses_a_leak(
         "BT in stream 1, q/Q in stream 2",
-        &document(&[b"BT /F2 20 Tf 110 260 Td", second.as_bytes()], None),
+        &document(&[b"BT /F2 20 Tf 110 260 Td\n", second.as_bytes()], None),
     );
     redacts_clean(
         "q in stream 1, BT..ET Q in stream 2",
-        &document(&[b"q", b"BT /F2 20 Tf 110 260 Td (SECRET) Tj ET Q"], None),
+        &document(&[b"q\n", b"BT /F2 20 Tf 110 260 Td (SECRET) Tj ET Q"], None),
     );
 }
 
