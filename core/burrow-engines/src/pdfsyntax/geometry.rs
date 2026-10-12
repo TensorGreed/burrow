@@ -179,6 +179,9 @@ pub enum Refusal {
     FormCycle,
     /// Form XObjects nested deeper than [`MAX_FORM_DEPTH`].
     FormDepth,
+    /// A Form XObject drawn while `Ts`, `Tz` or `TL` is not at its default (#304): PDFium starts
+    /// a form with all three at their defaults, and the other readers carry the caller's in.
+    TextStateIntoForm,
     /// A font whose CMap declares vertical writing (`WMode 1`).
     VerticalWriting,
     /// A CMap whose writing mode the document does not determine.
@@ -311,6 +314,7 @@ impl Refusal {
         Self::MixedCodeWidths,
         Self::FormCycle,
         Self::FormDepth,
+        Self::TextStateIntoForm,
         Self::VerticalWriting,
         Self::UndeterminedWritingMode,
         Self::MarkedContentPropertiesUnresolved,
@@ -363,6 +367,7 @@ impl Refusal {
             Self::MixedCodeWidths => "mixed-code-widths",
             Self::FormCycle => "form-cycle",
             Self::FormDepth => "form-depth",
+            Self::TextStateIntoForm => "text-state-into-form",
             Self::VerticalWriting => "vertical-writing",
             Self::UndeterminedWritingMode => "writing-mode-undetermined",
             Self::MarkedContentPropertiesUnresolved => "marked-content-properties-unresolved",
@@ -382,6 +387,7 @@ impl Refusal {
             self,
             Self::FormCycle
                 | Self::FormDepth
+                | Self::TextStateIntoForm
                 | Self::VerticalWriting
                 | Self::TooManyGlyphs
                 | Self::TooMuchInk
@@ -3708,6 +3714,20 @@ fn draw_form(
     if budget.open_forms.len() >= MAX_FORM_DEPTH {
         return Refusal::FormDepth.refuse("Form XObjects nested deeper than burrow will walk");
     }
+    // THE TEXT STATE THE READERS DISAGREE ON AT A FORM (#304). PDFium starts a form with `Ts`, `Tz`
+    // and `TL` at their defaults; MuPDF, Ghostscript, Poppler and pdf.js carry the caller's in, as
+    // the specification says. Measured both ways: a caller's `100 Ts` puts the form's SECRET in the
+    // region for PDFium alone, and a form placed to dodge the region under that rise puts it there
+    // for the other four. So neither reading is modelled (DECISIONS rule 1): a form drawn while any
+    // of the three is off its default refuses, and one drawn with all three at it starts the same
+    // in every reader. The wider rule (rule 4) -- it refuses a form that shows no text, or that
+    // sets its own values first -- because it then needs no second text state carried in step.
+    // `Tc`, `Tw`, `Tr`, the font size and the line state are inherited by all five, and stay so.
+    if !text_state_starts_every_form_alike(&state.text) {
+        return Refusal::TextStateIntoForm.refuse(
+            "a Form XObject drawn with a text rise, scaling or leading the readers do not agree on",
+        );
+    }
 
     budget.open_forms.push(form.id);
     // AND WHICH STREAM THE SPANS BELOW WILL INDEX. Restored on the way out, including on the
@@ -3749,6 +3769,20 @@ fn draw_form(
     budget.route = enclosing_route;
     budget.open_forms.pop();
     result
+}
+
+/// Whether `Ts`, `Tz` and `TL` are all at their defaults, the one state in which PDFium's reset at
+/// a form and the other readers' inheritance agree (#304). Exact comparisons: any other value is a
+/// value one reader carries in and PDFium drops. `-0 Ts` equals `0` here, and draws the same.
+#[allow(
+    clippy::float_cmp,
+    reason = "an exact default is the one state the readers agree on; a tolerance would admit a rise they place apart"
+)]
+fn text_state_starts_every_form_alike(text: &TextState) -> bool {
+    let initial = TextState::default();
+    text.rise == initial.rise
+        && text.horizontal_scale == initial.horizontal_scale
+        && text.leading == initial.leading
 }
 
 /// A form's own resources, with the scopes that enclose it behind them (#152).
@@ -4310,7 +4344,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 46,
+            total, 47,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -5000,6 +5034,10 @@ mod tests {
                 let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "/Fm0 Do");
                 walk_with("/Fm0 Do", &resources)
             })],
+            Refusal::TextStateIntoForm => vec![(Content, || {
+                let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "");
+                walk_with("7 Ts /Fm0 Do", &resources)
+            })],
             Refusal::FormDepth => vec![(Content, || {
                 let mut resources = Fake::new();
                 for level in 0..=MAX_FORM_DEPTH {
@@ -5537,17 +5575,55 @@ mod tests {
     }
 
     #[test]
-    fn a_form_inherits_the_text_state_in_force_at_the_do() {
-        // The rise is set OUTSIDE the form and never inside it. The font is selected inside:
-        // one selected outside is refused, see the next test.
+    fn a_form_drawn_off_the_default_rise_scale_or_leading_is_refused_and_tc_is_inherited() {
+        // #304: PDFium resets `Ts`, `Tz` and `TL` at a form and the other readers do not, so each
+        // off its default refuses at the `Do`. The font is selected inside: one selected outside
+        // is refused, see the next test.
         let resources =
             Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "/F1 10 Tf BT 0 0 Td (A) Tj ET");
-        let glyphs = glyphs_in(b"7 Ts /Fm0 Do", &resources, &unwatched()).expect("walks");
-        assert_eq!(glyphs.len(), 1);
+        for caller in [
+            "7 Ts /Fm0 Do",
+            "50 Tz /Fm0 Do",
+            "12 TL /Fm0 Do",
+            "-7 Ts /Fm0 Do",
+        ] {
+            match glyphs_in(caller.as_bytes(), &resources, &unwatched()) {
+                Err(error) => assert!(
+                    Refusal::TextStateIntoForm.caught(&error),
+                    "{caller}: refused, but not by this rule: {error:?}"
+                ),
+                Ok(glyphs) => panic!("{caller}: walked {} glyphs", glyphs.len()),
+            }
+        }
+        // THE TWINS: the same three set back to their defaults, inside a closed `q`, or after the
+        // `Do`, walk -- and `Tc`, which every reader carries into a form, reaches it.
+        for caller in [
+            "7 Ts 0 Ts 50 Tz 100 Tz 12 TL 0 TL /Fm0 Do",
+            "q 7 Ts 50 Tz 12 TL Q /Fm0 Do",
+            "/Fm0 Do 7 Ts 50 Tz 12 TL",
+        ] {
+            let glyphs = glyphs_in(caller.as_bytes(), &resources, &unwatched())
+                .unwrap_or_else(|error| panic!("{caller}: {error:?}"));
+            assert_eq!(glyphs.len(), 1, "{caller}");
+        }
+        // AN IMAGE IS NOT A FORM: it draws no text, so no reading of the three reaches it.
+        let (_, ink) = glyphs_and_ink_in(b"7 Ts 50 Tz 12 TL /Im0 Do", &Fake::new(), &unwatched())
+            .expect("an image walks");
+        assert_eq!(ink.len(), 1, "the image's box");
+        let two = Fake::new().with_form(
+            b"Fm0",
+            7,
+            Matrix::IDENTITY,
+            "/F1 10 Tf BT 0 0 Td (AA) Tj ET",
+        );
+        let spaced = glyphs_in(b"3 Tc /Fm0 Do", &two, &unwatched()).expect("walks");
+        let plain = glyphs_in(b"/Fm0 Do", &two, &unwatched()).expect("walks");
+        assert_eq!((spaced.len(), plain.len()), (2, 2));
         assert!(
-            (glyphs[0].origin.1 - 7.0).abs() < 1e-9,
-            "the rise set outside the form did not reach it: {:?}",
-            glyphs[0].origin
+            (spaced[1].origin.0 - plain[1].origin.0 - 3.0).abs() < 1e-9,
+            "the character spacing set outside the form did not reach it: {:?} vs {:?}",
+            spaced[1].origin,
+            plain[1].origin
         );
     }
 
