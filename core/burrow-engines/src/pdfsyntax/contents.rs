@@ -27,8 +27,15 @@
 //! Elements are joined with a single line feed. Without one, an element ending `BT` and the next
 //! beginning `/F1` would concatenate to `BT/F1`, which still lexes — but an element ending `72` and
 //! the next beginning `720 Td` concatenates to `72720 Td`, which is one number where there were
-//! two. Every reader inserts white space here for that reason. The separator belongs to no element,
-//! so an edit may not touch it and no element gets it back on the way out.
+//! two. The separator belongs to no element, so an edit may not touch it and no element gets it
+//! back on the way out.
+//!
+//! **Readers do not all insert white space here**, and this header used to say they did. Measured
+//! by #307's round 1 and #312's round 0: qpdf inserts a line feed, as this does; PDFium and MuPDF a
+//! space; Poppler nothing inside a string; Ghostscript ends every token at the boundary; and pdf.js
+//! inserts nothing at all. So a word, a string or a comment that runs over a boundary is read
+//! differently by each, and redaction refuses a page whose elements do not each end between tokens
+//! in white space, before they are joined here (`geometry::check_contents_boundaries`).
 
 use burrow_types::{Error, Result};
 
