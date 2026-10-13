@@ -2828,8 +2828,8 @@ fn is_operator_here(operator: &[u8], in_image_dictionary: &mut bool) -> bool {
 ///   the reader, and so a different glyph run.
 ///
 /// So every element a boundary follows -- empty elements skipped, since pdf.js joins across them
-/// -- must end in one of PDF's six white-space bytes (not the lexer's wider set, which admits 0x80
-/// and 0xFF, #309), with burrow's lexer between tokens there: not in a string, a hex string, an
+/// -- must end in one of PDF's six white-space bytes (not the lexer's wider set, which adds 0x80 and
+/// 0xFF; redaction refuses those between tokens, #309), with burrow's lexer between tokens there: not in a string, a hex string, an
 /// inline image's dictionary or data, or a comment the boundary would end. That is wider than the
 /// leaks (rule 4): a delimiter-adjacent boundary such as `)` | `Tj`, which every reader reads
 /// alike, refuses too. 0 of 915 boundaries in the 99 real documents are refused; every one ends in
@@ -2874,7 +2874,8 @@ fn lexes(content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// PDF's white space (PDF 32000-1 Table 1), without the 0x80 and 0xFF the lexer also skips.
+/// PDF's white space (PDF 32000-1 Table 1), without 0x80 and 0xFF: the lexer's `is_whitespace`
+/// adds them, and its redaction mode refuses them between tokens (#309).
 const fn is_pdf_whitespace(byte: u8) -> bool {
     matches!(byte, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
 }
@@ -5939,9 +5940,9 @@ mod tests {
                 Ok(()) => panic!("{what}: accepted"),
             }
         }
-        // A 0x80 AMONG THE TRAILING WHITE SPACE passes the last-byte half and is refused by the
-        // lexer reading the element, as the high-byte separator it is (#309), before this rule
-        // would name it.
+        // A 0x80 AMONG THE TRAILING WHITE SPACE passes the last-byte half; the element's own lex
+        // then fails, and the joined stream's lex, which this function runs on that failure,
+        // refuses it as the high-byte separator it is (#309), before this rule would name it.
         let error = check_contents_boundaries(&[b"100 Ts\x80\n", b"BT"], &unwatched())
             .expect_err("0x80 among the trailing white space");
         assert!(
