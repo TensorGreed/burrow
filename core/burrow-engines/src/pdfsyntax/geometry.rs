@@ -6274,6 +6274,21 @@ mod tests {
     }
 
     #[test]
+    fn a_high_byte_separator_in_an_embedded_cmaps_program_is_refused() {
+        // #309: the `/WMode` reader lexes in redaction's mode, so 0x80 or 0xFF between tokens
+        // refuses here as in a content stream. Pins that this reader's lexer is constructed so.
+        for byte in [0x80u8, 0xff] {
+            let program = [b"/WMode".as_slice(), &[byte], b"0 def"].concat();
+            let error = walk_cmap(None, &program).expect_err("a separator");
+            assert!(
+                error.to_string().contains("[high-byte-separator]"),
+                "{byte:#04x}: {error}"
+            );
+        }
+        walk_cmap(None, b"/WMode 0 def").expect("the same with a space");
+    }
+
+    #[test]
     fn a_nested_bt_is_refused() {
         refusing(
             "/F1 10 Tf BT BT 0 0 Td (A) Tj ET ET",

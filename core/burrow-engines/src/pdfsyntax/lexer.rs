@@ -1847,21 +1847,28 @@ mod tests {
         // A zero-length token would leave the cursor where it was and loop forever. Every byte
         // is fed as a one-byte input and as a byte inside a run; the assertion is that the call
         // returns at all, whichever way it returns.
-        for byte in 0u8..=255 {
-            let alone = [byte];
-            let mut lexer = Lexer::new(&alone, InlineImages::REDACTION);
-            let _ = lexer.next_token();
-            let in_a_run = [b'/', byte, b' ', byte];
-            let mut lexer = Lexer::new(&in_a_run, InlineImages::REDACTION);
-            let mut budget = 8;
-            while budget > 0 {
-                budget -= 1;
-                match lexer.next_token() {
-                    Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => break,
+        // Both modes: redaction's refuses 0x80 and 0xFF between tokens (#309), so only `Prune`,
+        // which skips them, reaches the loop past them.
+        for mode in [InlineImages::REDACTION, InlineImages::Prune] {
+            for byte in 0u8..=255 {
+                let alone = [byte];
+                let mut lexer = Lexer::new(&alone, mode);
+                let _ = lexer.next_token();
+                let in_a_run = [b'/', byte, b' ', byte];
+                let mut lexer = Lexer::new(&in_a_run, mode);
+                let mut budget = 8;
+                while budget > 0 {
+                    budget -= 1;
+                    match lexer.next_token() {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => break,
+                    }
                 }
+                assert!(
+                    budget > 0,
+                    "byte {byte:#04x} did not terminate under {mode:?}"
+                );
             }
-            assert!(budget > 0, "byte {byte:#04x} did not terminate");
         }
     }
 }

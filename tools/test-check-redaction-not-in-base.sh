@@ -148,6 +148,7 @@ REAL=(
   'pdf resources ['
   'redact: the region is not cleared'
   '[inline-image-filtered]'
+  '[high-byte-separator]'
 )
 if ! command -v cargo >/dev/null || ! rustup target list --installed 2>/dev/null | grep -qx wasm32-unknown-unknown; then
   echo "  FAIL the probe build needs cargo and the wasm32-unknown-unknown target; refusing rather" >&2

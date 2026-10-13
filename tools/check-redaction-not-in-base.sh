@@ -81,6 +81,8 @@ NEEDLES=(
   # carried because the mode was a runtime value (#228). The lexer itself is split's too; this
   # literal is the one part of it only redaction's callers reach.
   '[inline-image-filtered]'
+  # And its refusal of a 0x80 or 0xFF that separates tokens (#309), carried the same way.
+  '[high-byte-separator]'
 )
 MEANS=(
   'the glyph geometry walk is reachable'
@@ -92,6 +94,7 @@ MEANS=(
   "redaction's font and resource resolver is reachable"
   "redaction's output verification is reachable"
   "the lexer's redaction mode, and its refusal of a filtered inline image, is reachable"
+  "the lexer's redaction mode, and its refusal of a high-byte separator, is reachable"
 )
 [ "${#NEEDLES[@]}" -eq "${#MEANS[@]}" ] ||
   fail "NEEDLES has ${#NEEDLES[@]} entries and MEANS has ${#MEANS[@]}; each needle needs its meaning"

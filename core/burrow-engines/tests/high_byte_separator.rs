@@ -21,7 +21,7 @@ mod support;
 use std::collections::BTreeSet;
 
 use burrow_engines::pdfsyntax::region::Region;
-use support::char_box_oracle::chars_on_page;
+use support::char_box_oracle::{chars_on_page, dark_pixels_with_annotations};
 
 /// The region, in display space: x 100..300, and y 250..300 in PDF space on a 400-point page.
 const REGION: Region = Region {
@@ -146,6 +146,23 @@ fn refuses(what: &str, pdf: &[u8]) {
     }
 }
 
+/// The near-miss has SECRET's ink in the region, redacts, and leaves none there.
+#[track_caller]
+fn redacts_clean(what: &str, pdf: &[u8]) {
+    let pixels = (100, 100, 200, 50);
+    assert!(
+        dark_pixels_with_annotations(pdf, 0, pixels).0 > 0,
+        "{what}: no ink in the region to remove"
+    );
+    let (out, _) = redact(pdf).unwrap_or_else(|error| panic!("{what}: {error}"));
+    assert_eq!(
+        dark_pixels_with_annotations(&out, 0, pixels).0,
+        0,
+        "{what}: ink left in the region"
+    );
+}
+
+/// The twin is accepted: SECRET is outside the region there, so there is nothing to remove.
 #[track_caller]
 fn redacts(what: &str, pdf: &[u8]) {
     if let Err(error) = redact(pdf) {
@@ -236,7 +253,7 @@ fn a_high_byte_separator_in_a_form_a_glyph_or_a_contents_element_refuses() {
 #[test]
 fn a_high_byte_inside_a_comment_or_a_string_redacts() {
     for byte in [0x80u8, 0xff] {
-        redacts(
+        redacts_clean(
             "comment",
             &document(
                 &["%c@\n BT /F2 20 Tf 110 260 Td (SECRET) Tj ET"],
@@ -245,7 +262,7 @@ fn a_high_byte_inside_a_comment_or_a_string_redacts() {
                 byte,
             ),
         );
-        redacts(
+        redacts_clean(
             "string",
             &document(
                 &["BT /F4 20 Tf 10 10 Td (A@B) Tj ET BT /F2 20 Tf 110 260 Td (SECRET) Tj ET"],
