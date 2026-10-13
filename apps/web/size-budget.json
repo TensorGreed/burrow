@@ -119,7 +119,7 @@
     "total": 0.1,
     "why": [
       "Per-artifact headroom is loose (25%) because those lines are diagnostic: they say",
-      "which file moved. Total headroom is tight (10%, about 46 KB) because that line is the",
+      "which file moved. Total headroom is tight (10%, about 49 KB) because that line is the",
       "gate. Both numbers were re-derived when PDFium left the payload; the paragraphs below",
       "record what each was, what it is, and why it moved.",
       "",
@@ -135,14 +135,14 @@
       "must not be read as spending total margin -- the total is recorded separately and was",
       "not raised.",
       "",
-      "`page` is the exception and is recorded as such rather than left to look like 10%:",
-      "its budget is an ABSOLUTE 50 KiB, 58x its measurement. The reason is on that line.",
+      "`page` WAS the exception, recorded as an ABSOLUTE 50 KiB, 58x its measurement; it is on",
+      "the per-artifact rule now, as the paragraph below says.",
       "",
       "THE TOTAL'S HEADROOM IS 10%, RAISED FROM 3% WHEN THE PAYLOAD FELL BY 80.7%. Not because the margin was wrong before, but because a percentage of 2.4 MB and a percentage of 462 KB are different instruments. 3% of the new total is 13,877 bytes --- inside the noise of a routine dependency bump --- so a 3% gate would fire on churn and be raised by whoever was holding it, which is how a budget becomes a formality. 10% is 46,256 bytes: large enough that an ordinary bump does not reach it, small enough that a real regression does.",
       "",
-      "AND `page` IS NO LONGER AN EXCEPTION -- IT IS ON THE PER-ARTIFACT RULE, 25%, like every other line, and `headroom.page` records that rate rather than a different one. (It was recorded as 0.10 in the first draft of this change while the line itself was derived at 1.25x, so the file disagreed with itself about a number nothing reads -- `size-budget.test.ts` consumes only `total` and `per_artifact`. An unenforced claim is the one that rots.) Its absolute 50 KiB was set when the line measured 881 bytes and was 58x it; the self-hosted typeface then took it to 22,550, and the absolute quietly became 2.3x. At the old total that was affordable. At the new one its slack alone (28,650 bytes) is more than half the entire total's headroom, so the line could absorb a regression the total was supposed to catch and report nothing. It is on the same per-artifact rule as everything else now, which is what the rest of this block already claimed the file did.",
+      "AND `page` IS NO LONGER AN EXCEPTION -- IT IS ON THE PER-ARTIFACT RULE, 25%, like every other line, and `headroom.page` records that rate rather than a different one. (It was recorded as 0.10 in the first draft of this change while the line itself was derived at 1.25x, so the file disagreed with itself about a number nothing read at the time. An unenforced claim is the one that rots, and since 2026-10-13 none of these is unenforced: `size-budget.test.ts`'s headroom check holds every line's budget to at least its recording times one plus `page`, `per_artifact` or `total`, as `src/size-budget-headroom.ts` reads them.) Its absolute 50 KiB was set when the line measured 881 bytes and was 58x it; the self-hosted typeface then took it to 22,550, and the absolute quietly became 2.3x. At the old total that was affordable. At the new one its slack alone (28,650 bytes) is more than half the entire total's headroom, so the line could absorb a regression the total was supposed to catch and report nothing. It is on the same per-artifact rule as everything else now, which is what the rest of this block already claimed the file did.",
       "",
-      "PER-ARTIFACT HEADROOM WIDENED 10% -> 25%, AND THE ASYMMETRY IS THE WHOLE MECHANISM. The total only catches what the lines miss if it is the TIGHTER of the two: the `catches a regression split across three files` test looks for a uniform growth that every per-artifact line passes and the total still refuses, and no such growth exists when both numbers are equal. Setting the total to 10% therefore forced the lines wider, not narrower. They lose nothing by it --- they are diagnostic, they say WHICH file moved, and the total fires first for almost any real growth anyway: 25% of qpdf.wasm alone is 18% of the payload, well past the total's 10%."
+      "PER-ARTIFACT HEADROOM WIDENED 10% -> 25%, AND THE ASYMMETRY IS THE WHOLE MECHANISM. The total only catches what the lines miss if it is the TIGHTER of the two: the `catches a regression split across three files` test looks for a uniform growth that every per-artifact line passes and the total still refuses, and no such growth exists when both numbers are equal. Setting the total to 10% therefore forced the lines wider, not narrower. They lose nothing by it --- they are diagnostic, they say WHICH file moved, and the total fires first for almost any real growth anyway: 25% of qpdf.wasm alone is 16.8% of the payload, well past the total's 10%."
     ]
   },
   "artifacts": {
