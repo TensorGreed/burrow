@@ -110,6 +110,10 @@ pub enum Refusal {
     /// A `q` or `Q` while a text object is open (#300): PDFium saves the text position with the
     /// graphics state, so a `Q` there moves the pen where burrow's walk does not.
     GraphicsStateInTextObject,
+    /// A `Do` while a text object is open (#306): MuPDF shares the caller's text matrix with a
+    /// form drawn there, so the form moves the pen for the text after the `Do`, and the other
+    /// readers do not.
+    XObjectInTextObject,
     /// A `BT` the stream ends without closing.
     UnterminatedTextObject,
     /// An `ET` with no `BT`.
@@ -290,6 +294,7 @@ impl Refusal {
         Self::UnbalancedSave,
         Self::NestedTextObject,
         Self::GraphicsStateInTextObject,
+        Self::XObjectInTextObject,
         Self::UnterminatedTextObject,
         Self::UnmatchedEndText,
         Self::TextOutsideTextObject,
@@ -345,6 +350,7 @@ impl Refusal {
             Self::UnbalancedSave => "q-unbalanced",
             Self::NestedTextObject => "bt-nested",
             Self::GraphicsStateInTextObject => "graphics-state-in-text",
+            Self::XObjectInTextObject => "do-in-text-object",
             Self::UnterminatedTextObject => "bt-unterminated",
             Self::UnmatchedEndText => "et-without-bt",
             Self::TextOutsideTextObject => "text-outside-text-object",
@@ -3734,6 +3740,23 @@ fn walk(
                 // it once for this font. See `GraphicsState::writing_mode`.
                 state.writing_mode = None;
             }
+            // A `Do` INSIDE A TEXT OBJECT (#306), which the specification does not allow and every
+            // reader runs anyway. MuPDF shares the caller's text matrix with a form drawn there,
+            // measured by #306's round 0: a form's `Tm`, its `BT` alone (which resets the shared
+            // pen), or the advance of a string it shows moves the caller's pen for the text after
+            // the `Do`, so SECRET that the other four readers -- and this walk, whose form starts
+            // with no text object open -- place outside the region lands inside it in MuPDF (170 to
+            // 394 dark pixels). Refused rather than modelled (DECISIONS rule 1). The wider rule
+            // (rule 4): any `Do`, before its name is resolved, so an image `Do`, which moves no
+            // reader's pen, refuses too, as does a form drawn after the text object's last show.
+            // Checked here, so it holds in every stream this walk reads: a `Do` in a text object
+            // inside a form refuses as one on the page does.
+            b"Do" if position.is_some() => {
+                return Refusal::XObjectInTextObject.refuse(
+                    "a 'Do' inside a text object, where one renderer shares the text position with \
+                     the form it draws",
+                );
+            }
             b"Do" => {
                 let Some(Operand::Name { value, .. }) = operation.operands.first() else {
                     return Refusal::FormOperandNotAName
@@ -4617,7 +4640,7 @@ mod tests {
             "`Refusal::ALL` lists {total} of the enum's {in_enum} variants"
         );
         assert_eq!(
-            total, 49,
+            total, 50,
             "a refusal was added or removed without updating the probes"
         );
     }
@@ -5000,6 +5023,10 @@ mod tests {
             Refusal::GraphicsStateInTextObject => {
                 vec![(Content, || walk("/F1 10 Tf BT 0 0 Td q (A) Tj Q ET"))]
             }
+            Refusal::XObjectInTextObject => vec![(Content, || {
+                let resources = Fake::new().with_form(b"Fm0", 7, Matrix::IDENTITY, "");
+                walk_with("/F1 10 Tf BT 0 0 Td /Fm0 Do (A) Tj ET", &resources)
+            })],
             Refusal::UnterminatedTextObject => {
                 vec![(Content, || walk("/F1 10 Tf BT 0 0 Td (A) Tj"))]
             }
@@ -6208,6 +6235,36 @@ mod tests {
         refusing("/F1 10 Tf BT Q ET", Refusal::GraphicsStateInTextObject);
         // The near-miss: the same pair outside the text object is a graphics state, not a pen.
         walk("/F1 10 Tf q BT 0 0 Td (A) Tj ET Q").expect("q/Q around a text object");
+    }
+
+    #[test]
+    fn a_do_inside_a_text_object_is_refused_before_its_name_is_resolved() {
+        // A form, an image (`Im0` is no form here, so it would take the image path) and a non-name
+        // operand all refuse by this rule: the check comes before the lookup. So does a form drawn
+        // in a text object inside a form, and a form with no `BT` of its own, whose `Td` would
+        // otherwise name `[text-outside-text-object]`.
+        let resources = Fake::new()
+            .with_form(b"Fm0", 7, Matrix::IDENTITY, "")
+            .with_form(b"Fm1", 8, Matrix::IDENTITY, "BT /Fm0 Do ET")
+            .with_form(b"Fm2", 9, Matrix::IDENTITY, "0 0 Td");
+        for content in [
+            "/F1 10 Tf BT 0 0 Td /Fm0 Do (A) Tj ET",
+            "/F1 10 Tf BT 0 0 Td (A) Tj /Fm0 Do ET",
+            "/F1 10 Tf BT 0 0 Td /Im0 Do (A) Tj ET",
+            "/F1 10 Tf BT /Fm1 Do ET",
+            "/Fm1 Do",
+            "BT /Fm2 Do ET",
+            "BT 5 Do ET",
+        ] {
+            let error = walk_with(content, &resources).expect_err(content);
+            assert!(
+                Refusal::XObjectInTextObject.caught(&error),
+                "{content}: {error}"
+            );
+        }
+        // The near-misses: the same draws outside the text object.
+        walk_with("/F1 10 Tf BT 0 0 Td (A) Tj ET /Fm0 Do", &resources).expect("form after ET");
+        walk_with("/Im0 Do /F1 10 Tf BT 0 0 Td (A) Tj ET", &resources).expect("image before BT");
     }
 
     #[test]
