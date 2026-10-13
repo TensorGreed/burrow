@@ -2828,9 +2828,10 @@ fn is_operator_here(operator: &[u8], in_image_dictionary: &mut bool) -> bool {
 ///   the reader, and so a different glyph run.
 ///
 /// So every element a boundary follows -- empty elements skipped, since pdf.js joins across them
-/// -- must end in one of PDF's six white-space bytes (not the lexer's wider set, which adds 0x80 and
-/// 0xFF; redaction refuses those between tokens, #309), with burrow's lexer between tokens there: not in a string, a hex string, an
-/// inline image's dictionary or data, or a comment the boundary would end. That is wider than the
+/// -- must end in one of PDF's six white-space bytes (not the lexer's wider set, which adds 0x80
+/// and 0xFF; redaction refuses those between tokens, #309), with burrow's lexer between tokens
+/// there: not in a string, a hex string, an inline image's dictionary or data, or a comment the
+/// boundary would end. That is wider than the
 /// leaks (rule 4): a delimiter-adjacent boundary such as `)` | `Tj`, which every reader reads
 /// alike, refuses too. 0 of 915 boundaries in the 99 real documents are refused; every one ends in
 /// a line feed or a space. The rewriter's output is held to the same rule
