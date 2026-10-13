@@ -852,8 +852,10 @@ still splits (the ceiling is a ceiling, not a wall one level low).
    whose reference it cannot match to the cross-reference table, silently, and other readers may
    still find the object.
 2. **Any `/OCProperties` on the catalog**, read through the trailer's `/Root` whether the catalog
-   is indirect, in an object stream or direct: any value that is not null, a catalog that is not a
-   dictionary, or a read that warned, as `[split-optional-content-document]`.
+   is indirect, in an object stream or direct: any value that is not null, or a catalog that is not
+   a dictionary, as `[split-optional-content-document]`. A warning raised by that read refuses too,
+   as **defence in depth no fixture reaches**: the one shape measured to warn there, a wrong
+   cross-reference offset, is refused by step 1 first.
 
 A repair that the reference pass causes, by resolving an object qpdf then repairs, refuses as
 `[engine-repaired-input]`, as the open names a repair.
@@ -873,6 +875,14 @@ closes those routes whatever they are. The per-page refusal stays.
 | 182 fixtures | **17**, every one an adversarial redaction fixture: 11 reference shapes #227 refuses for redaction, 5 hidden-layer evasions, and 1 font qpdf repairs only when resolved. |
 
 `corpus/manifest.toml` declares no split documents beyond `big_book.pdf`, which still splits.
+
+**What the reference pass costs on the live path**, stated rather than discovered. It lexes the
+whole file and decodes every object stream the file declares, inside the open's own deadline and
+checkpointed as redaction's is, so a time overshoot is one decode. Memory is detected, not bounded
+(ADR 0007): one decoded stream is held at a time, so an object stream nothing references, which
+split never decoded before, is now decoded, and a peak near qpdf's 256 MiB decode ceiling is
+possible. The web open's measured check catches it after the fact, because the module's heap
+never shrinks; the native open has no measured check inside it.
 
 **Lifting it is the owner's decision, not a slice's.** It stays until the slices that make
 split's own walk sound are merged and released: one checks every resources dictionary split can
