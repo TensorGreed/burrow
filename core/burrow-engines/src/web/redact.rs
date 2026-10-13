@@ -66,20 +66,52 @@ use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 /// parameter that differs between operations.
 const QPDF_O_PRESERVE: u32 = 1;
 
+/// The session a [`WebRedactionDocument`] reads: its own, or one it borrows.
+///
+/// **Owned for redaction**, as `redact::Steps` requires: dropping the document drops the session.
+/// **Borrowed for split's open** (owner, 2026-10-13), which runs the reference check and reads the
+/// catalog through this seam on a session split keeps for the life of the split.
+enum HeldSession<'e> {
+    Owned(Session),
+    Borrowed(&'e Session),
+}
+
+impl core::ops::Deref for HeldSession<'_> {
+    type Target = Session;
+
+    fn deref(&self) -> &Session {
+        match self {
+            Self::Owned(session) => session,
+            Self::Borrowed(session) => session,
+        }
+    }
+}
+
 /// A document opened for redaction on the web: the session, and what marshalling needs.
 ///
 /// Owned by the redaction, as `redact::Steps` requires: dropping it drops the session, which
-/// drains and cleans up the `qpdf_data` and wipes the input it read from.
+/// drains and cleans up the `qpdf_data` and wipes the input it read from. Split's open borrows one
+/// instead, through [`Self::borrowing`].
 pub(crate) struct WebRedactionDocument<'e> {
     engine: &'e WebQpdf,
-    session: Session,
+    session: HeldSession<'e>,
     /// Keys copied into the engine heap, one per distinct name, freed when the document drops.
     keys: RefCell<BTreeMap<Vec<u8>, QpdfPtr>>,
     /// A marshalling failure waiting for the next drain. See the module header.
     latched: RefCell<Option<Error>>,
 }
 
-impl WebRedactionDocument<'_> {
+impl<'e> WebRedactionDocument<'e> {
+    /// A document over `session`, which the caller keeps: split's open (owner, 2026-10-13).
+    pub(super) fn borrowing(engine: &'e WebQpdf, session: &'e Session) -> Self {
+        Self {
+            engine,
+            session: HeldSession::Borrowed(session),
+            keys: RefCell::new(BTreeMap::new()),
+            latched: RefCell::new(None),
+        }
+    }
+
     /// A key in the engine heap, NUL-terminated, kept for the life of the document.
     ///
     /// `None` when the engine could not allocate it, with the failure latched.
@@ -455,7 +487,7 @@ impl<'e> OpensForRedaction for WebRedactor<'e> {
         Ok((
             WebRedactionDocument {
                 engine,
-                session,
+                session: HeldSession::Owned(session),
                 keys: RefCell::new(BTreeMap::new()),
                 latched: RefCell::new(None),
             },

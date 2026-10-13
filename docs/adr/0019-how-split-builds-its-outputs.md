@@ -842,3 +842,52 @@ hidden layer is refused by the optional-content check through eight form levels 
 guard at nine, and restoring the old `Ok(())` makes the nine-level fixture split with the hidden
 text in the part. `split_no_leak.rs` carries the depth-9 leak fixture and a depth-8 near-miss that
 still splits (the ceiling is a ceiling, not a wall one level low).
+
+## Amendment, 2026-10-13 — split refuses any document with optional content, at its open
+
+**Decided by the owner, as a stopgap.** Before a page is read, split now refuses:
+
+1. **Any reference qpdf resolves to nothing**: redaction's #227 check, run with split's own
+   refusals, `[split-reference-to-nothing]` and `[split-reference-unreadable]`. qpdf drops a key
+   whose reference it cannot match to the cross-reference table, silently, and other readers may
+   still find the object.
+2. **Any `/OCProperties` on the catalog**, read through the trailer's `/Root` whether the catalog
+   is indirect, in an object stream or direct: any value that is not null, or a catalog that is not
+   a dictionary, as `[split-optional-content-document]`. A warning raised by that read refuses too,
+   as **defence in depth no fixture reaches**: the one shape measured to warn there, a wrong
+   cross-reference offset, is refused by step 1 first.
+
+A repair that the reference pass causes, by resolving an object qpdf then repairs, refuses as
+`[engine-repaired-input]`, as the open names a repair.
+
+**Why the per-page refusal above is not enough on its own.** It judges optional content by what
+split's resource walk reaches and by qpdf's reading of each reference. A security review measured
+ways a layer that readers hide escapes both. They are described in private advisories, to be
+published once the fixed release is live. The configuration that hides a layer lives in
+`/OCProperties`, and split never writes one into a part, so refusing every document whose catalog
+qpdf reads with one **closes the three classes measured** -- in split's resource walk, in its
+content lexing, and in reference resolution. **It does not close every route**: the second review
+of this change measured one more, in how readers and qpdf read names in object syntax, where qpdf
+does not see the key at all. That route is open, tracked privately, and is the next slice, a
+release of its own. The per-page refusal stays.
+
+**Cost, measured on a one-part split of every input.**
+
+| Set | Newly refused |
+|---|---|
+| 99 real documents | **0**. One, `luatex.pdf`, has `/OCProperties`, and split already refused it for optional content. |
+| 182 fixtures | **17**, every one an adversarial redaction fixture: 11 reference shapes #227 refuses for redaction, 5 hidden-layer evasions, and 1 font qpdf repairs only when resolved. |
+
+`corpus/manifest.toml` declares no split documents beyond `big_book.pdf`, which still splits.
+
+**What the reference pass costs on the live path**, stated rather than discovered. It lexes the
+whole file and decodes every object stream the file declares, inside the open's own deadline and
+checkpointed as redaction's is, so a time overshoot is one decode. Memory is detected, not bounded
+(ADR 0007): one decoded stream is held at a time, so an object stream nothing references, which
+split never decoded before, is now decoded, and a peak near qpdf's 256 MiB decode ceiling is
+possible. The web open's measured check catches it after the fact, because the module's heap
+never shrinks; the native open has no measured check inside it.
+
+**Lifting it is the owner's decision, not a slice's.** It stays until the slices that make
+split's own walk sound are merged and released: one checks every resources dictionary split can
+reach for optional content, and #310 refuses the lexer readings other readers do not share.

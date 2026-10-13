@@ -46,6 +46,9 @@ mod redact_witness_tests;
 // A reference qpdf resolves to null, on both engines (#227).
 #[cfg(test)]
 mod references_tests;
+// Split's optional-content stopgap at its open, on both engines (owner, 2026-10-13).
+#[cfg(test)]
+mod split_stopgap_tests;
 // An annotation the redaction keeps draws inside its /Rect, on both engines (#229).
 #[cfg(test)]
 mod annotation_appearance_tests;
@@ -109,8 +112,17 @@ const DESCRIPTION: &[u8] = b"input\0";
 /// Holds a raw pointer, so it is `!Send`. It never leaves the function that made it.
 pub(super) struct Document {
     pub(super) data: ffi::QpdfData,
-    /// Read by qpdf for as long as `data` lives. Never touched from Rust after the read.
-    _bytes: Box<[u8]>,
+    /// Read by qpdf for as long as `data` lives. Never written from Rust after the read; read
+    /// through [`Document::input`] by checks that lex the file qpdf parsed (split's open, #227).
+    bytes: Box<[u8]>,
+}
+
+impl Document {
+    /// The bytes this document was opened from, as qpdf reads them. Shared, never mutable: qpdf
+    /// reads the same buffer for as long as `data` lives.
+    pub(super) fn input(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 impl Drop for Document {
@@ -278,10 +290,7 @@ impl Document {
 
         // Take ownership immediately, so every path from here frees the handle -- including
         // an unwind. Nothing between `qpdf_init` and this line can fail.
-        let document = Self {
-            data,
-            _bytes: bytes,
-        };
+        let document = Self { data, bytes };
 
         // SAFETY: `document.data` is live. `logger` is the process-wide discarding logger
         // from `limits::install`, which outlives every document. All four calls only set
@@ -299,7 +308,7 @@ impl Document {
             .as_ref()
             .map_or(core::ptr::null(), |p| p.as_ptr().cast::<c_char>());
 
-        // SAFETY: the buffer pointer addresses `document._bytes`, which this struct owns
+        // SAFETY: the buffer pointer addresses `document.bytes`, which this struct owns
         // and which outlives `document.data` by construction. `size` is its length.
         // `DESCRIPTION` is a NUL-terminated literal. `password_ptr` is null or a
         // NUL-terminated buffer alive for the whole call. qpdf does not copy the buffer
@@ -308,7 +317,7 @@ impl Document {
             ffi::qpdf_read_memory(
                 document.data,
                 DESCRIPTION.as_ptr().cast::<c_char>(),
-                document._bytes.as_ptr().cast::<c_char>(),
+                document.bytes.as_ptr().cast::<c_char>(),
                 size,
                 password_ptr,
             )

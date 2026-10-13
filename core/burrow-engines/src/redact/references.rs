@@ -81,6 +81,55 @@ const FIRST: Name = Name::literal(b"/First\0");
 /// How many lookups run between two reads of the deadline.
 const LOOKUPS_PER_CHECKPOINT: usize = 256;
 
+/// The refusals the check raises, named by the operation that runs it.
+///
+/// **Carried by the caller, as the lexer's `InlineImages` carries redaction's** (#228): split runs
+/// this check at its open too (owner, 2026-10-13), and split is in the base web module, which must
+/// not carry redaction's refusal text (`tools/check-redaction-not-in-base.sh`). Each operation
+/// names its own functions, and the other's are unreferenced wherever it is absent.
+#[derive(Clone, Copy)]
+pub(crate) struct ReferenceRefusals {
+    /// A reference qpdf resolves to null.
+    pub(crate) nothing: fn() -> Error,
+    /// References that could not be read as qpdf reads them, and why.
+    pub(crate) unreadable: fn(Irregular) -> Error,
+    /// An object stream qpdf could not decode.
+    pub(crate) undecodable: fn() -> Error,
+}
+
+/// Redaction's refusals: `[reference-to-nothing]` and `[reference-unreadable]`.
+pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
+    nothing: reference_to_nothing,
+    unreadable: reference_unreadable,
+    undecodable: object_stream_undecodable,
+};
+
+/// What an irregular reference was, for any operation's refusal of it. `operation` names who
+/// checks, for the one case that says so: more references than it checks.
+pub(crate) const fn irregular_detail(why: Irregular, operation: Operation) -> &'static str {
+    match why {
+        Irregular::NotPlainDigits => {
+            "a reference with a sign, a leading zero or an out-of-range number"
+        }
+        Irregular::CommentInside => "a reference with a comment inside it",
+        Irregular::StreamHeaderUnreadable => "a stream object whose header does not read",
+        Irregular::ObjectStreamHeaderUnreadable => "an object stream whose header does not read",
+        Irregular::BeyondCaps => match operation {
+            Operation::Redaction => "more references than redaction checks",
+            Operation::Split => "more references than split checks",
+        },
+    }
+}
+
+/// Which operation an [`irregular_detail`] is for.
+#[derive(Clone, Copy)]
+pub(crate) enum Operation {
+    /// Redaction, whose text is unchanged since #227.
+    Redaction,
+    /// Split's open (owner, 2026-10-13).
+    Split,
+}
+
 /// The refusal for a reference qpdf resolves to null.
 pub(crate) fn reference_to_nothing() -> Error {
     Error::Unsupported(
@@ -93,15 +142,7 @@ pub(crate) fn reference_to_nothing() -> Error {
 
 /// The refusal for references that could not be read as the PDF engine reads them.
 pub(crate) fn reference_unreadable(why: Irregular) -> Error {
-    let detail = match why {
-        Irregular::NotPlainDigits => {
-            "a reference with a sign, a leading zero or an out-of-range number"
-        }
-        Irregular::CommentInside => "a reference with a comment inside it",
-        Irregular::StreamHeaderUnreadable => "a stream object whose header does not read",
-        Irregular::ObjectStreamHeaderUnreadable => "an object stream whose header does not read",
-        Irregular::BeyondCaps => "more references than redaction checks",
-    };
+    let detail = irregular_detail(why, Operation::Redaction);
     Error::Unsupported(format!(
         "pdf redaction [reference-unreadable]: {detail}, which readers may resolve differently, \
          so what the page draws cannot be known"
@@ -139,8 +180,23 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
     deadline: &Deadline,
     clock: &dyn Clock,
 ) -> Result<Referenced> {
+    refuse_references_to_nothing_as(document, bytes, deadline, clock, &REDACTION)
+}
+
+/// [`refuse_references_to_nothing`], refusing with `refusals`: the check itself, for any operation.
+///
+/// # Errors
+///
+/// `refusals`' errors, the deadline, and whatever the engine reports.
+pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
+    document: &D,
+    bytes: &[u8],
+    deadline: &Deadline,
+    clock: &dyn Clock,
+    refusals: &ReferenceRefusals,
+) -> Result<Referenced> {
     let mut checkpoint = || deadline.checkpoint(clock);
-    let mut wanted = accepted(references::in_file(bytes, &mut checkpoint)?)?;
+    let mut wanted = accepted(references::in_file(bytes, &mut checkpoint)?, refusals)?;
     // The numbers object streams list as members: no header in the file speaks for them. Capped
     // per stream at `MAX_DECLARATIONS`, not in total: memory here is detected, not bounded
     // (ADR 0007), and every stream's decoded bytes are already held while it is read.
@@ -170,20 +226,18 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
         };
         stream.drained()?;
         let Some(decoded) = stream.stream_data()? else {
-            return Err(object_stream_undecodable());
+            return Err((refusals.undecodable)());
         };
         // WIPED WHEN DROPPED: a member can hold a string a person wrote.
         let decoded = zeroize::Zeroizing::new(decoded);
-        let members = accepted(references::in_object_stream(
-            &decoded,
-            count,
-            first,
-            &mut checkpoint,
-        )?)?;
+        let members = accepted(
+            references::in_object_stream(&decoded, count, first, &mut checkpoint)?,
+            refusals,
+        )?;
         wanted.references.extend(members.references);
         listed.extend(members.members);
         if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
-            return Err(reference_unreadable(Irregular::BeyondCaps));
+            return Err((refusals.unreadable)(Irregular::BeyondCaps));
         }
     }
 
@@ -199,10 +253,11 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
     let trailer = document.trailer()?;
     let text = zeroize::Zeroizing::new(trailer.unparse());
     trailer.drained()?;
-    let from_trailer = accepted(references::in_value(&text, &mut checkpoint)?)?.references;
+    let from_trailer =
+        accepted(references::in_value(&text, &mut checkpoint)?, refusals)?.references;
     wanted.references.extend(from_trailer.iter().copied());
     if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
-        return Err(reference_unreadable(Irregular::BeyondCaps));
+        return Err((refusals.unreadable)(Irregular::BeyondCaps));
     }
 
     // EVERY REFERENCE, AT THE GENERATION WRITTEN.
@@ -229,7 +284,7 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
             && !listed.contains(number)
             && object.object()? == (*number, *generation);
         if nothing && !declared {
-            return Err(reference_to_nothing());
+            return Err((refusals.nothing)());
         }
     }
     Ok(Referenced {
@@ -239,9 +294,9 @@ pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
 }
 
 /// The scan's answer, or the refusal it calls for.
-fn accepted(found: Found) -> Result<Found> {
+fn accepted(found: Found, refusals: &ReferenceRefusals) -> Result<Found> {
     match found.irregular {
-        Some(why) => Err(reference_unreadable(why)),
+        Some(why) => Err((refusals.unreadable)(why)),
         None => Ok(found),
     }
 }

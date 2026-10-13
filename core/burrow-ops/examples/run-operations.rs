@@ -204,10 +204,14 @@ fn one_operation(op: &str, file: &str) -> i32 {
     // was asked (the arguments it was actually given) and what came out (the output re-opened and
     // counted). An outcome bit alone let an operation be narrowed -- one page rotated, an identity
     // order, no cut -- and still pass (second security review).
+    // THROUGH THE OUTPUT READER, verification's own, not split's open: split's open refuses a
+    // document with optional content (owner, 2026-10-13), which would report another operation's
+    // output as unreadable when only split's policy had changed.
     let reopened = |bytes: &[u8]| -> String {
-        use burrow_engines::PageExtractor;
-        match <Qpdf as PageExtractor>::open(&qpdf, bytes.to_vec().into_boxed_slice(), &opts())
-            .and_then(|document| <Qpdf as PageExtractor>::pages(&qpdf, &document))
+        use burrow_engines::OutputReader;
+        match qpdf
+            .open_output(bytes, &opts())
+            .and_then(|read| qpdf.page_count(&read))
         {
             Ok(count) => format!("{count} page(s)"),
             Err(error) => format!("unreadable ({error})"),

@@ -1999,7 +1999,20 @@ fn a_refused_web_rotation_sweep_releases_its_handles_too() {
 fn split_script() -> QpdfScript {
     QpdfScript {
         page_count: 2,
-        oh_type_codes: [("<page 0>".to_owned(), 9)].into_iter().collect(),
+        // THE OPTIONAL-CONTENT STOPGAP'S READS at the open (owner, 2026-10-13): the one-page
+        // fixture's three objects resolve, at the generation written, so no reference is to
+        // nothing; and its catalog, reached through the trailer's `/Root`, is a dictionary with no
+        // `/OCProperties`, which the fake answers as null like every unscripted key.
+        oh_type_codes: [
+            ("<page 0>".to_owned(), 9),
+            ("<object 1 0>".to_owned(), 9),
+            ("<object 2 0>".to_owned(), 9),
+            ("<object 3 0>".to_owned(), 9),
+            ("<trailer>".to_owned(), 9),
+            ("/Root".to_owned(), 9),
+        ]
+        .into_iter()
+        .collect(),
         oh_unparsed: [(
             "<page 0>".to_owned(),
             // `/Type` and `/Contents` are on the allowlist; `/B`, `/AA` and `/Thumb` are the
@@ -2015,6 +2028,65 @@ fn split_script() -> QpdfScript {
 fn split_source(engine: &WebQpdf) -> <WebQpdf as PageExtractor>::Source {
     PageExtractor::open(engine, ordinary_pdf().into_boxed_slice(), &rotate_options())
         .expect("the fake opens")
+}
+
+#[test]
+fn the_web_split_open_refuses_optional_content_and_a_reference_to_nothing() {
+    // THE STOPGAP ON THE WEB PATH, as natively (owner, 2026-10-13): a catalog `/OCProperties` of
+    // any type refuses at the open, before a page is read; and so does a reference qpdf resolves
+    // to nothing, which here is one of the fixture's objects left unanswered.
+    for type_code in [9, 8, 1] {
+        let mut script = split_script();
+        script
+            .oh_type_codes
+            .insert("/OCProperties".to_owned(), type_code);
+        let (engine, _state) = structure_engine(script);
+        let error = PageExtractor::open(
+            &engine,
+            ordinary_pdf().into_boxed_slice(),
+            &rotate_options(),
+        )
+        .err()
+        .expect("refused");
+        assert!(
+            error
+                .to_string()
+                .contains("[split-optional-content-document]"),
+            "type {type_code}: {error}"
+        );
+    }
+    let mut script = split_script();
+    script.oh_type_codes.remove("<object 2 0>");
+    let (engine, _state) = structure_engine(script);
+    let error = PageExtractor::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .err()
+    .expect("refused");
+    assert!(
+        error.to_string().contains("[split-reference-to-nothing]"),
+        "{error}"
+    );
+    // A CATALOG THAT IS NOT A DICTIONARY refuses as well: nothing can be said of what it holds.
+    let mut script = split_script();
+    script.oh_type_codes.remove("/Root");
+    let (engine, _state) = structure_engine(script);
+    let error = PageExtractor::open(
+        &engine,
+        ordinary_pdf().into_boxed_slice(),
+        &rotate_options(),
+    )
+    .err()
+    .expect("refused");
+    assert!(
+        error
+            .to_string()
+            .contains("[split-optional-content-document]"),
+        "{error}"
+    );
+    // THE NEAR-MISS is every other test here: `split_script` opens.
 }
 
 #[test]

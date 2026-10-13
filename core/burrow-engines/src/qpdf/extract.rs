@@ -95,6 +95,15 @@ impl PageExtractor for Qpdf {
         if document.repaired() {
             return Err(crate::engine_repaired_the_input());
         }
+        // THE OPTIONAL-CONTENT STOPGAP (owner, 2026-10-13), before a page is read: no reference
+        // qpdf resolves to nothing, and no `/OCProperties` on the catalog. See
+        // `prune::refuse_optional_content_document`.
+        crate::prune::refuse_optional_content_document(
+            &document,
+            document.input(),
+            &deadline,
+            options.clock.as_ref(),
+        )?;
         // INSIDE THE OPEN'S OWN DEADLINE, not a fresh one. This is a sweep over every source
         // page, so on a `max_pages`-sized document it is not "one engine call" of overshoot --
         // and `Deadline::start` resets the budget as well as the origin, so making one here
