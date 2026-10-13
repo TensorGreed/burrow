@@ -48,6 +48,7 @@ import {
   explain,
 } from "./size-budget-drift.js";
 import { HARNESS_DIR, PRODUCTION_DIR } from "./build-output.js";
+import { type HeadroomLine, headroomFindings, policyMinimum } from "./size-budget-headroom.js";
 
 const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -543,6 +544,72 @@ describe("the first-load size budget", () => {
         `${kb(budget.total.measured_brotli)} to the ${kb(budget.total.budget_brotli)} budget. ` +
         `Re-measure and update size-budget.json, or find out what grew`,
     ).toBeLessThanOrEqual(halfway);
+  });
+});
+
+/** Every budget line in the file with the policy that applies to it: what the headroom check reads. */
+function policyLines(file: typeof budget): HeadroomLine[] {
+  const { page, per_artifact: perArtifact, total } = file.headroom;
+  const line = (name: string, l: Line, policy: number): HeadroomLine => ({
+    name,
+    measured: l.measured_brotli,
+    budget: l.budget_brotli,
+    policy,
+  });
+  return [
+    ...Object.entries(file.artifacts).map(([key, l]) =>
+      line(key, l, key === "page" || key === "page-js" ? page : perArtifact),
+    ),
+    line("total", file.total, total),
+    ...Object.entries(file.render.artifacts).map(([key, l]) =>
+      line(`render ${key}`, l, perArtifact),
+    ),
+    line("render total", file.render.total, total),
+    ...Object.entries(file.redact.artifacts).map(([key, l]) =>
+      line(`redact ${key}`, l, perArtifact),
+    ),
+  ];
+}
+
+describe("every budget keeps its policy headroom over its recording (owner, 2026-10-13)", () => {
+  // THE COUNT IS KNOWABLE, so it is asserted rather than "more than none": six base lines and the
+  // total, three render lines and the render total, two redaction lines.
+  const lines = policyLines(budget);
+
+  it("examines every budget line in the file", () => {
+    expect(
+      lines.map((l) => l.name),
+      "a line the check does not see is a line it cannot hold to the policy",
+    ).toHaveLength(13);
+  });
+
+  it("finds every budget at or above its recording times one plus its policy", () => {
+    expect(headroomFindings(lines)).toEqual([]);
+  });
+
+  it("goes red on a total at 4% headroom, naming the total", () => {
+    const mutated = structuredClone(budget);
+    mutated.total.budget_brotli = Math.round(mutated.total.measured_brotli * 1.04);
+    const findings = headroomFindings(policyLines(mutated));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatch(/^total: /);
+  });
+
+  it("goes red on one artifact a byte under its policy, and passes the exact minimum", () => {
+    const short = structuredClone(budget);
+    const wasm = short.artifacts["engines/burrow_wasm_bg.wasm"];
+    wasm.budget_brotli = policyMinimum(wasm.measured_brotli, short.headroom.per_artifact) - 1;
+    expect(headroomFindings(policyLines(short))).toEqual([
+      expect.stringMatching(/^engines\/burrow_wasm_bg\.wasm: /),
+    ]);
+    wasm.budget_brotli += 1;
+    expect(headroomFindings(policyLines(short))).toEqual([]);
+  });
+
+  it("rounds the minimum up, so a fractional product cannot pass a byte short", () => {
+    expect(policyMinimum(73045, 0.25)).toBe(91307);
+    expect(policyMinimum(489651, 0.1)).toBe(538617);
+    expect(policyMinimum(68, 0.25)).toBe(85);
   });
 });
 
