@@ -48,6 +48,7 @@ import {
   explain,
 } from "./size-budget-drift.js";
 import { HARNESS_DIR, PRODUCTION_DIR } from "./build-output.js";
+import { type HeadroomLine, headroomFindings, policyMinimum } from "./size-budget-headroom.js";
 
 const webApp = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -447,6 +448,9 @@ describe("the first-load size budget", () => {
     expect(measurement.total.brotli + delta).toBe(renderMeasurement.total.brotli);
   });
 
+  // STILL NEEDED BESIDE THE HEADROOM CHECK (2026-10-13): that check sets only a MINIMUM per line,
+  // which already implies every line passes this test's growth. What only this test holds is the
+  // other side -- that the total stays under its lines' growth, so it remains the tighter gate.
   it("catches a regression split across three files, which no per-file budget would", () => {
     // The reason the total exists, planted rather than argued: a growth that every per-artifact
     // line waves through and the total still refuses.
@@ -543,6 +547,83 @@ describe("the first-load size budget", () => {
         `${kb(budget.total.measured_brotli)} to the ${kb(budget.total.budget_brotli)} budget. ` +
         `Re-measure and update size-budget.json, or find out what grew`,
     ).toBeLessThanOrEqual(halfway);
+  });
+});
+
+/** Every budget line in the file with the policy that applies to it: what the headroom check reads. */
+function policyLines(file: typeof budget): HeadroomLine[] {
+  const { page, per_artifact: perArtifact, total } = file.headroom;
+  const line = (name: string, l: Line, policy: number): HeadroomLine => ({
+    name,
+    measured: l.measured_brotli,
+    budget: l.budget_brotli,
+    policy,
+  });
+  return [
+    ...Object.entries(file.artifacts).map(([key, l]) =>
+      line(key, l, key === "page" || key === "page-js" ? page : perArtifact),
+    ),
+    line("total", file.total, total),
+    ...Object.entries(file.render.artifacts).map(([key, l]) =>
+      line(`render ${key}`, l, perArtifact),
+    ),
+    line("render total", file.render.total, total),
+    ...Object.entries(file.redact.artifacts).map(([key, l]) =>
+      line(`redact ${key}`, l, perArtifact),
+    ),
+  ];
+}
+
+describe("every budget keeps its policy headroom over its recording (owner, 2026-10-13)", () => {
+  const lines = policyLines(budget);
+
+  // THE COUNT IS DERIVED FROM THE FILE, not written down: every object in it that carries a
+  // `budget_brotli`, found by walking the JSON independently of `policyLines`. A new line in an
+  // existing section is then covered with no edit, and a new section -- a fourth payload beside
+  // `render` and `redact` -- that `policyLines` does not read turns this red instead of passing
+  // unexamined, which a fixed count would have done.
+  it("examines every budget line in the file", () => {
+    const inFile: string[] = [];
+    const walk = (node: unknown, path: string[]): void => {
+      if (node === null || typeof node !== "object") return;
+      if ("budget_brotli" in node)
+        inFile.push(path.filter((part) => part !== "artifacts").join(" "));
+      for (const [key, value] of Object.entries(node)) walk(value, [...path, key]);
+    };
+    walk(budget, []);
+    expect(
+      lines.map((l) => l.name).sort(),
+      `a line the check does not see is a line it cannot hold to the policy (${inFile.length} in the file)`,
+    ).toEqual(inFile.sort());
+  });
+
+  it("finds every budget at or above its recording times one plus its policy", () => {
+    expect(headroomFindings(lines)).toEqual([]);
+  });
+
+  it("goes red on a total at 4% headroom, naming the total", () => {
+    const mutated = structuredClone(budget);
+    mutated.total.budget_brotli = Math.round(mutated.total.measured_brotli * 1.04);
+    const findings = headroomFindings(policyLines(mutated));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatch(/^total: /);
+  });
+
+  it("goes red on one artifact a byte under its policy, and passes the exact minimum", () => {
+    const short = structuredClone(budget);
+    const wasm = short.artifacts["engines/burrow_wasm_bg.wasm"];
+    wasm.budget_brotli = policyMinimum(wasm.measured_brotli, short.headroom.per_artifact) - 1;
+    expect(headroomFindings(policyLines(short))).toEqual([
+      expect.stringMatching(/^engines\/burrow_wasm_bg\.wasm: /),
+    ]);
+    wasm.budget_brotli += 1;
+    expect(headroomFindings(policyLines(short))).toEqual([]);
+  });
+
+  it("rounds the minimum up, so a fractional product cannot pass a byte short", () => {
+    expect(policyMinimum(73045, 0.25)).toBe(91307);
+    expect(policyMinimum(489651, 0.1)).toBe(538617);
+    expect(policyMinimum(68, 0.25)).toBe(85);
   });
 });
 
