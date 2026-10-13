@@ -104,8 +104,9 @@ pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
     undecodable: object_stream_undecodable,
 };
 
-/// What an irregular reference was, for any operation's refusal of it.
-pub(crate) const fn irregular_detail(why: Irregular) -> &'static str {
+/// What an irregular reference was, for any operation's refusal of it. `operation` names who
+/// checks, for the one case that says so: more references than it checks.
+pub(crate) const fn irregular_detail(why: Irregular, operation: Operation) -> &'static str {
     match why {
         Irregular::NotPlainDigits => {
             "a reference with a sign, a leading zero or an out-of-range number"
@@ -113,8 +114,20 @@ pub(crate) const fn irregular_detail(why: Irregular) -> &'static str {
         Irregular::CommentInside => "a reference with a comment inside it",
         Irregular::StreamHeaderUnreadable => "a stream object whose header does not read",
         Irregular::ObjectStreamHeaderUnreadable => "an object stream whose header does not read",
-        Irregular::BeyondCaps => "more references than burrow checks",
+        Irregular::BeyondCaps => match operation {
+            Operation::Redaction => "more references than redaction checks",
+            Operation::Split => "more references than split checks",
+        },
     }
+}
+
+/// Which operation an [`irregular_detail`] is for.
+#[derive(Clone, Copy)]
+pub(crate) enum Operation {
+    /// Redaction, whose text is unchanged since #227.
+    Redaction,
+    /// Split's open (owner, 2026-10-13).
+    Split,
 }
 
 /// The refusal for a reference qpdf resolves to null.
@@ -129,7 +142,7 @@ pub(crate) fn reference_to_nothing() -> Error {
 
 /// The refusal for references that could not be read as the PDF engine reads them.
 pub(crate) fn reference_unreadable(why: Irregular) -> Error {
-    let detail = irregular_detail(why);
+    let detail = irregular_detail(why, Operation::Redaction);
     Error::Unsupported(format!(
         "pdf redaction [reference-unreadable]: {detail}, which readers may resolve differently, \
          so what the page draws cannot be known"

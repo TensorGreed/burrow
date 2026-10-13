@@ -657,7 +657,10 @@ fn split_reference_to_nothing() -> Error {
 }
 
 fn split_reference_unreadable(why: crate::pdfsyntax::references::Irregular) -> Error {
-    let detail = crate::redact::references::irregular_detail(why);
+    let detail = crate::redact::references::irregular_detail(
+        why,
+        crate::redact::references::Operation::Split,
+    );
     Error::Unsupported(format!(
         "split [split-reference-unreadable]: {detail}, which readers may resolve differently, so \
          what a part would show cannot be known"

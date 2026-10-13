@@ -161,7 +161,9 @@ echo "=== the native path"
   # open -- is refused by the guard BEFORE pruning, so deleting the prune pass no longer changes
   # its outcome and the witness went green with the prune gone. `oc-nested.pdf` opens clean (the
   # guard does not fire) and is refused only by the optional-content check inside the prune walk,
-  # so the deletion still reddens it -- the native half of the same property, unconfounded.
+  # so the deletion still reddens it -- the native half of the same property, unconfounded. Since
+  # the optional-content stopgap (2026-10-13) refuses the file as written at the open, the test
+  # holds the prune walk's refusal on the same file with its catalog `/OCProperties` renamed.
   require_red \
     "qpdf/extract.rs without its prune" \
     "a_layer_one_level_down_is_refused_like_one_on_the_page" \

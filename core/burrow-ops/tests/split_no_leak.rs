@@ -383,16 +383,14 @@ fn a_document_that_uses_layers_is_refused_rather_than_split() {
     //
     // So the answer is a refusal, and this is the assertion that it fires rather than the split
     // quietly succeeding and revealing a watermark somebody turned off.
-    let result = split(
-        &Qpdf::new(),
-        fixture("optional-content.pdf").into_boxed_slice(),
-        Cuts::after_pages(&[1]),
-        &options(),
-    );
-    assert!(
-        matches!(result, Err(Error::Unsupported(_))),
-        "a document whose page draws inside a layer that `/D /OFF` turns off was split; the \
-         part would show content the source hid. Got {result:?}"
+    //
+    // UNDER THE STOPGAP (owner, 2026-10-13) the document as written refuses at the open, and the
+    // per-page refusal is held on the same document with its catalog switch renamed.
+    let pdf = fixture("optional-content.pdf");
+    assert_the_stopgap_refuses(&pdf, "a layer on the page");
+    assert_the_per_page_refusal(
+        split_first(without_the_catalog_switch(pdf), &[1]),
+        "a layer on the page",
     );
 }
 
@@ -550,16 +548,15 @@ fn a_layer_one_level_down_is_refused_like_one_on_the_page() {
     // that document splitting happily, with the hidden text visible in the output and the
     // layer's name still in it. It is the shape Illustrator and InDesign emit, not an
     // adversarial one.
-    let result = split(
-        &Qpdf::new(),
-        fixture("oc-nested.pdf").into_boxed_slice(),
-        Cuts::after_pages(&[1]),
-        &options(),
-    );
-    assert!(
-        matches!(result, Err(Error::Unsupported(_))),
-        "a hidden layer one level down was split rather than refused, so content the source hid \
-         is visible in the part. Got {result:?}"
+    //
+    // UNDER THE STOPGAP (owner, 2026-10-13) the document as written refuses at the open, and the
+    // per-page refusal is held on the same document with its catalog switch renamed -- which is
+    // what `tools/test-prune-is-reached.sh` needs: the prune walk is the only thing refusing it.
+    let pdf = fixture("oc-nested.pdf");
+    assert_the_stopgap_refuses(&pdf, "a layer one level down");
+    assert_the_per_page_refusal(
+        split_first(without_the_catalog_switch(pdf), &[1]),
+        "a layer one level down",
     );
 }
 
@@ -713,6 +710,20 @@ fn without_the_catalog_switch(pdf: Vec<u8>) -> Vec<u8> {
     let mut out = pdf;
     out[at..at + b"/OCProperties".len()].copy_from_slice(b"/XCProperties");
     out
+}
+
+/// The per-page optional-content refusal, which has no tag of its own: its text, and not the
+/// stopgap's tag, so the stopgap cannot stand in for it.
+#[track_caller]
+fn assert_the_per_page_refusal(result: burrow_types::Result<Vec<Vec<u8>>>, why: &str) {
+    match result {
+        Err(Error::Unsupported(text)) => assert!(
+            text.contains("uses optional content")
+                && !text.contains("[split-optional-content-document]"),
+            "{why}: refused, but not by the per-page optional-content check: {text}"
+        ),
+        other => panic!("{why}: not refused by the per-page check: {other:?}"),
+    }
 }
 
 /// The stopgap refuses the document as written: any `/OCProperties` on the catalog.

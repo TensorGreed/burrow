@@ -225,14 +225,34 @@ fn a_repair_the_reference_pass_causes_is_named_as_a_repair() {
     refuses("a repaired font", &pdf, "[engine-repaired-input]");
 }
 
-/// THE NEAR-MISSES open: a catalog with no `/OCProperties`, and a tagged document -- structure
-/// tree, `/MarkInfo`, a marked-content property list on the page -- which is the shape most like
-/// optional content that carries none.
+/// THE NEAR-MISSES open: a catalog with no `/OCProperties`; one whose `/OCProperties` is the
+/// literal `null`, and one whose reference names an object the file declares as `null`, which
+/// every reader reads as absent and #227's rule accepts -- the boundary a refusal of any present
+/// key would cross; and a tagged document -- structure tree, `/MarkInfo`, a marked-content property
+/// list on the page -- which is the shape most like optional content that carries none.
 #[test]
 fn a_document_without_optional_content_opens() {
     opens(
         "a plain catalog",
         &classic(&document(PLAIN_CATALOG, "", SHOWN, &[])),
+    );
+    opens(
+        "a literal null",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /OCProperties null >>",
+            "",
+            SHOWN,
+            &[],
+        )),
+    );
+    opens(
+        "a reference to an object declared null",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /OCProperties 7 0 R >>",
+            "",
+            SHOWN,
+            &[(7, 0, "null".to_owned())],
+        )),
     );
     opens(
         "a tagged document",
