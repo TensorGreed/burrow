@@ -448,6 +448,9 @@ describe("the first-load size budget", () => {
     expect(measurement.total.brotli + delta).toBe(renderMeasurement.total.brotli);
   });
 
+  // STILL NEEDED BESIDE THE HEADROOM CHECK (2026-10-13): that check sets only a MINIMUM per line,
+  // which already implies every line passes this test's growth. What only this test holds is the
+  // other side -- that the total stays under its lines' growth, so it remains the tighter gate.
   it("catches a regression split across three files, which no per-file budget would", () => {
     // The reason the total exists, planted rather than argued: a growth that every per-artifact
     // line waves through and the total still refuses.
@@ -572,15 +575,26 @@ function policyLines(file: typeof budget): HeadroomLine[] {
 }
 
 describe("every budget keeps its policy headroom over its recording (owner, 2026-10-13)", () => {
-  // THE COUNT IS KNOWABLE, so it is asserted rather than "more than none": six base lines and the
-  // total, three render lines and the render total, two redaction lines.
   const lines = policyLines(budget);
 
+  // THE COUNT IS DERIVED FROM THE FILE, not written down: every object in it that carries a
+  // `budget_brotli`, found by walking the JSON independently of `policyLines`. A new line in an
+  // existing section is then covered with no edit, and a new section -- a fourth payload beside
+  // `render` and `redact` -- that `policyLines` does not read turns this red instead of passing
+  // unexamined, which a fixed count would have done.
   it("examines every budget line in the file", () => {
+    const inFile: string[] = [];
+    const walk = (node: unknown, path: string[]): void => {
+      if (node === null || typeof node !== "object") return;
+      if ("budget_brotli" in node)
+        inFile.push(path.filter((part) => part !== "artifacts").join(" "));
+      for (const [key, value] of Object.entries(node)) walk(value, [...path, key]);
+    };
+    walk(budget, []);
     expect(
-      lines.map((l) => l.name),
-      "a line the check does not see is a line it cannot hold to the policy",
-    ).toHaveLength(13);
+      lines.map((l) => l.name).sort(),
+      `a line the check does not see is a line it cannot hold to the policy (${inFile.length} in the file)`,
+    ).toEqual(inFile.sort());
   });
 
   it("finds every budget at or above its recording times one plus its policy", () => {

@@ -25,6 +25,10 @@ export interface HeadroomLine {
  */
 export function policyMinimum(measured: number, policy: number): number {
   const points = Math.round(policy * 100);
+  // WHOLE PERCENTAGE POINTS ONLY: a policy of 0.125 would round to 13% here without saying so.
+  if (Math.abs(policy * 100 - points) > 1e-9) {
+    throw new Error(`a headroom policy of ${policy} is not a whole percentage`);
+  }
   return Math.ceil((measured * (100 + points)) / 100);
 }
 

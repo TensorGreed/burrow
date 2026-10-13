@@ -228,7 +228,7 @@
         "budget_brotli": 2381009,
         "measured_sha256": "cbaff19140954ba076d3f32d6431c9d55867443e7cb04969d7bc1493d462e271",
         "measured_sha256_normalised": "cbaff19140954ba076d3f32d6431c9d55867443e7cb04969d7bc1493d462e271",
-        "why": "A prebuilt vendored artifact, byte-reproducible -- its bytes match between a local build and CI, which is why it is not in `not_byte_reproducible` and qpdf.wasm is. RAISED by the owner (2026-10-13), 2,381,008 -> 2,381,009, when the headroom policy became enforced against the recording: 25% over the recorded 1,904,807, which the line had drifted under one re-record at a time. Margin, not payload: nothing that ships grew for this."
+        "why": "A prebuilt vendored artifact, byte-reproducible -- its bytes match between a local build and CI, which is why it is not in `not_byte_reproducible` and qpdf.wasm is. RAISED by the owner (2026-10-13), 2,381,008 -> 2,381,009, when the headroom policy became enforced against the recording: 25% over the recorded 1,904,807. The line was set at this same measurement by rounding 25% down rather than up, one byte short of the policy minimum. Margin, not payload: nothing that ships grew for this."
       },
       "engines/burrow-render-worker.js": {
         "measured_raw": 280893,
@@ -290,7 +290,7 @@
         "budget_brotli": 41782,
         "measured_sha256": "89cc5be37b86c4929d02e28a17e8da5cb660331639280f06831a31418b3e599b",
         "measured_sha256_normalised": "d6e5dfe7d0a9943f00ee5d580c0814e1f43727a71f87da9fd12b8e8847551333",
-        "why": "Redaction's worker bundle: the shared prelude, bridge and protocol, qpdf's glue, the wasm-bindgen glue for the redaction module and `redact-main.js`. Mostly the same files as the base bundle, which is why it is about the base worker's size; the difference is the dispatch and the generated binding. RAISED by the owner (2026-10-13), 41,781 -> 41,782, when the headroom policy became enforced against the recording: 25% over the recorded 33,425, which the line had drifted under one re-record at a time. Margin, not payload: nothing that ships grew for this."
+        "why": "Redaction's worker bundle: the shared prelude, bridge and protocol, qpdf's glue, the wasm-bindgen glue for the redaction module and `redact-main.js`. Mostly the same files as the base bundle, which is why it is about the base worker's size; the difference is the dispatch and the generated binding. RAISED by the owner (2026-10-13), 41,781 -> 41,782, when the headroom policy became enforced against the recording: 25% over the recorded 33,425. The line was set at this same measurement by rounding 25% down rather than up, one byte short of the policy minimum. Margin, not payload: nothing that ships grew for this."
       },
       "engines/burrow_wasm_redact_bg.wasm": {
         "measured_raw": 700468,
