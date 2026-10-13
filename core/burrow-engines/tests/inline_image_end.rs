@@ -9,13 +9,14 @@
 //!
 //! The rule (DECISIONS rules 1 and 4), in redaction's lexer mode, for an unfiltered image:
 //! `[inline-image-data-holds-ei]` for data holding an `EI` a scan could stop at, or ending in `E`
-//! right before the `EI`; `[inline-image-end-unrecognised]` for an `EI` not followed by SP, LF or CR,
-//! or by 64 bytes (line feeds aside) that are not all printable, or by a next word that is not `Q`,
-//! `q`, `EMC`, `BT`, `ET` or `BI` within them. The lexer's own test pins each byte position; these
+//! right before the `EI`; `[inline-image-end-unrecognised]` when the next 64 bytes after it (line
+//! feeds aside) are not all CR or printable, or when the next word, past SP, LF or CR only, is not
+//! `Q`, `q`, `EMC`, `BT`, `ET` or `BI` within them -- which also refuses any other byte straight after
+//! the `EI`, and accepts the stream ending there. The lexer's own test pins each byte position; these
 //! put the shapes on a page, in a form and in a Type 3 glyph, and assert PDFium's half where it has
 //! one -- no SECRET drawn, since PDFium reads it as image data. Each twin is the same image with
-//! data and an end every reader agrees on. 0 of the 75 unfiltered inline images in the 99 real
-//! documents are refused.
+//! data and an end every reader agrees on. None of the 73 unfiltered inline images in 3 of the 99
+//! real documents and 3 committed fixtures is refused.
 
 #![cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

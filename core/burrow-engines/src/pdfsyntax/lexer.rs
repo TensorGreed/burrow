@@ -230,8 +230,10 @@ fn inline_image_end_unrecognised() -> Error {
 /// How far past an inline image's `EI` the content must look like content to pdf.js (#320).
 ///
 /// pdf.js 5.7.284 accepts an `EI` only if the next 15 bytes are line ends or printable ASCII and a
-/// lexer over the next 75 reaches a known operator. This is wider than both, so a pdf.js that
-/// widens either window by less than this still agrees, at a measured cost of 0 (#320's round 0).
+/// lexer over the next 75 reaches a known operator. One bound serves both, in opposite directions:
+/// it is wider than the first, so a pdf.js that widens its printable window up to 64 still agrees,
+/// and narrower than the second, so one that narrows its operator window down to 65 still does.
+/// Both at a measured cost of 0 (#320's round 0).
 const PDFJS_END_WINDOW: usize = 64;
 
 /// The zero-operand operators that may follow an inline image's `EI` (#320). `Q` is the only one
@@ -252,8 +254,8 @@ enum PdfjsEnd {
 fn pdfjs_end(bytes: &[u8], start: usize, end: usize, ei: usize) -> Option<PdfjsEnd> {
     let data = bytes.get(start..end).unwrap_or_default();
     // 1. AN `EI` IN THE DATA that a scan could stop at: followed by white space, a delimiter or
-    // the end of the data. pdf.js wants SP, LF or CR; any white space or delimiter is the wider
-    // rule, since its fallback rewinds to a candidate it first rejected.
+    // the end of the data. pdf.js takes only SP, LF or CR there, as a candidate it may accept or
+    // rewind to; any other white space or a delimiter is the wider rule's recorded over-refusal.
     let early = data.windows(2).enumerate().any(|(at, pair)| {
         pair == b"EI"
             && data
@@ -1426,8 +1428,8 @@ mod tests {
         let early = "[inline-image-data-holds-ei]";
         let late = "[inline-image-end-unrecognised]";
         // EARLY: an `EI` in the data a scan could stop at -- after white space or not, at the very
-        // start, at the very end, before a CR, a tab (the wider rule: pdf.js rejects it, then may
-        // rewind to it) or a delimiter.
+        // start, at the very end, before a CR, a tab or a delimiter (those two the wider rule: pdf.js
+        // never takes them as candidates).
         for (what, data) in [
             ("the issue's", b"X\nEI Q BT (SECRET) Tj ET q\n".as_slice()),
             ("no white space before it", b"XEI Q BT (S) Tj ET q"),
