@@ -178,12 +178,17 @@ pub(super) struct Lexer<'a> {
 pub(crate) enum InlineImages {
     /// Refuse it, with the error `filtered` returns: redaction cannot say what the page draws
     /// past an image it cannot end, and a guess would be a page reported clean that is not. And
-    /// refuse a 0x80 or 0xFF where it separates tokens, with the error `separator` returns.
+    /// refuse a 0x80 or 0xFF where it separates tokens, with the error `separator` returns, and an
+    /// unfiltered image pdf.js would end somewhere else, with `data_holds_ei` or `end_unrecognised`.
     Redaction {
         /// The refusal of a filtered inline image.
         filtered: fn() -> Error,
         /// The refusal of a high-byte separator (#309).
         separator: fn() -> Error,
+        /// The refusal of image data pdf.js could end early (#320).
+        data_holds_ei: fn() -> Error,
+        /// The refusal of an `EI` pdf.js could read past (#320).
+        end_unrecognised: fn() -> Error,
     },
     /// Stop lexing and say so: `split`'s pruning then refuses the page, since what it uses past the
     /// image can be neither pruned by nor carried whole (ADR 0019's #228 amendment).
@@ -191,12 +196,119 @@ pub(crate) enum InlineImages {
 }
 
 impl InlineImages {
-    /// Redaction's mode: refuse a filtered inline image, `[inline-image-filtered]`, and a high-byte
-    /// separator, `[high-byte-separator]`.
+    /// Redaction's mode: refuse a filtered inline image, `[inline-image-filtered]`, a high-byte
+    /// separator, `[high-byte-separator]`, and an unfiltered image whose end pdf.js could read
+    /// elsewhere, `[inline-image-data-holds-ei]` and `[inline-image-end-unrecognised]`.
     pub(crate) const REDACTION: Self = Self::Redaction {
         filtered: inline_image_filtered,
         separator: high_byte_separator,
+        data_holds_ei: inline_image_data_holds_ei,
+        end_unrecognised: inline_image_end_unrecognised,
     };
+}
+
+/// Redaction's refusal of unfiltered image data pdf.js could end early (#320). Reached only through
+/// [`InlineImages::REDACTION`].
+fn inline_image_data_holds_ei() -> Error {
+    Error::Malformed(
+        "pdf syntax [inline-image-data-holds-ei]: an inline image whose data holds an 'EI' a \
+         renderer may take as its end, drawing what follows as content"
+            .to_owned(),
+    )
+}
+
+/// Redaction's refusal of an `EI` pdf.js could read past (#320). Reached only through
+/// [`InlineImages::REDACTION`].
+fn inline_image_end_unrecognised() -> Error {
+    Error::Malformed(
+        "pdf syntax [inline-image-end-unrecognised]: an inline image's 'EI' that a renderer may \
+         not recognise as its end, scanning on into the content after it"
+            .to_owned(),
+    )
+}
+
+/// How far past an inline image's `EI` the content must look like content to pdf.js (#320).
+///
+/// pdf.js 5.7.284 accepts an `EI` only if the next 15 bytes are line ends or printable ASCII and a
+/// lexer over the next 75 reaches a known operator. One bound serves both, in opposite directions:
+/// it is wider than the first, so a pdf.js that widens its printable window up to 64 still agrees,
+/// and narrower than the second, so one that narrows its operator window down to 65 still does.
+/// Both at a measured cost of 0 (#320's round 0).
+const PDFJS_END_WINDOW: usize = 64;
+
+/// The zero-operand operators that may follow an inline image's `EI` (#320). `Q` is the only one
+/// the census found; each of the others has its own fixture.
+const AFTER_AN_INLINE_IMAGE: [&[u8]; 6] = [b"Q", b"q", b"EMC", b"BT", b"ET", b"BI"];
+
+/// Which of #320's two refusals an unfiltered inline image earns, if either.
+#[derive(Debug, PartialEq, Eq)]
+enum PdfjsEnd {
+    /// pdf.js could end the image inside its data.
+    DataHoldsEi,
+    /// pdf.js could reject this `EI` and scan on past it.
+    Unrecognised,
+}
+
+/// Whether pdf.js ends the unfiltered inline image whose data is `bytes[start..end]` at the `EI`
+/// at `ei`, as burrow does (#320). See [`Lexer::skip_inline_image_data`] for what pdf.js does.
+fn pdfjs_end(bytes: &[u8], start: usize, end: usize, ei: usize) -> Option<PdfjsEnd> {
+    let data = bytes.get(start..end).unwrap_or_default();
+    // 1. AN `EI` IN THE DATA that a scan could stop at: followed by white space, a delimiter or
+    // the end of the data. pdf.js takes only SP, LF or CR there, as a candidate it may accept or
+    // rewind to; any other white space or a delimiter is the wider rule's recorded over-refusal.
+    let early = data.windows(2).enumerate().any(|(at, pair)| {
+        pair == b"EI"
+            && data
+                .get(at + 2)
+                .is_none_or(|next| is_whitespace(*next) || is_delimiter(*next))
+    });
+    // 2. DATA ENDING IN `E` RIGHT BEFORE `EI`: pdf.js's scanner resets on the second `E` of `EEI`,
+    // misses burrow's `EI`, and scans on.
+    let glued = end == ei && data.last() == Some(&b'E');
+    if early || glued {
+        return Some(PdfjsEnd::DataHoldsEi);
+    }
+    let after = ei + 2;
+    // 3. THE WINDOW AFTER IT is line ends and printable ASCII, line feeds not counted: burrow puts
+    // one between `/Contents` elements, where pdf.js puts nothing.
+    let mut seen = 0;
+    for byte in bytes.get(after + 1..).unwrap_or_default() {
+        if seen >= PDFJS_END_WINDOW {
+            break;
+        }
+        match byte {
+            b'\n' => {}
+            b'\r' | 0x20..=0x7e => seen += 1,
+            _ => return Some(PdfjsEnd::Unrecognised),
+        }
+    }
+    // 4. THE NEXT WORD, after SP, LF or CR only, is a zero-operand operator from the list, ending
+    // inside the window, or the stream ends: pdf.js wants a known operator with its operands
+    // before anything it does not know, and a number, a name, `[` or `<<` would need it to agree on
+    // more. This is also what refuses an `EI` followed by anything but SP, LF or CR, which pdf.js
+    // does not take: a tab, a form feed, NUL, a high byte or a delimiter there leaves an empty
+    // word. (A separate check of that one byte was the first version, and no mutation of it could
+    // fail a test -- this step already decided every case it did.)
+    let rest = bytes.get(after..).unwrap_or_default();
+    let skipped = rest
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\n' | b'\r'))
+        .count();
+    let word_start = after + skipped;
+    // `None` here is the stream ending after the `EI`: nothing pdf.js could read on into.
+    let tail = bytes.get(word_start..).filter(|tail| !tail.is_empty())?;
+    let length = tail
+        .iter()
+        .take_while(|byte| !is_whitespace(**byte) && !is_delimiter(**byte))
+        .count();
+    let word = tail.get(..length).unwrap_or_default();
+    // Counted, as step 3 counts, from the byte after the one that ends the `EI`.
+    if !AFTER_AN_INLINE_IMAGE.contains(&word)
+        || (word_start + length).saturating_sub(after + 1) > PDFJS_END_WINDOW
+    {
+        return Some(PdfjsEnd::Unrecognised);
+    }
+    None
 }
 
 /// Redaction's refusal of a filtered inline image. Reached only through
@@ -575,6 +687,18 @@ impl<'a> Lexer<'a> {
     ///
     /// An `ID` with no `BI` before it is refused for the same reason: it has no dictionary, so
     /// there is nothing to derive an extent from.
+    ///
+    /// # pdf.js ends an unfiltered image by scanning, and redaction refuses where it could differ
+    ///
+    /// **The other four readers agree with the computed extent; pdf.js does not** (#320). Its
+    /// `findDefaultInlineStreamEnd` (5.7.284) scans the data for `EI` and SP, LF or CR, takes the
+    /// first whose next 15 bytes are printable and whose next 75 reach a known operator, and falls
+    /// back to the last it saw. #320's round 0 measured both directions after an `Ok`: an `EI`
+    /// inside the data ended the image early and pdf.js drew the text object behind it, image bytes
+    /// to the other four; and an `EI` pdf.js would not take -- followed by a tab, a delimiter, a
+    /// number -- let it scan on into a later string and draw from inside it. Under
+    /// [`InlineImages::REDACTION`] an unfiltered image whose end pdf.js could read elsewhere is
+    /// refused (`pdfjs_end` has the four conditions); `Prune` keeps the computed extent alone.
     fn skip_inline_image_data(&mut self, dictionary: Option<&[u8]>) -> Result<()> {
         let Some(dictionary) = dictionary else {
             return Err(Error::Malformed(
@@ -624,6 +748,19 @@ impl<'a> Lexer<'a> {
             .get(at.saturating_add(2))
             .is_none_or(|next| is_whitespace(*next) || is_delimiter(*next));
         if self.bytes.get(at..at.saturating_add(2)) == Some(b"EI") && ends_a_word {
+            // AND PDF.JS ENDS IT HERE TOO (#320), redaction's mode only.
+            if let InlineImages::Redaction {
+                data_holds_ei,
+                end_unrecognised,
+                ..
+            } = self.images
+            {
+                match pdfjs_end(self.bytes, self.at, data_end, at) {
+                    Some(PdfjsEnd::DataHoldsEi) => return Err(data_holds_ei()),
+                    Some(PdfjsEnd::Unrecognised) => return Err(end_unrecognised()),
+                    None => {}
+                }
+            }
             self.at = at + 2;
             return Ok(());
         }
@@ -1214,8 +1351,10 @@ mod tests {
             "BI /W 1 /H 1 /BPC 8@/CS /G ID X EI",
             "BI /W 1 /H 1 /BPC 8 /CS /G ID@X EI",
             "BI /W 1 /H 1 /BPC 8 /CS /G ID X@EI",
-            "BI /W 1 /H 1 /BPC 8 /CS /G ID X EI@Q",
         ];
+        // AFTER `EI` THE IMAGE'S OWN END IS JUDGED FIRST: pdf.js does not take an `EI` followed by
+        // anything but SP, LF or CR (#320), so this names that rule rather than this one.
+        let after_ei = "BI /W 1 /H 1 /BPC 8 /CS /G ID X EI@Q";
         // THE NEAR-MISSES, where all five read the byte alike: inside a string, a comment, and as
         // an inline image's one byte of data.
         let accepted = [
@@ -1245,12 +1384,151 @@ mod tests {
                 lex_all(&with(shape), InlineImages::REDACTION)
                     .unwrap_or_else(|error| panic!("{byte:#04x} in {shape}: {error}"));
             }
+            let error = lex_all(&with(after_ei), InlineImages::REDACTION)
+                .expect_err(&format!("{byte:#04x} after EI"));
+            assert!(
+                error.contains("[inline-image-end-unrecognised]"),
+                "{byte:#04x} after EI: {error}"
+            );
+            lex_all(&with(after_ei), InlineImages::Prune)
+                .unwrap_or_else(|error| panic!("{byte:#04x} after EI, Prune: {error}"));
         }
         // AND THE SAME SHAPES WITH A SPACE, which every reader reads alike.
         for shape in refused {
             lex_all(shape.replace('@', " ").as_bytes(), InlineImages::REDACTION)
                 .unwrap_or_else(|error| panic!("{shape} with a space: {error}"));
         }
+    }
+
+    /// An unfiltered one-row gray image whose data is `data`, `gap` before its `EI`, `after` after.
+    fn gray_image(data: &[u8], gap: &[u8], after: &[u8]) -> Vec<u8> {
+        [
+            format!("q BI /W {} /H 1 /BPC 8 /CS /G ID ", data.len()).as_bytes(),
+            data,
+            gap,
+            b"EI",
+            after,
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn an_unfiltered_image_pdfjs_would_end_elsewhere_refuses() {
+        // #320's ROUND 0, from pdf.js 5.7.284's `findDefaultInlineStreamEnd`: it ends an unfiltered
+        // image at the first `EI` + SP/LF/CR whose next 15 bytes are printable and whose next 75
+        // reach a known operator, and falls back to the last candidate it saw. So an `EI` in the
+        // data can end it early, and an `EI` it does not accept lets it scan on past burrow's end.
+        let refuses = |stream: &[u8], rule: &str, what: &str| {
+            let error = lex_all(stream, InlineImages::REDACTION).expect_err(what);
+            assert!(error.contains(rule), "{what}: {error}");
+            // `split`'s mode is not redaction's, and reads on.
+            lex_all(stream, InlineImages::Prune)
+                .unwrap_or_else(|error| panic!("{what}, Prune: {error}"));
+        };
+        let early = "[inline-image-data-holds-ei]";
+        let late = "[inline-image-end-unrecognised]";
+        // EARLY: an `EI` in the data a scan could stop at -- after white space or not, at the very
+        // start, at the very end, before a CR, a tab or a delimiter (those two the wider rule: pdf.js
+        // never takes them as candidates).
+        for (what, data) in [
+            ("the issue's", b"X\nEI Q BT (SECRET) Tj ET q\n".as_slice()),
+            ("no white space before it", b"XEI Q BT (S) Tj ET q"),
+            ("at offset 0", b"EI Q BT (S) Tj ET q"),
+            ("before a CR", b"X\nEI\rQ"),
+            ("before a tab", b"X\nEI\tQ"),
+            ("before a delimiter", b"X\nEI(S)"),
+            ("at the end of the data", b"XXEI"),
+        ] {
+            refuses(&gray_image(data, b" ", b" Q"), early, what);
+        }
+        // AND DATA ENDING IN `E` RIGHT BEFORE THE `EI`: pdf.js resets on the second `E` of `EEI`.
+        refuses(&gray_image(b"XE", b"", b" Q"), early, "XE then EI");
+        // LATE: an `EI` pdf.js does not take, so it scans on into what follows.
+        for (what, after) in [
+            ("a tab", b"\tQ".as_slice()),
+            ("a form feed", b"\x0cQ"),
+            ("NUL", b"\0Q"),
+            ("a name", b"/P"),
+            ("a comment", b"%c\nQ"),
+            ("a string", b"(x) Tj"),
+            ("an array", b"\n[1 2] 0 d"),
+            ("a marked-content dictionary", b"\n/P <</MCID 0>> BDC"),
+            ("a number", b" 1 0 0 1 0 0 cm"),
+            ("a word not on the list", b" Do"),
+            (
+                "a high byte inside the window",
+                b" Q                        \x80",
+            ),
+            ("a tab inside the window", b" Q\tq"),
+            // Round 0's `/Contents` shape: one-space elements after `EI\nQ `, which pdf.js joins
+            // with nothing and burrow with a line feed each, put a high byte inside a string at
+            // offset 9 to pdf.js and 16 here. Not counting the line feeds keeps it inside.
+            (
+                "a high byte past /Contents line feeds",
+                b"\nQ \n \n \n \n \n \n(\x80) Tj",
+            ),
+        ] {
+            refuses(&gray_image(b"X", b" ", after), late, what);
+        }
+        // THE WINDOW: 64 bytes after the one that follows `EI`, line feeds not counted, since
+        // burrow puts one between `/Contents` elements and pdf.js nothing. `Q` ending at the 64th
+        // reads; at the 65th it refuses.
+        let at = |spaces: usize| [b" ".as_slice(), &b" ".repeat(spaces), b"Q"].concat();
+        lex_all(&gray_image(b"X", b" ", &at(63)), InlineImages::REDACTION).expect("Q at 64");
+        refuses(&gray_image(b"X", b" ", &at(64)), late, "Q at 65");
+        // LINE FEEDS ARE NOT COUNTED BY THE PRINTABLE CHECK, which so reaches further: a high byte
+        // 70 line feeds past the `Q` is still inside it. They ARE counted by the distance to the
+        // next word, since pdf.js's own window counts the real ones: 200 of them before the `Q` and
+        // pdf.js scans on.
+        let feeds_then_high = [b" Q".as_slice(), &b"\n".repeat(70), b"\x80"].concat();
+        refuses(
+            &gray_image(b"X", b" ", &feeds_then_high),
+            late,
+            "0x80 after 70 line feeds",
+        );
+        let feeds_then_q = [b" ".as_slice(), &b"\n".repeat(200), b"Q"].concat();
+        refuses(
+            &gray_image(b"X", b" ", &feeds_then_q),
+            late,
+            "Q after 200 line feeds",
+        );
+        let printable_past = [b" Q".as_slice(), &b" ".repeat(70), b"\x80"].concat();
+        let error = lex_all(
+            &gray_image(b"X", b" ", &printable_past),
+            InlineImages::REDACTION,
+        )
+        .expect_err("0x80 past the window");
+        assert!(
+            error.contains("[high-byte-separator]"),
+            "#309's, not this rule's: {error}"
+        );
+        // THE NEAR-MISSES: each listed operator, the end of the stream, white space to the end, and
+        // data whose letters are not a candidate.
+        for after in [
+            " Q",
+            " q Q",
+            "\nEMC",
+            "\rBT ET",
+            " ET",
+            " BI /W 1 /H 1 /BPC 8 /CS /G ID X EI Q",
+            "",
+            "\n",
+            " \n ",
+        ] {
+            lex_all(
+                &gray_image(b"X", b" ", after.as_bytes()),
+                InlineImages::REDACTION,
+            )
+            .unwrap_or_else(|error| panic!("{after:?}: {error}"));
+        }
+        for data in [b"E I".as_slice(), b"IE", b"Ei", b"EIx", b"XEIEIx"] {
+            lex_all(&gray_image(data, b" ", b" Q"), InlineImages::REDACTION)
+                .unwrap_or_else(|error| panic!("{}: {error}", String::from_utf8_lossy(data)));
+        }
+        // A FILTERED image keeps its own refusal; this rule is about unfiltered ones.
+        let filtered = b"BI /W 1 /H 1 /F /AHx ID 00> EI\tQ";
+        let error = lex_all(filtered, InlineImages::REDACTION).expect_err("filtered");
+        assert!(error.contains("[inline-image-filtered]"), "{error}");
     }
 
     #[test]
@@ -1389,8 +1667,16 @@ mod tests {
             let stream = format!("BI /W 1 /H 1 /CS /G /BPC 8 ID X {glued} Q");
             let result = read(stream.as_bytes(), InlineImages::REDACTION);
             if glued == "EI/" {
-                // A delimiter ends a word, so this one is `EI` and then a name.
-                assert!(result.is_ok(), "{glued}: {result:?}");
+                // A delimiter ends a word, so this one is `EI` and then a name -- under `Prune`.
+                // pdf.js does not take an `EI` followed by a delimiter, and scans on past it, so
+                // redaction refuses it (#320).
+                let pruned = read(stream.as_bytes(), InlineImages::Prune);
+                assert!(pruned.is_ok(), "{glued}: {pruned:?}");
+                assert!(
+                    result
+                        .is_err_and(|refused| refused.contains("[inline-image-end-unrecognised]")),
+                    "{glued}: pdf.js reads on past it"
+                );
             } else {
                 assert!(
                     result.is_err_and(|refused| refused.contains("ends somewhere else")),
@@ -1530,11 +1816,12 @@ mod tests {
         }
     }
 
-    /// An image of `size` bytes after `ID `, then `EI` and a name that must be read.
+    /// An image of `size` bytes after `ID `, then `EI`, a `Q` (so pdf.js ends it there too, #320)
+    /// and a name that must be read.
     fn image(dictionary: &str, size: usize) -> Vec<u8> {
         let mut stream = format!("BI {dictionary} ID ").into_bytes();
         stream.extend(std::iter::repeat_n(b'x', size));
-        stream.extend_from_slice(b" EI /AFTER 12 Tf");
+        stream.extend_from_slice(b" EI Q /AFTER 12 Tf");
         stream
     }
 

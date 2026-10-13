@@ -463,10 +463,24 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
             (Ok((out, _)), None) => assert_absent(&out, b"SECRET", why),
         }
     }
-    // THE NEAR-MISS: the same image with nothing wrong with it. Its payload is image data to both
-    // readers -- PDFium draws no text from it -- so the redaction goes through.
-    let honest = page_with_content(&format!(
+    // THE SAME IMAGE WITH NOTHING WRONG WITH IT TO PDFIUM: its payload is image data, and PDFium
+    // draws no text from it. pdf.js ends the image at the payload's own `\nEI\n` and draws the
+    // SECRET after it (#320), so this refuses too.
+    let ended_early = page_with_content(&format!(
         "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8 ID {payload} EI Q {kept}"
+    ));
+    match redact(&ended_early) {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[inline-image-data-holds-ei]"),
+            "refused, but not by #320's rule: {error:?}"
+        ),
+        Ok(_) => panic!("an image whose data pdf.js ends early was redacted"),
+    }
+    // THE NEAR-MISS: data with no `EI` in it, image data to every reader, so the redaction goes
+    // through.
+    let honest = page_with_content(&format!(
+        "q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8 ID {} EI Q {kept}",
+        "x".repeat(96)
     ));
     assert!(
         redact(&honest).is_ok(),
