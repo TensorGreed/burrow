@@ -6063,7 +6063,7 @@ mod tests {
         // stream never closes refuses at the end. Any other word inside the dictionary never
         // reaches this rule -- the lexer refuses it first (#228).
         refusing(
-            "BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI true /F1 10 Tf BT 0 0 Td (A) Tj ET",
+            "BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI BT ET true /F1 10 Tf BT 0 0 Td (A) Tj ET",
             Refusal::UnknownOperator,
         );
         refusing(
@@ -7374,9 +7374,11 @@ mod tests {
             check_type_three_image_inside(extent, None),
             Refusal::TypeThreeImageOutsideItsBox,
         );
-        // TWO IMAGES ARE UNIONED: an in-box one cannot hide a second outside it.
+        // TWO IMAGES ARE UNIONED: an in-box one cannot hide a second outside it. The second's data
+        // byte is printable: it sits inside the 64 bytes after the first's `EI`, which must look
+        // like content to pdf.js (#320), and a NUL there refuses.
         let two = check_type_three_procedure(
-            b"48 0 3 -1 48 63 d1\nq 44 0 0 64 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\nq 10 0 0 10 0 -300 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\n",
+            b"48 0 3 -1 48 63 d1\nq 44 0 0 64 3 -1 cm BI /W 1 /H 1 /BPC 1 /IM true ID \x00 EI Q\nq 10 0 0 10 0 -300 cm BI /W 1 /H 1 /BPC 1 /IM true ID A EI Q\n",
             &unwatched(),
         )
         .unwrap()

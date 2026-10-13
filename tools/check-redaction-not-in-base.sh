@@ -83,6 +83,9 @@ NEEDLES=(
   '[inline-image-filtered]'
   # And its refusal of a 0x80 or 0xFF that separates tokens (#309), carried the same way.
   '[high-byte-separator]'
+  # And its two refusals of an unfiltered image pdf.js ends elsewhere (#320).
+  '[inline-image-data-holds-ei]'
+  '[inline-image-end-unrecognised]'
 )
 MEANS=(
   'the glyph geometry walk is reachable'
@@ -95,6 +98,8 @@ MEANS=(
   "redaction's output verification is reachable"
   "the lexer's redaction mode, and its refusal of a filtered inline image, is reachable"
   "the lexer's redaction mode, and its refusal of a high-byte separator, is reachable"
+  "the lexer's redaction mode, and its refusal of image data pdf.js could end early, is reachable"
+  "the lexer's redaction mode, and its refusal of an EI pdf.js could read past, is reachable"
 )
 [ "${#NEEDLES[@]}" -eq "${#MEANS[@]}" ] ||
   fail "NEEDLES has ${#NEEDLES[@]} entries and MEANS has ${#MEANS[@]}; each needle needs its meaning"
