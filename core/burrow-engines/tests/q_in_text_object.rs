@@ -286,11 +286,12 @@ fn a_q_inside_a_text_object_in_a_form_refuses() {
     );
 }
 
-/// THE GUARD AGAINST OVER-REACH: a form drawn INSIDE the page's text object, whose own content is a
-/// `q`/`Q` around a text object of its own that moves its pen 200 points down and fifteen W's along.
-/// PDFium keeps a form's text position apart from its caller's -- asserted here: the caller's SECRET
-/// stays at (110, 260) -- so the form's walk starts with no text object open and this redacts. A
-/// walk that carried the caller's open text object into the form would refuse it.
+/// A FORM DRAWN INSIDE THE PAGE'S TEXT OBJECT, whose own content is a `q`/`Q` around a text object
+/// of its own that moves its pen 200 points down and fifteen W's along. PDFium keeps a form's text
+/// position apart from its caller's -- asserted here: the caller's SECRET stays at (110, 260) -- and
+/// this was #300's guard against over-reach, redacting clean. MuPDF does not (#306): it shares the
+/// caller's text matrix with the form, so since #306 the `Do` refuses `[do-in-text-object]` before
+/// the form is walked, and the form's `q` is never judged against the caller's text object.
 #[test]
 fn a_forms_own_q_is_not_judged_against_its_callers_text_object() {
     let form = format!("q BT /F2 20 Tf 0 -200 Td {FIFTEEN_W} ET Q");
@@ -299,7 +300,13 @@ fn a_forms_own_q_is_not_judged_against_its_callers_text_object() {
         Some(form.as_bytes()),
     );
     secret_drawn_at("a form that moves its own pen", &pdf, 110.0, 260.0);
-    redacts_clean("BT .. /Fm0 Do (SECRET) Tj ET, Fm0 = q BT..ET Q", &pdf);
+    match redact(&pdf) {
+        Err(error) => assert!(
+            error.to_string().contains("[do-in-text-object]"),
+            "refused, but not at the Do: {error}"
+        ),
+        Ok(_) => panic!("redacted a form drawn inside a text object"),
+    }
 }
 
 /// MARKED CONTENT around the `q` changes nothing, measured. The twin moves the `q`/`Q` outside the
