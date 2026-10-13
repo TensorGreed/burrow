@@ -6240,9 +6240,9 @@ mod tests {
     #[test]
     fn a_do_inside_a_text_object_is_refused_before_its_name_is_resolved() {
         // A form, an image (`Im0` is no form here, so it would take the image path) and a non-name
-        // operand all refuse by this rule: the check comes before the lookup. So does a form drawn
-        // in a text object inside a form, and a form with no `BT` of its own, whose `Td` would
-        // otherwise name `[text-outside-text-object]`.
+        // operand all refuse by this rule: the check comes before the lookup. So does a `Do` in a
+        // text object inside a form (`Fm1`, drawn from outside any), and a form with no `BT` of its
+        // own, whose `Td` would otherwise name `[text-outside-text-object]`.
         let resources = Fake::new()
             .with_form(b"Fm0", 7, Matrix::IDENTITY, "")
             .with_form(b"Fm1", 8, Matrix::IDENTITY, "BT /Fm0 Do ET")
@@ -6251,7 +6251,6 @@ mod tests {
             "/F1 10 Tf BT 0 0 Td /Fm0 Do (A) Tj ET",
             "/F1 10 Tf BT 0 0 Td (A) Tj /Fm0 Do ET",
             "/F1 10 Tf BT 0 0 Td /Im0 Do (A) Tj ET",
-            "/F1 10 Tf BT /Fm1 Do ET",
             "/Fm1 Do",
             "BT /Fm2 Do ET",
             "BT 5 Do ET",

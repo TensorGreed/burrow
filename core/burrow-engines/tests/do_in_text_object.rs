@@ -147,9 +147,13 @@ fn refuses(what: &str, pdf: &[u8]) {
     }
 }
 
-/// The twin redacts, and leaves no ink in the region.
+/// The twin has ink in the region, redacts, and leaves none there.
 #[track_caller]
 fn redacts_clean(what: &str, pdf: &[u8]) {
+    assert!(
+        dark_pixels_with_annotations(pdf, 0, PIXELS).0 > 0,
+        "{what}: no ink in the region to remove"
+    );
     let (out, _) = redact(pdf).unwrap_or_else(|error| panic!("{what}: {error}"));
     assert_eq!(
         dark_pixels_with_annotations(&out, 0, PIXELS).0,
