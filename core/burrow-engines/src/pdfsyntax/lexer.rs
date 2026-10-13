@@ -302,7 +302,7 @@ fn pdfjs_end(bytes: &[u8], start: usize, end: usize, ei: usize) -> Option<PdfjsE
     let word = tail.get(..length).unwrap_or_default();
     // Counted, as step 3 counts, from the byte after the one that ends the `EI`.
     if !AFTER_AN_INLINE_IMAGE.contains(&word)
-        || word_start + length - (after + 1) > PDFJS_END_WINDOW
+        || (word_start + length).saturating_sub(after + 1) > PDFJS_END_WINDOW
     {
         return Some(PdfjsEnd::Unrecognised);
     }
