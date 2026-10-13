@@ -214,14 +214,15 @@ fn a_catalog_key_at_a_wrong_offset_refuses_as_a_reference() {
 }
 
 /// A REPAIR THE REFERENCE PASS CAUSES refuses as the repair it is, not as optional content: the
-/// committed fixture whose font qpdf repairs only when it is resolved, which the pass resolves.
+/// generated fixture (`tools/check-redaction-corpus.sh` builds it; CI does before the tests) whose
+/// font qpdf repairs only when it is resolved, which the pass resolves.
 #[test]
 fn a_repair_the_reference_pass_causes_is_named_as_a_repair() {
     let pdf = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/redaction/generated/evade-font-repaired-during-the-walk.pdf"),
     )
-    .expect("the committed fixture");
+    .expect("the generated fixture: run tools/check-redaction-corpus.sh, which builds it");
     refuses("a repaired font", &pdf, "[engine-repaired-input]");
 }
 

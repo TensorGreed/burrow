@@ -864,8 +864,12 @@ A repair that the reference pass causes, by resolving an object qpdf then repair
 split's resource walk reaches and by qpdf's reading of each reference. A security review measured
 ways a layer that readers hide escapes both. They are described in private advisories, to be
 published once the fixed release is live. The configuration that hides a layer lives in
-`/OCProperties`, and split never writes one into a part, so refusing every document that has one
-closes those routes whatever they are. The per-page refusal stays.
+`/OCProperties`, and split never writes one into a part, so refusing every document whose catalog
+qpdf reads with one **closes the three classes measured** -- in split's resource walk, in its
+content lexing, and in reference resolution. **It does not close every route**: the second review
+of this change measured one more, in how readers and qpdf read names in object syntax, where qpdf
+does not see the key at all. That route is open, tracked privately, and is the next slice, a
+release of its own. The per-page refusal stays.
 
 **Cost, measured on a one-part split of every input.**
 
