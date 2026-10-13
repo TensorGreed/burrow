@@ -3587,7 +3587,9 @@ fn walk(
     // nothing: every text operator there refuses `[text-outside-text-object]`, so the next glyph
     // follows a `BT`, which resets both. The refusal inside is therefore the whole of it -- and it
     // rests on that refusal. A form's walk starts with its own `None`: PDFium keeps a form's text
-    // position apart from the caller's, measured.
+    // position apart from the caller's, measured. MuPDF does not, so a `Do` while this is `Some`
+    // refuses (#306), and every form is walked from outside a text object; the `None` is defence in
+    // depth, not something a `Do` can observe.
     let mut position: Option<TextPosition> = None;
     // THE CURRENT PATH, in USER SPACE, built by `m`/`l`/`c`/`v`/`y`/`re` and consumed by a paint
     // operator (#125). User space, so the stroke inflation is applied before the CTM and so scales
