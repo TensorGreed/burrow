@@ -97,11 +97,21 @@ const fn is_delimiter(byte: u8) -> bool {
 /// 1,842 dark pixels -- and `/Fm1\xff Do` named no form, so `split` never walked into a hidden
 /// layer it then carried through. Vertical tab and 0xA0 do NOT end a word to PDFium, and are not
 /// here.
+///
+/// **And they are part of a word to MuPDF, Ghostscript and Poppler** (#309), so where one stands
+/// between tokens the readers split the stream differently: `100\x80Ts` is a rise to PDFium and to
+/// this lexer, and one unknown word to those three. Redaction refuses them there rather than
+/// choosing a reading -- see [`is_high_byte_separator`] -- and `split` keeps this reading (#310).
 const fn is_whitespace(byte: u8) -> bool {
     matches!(
         byte,
         b'\0' | b'\t' | b'\n' | 0x0c | b'\r' | b' ' | 0x80 | 0xff
     )
+}
+
+/// Whether `byte` is one of the two [`is_whitespace`] bytes the readers do not agree on (#309).
+const fn is_high_byte_separator(byte: u8) -> bool {
+    matches!(byte, 0x80 | 0xff)
 }
 
 /// Whether `byte` can appear inside a number.
@@ -154,24 +164,39 @@ pub(super) struct Lexer<'a> {
 /// **Named by every caller, with no default** (owner, 2026-10-03): a default is a caller that
 /// never decided. Both callers end in a refusal today, written in two places for two reasons.
 ///
-/// **Redaction's refusal travels in the variant**, and callers name it as [`Self::REDACTION`].
+/// **Redaction's refusals travel in the variant**, and callers name it as [`Self::REDACTION`].
 /// A plain `Redaction` variant kept the refusal's text in the base web module, which reaches this
 /// lexer through `split` and never redacts: the mode is a runtime value, so the compiler could not
-/// drop the arm. Carried as a function that only redaction's callers name, it is unreferenced
+/// drop the arm. Carried as functions that only redaction's callers name, they are unreferenced
 /// wherever they are absent (#228).
+///
+/// **The mode is also where a high-byte separator is refused (#309)**, because it already says
+/// which lexer is redaction's: every content stream, Type 3 procedure and CMap redaction reads is
+/// lexed under [`Self::REDACTION`], and `split`'s pruning under [`Self::Prune`], which keeps
+/// PDFium's reading.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum InlineImages {
-    /// Refuse it, with the error the function returns: redaction cannot say what the page draws
-    /// past an image it cannot end, and a guess would be a page reported clean that is not.
-    Redaction(fn() -> Error),
+    /// Refuse it, with the error `filtered` returns: redaction cannot say what the page draws
+    /// past an image it cannot end, and a guess would be a page reported clean that is not. And
+    /// refuse a 0x80 or 0xFF where it separates tokens, with the error `separator` returns.
+    Redaction {
+        /// The refusal of a filtered inline image.
+        filtered: fn() -> Error,
+        /// The refusal of a high-byte separator (#309).
+        separator: fn() -> Error,
+    },
     /// Stop lexing and say so: `split`'s pruning then refuses the page, since what it uses past the
     /// image can be neither pruned by nor carried whole (ADR 0019's #228 amendment).
     Prune,
 }
 
 impl InlineImages {
-    /// Redaction's mode: refuse a filtered inline image, `[inline-image-filtered]`.
-    pub(crate) const REDACTION: Self = Self::Redaction(inline_image_filtered);
+    /// Redaction's mode: refuse a filtered inline image, `[inline-image-filtered]`, and a high-byte
+    /// separator, `[high-byte-separator]`.
+    pub(crate) const REDACTION: Self = Self::Redaction {
+        filtered: inline_image_filtered,
+        separator: high_byte_separator,
+    };
 }
 
 /// Redaction's refusal of a filtered inline image. Reached only through
@@ -181,6 +206,16 @@ fn inline_image_filtered() -> Error {
         "pdf syntax [inline-image-filtered]: an inline image with a /F filter, which the renderer \
          ends at its filter's own end of data rather than at any /L, and which burrow cannot \
          decode to find"
+            .to_owned(),
+    )
+}
+
+/// Redaction's refusal of a 0x80 or 0xFF that separates tokens (#309). Reached only through
+/// [`InlineImages::REDACTION`].
+fn high_byte_separator() -> Error {
+    Error::Malformed(
+        "pdf syntax [high-byte-separator]: a byte 0x80 or 0xFF between tokens, which some readers \
+         take as white space and others as part of a word"
             .to_owned(),
     )
 }
@@ -223,13 +258,34 @@ impl<'a> Lexer<'a> {
         self.bytes.get(self.at).copied()
     }
 
+    /// Refuse `byte` under [`InlineImages::REDACTION`] if it is a high-byte separator (#309).
+    ///
+    /// Called wherever white space is skipped BETWEEN tokens -- here, the one byte after `ID`, and
+    /// before `EI` -- and nowhere a byte is inside a token, a string, a comment or image data, where
+    /// all five readers read 0x80 and 0xFF alike (#309's round 0). Next to a delimiter as well as
+    /// between two words: `(A)\x80Tj` is `Tj` to PDFium and one unknown word `\x80Tj` to MuPDF,
+    /// Ghostscript and Poppler, whose pen then never advances.
+    fn refuse_a_separator(&self, byte: u8) -> Result<()> {
+        match self.images {
+            InlineImages::Redaction { separator, .. } if is_high_byte_separator(byte) => {
+                Err(separator())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Advance past white space and comments.
     ///
     /// A comment runs to the next end-of-line. `%` inside a string is not a comment, which is
     /// why this is only ever called between tokens.
-    fn skip_trivia(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Malformed`] for a high-byte separator under [`InlineImages::REDACTION`] (#309).
+    fn skip_trivia(&mut self) -> Result<()> {
         while let Some(byte) = self.peek() {
             if is_whitespace(byte) {
+                self.refuse_a_separator(byte)?;
                 self.at += 1;
             } else if byte == b'%' {
                 while let Some(byte) = self.peek() {
@@ -242,6 +298,7 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
+        Ok(())
     }
 
     /// The next token, or `None` at the end of the input.
@@ -251,7 +308,7 @@ impl<'a> Lexer<'a> {
     /// [`Error::Malformed`] for anything this cannot account for. See the module header: a
     /// partial answer is the one result that may not escape.
     pub(super) fn next_token(&mut self) -> Result<Option<Token>> {
-        self.skip_trivia();
+        self.skip_trivia()?;
         self.token_start = self.at;
         let Some(byte) = self.peek() else {
             return Ok(None);
@@ -525,14 +582,15 @@ impl<'a> Lexer<'a> {
             ));
         };
         // One byte of white space after `ID` belongs to the operator, not the data.
-        if self.peek().is_some_and(is_whitespace) {
+        if let Some(byte) = self.peek().filter(|byte| is_whitespace(*byte)) {
+            self.refuse_a_separator(byte)?;
             self.at += 1;
         }
 
         let length = match inline_image_length(dictionary)? {
             Extent::Bytes(length) => length,
             Extent::Filtered => match self.images {
-                InlineImages::Redaction(refusal) => return Err(refusal()),
+                InlineImages::Redaction { filtered, .. } => return Err(filtered()),
                 InlineImages::Prune => {
                     // NOTHING AFTER IT CAN BE READ, so nothing is: the caller is told, and
                     // decides what an unread remainder means for it.
@@ -549,7 +607,13 @@ impl<'a> Lexer<'a> {
         // Anything else there means the dictionary and the data disagree about how long the
         // image is, and two conforming readers would end it in two places.
         let mut at = data_end;
-        while self.bytes.get(at).copied().is_some_and(is_whitespace) {
+        while let Some(byte) = self
+            .bytes
+            .get(at)
+            .copied()
+            .filter(|byte| is_whitespace(*byte))
+        {
+            self.refuse_a_separator(byte)?;
             at += 1;
         }
         // `EI` MUST STAND AS A WORD, as PDFium requires: `EI5` is not the end of the image to the
@@ -940,7 +1004,11 @@ mod tests {
     use super::{InlineImages, Lexer, Token, hex_value, is_whitespace};
 
     fn tokens(bytes: &[u8]) -> Vec<Token> {
-        let mut lexer = Lexer::new(bytes, InlineImages::REDACTION);
+        tokens_in(bytes, InlineImages::REDACTION)
+    }
+
+    fn tokens_in(bytes: &[u8], mode: InlineImages) -> Vec<Token> {
+        let mut lexer = Lexer::new(bytes, mode);
         let mut out = Vec::new();
         while let Some(token) = lexer.next_token().expect("lexes") {
             out.push(token);
@@ -1118,17 +1186,85 @@ mod tests {
         }
     }
 
+    /// Every token of `bytes` under `mode`, or the error that stopped the lexer.
+    fn lex_all(bytes: &[u8], mode: InlineImages) -> std::result::Result<usize, String> {
+        let mut lexer = Lexer::new(bytes, mode);
+        let mut count = 0;
+        while let Some(_token) = lexer.next_token().map_err(|error| error.to_string())? {
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    #[test]
+    fn bytes_0x80_and_0xff_between_tokens_refuse_under_redaction_and_nowhere_else() {
+        // #309's ROUND 0: white space to PDFium and pdf.js, part of a word to MuPDF, Ghostscript and
+        // Poppler, so each of these splits the stream two ways. Between two words, next to a
+        // delimiter, at the end, inside a dictionary or an array, as the one byte after `ID`, before
+        // `EI` and after it. `@` stands for the byte.
+        let refused = [
+            "100@Ts",
+            "100 @Ts",
+            "100 Ts@",
+            "(A)@Tj",
+            "q Q@",
+            "<< /A@/B >> BDC",
+            "[(SEC)@(RET)] TJ",
+            "/F1@ 1 Tf",
+            "BI /W 1 /H 1 /BPC 8@/CS /G ID X EI",
+            "BI /W 1 /H 1 /BPC 8 /CS /G ID@X EI",
+            "BI /W 1 /H 1 /BPC 8 /CS /G ID X@EI",
+            "BI /W 1 /H 1 /BPC 8 /CS /G ID X EI@Q",
+        ];
+        // THE NEAR-MISSES, where all five read the byte alike: inside a string, a comment, and as
+        // an inline image's one byte of data.
+        let accepted = [
+            "(SEC@RET) Tj",
+            "%c@\n100 Ts",
+            "BI /W 1 /H 1 /BPC 8 /CS /G ID @ EI",
+        ];
+        for byte in [0x80u8, 0xff] {
+            let with = |shape: &str| -> Vec<u8> {
+                shape
+                    .bytes()
+                    .map(|b| if b == b'@' { byte } else { b })
+                    .collect()
+            };
+            for shape in refused {
+                let error = lex_all(&with(shape), InlineImages::REDACTION)
+                    .expect_err(&format!("{byte:#04x} in {shape}"));
+                assert!(
+                    error.contains("[high-byte-separator]"),
+                    "{byte:#04x} in {shape}: {error}"
+                );
+                // `split`'s mode keeps PDFium's reading (#310).
+                lex_all(&with(shape), InlineImages::Prune)
+                    .unwrap_or_else(|error| panic!("{byte:#04x} in {shape}, Prune: {error}"));
+            }
+            for shape in accepted {
+                lex_all(&with(shape), InlineImages::REDACTION)
+                    .unwrap_or_else(|error| panic!("{byte:#04x} in {shape}: {error}"));
+            }
+        }
+        // AND THE SAME SHAPES WITH A SPACE, which every reader reads alike.
+        for shape in refused {
+            lex_all(shape.replace('@', " ").as_bytes(), InlineImages::REDACTION)
+                .unwrap_or_else(|error| panic!("{shape} with a space: {error}"));
+        }
+    }
+
     #[test]
     fn bytes_0x80_and_0xff_end_a_word_as_the_renderer_reads_them() {
         // #228's THIRD SECURITY REVIEW, every byte value measured between two tokens: PDFium ends a
         // word at 0x80 and 0xFF as at white space. Without them `Tj\xff` was an unknown operator
-        // here and showed text there, and `/Fm1\xff` named no form.
+        // here and showed text there, and `/Fm1\xff` named no form. Read so under `Prune`, which
+        // is `split`'s (#310); redaction refuses them, `bytes_0x80_and_0xff_between_tokens_...`.
         for byte in [0x80u8, 0xff] {
             let mut stream = b"(S) Tj".to_vec();
             stream.push(byte);
             stream.extend_from_slice(b"ET");
             assert_eq!(
-                tokens(&stream),
+                tokens_in(&stream, InlineImages::Prune),
                 [
                     Token::Str,
                     Token::Keyword(b"Tj".to_vec()),
@@ -1139,12 +1275,16 @@ mod tests {
             let mut name = b"/Fm1".to_vec();
             name.push(byte);
             name.extend_from_slice(b"Do");
-            assert_eq!(names(&name), ["Fm1"], "{byte:#04x} ends the name");
+            assert_eq!(
+                tokens_in(&name, InlineImages::Prune),
+                [Token::Name(b"Fm1".to_vec()), Token::Keyword(b"Do".to_vec())],
+                "{byte:#04x} ends the name"
+            );
             // And it is the one byte after `ID`, so the image begins where PDFium begins it.
             let mut image = b"BI /W 1 /H 1 /BPC 8 /CS /G ID".to_vec();
             image.push(byte);
             image.extend_from_slice(b"X EI /AFTER 1 Tf");
-            let read = read(&image, InlineImages::REDACTION).expect("an image");
+            let read = read(&image, InlineImages::Prune).expect("an image");
             assert!(read.contains(&"AFTER".to_owned()), "{byte:#04x}: {read:?}");
         }
         // THE NEAR-MISSES: vertical tab and 0xA0 do NOT end a word to PDFium, measured.
@@ -1707,21 +1847,28 @@ mod tests {
         // A zero-length token would leave the cursor where it was and loop forever. Every byte
         // is fed as a one-byte input and as a byte inside a run; the assertion is that the call
         // returns at all, whichever way it returns.
-        for byte in 0u8..=255 {
-            let alone = [byte];
-            let mut lexer = Lexer::new(&alone, InlineImages::REDACTION);
-            let _ = lexer.next_token();
-            let in_a_run = [b'/', byte, b' ', byte];
-            let mut lexer = Lexer::new(&in_a_run, InlineImages::REDACTION);
-            let mut budget = 8;
-            while budget > 0 {
-                budget -= 1;
-                match lexer.next_token() {
-                    Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => break,
+        // Both modes: redaction's refuses 0x80 and 0xFF between tokens (#309), so only `Prune`,
+        // which skips them, reaches the loop past them.
+        for mode in [InlineImages::REDACTION, InlineImages::Prune] {
+            for byte in 0u8..=255 {
+                let alone = [byte];
+                let mut lexer = Lexer::new(&alone, mode);
+                let _ = lexer.next_token();
+                let in_a_run = [b'/', byte, b' ', byte];
+                let mut lexer = Lexer::new(&in_a_run, mode);
+                let mut budget = 8;
+                while budget > 0 {
+                    budget -= 1;
+                    match lexer.next_token() {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => break,
+                    }
                 }
+                assert!(
+                    budget > 0,
+                    "byte {byte:#04x} did not terminate under {mode:?}"
+                );
             }
-            assert!(budget > 0, "byte {byte:#04x} did not terminate");
         }
     }
 }

@@ -2828,9 +2828,10 @@ fn is_operator_here(operator: &[u8], in_image_dictionary: &mut bool) -> bool {
 ///   the reader, and so a different glyph run.
 ///
 /// So every element a boundary follows -- empty elements skipped, since pdf.js joins across them
-/// -- must end in one of PDF's six white-space bytes (not the lexer's wider set, which admits 0x80
-/// and 0xFF, #309), with burrow's lexer between tokens there: not in a string, a hex string, an
-/// inline image's dictionary or data, or a comment the boundary would end. That is wider than the
+/// -- must end in one of PDF's six white-space bytes (not the lexer's wider set, which adds 0x80
+/// and 0xFF; redaction refuses those between tokens, #309), with burrow's lexer between tokens
+/// there: not in a string, a hex string, an inline image's dictionary or data, or a comment the
+/// boundary would end. That is wider than the
 /// leaks (rule 4): a delimiter-adjacent boundary such as `)` | `Tj`, which every reader reads
 /// alike, refuses too. 0 of 915 boundaries in the 99 real documents are refused; every one ends in
 /// a line feed or a space. The rewriter's output is held to the same rule
@@ -2874,7 +2875,8 @@ fn lexes(content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// PDF's white space (PDF 32000-1 Table 1), without the 0x80 and 0xFF the lexer also skips.
+/// PDF's white space (PDF 32000-1 Table 1), without 0x80 and 0xFF: the lexer's `is_whitespace`
+/// adds them, and its redaction mode refuses them between tokens (#309).
 const fn is_pdf_whitespace(byte: u8) -> bool {
     matches!(byte, 0x00 | 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
 }
@@ -5922,10 +5924,6 @@ mod tests {
             ),
             ("0x80 is not PDF white space", &[b"100 Ts\x80", b"BT"]),
             (
-                "0x80 among the trailing white space",
-                &[b"100 Ts\x80\n", b"BT"],
-            ),
-            (
                 "a whitespace-only element after a word, the recorded over-refusal",
                 &[b"100 T", b" ", b"s"],
             ),
@@ -5943,6 +5941,15 @@ mod tests {
                 Ok(()) => panic!("{what}: accepted"),
             }
         }
+        // A 0x80 AMONG THE TRAILING WHITE SPACE passes the last-byte half; the element's own lex
+        // then fails, and the joined stream's lex, which this function runs on that failure,
+        // refuses it as the high-byte separator it is (#309), before this rule would name it.
+        let error = check_contents_boundaries(&[b"100 Ts\x80\n", b"BT"], &unwatched())
+            .expect_err("0x80 among the trailing white space");
+        assert!(
+            error.to_string().contains("[high-byte-separator]"),
+            "{error:?}"
+        );
         // THE TWINS: each boundary at a line end or a space, between tokens -- a text object split
         // over two elements among them, which ADR 0029 §3 handles -- and one element on its own,
         // which has no boundary.
@@ -6266,6 +6273,21 @@ mod tests {
         // The near-misses: the same draws outside the text object.
         walk_with("/F1 10 Tf BT 0 0 Td (A) Tj ET /Fm0 Do", &resources).expect("form after ET");
         walk_with("/Im0 Do /F1 10 Tf BT 0 0 Td (A) Tj ET", &resources).expect("image before BT");
+    }
+
+    #[test]
+    fn a_high_byte_separator_in_an_embedded_cmaps_program_is_refused() {
+        // #309: the `/WMode` reader lexes in redaction's mode, so 0x80 or 0xFF between tokens
+        // refuses here as in a content stream. Pins that this reader's lexer is constructed so.
+        for byte in [0x80u8, 0xff] {
+            let program = [b"/WMode".as_slice(), &[byte], b"0 def"].concat();
+            let error = walk_cmap(None, &program).expect_err("a separator");
+            assert!(
+                error.to_string().contains("[high-byte-separator]"),
+                "{byte:#04x}: {error}"
+            );
+        }
+        walk_cmap(None, b"/WMode 0 def").expect("the same with a space");
     }
 
     #[test]

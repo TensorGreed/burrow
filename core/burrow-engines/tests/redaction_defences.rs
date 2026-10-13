@@ -407,17 +407,21 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
             ),
             Some("ends somewhere else"),
         ),
-        // These two are READ as PDFium reads them rather than refused, so the outcome is either a
+        // This one is READ as PDFium reads it rather than refused, so the outcome is either a
         // refusal for some later reason or an `Ok` that saw the text and removed it.
         (
             "a number glued to ID",
             format!("q 10 0 0 10 200 50 cm BI /W 96 /H 1 /CS /G /BPC 8ID {payload} EI Q {kept}"),
             None,
         ),
+        // 0xFF IS WHITE SPACE TO PDFIUM AND PART OF A WORD TO MUPDF, GHOSTSCRIPT AND POPPLER, so
+        // both of #228's third-review shapes now refuse (#309). They were read as PDFium reads them,
+        // which stopped `Tj\xff` being an operator PDFium drew and burrow did not see; the refusal
+        // keeps that, since the lexer still ends the word there before it refuses.
         (
             "0xFF after Tj, white space to PDFium (third security review)",
             format!("BT /F1 24 Tf 72 700 Td (SECRET) Tj\u{1} ET {kept}"),
-            Some("OK"),
+            Some("[high-byte-separator]"),
         ),
         (
             // The review's shape: the image data begins with `(`. A lexer that did not begin the
@@ -428,7 +432,7 @@ fn no_inline_image_shape_the_second_228_review_found_redacts_ok_over_the_secret(
                  BT /F1 24 Tf 72 700 Td (SECRET) Tj ET ) pop Q {kept}",
                 " ".repeat(95)
             ),
-            None,
+            Some("[high-byte-separator]"),
         ),
     ];
     for (why, content, code) in cases {

@@ -546,6 +546,26 @@ mod tests {
     }
 
     #[test]
+    fn a_high_byte_separating_tokens_in_a_cmap_is_refused() {
+        // #309: the CMap is lexed in redaction's mode, so 0x80 or 0xFF between tokens refuses
+        // here as in a content stream. Pins that this reader's lexer is constructed so.
+        for byte in [0x80u8, 0xff] {
+            let program = [
+                b"1 beginbfchar\n<01>".as_slice(),
+                &[byte],
+                b"<0041>\nendbfchar",
+            ]
+            .concat();
+            let error = ToUnicode::parse(&program).expect_err("a separator");
+            assert!(
+                error.to_string().contains("[high-byte-separator]"),
+                "{byte:#04x}: {error}"
+            );
+        }
+        assert!(ToUnicode::parse(b"1 beginbfchar\n<01> <0041>\nendbfchar").is_ok());
+    }
+
+    #[test]
     fn a_producers_bfchar_section_reads_back_entry_for_entry() {
         let read = ToUnicode::parse(SUBSET).expect("parses");
         assert_eq!(read.len(), 4);
