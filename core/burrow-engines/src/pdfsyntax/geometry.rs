@@ -5922,10 +5922,6 @@ mod tests {
             ),
             ("0x80 is not PDF white space", &[b"100 Ts\x80", b"BT"]),
             (
-                "0x80 among the trailing white space",
-                &[b"100 Ts\x80\n", b"BT"],
-            ),
-            (
                 "a whitespace-only element after a word, the recorded over-refusal",
                 &[b"100 T", b" ", b"s"],
             ),
@@ -5943,6 +5939,15 @@ mod tests {
                 Ok(()) => panic!("{what}: accepted"),
             }
         }
+        // A 0x80 AMONG THE TRAILING WHITE SPACE passes the last-byte half and is refused by the
+        // lexer reading the element, as the high-byte separator it is (#309), before this rule
+        // would name it.
+        let error = check_contents_boundaries(&[b"100 Ts\x80\n", b"BT"], &unwatched())
+            .expect_err("0x80 among the trailing white space");
+        assert!(
+            error.to_string().contains("[high-byte-separator]"),
+            "{error:?}"
+        );
         // THE TWINS: each boundary at a line end or a space, between tokens -- a text object split
         // over two elements among them, which ADR 0029 §3 handles -- and one element on its own,
         // which has no boundary.
