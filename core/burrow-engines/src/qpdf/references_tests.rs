@@ -20,12 +20,12 @@ use crate::redact::graph::{OpensForRedaction, PdfDocument, PdfObject};
 use crate::{OpenOptions, PageRedactor};
 
 /// One object as written: its number, its generation, and its body.
-type Written = (u32, u16, String);
+pub(super) type Written = (u32, u16, String);
 
 /// A file with a classic cross-reference table, each object at the generation it is written with.
 ///
 /// Numbers missing between 1 and the largest are free entries.
-fn classic(objects: &[Written]) -> Vec<u8> {
+pub(super) fn classic(objects: &[Written]) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut entries = std::collections::BTreeMap::new();
     for (number, generation, body) in objects {
@@ -53,7 +53,7 @@ fn classic(objects: &[Written]) -> Vec<u8> {
 /// A file whose `members` live in one uncompressed object stream, numbered `stream` and written,
 /// headed and cross-referenced at `stream_generation`, and whose cross-reference is an
 /// uncompressed stream. `direct` are written in the file body.
-fn with_object_stream(
+pub(super) fn with_object_stream(
     direct: &[Written],
     stream: u32,
     stream_generation: u16,

@@ -78,6 +78,15 @@ impl PageExtractor for WebQpdf {
             return Err(crate::engine_repaired_the_input());
         }
 
+        // THE OPTIONAL-CONTENT STOPGAP (owner, 2026-10-13), as natively, before a page is read.
+        // Through redaction's seam over this session, borrowed, so split keeps the session.
+        crate::prune::refuse_optional_content_document(
+            &crate::web::redact::WebRedactionDocument::borrowing(self, &session),
+            &bytes,
+            &deadline,
+            clock.as_ref(),
+        )?;
+
         // THE SHARING SWEEP, inside the open's own deadline rather than a fresh one. It is
         // O(source pages) bridge crossings, so on a `max_pages`-sized document it is not "one
         // engine call" of overshoot -- and `Deadline::start` resets the budget as well as the

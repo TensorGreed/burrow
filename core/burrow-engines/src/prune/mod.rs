@@ -638,6 +638,124 @@ fn belongs_to<G: ObjectGraph>(
     Ok(in_output.contains(&graph.identity(&owner)?))
 }
 
+/// Split's refusals for the reference check it runs at its open (#227): split's own text, since
+/// the base web module carries split and must not carry redaction's.
+pub(crate) const SPLIT_REFERENCES: crate::redact::references::ReferenceRefusals =
+    crate::redact::references::ReferenceRefusals {
+        nothing: split_reference_to_nothing,
+        unreadable: split_reference_unreadable,
+        undecodable: split_object_stream_undecodable,
+    };
+
+fn split_reference_to_nothing() -> Error {
+    Error::Unsupported(
+        "split [split-reference-to-nothing]: the document refers to an object the PDF engine \
+         reads as absent, which another reader may find and show, so what a part would show \
+         cannot be known"
+            .to_owned(),
+    )
+}
+
+fn split_reference_unreadable(why: crate::pdfsyntax::references::Irregular) -> Error {
+    let detail = crate::redact::references::irregular_detail(why);
+    Error::Unsupported(format!(
+        "split [split-reference-unreadable]: {detail}, which readers may resolve differently, so \
+         what a part would show cannot be known"
+    ))
+}
+
+fn split_object_stream_undecodable() -> Error {
+    Error::Unsupported(
+        "split [split-reference-unreadable]: an object stream the PDF engine could not decode, \
+         whose references cannot be read, so what a part would show cannot be known"
+            .to_owned(),
+    )
+}
+
+/// The stopgap's refusal: any document with optional content (owner, 2026-10-13).
+fn optional_content_document() -> Error {
+    Error::Unsupported(
+        "split [split-optional-content-document]: this document uses optional content (layers), \
+         and burrow cannot carry the setting that decides whether a layer is hidden into a part \
+         of it"
+            .to_owned(),
+    )
+}
+
+/// Refuse a document split cannot be sure carries no optional content, at its open (owner,
+/// 2026-10-13: a stopgap, in force until the resource-scope and lexer slices are released).
+///
+/// **The per-page refusal below is not enough on its own**: it judges optional content from what
+/// split's walk reaches and from qpdf's reading of each reference, and both have been shown to miss
+/// a layer readers hide -- a Type 3 font's resources, which the walk never checks; names split's
+/// lexer reads apart from other readers; and a reference qpdf resolves to nothing while another
+/// reader finds the object. So, in this order:
+///
+/// 1. **No reference qpdf resolves to nothing** (#227's check, with split's own refusals). qpdf
+///    drops such a key silently, so a catalog's `/OCProperties`, or a layer's `/OC`, written behind
+///    a wrong generation is absent to everything after this and present to the readers.
+/// 2. **No `/OCProperties` on the catalog**, resolved through the trailer's `/Root` (a direct or an
+///    indirect catalog): any value that is not null refuses -- a dictionary, an array, anything --
+///    and so does a catalog that is not a dictionary, or a read that raised a warning or an error.
+///
+/// The configuration that hides a layer lives in `/OCProperties`, and without it each reader
+/// shows the same thing in the source and in a part, which split never gives one. The per-page
+/// refusal stays: lifting this is the owner's decision, not a slice's.
+///
+/// # Errors
+///
+/// `[split-reference-to-nothing]`, `[split-reference-unreadable]`,
+/// `[split-optional-content-document]`, the deadline, and whatever the engine reports.
+pub(crate) fn refuse_optional_content_document<D: crate::redact::graph::PdfDocument>(
+    document: &D,
+    bytes: &[u8],
+    deadline: &Deadline,
+    clock: &dyn burrow_types::Clock,
+) -> Result<()> {
+    use crate::name::Name;
+    use crate::redact::graph::PdfObject;
+    const ROOT: Name = Name::literal(b"/Root\0");
+    const OC_PROPERTIES: Name = Name::literal(b"/OCProperties\0");
+
+    crate::redact::references::refuse_references_to_nothing_as(
+        document,
+        bytes,
+        deadline,
+        clock,
+        &SPLIT_REFERENCES,
+    )?;
+    // A REPAIR THE REFERENCE PASS CAUSED is a repair, and says so: asking qpdf for every object the
+    // file names resolves objects split's walk would not have, and one qpdf repairs while resolving
+    // it warns here (`evade-font-repaired-during-the-walk.pdf`). Named as the open names a repair,
+    // not as optional content.
+    if document.repaired() {
+        return Err(crate::engine_repaired_the_input());
+    }
+
+    let trailer = document.trailer()?;
+    let catalog = trailer.key(&ROOT);
+    // THE TYPE BEFORE THE READ: qpdf answers a key read of a non-dictionary with a fallback and a
+    // warning, and a catalog that is not a dictionary is not one split can say anything about.
+    if catalog.type_code() != object_type::DICTIONARY {
+        catalog.drained()?;
+        trailer.drained()?;
+        return Err(optional_content_document());
+    }
+    let present = catalog.key(&OC_PROPERTIES).type_code() != object_type::NULL;
+    catalog.drained()?;
+    trailer.drained()?;
+    // AND A READ OF THE CATALOG THAT WARNED, as defence in depth. An `/OCProperties` whose
+    // cross-reference offset is wrong reads as absent and warns only when the key is read, while
+    // MuPDF, Ghostscript and Poppler still find it (the stopgap's round 0) -- but the reference
+    // check above asks qpdf for that object first and refuses the null, so no shape measured
+    // reaches this. It stays because a warning here is qpdf reading the catalog other than as
+    // written.
+    if present || document.repaired() {
+        return Err(optional_content_document());
+    }
+    Ok(())
+}
+
 /// Refuse a page that references optional content.
 ///
 /// See the module header: neither of ADR 0019 §2b's answers is reachable without the destination's

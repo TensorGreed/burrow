@@ -1,0 +1,246 @@
+//! Split's optional-content stopgap at its open, on both engines (owner, 2026-10-13).
+//!
+//! Split refuses any document whose catalog carries `/OCProperties`, after refusing any reference
+//! qpdf resolves to nothing (#227's check, with split's own refusals). Each case is opened through
+//! the native engine and through the web engine over the native-backed bridge, so the two paths
+//! are held to the same answer. The documents are benign -- nothing in them is hidden -- because
+//! what is pinned is the refusal, not a layer: a document with a layer configuration of any shape
+//! refuses, and one without opens.
+
+use std::sync::Arc;
+
+use burrow_types::{Clock, Limits, ManualClock};
+
+use super::references_tests::{Written, classic, with_object_stream};
+use super::web_differential_tests::NativeBridge;
+use crate::{OpenOptions, PageExtractor};
+
+fn options() -> OpenOptions<'static> {
+    OpenOptions::new(
+        Limits::default(),
+        Arc::new(ManualClock::new(0)) as Arc<dyn Clock>,
+    )
+}
+
+/// What each engine's split open answers for `pdf`: `Ok` or the refusal's text.
+fn opened(pdf: &[u8]) -> [Result<(), String>; 2] {
+    let native = PageExtractor::open(
+        &super::Qpdf::new(),
+        pdf.to_vec().into_boxed_slice(),
+        &options(),
+    )
+    .map(drop)
+    .map_err(|error| error.to_string());
+    let web = PageExtractor::open(
+        &crate::web::WebQpdf::new(Arc::new(NativeBridge::new())),
+        pdf.to_vec().into_boxed_slice(),
+        &options(),
+    )
+    .map(drop)
+    .map_err(|error| error.to_string());
+    [native, web]
+}
+
+#[track_caller]
+fn refuses(what: &str, pdf: &[u8], rule: &str) {
+    for (engine, result) in ["native", "web"].iter().zip(opened(pdf)) {
+        match result {
+            Err(error) => assert!(error.contains(rule), "{what}, {engine}: {error}"),
+            Ok(()) => panic!("{what}, {engine}: opened, where {rule} must refuse"),
+        }
+    }
+}
+
+#[track_caller]
+fn opens(what: &str, pdf: &[u8]) {
+    for (engine, result) in ["native", "web"].iter().zip(opened(pdf)) {
+        if let Err(error) = result {
+            panic!("{what}, {engine}: {error}");
+        }
+    }
+}
+
+/// A one-page document with `catalog` as object 1, `page_extra` in the page dictionary, `content`
+/// as its stream, and `more` after the five objects.
+fn document(catalog: &str, page_extra: &str, content: &str, more: &[Written]) -> Vec<Written> {
+    let mut objects = vec![
+        (1, 0, catalog.to_owned()),
+        (2, 0, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned()),
+        (
+            3,
+            0,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 4 0 R \
+                 /Resources << /Font << /F1 5 0 R >> {page_extra} >> >>"
+            ),
+        ),
+        (
+            4,
+            0,
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len()
+            ),
+        ),
+        (
+            5,
+            0,
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        ),
+    ];
+    objects.extend_from_slice(more);
+    objects
+}
+
+const SHOWN: &str = "BT /F1 24 Tf 20 350 Td (KEEP) Tj ET";
+const PLAIN_CATALOG: &str = "<< /Type /Catalog /Pages 2 0 R >>";
+const GROUP: (u32, u16, &str) = (6, 0, "<< /Type /OCG /Name (Layer) >>");
+
+fn group() -> Written {
+    (GROUP.0, GROUP.1, GROUP.2.to_owned())
+}
+
+/// A LAYER CONFIGURATION OF ANY SHAPE refuses: a dictionary, the same behind a reference, an
+/// array (no reader hides through one, and it refuses all the same), and the key written with a
+/// `#` escape, which qpdf reads as the key itself.
+#[test]
+fn a_catalog_with_optional_content_properties_of_any_shape_refuses() {
+    for (what, catalog, more) in [
+        (
+            "a dictionary",
+            "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R] /D << /ON [6 0 R] >> >> >>",
+            vec![group()],
+        ),
+        (
+            "an indirect dictionary",
+            "<< /Type /Catalog /Pages 2 0 R /OCProperties 7 0 R >>",
+            vec![group(), (7, 0, "<< /OCGs [6 0 R] /D << >> >>".to_owned())],
+        ),
+        (
+            "an array",
+            "<< /Type /Catalog /Pages 2 0 R /OCProperties [6 0 R] >>",
+            vec![group()],
+        ),
+        (
+            "an escaped key",
+            "<< /Type /Catalog /Pages 2 0 R /OCPr#6fperties << /OCGs [6 0 R] /D << >> >> >>",
+            vec![group()],
+        ),
+    ] {
+        refuses(
+            what,
+            &classic(&document(catalog, "", SHOWN, &more)),
+            "[split-optional-content-document]",
+        );
+    }
+}
+
+/// WHEREVER THE CATALOG IS WRITTEN: inside an object stream, which a byte scan of the file body
+/// would not see, and as a direct dictionary in the trailer, which has no object number.
+#[test]
+fn a_catalog_in_an_object_stream_or_in_the_trailer_is_read_as_well() {
+    let catalog = "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [6 0 R] /D << >> >> >>";
+    let direct: Vec<Written> = document(catalog, "", SHOWN, &[group()])
+        .into_iter()
+        .filter(|(number, _, _)| *number != 1)
+        .collect();
+    refuses(
+        "in an object stream",
+        &with_object_stream(&direct, 9, 0, &[(1, catalog.to_owned())]),
+        "[split-optional-content-document]",
+    );
+
+    let mut pdf = classic(&document(PLAIN_CATALOG, "", SHOWN, &[group()]));
+    let trailer = b"/Root 1 0 R";
+    let at = pdf
+        .windows(trailer.len())
+        .rposition(|w| w == trailer)
+        .expect("the trailer's /Root");
+    let mut rewritten = pdf[..at].to_vec();
+    rewritten.extend_from_slice(catalog.replacen("<<", "/Root <<", 1).as_bytes());
+    rewritten.extend_from_slice(&pdf[at + trailer.len()..]);
+    pdf = rewritten;
+    refuses(
+        "a direct catalog in the trailer",
+        &pdf,
+        "[split-optional-content-document]",
+    );
+}
+
+/// A REFERENCE QPDF RESOLVES TO NOTHING refuses before the catalog is read: `/OCProperties 7 1 R`
+/// over a file holding only `7 0`, which qpdf reads as absent -- so a check of the key alone
+/// would pass it -- while a reader that ignores the generation finds the object (#227).
+#[test]
+fn a_catalog_key_qpdf_resolves_to_nothing_refuses_as_a_reference() {
+    let pdf = classic(&document(
+        "<< /Type /Catalog /Pages 2 0 R /OCProperties 7 1 R >>",
+        "",
+        SHOWN,
+        &[group(), (7, 0, "<< /OCGs [6 0 R] /D << >> >>".to_owned())],
+    ));
+    refuses(
+        "behind a wrong generation",
+        &pdf,
+        "[split-reference-to-nothing]",
+    );
+}
+
+/// A CROSS-REFERENCE OFFSET THAT IS WRONG for the object `/OCProperties` names: qpdf reads it as
+/// absent, and warns only when the key is read, while other readers still find object 7 (the
+/// stopgap's round 0). #227's check asks qpdf for `7 0` first and gets the null, so it refuses
+/// before the catalog is read -- the warning check after the read is reached by no shape measured.
+#[test]
+fn a_catalog_key_at_a_wrong_offset_refuses_as_a_reference() {
+    let mut pdf = classic(&document(
+        "<< /Type /Catalog /Pages 2 0 R /OCProperties 7 0 R >>",
+        "",
+        SHOWN,
+        &[group(), (7, 0, "<< /OCGs [6 0 R] /D << >> >>".to_owned())],
+    ));
+    // Object 7's entry is the xref's eighth line after the header; point it two bytes late.
+    let text = String::from_utf8(pdf.clone()).expect("ASCII");
+    // At a line start: `startxref` ends in the same five bytes.
+    let xref = text.rfind("\nxref\n").expect("an xref") + 1;
+    let entry = text[xref..]
+        .lines()
+        .nth(2 + 7)
+        .expect("object 7's entry")
+        .to_owned();
+    let offset: usize = entry[..10].parse().expect("an offset");
+    let moved = format!("{:010}{}", offset + 2, &entry[10..]);
+    let at = xref + text[xref..].find(&entry).expect("the entry");
+    pdf.splice(at..at + entry.len(), moved.bytes());
+    refuses("a wrong offset", &pdf, "[split-reference-to-nothing]");
+}
+
+/// A REPAIR THE REFERENCE PASS CAUSES refuses as the repair it is, not as optional content: the
+/// committed fixture whose font qpdf repairs only when it is resolved, which the pass resolves.
+#[test]
+fn a_repair_the_reference_pass_causes_is_named_as_a_repair() {
+    let pdf = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/redaction/generated/evade-font-repaired-during-the-walk.pdf"),
+    )
+    .expect("the committed fixture");
+    refuses("a repaired font", &pdf, "[engine-repaired-input]");
+}
+
+/// THE NEAR-MISSES open: a catalog with no `/OCProperties`, and a tagged document -- structure
+/// tree, `/MarkInfo`, a marked-content property list on the page -- which is the shape most like
+/// optional content that carries none.
+#[test]
+fn a_document_without_optional_content_opens() {
+    opens(
+        "a plain catalog",
+        &classic(&document(PLAIN_CATALOG, "", SHOWN, &[])),
+    );
+    opens(
+        "a tagged document",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 8 0 R >>",
+            "/Properties << /P0 << /MCID 0 >> >>",
+            "/P /P0 BDC BT /F1 24 Tf 20 350 Td (KEEP) Tj ET EMC",
+            &[(8, 0, "<< /Type /StructTreeRoot >>".to_owned())],
+        )),
+    );
+}

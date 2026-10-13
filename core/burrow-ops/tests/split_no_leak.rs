@@ -697,6 +697,36 @@ const COURIER: &str = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>";
 const EXCLUDED_IMAGE: &str = "<< /Type /XObject /Subtype /Image /Width 18 /Height 1 /ColorSpace \
                               /DeviceGray /BitsPerComponent 8 /Length 18 >>\nstream\nEXCLUDEDIMAGEBYTES\nendstream";
 
+/// `pdf` with its catalog's `/OCProperties` renamed to a key nothing reads, the same length so
+/// every offset holds. Its layers are still there, and still named by `/OC`.
+///
+/// **For the rules beneath the optional-content stopgap** (owner, 2026-10-13): split now refuses
+/// any document with `/OCProperties` at its open, first, which would hide whether a rule a test
+/// pins still fires. Each such test splits the document as written, asserts the stopgap refuses
+/// it, then splits this and asserts its own rule as before -- so the rule stays pinned for the day
+/// the stopgap is lifted, which is the owner's decision.
+fn without_the_catalog_switch(pdf: Vec<u8>) -> Vec<u8> {
+    let at = pdf
+        .windows(b"/OCProperties".len())
+        .position(|w| w == b"/OCProperties")
+        .expect("a catalog /OCProperties to rename");
+    let mut out = pdf;
+    out[at..at + b"/OCProperties".len()].copy_from_slice(b"/XCProperties");
+    out
+}
+
+/// The stopgap refuses the document as written: any `/OCProperties` on the catalog.
+#[track_caller]
+fn assert_the_stopgap_refuses(pdf: &[u8], why: &str) {
+    match split_first(pdf.to_vec(), &[1]) {
+        Err(error) => assert!(
+            format!("{error:?}").contains("[split-optional-content-document]"),
+            "{why}: refused, but not by the stopgap: {error:?}"
+        ),
+        Ok(_) => panic!("{why}: split a document with /OCProperties"),
+    }
+}
+
 fn split_first(bytes: Vec<u8>, after: &[u64]) -> burrow_types::Result<Vec<Vec<u8>>> {
     split(
         &Qpdf::new(),
@@ -911,6 +941,8 @@ fn a_hidden_layer_in_a_form_drawn_after_a_filtered_inline_image_refuses() {
         ),
         "<< /Type /OCG /Name (Hidden) >>".to_owned(),
     ]);
+    assert_the_stopgap_refuses(&bytes, "a hidden layer after the image");
+    let bytes = without_the_catalog_switch(bytes);
     assert_refused_naming_the_image(
         split_first(bytes, &[1]),
         Some("HIDDENLAYERTEXT"),
@@ -1083,8 +1115,10 @@ fn a_name_token_longer_than_a_renderer_reads_refuses_the_split() {
     // 255-raw name and resolve a different resource. The hidden-layer form is drawn by `/Fm`; the
     // over-long name is the operand that carries the leak, refused before the walk resolves it.
     let long = format!("/{} Do", "A".repeat(255));
+    let pdf = hidden_layer_pdf_drawing(&format!("/Fm Do {long}"));
+    assert_the_stopgap_refuses(&pdf, "a 256-raw-byte name");
     assert_refused_for_long_name(
-        split_first(hidden_layer_pdf_drawing(&format!("/Fm Do {long}")), &[1]),
+        split_first(without_the_catalog_switch(pdf), &[1]),
         "a 256-raw-byte name",
     );
 }
@@ -1096,8 +1130,10 @@ fn a_name_long_in_raw_escapes_refuses_even_though_it_decodes_short() {
     // different resource. The RAW check refuses it.
     let escapes = "#41".repeat(100);
     let long = format!("/{escapes} Do");
+    let pdf = hidden_layer_pdf_drawing(&format!("/Fm Do {long}"));
+    assert_the_stopgap_refuses(&pdf, "a 301-raw-byte escape name");
     assert_refused_for_long_name(
-        split_first(hidden_layer_pdf_drawing(&format!("/Fm Do {long}")), &[1]),
+        split_first(without_the_catalog_switch(pdf), &[1]),
         "a 301-raw-byte escape name",
     );
 }
@@ -1208,7 +1244,8 @@ fn a_hidden_layer_past_the_form_nesting_ceiling_is_refused() {
     // the MEASURED leaking depth: with the guard restored to Ok(()), this fixture splits Ok with
     // HIDDENLAYERTEXT in the part (confirmed by mutation); chains of eight and shallower are
     // caught by the optional-content refusal itself. The guard now refuses instead.
-    let result = split_first(nested_form_chain(9, true), &[1]);
+    assert_the_stopgap_refuses(&nested_form_chain(9, true), "nine forms down");
+    let result = split_first(without_the_catalog_switch(nested_form_chain(9, true)), &[1]);
     match result {
         Err(error) => assert!(
             format!("{error:?}").contains("[split-nested-form-too-deep]"),
@@ -1307,7 +1344,14 @@ fn a_hidden_layer_in_an_annotation_appearance_past_the_ceiling_is_refused() {
     // depth here: with the guards restored to Ok(()) this splits with HIDDENLAYERTEXT in the part
     // (confirmed by mutation); eight is caught by the optional-content refusal. Annotation
     // appearances are a resource split prunes, so this is a redaction-reachable path.
-    let result = split_first(annotation_appearance_chain(9, true), &[1]);
+    assert_the_stopgap_refuses(
+        &annotation_appearance_chain(9, true),
+        "nine appearances down",
+    );
+    let result = split_first(
+        without_the_catalog_switch(annotation_appearance_chain(9, true)),
+        &[1],
+    );
     match result {
         Err(error) => assert!(
             format!("{error:?}").contains("[split-nested-form-too-deep]"),
