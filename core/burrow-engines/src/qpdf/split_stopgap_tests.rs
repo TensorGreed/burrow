@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Limits, ManualClock};
 
-use super::references_tests::{Written, classic, with_object_stream};
+use super::references_tests::{Written, classic, long_name, planted, with_object_stream};
 use super::web_differential_tests::NativeBridge;
 use crate::{OpenOptions, PageExtractor};
 
@@ -264,4 +264,74 @@ fn a_document_without_optional_content_opens() {
             &[(8, 0, "<< /Type /StructTreeRoot >>".to_owned())],
         )),
     );
+}
+
+/// A NAME OUTSIDE THE MEASURED ALLOWLIST refuses at split's open (owner, 2026-10-14), before the
+/// catalog is read: in the catalog, in a page's dictionary, ended by a vertical tab, longer than
+/// 255 bytes written, and inside an object stream's member, which a scan of the file body would
+/// not see. Benign documents: what is pinned is the refusal.
+#[test]
+fn a_name_outside_the_measured_allowlist_refuses_at_split_s_open() {
+    const RULE: &str = "[split-name-read-differently]";
+    for (what, catalog, page_extra, byte) in [
+        (
+            "0x80 in a catalog key",
+            "<< /Type /Catalog /Pages 2 0 R /Ma`rk 1 >>",
+            "",
+            0x80,
+        ),
+        ("0xFF ending a page key", PLAIN_CATALOG, "/Mark` 1", 0xff),
+        (
+            "a key qpdf ends at a vertical tab",
+            PLAIN_CATALOG,
+            "/Mark`1",
+            0x0b,
+        ),
+    ] {
+        refuses(
+            what,
+            &planted(classic(&document(catalog, page_extra, SHOWN, &[])), byte),
+            RULE,
+        );
+    }
+    refuses(
+        "256 bytes written",
+        &classic(&document(
+            PLAIN_CATALOG,
+            &format!("{} 1", long_name(256)),
+            SHOWN,
+            &[],
+        )),
+        RULE,
+    );
+    let catalog = "<< /Type /Catalog /Pages 2 0 R /Ma`rk 1 >>";
+    let direct: Vec<Written> = document(catalog, "", SHOWN, &[])
+        .into_iter()
+        .filter(|(number, _, _)| *number != 1)
+        .collect();
+    refuses(
+        "0x80 in a key inside an object stream",
+        &planted(
+            with_object_stream(&direct, 9, 0, &[(1, catalog.to_owned())]),
+            0x80,
+        ),
+        RULE,
+    );
+}
+
+/// THE NEAR-MISSES open: the refused bytes written as escapes, which both read alike, and 255
+/// bytes written.
+#[test]
+fn a_name_inside_the_measured_allowlist_opens_for_split() {
+    for (what, page_extra) in [
+        ("0x80 escaped", "/Ma#80rk 1".to_owned()),
+        ("0xFF escaped", "/Mark#ff 1".to_owned()),
+        ("0x0B escaped", "/Mark#0B 1".to_owned()),
+        ("255 bytes written", format!("{} 1", long_name(255))),
+    ] {
+        opens(
+            what,
+            &classic(&document(PLAIN_CATALOG, &page_extra, SHOWN, &[])),
+        );
+    }
 }

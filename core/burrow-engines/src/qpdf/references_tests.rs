@@ -870,3 +870,108 @@ fn no_separator_byte_turns_a_page_burrow_measures_upright() {
     }
     assert_eq!(bytes_swept, 36, "every byte in the sweep was tried");
 }
+
+/// `pdf` with every `` ` `` replaced by `byte`: one byte for one, so no offset moves. The
+/// placeholder is a regular character the builders never write.
+pub(super) fn planted(mut pdf: Vec<u8>, byte: u8) -> Vec<u8> {
+    let mut replaced = 0;
+    for at in pdf.iter_mut().filter(|b| **b == b'`') {
+        *at = byte;
+        replaced += 1;
+    }
+    assert!(replaced > 0, "nothing to plant {byte:#04x} at");
+    pdf
+}
+
+/// A name of `written` bytes after the `/`, written plainly.
+pub(super) fn long_name(written: usize) -> String {
+    format!("/{}", "N".repeat(written))
+}
+
+/// A NAME OUTSIDE THE MEASURED ALLOWLIST refuses, wherever qpdf parses it (owner, 2026-10-14;
+/// `pdfsyntax::references::name_reads_alike` has the measurement): a byte PDFium and qpdf end a
+/// name at differently, a name qpdf ends at a vertical tab, and one longer than 255 bytes written --
+/// in a key, in a value, and in the trailer. The documents are benign: what is pinned is the
+/// refusal.
+#[test]
+fn a_name_outside_the_measured_allowlist_is_refused() {
+    for (what, extra, byte) in [
+        ("0x80 inside a key", "/Ma`rk 1", 0x80),
+        ("0xFF ending a key", "/Mark` 1", 0xff),
+        ("0x80 ending a value", "/Mark /Va`", 0x80),
+        ("a key qpdf ends at a vertical tab", "/Mark`1", 0x0b),
+    ] {
+        refused_on_both(
+            &planted(classic(&page_objects(extra)), byte),
+            "name-read-differently",
+            what,
+        );
+    }
+    refused_on_both(
+        &classic(&page_objects(&format!("{} 1", long_name(256)))),
+        "name-read-differently",
+        "256 bytes written",
+    );
+    refused_on_both(
+        &classic(&page_objects(&format!("{}#41 1", long_name(253)))),
+        "name-read-differently",
+        "an escape across the 255th byte",
+    );
+    let text = String::from_utf8(classic(&page_objects(""))).expect("ASCII");
+    let in_trailer = text.replacen("/Root 1 0 R", "/Root 1 0 R /Ma`rk 1", 1);
+    refused_on_both(
+        &planted(in_trailer.into_bytes(), 0x80),
+        "name-read-differently",
+        "0x80 in a trailer key",
+    );
+}
+
+/// AN ESCAPE OUTSIDE THE ALLOWLIST -- `#00`, a bare `#`, a `#` with one hex digit -- is one qpdf
+/// warns about, so the operation refuses it first as `[engine-repaired-input]` (measured, both
+/// engines). The allowlist refuses it as well, which is pinned by asking the rule alone through
+/// the plain open: defence in depth, so that the warning channel is not the only thing standing.
+#[test]
+fn an_escape_outside_the_allowlist_refuses_as_a_repair_and_by_the_rule_alone() {
+    for (what, extra) in [
+        ("#00", "/Ma#00rk 1"),
+        ("a bare #", "/Ma#rk 1"),
+        ("a # with one hex digit", "/Mark#4 1"),
+    ] {
+        let bytes = classic(&page_objects(extra));
+        refused_on_both(&bytes, "engine-repaired-input", what);
+        let clock = ManualClock::new(0);
+        let (document, _, _, deadline) =
+            super::open_document(bytes.clone().into_boxed_slice(), &options()).unwrap();
+        let refused = crate::redact::references::refuse_references_to_nothing(
+            &document, &bytes, &deadline, &clock,
+        );
+        assert!(
+            matches!(&refused, Err(error) if format!("{error:?}").contains("[name-read-differently]")),
+            "{what}, the rule alone: {refused:?}"
+        );
+    }
+}
+
+/// THE NEAR-MISSES redact: each refused byte written as its `#xx` escape, which both read alike;
+/// every other escape's shape; 254 bytes written, and 85 escapes; and a
+/// refused byte inside a string, which is not a name.
+#[test]
+fn a_name_inside_the_measured_allowlist_redacts() {
+    for (what, extra) in [
+        ("0x80 escaped", "/Ma#80rk 1".to_owned()),
+        ("0xFF escaped, upper case", "/Mark#FF 1".to_owned()),
+        ("0x0B escaped", "/Mark#0b 1".to_owned()),
+        ("#01", "/Ma#01rk 1".to_owned()),
+        // 254, not 255: redaction's own lexer reads a page dictionary's keys too, and its cut is
+        // 255 bytes counting the `/` (#257), one stricter than object syntax's. Split's near-miss
+        // and the unit test hold 255.
+        ("254 bytes written", format!("{} 1", long_name(254))),
+        ("85 escapes", format!("/{} 1", "#41".repeat(85))),
+    ] {
+        redacts_on_both(&classic(&page_objects(&extra)), what);
+    }
+    redacts_on_both(
+        &planted(classic(&page_objects("/Mark (a`b)")), 0x80),
+        "0x80 inside a string",
+    );
+}

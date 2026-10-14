@@ -891,3 +891,29 @@ never shrinks; the native open has no measured check inside it.
 **Lifting it is the owner's decision, not a slice's.** It stays until the slices that make
 split's own walk sound are merged and released: one checks every resources dictionary split can
 reach for optional content, and #310 refuses the lexer readings other readers do not share.
+
+## Amendment, 2026-10-14 — object-syntax names outside a measured allowlist refuse at the open
+
+**Decided by the owner.** The 2026-10-13 amendment left one route open, in how readers and qpdf read
+names in object syntax. This closes it with an allowlist rather than a list of known bytes: the
+reference pass at split's open, which already lexes every value qpdf parses (each object, each
+trailer, each object stream's members), now refuses any name that PDFium and qpdf have not been
+measured to read alike, as `[split-name-read-differently]`. The measurement covers every byte value
+in six positions, every `#xx` escape in both hex cases, and the name's length; the allowlist is
+`pdfsyntax::references::name_reads_alike`, whose rustdoc carries the table. The length is counted
+as written, because that is where the measured divergence is; a decoded bound would have refused
+names both read alike, and #257's near-miss pins one.
+
+Strings and stream data are not lexed as names, so nothing inside them is judged. Escapes that qpdf
+itself warns about refuse first as `[engine-repaired-input]`; the allowlist refuses them as well,
+as defence in depth.
+
+**Cost, measured on split's open of every input**, against `main` with the same harness:
+
+| Set | Newly refused |
+|---|---|
+| 99 real documents | **0** |
+| 182 fixtures | **0** |
+| `big_book.pdf` | **0** |
+
+The stopgap and the per-page refusal stay; lifting either is the owner's decision.

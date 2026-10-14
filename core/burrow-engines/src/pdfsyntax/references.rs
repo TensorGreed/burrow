@@ -115,6 +115,9 @@ pub enum Irregular {
     ObjectStreamHeaderUnreadable,
     /// More references, more stream objects or more lexing than the caps allow.
     BeyondCaps,
+    /// A name outside [`name_reads_alike`]'s allowlist: one PDFium and qpdf have not been
+    /// measured to read alike.
+    NameReadDifferently,
 }
 
 /// What a scan found.
@@ -475,6 +478,12 @@ impl<'c> Scan<'c> {
             if !self.spend(lexer.at.saturating_sub(before))? {
                 return Ok(end(false, 0, false));
             }
+            // A NAME PDFIUM MAY READ APART from qpdf, wherever it is: a key, a value, or the token
+            // after a value, which qpdf reads too.
+            if token == (Token::Name { alike: false }) {
+                self.found.irregular = Some(Irregular::NameReadDifferently);
+                return Ok(end(false, 0, false));
+            }
             if complete {
                 // ONE MORE SIGNIFICANT TOKEN, to see whether a stream follows the value.
                 match token {
@@ -667,7 +676,9 @@ enum Token<'a> {
     Word(&'a [u8]),
     /// `%` to the end of the line.
     Comment,
-    /// A string, a hex string, a name, or a delimiter qpdf would warn about.
+    /// A name, and whether [`name_reads_alike`] accepts it.
+    Name { alike: bool },
+    /// A string, a hex string, or a delimiter qpdf would warn about.
     Scalar,
 }
 
@@ -725,8 +736,12 @@ impl<'a> Lexer<'a> {
             b'[' => Token::Open,
             b']' => Token::Close,
             b'/' => {
+                let start = self.at;
                 self.regular_run();
-                Token::Scalar
+                let name = self.bytes.get(start..self.at).unwrap_or_default();
+                Token::Name {
+                    alike: name_reads_alike(name, self.peek()),
+                }
             }
             b')' | b'>' | b'{' | b'}' => Token::Scalar,
             _ => {
@@ -797,6 +812,58 @@ const fn is_whitespace(byte: u8) -> bool {
     matches!(byte, b'\0' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ')
 }
 
+/// The longest name accepted, in bytes as written after the `/` (owner, 2026-10-14).
+///
+/// PDFium keeps the first 255 bytes of a name as written and drops the rest, where qpdf keeps all
+/// of it (measured): 255 plain bytes, and 85 escapes, read alike in both, and a 256th byte does
+/// not, including an escape that straddles the cut. So the length is counted as written, not
+/// decoded -- a decoded bound of 85 would also refuse 86 to 255 plain bytes, which both read
+/// alike, and #257's near-miss pins that a 254-byte resource name splits.
+pub const MAX_NAME_WRITTEN: usize = 255;
+
+/// Whether PDFium and qpdf have been measured to read this name alike, written as `name` (the
+/// bytes after `/`, to where qpdf's tokeniser ends it) and followed by `next`.
+///
+/// **An allowlist, from the measurement** (owner, 2026-10-14; draft advisory E): each of the 256
+/// byte values in six positions, and every `#xx` escape in both hex cases in six more, through
+/// PDFium and qpdf 12.4.1. Accepted:
+///
+/// - a byte that is not white space, a delimiter, `#`, 0x80 or 0xFF -- the 236 both read alike in
+///   every position. 0x80 and 0xFF end a name to PDFium and not to qpdf;
+/// - `#` with two hex digits after it, other than `#00` -- 411 of the 412 escapes agree, and qpdf
+///   drops a name holding `#00` where PDFium keeps it. A `#` without two hex digits after it
+///   reads differently in each;
+/// - at most [`MAX_NAME_WRITTEN`] bytes, as written.
+///
+/// And a name qpdf ends at a vertical tab is refused: qpdf counts 0x0B as white space and PDFium
+/// reads it as part of the name. Everything else refuses. Strings and stream data are never
+/// lexed as names, so nothing inside them is judged here.
+pub fn name_reads_alike(name: &[u8], next: Option<u8>) -> bool {
+    if next == Some(0x0b) || name.len() > MAX_NAME_WRITTEN {
+        return false;
+    }
+    let mut at = 0;
+    while let Some(&byte) = name.get(at) {
+        let width = match byte {
+            b'#' => match (name.get(at + 1), name.get(at + 2)) {
+                (Some(high), Some(low))
+                    if high.is_ascii_hexdigit()
+                        && low.is_ascii_hexdigit()
+                        && !(*high == b'0' && *low == b'0') =>
+                {
+                    3
+                }
+                _ => return false,
+            },
+            0x80 | 0xff => return false,
+            _ if is_whitespace(byte) || is_delimiter(byte) => return false,
+            _ => 1,
+        };
+        at += width;
+    }
+    true
+}
+
 /// PDF's delimiters, as qpdf's `QPDFTokenizer::is_delimiter`.
 const fn is_delimiter(byte: u8) -> bool {
     matches!(
@@ -807,7 +874,10 @@ const fn is_delimiter(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Found, Irregular, MAX_DISTINCT_REFERENCES, in_file, in_object_stream};
+    use super::{
+        Found, Irregular, MAX_DISTINCT_REFERENCES, MAX_NAME_WRITTEN, in_file, in_object_stream,
+        name_reads_alike,
+    };
     use burrow_types::{Error, Result};
     use proptest::prelude::*;
 
@@ -817,6 +887,121 @@ mod tests {
 
     fn object_stream(decoded: &[u8], count: i64, first: i64) -> Found {
         in_object_stream(decoded, count, first, &mut || Ok(())).expect("no checkpoint fails")
+    }
+
+    /// THE MEASURED TABLE, byte by byte: 236 values read alike inside a name; white space and
+    /// the delimiters cannot be inside one qpdf reads; and `#`, 0x80 and 0xFF refuse.
+    #[test]
+    fn every_raw_byte_is_judged_as_the_measurement_found() {
+        let mut alike = 0;
+        for byte in 0..=u8::MAX {
+            let refused = matches!(
+                byte,
+                b'\0'
+                    | b'\t'
+                    | b'\n'
+                    | 0x0b
+                    | 0x0c
+                    | b'\r'
+                    | b' '
+                    | b'('
+                    | b')'
+                    | b'<'
+                    | b'>'
+                    | b'['
+                    | b']'
+                    | b'{'
+                    | b'}'
+                    | b'/'
+                    | b'%'
+                    | b'#'
+                    | 0x80
+                    | 0xff
+            );
+            assert_eq!(
+                name_reads_alike(&[b'A', byte, b'A'], None),
+                !refused,
+                "{byte:#04x}"
+            );
+            alike += usize::from(!refused);
+        }
+        assert_eq!(alike, 236);
+    }
+
+    /// EVERY ESCAPE, in both hex cases: all but `#00` read alike; a `#` without two hex digits
+    /// after it does not.
+    #[test]
+    fn every_escape_is_judged_as_the_measurement_found() {
+        let hex = b"0123456789abcdefABCDEF";
+        let mut alike = 0;
+        for high in hex {
+            for low in hex {
+                let name = [b'A', b'#', *high, *low];
+                let zero = *high == b'0' && *low == b'0';
+                assert_eq!(
+                    name_reads_alike(&name, None),
+                    !zero,
+                    "#{}{}",
+                    *high as char,
+                    *low as char
+                );
+                alike += usize::from(!zero);
+            }
+        }
+        assert_eq!(alike, 22 * 22 - 1);
+        for name in [&b"A#"[..], b"A#4", b"A#4g", b"A#g4", b"#", b"A#-1"] {
+            assert!(!name_reads_alike(name, None), "{name:?}");
+        }
+    }
+
+    /// The length is counted AS WRITTEN, an escape straddling the cut included, and a name ended
+    /// by a vertical tab refuses whatever it holds.
+    #[test]
+    fn the_length_is_as_written_and_a_vertical_tab_after_a_name_refuses() {
+        let plain = |n: usize| vec![b'N'; n];
+        assert!(name_reads_alike(&plain(MAX_NAME_WRITTEN), None));
+        assert!(!name_reads_alike(&plain(MAX_NAME_WRITTEN + 1), None));
+        assert!(
+            name_reads_alike(&b"#41".repeat(85), None),
+            "85 escapes, 255 written"
+        );
+        assert!(
+            !name_reads_alike(&b"#41".repeat(86), None),
+            "86 escapes, 258 written"
+        );
+        let straddling = |plain_bytes: usize| [plain(plain_bytes), b"#41".to_vec()].concat();
+        assert!(
+            name_reads_alike(&straddling(252), None),
+            "an escape ending at the cut"
+        );
+        assert!(
+            !name_reads_alike(&straddling(253), None),
+            "an escape across the cut"
+        );
+        assert!(name_reads_alike(b"", None), "the empty name");
+        assert!(!name_reads_alike(b"Key", Some(0x0b)));
+        for next in *b" /(>\0" {
+            assert!(name_reads_alike(b"Key", Some(next)), "{next:#04x}");
+        }
+    }
+
+    /// The scan reports it, in a file's object, in an object stream's member and after a value,
+    /// and does not judge a string's bytes.
+    #[test]
+    fn the_scan_reports_a_name_outside_the_allowlist_and_ignores_strings() {
+        let bad = b"1 0 obj\n<< /Ke\x80y 1 >>\nendobj\n";
+        assert_eq!(file(bad).irregular, Some(Irregular::NameReadDifferently));
+        let after = b"1 0 obj\n<< /Key 1 >> /Ke\xffy\nendobj\n";
+        assert_eq!(file(after).irregular, Some(Irregular::NameReadDifferently));
+        assert_eq!(
+            object_stream(b"5 0 << /Ke\x80y 1 >>", 1, 4).irregular,
+            Some(Irregular::NameReadDifferently)
+        );
+        assert_eq!(
+            file(b"1 0 obj\n<< /Key (\x80\xff#00) >>\nendobj\n").irregular,
+            None
+        );
+        assert_eq!(file(b"1 0 obj\n<< /Ke#80y 1 >>\nendobj\n").irregular, None);
     }
 
     fn refs(found: &Found) -> Vec<(i32, i32)> {

@@ -52,7 +52,10 @@
 //! the trapped accessor that resolves it. Null refuses.
 //!
 //! A reference written in any shape but plain digits is refused without asking, and so is anything
-//! the lexer could not read as qpdf would: see [`crate::pdfsyntax::references::Irregular`].
+//! the lexer could not read as qpdf would: see [`crate::pdfsyntax::references::Irregular`]. So is
+//! a name PDFium and qpdf are not measured to read alike, anywhere the scan lexes, under its own
+//! refusal (owner, 2026-10-14; see [`crate::pdfsyntax::references::name_reads_alike`]): the scan
+//! already lexes every value qpdf parses, so it is where object syntax is read as written.
 //!
 //! # What asking costs, stated rather than discovered
 //!
@@ -95,6 +98,8 @@ pub(crate) struct ReferenceRefusals {
     pub(crate) unreadable: fn(Irregular) -> Error,
     /// An object stream qpdf could not decode.
     pub(crate) undecodable: fn() -> Error,
+    /// A name PDFium and qpdf are not measured to read alike.
+    pub(crate) name: fn() -> Error,
 }
 
 /// Redaction's refusals: `[reference-to-nothing]` and `[reference-unreadable]`.
@@ -102,6 +107,7 @@ pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
     nothing: reference_to_nothing,
     unreadable: reference_unreadable,
     undecodable: object_stream_undecodable,
+    name: name_read_differently,
 };
 
 /// What an irregular reference was, for any operation's refusal of it. `operation` names who
@@ -118,6 +124,8 @@ pub(crate) const fn irregular_detail(why: Irregular, operation: Operation) -> &'
             Operation::Redaction => "more references than redaction checks",
             Operation::Split => "more references than split checks",
         },
+        // Refused through `ReferenceRefusals::name`, under its own name; this is for completeness.
+        Irregular::NameReadDifferently => "a name readers may read differently",
     }
 }
 
@@ -158,6 +166,15 @@ fn object_stream_undecodable() -> Error {
     )
 }
 
+/// The refusal for a name PDFium and qpdf are not measured to read alike (owner, 2026-10-14).
+fn name_read_differently() -> Error {
+    Error::Unsupported(
+        "pdf redaction [name-read-differently]: the document writes a name that readers may \
+         read differently, so what the page draws cannot be known"
+            .to_owned(),
+    )
+}
+
 /// What the reference pass read, kept for the walk that asks what names a removed annotation
 /// (#239): every reference in the file, its object streams and the trailer qpdf holds, at the
 /// generation written, and those of that trailer apart.
@@ -172,8 +189,8 @@ pub(crate) struct Referenced {
 ///
 /// # Errors
 ///
-/// `[reference-to-nothing]`, `[reference-unreadable]`, the deadline, and whatever the engine
-/// reports.
+/// `[reference-to-nothing]`, `[reference-unreadable]`, `[name-read-differently]`, the deadline,
+/// and whatever the engine reports.
 pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
     document: &D,
     bytes: &[u8],
@@ -296,6 +313,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
 /// The scan's answer, or the refusal it calls for.
 fn accepted(found: Found, refusals: &ReferenceRefusals) -> Result<Found> {
     match found.irregular {
+        Some(Irregular::NameReadDifferently) => Err((refusals.name)()),
         Some(why) => Err((refusals.unreadable)(why)),
         None => Ok(found),
     }
