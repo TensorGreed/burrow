@@ -130,6 +130,17 @@ one is decided in an issue, with the same three parts.
     change gets; and the final pre-launch spec-review round in ROADMAP's exit rule, which hunts the
     whole class by design.
 
+16. **Every nightly failure is read per job, and each failing job is matched to a known entry or
+    filed before the next report.** Matched means `tools/check-known-crashes.py` classifies it to a
+    ledger entry whose issue is open, which the nightly's `ledger` job checks. Filed means a new
+    issue, or a dated comment on the issue that owns it. A report that says "the nightly failed"
+    without that per-job account is incomplete. *Decided:* owner, 2026-10-14. Two red nightlies (2026-10-13
+    and 2026-10-14) had gone unread for a batch, with three UNMATCHED findings, filed only
+    afterwards: #193's comment, #327 and #328, each naming the run, the job and the verdict.
+    *Does not cover:* reproducing or fixing the finding, which is sequenced like any other issue;
+    where an upstream engine's crash input may be described, which the owner's standing privacy
+    instruction governs; and CI on a PR, which rule 11 governs.
+
 ## Spec review first (the practice that uses rule 10)
 
 For every new rule from here: **before writing code**, give the `security-reviewer` the proposed
