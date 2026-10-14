@@ -3340,12 +3340,13 @@ fn anything_but_a_dictionary_where_one_belongs_is_refused_on_every_route() {
         );
         refused += 1;
     }
-    // THE NEAR-MISS: the same page, every key the type it should be, including a `null` where a
-    // dictionary is optional. ON THE PAGE, not inherited: this control inherited `/Resources` until
-    // #224 made an inherited `/Resources` a refusal of its own, for a reason that is not the type.
+    // THE NEAR-MISS: the same page, every key the type it should be. ON THE PAGE, not inherited:
+    // this control inherited `/Resources` until #224 made an inherited `/Resources` a refusal of its
+    // own, for a reason that is not the type. It carried a `null` where a dictionary is optional
+    // until 2026-10-14, when a null dictionary value became a refusal of its own (`[null-value]`).
     let control = page_shaped(move |_, f| {
         (
-            format!("<< /Font << /F1 {f} 0 R >> /XObject null >>"),
+            format!("<< /Font << /F1 {f} 0 R >> >>"),
             String::new(),
             String::new(),
         )

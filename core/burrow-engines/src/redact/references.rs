@@ -73,13 +73,16 @@ use burrow_types::{Clock, Deadline, Error, Result};
 use super::graph::{PdfDocument, PdfObject};
 use crate::codes::qpdf::object_type;
 use crate::name::Name;
-use crate::pdfsyntax::references::{self, Found, Irregular};
+use crate::pdfsyntax::references::{self, Found, Holder, Irregular};
 
 /// An object stream's member count.
 const COUNT: Name = Name::literal(b"/N\0");
 
 /// Where an object stream's first member begins.
 const FIRST: Name = Name::literal(b"/First\0");
+
+/// The trailer's catalog.
+const ROOT: Name = Name::literal(b"/Root\0");
 
 /// How many lookups run between two reads of the deadline.
 const LOOKUPS_PER_CHECKPOINT: usize = 256;
@@ -102,6 +105,14 @@ pub(crate) struct ReferenceRefusals {
     pub(crate) name: fn() -> Error,
     /// A byte in object syntax refused fail closed (`Irregular::SyntaxReadDifferently`).
     pub(crate) syntax: fn() -> Error,
+    /// A dictionary value qpdf would drop on write -- the literal `null`, or a reference to an
+    /// object the file declares `null` -- for the operations that refuse one (split); `None`
+    /// where the operation does not (yet) judge it.
+    pub(crate) null_value: Option<fn() -> Error>,
+    /// Whether the null-value refusal waits for the caller ([`Referenced::drops_a_null`]) rather
+    /// than refusing in this pass: redaction's, so that the refusals its evasion fixtures pin
+    /// still name themselves first.
+    pub(crate) defer_null_value: bool,
 }
 
 /// Redaction's refusals: `[reference-to-nothing]` and `[reference-unreadable]`.
@@ -111,6 +122,8 @@ pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
     undecodable: object_stream_undecodable,
     name: name_read_differently,
     syntax: syntax_read_differently,
+    null_value: Some(null_value),
+    defer_null_value: true,
 };
 
 /// What an irregular reference was, for any operation's refusal of it. `operation` names who
@@ -190,6 +203,15 @@ fn syntax_read_differently() -> Error {
     )
 }
 
+/// The refusal for a dictionary value qpdf drops when it writes (owner, 2026-10-14).
+pub(crate) fn null_value() -> Error {
+    Error::Unsupported(
+        "pdf redaction [null-value]: the document writes a value the PDF engine drops when it \
+         writes, so what the page draws cannot be known"
+            .to_owned(),
+    )
+}
+
 /// What the reference pass read, kept for the walk that asks what names a removed annotation
 /// (#239): every reference in the file, its object streams and the trailer qpdf holds, at the
 /// generation written, and those of that trailer apart.
@@ -197,6 +219,8 @@ fn syntax_read_differently() -> Error {
 pub(crate) struct Referenced {
     pub(crate) objects: BTreeSet<(c_int, c_int)>,
     pub(crate) from_trailer: BTreeSet<(c_int, c_int)>,
+    /// Whether the document writes a dictionary value qpdf drops, where the refusal was deferred.
+    pub(crate) drops_a_null: bool,
 }
 
 /// Refuse the document if any reference it writes resolves to null in `document`, or cannot be
@@ -229,10 +253,17 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
 ) -> Result<Referenced> {
     let mut checkpoint = || deadline.checkpoint(clock);
     let mut wanted = accepted(references::in_file(bytes, &mut checkpoint)?, refusals)?;
+    // THE NULL VALUES, from the file and from every object stream, kept apart from `wanted`'s
+    // references so the object streams' merge below does not need to know about them.
+    let mut null_holders = core::mem::take(&mut wanted.null_values);
+    let mut dictionary_references = core::mem::take(&mut wanted.dictionary_references);
     // The numbers object streams list as members: no header in the file speaks for them. Capped
     // per stream at `MAX_DECLARATIONS`, not in total: memory here is detected, not bounded
     // (ADR 0007), and every stream's decoded bytes are already held while it is read.
     let mut listed: BTreeSet<c_int> = BTreeSet::new();
+    // HOW MANY OBJECT STREAMS list each number: a number listed twice, or listed and also headed in
+    // the file body, is more than one revision of the object.
+    let mut listings: std::collections::BTreeMap<c_int, usize> = std::collections::BTreeMap::new();
 
     // THE OBJECT STREAMS, from every stream object's header. qpdf reads an object stream's
     // members through `getObject(number, 0)` whatever generation the stream was written with
@@ -267,7 +298,18 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
             refusals,
         )?;
         wanted.references.extend(members.references);
+        // ENTRIES, not streams: a number listed twice in one stream is two copies.
+        for (member, entries) in &members.member_entries {
+            *listings.entry(*member).or_default() += entries;
+        }
         listed.extend(members.members);
+        null_holders.extend(members.null_values);
+        for (pair, holders) in members.dictionary_references {
+            dictionary_references
+                .entry(pair)
+                .or_default()
+                .extend(holders);
+        }
         if wanted.references.len() > references::MAX_DISTINCT_REFERENCES {
             return Err((refusals.unreadable)(Irregular::BeyondCaps));
         }
@@ -319,10 +361,80 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
             return Err((refusals.nothing)());
         }
     }
+    let mut drops_a_null = false;
+    if let Some(refuse) = refusals.null_value
+        && null_value_found(
+            document,
+            &wanted,
+            &listed,
+            &listings,
+            &null_holders,
+            &dictionary_references,
+        )?
+    {
+        if !refusals.defer_null_value {
+            return Err(refuse());
+        }
+        drops_a_null = true;
+    }
     Ok(Referenced {
         objects: wanted.references,
         from_trailer,
+        drops_a_null,
     })
+}
+
+/// Whether the document writes a dictionary value qpdf drops when it writes: the literal `null`, or a reference to an
+/// object the file declares `null` (the /OC-null slice; owner, 2026-10-14). A reader that treats the
+/// key's presence as meaning something reads the source and the part differently.
+///
+/// **One exemption:** a direct key of the catalog dictionary itself. For split, because no part
+/// receives the source catalog's keys. For redaction, which keeps the catalog, the justification is
+/// narrower and is a residual (owner, 2026-10-14): read in pdf.js 5.7.284's source, a null catalog
+/// key differs from an absent one only for `/StructTreeRoot` (a metadata flag), `/PageLabels`
+/// through a reference to null (the labels) and `/Dests` (caching) -- none changes what is drawn;
+/// no other reader was measured. The catalog is the `/Root` qpdf resolves from the
+/// trailer, as the stopgap's check reads it, and only when its number is written exactly once in
+/// the file -- one header at that generation, or one object stream's member -- so an earlier
+/// revision's catalog, a second `/Type /Catalog` object, and anything nested inside the catalog are
+/// judged like any other dictionary. The census: 0 of 99 real documents, where refusing the
+/// catalog's keys too cost 3.
+fn null_value_found<D: PdfDocument>(
+    document: &D,
+    wanted: &Found,
+    listed: &BTreeSet<c_int>,
+    listings: &std::collections::BTreeMap<c_int, usize>,
+    null_holders: &BTreeSet<Holder>,
+    dictionary_references: &std::collections::BTreeMap<(i32, i32), BTreeSet<Holder>>,
+) -> Result<bool> {
+    let trailer = document.trailer()?;
+    let root = trailer.key(&ROOT);
+    let catalog = if root.type_code() == object_type::DICTIONARY {
+        let (number, generation) = root.object()?;
+        let headed = wanted.declarations.get(&number);
+        let headers = headed.map_or(0, |declared| declared.headers);
+        let listed_times = listings.get(&number).copied().unwrap_or(0);
+        let once = match (headers, listed_times) {
+            (1, 0) => headed.is_some_and(|declared| declared.generations.contains(&generation)),
+            (0, 1) => true,
+            _ => false,
+        };
+        (number > 0 && once).then_some(number)
+    } else {
+        None
+    };
+    root.drained()?;
+    trailer.drained()?;
+    let exempt = |holder: &Holder| holder.direct && catalog.is_some() && holder.object == catalog;
+    let literal = null_holders.iter().any(|holder| !exempt(holder));
+    let declared = dictionary_references
+        .iter()
+        .any(|((number, generation), holders)| {
+            wanted.declares_only_null(*number, *generation)
+                && !listed.contains(number)
+                && holders.iter().any(|holder| !exempt(holder))
+        });
+    Ok(literal || declared)
 }
 
 /// The scan's answer, or the refusal it calls for.

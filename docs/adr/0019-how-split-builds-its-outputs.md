@@ -934,3 +934,20 @@ Inside a literal string it is accepted, and qpdf's own rewriting of a value is n
 
 **Cost, measured** against `main` with the same harness, for both operations: **0 of 99** real
 documents, **0 of 182** fixtures, **0** on `big_book.pdf`.
+
+## Amendment, 2026-10-14 — a dictionary value the engine drops on write refuses at the open
+
+**Decided by the owner.** qpdf does not write a dictionary key whose value is `null`, or a
+reference to an object the file declares `null`; a reader may treat such a key's presence as
+meaning something, so a part could read differently from its source. Split's open now refuses, as
+`[split-null-value]`, any such value inside a dictionary wherever the shared reference pass lexes
+(not in an array, where qpdf keeps the null; not an object's whole value). **One exemption:** a
+direct key of the catalog dictionary itself, because no part receives the source catalog's keys --
+the `/Root` qpdf resolves from the trailer, and only when its number is written exactly once in the
+file, so an earlier revision, a second `/Type /Catalog` object and anything nested in the catalog
+are judged like any other dictionary.
+
+**Cost, measured** on split's open against `main`, with the variants registered first: refusing
+the catalog's keys too cost 3 of 99 real documents (over the 1% bar); with the exemption, **0 of
+99** real documents, **0** on `big_book.pdf`, and **5 of 182** fixtures, all adversarial redaction
+fixtures that carry a null.

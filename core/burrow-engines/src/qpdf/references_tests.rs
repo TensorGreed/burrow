@@ -813,16 +813,14 @@ fn a_member_past_the_streams_count_with_a_decoy_is_not_an_ok_over_a_turned_page(
     );
     bytes[entry..entry + 7].copy_from_slice(&[2, 0, 0, 0, 7, 0, 1]);
     bytes.extend_from_slice(b"6 0 obj null endobj\n");
-    // MEASURED: `Ok` on both engines, with PDFium upright -- the readers agree, so this is not a
-    // leak, and the assertion inside the oracle is what would say otherwise. Recorded as an `Ok`
-    // so that a change in either reader shows here rather than passing silently.
+    // MEASURED: `Ok` on both engines, with PDFium upright -- the readers agree, so this was not a
+    // leak. Since 2026-10-14 the decoy's `null`, referred to from the member's dictionary, is a
+    // value qpdf drops on write, and refuses as `[null-value]` -- stricter, recorded so that a
+    // change either way shows here rather than passing silently.
     let outcomes = no_ok_over_a_turned_page(&bytes, "a member past /N, with a decoy");
     assert_eq!(
         outcomes,
-        [
-            "natively: Ok, PDFium agrees",
-            "on the web: Ok, PDFium agrees"
-        ]
+        ["natively: [null-value]", "on the web: [null-value]"]
     );
 }
 
@@ -1117,5 +1115,62 @@ fn a_vertical_tab_in_object_syntax_is_refused() {
     redacts_on_both(
         &planted(classic(&page_objects("/Mark (a`b)")), 0x0b),
         "a vertical tab inside a literal string",
+    );
+}
+
+/// A NULL DICTIONARY VALUE refuses redaction, before anything is written, and a direct key of the
+/// one catalog is the exemption (owner, 2026-10-14; the residual is in the rustdoc). Minimal
+/// documents with a null value somewhere; nothing else in them is unusual.
+#[test]
+fn a_null_dictionary_value_refuses_redaction_except_in_the_catalog() {
+    const RULE: &str = "null-value";
+    let with_catalog = |catalog: &str, more: &[Written]| {
+        let mut objects = page_objects("");
+        objects[0].2 = catalog.to_owned();
+        objects.extend_from_slice(more);
+        classic(&objects)
+    };
+    refused_on_both(&classic(&page_objects("/Extra null")), RULE, "a page key");
+    let mut declared = page_objects("/Extra 9 0 R");
+    declared.push((9, 0, "null".to_owned()));
+    refused_on_both(
+        &classic(&declared),
+        RULE,
+        "a reference to an object declared null",
+    );
+    redacts_on_both(
+        &with_catalog("<< /Type /Catalog /Pages 2 0 R /Extra null >>", &[]),
+        "a direct catalog key",
+    );
+    refused_on_both(
+        &with_catalog(
+            "<< /Type /Catalog /Pages 2 0 R /Extra << /Inner null >> >>",
+            &[],
+        ),
+        RULE,
+        "a null one level below the catalog",
+    );
+    let mut twice = vec![(
+        1,
+        0,
+        "<< /Type /Catalog /Pages 2 0 R /Extra null >>".to_owned(),
+    )];
+    twice.extend(page_objects(""));
+    refused_on_both(
+        &classic(&twice),
+        RULE,
+        "the catalog's number occurring twice",
+    );
+    refused_on_both(
+        &with_catalog(
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            &[(
+                9,
+                0,
+                "<< /Type /Catalog /Pages 2 0 R /Extra null >>".to_owned(),
+            )],
+        ),
+        RULE,
+        "a second /Type /Catalog object holding a null",
     );
 }
