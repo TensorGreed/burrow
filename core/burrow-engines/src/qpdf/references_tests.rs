@@ -870,3 +870,204 @@ fn no_separator_byte_turns_a_page_burrow_measures_upright() {
     }
     assert_eq!(bytes_swept, 36, "every byte in the sweep was tried");
 }
+
+/// `pdf` with every `` ` `` replaced by `byte`: one byte for one, so no offset moves. The
+/// placeholder is a regular character the builders never write.
+pub(super) fn planted(mut pdf: Vec<u8>, byte: u8) -> Vec<u8> {
+    let mut replaced = 0;
+    for at in pdf.iter_mut().filter(|b| **b == b'`') {
+        *at = byte;
+        replaced += 1;
+    }
+    assert!(replaced > 0, "nothing to plant {byte:#04x} at");
+    pdf
+}
+
+/// A name of `written` bytes after the `/`, written plainly.
+pub(super) fn long_name(written: usize) -> String {
+    format!("/{}", "N".repeat(written))
+}
+
+/// A NAME OUTSIDE THE MEASURED ALLOWLIST refuses, wherever qpdf parses it (owner, 2026-10-14;
+/// `pdfsyntax::references::name_reads_alike`): a refused byte, a name followed by a vertical tab,
+/// and one longer than 255 bytes written --
+/// in a key, in a value, and in the trailer. The documents are benign: what is pinned is the
+/// refusal.
+#[test]
+fn a_name_outside_the_measured_allowlist_is_refused() {
+    for (what, extra, byte) in [
+        ("0x80 inside a key", "/Ma`rk 1", 0x80),
+        ("0xFF ending a key", "/Mark` 1", 0xff),
+        ("0x80 ending a value", "/Mark /Va`", 0x80),
+        ("a key followed by a vertical tab", "/Mark`1", 0x0b),
+    ] {
+        refused_on_both(
+            &planted(classic(&page_objects(extra)), byte),
+            "name-read-differently",
+            what,
+        );
+    }
+    refused_on_both(
+        &classic(&page_objects(&format!("{} 1", long_name(256)))),
+        "name-read-differently",
+        "256 bytes written",
+    );
+    refused_on_both(
+        &classic(&page_objects(&format!("{}#41 1", long_name(253)))),
+        "name-read-differently",
+        "an escape across the 255th byte",
+    );
+    let text = String::from_utf8(classic(&page_objects(""))).expect("ASCII");
+    let in_trailer = text.replacen("/Root 1 0 R", "/Root 1 0 R /Ma`rk 1", 1);
+    refused_on_both(
+        &planted(in_trailer.into_bytes(), 0x80),
+        "name-read-differently",
+        "0x80 in a trailer key",
+    );
+}
+
+/// AN ESCAPE OUTSIDE THE ALLOWLIST -- `#00`, a bare `#`, a `#` with one hex digit -- IN A PAGE
+/// DICTIONARY, which qpdf parses at the open and warns about, so the operation refuses it first as
+/// `[engine-repaired-input]` (measured, both engines). The allowlist refuses it as well, pinned by
+/// asking the rule alone through the plain open. In an object the open does not parse, the rule
+/// refuses first: `an_escape_in_a_resource_object_refuses_by_the_rule`.
+#[test]
+fn an_escape_outside_the_allowlist_refuses_as_a_repair_and_by_the_rule_alone() {
+    for (what, extra) in [
+        ("#00", "/Ma#00rk 1"),
+        ("a bare #", "/Ma#rk 1"),
+        ("a # with one hex digit", "/Mark#4 1"),
+    ] {
+        let bytes = classic(&page_objects(extra));
+        refused_on_both(&bytes, "engine-repaired-input", what);
+        let clock = ManualClock::new(0);
+        let (document, _, _, deadline) =
+            super::open_document(bytes.clone().into_boxed_slice(), &options()).unwrap();
+        let refused = crate::redact::references::refuse_references_to_nothing(
+            &document, &bytes, &deadline, &clock,
+        );
+        assert!(
+            matches!(&refused, Err(error) if format!("{error:?}").contains("[name-read-differently]")),
+            "{what}, the rule alone: {refused:?}"
+        );
+    }
+}
+
+/// THE NEAR-MISSES redact: each refused byte written as its `#xx` escape, which both read alike;
+/// every other escape's shape; 254 bytes written, and 85 escapes; and a
+/// refused byte inside a string, which is not a name.
+#[test]
+fn a_name_inside_the_measured_allowlist_redacts() {
+    for (what, extra) in [
+        ("0x80 escaped", "/Ma#80rk 1".to_owned()),
+        ("0xFF escaped, upper case", "/Mark#FF 1".to_owned()),
+        ("0x0B escaped", "/Mark#0b 1".to_owned()),
+        ("#01", "/Ma#01rk 1".to_owned()),
+        // 254, not 255: redaction's own lexer reads a page dictionary's keys too, and its cut is
+        // 255 bytes counting the `/` (#257), one stricter than object syntax's. Split's near-miss
+        // and the unit test hold 255.
+        ("254 bytes written", format!("{} 1", long_name(254))),
+        ("85 escapes", format!("/{} 1", "#41".repeat(85))),
+    ] {
+        redacts_on_both(&classic(&page_objects(&extra)), what);
+    }
+    redacts_on_both(
+        &planted(classic(&page_objects("/Mark (a`b)")), 0x80),
+        "0x80 inside a string",
+    );
+}
+
+/// `pdf`, a [`classic`] file, with its `trailer` keyword glued to an empty cross-reference
+/// subsection's count -- `N 0trailer` -- which qpdf reads without a warning (#239).
+pub(super) fn glued_trailer(pdf: Vec<u8>) -> Vec<u8> {
+    let text = String::from_utf8(pdf).expect("ASCII");
+    let (body, tail) = text.split_once("trailer\n").expect("a classic trailer");
+    format!("{body}9 0trailer\n{tail}").into_bytes()
+}
+
+/// A TRAILER GLUED TO A COUNT is read by qpdf, and its names are judged as written: the byte scan
+/// starts there too, where before only qpdf's rewriting of it was read (round 1's security review:
+/// each of these returned `Ok` through that rewriting alone). With escaped twins that redact.
+#[test]
+fn a_name_in_a_glued_trailer_is_judged_as_written() {
+    let trailer = |key: &str| {
+        let text = String::from_utf8(classic(&page_objects(""))).expect("ASCII");
+        glued_trailer(
+            text.replacen("/Root 1 0 R", &format!("/Root 1 0 R {key}"), 1)
+                .into_bytes(),
+        )
+    };
+    for (what, key, byte) in [
+        ("0x80", "/Ma`rk 1", 0x80),
+        ("0xFF", "/Mark` 1", 0xff),
+        ("a vertical tab", "/Mark`1", 0x0b),
+    ] {
+        refused_on_both(
+            &planted(trailer(key), byte),
+            "name-read-differently",
+            &format!("{what} in a glued trailer"),
+        );
+    }
+    refused_on_both(
+        &trailer(&format!("{} 1", long_name(256))),
+        "name-read-differently",
+        "256 bytes in a glued trailer",
+    );
+    redacts_on_both(&trailer("/Ma#80rk 1"), "0x80 escaped in a glued trailer");
+    redacts_on_both(&trailer(""), "a glued trailer with no odd name");
+    let text = String::from_utf8(classic(&page_objects(""))).expect("ASCII");
+    redacts_on_both(
+        text.replacen("/Root 1 0 R", "/Root 1 0 R /Ma#80rk 1", 1)
+            .as_bytes(),
+        "0x80 escaped in a trailer",
+    );
+}
+
+/// IN AN OBJECT STREAM'S MEMBER, for redaction: the page lives in the stream, so the byte scan of
+/// the file never sees its dictionary. With its escaped twin.
+#[test]
+fn a_name_in_an_object_stream_member_is_judged() {
+    let build = |extra: &str| {
+        let objects = page_objects(extra);
+        let direct: Vec<Written> = objects.iter().filter(|o| o.0 != 3).cloned().collect();
+        let member = objects
+            .iter()
+            .find(|o| o.0 == 3)
+            .expect("the page")
+            .2
+            .clone();
+        with_object_stream(&direct, 9, 0, &[(3, member)])
+    };
+    refused_on_both(
+        &planted(build("/Ma`rk 1"), 0x80),
+        "name-read-differently",
+        "0x80 in a member's key",
+    );
+    redacts_on_both(&build("/Ma#80rk 1"), "0x80 escaped in a member's key");
+}
+
+/// WHERE THE ESCAPE IS IN AN OBJECT QPDF DID NOT PARSE AT THE OPEN -- a font dictionary -- the
+/// allowlist is what refuses it, not the repair check: the byte scan runs before anything asks
+/// qpdf for the font.
+#[test]
+fn an_escape_in_a_resource_object_refuses_by_the_rule() {
+    let mut objects = page_objects("");
+    let font = objects.iter_mut().find(|o| o.0 == 5).expect("the font");
+    font.2 = font.2.replacen(">>", "/Ma#00rk 1 >>", 1);
+    refused_on_both(&classic(&objects), "name-read-differently", "#00 in a font");
+}
+
+/// A STRING THAT HOLDS `obj` IS LEXED FROM THERE, as for references, so a refused name after it
+/// refuses: the cost direction, pinned. One without `obj` is not judged.
+#[test]
+fn a_string_is_judged_only_where_a_scan_starts_inside_it() {
+    refused_on_both(
+        &planted(classic(&page_objects("/Mark (x obj /a`b)")), 0x80),
+        "name-read-differently",
+        "a refused name after `obj` inside a string",
+    );
+    redacts_on_both(
+        &planted(classic(&page_objects("/Mark (x /a`b)")), 0x80),
+        "the same string without `obj`",
+    );
+}

@@ -645,6 +645,7 @@ pub(crate) const SPLIT_REFERENCES: crate::redact::references::ReferenceRefusals 
         nothing: split_reference_to_nothing,
         unreadable: split_reference_unreadable,
         undecodable: split_object_stream_undecodable,
+        name: split_name_read_differently,
     };
 
 fn split_reference_to_nothing() -> Error {
@@ -665,6 +666,14 @@ fn split_reference_unreadable(why: crate::pdfsyntax::references::Irregular) -> E
         "split [split-reference-unreadable]: {detail}, which readers may resolve differently, so \
          what a part would show cannot be known"
     ))
+}
+
+fn split_name_read_differently() -> Error {
+    Error::Unsupported(
+        "split [split-name-read-differently]: the document writes a name that readers may read \
+         differently, so what a part would show cannot be known"
+            .to_owned(),
+    )
 }
 
 fn split_object_stream_undecodable() -> Error {
@@ -708,7 +717,8 @@ fn optional_content_document() -> Error {
 /// # Errors
 ///
 /// `[split-reference-to-nothing]`, `[split-reference-unreadable]`,
-/// `[split-optional-content-document]`, the deadline, and whatever the engine reports.
+/// `[split-name-read-differently]`, `[split-optional-content-document]`, the deadline, and
+/// whatever the engine reports.
 pub(crate) fn refuse_optional_content_document<D: crate::redact::graph::PdfDocument>(
     document: &D,
     bytes: &[u8],

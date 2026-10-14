@@ -5282,3 +5282,20 @@ flags rule narrowed to Symbolic only, and the neutral allowlist shrunk; and with
 exemption restored, both AllCaps refusal fixtures redact where they must refuse. The residual -- exact for AFM viewers and PDFium's
 bundled faces, not for a viewer substituting a system font -- is DECISIONS.md rule 14, with the native
 milestones to revisit `FPDF_SetSystemFontInfo`.
+
+## Amendment, 2026-10-14 — object-syntax names outside a measured allowlist are refused
+
+**Decided by the owner.** #227's reference pass lexes every value qpdf parses, from where qpdf starts
+parsing. It now also refuses any name in them that PDFium and qpdf have not been measured to read
+alike, as `[name-read-differently]`: an allowlist from a measurement of every byte value, every
+`#xx` escape spelled in one case and the name's length, held in
+`pdfsyntax::references::name_reads_alike`; what was not measured refuses. Split's open
+runs the same pass and refuses with its own text (ADR 0019's 2026-10-14 amendment). An escape qpdf
+warns about refuses first as `[engine-repaired-input]` where qpdf parsed its object at the open,
+and by the allowlist elsewhere. A trailer glued to the number before it is scanned as written.
+
+**Cost, measured** by redacting page 0 of every input against `main`, with the same harness: **0 of
+99** real documents, **0 of 182** fixtures. `tests/redaction/outcomes.tsv` is regenerated unchanged.
+
+Whether anything in redaction's open reads a name before this pass, or apart from it, is the
+owner's probe, a placeholder in ROADMAP's *Ship blockers* until it reports.

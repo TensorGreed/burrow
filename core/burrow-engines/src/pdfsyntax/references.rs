@@ -56,6 +56,13 @@
 //! not plain digits, so each of those is [`Irregular::NotPlainDigits`] or
 //! [`Irregular::CommentInside`] rather than a number this module decided the reader meant.
 //!
+//! # And every name, held to a measured allowlist (owner, 2026-10-14)
+//!
+//! The same scans read every name in the values qpdf parses, and one PDFium and qpdf were not
+//! measured to read alike is [`Irregular::NameReadDifferently`]: see [`name_reads_alike`]. That is
+//! a difference between two readers rather than between this lexer and qpdf, and it is judged in
+//! the bytes the file wrote, never in qpdf's rewriting of them ([`in_value`]).
+//!
 //! # Bounded, and not a parser
 //!
 //! No recursion: nesting is a counter. Every loop advances through the input. The work across all
@@ -115,6 +122,10 @@ pub enum Irregular {
     ObjectStreamHeaderUnreadable,
     /// More references, more stream objects or more lexing than the caps allow.
     BeyondCaps,
+    /// A name outside [`name_reads_alike`]'s allowlist: not one PDFium and qpdf were measured to
+    /// read alike. Unlike the others, this is a difference between two readers, not between this
+    /// lexer and qpdf.
+    NameReadDifferently,
 }
 
 /// What a scan found.
@@ -211,7 +222,7 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
         at = start + 1;
         let keyword = if keyword_at(bytes, start, b"obj") {
             b"obj".as_slice()
-        } else if keyword_at(bytes, start, b"trailer") {
+        } else if keyword_at(bytes, start, b"trailer") || glued_trailer_at(bytes, start) {
             b"trailer".as_slice()
         } else {
             continue;
@@ -261,13 +272,20 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
 }
 
 /// Every reference in one value, lexed from its start as qpdf lexes it: the text qpdf unparses an
-/// object to, for the walk that asks what names a removed annotation (#239).
+/// object to, for the walk that asks what names a removed annotation (#239), and the trailer qpdf
+/// holds.
+///
+/// **Names are not judged here.** This is qpdf's rewriting, not the file: qpdf writes a name's odd
+/// bytes as escapes, so the allowlist would see a name other than the one written, and could refuse
+/// a long one only for qpdf's spelling of it. The names as written are judged by [`in_file`] and
+/// [`in_object_stream`].
 ///
 /// # Errors
 ///
 /// Only whatever `checkpoint` returns. Something unreadable is [`Found::irregular`], not an error.
 pub fn in_value(text: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Result<Found> {
     let mut scan = Scan::new(text.len(), checkpoint);
+    scan.judge_names = false;
     scan.one_value(text, 0)?;
     Ok(scan.found)
 }
@@ -333,6 +351,20 @@ fn plain(text: &[u8]) -> Option<i32> {
         return None;
     }
     i32::try_from(value_of(text)?).ok()
+}
+
+/// `trailer` after a regular byte, which qpdf reads as the keyword without a warning (`11
+/// 0trailer`, #239) and `keyword_at` does not. A scan starts there too: a start qpdf never uses
+/// can only find more, and without it the names in such a trailer are judged only after qpdf
+/// rewrote them (round 1 of the name allowlist's security review).
+fn glued_trailer_at(bytes: &[u8], at: usize) -> bool {
+    let Some(end) = at.checked_add(b"trailer".len()) else {
+        return false;
+    };
+    bytes.get(at..end) == Some(b"trailer".as_slice())
+        && bytes
+            .get(end)
+            .is_none_or(|b| is_whitespace(*b) || is_delimiter(*b))
 }
 
 /// Whether `keyword` stands at `at` as a token of its own: white space or a delimiter before it,
@@ -420,6 +452,8 @@ struct Scan<'c> {
     /// `work` at the last checkpoint.
     checkpointed: usize,
     checkpoint: &'c mut dyn FnMut() -> Result<()>,
+    /// Whether names are held to [`name_reads_alike`]: in bytes the file wrote, not in qpdf's.
+    judge_names: bool,
 }
 
 /// One token that is not a comment, as far as reading references needs.
@@ -439,6 +473,7 @@ impl<'c> Scan<'c> {
                 .saturating_add(WORK_SLACK),
             checkpointed: 0,
             checkpoint,
+            judge_names: true,
         }
     }
 
@@ -473,6 +508,12 @@ impl<'c> Scan<'c> {
                 return Ok(end(false, significant_tokens, first_is_null));
             };
             if !self.spend(lexer.at.saturating_sub(before))? {
+                return Ok(end(false, 0, false));
+            }
+            // A NAME PDFIUM MAY READ APART from qpdf, wherever it is: a key, a value, or the token
+            // after a value, which qpdf reads too.
+            if self.judge_names && token == (Token::Name { alike: false }) {
+                self.found.irregular = Some(Irregular::NameReadDifferently);
                 return Ok(end(false, 0, false));
             }
             if complete {
@@ -667,7 +708,9 @@ enum Token<'a> {
     Word(&'a [u8]),
     /// `%` to the end of the line.
     Comment,
-    /// A string, a hex string, a name, or a delimiter qpdf would warn about.
+    /// A name, and whether [`name_reads_alike`] accepts it.
+    Name { alike: bool },
+    /// A string, a hex string, or a delimiter qpdf would warn about.
     Scalar,
 }
 
@@ -725,8 +768,12 @@ impl<'a> Lexer<'a> {
             b'[' => Token::Open,
             b']' => Token::Close,
             b'/' => {
+                let start = self.at;
                 self.regular_run();
-                Token::Scalar
+                let name = self.bytes.get(start..self.at).unwrap_or_default();
+                Token::Name {
+                    alike: name_reads_alike(name, self.peek()),
+                }
             }
             b')' | b'>' | b'{' | b'}' => Token::Scalar,
             _ => {
@@ -797,6 +844,70 @@ const fn is_whitespace(byte: u8) -> bool {
     matches!(byte, b'\0' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | b' ')
 }
 
+/// The longest name accepted, in bytes as written after the `/` (owner, 2026-10-14).
+///
+/// Measured: 255 plain bytes, and 85 escapes, are read alike by PDFium and qpdf, and a 256th byte
+/// is not, an escape that straddles it included. So the length is counted as written, not decoded:
+/// a decoded bound of 85 would also refuse 86 to 255 plain bytes, which both read alike, and #257's
+/// near-miss pins that a 254-byte resource name splits.
+pub const MAX_NAME_WRITTEN: usize = 255;
+
+/// Whether PDFium and qpdf have been measured to read this name alike, written as `name` (the
+/// bytes after `/`, to where qpdf's tokeniser ends it) and followed by `next`.
+///
+/// **An allowlist, from the measurement** (owner, 2026-10-14): each of the 256 byte values inside a
+/// name and at its end before four different followers, every `#xx` escape spelled in upper case
+/// and in lower case in six positions, and the name's length, through PDFium and qpdf 12.4.1.
+/// Accepted, and nothing else:
+///
+/// - a byte that is not white space, a delimiter, `#`, 0x80 or 0xFF: the 236 measured alike;
+/// - `#` and two hex digits in one case, other than `#00`: the 411 escapes measured alike.
+///   Mixed case (`#aF`) was not measured and refuses;
+/// - one byte at least, and at most [`MAX_NAME_WRITTEN`] as written. The empty name was not
+///   measured and refuses.
+///
+/// A name followed by a vertical tab refuses too. Which reader reads each refused shape how is in
+/// the private measurement, not here. **Residual, stated:** a name's first byte, and a name ended
+/// by `[`, `]`, `<`, `)`, `{`, `}` or `%`, were not measured as positions of their own; each is
+/// accepted on the strength of the positions that were.
+///
+/// Strings and stream data are judged only where the scan starts inside them -- an `obj` or
+/// `trailer` keyword there begins one, as for references -- which can only refuse more.
+pub fn name_reads_alike(name: &[u8], next: Option<u8>) -> bool {
+    if next == Some(0x0b) || name.is_empty() || name.len() > MAX_NAME_WRITTEN {
+        return false;
+    }
+    let mut at = 0;
+    while let Some(&byte) = name.get(at) {
+        let width = match byte {
+            b'#' => match (name.get(at + 1), name.get(at + 2)) {
+                (Some(high), Some(low))
+                    if one_case_hex(*high, *low) && !(*high == b'0' && *low == b'0') =>
+                {
+                    3
+                }
+                _ => return false,
+            },
+            0x80 | 0xff => return false,
+            _ if is_whitespace(byte) || is_delimiter(byte) => return false,
+            _ => 1,
+        };
+        at += width;
+    }
+    true
+}
+
+/// Two hex digits written in one case: digits with lower-case letters, or with upper-case ones.
+const fn one_case_hex(high: u8, low: u8) -> bool {
+    const fn lower(b: u8) -> bool {
+        b.is_ascii_digit() || matches!(b, b'a'..=b'f')
+    }
+    const fn upper(b: u8) -> bool {
+        b.is_ascii_digit() || matches!(b, b'A'..=b'F')
+    }
+    (lower(high) && lower(low)) || (upper(high) && upper(low))
+}
+
 /// PDF's delimiters, as qpdf's `QPDFTokenizer::is_delimiter`.
 const fn is_delimiter(byte: u8) -> bool {
     matches!(
@@ -807,7 +918,10 @@ const fn is_delimiter(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Found, Irregular, MAX_DISTINCT_REFERENCES, in_file, in_object_stream};
+    use super::{
+        Found, Irregular, MAX_DISTINCT_REFERENCES, MAX_NAME_WRITTEN, in_file, in_object_stream,
+        name_reads_alike,
+    };
     use burrow_types::{Error, Result};
     use proptest::prelude::*;
 
@@ -817,6 +931,151 @@ mod tests {
 
     fn object_stream(decoded: &[u8], count: i64, first: i64) -> Found {
         in_object_stream(decoded, count, first, &mut || Ok(())).expect("no checkpoint fails")
+    }
+
+    /// THE MEASURED TABLE, byte by byte: 236 values read alike inside a name; white space and
+    /// the delimiters cannot be inside one qpdf reads; and `#`, 0x80 and 0xFF refuse.
+    #[test]
+    fn every_raw_byte_is_judged_as_the_measurement_found() {
+        let mut alike = 0;
+        for byte in 0..=u8::MAX {
+            let refused = matches!(
+                byte,
+                b'\0'
+                    | b'\t'
+                    | b'\n'
+                    | 0x0b
+                    | 0x0c
+                    | b'\r'
+                    | b' '
+                    | b'('
+                    | b')'
+                    | b'<'
+                    | b'>'
+                    | b'['
+                    | b']'
+                    | b'{'
+                    | b'}'
+                    | b'/'
+                    | b'%'
+                    | b'#'
+                    | 0x80
+                    | 0xff
+            );
+            assert_eq!(
+                name_reads_alike(&[b'A', byte, b'A'], None),
+                !refused,
+                "{byte:#04x}"
+            );
+            alike += usize::from(!refused);
+        }
+        assert_eq!(alike, 236);
+    }
+
+    /// EVERY ESCAPE SPELLED IN ONE CASE, as measured: all but `#00` are accepted. Mixed case, and a
+    /// `#` without two hex digits after it, refuse.
+    #[test]
+    fn every_escape_is_judged_as_the_measurement_found() {
+        let hex = b"0123456789abcdefABCDEF";
+        let mut alike = 0;
+        for high in hex {
+            for low in hex {
+                let name = [b'A', b'#', *high, *low];
+                let mixed = (high.is_ascii_lowercase() && low.is_ascii_uppercase())
+                    || (high.is_ascii_uppercase() && low.is_ascii_lowercase());
+                if mixed {
+                    assert!(
+                        !name_reads_alike(&name, None),
+                        "#{}{} is mixed case",
+                        *high as char,
+                        *low as char
+                    );
+                    continue;
+                }
+                let zero = *high == b'0' && *low == b'0';
+                assert_eq!(
+                    name_reads_alike(&name, None),
+                    !zero,
+                    "#{}{}",
+                    *high as char,
+                    *low as char
+                );
+                alike += usize::from(!zero);
+            }
+        }
+        // 256 lower-case spellings and 256 upper, 100 of them all digits and so both: 412 measured,
+        // 411 alike.
+        assert_eq!(alike, 411);
+        for name in [&b"A#"[..], b"A#4", b"A#4g", b"A#g4", b"#", b"A#-1"] {
+            assert!(!name_reads_alike(name, None), "{name:?}");
+        }
+    }
+
+    /// The length is counted AS WRITTEN, an escape straddling the cut included, and a name ended
+    /// by a vertical tab refuses whatever it holds.
+    #[test]
+    fn the_length_is_as_written_and_a_vertical_tab_after_a_name_refuses() {
+        let plain = |n: usize| vec![b'N'; n];
+        assert!(name_reads_alike(&plain(MAX_NAME_WRITTEN), None));
+        assert!(!name_reads_alike(&plain(MAX_NAME_WRITTEN + 1), None));
+        assert!(
+            name_reads_alike(&b"#41".repeat(85), None),
+            "85 escapes, 255 written"
+        );
+        assert!(
+            !name_reads_alike(&b"#41".repeat(86), None),
+            "86 escapes, 258 written"
+        );
+        let straddling = |plain_bytes: usize| [plain(plain_bytes), b"#41".to_vec()].concat();
+        assert!(
+            name_reads_alike(&straddling(252), None),
+            "an escape ending at the cut"
+        );
+        assert!(
+            !name_reads_alike(&straddling(253), None),
+            "an escape across the cut"
+        );
+        assert!(!name_reads_alike(b"", None), "the empty name, unmeasured");
+        assert!(!name_reads_alike(b"Key", Some(0x0b)));
+        for next in *b" /(>\0" {
+            assert!(name_reads_alike(b"Key", Some(next)), "{next:#04x}");
+        }
+    }
+
+    /// The scan reports it, in a file's object, in an object stream's member and after a value,
+    /// and does not judge a string's bytes.
+    #[test]
+    fn the_scan_reports_a_name_outside_the_allowlist_and_ignores_strings() {
+        let bad = b"1 0 obj\n<< /Ke\x80y 1 >>\nendobj\n";
+        assert_eq!(file(bad).irregular, Some(Irregular::NameReadDifferently));
+        let after = b"1 0 obj\n<< /Key 1 >> /Ke\xffy\nendobj\n";
+        assert_eq!(file(after).irregular, Some(Irregular::NameReadDifferently));
+        assert_eq!(
+            object_stream(b"5 0 << /Ke\x80y 1 >>", 1, 4).irregular,
+            Some(Irregular::NameReadDifferently)
+        );
+        assert_eq!(
+            file(b"1 0 obj\n<< /Key (\x80\xff#00) >>\nendobj\n").irregular,
+            None
+        );
+        assert_eq!(file(b"1 0 obj\n<< /Ke#80y 1 >>\nendobj\n").irregular, None);
+        // A STRING IS JUDGED WHERE A SCAN STARTS INSIDE IT, as for references: over-refusal.
+        assert_eq!(
+            file(b"1 0 obj\n<< /Key (x obj /a\x80b) >>\nendobj\n").irregular,
+            Some(Irregular::NameReadDifferently)
+        );
+        // A TRAILER GLUED TO THE NUMBER BEFORE IT starts a scan as well; and qpdf's rewriting of a
+        // value, which `in_value` reads, is not judged.
+        assert_eq!(
+            file(b"1 0 obj\n<< >>\nendobj\n11 0trailer\n<< /Ke\x80y 1 >>\n").irregular,
+            Some(Irregular::NameReadDifferently)
+        );
+        assert_eq!(
+            super::in_value(b"<< /Ke\x80y 1 >>", &mut || Ok(()))
+                .unwrap()
+                .irregular,
+            None
+        );
     }
 
     fn refs(found: &Found) -> Vec<(i32, i32)> {
