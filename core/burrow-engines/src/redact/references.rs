@@ -130,6 +130,7 @@ pub(crate) const fn irregular_detail(why: Irregular, operation: Operation) -> &'
         // UNREACHABLE THROUGH `accepted`, which refuses this one with `ReferenceRefusals::name`; the
         // arm exists because the match is exhaustive.
         Irregular::NameReadDifferently => "a name readers may read differently",
+        // UNREACHABLE THROUGH `accepted` too, which refuses with `ReferenceRefusals::syntax`.
         Irregular::SyntaxReadDifferently => "a byte in object syntax readers may read differently",
     }
 }

@@ -5302,11 +5302,13 @@ owner's probe, a placeholder in ROADMAP's *Ship blockers* until it reports.
 
 ## Amendment, 2026-10-14 — a vertical tab in object syntax refuses, fail closed
 
-**Decided by the owner, without a measurement.** The reference pass that the reference pass runs now refuses a
-raw vertical tab (0x0B) anywhere it lexes object syntax outside a literal string -- between tokens,
-in a comment, in a hex string, and in an object's or an object stream's header -- as `[syntax-read-differently]`.
+**Decided by the owner, without a measurement.** The reference pass that redaction runs now refuses a
+raw vertical tab (0x0B) where it lexes object syntax outside a literal string -- between tokens, in
+a comment, in a hex string, in an object stream's header, and in an object's header as the scan
+reads it back -- as `[syntax-read-differently]`.
 Nothing was measured about how the readers take one there; refusing is the fail-closed answer.
-The lexer still splits tokens at it as qpdf does, so a reference written with one is still read.
+A header the scan cannot read back (one padded past its walk, or split by a comment) is not judged;
+that is filed for the final spec review.
 Inside a literal string it is accepted, and qpdf's own rewriting of a value is not judged.
 
 **Cost, measured** against `main` with the same harness, for both operations: **0 of 99** real

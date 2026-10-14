@@ -127,8 +127,8 @@ pub enum Irregular {
     /// lexer and qpdf.
     NameReadDifferently,
     /// A raw vertical tab (0x0B) in object syntax outside a literal string -- between tokens, in a
-    /// comment, in a hex string or in an object's header -- refused without a measurement, fail
-    /// closed (owner, 2026-10-14).
+    /// comment, in a hex string, or in an object's header as the scan reads it back -- refused
+    /// without a measurement, fail closed (owner, 2026-10-14).
     SyntaxReadDifferently,
 }
 
@@ -421,10 +421,11 @@ fn header(bytes: &[u8], obj_at: usize) -> Option<(i32, i32)> {
 }
 
 /// Whether the white space of the `N G obj` header before `obj_at` holds a vertical tab, read back
-/// as [`header`] reads it.
+/// as [`header`] reads it: before `obj`, before the generation, and before the number. A header the
+/// walk cannot read -- past [`MAX_HEADER_WALK`], or split by a comment -- is not judged here.
 fn vertical_tab_in_header(bytes: &[u8], obj_at: usize) -> bool {
     let mut at = obj_at;
-    for _ in 0..2 {
+    for _ in 0..3 {
         let Some(white_space) = skip_whitespace_back(bytes, at) else {
             return false;
         };
@@ -482,8 +483,9 @@ struct Scan<'c> {
     /// `work` at the last checkpoint.
     checkpointed: usize,
     checkpoint: &'c mut dyn FnMut() -> Result<()>,
-    /// Whether names are held to [`name_reads_alike`], and a vertical tab refused: in bytes the
-    /// file wrote, not in qpdf's.
+    /// Whether the bytes are judged as the file wrote them -- names held to [`name_reads_alike`], a
+    /// vertical tab refused -- rather than read as qpdf rewrote them. The name is older than the
+    /// second rule.
     judge_names: bool,
 }
 
@@ -536,6 +538,11 @@ impl<'c> Scan<'c> {
         loop {
             let before = lexer.at;
             let Some(token) = lexer.next() else {
+                // WHITE SPACE BEFORE THE END OF THE INPUT is read too.
+                if self.judge_names && lexer.vertical_tab {
+                    self.found.irregular = Some(Irregular::SyntaxReadDifferently);
+                    return Ok(end(false, 0, false));
+                }
                 return Ok(end(false, significant_tokens, first_is_null));
             };
             if !self.spend(lexer.at.saturating_sub(before))? {
@@ -1147,6 +1154,20 @@ mod tests {
                 b"1 0 obj\n<< /Key <41\x0b42> >>\nendobj\n",
             ),
             ("in a header", b"1\x0b0 obj\n<< /Key 1 >>\nendobj\n"),
+        ] {
+            assert_eq!(
+                file(bytes).irregular,
+                Some(Irregular::SyntaxReadDifferently),
+                "{what}"
+            );
+        }
+        // Before a header's object number, and in white space just before the end of the input.
+        for (what, bytes) in [
+            (
+                "before the number",
+                &b"1 0 obj\n<< >>\nendobj\x0b2 0 obj\n<< >>\nendobj\n"[..],
+            ),
+            ("at the end of the input", b"1 0 obj\n<< /Key 1 >>\x0b"),
         ] {
             assert_eq!(
                 file(bytes).irregular,
