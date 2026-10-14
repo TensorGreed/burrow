@@ -397,4 +397,25 @@ fn a_malformed_dictionary_around_a_name_refuses_split_s_open_as_a_repair() {
             &classic(&document(PLAIN_CATALOG, twin, SHOWN, &[])),
         );
     }
+/// A RAW VERTICAL TAB IN OBJECT SYNTAX refuses at split's open (owner, 2026-10-14), between tokens
+/// and in a hex string; inside a literal string it opens.
+#[test]
+fn a_vertical_tab_in_object_syntax_refuses_split_s_open() {
+    for (what, extra) in [
+        ("between tokens", "/Mark 1`/Other 2"),
+        ("in a hex string", "/Mark <41`42>"),
+    ] {
+        refuses(
+            what,
+            &planted(classic(&document(PLAIN_CATALOG, extra, SHOWN, &[])), 0x0b),
+            "[split-syntax-read-differently]",
+        );
+    }
+    opens(
+        "a vertical tab inside a literal string",
+        &planted(
+            classic(&document(PLAIN_CATALOG, "/Mark (a`b)", SHOWN, &[])),
+            0x0b,
+        ),
+    );
 }

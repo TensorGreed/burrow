@@ -546,7 +546,7 @@ fn a_reference_split_by_nul_form_feed_or_vertical_tab_is_still_read() {
     // qpdf reads each of these bytes as white space, so `6<b>1 R` and `6 1<b>R` are `6 1 R` to it
     // -- over a `6 0`, null -- and PDFium turns the page through NUL and form feed. The security
     // review of #227 showed those two load-bearing (removing either from the lexer's white space
-    // returned `Ok`); vertical tab was missing outright.
+    // returned `Ok`); vertical tab was missing outright, and since 2026-10-14 refuses outright.
     for byte in ['\0', '\x0c', '\x0b'] {
         for shape in [format!("6{byte}1 R"), format!("6 1{byte}R")] {
             let mut objects = page_objects(&format!("/Rotate {shape}"));
@@ -559,19 +559,21 @@ fn a_reference_split_by_nul_form_feed_or_vertical_tab_is_still_read() {
                     "{shape:?}: PDFium turns the page"
                 );
             }
-            refused_on_both(
-                &bytes,
-                "reference-to-nothing",
-                &format!("/Rotate {shape:?}"),
-            );
+            let rule = if byte == '\x0b' {
+                "syntax-read-differently"
+            } else {
+                "reference-to-nothing"
+            };
+            refused_on_both(&bytes, rule, &format!("/Rotate {shape:?}"));
         }
     }
 }
 
 #[test]
-fn an_object_stream_headed_with_a_vertical_tab_is_still_read() {
+fn an_object_stream_headed_with_a_vertical_tab_is_refused() {
     // `7 0\vobj`: qpdf reads the header, and the first lexer never did, so the member's
-    // `/Rotate 6 1 R` was never asked about (security review of #227, round 1).
+    // `/Rotate 6 1 R` was never asked about (security review of #227, round 1). Since 2026-10-14
+    // the vertical tab in the header refuses before the member is asked about.
     let direct: Vec<Written> = page_objects("")
         .into_iter()
         .filter(|(number, _, _)| *number != 3)
@@ -590,7 +592,7 @@ fn an_object_stream_headed_with_a_vertical_tab_is_still_read() {
     );
     refused_on_both(
         &bytes,
-        "reference-to-nothing",
+        "syntax-read-differently",
         "an object stream headed `7 0\\vobj`",
     );
 }
@@ -1094,4 +1096,24 @@ fn a_malformed_dictionary_around_a_name_refuses_as_a_repair() {
         );
         redacts_on_both(&classic(&page_objects(twin)), &format!("{what}: the twin"));
     }
+/// A RAW VERTICAL TAB IN OBJECT SYNTAX refuses, fail closed and without a measurement (owner,
+/// 2026-10-14): between a value and the next key, in a hex string, and in a comment. The twin, the
+/// same byte inside a literal string, redacts.
+#[test]
+fn a_vertical_tab_in_object_syntax_is_refused() {
+    for (what, extra) in [
+        ("between tokens", "/Mark 1`/Other 2"),
+        ("in a hex string", "/Mark <41`42>"),
+        ("in a comment", "/Mark 1 %a`b\n/Other 2"),
+    ] {
+        refused_on_both(
+            &planted(classic(&page_objects(extra)), 0x0b),
+            "syntax-read-differently",
+            what,
+        );
+    }
+    redacts_on_both(
+        &planted(classic(&page_objects("/Mark (a`b)")), 0x0b),
+        "a vertical tab inside a literal string",
+    );
 }

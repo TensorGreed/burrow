@@ -920,3 +920,15 @@ open, refuses first as `[engine-repaired-input]`; elsewhere the allowlist refuse
 | `big_book.pdf` | **0** |
 
 The stopgap and the per-page refusal stay; lifting either is the owner's decision.
+
+## Amendment, 2026-10-14 — a vertical tab in object syntax refuses, fail closed
+
+**Decided by the owner, without a measurement.** The reference pass that split's open runs now refuses a
+raw vertical tab (0x0B) anywhere it lexes object syntax outside a literal string -- between tokens,
+in a comment, in a hex string, and in an object's or an object stream's header -- as `[split-syntax-read-differently]`.
+Nothing was measured about how the readers take one there; refusing is the fail-closed answer.
+The lexer still splits tokens at it as qpdf does, so a reference written with one is still read.
+Inside a literal string it is accepted, and qpdf's own rewriting of a value is not judged.
+
+**Cost, measured** against `main` with the same harness, for both operations: **0 of 99** real
+documents, **0 of 182** fixtures, **0** on `big_book.pdf`.
