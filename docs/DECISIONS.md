@@ -132,9 +132,9 @@ one is decided in an issue, with the same three parts.
 
 16. **Every nightly failure is read per job, and each failing job is matched to a known entry or
     filed before the next report.** Matched means `tools/check-known-crashes.py` classifies it to a
-    ledger entry, whose issue the nightly's `ledger` job holds open. Filed means a new issue, or a
-    dated comment on the issue that owns it. A report that says "the nightly failed" without that
-    per-job account is incomplete. *Decided:* owner, 2026-10-14. Two red nightlies (2026-10-13
+    ledger entry whose issue is open, which the nightly's `ledger` job checks. Filed means a new
+    issue, or a dated comment on the issue that owns it. A report that says "the nightly failed"
+    without that per-job account is incomplete. *Decided:* owner, 2026-10-14. Two red nightlies (2026-10-13
     and 2026-10-14) had gone unread for a batch, with three UNMATCHED findings, filed only
     afterwards: #193's comment, #327 and #328, each naming the run, the job and the verdict.
     *Does not cover:* reproducing or fixing the finding, which is sequenced like any other issue;
