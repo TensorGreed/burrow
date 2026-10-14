@@ -1071,3 +1071,27 @@ fn a_string_is_judged_only_where_a_scan_starts_inside_it() {
         "the same string without `obj`",
     );
 }
+
+/// A MALFORMED DICTIONARY AROUND A NAME -- a hex string where a key belongs after a name value, or a
+/// `{` straight after a key -- is where the edges' measurement found the readers disagreeing, over
+/// the dictionary rather than the name (2026-10-14). qpdf warns, and redaction refuses it as a
+/// repair. The twins redact: the hex string given its key, a name still ending at `<`; the brace
+/// deleted.
+#[test]
+fn a_malformed_dictionary_around_a_name_refuses_as_a_repair() {
+    for (what, extra, twin) in [
+        (
+            "a hex string where a key belongs",
+            "/Mark /Va<41>",
+            "/Mark /Va/Kx<41>",
+        ),
+        ("a brace after a key", "/Mark{ 1", "/Mark 1"),
+    ] {
+        refused_on_both(
+            &classic(&page_objects(extra)),
+            "engine-repaired-input",
+            what,
+        );
+        redacts_on_both(&classic(&page_objects(twin)), &format!("{what}: the twin"));
+    }
+}
