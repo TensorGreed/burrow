@@ -100,6 +100,8 @@ pub(crate) struct ReferenceRefusals {
     pub(crate) undecodable: fn() -> Error,
     /// A name PDFium and qpdf are not measured to read alike.
     pub(crate) name: fn() -> Error,
+    /// A byte in object syntax refused fail closed (`Irregular::SyntaxReadDifferently`).
+    pub(crate) syntax: fn() -> Error,
 }
 
 /// Redaction's refusals: `[reference-to-nothing]` and `[reference-unreadable]`.
@@ -108,6 +110,7 @@ pub(crate) const REDACTION: ReferenceRefusals = ReferenceRefusals {
     unreadable: reference_unreadable,
     undecodable: object_stream_undecodable,
     name: name_read_differently,
+    syntax: syntax_read_differently,
 };
 
 /// What an irregular reference was, for any operation's refusal of it. `operation` names who
@@ -127,6 +130,8 @@ pub(crate) const fn irregular_detail(why: Irregular, operation: Operation) -> &'
         // UNREACHABLE THROUGH `accepted`, which refuses this one with `ReferenceRefusals::name`; the
         // arm exists because the match is exhaustive.
         Irregular::NameReadDifferently => "a name readers may read differently",
+        // UNREACHABLE THROUGH `accepted` too, which refuses with `ReferenceRefusals::syntax`.
+        Irregular::SyntaxReadDifferently => "a byte in object syntax readers may read differently",
     }
 }
 
@@ -176,6 +181,15 @@ fn name_read_differently() -> Error {
     )
 }
 
+/// The refusal for a byte in object syntax refused fail closed (owner, 2026-10-14).
+fn syntax_read_differently() -> Error {
+    Error::Unsupported(
+        "pdf redaction [syntax-read-differently]: the document writes object syntax that readers \
+         may read differently, so what the page draws cannot be known"
+            .to_owned(),
+    )
+}
+
 /// What the reference pass read, kept for the walk that asks what names a removed annotation
 /// (#239): every reference in the file, its object streams and the trailer qpdf holds, at the
 /// generation written, and those of that trailer apart.
@@ -190,8 +204,8 @@ pub(crate) struct Referenced {
 ///
 /// # Errors
 ///
-/// `[reference-to-nothing]`, `[reference-unreadable]`, `[name-read-differently]`, the deadline,
-/// and whatever the engine reports.
+/// `[reference-to-nothing]`, `[reference-unreadable]`, `[name-read-differently]`,
+/// `[syntax-read-differently]`, the deadline, and whatever the engine reports.
 pub(crate) fn refuse_references_to_nothing<D: PdfDocument>(
     document: &D,
     bytes: &[u8],
@@ -315,6 +329,7 @@ pub(crate) fn refuse_references_to_nothing_as<D: PdfDocument>(
 fn accepted(found: Found, refusals: &ReferenceRefusals) -> Result<Found> {
     match found.irregular {
         Some(Irregular::NameReadDifferently) => Err((refusals.name)()),
+        Some(Irregular::SyntaxReadDifferently) => Err((refusals.syntax)()),
         Some(why) => Err((refusals.unreadable)(why)),
         None => Ok(found),
     }

@@ -126,6 +126,10 @@ pub enum Irregular {
     /// read alike. Unlike the others, this is a difference between two readers, not between this
     /// lexer and qpdf.
     NameReadDifferently,
+    /// A raw vertical tab (0x0B) in object syntax outside a literal string -- between tokens, in a
+    /// comment, in a hex string, or in an object's header as the scan reads it back -- refused
+    /// without a measurement, fail closed (owner, 2026-10-14).
+    SyntaxReadDifferently,
 }
 
 /// What a scan found.
@@ -237,6 +241,10 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
         // NOT CHARGED AGAIN: a header is read backwards over bytes the search above has already
         // charged, and at most `MAX_HEADER_WALK` of them. A second charge was tried and no test
         // could tell it was there (round-2 mutation sweep), so it is not claimed.
+        if keyword == b"obj" && vertical_tab_in_header(bytes, start) {
+            scan.found.irregular = Some(Irregular::SyntaxReadDifferently);
+            break;
+        }
         let header = header(bytes, start);
         if end.stream {
             let Some((number, _)) = header else {
@@ -412,6 +420,29 @@ fn header(bytes: &[u8], obj_at: usize) -> Option<(i32, i32)> {
     Some((i32::try_from(number).ok()?, i32::try_from(generation).ok()?))
 }
 
+/// Whether the white space of the `N G obj` header before `obj_at` holds a vertical tab, read back
+/// as [`header`] reads it: before `obj`, before the generation, and before the number. A header the
+/// walk cannot read -- past [`MAX_HEADER_WALK`], or split by a comment -- is not judged here.
+fn vertical_tab_in_header(bytes: &[u8], obj_at: usize) -> bool {
+    let mut at = obj_at;
+    for _ in 0..3 {
+        let Some(white_space) = skip_whitespace_back(bytes, at) else {
+            return false;
+        };
+        if bytes
+            .get(white_space..at)
+            .is_some_and(|run| run.contains(&VERTICAL_TAB))
+        {
+            return true;
+        }
+        at = regular_run_back(bytes, white_space);
+    }
+    false
+}
+
+/// The byte `SyntaxReadDifferently` refuses.
+const VERTICAL_TAB: u8 = 0x0b;
+
 /// The position before the white space that ends at `at`, or `None` if there is none or it runs
 /// further back than [`MAX_HEADER_WALK`].
 fn skip_whitespace_back(bytes: &[u8], at: usize) -> Option<usize> {
@@ -452,7 +483,9 @@ struct Scan<'c> {
     /// `work` at the last checkpoint.
     checkpointed: usize,
     checkpoint: &'c mut dyn FnMut() -> Result<()>,
-    /// Whether names are held to [`name_reads_alike`]: in bytes the file wrote, not in qpdf's.
+    /// Whether the bytes are judged as the file wrote them -- names held to [`name_reads_alike`], a
+    /// vertical tab refused -- rather than read as qpdf rewrote them. The name is older than the
+    /// second rule.
     judge_names: bool,
 }
 
@@ -505,6 +538,11 @@ impl<'c> Scan<'c> {
         loop {
             let before = lexer.at;
             let Some(token) = lexer.next() else {
+                // WHITE SPACE BEFORE THE END OF THE INPUT is read too.
+                if self.judge_names && lexer.vertical_tab {
+                    self.found.irregular = Some(Irregular::SyntaxReadDifferently);
+                    return Ok(end(false, 0, false));
+                }
                 return Ok(end(false, significant_tokens, first_is_null));
             };
             if !self.spend(lexer.at.saturating_sub(before))? {
@@ -514,6 +552,10 @@ impl<'c> Scan<'c> {
             // after a value, which qpdf reads too.
             if self.judge_names && token == (Token::Name { alike: false }) {
                 self.found.irregular = Some(Irregular::NameReadDifferently);
+                return Ok(end(false, 0, false));
+            }
+            if self.judge_names && lexer.vertical_tab {
+                self.found.irregular = Some(Irregular::SyntaxReadDifferently);
                 return Ok(end(false, 0, false));
             }
             if complete {
@@ -647,6 +689,10 @@ impl<'c> Scan<'c> {
             if !self.spend(lexer.at.saturating_sub(before))? {
                 return Ok(None);
             }
+            if self.judge_names && lexer.vertical_tab {
+                self.found.irregular = Some(Irregular::SyntaxReadDifferently);
+                return Ok(None);
+            }
             match token {
                 Some(Token::Comment) => {}
                 Some(Token::Integer(text)) => return Ok(value_of(text)),
@@ -718,11 +764,17 @@ enum Token<'a> {
 struct Lexer<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// Set once a vertical tab has been read outside a literal string.
+    vertical_tab: bool,
 }
 
 impl<'a> Lexer<'a> {
     const fn new(bytes: &'a [u8], at: usize) -> Self {
-        Self { bytes, at }
+        Self {
+            bytes,
+            at,
+            vertical_tab: false,
+        }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -732,14 +784,16 @@ impl<'a> Lexer<'a> {
     /// The next token, or `None` at the end of the input. Never fails: input qpdf would warn
     /// about still splits somewhere, and the warning is what refuses it.
     fn next(&mut self) -> Option<Token<'a>> {
-        while self.peek().is_some_and(is_whitespace) {
+        while let Some(byte) = self.peek().filter(|b| is_whitespace(*b)) {
+            self.vertical_tab |= byte == VERTICAL_TAB;
             self.at += 1;
         }
         let first = self.peek()?;
         self.at += 1;
         Some(match first {
             b'%' => {
-                while self.peek().is_some_and(|b| b != b'\r' && b != b'\n') {
+                while let Some(byte) = self.peek().filter(|b| *b != b'\r' && *b != b'\n') {
+                    self.vertical_tab |= byte == VERTICAL_TAB;
                     self.at += 1;
                 }
                 Token::Comment
@@ -755,6 +809,7 @@ impl<'a> Lexer<'a> {
             b'<' => {
                 while let Some(b) = self.peek() {
                     self.at += 1;
+                    self.vertical_tab |= b == VERTICAL_TAB;
                     if b == b'>' {
                         break;
                     }
@@ -1082,6 +1137,61 @@ mod tests {
         );
     }
 
+    /// A RAW VERTICAL TAB in object syntax refuses wherever the scan reads it outside a literal
+    /// string: between tokens, in a comment, in a hex string, in an object's header and in an
+    /// object stream's header. Inside a literal string it is accepted; and qpdf's rewriting of a
+    /// value, which `in_value` reads, is not judged.
+    #[test]
+    fn a_vertical_tab_outside_a_literal_string_refuses() {
+        for (what, bytes) in [
+            (
+                "between tokens",
+                &b"1 0 obj\n<< /Key 1\x0b/Other 2 >>\nendobj\n"[..],
+            ),
+            ("in a comment", b"1 0 obj\n<< /Key 1 %a\x0bb\n>>\nendobj\n"),
+            (
+                "in a hex string",
+                b"1 0 obj\n<< /Key <41\x0b42> >>\nendobj\n",
+            ),
+            ("in a header", b"1\x0b0 obj\n<< /Key 1 >>\nendobj\n"),
+        ] {
+            assert_eq!(
+                file(bytes).irregular,
+                Some(Irregular::SyntaxReadDifferently),
+                "{what}"
+            );
+        }
+        // Before a header's object number, and in white space just before the end of the input.
+        for (what, bytes) in [
+            (
+                "before the number",
+                &b"1 0 obj\n<< >>\nendobj\x0b2 0 obj\n<< >>\nendobj\n"[..],
+            ),
+            ("at the end of the input", b"1 0 obj\n<< /Key 1 >>\x0b"),
+        ] {
+            assert_eq!(
+                file(bytes).irregular,
+                Some(Irregular::SyntaxReadDifferently),
+                "{what}"
+            );
+        }
+        assert_eq!(
+            object_stream(b"5\x0b0 << /Key 1 >>", 1, 4).irregular,
+            Some(Irregular::SyntaxReadDifferently),
+            "in an object stream's header"
+        );
+        assert_eq!(
+            file(b"1 0 obj\n<< /Key (a\x0bb) >>\nendobj\n").irregular,
+            None
+        );
+        assert_eq!(
+            super::in_value(b"<< /Key 1\x0b/Other 2 >>", &mut || Ok(()))
+                .unwrap()
+                .irregular,
+            None
+        );
+    }
+
     fn refs(found: &Found) -> Vec<(i32, i32)> {
         assert_eq!(found.irregular, None, "read plainly: {found:?}");
         found.references.iter().copied().collect()
@@ -1394,16 +1504,18 @@ mod tests {
     }
 
     #[test]
-    fn vertical_tab_is_white_space_as_qpdf_reads_it() {
+    fn vertical_tab_refuses_and_nul_and_form_feed_are_white_space() {
         // qpdf's `util::is_space` includes `\v`. Without it, `7 0\vobj` was a header this never
-        // read, and an object stream headed that way had its members unchecked, qpdf silent.
+        // read, and an object stream headed that way had its members unchecked, qpdf silent. Since
+        // 2026-10-14 a raw vertical tab in object syntax refuses outright, so both shapes refuse;
+        // the lexer still splits tokens there as qpdf does.
         let found =
             file(b"7 0\x0bobj << /Type /ObjStm /N 1 /First 4 >> stream\nxx\nendstream endobj");
+        assert_eq!(found.irregular, Some(Irregular::SyntaxReadDifferently));
         assert_eq!(
-            found.stream_objects.iter().copied().collect::<Vec<_>>(),
-            [7]
+            file(b"1 0 obj [6\x0b1\x0bR] endobj").irregular,
+            Some(Irregular::SyntaxReadDifferently)
         );
-        assert_eq!(refs(&file(b"1 0 obj [6\x0b1\x0bR] endobj")), [(6, 1)]);
         // And NUL and form feed, which the security review showed are load-bearing: a reference
         // split by either is a reference to qpdf, and PDFium turns the page through it.
         assert_eq!(
