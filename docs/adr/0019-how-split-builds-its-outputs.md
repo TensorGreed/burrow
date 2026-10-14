@@ -897,19 +897,19 @@ reach for optional content, and #310 refuses the lexer readings other readers do
 **Decided by the owner.** The 2026-10-13 amendment left one route open, in how readers and qpdf read
 names in object syntax. This closes it with an allowlist rather than a list of known bytes: the
 reference pass at split's open, which lexes every value qpdf parses (each object, each trailer --
-one glued to the number before it included -- and each object stream's members), now refuses any name that PDFium and qpdf have not been
-measured to read alike, as `[split-name-read-differently]`. The measurement covers every byte value
-inside a name and at its end, every `#xx` escape spelled in one case, and the name's length;
-anything it did not measure (the empty name, a mixed-case escape) refuses, and the positions it
-covered by inference are stated in the rustdoc; the allowlist is
-`pdfsyntax::references::name_reads_alike`, whose rustdoc carries the table. The length is counted
-as written, because that is where the measured divergence is; a decoded bound would have refused
-names both read alike, and #257's near-miss pins one.
+one glued to the number before it included -- and each object stream's members), now refuses any
+name that PDFium and qpdf have not been measured to read alike, as `[split-name-read-differently]`.
+The measurement covers every byte value inside a name and at its end, every `#xx` escape spelled in
+one case, and the name's length; anything it did not measure (the empty name, a mixed-case escape)
+refuses, and the positions it covered by inference are stated in the rustdoc; the allowlist is
+`pdfsyntax::references::name_reads_alike`, whose rustdoc carries the table. The length is counted as
+written, because that is where the measured divergence is; a decoded bound would have refused names
+both read alike, and #257's near-miss pins one.
 
 Strings and stream data are judged only where a scan starts inside them, at an `obj` or `trailer`
 keyword there, as for references: over-refusal, the safe direction. qpdf's own rewriting of a value
-is not judged; the names as written are. An escape qpdf warns about, in an object qpdf parses at
-the open, refuses first as `[engine-repaired-input]`; elsewhere the allowlist refuses it first.
+is not judged; the names as written are. An escape qpdf warns about, in an object qpdf parses at the
+open, refuses first as `[engine-repaired-input]`; elsewhere the allowlist refuses it first.
 
 **Cost, measured on split's open of every input**, against `main` with the same harness:
 

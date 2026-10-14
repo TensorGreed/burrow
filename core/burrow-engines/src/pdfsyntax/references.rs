@@ -353,12 +353,6 @@ fn plain(text: &[u8]) -> Option<i32> {
     i32::try_from(value_of(text)?).ok()
 }
 
-/// Whether `keyword` stands at `at` as a token of its own: white space or a delimiter before it,
-/// and white space, a delimiter or the end after.
-///
-/// Before it qpdf has a number and white space -- a comment ends at a line break, which is white
-/// space -- so requiring white space or a delimiter finds every `obj` qpdf reads and some it does
-/// not, which only starts more scans.
 /// `trailer` after a regular byte, which qpdf reads as the keyword without a warning (`11
 /// 0trailer`, #239) and `keyword_at` does not. A scan starts there too: a start qpdf never uses
 /// can only find more, and without it the names in such a trailer are judged only after qpdf
@@ -373,6 +367,12 @@ fn glued_trailer_at(bytes: &[u8], at: usize) -> bool {
             .is_none_or(|b| is_whitespace(*b) || is_delimiter(*b))
 }
 
+/// Whether `keyword` stands at `at` as a token of its own: white space or a delimiter before it,
+/// and white space, a delimiter or the end after.
+///
+/// Before it qpdf has a number and white space -- a comment ends at a line break, which is white
+/// space -- so requiring white space or a delimiter finds every `obj` qpdf reads and some it does
+/// not, which only starts more scans.
 fn keyword_at(bytes: &[u8], at: usize, keyword: &[u8]) -> bool {
     let Some(end) = at.checked_add(keyword.len()) else {
         return false;
