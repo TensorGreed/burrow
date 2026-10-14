@@ -375,15 +375,15 @@ fn the_object_stream_string_and_glued_trailer_twins() {
     opens("0x80 escaped in a glued trailer", &trailer("/Ma#80rk 1"));
 }
 
-/// THE SAME MALFORMED DICTIONARIES at split's open: qpdf warns, and the open refuses the repair;
-/// the well-formed twins open.
+/// THE SAME MALFORMED SHAPES at split's open, here in the page's `/Resources`: qpdf warns, and the
+/// open refuses the repair; the well-formed twins open.
 #[test]
 fn a_malformed_dictionary_around_a_name_refuses_split_s_open_as_a_repair() {
     for (what, extra, twin) in [
         (
             "a hex string where a key belongs",
             "/Mark /Va<41>",
-            "/Mark /Va /Kx <41>",
+            "/Mark /Va/Kx<41>",
         ),
         ("a brace after a key", "/Mark{ 1", "/Mark 1"),
     ] {

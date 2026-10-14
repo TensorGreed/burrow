@@ -871,8 +871,9 @@ pub const MAX_NAME_WRITTEN: usize = 255;
 /// byte, in a key and in a value, the same 236 bytes read alike and no others; and a name ended by
 /// `[`, `]`, `<`, `)`, `{`, `}` or `%` ends in the same place in both readers. Where the dictionary
 /// around such a name is malformed -- a non-name where a key belongs, a `{` token -- the readers
-/// part company over the dictionary, not the name, and qpdf warns: the operation refuses that as
-/// `[engine-repaired-input]` where qpdf parses the object.
+/// part company over the dictionary, not the name, and qpdf warns when it parses the object. The
+/// reference pass makes it parse every object the file refers to, so the operation refuses that as
+/// `[engine-repaired-input]`; an object nothing refers to is parsed by neither operation.
 ///
 /// Strings and stream data are judged only where the scan starts inside them -- an `obj` or
 /// `trailer` keyword there begins one, as for references -- which can only refuse more.
