@@ -124,7 +124,8 @@ pub(crate) const fn irregular_detail(why: Irregular, operation: Operation) -> &'
             Operation::Redaction => "more references than redaction checks",
             Operation::Split => "more references than split checks",
         },
-        // Refused through `ReferenceRefusals::name`, under its own name; this is for completeness.
+        // UNREACHABLE THROUGH `accepted`, which refuses this one with `ReferenceRefusals::name`; the
+        // arm exists because the match is exhaustive.
         Irregular::NameReadDifferently => "a name readers may read differently",
     }
 }

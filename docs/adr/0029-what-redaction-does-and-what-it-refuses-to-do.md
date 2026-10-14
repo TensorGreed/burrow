@@ -5288,9 +5288,11 @@ milestones to revisit `FPDF_SetSystemFontInfo`.
 **Decided by the owner.** #227's reference pass lexes every value qpdf parses, from where qpdf starts
 parsing. It now also refuses any name in them that PDFium and qpdf have not been measured to read
 alike, as `[name-read-differently]`: an allowlist from a measurement of every byte value, every
-`#xx` escape and the name's length, held in `pdfsyntax::references::name_reads_alike`. Split's open
-runs the same pass and refuses with its own text (ADR 0019's 2026-10-14 amendment). Escapes qpdf
-warns about refuse first as `[engine-repaired-input]`; the allowlist is defence in depth there.
+`#xx` escape spelled in one case and the name's length, held in
+`pdfsyntax::references::name_reads_alike`; what was not measured refuses. Split's open
+runs the same pass and refuses with its own text (ADR 0019's 2026-10-14 amendment). An escape qpdf
+warns about refuses first as `[engine-repaired-input]` where qpdf parsed its object at the open,
+and by the allowlist elsewhere. A trailer glued to the number before it is scanned as written.
 
 **Cost, measured** by redacting page 0 of every input against `main`, with the same harness: **0 of
 99** real documents, **0 of 182** fixtures. `tests/redaction/outcomes.tsv` is regenerated unchanged.

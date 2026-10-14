@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use burrow_types::{Clock, Limits, ManualClock};
 
-use super::references_tests::{Written, classic, long_name, planted, with_object_stream};
+use super::references_tests::{
+    Written, classic, glued_trailer, long_name, planted, with_object_stream,
+};
 use super::web_differential_tests::NativeBridge;
 use crate::{OpenOptions, PageExtractor};
 
@@ -267,7 +269,7 @@ fn a_document_without_optional_content_opens() {
 }
 
 /// A NAME OUTSIDE THE MEASURED ALLOWLIST refuses at split's open (owner, 2026-10-14), before the
-/// catalog is read: in the catalog, in a page's dictionary, ended by a vertical tab, longer than
+/// catalog is read: in the catalog, in a page's dictionary, followed by a vertical tab, longer than
 /// 255 bytes written, and inside an object stream's member, which a scan of the file body would
 /// not see. Benign documents: what is pinned is the refusal.
 #[test]
@@ -282,7 +284,7 @@ fn a_name_outside_the_measured_allowlist_refuses_at_split_s_open() {
         ),
         ("0xFF ending a page key", PLAIN_CATALOG, "/Mark` 1", 0xff),
         (
-            "a key qpdf ends at a vertical tab",
+            "a key followed by a vertical tab",
             PLAIN_CATALOG,
             "/Mark`1",
             0x0b,
@@ -334,4 +336,41 @@ fn a_name_inside_the_measured_allowlist_opens_for_split() {
             &classic(&document(PLAIN_CATALOG, &page_extra, SHOWN, &[])),
         );
     }
+}
+
+/// THE TWINS of the object-stream, string and glued-trailer cases: the same member written with an
+/// escape opens; a refused byte inside a string that holds no `obj` opens; and a glued trailer
+/// with a refused byte in a key refuses, its escaped twin opening.
+#[test]
+fn the_object_stream_string_and_glued_trailer_twins() {
+    let catalog = |key: &str| format!("<< /Type /Catalog /Pages 2 0 R {key} >>");
+    let direct: Vec<Written> = document(PLAIN_CATALOG, "", SHOWN, &[])
+        .into_iter()
+        .filter(|(number, _, _)| *number != 1)
+        .collect();
+    opens(
+        "0x80 escaped in a key inside an object stream",
+        &with_object_stream(&direct, 9, 0, &[(1, catalog("/Ma#80rk 1"))]),
+    );
+    opens(
+        "0x80 inside a string",
+        &planted(
+            classic(&document(PLAIN_CATALOG, "/Mark (a`b)", SHOWN, &[])),
+            0x80,
+        ),
+    );
+    let trailer = |key: &str| {
+        let text =
+            String::from_utf8(classic(&document(PLAIN_CATALOG, "", SHOWN, &[]))).expect("ASCII");
+        glued_trailer(
+            text.replacen("/Root 1 0 R", &format!("/Root 1 0 R {key}"), 1)
+                .into_bytes(),
+        )
+    };
+    refuses(
+        "0x80 in a glued trailer",
+        &planted(trailer("/Ma`rk 1"), 0x80),
+        "[split-name-read-differently]",
+    );
+    opens("0x80 escaped in a glued trailer", &trailer("/Ma#80rk 1"));
 }
