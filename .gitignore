@@ -65,6 +65,8 @@ bindings/burrow-wasm/pkg-redact/
 corpus/files/
 corpus/cache/
 corpus/out/
+# The owner's producer set: real producer output, never committed.
+corpus/producers/
 
 # --- Generated corpus output, anywhere in the tree ---
 # Generated corpora are reproducible from their generator, so committing them is pure
