@@ -139,13 +139,18 @@ skill and get a `license-auditor` pass before merging.
 **Reviews run before the first push, not after.** The reviewer goes over the change while it
 is still local. **Which reviewer depends on what the change decides** (2026-09-24):
 
-- **Code that decides what redaction removes or keeps** gets both `security-reviewer` and
-  `code-reviewer`. That covers the geometry walk, the rewriter, the refusal rules, verification,
-  and anything else whose bug leaks a secret.
-- **Tooling and gate changes** get one reviewer, whichever fits the change better. That covers
-  checkers, their self-tests, CI wiring, fixture generators and docs.
+- **Code that makes redaction or split accept more** -- `Ok` on input it used to refuse -- gets both
+  `security-reviewer` and `code-reviewer`, after a round-0 spec review. That covers the geometry
+  walk, the rewriter, verification, and anything else whose bug leaks a secret.
+- **A new refusal** gets one review, with a fixture, a near-miss twin and an asserted mutation, and
+  no leak hunt: refusing fails closed. It is a refusal only if the census and `outcomes.tsv` show no
+  input moving from refused to `Ok`.
+- **Mechanical changes** -- tooling, gates, checkers, their self-tests, CI wiring, fixture
+  generators, budgets, ledgers, docs -- get one `code-reviewer` pass.
 
-When a change is both, it gets both.
+When a change is more than one of these, it gets the heaviest. DECISIONS.md rule 17 (owner,
+2026-10-14) is the source; this replaced "both reviewers for any code that decides what redaction
+removes or keeps" (2026-09-24).
 
 **How many rounds, and what a round may find** (owner, 2026-10-09; DECISIONS.md rule 15). Review is
 bounded, so a small increment does not turn into an open-ended loop:
@@ -254,11 +259,11 @@ index exists to remove.
 
 ### Spec review first
 
-For every **new rule** (a change that decides what redaction or split removes or keeps): before
-writing code, give the `security-reviewer` the proposed rule, the ADR 0029 §3 / ADR 0019 §2b
+For every **new acceptance rule** (a change that makes redaction or split accept more; DECISIONS.md
+rule 17 -- a new refusal answers with its census instead): before writing code, give the `security-reviewer` the proposed rule, the ADR 0029 §3 / ADR 0019 §2b
 accept-vs-refuse table (DECISIONS.md rule 10), and the census plan, and ask for (a) the inputs the
 rule would accept that the table says to refuse, and (b) the fixture list it would demand. Build
-from that list. The post-code reviews (*Conventions*: both reviewers for redaction-deciding code)
+from that list. The post-code reviews (*Conventions*: both reviewers for an acceptance change)
 still run, at most two rounds (rule 15) — the aim is that round 2 finds nothing a round 0 could
 have. Round 0 is also where the slice's **scope** is fixed: what is outside it is filed, not
 built. This does not change the reviewers, the sweep, or any test; the bar after round 2 is rule
@@ -554,6 +559,6 @@ those at full candour is working and is not what "summarise" is asking you to sh
     Enumerate them with their parent command, not just a count, when the answer is not zero.
 - Report faithfully. If tests fail, say so and show the output. Never claim a step passed
   without running it.
-- **Review before the first push**: both reviewers for code that decides what redaction removes
-  or keeps, and one for tooling and gate changes. See *Conventions*; this is the
-  working-agreement half of the same rule.
+- **Review before the first push**: both reviewers for a change that makes redaction or split
+  accept more, one review for a new refusal, and one `code-reviewer` pass for a mechanical change
+  (DECISIONS.md rule 17). See *Conventions*; this is the working-agreement half of the same rule.
