@@ -1096,6 +1096,8 @@ fn a_malformed_dictionary_around_a_name_refuses_as_a_repair() {
         );
         redacts_on_both(&classic(&page_objects(twin)), &format!("{what}: the twin"));
     }
+}
+
 /// A RAW VERTICAL TAB IN OBJECT SYNTAX refuses, fail closed and without a measurement (owner,
 /// 2026-10-14): between a value and the next key, in a hex string, and in a comment. The twin, the
 /// same byte inside a literal string, redacts.

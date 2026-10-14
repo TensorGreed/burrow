@@ -397,6 +397,8 @@ fn a_malformed_dictionary_around_a_name_refuses_split_s_open_as_a_repair() {
             &classic(&document(PLAIN_CATALOG, twin, SHOWN, &[])),
         );
     }
+}
+
 /// A RAW VERTICAL TAB IN OBJECT SYNTAX refuses at split's open (owner, 2026-10-14), between tokens
 /// and in a hex string; inside a literal string it opens.
 #[test]
