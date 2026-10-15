@@ -421,3 +421,104 @@ fn a_vertical_tab_in_object_syntax_refuses_split_s_open() {
         ),
     );
 }
+
+/// A NULL DICTIONARY VALUE refuses at split's open, and a direct key of the one catalog is the
+/// exemption (owner, 2026-10-14). Minimal documents with a null value somewhere; nothing else in
+/// them is unusual.
+#[test]
+fn a_null_dictionary_value_refuses_split_s_open_except_in_the_catalog() {
+    const RULE: &str = "[split-null-value]";
+    refuses(
+        "a page dictionary key",
+        &classic(&document(PLAIN_CATALOG, "/Extra null", SHOWN, &[])),
+        RULE,
+    );
+    refuses(
+        "a reference to an object declared null",
+        &classic(&document(
+            PLAIN_CATALOG,
+            "/Extra 9 0 R",
+            SHOWN,
+            &[(9, 0, "null".to_owned())],
+        )),
+        RULE,
+    );
+    opens(
+        "a direct catalog key",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /Extra null >>",
+            "",
+            SHOWN,
+            &[],
+        )),
+    );
+    refuses(
+        "a null one level below the catalog",
+        &classic(&document(
+            "<< /Type /Catalog /Pages 2 0 R /Extra << /Inner null >> >>",
+            "",
+            SHOWN,
+            &[],
+        )),
+        RULE,
+    );
+    // The catalog's number written twice: an earlier revision of object 1 holding the null.
+    let mut twice = vec![(
+        1,
+        0,
+        "<< /Type /Catalog /Pages 2 0 R /Extra null >>".to_owned(),
+    )];
+    twice.extend(document(PLAIN_CATALOG, "", SHOWN, &[]));
+    refuses(
+        "the catalog's number occurring twice",
+        &classic(&twice),
+        RULE,
+    );
+    refuses(
+        "a second /Type /Catalog object holding a null",
+        &classic(&document(
+            PLAIN_CATALOG,
+            "",
+            SHOWN,
+            &[(
+                9,
+                0,
+                "<< /Type /Catalog /Pages 2 0 R /Extra null >>".to_owned(),
+            )],
+        )),
+        RULE,
+    );
+}
+
+/// THE CATALOG'S IDENTITY, wherever it is written: as one object stream member its direct keys are
+/// exempt; listed twice in one stream, or written directly in the trailer, they are not.
+#[test]
+fn the_catalog_exemption_holds_only_for_one_catalog_written_once() {
+    const RULE: &str = "[split-null-value]";
+    let with_null = "<< /Type /Catalog /Pages 2 0 R /Extra null >>";
+    let direct: Vec<Written> = document(PLAIN_CATALOG, "", SHOWN, &[])
+        .into_iter()
+        .filter(|(number, _, _)| *number != 1)
+        .collect();
+    opens(
+        "the catalog as one object stream member",
+        &with_object_stream(&direct, 9, 0, &[(1, with_null.to_owned())]),
+    );
+    refuses(
+        "the catalog listed twice in one object stream",
+        &with_object_stream(
+            &direct,
+            9,
+            0,
+            &[(1, with_null.to_owned()), (1, PLAIN_CATALOG.to_owned())],
+        ),
+        RULE,
+    );
+    let text = String::from_utf8(classic(&document(PLAIN_CATALOG, "", SHOWN, &[]))).expect("ASCII");
+    let in_trailer = text.replacen("/Root 1 0 R", &format!("/Root {with_null}"), 1);
+    refuses(
+        "a direct catalog in the trailer",
+        in_trailer.as_bytes(),
+        RULE,
+    );
+}

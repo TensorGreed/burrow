@@ -154,9 +154,47 @@ pub struct Found {
     /// The object numbers an object stream's header lists. Empty from [`in_file`]. A member has
     /// no header in the file, so its declaration cannot be read here.
     pub members: BTreeSet<i32>,
+    /// Every member number an object stream's header lists, in order and repeats included: a number
+    /// listed more than once is more than one copy of the object in one stream.
+    pub member_list: Vec<i32>,
     /// Set when something could not be read as qpdf reads it, and the scan stopped there. The
     /// other fields are then incomplete and must not be used as an answer.
     pub irregular: Option<Irregular>,
+    /// The objects holding a `null` written as a value inside a dictionary (not inside an array,
+    /// and not an object's whole value), by the number of the object that holds it: `None` where
+    /// the holder's number did not read. qpdf drops such a key when it writes, so a reader that
+    /// treats the key's presence as meaningful reads the source and the output differently.
+    /// Recorded where the bytes are judged as written ([`in_file`], [`in_object_stream`]).
+    pub null_values: Vec<Holder>,
+    /// Every reference written as a value inside a dictionary, with the object holding it, one entry
+    /// per occurrence: the caller asks which resolve to a declared `null`, which qpdf drops the same
+    /// way. Not capped of its own: each entry costs at least a reference's worth of lexed bytes, so
+    /// its length is bounded by the scan's work budget ([`WORK_FACTOR`] times the input plus
+    /// [`WORK_SLACK`]), as [`Found::null_values`]' is.
+    pub dictionary_references: Vec<((i32, i32), Holder)>,
+}
+
+/// Where a dictionary value was written: the number of the object holding it (`None` where the
+/// holder's header did not read, or for a trailer), and whether it is a direct key of that object's
+/// own dictionary rather than of one nested inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Holder {
+    /// The holding object's number.
+    pub object: Option<i32>,
+    /// Whether the value is a direct key of the object's top-level dictionary.
+    pub direct: bool,
+}
+
+/// The deepest nesting of arrays and dictionaries a scan follows; deeper is
+/// [`Irregular::BeyondCaps`]. Above the parser nesting burrow sets qpdf to (64, `PARSER_MAX_NESTING`),
+/// past which qpdf warns, so it refuses nothing qpdf reads silently.
+pub const MAX_NESTING: usize = 1024;
+
+/// Which kind of container a token opens or closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Container {
+    Array,
+    Dictionary,
 }
 
 /// What the headers for one object number declared.
@@ -166,6 +204,11 @@ pub struct Declared {
     pub null_at: BTreeSet<i32>,
     /// Whether some header for this number holds anything else, at any generation.
     pub something_else: bool,
+    /// How many headers in the file declare this number, and at which generations: more than one
+    /// is more than one revision of the object.
+    pub headers: usize,
+    /// The generations those headers name.
+    pub generations: BTreeSet<i32>,
 }
 
 impl Found {
@@ -231,7 +274,13 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
         } else {
             continue;
         };
-        let end = scan.one_value(bytes, start + keyword.len())?;
+        // THE HOLDER'S NUMBER, for a value under an `obj` keyword; a trailer's has none.
+        let holder = if keyword == b"obj" {
+            header(bytes, start).map(|(number, _)| number)
+        } else {
+            None
+        };
+        let end = scan.one_value(bytes, start + keyword.len(), holder)?;
         if scan.found.irregular.is_some() {
             break;
         }
@@ -264,6 +313,8 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
             continue;
         };
         let declared = scan.found.declarations.entry(number).or_default();
+        declared.headers = declared.headers.saturating_add(1);
+        declared.generations.insert(generation);
         // `!end.stream` is defence in depth, unwitnessed: `null` followed by `stream` is an object
         // qpdf warns about, which refuses after the write.
         if end.only_null && !end.stream {
@@ -294,7 +345,7 @@ pub fn in_file(bytes: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Resu
 pub fn in_value(text: &[u8], checkpoint: &mut dyn FnMut() -> Result<()>) -> Result<Found> {
     let mut scan = Scan::new(text.len(), checkpoint);
     scan.judge_names = false;
-    scan.one_value(text, 0)?;
+    scan.one_value(text, 0, None)?;
     Ok(scan.found)
 }
 
@@ -322,8 +373,8 @@ pub fn in_object_stream(
     if scan.found.irregular.is_some() {
         return Ok(scan.found);
     }
-    for start in starts {
-        scan.one_value(decoded, start)?;
+    for (start, number) in starts {
+        scan.one_value(decoded, start, number)?;
         if scan.found.irregular.is_some() {
             break;
         }
@@ -518,7 +569,7 @@ impl<'c> Scan<'c> {
     /// inside a value qpdf reads without warning (`obj`, `endobj`, `stream`, `endstream`, `xref`,
     /// `trailer`, `startxref`), and at the end of the input. Lexing past the value qpdf would read
     /// can only find more, so the rule leans long.
-    fn one_value(&mut self, bytes: &[u8], start: usize) -> Result<ValueEnd> {
+    fn one_value(&mut self, bytes: &[u8], start: usize, holder: Option<i32>) -> Result<ValueEnd> {
         let mut lexer = Lexer::new(bytes, start);
         // Whether every significant token so far is one `null`: the value of a declared null.
         let mut significant_tokens = 0_usize;
@@ -528,6 +579,9 @@ impl<'c> Scan<'c> {
             only_null: significant_tokens == 1 && first_is_null,
         };
         let mut depth: usize = 0;
+        // THE INNERMOST CONTAINER, as a capped stack: no recursion. Only where the bytes are judged
+        // as written; qpdf's rewriting holds no nulls in dictionaries.
+        let mut containers: Vec<Container> = Vec::new();
         // The two significant tokens before this one, the newer first, and whether a comment
         // came between each and the one after it.
         let mut newer: Option<(Significant<'_>, bool)> = None;
@@ -588,7 +642,29 @@ impl<'c> Scan<'c> {
                         if self.found.irregular.is_some() {
                             return Ok(end(false, 0, false));
                         }
+                        if self.judge_names
+                            && containers.last() == Some(&Container::Dictionary)
+                            && let (Some(number), Some(generation)) =
+                                (plain(number), plain(generation))
+                        {
+                            self.found.dictionary_references.push((
+                                (number, generation),
+                                Holder {
+                                    object: holder,
+                                    direct: containers.len() == 1,
+                                },
+                            ));
+                        }
                     }
+                    Significant::Other
+                }
+                Token::Word(b"null")
+                    if self.judge_names && containers.last() == Some(&Container::Dictionary) =>
+                {
+                    self.found.null_values.push(Holder {
+                        object: holder,
+                        direct: containers.len() == 1,
+                    });
                     Significant::Other
                 }
                 Token::Word(word) if is_stop_word(word) => {
@@ -608,10 +684,22 @@ impl<'c> Scan<'c> {
             newer = Some((significant, comment_since_newer));
             comment_since_newer = false;
             match token {
-                Token::Open => depth = depth.saturating_add(1),
-                Token::Close => {
+                Token::Open(kind) => {
+                    depth = depth.saturating_add(1);
+                    if self.judge_names {
+                        if containers.len() >= MAX_NESTING {
+                            self.found.irregular = Some(Irregular::BeyondCaps);
+                            return Ok(end(false, 0, false));
+                        }
+                        containers.push(kind);
+                    }
+                }
+                Token::Close(_) => {
                     depth = depth.saturating_sub(1);
                     complete = depth == 0;
+                    // A CLOSE OF THE OTHER KIND is input qpdf warns about, and the warning refuses;
+                    // the stack follows the reader's nesting regardless.
+                    containers.pop();
                 }
                 Token::Integer(_) if depth == 0 => {
                     integers_outside += 1;
@@ -640,7 +728,7 @@ impl<'c> Scan<'c> {
         decoded: &[u8],
         count: i64,
         first: i64,
-    ) -> Result<Option<BTreeSet<usize>>> {
+    ) -> Result<Option<MemberStarts>> {
         let (Ok(first), Ok(count)) = (usize::try_from(first), usize::try_from(count)) else {
             return Ok(None);
         };
@@ -653,19 +741,20 @@ impl<'c> Scan<'c> {
         }
         if count > MAX_DECLARATIONS {
             self.found.irregular = Some(Irregular::BeyondCaps);
-            return Ok(Some(BTreeSet::new()));
+            return Ok(Some(Vec::new()));
         }
         let mut lexer = Lexer::new(decoded, 0);
-        let mut starts = BTreeSet::new();
+        let mut starts = Vec::new();
         for _ in 0..count {
             let Some(number) = self.integer(&mut lexer)? else {
-                return Ok(self.found.irregular.map(|_| BTreeSet::new()));
+                return Ok(self.found.irregular.map(|_| Vec::new()));
             };
             let Some(offset) = self.integer(&mut lexer)? else {
-                return Ok(self.found.irregular.map(|_| BTreeSet::new()));
+                return Ok(self.found.irregular.map(|_| Vec::new()));
             };
             if let Ok(number) = i32::try_from(number) {
                 self.found.members.insert(number);
+                self.found.member_list.push(number);
             }
             let Ok(offset) = usize::try_from(offset) else {
                 continue;
@@ -673,9 +762,15 @@ impl<'c> Scan<'c> {
             if let Some(start) = first.checked_add(offset)
                 && start < decoded.len()
             {
-                starts.insert(start);
+                starts.push((start, i32::try_from(number).ok()));
             }
         }
+        // IN OFFSET ORDER, each offset once, and the FIRST number listed for an offset holds it --
+        // as qpdf reads them: `resolveObjectsInStream` warns on an offset that does not increase and
+        // skips the later entry (`QPDF_objects.cc`), and that warning refuses the document. The
+        // stable sort keeps listing order among equal offsets; `dedup_by_key` keeps the first.
+        starts.sort_by_key(|(start, _)| *start);
+        starts.dedup_by_key(|(start, _)| *start);
         Ok(Some(starts))
     }
 
@@ -733,6 +828,9 @@ impl<'c> Scan<'c> {
     }
 }
 
+/// Where each member of an object stream begins, and the number its header gives it.
+type MemberStarts = Vec<(usize, Option<i32>)>;
+
 /// A keyword that cannot be inside a value qpdf reads without warning.
 fn is_stop_word(word: &[u8]) -> bool {
     matches!(
@@ -745,9 +843,9 @@ fn is_stop_word(word: &[u8]) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Token<'a> {
     /// `[` or `<<`.
-    Open,
+    Open(Container),
     /// `]` or `>>`.
-    Close,
+    Close(Container),
     /// A run of regular characters that qpdf reads as an integer: an optional sign and digits.
     Integer(&'a [u8]),
     /// Any other run of regular characters: a keyword, a real, `R`.
@@ -804,7 +902,7 @@ impl<'a> Lexer<'a> {
             }
             b'<' if self.peek() == Some(b'<') => {
                 self.at += 1;
-                Token::Open
+                Token::Open(Container::Dictionary)
             }
             b'<' => {
                 while let Some(b) = self.peek() {
@@ -818,10 +916,10 @@ impl<'a> Lexer<'a> {
             }
             b'>' if self.peek() == Some(b'>') => {
                 self.at += 1;
-                Token::Close
+                Token::Close(Container::Dictionary)
             }
-            b'[' => Token::Open,
-            b']' => Token::Close,
+            b'[' => Token::Open(Container::Array),
+            b']' => Token::Close(Container::Array),
             b'/' => {
                 let start = self.at;
                 self.regular_run();
@@ -1189,6 +1287,30 @@ mod tests {
                 .unwrap()
                 .irregular,
             None
+        );
+    }
+
+    /// TWO MEMBERS AT ONE OFFSET: the first number listed holds the value read there, as qpdf reads
+    /// the stream (it skips the later entry, with a warning). Pinned, because the holder decides
+    /// the catalog exemption.
+    #[test]
+    fn the_first_member_listed_at_an_offset_holds_its_value() {
+        let found = object_stream(b"1 0 2 0 << /K null >>", 2, 8);
+        assert_eq!(found.irregular, None);
+        assert_eq!(
+            found.null_values,
+            vec![super::Holder {
+                object: Some(1),
+                direct: true
+            }]
+        );
+        let found = object_stream(b"2 0 1 0 << /K null >>", 2, 8);
+        assert_eq!(
+            found.null_values,
+            vec![super::Holder {
+                object: Some(2),
+                direct: true
+            }]
         );
     }
 

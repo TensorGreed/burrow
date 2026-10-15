@@ -384,6 +384,27 @@ impl<D: PdfDocument> PageRedaction<D> {
         Ok(())
     }
 
+    /// Refuse the document if it writes a dictionary value qpdf drops when it writes (owner,
+    /// 2026-10-14), as the reference pass found it. Asked last in `write`, after the repair check
+    /// and before the bytes are returned, so no byte leaves and every refusal the evasion fixtures
+    /// pin -- several carry nulls of their own -- names itself first.
+    ///
+    /// # Errors
+    ///
+    /// `[null-value]`.
+    pub(crate) fn refuse_null_values(&self) -> Result<()> {
+        // FAIL CLOSED if the reference pass never ran: nothing then says the document is clean.
+        let Some(read) = self.referenced.as_ref() else {
+            return Err(Error::Internal(
+                "the null-value check ran before the reference pass".to_owned(),
+            ));
+        };
+        if read.drops_a_null {
+            return Err(super::references::null_value());
+        }
+        Ok(())
+    }
+
     /// Refuse the document if it carries an interactive form — `/AcroForm` on the catalogue, or a
     /// form field (`/FT`) on any referenced object. ADR 0029 §3 refuses a document with an
     /// `/AcroForm`: the carrier sits on the catalogue, out of the page-scoped reach redaction has,
@@ -1121,6 +1142,9 @@ impl<D: PdfDocument> Steps for PageRedaction<D> {
         if self.document.repaired() {
             return Err(super::repaired_by_the_engine());
         }
+        // A DICTIONARY VALUE QPDF DROPPED IN THAT WRITE refuses, after the repair check so that one
+        // names itself first; the bytes are dropped here and never leave.
+        self.refuse_null_values()?;
         Ok(bytes)
     }
 }

@@ -5313,3 +5313,23 @@ Inside a literal string it is accepted, and qpdf's own rewriting of a value is n
 
 **Cost, measured** against `main` with the same harness, for both operations: **0 of 99** real
 documents, **0 of 182** fixtures, **0** on `big_book.pdf`.
+
+## Amendment, 2026-10-14 — a dictionary value the engine drops on write is refused
+
+**Decided by the owner, as a new refusal.** The same rule as split's open (ADR 0019's 2026-10-14
+amendment): a `null`, or a reference to an object the file declares `null`, written as a value
+inside a dictionary, is refused as `[null-value]`. It is found by the reference pass and refused in
+the write step, after qpdf writes into memory and before the bytes are returned, so no byte leaves --
+last of the refusals before the write, so the evasion fixtures that carry nulls of their own still
+name the refusal they pin.
+
+**The catalog exemption, and its residual.** A direct key of the catalog dictionary is exempt, on
+the same identity rule as split's. Redaction keeps the catalog, so split's reason does not apply;
+redaction's is narrower and is a residual. Read in pdf.js 5.7.284's source, a null catalog key
+differs from an absent one only for `/StructTreeRoot` (a metadata flag), `/PageLabels` written as a
+reference to null (the page labels) and `/Dests` (internal caching); none changes what is drawn. No
+other reader was measured.
+
+**Cost, measured** against `main`: **0 of 99** real documents and **0 of 182** fixtures change
+outcome; `tests/redaction/outcomes.tsv` regenerates unchanged. Refusing the catalog's keys too
+would have cost 3 of 99 documents and 130 of 4,824 census tiles.

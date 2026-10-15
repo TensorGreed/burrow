@@ -1261,13 +1261,22 @@ mod wiring {
             "media-box-unverified",
             "a Letter-sized box away from the origin",
         );
-        // THE PAGE'S OWN /CropBox DECIDES: both readers show at most that box, so a null
-        // /MediaBox under it changes nothing either can see.
-        redact_in(
+        // THE PAGE'S OWN /CropBox DECIDES: both readers show at most that box. Its null /MediaBox
+        // is refused since 2026-10-14 as a value qpdf drops on write (`[null-value]`); the same
+        // crop box over no /MediaBox of the page's own still redacts.
+        let refused = redact_in(
             &page_under_a_tree(
                 &format!("{RESOURCES} /MediaBox null /CropBox [0 0 300 400]"),
                 BOX,
             ),
+            UPPER_BAND,
+        );
+        assert!(
+            matches!(&refused, Err(error) if format!("{error:?}").contains("[null-value]")),
+            "a null /MediaBox under the page's own crop box: {refused:?}"
+        );
+        redact_in(
+            &page_under_a_tree(&format!("{RESOURCES} /CropBox [0 0 300 400]"), BOX),
             UPPER_BAND,
         )
         .expect("the page's own crop box is what both show");
