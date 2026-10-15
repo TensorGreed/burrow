@@ -742,7 +742,10 @@ mod recording {
         })))
         .expect("encodes");
         stage[3] = 99;
+        let mut padded = good.clone();
+        padded[4] = 1;
         for (what, bytes) in [
+            ("a no-answer carrying a number", padded),
             ("a kind past the table", kind),
             ("a stage past the table", stage),
             ("one byte short", good[..good.len() - 1].to_vec()),

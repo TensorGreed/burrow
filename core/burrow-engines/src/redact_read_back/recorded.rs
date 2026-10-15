@@ -441,8 +441,16 @@ pub fn decode_answer(bytes: &[u8]) -> Result<Answer> {
             requested,
             allowed,
         },
-        1 => Failure::Internal,
-        2 => Failure::NoAnswer,
+        // ONE ENCODING PER ANSWER: a failure that names no ceiling carries zeros, and anything
+        // else in those fields is refused rather than ignored. Found by the fuzz target's
+        // re-encoding claim in its first minute.
+        1 | 2 if (limit, stage, requested, allowed) == (0, 0, 0, 0) => {
+            if kind == 1 {
+                Failure::Internal
+            } else {
+                Failure::NoAnswer
+            }
+        }
         _ => return Err(malformed()),
     };
     Ok(Answer::Failed(failure))
