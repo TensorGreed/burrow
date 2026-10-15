@@ -22,9 +22,9 @@
 //!   `pdf redaction [`, `pdf region [`, `pdf syntax [`, …), of any shape, is in [`RULE_IDS`];
 //! - every hyphenated `[id]` in any production string literal is in it too;
 //! - no production string literal interpolates into a bracket (`[{`), outside an explicit list of
-//!   three whole literals, each in its own file and each met exactly once: the two that stamp a
-//!   table's name ([`InkKind`]'s, and [`Refusal`]'s), and one that only READS a refusal's prefix
-//!   to match it and raises nothing;
+//!   three whole literals, each tied to the file it is in and each met exactly once: the two that
+//!   stamp a table's name ([`InkKind`]'s, in `steps.rs`, and [`Refusal`]'s, in `geometry.rs`), and
+//!   one, also in `geometry.rs`, that only READS a refusal's prefix to match it and raises nothing;
 //! - every name in [`Refusal::ALL`], [`FrameRule::ALL`] and [`InkKind::ALL`] is in it, each `ALL`
 //!   held to its enum by an exhaustive match or its own test, and so is every rule
 //!   `tests/redaction/outcomes.tsv` records;
@@ -451,9 +451,10 @@ mod tests {
         }
     }
 
-    /// The interpolations into a bracket that may stand: each a WHOLE literal, in one file, that
-    /// stamps a table's name. Compared with `==` after Rust's line continuations are folded, and
-    /// each must be met exactly once, so a new literal with a stamped prefix is not admitted.
+    /// The interpolations into a bracket that may stand: each a WHOLE literal, tied to the file it
+    /// is in. Two stamp a table's name; the third only reads a refusal's prefix to match it.
+    /// Compared with `==` after Rust's line continuations are folded, and each must be met exactly
+    /// once, so a new literal with a stamped prefix is not admitted.
     const STAMPED: &[(&str, &str)] = &[
         // `InkKind::rule`, in the region-reaches-ink refusal.
         (
