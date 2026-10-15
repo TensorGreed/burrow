@@ -19,6 +19,7 @@
 #   bindings/pkg*      BUILT here (`ci-local.py --only wasm-pack`), so their stamps name this tree.
 #   tests/redaction/generated   GENERATED here (`tools/check-redaction-corpus.sh`), because the
 #                      census and the `outcomes.tsv` bless read it outside a sweep.
+#   apps/web/dist      a PRODUCTION build (`pnpm build`), which `checker-self-tests` copies.
 #   census harnesses   `~/burrow-census/zz_census.rs` and `zz_tiles.rs`, if present, copied into
 #                      `core/burrow-engines/tests/` (gitignored). Never formatted with rustfmt:
 #                      `rustfmt --edition 2021` follows `mod support;` into tracked files.
@@ -111,6 +112,11 @@ if [ "$build" -eq 1 ]; then
   # directory, and a census ran over the 127 inputs it could find and looked like a census.
   "$target/tools/check-redaction-corpus.sh" >/dev/null
   echo "  tests/redaction/generated: $(find "$target/tests/redaction/generated" -type f | wc -l) file(s)"
+  # 7. A PRODUCTION BUILD in `apps/web/dist`. `checker-self-tests` copies one and refuses without
+  # it ("no build at apps/web/dist ... refusing rather than passing vacuously"): measured, the one
+  # job of 28 that failed in this script's first proof sweep.
+  (cd "$target/apps/web" && pnpm -s build >/dev/null)
+  echo "  apps/web/dist: a production build, $(find "$target/apps/web/dist" -type f | wc -l) file(s)"
 fi
 
 # THE CHECK, and what it examined. Without --no-build every stamp must be current; with it, only
