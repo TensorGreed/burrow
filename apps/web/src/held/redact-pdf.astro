@@ -13,8 +13,9 @@
 // absent from the visible prose, and none of the forbidden claims made. Write "Not Only PDF",
 // never "burrow" -- the repository is burrow; the product a person is using is not.
 //
-// NO ISLAND YET. The tool arrives in S3; until then the page is static, with a placeholder
-// where it will mount.
+// THE ISLAND (S3) mounts into `#redact-tool` by hand, as every tool page's does: a file, every
+// page's frame, one region typed in points, a run through redaction's own worker, and a download.
+// Pictures and pointer selection are S4.
 import BaseLayout from "../layouts/BaseLayout.astro";
 import {
   ALT_TEXT_MARK,
@@ -48,9 +49,30 @@ import {
     </p>
   </div>
 
-  <div id="redact-tool" class="read">
-    <p>The tool is not on this page yet. What it will do, and what it will not, is below.</p>
-  </div>
+  <div id="redact-tool"></div>
+
+  <script>
+    import { type Component, mount } from "svelte";
+
+    import RedactTool from "../components/RedactTool.svelte";
+
+    const target = document.getElementById("redact-tool");
+    if (target) {
+      // Astro types a `.svelte` default export as an Astro component; mounting it by hand is the
+      // same module reached through Svelte's own API (see `rotate-pdf.astro`).
+      mount(RedactTool as unknown as Component, { target });
+    }
+  </script>
+
+  <noscript>
+    <div class="read no-js">
+      <h2>This tool needs JavaScript</h2>
+      <p>
+        The redacting is done by code running in your browser, so with JavaScript switched off there
+        is nothing to do the work. There is no server-side version to fall back to.
+      </p>
+    </div>
+  </noscript>
 
   {
     /*

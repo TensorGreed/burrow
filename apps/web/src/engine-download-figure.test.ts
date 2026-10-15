@@ -28,12 +28,24 @@ interface BudgetLine {
   measured_raw: number;
   measured_brotli: number;
 }
-const budget: { artifacts: Record<string, BudgetLine> } = JSON.parse(
-  readFileSync(join(webApp, "size-budget.json"), "utf8"),
-);
+const budget: {
+  artifacts: Record<string, BudgetLine>;
+  redact: { artifacts: Record<string, BudgetLine> };
+} = JSON.parse(readFileSync(join(webApp, "size-budget.json"), "utf8"));
 
 const engineLines = Object.entries(budget.artifacts).filter(([key]) => key.startsWith("engines/"));
 const engineBrotli = engineLines.reduce((sum, [, line]) => sum + line.measured_brotli, 0);
+
+/**
+ * What the HELD redaction page downloads (#136): its own bundle -- the redaction worker and module
+ * -- plus the two base artifacts it shares, qpdf and the guard control. Not the base worker or the
+ * base module, which a redacting page never fetches (ADR 0029's 2026-09-21 amendment).
+ */
+const redactLines = [
+  ...engineLines.filter(([key]) => key === "engines/qpdf.wasm" || key === "engines/control.txt"),
+  ...Object.entries(budget.redact.artifacts),
+];
+const redactBrotli = redactLines.reduce((sum, [, line]) => sum + line.measured_brotli, 0);
 
 /**
  * Every place a person is shown the figure, with the unit it is shown in.
@@ -62,6 +74,11 @@ const SHOWN = [
   {
     file: "src/components/CompressTool.svelte",
     pattern: /Starting the PDF engine — about ([\d,.]+) KB, downloaded once/,
+  },
+  {
+    file: "src/components/RedactTool.svelte",
+    pattern: /Starting the PDF engine — about ([\d,.]+) KB, downloaded once/,
+    measured: redactBrotli,
   },
 ];
 
@@ -95,7 +112,8 @@ describe("the engine download figure people are shown", () => {
     expect(SHOWN.map((s) => s.file).sort()).toEqual(islandsOnDisk());
 
     const found: string[] = [];
-    for (const { file, pattern } of SHOWN) {
+    expect(redactLines.length, "the redaction page's payload is four budget lines").toBe(4);
+    for (const { file, pattern, measured } of SHOWN) {
       const source = readFileSync(join(webApp, file), "utf8");
       const match = pattern.exec(source);
       expect(
@@ -103,7 +121,7 @@ describe("the engine download figure people are shown", () => {
         `${file} no longer states the engine download in KB, so nobody is checking what it says`,
       ).not.toBeNull();
       const shownKb = Number(match?.[1]?.replace(/,/g, ""));
-      const actualKb = engineBrotli / 1000;
+      const actualKb = (measured ?? engineBrotli) / 1000;
       // A 10% band. The copy says "about", and rounding it to a tidy figure is the right thing
       // for prose; what must not survive is a number from a different build.
       expect(

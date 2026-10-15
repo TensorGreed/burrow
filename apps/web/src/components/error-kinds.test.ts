@@ -23,6 +23,7 @@ import { messageFor as mergeMessage } from "./merge-messages.js";
 import { messageFor as reorderMessage } from "./reorder-messages.js";
 import { messageFor as splitMessage } from "./split-messages.js";
 import { messageFor as rotateMessage } from "./rotate-messages.js";
+import { messageFor as redactMessage } from "./redact-messages.js";
 
 /** Every string `kind_of` can return, read out of the binding itself. */
 function kindsFromRust(): string[] {
@@ -61,14 +62,14 @@ const UNHANDLED = "__not_a_kind_any_binding_produces__";
  */
 const FALLBACK_IS_CORRECT: Record<string, string[]> = {
   // The fallback IS the message for these two.
-  Io: ["merge", "rotate", "reorder", "split", "compress"],
-  Internal: ["merge", "rotate", "reorder", "split", "compress"],
+  Io: ["merge", "rotate", "reorder", "split", "compress", "redact"],
+  Internal: ["merge", "rotate", "reorder", "split", "compress", "redact"],
   // `Error` is `#[non_exhaustive]`; "Unknown" is the conservative arm and has no sentence of
   // its own by design.
-  Unknown: ["merge", "rotate", "reorder", "split", "compress"],
+  Unknown: ["merge", "rotate", "reorder", "split", "compress", "redact"],
   // One input, so no input can be named. `merge` must handle it and does -- through the
   // INNER kind, which is why the probe below hands it one.
-  InputFailed: ["rotate", "reorder", "split", "compress"],
+  InputFailed: ["rotate", "reorder", "split", "compress", "redact"],
 };
 
 type Probe = { kind: string; innerKind?: string };
@@ -79,6 +80,8 @@ const PAGES = [
   { name: "reorder", messageFor: reorderMessage as (f: Probe) => { title: string } },
   { name: "split", messageFor: splitMessage as (f: Probe) => { title: string } },
   { name: "compress", messageFor: compressMessage as (f: Probe) => { title: string } },
+  // HELD (#136): the redaction page is built only into harness builds until S9.
+  { name: "redact", messageFor: redactMessage as (f: Probe) => { title: string } },
 ];
 
 /**
@@ -117,7 +120,7 @@ describe("the binding's error kinds", () => {
     // REPORTED AS WELL AS GATED: naming both sides means a mismatch says WHICH page is
     // unregistered rather than that two numbers differ.
     expect(PAGES.map((p) => p.name).sort()).toEqual(messageModulesOnDisk());
-    expect(PAGES).toHaveLength(5);
+    expect(PAGES).toHaveLength(6);
   });
 
   it("are all handled, on every page that can receive them", () => {
