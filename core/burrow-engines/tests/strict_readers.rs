@@ -945,3 +945,74 @@ fn an_embedded_program_under_a_standard_fourteen_name_refuses() {
         ),
     );
 }
+
+/// #180: a font part PDFium reads through a stream's dictionary, where qpdf answers null for every
+/// key of a stream. Each refuses by name; its dictionary twin redacts. Outcome only, as above: the
+/// ink these fonts draw without a program is not measured here.
+#[test]
+fn a_font_part_written_as_a_stream_refuses_and_the_dictionary_redacts() {
+    let cid = |descendant: &[u8], extra: &[&[u8]]| -> Vec<u8> {
+        let mut objects: Vec<&[u8]> = vec![
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /Helvetica /Encoding /Identity-H \
+              /DescendantFonts [6 0 R] >>",
+            descendant,
+        ];
+        objects.extend_from_slice(extra);
+        document(
+            "/Font << /F2 5 0 R >>",
+            b"BT /F2 20 Tf 110 260 Td <000100020003000400050006> Tj ET",
+            &objects,
+        )
+    };
+    const CID_FONT: &str = "/Type /Font /Subtype /CIDFontType2 /BaseFont /Helvetica \
+                            /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) \
+                            /Supplement 0 >> /DW 500";
+    // 1. THE DESCENDANT ITSELF A STREAM: `/DW` read as 1000 here, 500 by PDFium.
+    let stream_descendant = format!("<< {CID_FONT} /Length 0 >>\nstream\n\nendstream");
+    refuses_by(
+        "a descendant that is a stream",
+        &cid(stream_descendant.as_bytes(), &[]),
+        "descendant-fonts",
+    );
+    let dictionary_descendant = format!("<< {CID_FONT} >>");
+    redact(&cid(dictionary_descendant.as_bytes(), &[])).expect("a dictionary descendant redacts");
+
+    // 2. THE DESCENDANT'S `/FontDescriptor` A STREAM.
+    let with_descriptor = format!("<< {CID_FONT} /FontDescriptor 7 0 R >>");
+    refuses_by(
+        "a descendant /FontDescriptor that is a stream",
+        &cid(
+            with_descriptor.as_bytes(),
+            &[b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 /Length 0 >>\nstream\n\nendstream"],
+        ),
+        "width-source",
+    );
+    redact(&cid(
+        with_descriptor.as_bytes(),
+        &[b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 >>"],
+    ))
+    .expect("a dictionary descendant /FontDescriptor redacts");
+
+    // 3. A SIMPLE FONT'S `/Encoding` A STREAM.
+    let simple = |encoding: &[u8]| -> Vec<u8> {
+        document(
+            "/Font << /F1 5 0 R >>",
+            b"BT /F1 20 Tf 110 260 Td (SECRET) Tj ET",
+            &[
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 6 0 R >>",
+                encoding,
+            ],
+        )
+    };
+    refuses_by(
+        "a simple font /Encoding that is a stream",
+        &simple(
+            b"<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Length 0 >>\nstream\n\nendstream",
+        ),
+        "encoding-not-a-dictionary",
+    );
+    redact(&simple(
+        b"<< /Type /Encoding /BaseEncoding /WinAnsiEncoding >>",
+    ))
+    .expect("a dictionary /Encoding redacts");
+}
