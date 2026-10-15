@@ -13,7 +13,8 @@
 //!   advances live in the viewer, not the file. PDFium has them built in and burrow does not, so
 //!   the honest answer is a refusal rather than a guess — and a guess here misplaces every glyph
 //!   on the page by the difference between the guess and the truth.
-//! - **A code outside `/FirstChar`…`/LastChar`** has no width unless `/MissingWidth` is declared.
+//! - **A code outside `/FirstChar`…`/LastChar`** has no width unless `/MissingWidth` is declared,
+//!   and one past `/LastChar` that `/Widths` still gives a width refuses `[last-char]` (#182).
 //! - **A `/FontMatrix` that is not invertible**, a `/W` array that does not parse, a
 //!   `/DescendantFonts` that is empty.
 //!
@@ -45,6 +46,7 @@ const EXT_G_STATE: Name = Name::literal(b"/ExtGState\0");
 const LINE_WIDTH: Name = Name::literal(b"/LW\0");
 const MITER_LIMIT: Name = Name::literal(b"/ML\0");
 const FIRST_CHAR: Name = Name::literal(b"/FirstChar\0");
+const LAST_CHAR: Name = Name::literal(b"/LastChar\0");
 const WIDTHS: Name = Name::literal(b"/Widths\0");
 const FONT_MATRIX: Name = Name::literal(b"/FontMatrix\0");
 const FONT_BBOX: Name = Name::literal(b"/FontBBox\0");
@@ -93,6 +95,9 @@ pub(crate) struct PageResources<O> {
 #[derive(Debug)]
 struct FontFacts {
     first_char: i64,
+    /// `/LastChar`, where it is above 0 and ends `/Widths` early (#182); `None` otherwise, as
+    /// PDFium then reads the whole array. See [`past_last_char`].
+    last_char: Option<i64>,
     widths: Vec<f64>,
     missing_width: Option<f64>,
     font_matrix: Matrix,
@@ -456,6 +461,13 @@ impl<O: PdfObject> Resources for PageResources<O> {
 
     fn glyph(&self, name: &[u8], code: u32) -> Result<GlyphMetrics> {
         let facts = self.font_facts(name)?;
+        if past_last_char(&facts, code) {
+            return Err(Error::Malformed(
+                "pdf resources [last-char]: a code past the font's /LastChar that its /Widths \
+                 still gives a width, which a renderer does not use"
+                    .to_owned(),
+            ));
+        }
         let width = width_of(&facts, code).ok_or_else(|| {
             Error::Malformed(facts.no_metrics.clone().unwrap_or_else(|| {
                 "pdf resources [no-width]: a code the font declares no width for, and no \
@@ -512,6 +524,27 @@ impl<O: PdfObject> Resources for PageResources<O> {
     fn bytes_per_code(&self, name: &[u8]) -> Result<u8> {
         Ok(self.font_facts(name)?.bytes_per_code)
     }
+}
+
+/// Whether `code` is past a simple font's `/LastChar` while its `/Widths` still holds an entry for
+/// it (#182).
+///
+/// PDFium stops reading `/Widths` at `/LastChar` and gives a code past it `/MissingWidth`, or 0;
+/// [`width_of`] indexes the array from `/FirstChar` and would use the entry. Glyphs past
+/// `/LastChar` then sat where PDFium does not draw them: `Ok`, with the secret in the region,
+/// measured. **Refused rather than modelled** (DECISIONS rule 1): the code is refused, never
+/// re-measured with `/MissingWidth`, so no placement moves inside an output that was `Ok`. A code
+/// with no entry is untouched, and goes to `/MissingWidth` or `[no-width]` as before.
+fn past_last_char(facts: &FontFacts, code: u32) -> bool {
+    let Some(last_char) = facts.last_char else {
+        return false;
+    };
+    if facts.bytes_per_code > 1 || i64::from(code) <= last_char {
+        return false;
+    }
+    usize::try_from(i64::from(code) - facts.first_char)
+        .ok()
+        .is_some_and(|at| at < facts.widths.len())
 }
 
 /// The width for `code`, or `None` when neither the document nor the bundled tables have one.
@@ -707,6 +740,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
     let subtype = subtype_of(font)?;
     let mut facts = FontFacts {
         first_char: integer_or(&font.key(&FIRST_CHAR), 0)?,
+        last_char: None,
         widths: Vec::new(),
         missing_width: None,
         // 0.001 for every font but Type 3, which declares its own.
@@ -763,7 +797,7 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         ));
     }
     // `/Widths` READ ONLY TO CODE 255: the first `256 - /FirstChar` items, as PDFium reads no
-    // further. It also stops at `/LastChar`, which burrow does not read yet -- #182.
+    // further. It also stops at `/LastChar`: see below (#182).
     let codes_left = SIMPLE_FONT_CODES
         .saturating_sub(std::ffi::c_int::try_from(facts.first_char).unwrap_or(SIMPLE_FONT_CODES))
         .max(0);
@@ -775,6 +809,18 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         for width in &mut facts.widths {
             *width /= 10.0;
         }
+    }
+    // `/LastChar` ENDS `/Widths` FOR PDFIUM (#182): a code past it takes `/MissingWidth`, or 0, and
+    // never the array's entry for it. Above 0 only; at or below 0, or absent, PDFium reads the whole
+    // array, and so does this. Kept only where it ends the array early, which is the one place the
+    // two readings differ; `past_last_char` refuses a code there.
+    let last_char = integer_or(&font.key(&LAST_CHAR), 0)?;
+    let widths_end = facts
+        .first_char
+        .saturating_add(i64::try_from(facts.widths.len()).unwrap_or(i64::MAX))
+        .saturating_sub(1);
+    if last_char > 0 && last_char < widths_end {
+        facts.last_char = Some(last_char);
     }
 
     let descriptor = font.key(&FONT_DESCRIPTOR);
@@ -1270,8 +1316,8 @@ fn simple_width_in_range(width: f64) -> Result<()> {
 
 /// The codes a simple font has: one byte each. `/Widths` is read only to code 255 -- its first
 /// `256 - /FirstChar` items -- so a 65,536-item `/Widths` costs at most 256 reads, and an item for a
-/// code past 255 is never judged. PDFium also stops at `/LastChar`, which burrow does not read yet
-/// (#182).
+/// code past 255 is never judged. PDFium also stops at `/LastChar`, and a code past it refuses
+/// (`past_last_char`, #182).
 const SIMPLE_FONT_CODES: std::ffi::c_int = 256;
 
 /// The most items [`numbers_strict`] reads from one array. A simple font's `/Widths` has at most
