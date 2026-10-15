@@ -98,6 +98,11 @@ pub mod pdfsyntax;
 // whose every key-taking method takes one of these.
 pub(crate) mod name;
 pub mod redact;
+/// #206's second reading of a redacted page: the rules, over a `SecondReading` trait that names no
+/// engine. Natively PDFium implements it (`pdfium::read_back`). A build without the native engines
+/// -- the web today, and the mobile targets -- has no implementation yet, and its redaction runs
+/// `redact_verify` alone; the web's is #206's web half.
+pub mod redact_read_back;
 /// #134's read-back. Ungated since #191: it names no engine. It reads through its own
 /// `ClearedWitness` trait, which `redact::witness` implements over `redact::graph`, so the web
 /// engine verifies through it as the native one does (#191).

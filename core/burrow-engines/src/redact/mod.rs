@@ -529,6 +529,10 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
     let clock = Arc::clone(&options.clock);
     let limits = options.limits;
     let (document, deadline) = engine.open_for_redaction(bytes, options)?;
+    // THE PAGE COUNT THE SECOND READING HOLDS BOTH DOCUMENTS TO (#206, R4 and R5): qpdf's count of
+    // the input, read at the open the redaction edits, before any step runs.
+    #[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+    let promised_pages = graph::PdfDocument::page_count(&document)?;
     // THE PAGE BOUND IS THE CONSTRUCTOR'S, with the error that names the rule, and it is not
     // checked again here. `PdfDocument::page` checks it too since #191, with a different error,
     // and that one is what makes the lookup safe; it cannot mask this one, because the golden
@@ -584,7 +588,38 @@ pub(crate) fn redact_page<E: graph::OpensForRedaction + Clone>(
         // receives is now observable, which is the only way a test can say it was right.
         #[cfg(test)]
         hooks::record_expectation(&expected);
-        crate::redact_verify::region_is_cleared(&witness, emitted, &expected)
+        // NATIVELY, A SECOND READING AFTER BURROW'S OWN (#206). `region_is_cleared_twice` runs
+        // `region_is_cleared` first, so every refusal it makes stands, and then PDFium's reading
+        // of where the characters are and how many pages each document has, which can only add
+        // refusals. A build without the native engines has no second reading yet: the web's
+        // redaction worker holds no PDFium, and bringing one is #206's web half. (The web ENGINE
+        // in a native test build, `WebQpdf` over `NativeBridge`, does get one: this is the same
+        // body, and the gate is on the build, not on the engine.)
+        //
+        // The test-only skip is for the twins of older rules whose fixtures PDFium cannot open:
+        // with it, a twin still shows its own rule does not refuse; without it, the same input
+        // shows the second reading does. See `hooks::SECOND_READING_SKIPPED`.
+        #[cfg(all(
+            test,
+            feature = "native-engines",
+            burrow_native_engines,
+            target_os = "linux"
+        ))]
+        if hooks::second_reading_skipped() {
+            return crate::redact_verify::region_is_cleared(&witness, emitted, &expected);
+        }
+        #[cfg(all(feature = "native-engines", burrow_native_engines, target_os = "linux"))]
+        let verdict = crate::redact_read_back::region_is_cleared_twice(
+            &witness,
+            &crate::pdfium::read_back::PdfiumReading::over(options, deadline),
+            bytes,
+            emitted,
+            &expected,
+            promised_pages,
+        );
+        #[cfg(not(all(feature = "native-engines", burrow_native_engines, target_os = "linux")))]
+        let verdict = crate::redact_verify::region_is_cleared(&witness, emitted, &expected);
+        verdict
     };
     run_reporting(steps, redacted.clone(), &verify, &|report, paths| {
         *cut_fonts.borrow_mut() = paths.iter().cloned().collect();

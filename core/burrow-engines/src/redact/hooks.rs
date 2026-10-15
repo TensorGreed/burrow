@@ -65,3 +65,74 @@ pub(crate) fn narrowing_skipped() -> bool {
     }
     skip
 }
+
+// ---- #206: the second reading, and the placement defects it exists to catch -------------------
+
+// A PLACEMENT DEFECT, planted in the font reader rather than in the document.
+//
+// The second reading exists for a defect in PLACING a glyph, which burrow makes in both of its
+// passes -- the operation's and the read-back's -- so the two agree. No document produces one: a
+// correct reader places every glyph where PDFium does. So the defect is planted where it would be,
+// in the font facts both passes read, and both inherit it as a real one would: every simple font's
+// `/Widths` read as a tenth of what the file says. A fixture then draws plain, visible text whose
+// second glyph only the true width carries into the region; with the plant on, burrow removes
+// nothing and its own verification passes the output, and only the second reading can refuse.
+//
+// In the reader and not in the walk, because `pdfsyntax::geometry` holds itself to having no
+// test-only code above its tests (`nothing_above_the_tests_is_compiled_only_for_them_except_the_
+// recorder`). Counted, so a test can assert the plant applied.
+thread_local! {
+    pub(crate) static WIDTHS_MISREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static WIDTHS_MISREAD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether the font reader should misread `/Widths`, counting each time it does.
+pub(crate) fn widths_misread() -> bool {
+    let misread = WIDTHS_MISREAD.with(std::cell::Cell::get);
+    if misread {
+        WIDTHS_MISREAD_COUNT.with(|n| n.set(n.get() + 1));
+    }
+    misread
+}
+
+thread_local! {
+    /// Make the second reading fail outright, so a test can ask whether its error is a refusal.
+    pub(crate) static SECOND_READING_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Make the second reading read this page instead of the one it was asked about.
+    pub(crate) static SECOND_READING_PAGE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// How many times the second reading read a page, so a test can show it ran at all.
+    pub(crate) static SECOND_READINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Make qpdf lose the document's last page as it opens it for redaction: the reader losing a
+    /// page before the writer ever heard of it (#111), which no fixture can make qpdf do on demand.
+    pub(crate) static READER_DROPS_A_PAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Make qpdf drop the document's last page as it writes the redacted output.
+    pub(crate) static WRITER_DROPS_A_PAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
+    /// Run burrow's own verification alone, without the second reading. Only for a twin of an
+    /// OLDER rule whose fixture PDFium cannot open: without this, that twin would be refused by
+    /// the second reading and stop saying anything about its own rule. Every such twin also runs
+    /// without it and requires the second reading's refusal, so the skip hides nothing.
+    pub(crate) static SECOND_READING_SKIPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread's redactions verify without the second reading.
+pub(crate) fn second_reading_skipped() -> bool {
+    SECOND_READING_SKIPPED.with(std::cell::Cell::get)
+}
+
+/// Whether the second reading should fail, and the error it fails with.
+pub(crate) fn forced_second_reading_failure() -> Option<burrow_types::Error> {
+    SECOND_READING_FAILS
+        .with(std::cell::Cell::get)
+        .then(|| burrow_types::Error::Malformed("planted second-reading failure".to_owned()))
+}
+
+/// The page the second reading reads when asked for `page`. Counts the reading.
+pub(crate) fn second_reading_page(page: usize) -> usize {
+    SECOND_READINGS.with(|n| n.set(n.get() + 1));
+    SECOND_READING_PAGE
+        .with(std::cell::Cell::get)
+        .unwrap_or(page)
+}

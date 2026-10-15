@@ -1953,3 +1953,235 @@ mod propagation {
         );
     }
 }
+
+// #206: the second reading, wired into the operation that ships natively. The rules themselves are
+// held by a lying fake in `redact_read_back::tests`; these hold that `redact_page` asks PDFium at
+// all, that a disagreement it reports reaches the caller as a refusal, and that an honest document
+// still redacts.
+#[cfg(all(
+    test,
+    feature = "native-engines",
+    burrow_native_engines,
+    target_os = "linux"
+))]
+mod second_reading {
+    use super::super::Qpdf;
+    use crate::PageRedactor;
+    use crate::pdfsyntax::region::Region;
+    use crate::redact::hooks::{
+        READER_DROPS_A_PAGE, SECOND_READING_FAILS, SECOND_READING_PAGE, SECOND_READINGS,
+        WIDTHS_MISREAD, WIDTHS_MISREAD_COUNT, WRITER_DROPS_A_PAGE,
+    };
+    use burrow_types::{Error, Limits, SystemClock};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    /// A two-page document. Page 0 draws `content`; page 1 is blank. Plain, visible text in a
+    /// standard font: what each test plants is in the walk or the engine, never in the file.
+    fn document(content: &str) -> Vec<u8> {
+        let widths = "[556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 556 \
+                      556 556 556 556 556 556 556 556 556 556 556 556 556]";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Count 2 /Kids [3 0 R 6 0 R] >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_owned(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}endstream",
+                content.len()
+            ),
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding \
+                 /WinAnsiEncoding /FirstChar 32 /LastChar 94 /Widths {widths} >>"
+            ),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>".to_owned(),
+        ];
+        let mut out = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
+        }
+        let xref_at = out.len();
+        out.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in &offsets {
+            out.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        out.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        out.into_bytes()
+    }
+
+    /// Two glyphs at 100 pt from x = 10. The first is outside the region on any reading; the
+    /// second's origin is at 10 + 55.6 = 65.6, inside it, carried there by the first's width.
+    const CARRIED_BY_A_WIDTH: &str = "BT /F1 100 Tf 10 700 Td (KK) Tj ET\n";
+
+    /// Both glyphs where the content stream says, one inside the region and one outside.
+    const PLAIN: &str = "BT /F1 24 Tf 72 700 Td (K) Tj ET\nBT /F1 24 Tf 72 100 Td (S) Tj ET\n";
+
+    /// The region `[40, 540] x [632, 752]` in content space.
+    fn redact(content: &str) -> burrow_types::Result<Vec<u8>> {
+        let options = crate::OpenOptions::new(Limits::default(), Arc::new(SystemClock::new()));
+        let covered: BTreeSet<usize> = [0].into_iter().collect();
+        let region = Region {
+            left: 40.0,
+            top: 40.0,
+            width: 500.0,
+            height: 120.0,
+        };
+        Qpdf.redact_page(&document(content), 0, &covered, region, &options)
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Every hook off, and the counters zeroed, so one test's plant cannot reach the next.
+    fn reset() {
+        WIDTHS_MISREAD.with(|flag| flag.set(false));
+        WIDTHS_MISREAD_COUNT.with(|n| n.set(0));
+        SECOND_READING_FAILS.with(|flag| flag.set(false));
+        SECOND_READING_PAGE.with(|page| page.set(None));
+        SECOND_READINGS.with(|n| n.set(0));
+        READER_DROPS_A_PAGE.with(|flag| flag.set(false));
+        WRITER_DROPS_A_PAGE.with(|flag| flag.set(false));
+    }
+
+    fn readings() -> usize {
+        SECOND_READINGS.with(std::cell::Cell::get)
+    }
+
+    /// The bracketed rule a rejection names.
+    fn rule_of(result: burrow_types::Result<Vec<u8>>) -> String {
+        match result {
+            Ok(_) => "Ok".to_owned(),
+            Err(Error::OutputRejected(message)) => message
+                .rsplit('[')
+                .next()
+                .and_then(|rest| rest.split(']').next())
+                .map_or_else(|| format!("no rule in {message:?}"), str::to_owned),
+            Err(other) => format!("not a rejection: {other}"),
+        }
+    }
+
+    #[test]
+    fn an_honest_document_redacts_and_the_renderer_was_asked() {
+        reset();
+        let result = redact(PLAIN);
+        let asked = readings();
+        reset();
+        assert_eq!(rule_of(result), "Ok");
+        assert_eq!(
+            asked, 1,
+            "the second reading must run on every native redaction"
+        );
+    }
+
+    #[test]
+    fn r1_a_placement_defect_burrow_makes_twice_is_refused_by_the_renderer() {
+        // THE CASE THE SECOND READING EXISTS FOR. The font reader misreads `/Widths`, in both of
+        // burrow's passes, as a real placement defect would: the operation places the second
+        // glyph at x = 15.6, outside the region, removes nothing, and burrow's own verification
+        // agrees. Only PDFium puts it inside.
+        //
+        // TWIN FIRST: the same document with the reader correct redacts, so the refusal below is
+        // the defect's and not the document's.
+        reset();
+        let twin = redact(CARRIED_BY_A_WIDTH);
+        reset();
+        assert_eq!(rule_of(twin), "Ok", "the twin, with the reader correct");
+
+        WIDTHS_MISREAD.with(|flag| flag.set(true));
+        let planted = redact(CARRIED_BY_A_WIDTH);
+        let misread = WIDTHS_MISREAD_COUNT.with(std::cell::Cell::get);
+        let asked = readings();
+        reset();
+        assert!(
+            misread > 0,
+            "the planted defect did not apply: no font's widths were read"
+        );
+        assert_eq!(asked, 1, "the second reading ran");
+        assert_eq!(rule_of(planted), "second-reading-glyph-in-region");
+    }
+
+    /// `depth` nested `BMC` sequences around the plain page's text.
+    fn nested(depth: usize) -> String {
+        format!(
+            "{}{PLAIN}{}",
+            "/Span BMC\n".repeat(depth),
+            "EMC\n".repeat(depth)
+        )
+    }
+
+    #[test]
+    fn a_page_nested_past_the_ceiling_is_refused_before_pdfium_loads_it() {
+        let cap = crate::redact_read_back::MAX_MARKED_DEPTH;
+        // THE TWIN: nested exactly to the ceiling, read and redacted.
+        reset();
+        let twin = redact(&nested(cap));
+        let twin_read = readings();
+        reset();
+        assert_eq!(rule_of(twin), "Ok", "nested to the ceiling");
+        assert_eq!(twin_read, 1, "the page at the ceiling is read");
+
+        let past = redact(&nested(cap + 1));
+        let read = readings();
+        reset();
+        assert_eq!(rule_of(past), "second-reading-nesting");
+        assert_eq!(
+            read, 0,
+            "the page past the ceiling must never reach PDFium's page load"
+        );
+    }
+
+    #[test]
+    fn r4_an_output_short_of_a_page_is_refused() {
+        reset();
+        WRITER_DROPS_A_PAGE.with(|flag| flag.set(true));
+        let result = redact(PLAIN);
+        let applied = !WRITER_DROPS_A_PAGE.with(std::cell::Cell::get);
+        reset();
+        assert!(applied, "the writer never dropped the page");
+        assert_eq!(rule_of(result), "second-reading-page-count");
+    }
+
+    #[test]
+    fn r5_an_input_qpdf_reads_short_of_a_page_is_refused() {
+        // #111: qpdf loses a page as it reads, so the promise and qpdf's own reading of the output
+        // agree with each other. Only another engine's count of the input can refuse.
+        reset();
+        READER_DROPS_A_PAGE.with(|flag| flag.set(true));
+        let result = redact(PLAIN);
+        let applied = !READER_DROPS_A_PAGE.with(std::cell::Cell::get);
+        reset();
+        assert!(applied, "the reader never dropped the page");
+        assert_eq!(rule_of(result), "second-reading-input-page-count");
+    }
+
+    #[test]
+    fn a_reading_of_another_page_is_refused() {
+        reset();
+        SECOND_READING_PAGE.with(|page| page.set(Some(1)));
+        let result = redact(PLAIN);
+        let asked = readings();
+        reset();
+        assert_eq!(asked, 1);
+        assert_eq!(rule_of(result), "second-reading-wrong-page");
+    }
+
+    #[test]
+    fn a_failing_second_reading_stops_the_operation_returning_bytes() {
+        // KILLS: discarding `region_is_cleared_twice`'s result, or calling `region_is_cleared`
+        // alone. The honest run above is this test's twin.
+        reset();
+        SECOND_READING_FAILS.with(|flag| flag.set(true));
+        let result = redact(PLAIN);
+        reset();
+        assert_eq!(rule_of(result), "second-reading-unavailable");
+    }
+}

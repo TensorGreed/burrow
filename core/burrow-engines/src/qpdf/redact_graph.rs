@@ -54,6 +54,12 @@ impl PdfDocument for Document {
     }
 
     fn write(&self) -> Result<Vec<u8>> {
+        // #206's PAGE-COUNT HOOK: the writer drops a page, so qpdf's own reading of the output
+        // agrees with the output and only a second engine's count of it can refuse.
+        #[cfg(test)]
+        if crate::redact::hooks::WRITER_DROPS_A_PAGE.with(|once| once.replace(false)) {
+            extract::drop_last_page(self)?;
+        }
         // The document is its own source: redaction edits in place.
         extract::write_out(self, self, ObjectStreams::Preserve)
     }
@@ -188,6 +194,12 @@ impl OpensForRedaction for Qpdf {
         // `open_document` takes, which is when qpdf flattens -- and repairs -- the page tree.
         if document.repaired() {
             return Err(crate::redact::repaired_by_the_engine());
+        }
+        // #206's OTHER PAGE-COUNT HOOK: qpdf loses a page as it reads the input, before the
+        // writer ever hears of it (#111). One-shot, so the read-back's own open is untouched.
+        #[cfg(test)]
+        if crate::redact::hooks::READER_DROPS_A_PAGE.with(|once| once.replace(false)) {
+            extract::drop_last_page(&document)?;
         }
         Ok((document, deadline))
     }

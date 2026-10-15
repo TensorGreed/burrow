@@ -137,6 +137,22 @@ impl<E: OpensForRedaction + Clone> ClearedWitness for Witness<E> {
         glyphs_in(&content, &resources, &self.watch(read))
     }
 
+    fn glyphs_and_marked_depth_on(
+        &self,
+        read: &Self::Read,
+        page: usize,
+    ) -> Result<(Vec<Glyph>, usize)> {
+        read.deadline.checkpoint(self.clock.as_ref())?;
+        let handle = read.page(page)?;
+        let content = read.content(page)?;
+        let resources = PageResources::of(&handle)?;
+        crate::pdfsyntax::geometry::glyphs_and_marked_depth_in(
+            &content,
+            &resources,
+            &self.watch(read),
+        )
+    }
+
     fn orphaned_codes(
         &self,
         read: &Self::Read,

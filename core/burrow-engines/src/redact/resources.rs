@@ -751,6 +751,14 @@ fn read_font<O: PdfObject>(font: &O) -> Result<FontFacts> {
         .saturating_sub(std::ffi::c_int::try_from(facts.first_char).unwrap_or(SIMPLE_FONT_CODES))
         .max(0);
     facts.widths = numbers_strict_up_to(&font.key(&WIDTHS), codes_left)?.unwrap_or_default();
+    // #206's PLANTED PLACEMENT DEFECT: every width read as a tenth of what the file says, so the
+    // walk places each later glyph short of where PDFium does. See `redact::hooks::WIDTHS_MISREAD`.
+    #[cfg(test)]
+    if crate::redact::hooks::widths_misread() {
+        for width in &mut facts.widths {
+            *width /= 10.0;
+        }
+    }
 
     let descriptor = font.key(&FONT_DESCRIPTOR);
     // A `/FontDescriptor` THAT IS NOT A DICTIONARY REFUSES (#125's seventh security review): PDFium

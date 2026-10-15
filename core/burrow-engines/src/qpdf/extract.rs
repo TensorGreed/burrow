@@ -427,3 +427,29 @@ pub(super) fn write_out(
     // next write call or cleanup on this handle. Copied out immediately.
     Ok(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
 }
+
+/// Remove the document's last page, for #206's page-count hooks in `redact_graph`. Test support
+/// only. Here rather than there because this module already reaches `qpdf_remove_page`, and the
+/// set of modules that call the C API directly is held by `handle::tests`.
+#[cfg(test)]
+pub(super) fn drop_last_page(document: &Document) -> Result<()> {
+    let pages = usize::try_from(crate::redact::graph::PdfDocument::page_count(document)?)
+        .map_err(|_| Error::Internal("a page count that does not fit in usize".to_owned()))?;
+    let Some(last) = pages.checked_sub(1).filter(|last| *last > 0) else {
+        return Err(Error::Internal(
+            "the page-dropping hook needs a document of two pages or more".to_owned(),
+        ));
+    };
+    // SAFETY: `last` is below the page count read immediately above. Routes through `trap_errors`.
+    let page = unsafe { ObjectHandle::page(document, last) };
+    page.drained()?;
+    // SAFETY: `page` was just obtained from `document`, so it belongs to the document it is removed
+    // from. Routes through `trap_errors`.
+    let removed = unsafe { ffi::qpdf_remove_page(document.data, page.raw()) };
+    if ffi::has_errors(removed) {
+        return Err(Error::Internal(
+            "the page-dropping hook could not remove a page".to_owned(),
+        ));
+    }
+    page.drained()
+}

@@ -236,6 +236,134 @@ unsafe extern "C" {
     /// `FPDF_EXPORT void FPDF_CALLCONV FPDF_RenderPage_Close(FPDF_PAGE page)` —
     /// `fpdf_progressive.h:149`.
     fn FPDF_RenderPage_Close(page: FpdfPage);
+
+    // ---- fpdf_text.h: WHERE glyphs are, never WHAT they say (#206) ---------------------
+    //
+    // GEOMETRY ONLY, AND THE LIST IS CLOSED. These five answer where PDFium places each
+    // character: its pen origin, and whether PDFium invented it. The ink box
+    // (`FPDFText_GetCharBox`) is deliberately not declared until #344 (see
+    // `redact_read_back`'s R1). No
+    // function that returns a character's Unicode or a page's text is declared here or anywhere
+    // in this crate's shipped source -- `FPDFText_GetUnicode`, `FPDFText_GetText`,
+    // `FPDFText_GetBoundedText` and the rest -- because a reading that decodes through the
+    // font verifies the document's own claim about itself (spike 0006, channel 21). "A
+    // function that cannot be called cannot leak", the rule `codes/qpdf.rs` keeps for qpdf's
+    // error text. `redact_read_back::tests::no_text_reading_function_is_declared` holds it,
+    // with a probe per forbidden name.
+
+    /// `FPDF_EXPORT FPDF_TEXTPAGE FPDF_CALLCONV FPDFText_LoadPage(FPDF_PAGE page)` —
+    /// `fpdf_text.h:31`. Null on failure. Released with `FPDFText_ClosePage`.
+    fn FPDFText_LoadPage(page: FpdfPage) -> FpdfTextPage;
+
+    /// `FPDF_EXPORT void FPDF_CALLCONV FPDFText_ClosePage(FPDF_TEXTPAGE text_page)` —
+    /// `fpdf_text.h:42`.
+    fn FPDFText_ClosePage(text_page: FpdfTextPage);
+
+    /// `FPDF_EXPORT int FPDF_CALLCONV FPDFText_CountChars(FPDF_TEXTPAGE text_page)` —
+    /// `fpdf_text.h:60`. `-1` on error. Generated characters are counted.
+    fn FPDFText_CountChars(text_page: FpdfTextPage) -> c_int;
+
+    /// ```c
+    /// FPDF_EXPORT int FPDF_CALLCONV
+    /// FPDFText_IsGenerated(FPDF_TEXTPAGE text_page, int index);
+    /// ```
+    /// `fpdf_text.h:104-105`. 1 if PDFium generated the character, 0 if not, -1 on error.
+    fn FPDFText_IsGenerated(text_page: FpdfTextPage, index: c_int) -> c_int;
+
+    /// ```c
+    /// FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+    /// FPDFText_GetCharOrigin(FPDF_TEXTPAGE text_page, int index, double* x, double* y);
+    /// ```
+    /// `fpdf_text.h:342-346`. The pen position, in page space. Non-zero for success.
+    fn FPDFText_GetCharOrigin(
+        text_page: FpdfTextPage,
+        index: c_int,
+        x: *mut f64,
+        y: *mut f64,
+    ) -> c_int;
+}
+
+/// Opaque stand-in for PDFium's `struct fpdf_textpage_t__`. `fpdfview.h:90`.
+///
+/// Its own struct, for the reason [`FpdfPageOpaque`] is: an alias would make a text page and a
+/// page the same type, and passing one for the other would compile.
+#[repr(C)]
+pub(crate) struct FpdfTextPageOpaque {
+    _data: [u8; 0],
+    _marker: PhantomData<(*mut u8, PhantomPinned)>,
+}
+
+/// `FPDF_TEXTPAGE`. Null means the text page could not be built.
+///
+/// Like a page handle, it never leaves the engine thread and never outlives its page.
+pub(crate) type FpdfTextPage = *mut FpdfTextPageOpaque;
+
+/// One character's placement as PDFium reads it: its origin, and whether it was generated.
+/// `None` where PDFium reported failure for either.
+pub(crate) struct CharPlacement {
+    /// `(x, y)`, page space.
+    pub(crate) origin: (f64, f64),
+    /// `FPDFText_IsGenerated` said 1.
+    pub(crate) generated: bool,
+}
+
+/// Build a page's text layer.
+///
+/// # Safety
+///
+/// Engine thread, with a live `page`. The result, if non-null, must be released with
+/// [`text_close_page`] before the page is closed.
+pub(crate) unsafe fn text_load_page(page: FpdfPage) -> FpdfTextPage {
+    // SAFETY: the caller guarantees the page is live and that this is the engine thread.
+    unsafe { FPDFText_LoadPage(page) }
+}
+
+/// Release a text page.
+///
+/// # Safety
+///
+/// Engine thread, exactly once per non-null [`text_load_page`] result, before its page closes.
+pub(crate) unsafe fn text_close_page(text_page: FpdfTextPage) {
+    // SAFETY: the caller guarantees single use, liveness, and the engine thread.
+    unsafe { FPDFText_ClosePage(text_page) }
+}
+
+/// How many characters the text page holds, generated ones included. Negative on error.
+///
+/// # Safety
+///
+/// Engine thread, with a live text page.
+pub(crate) unsafe fn text_count_chars(text_page: FpdfTextPage) -> c_int {
+    // SAFETY: the caller guarantees the text page is live and that this is the engine thread.
+    unsafe { FPDFText_CountChars(text_page) }
+}
+
+/// Character `index`'s placement, or `None` if PDFium reported failure for any part of it.
+///
+/// # Safety
+///
+/// Engine thread, with a live text page, and `index` in `0..text_count_chars(text_page)`.
+pub(crate) unsafe fn text_char_placement(
+    text_page: FpdfTextPage,
+    index: c_int,
+) -> Option<CharPlacement> {
+    let (mut x, mut y) = (0.0_f64, 0.0_f64);
+    // SAFETY: the caller guarantees the text page is live, `index` is in range and this is the
+    // engine thread. Every out-parameter points at a live, aligned local for the duration of the
+    // call, and none is read unless the call that writes it reported success.
+    let (generated, placed) = unsafe {
+        (
+            FPDFText_IsGenerated(text_page, index),
+            FPDFText_GetCharOrigin(text_page, index, &raw mut x, &raw mut y),
+        )
+    };
+    if generated < 0 || placed == 0 {
+        return None;
+    }
+    Some(CharPlacement {
+        origin: (x, y),
+        generated: generated == 1,
+    })
 }
 
 /// Initialise the library, and return `FPDF_GetLastError()` read immediately after.

@@ -1788,9 +1788,14 @@ fn the_read_back_reports_what_it_examined_rather_than_nothing() {
     let font = pdf.add(&format!(
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \
          /Widths {} /ToUnicode {to_unicode} 0 R \
-         /Encoding << /Type /Encoding /Differences [83 /Sacute 75 /Kcommaaccent] >> >>",
+         /Encoding << /Type /Encoding /Differences [83 /Sacute 75 /K] >> >>",
         support::pdf_builder::HELVETICA_WIDTHS
     ));
+    // THE KEPT CODE NAMES `/K`, A GLYPH THE SUBSTITUTED HELVETICA HAS. It named `/Kcommaaccent`,
+    // which PDFium's substitute does not carry, so PDFium placed no character at all on the
+    // redacted page, and since #206 that is the second reading's R2 refusing an `Ok` this test
+    // needs (measured: 0 characters for `/Kcommaaccent`, 1 for `/K`). The removed code keeps its
+    // non-standard name, so `/Differences` is still a mapping the check has to narrow.
     let content = pdf.stream(
         "",
         "BT /F1 24 Tf 72 700 Td (S) Tj ET\nBT /F1 24 Tf 72 300 Td (K) Tj ET\n",
@@ -1991,6 +1996,12 @@ fn a_region_over_a_forms_rendered_text_removes_it() {
 /// there, in `glyph_edits`, which rescanned every removal for every operation — 3.6e9
 /// comparisons. Grouping once gives 0.72 s.
 ///
+/// Since #206 every native redaction is read a second time, and a page nested past
+/// `redact_read_back::MAX_MARKED_DEPTH` is refused before PDFium loads it -- PDFium's page load
+/// grows with nesting depth. So the large cases now end in `[second-reading-nesting]`, after the
+/// walk and the rewrite have run in full, and the clock still measures those; the ceiling and the
+/// level just under it redact, and carry the report that shows the work was done.
+///
 /// So: 8k, 16k and 60k, and the bound is wall clock because that is what was wrong. The margin
 /// is wide (roughly 14x the measured 0.72 s) so an ordinary slow machine does not fail it, and a
 /// return to either quadratic is 15x to 150x over it. A tighter bound would be a flaky test; a
@@ -2037,13 +2048,13 @@ fn nested_carriers_over_many_removals_do_not_go_quadratic() {
     }
 
     const CEILING: std::time::Duration = std::time::Duration::from_secs(10);
-    for n in [8_000usize, 16_000, 60_000] {
-        let pdf = page(n);
-        let started = std::time::Instant::now();
-        let (_, report) = redact(&pdf).unwrap_or_else(|error| {
-            panic!("{n} nested carriers over {n} removals should redact: {error:?}")
+    let cap = burrow_engines::redact_read_back::MAX_MARKED_DEPTH;
+    // AT AND JUST UNDER THE SECOND READING'S NESTING CEILING (#206): these redact, and the work
+    // is witnessed by the report.
+    for n in [cap - 1, cap] {
+        let (_, report) = redact(&page(n)).unwrap_or_else(|error| {
+            panic!("{n} nested carriers, within the nesting ceiling, should redact: {error:?}")
         });
-        let took = started.elapsed();
         // AND THE WORK WAS ACTUALLY DONE. A walk that found nothing would be very fast and
         // would pass a timing bound while leaking every carrier it skipped.
         assert_eq!(
@@ -2051,6 +2062,25 @@ fn nested_carriers_over_many_removals_do_not_go_quadratic() {
             "{n} nested carriers: stripped {} of them",
             report.dropped_carried_text
         );
+    }
+    // PAST IT, the operation still walks and rewrites every carrier -- that is what the clock
+    // measures -- and the second reading then refuses the output by name before PDFium loads the
+    // page, whose load grows with nesting depth. One past the ceiling is the near-miss.
+    for n in [cap + 1, 8_000usize, 16_000, 60_000] {
+        let pdf = page(n);
+        let started = std::time::Instant::now();
+        let outcome = redact(&pdf);
+        let took = started.elapsed();
+        match outcome {
+            Err(burrow_types::Error::OutputRejected(message)) => assert!(
+                message.contains("[second-reading-nesting]"),
+                "{n} nested carriers: refused, but not by the nesting ceiling: {message}"
+            ),
+            other => panic!(
+                "{n} nested carriers must be refused by [second-reading-nesting]: {:?}",
+                other.map(|_| ())
+            ),
+        }
         assert!(
             took < CEILING,
             "{n} nested carriers over {n} removals took {took:?}, over the {CEILING:?} ceiling \
@@ -2213,7 +2243,11 @@ fn a_type_three_procedure_named_four_thousand_times_is_scanned_once() {
     let procs: String = (0..4_000).map(|i| format!("/a{i} {{2}} 0 R ")).collect();
     let pdf = page_with(
         "<< /Font << /F1 {0} 0 R /T3 {1} 0 R >> >>",
-        "BT /F1 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\nBT /T3 1 Tf 1 0 0 1 72 100 Tm (A) Tj ET\n",
+        // The Helvetica `K` outside the band is there for #206's R2: PDFium places no character for
+        // a Type 3 glyph whose procedure draws nothing, so without a glyph it does read, the
+        // second reading sees an empty page where burrow places one, and refuses.
+        "BT /F1 24 Tf 1 0 0 1 72 700 Tm (S) Tj ET\nBT /T3 1 Tf 1 0 0 1 72 100 Tm (A) Tj ET\n\
+         BT /F1 24 Tf 1 0 0 1 72 50 Tm (K) Tj ET\n",
         &[
             format!(
                 "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 94 \

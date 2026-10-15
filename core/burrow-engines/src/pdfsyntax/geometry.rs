@@ -3030,6 +3030,13 @@ struct Budget<'w> {
     /// [`ScopedFont`] resolves by. Shared, and rebuilt only at a `Do`, so a glyph costs a
     /// reference count rather than a copy of the route.
     route: Arc<[Vec<u8>]>,
+    /// How many marked-content sequences (`BDC`, `BMC`) are open, counted ACROSS forms: a form's
+    /// own marks are added to the ones open where it is drawn, which is never less than a
+    /// renderer's count for the same point. An unmatched `EMC` does not take it below zero.
+    marked_depth: usize,
+    /// The deepest [`Self::marked_depth`] reached anywhere in the walk. See
+    /// [`glyphs_and_marked_depth_in`] for who reads it.
+    deepest_mark: usize,
 }
 
 /// A Form XObject, resolved.
@@ -3414,7 +3421,26 @@ pub fn glyphs_in(
     resources: &dyn Resources,
     watch: &Watch<'_>,
 ) -> Result<Vec<Glyph>> {
-    Ok(glyphs_and_ink_in(content, resources, watch)?.0)
+    Ok(walk_page(content, resources, watch)?.0)
+}
+
+/// As [`glyphs_in`], with the deepest marked-content nesting the walk reached, forms included.
+///
+/// For #206's second reading, which loads the page in PDFium: PDFium's page load grows with
+/// nesting depth, so the reading is refused before the load above a ceiling
+/// (`redact_read_back::MAX_MARKED_DEPTH`). The count is a bound, not a model of PDFium's: see
+/// the walk's `marked_depth`.
+///
+/// # Errors
+///
+/// The same as [`glyphs_in`].
+pub fn glyphs_and_marked_depth_in(
+    content: &[u8],
+    resources: &dyn Resources,
+    watch: &Watch<'_>,
+) -> Result<(Vec<Glyph>, usize)> {
+    let (glyphs, _, deepest) = walk_page(content, resources, watch)?;
+    Ok((glyphs, deepest))
 }
 
 /// Walk a content stream and return both the glyphs it draws and the non-text-ink boxes it
@@ -3431,6 +3457,17 @@ pub fn glyphs_and_ink_in(
     resources: &dyn Resources,
     watch: &Watch<'_>,
 ) -> Result<(Vec<Glyph>, Vec<InkBox>)> {
+    let (glyphs, ink, _) = walk_page(content, resources, watch)?;
+    Ok((glyphs, ink))
+}
+
+/// The one walk of a page's content behind every entry above: glyphs, ink, and the deepest
+/// marked-content nesting.
+fn walk_page(
+    content: &[u8],
+    resources: &dyn Resources,
+    watch: &Watch<'_>,
+) -> Result<(Vec<Glyph>, Vec<InkBox>, usize)> {
     let mut out = Vec::new();
     let mut ink = Vec::new();
     let mut budget = Budget {
@@ -3439,6 +3476,8 @@ pub fn glyphs_and_ink_in(
         forms_drawn: 0,
         in_form: None,
         route: Arc::from(Vec::new()),
+        marked_depth: 0,
+        deepest_mark: 0,
     };
     walk(
         content,
@@ -3457,7 +3496,7 @@ pub fn glyphs_and_ink_in(
         &mut out,
         &mut ink,
     )?;
-    Ok((out, ink))
+    Ok((out, ink, budget.deepest_mark))
 }
 
 /// One numeric operand, refused rather than defaulted.
@@ -3966,6 +4005,13 @@ fn walk(
                 path_ctm = None;
                 path_ctm_shifted = false;
             }
+            // MARKED-CONTENT NESTING, counted for the second reading's ceiling and for nothing
+            // else: no glyph is placed or refused by it. (`BDC` naming `/OC` refused above.)
+            b"BDC" | b"BMC" => {
+                budget.marked_depth = budget.marked_depth.saturating_add(1);
+                budget.deepest_mark = budget.deepest_mark.max(budget.marked_depth);
+            }
+            b"EMC" => budget.marked_depth = budget.marked_depth.saturating_sub(1),
             _ => {}
         }
     }
