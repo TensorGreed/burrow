@@ -5338,8 +5338,8 @@ would have cost 3 of 99 documents and 130 of 4,824 census tiles.
 
 **Decided by the owner, as a new refusal.** A CMap program's writing mode is read with the
 content-stream lexer, which treats `BI` ... `ID` ... `EI` as a content stream does. No CMap program
-contains those words, and a CMap reader does not treat them so, so a program carrying any of them
-now refuses as `[writing-mode-undetermined]` rather than being read. Found by the nightly's
+contains those words, and a CMap reader does not treat them so, so a program in which the lexer
+reads any of them as a keyword now refuses as `[writing-mode-undetermined]` rather than being read. Found by the nightly's
 `pdfsyntax_cmap_wmode` oracle (#193).
 
 **Cost, measured** against `main`: **0 of 4,824** census tiles change outcome, and **0 of 282**
