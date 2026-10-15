@@ -1252,6 +1252,15 @@ fn program_writing_mode(program: &[u8]) -> Result<Option<WritingMode>> {
             // `/UniJIS-UCS2-V usecmap` INHERITS A VERTICAL MODE WITHOUT DECLARING ONE. An
             // embedded CMap that does this and states no `/WMode` of its own is vertical, and a
             // check that read only `/WMode` would pass it as horizontal.
+            // INLINE-IMAGE SYNTAX IN A CMAP PROGRAM refuses: no CMap program contains `BI`, `ID`
+            // or `EI`, and this lexer treats them as a content stream would, which a CMap reader
+            // does not (owner, 2026-10-14; #193).
+            super::lexer::Token::Keyword(word)
+                if matches!(word.as_slice(), b"BI" | b"ID" | b"EI") =>
+            {
+                return Refusal::UndeterminedWritingMode
+                    .refuse("a CMap program carrying inline-image syntax, which no CMap contains");
+            }
             super::lexer::Token::Keyword(word) if word == b"usecmap" => {
                 let Some(name) = previous_name.take() else {
                     return Refusal::UndeterminedWritingMode
@@ -5400,6 +5409,10 @@ mod tests {
                 (Content, || {
                     walk_cmap(None, b"/Identity-V usecmap /WMode 0 def")
                 }),
+                // Inline-image syntax, which no CMap program contains (#193).
+                (Content, || {
+                    walk_cmap(None, b"/CMapName /Plain-H def BI /W 1 /H 1 /BPC 8 /CS /G")
+                }),
             ],
             Refusal::MarkedContentPropertiesUnresolved => {
                 vec![(Entry("carried_text_edits"), || {
@@ -6623,6 +6636,42 @@ mod tests {
                 String::from_utf8_lossy(program)
             );
         }
+    }
+
+    #[test]
+    fn inline_image_syntax_in_a_cmap_program_is_refused() {
+        // NO CMAP CONTAINS `BI`, `ID` OR `EI` (owner, 2026-10-14; #193). A program carrying an
+        // inline-image block -- here a one-byte image of a plain byte, nothing else unusual --
+        // refuses; the same program without the block derives as it always did.
+        for program in [
+            b"/CMapName /Plain-H def BI /W 1 /H 1 /BPC 8 /CS /G ID A EI".as_slice(),
+            b"/CMapName /Plain-H def BI /W 1 /H 1 /BPC 8 /CS /G".as_slice(),
+            b"/CMapName /Plain-H def EI".as_slice(),
+        ] {
+            assert_refused_mode(
+                writing_mode_of(&CMap::Embedded {
+                    dictionary_wmode: None,
+                    program,
+                }),
+                Refusal::UndeterminedWritingMode,
+            );
+        }
+        // A LONE `ID` refuses too, earlier, in the lexer: no `BI` opened it.
+        assert!(
+            writing_mode_of(&CMap::Embedded {
+                dictionary_wmode: None,
+                program: b"/CMapName /Plain-H def ID A EI",
+            })
+            .is_err()
+        );
+        let twin = CMap::Embedded {
+            dictionary_wmode: None,
+            program: b"/CMapName /Plain-H def",
+        };
+        assert_eq!(
+            writing_mode_of(&twin).expect("derives"),
+            WritingMode::Horizontal
+        );
     }
 
     #[test]

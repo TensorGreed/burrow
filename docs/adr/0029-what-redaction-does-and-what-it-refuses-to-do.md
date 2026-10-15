@@ -5333,3 +5333,16 @@ other reader was measured.
 **Cost, measured** against `main`: **0 of 99** real documents and **0 of 182** fixtures change
 outcome; `tests/redaction/outcomes.tsv` regenerates unchanged. Refusing the catalog's keys too
 would have cost 3 of 99 documents and 130 of 4,824 census tiles.
+
+## Amendment, 2026-10-14 — inline-image syntax in a CMap program refuses
+
+**Decided by the owner, as a new refusal.** A CMap program's writing mode is read with the
+content-stream lexer, which treats `BI` ... `ID` ... `EI` as a content stream does. No CMap program
+contains those words, and a CMap reader does not treat them so, so a program in which the lexer
+reads `BI` or `EI` as a keyword now refuses as `[writing-mode-undetermined]` rather than being
+read; an `ID` refuses earlier, in the lexer, since no `BI` opened it. Found by the nightly's
+`pdfsyntax_cmap_wmode` oracle (#193).
+
+**Cost, measured** against `main`: **0 of 4,824** census tiles change outcome, and **0 of 282**
+inputs at open (99 real documents, 182 fixtures, `big_book.pdf`). `tests/redaction/outcomes.tsv`
+regenerates unchanged.
