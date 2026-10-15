@@ -2088,31 +2088,55 @@ def qpdf_cli() -> tuple[str | None, str]:
 # is stated rather than closed: the failure it allows is the loud `EADDRINUSE` this exists to avoid,
 # never a run against another tree's server.
 PLAYWRIGHT_PORTS = (4321, 4322, 4323)
-PLAYWRIGHT_LOCK = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / (
-    f"burrow-playwright-{os.getuid()}.lock"
-)
+# ONE FIXED PATH for every shell of this user: `XDG_RUNTIME_DIR` differs between a desktop session
+# and an ssh one, and two lock files are no lock (code review of the enabler).
+PLAYWRIGHT_LOCK = Path(tempfile.gettempdir()) / f"burrow-playwright-{os.getuid()}.lock"
 PLAYWRIGHT_LOCK_WAIT_S = 3600.0
+# THE PORTS GET THEIR OWN, SHORT LIMIT. Waiting an hour for a lock another sweep holds is right;
+# waiting an hour for a port held by a `pnpm dev` left running is not -- that used to fail at once,
+# on `EADDRINUSE`, and it should still fail fast, naming who holds the port.
+PLAYWRIGHT_PORT_WAIT_S = 120.0
 
 
 def port_in_use(port: int) -> bool:
-    """Whether something already listens on 127.0.0.1:`port` (a bind that fails)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            return True
+    """Whether something LISTENS on `port`, on 127.0.0.1 or the wildcard address.
+
+    `SO_REUSEADDR` on the probe, so a port whose last connection is in TIME_WAIT reads as free --
+    Playwright's server sets it too, and binds such a port -- while a socket that is listening still
+    refuses the bind on Linux.
+    """
+    for address in ("127.0.0.1", "0.0.0.0"):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((address, port))
+            except OSError:
+                return True
     return False
+
+
+def port_listener(port: int) -> str:
+    """Who listens on `port`, as `ss` reports it, for the message that names it."""
+    try:
+        listing = subprocess.run(
+            ["ss", "-ltnpH", f"sport = :{port}"], capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        listing = ""
+    return listing or "a listener `ss` did not name"
 
 
 def playwright_lock(
     wait_s: float = PLAYWRIGHT_LOCK_WAIT_S,
     path: Path | None = None,
     ports: tuple[int, ...] = PLAYWRIGHT_PORTS,
+    port_wait_s: float = PLAYWRIGHT_PORT_WAIT_S,
 ):
     """The machine-wide Playwright lock, held until the returned file is closed; None on timeout.
 
-    Taken only once `ports` are free too. The holder writes its checkout and pid into the file,
-    so a waiter can say what it waits for.
+    The holder writes its checkout and pid into the file AS SOON AS IT HOLDS IT, so a waiter can
+    say what it waits for even while the holder is still waiting on a port. Taken only once
+    `ports` are free too.
     """
     lock_path = path or PLAYWRIGHT_LOCK
     handle = open(lock_path, "a+")  # noqa: SIM115 -- held open for the job's duration
@@ -2132,22 +2156,25 @@ def playwright_lock(
                 handle.close()
                 return None
             time.sleep(2.0)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{REPO} (pid {os.getpid()})\n")
+    handle.flush()
+    ports_started = time.monotonic()
     busy_said = False
     while busy := [port for port in ports if port_in_use(port)]:
         if not busy_said:
             print(f"    holding the Playwright lock, waiting for port(s) {busy} to be released")
             busy_said = True
-        if time.monotonic() - started >= wait_s:
+        if time.monotonic() - ports_started >= port_wait_s:
+            for port in busy:
+                print(f"    port {port} is still in use after {port_wait_s:.0f}s: {port_listener(port)}")
             handle.close()
             return None
         time.sleep(2.0)
     waited = time.monotonic() - started
     if said or busy_said:
         print(f"    took the Playwright lock after {waited:.0f}s")
-    handle.seek(0)
-    handle.truncate()
-    handle.write(f"{REPO} (pid {os.getpid()})\n")
-    handle.flush()
     return handle
 
 
@@ -2162,8 +2189,9 @@ def run(job: dict, env: dict[str, str] | None = None) -> bool:
         if lock is None:
             print(
                 f"    FAIL  {job['name']}: the Playwright lock was not free within "
-                f"{PLAYWRIGHT_LOCK_WAIT_S:.0f}s, or its ports {list(PLAYWRIGHT_PORTS)} stayed bound, "
-                f"so this run would share them with another -- not run"
+                f"{PLAYWRIGHT_LOCK_WAIT_S:.0f}s, or its ports {list(PLAYWRIGHT_PORTS)} stayed bound "
+                f"for {PLAYWRIGHT_PORT_WAIT_S:.0f}s (named above), so this run would share them "
+                f"with another -- not run"
             )
             return False
     try:

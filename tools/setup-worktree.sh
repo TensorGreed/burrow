@@ -13,8 +13,14 @@
 #                      sweeps would measure it. A copy is 452 MB (2026-10-15) and cannot. Copied
 #                      stamps are still checked against THIS tree's inputs: a branch whose engine
 #                      pins differ refuses (`build-stamp.py check`), exactly as in the main checkout.
+#                      THE COPY IS CHECKED, not assumed: no symlink in it may resolve outside it (`cp
+#                      -a` keeps an absolute link, which would point back into the main checkout's
+#                      engines), no regular file may share an inode with the main checkout's (a `cp
+#                      -al` hardlink farm writes through), and its file count must equal the main
+#                      checkout's. Any of the three refuses, naming what it found.
 #   corpus/files       LINKED to the main checkout's, read-only by use: the corpus runner only reads
-#                      it. Stated rather than enforced.
+#                      it. Stated rather than enforced: `tools/corpus-fetch.sh` run in a set-up
+#                      worktree WOULD write through the link into the main checkout's corpus.
 #   apps/web           `pnpm install --frozen-lockfile`, from this tree's lockfile.
 #   bindings/pkg*      BUILT here (`ci-local.py --only wasm-pack`), so their stamps name this tree.
 #   tests/redaction/generated   GENERATED here (`tools/check-redaction-corpus.sh`), because the
@@ -80,10 +86,43 @@ if [ -d "$target/engines/vendor" ] && [ "$refresh" -eq 0 ]; then
 else
   rm -rf "$target/engines/vendor"
   cp -a "$main/engines/vendor" "$target/engines/vendor"
-  echo "  engines/vendor: copied, $(find "$target/engines/vendor" -type f | wc -l) file(s)"
 fi
 
+# THE COPY, VERIFIED -- fresh or kept. Each check names what it found and refuses.
+copy="$target/engines/vendor"
+outside=()
+while IFS= read -r -d '' link; do
+  resolved="$(readlink -f "$link" || true)"
+  case "$resolved" in
+    "$copy" | "$copy"/*) ;;
+    *) outside+=("${link#"$target"/} -> $(readlink "$link")") ;;
+  esac
+done < <(find "$copy" -type l -print0)
+if [ "${#outside[@]}" -ne 0 ]; then
+  echo "setup-worktree: ${#outside[@]} symlink(s) in the copied engines resolve OUTSIDE the copy, so this worktree would read or write another tree's engines through them:" >&2
+  printf '    %s\n' "${outside[@]}" >&2
+  echo "  They came from $main/engines/vendor. Removing them there is the owner's call; until then this refuses." >&2
+  exit 2
+fi
+shared="$(comm -12 <(find "$copy" -type f -printf '%D:%i\n' | sort -u) \
+                   <(find "$main/engines/vendor" -type f -printf '%D:%i\n' | sort -u) | wc -l)"
+if [ "$shared" -ne 0 ]; then
+  echo "setup-worktree: $shared file(s) in the copied engines share an inode with $main/engines/vendor -- a hardlink, not a copy, so a write here reaches the main checkout. Re-run with --refresh-engines." >&2
+  exit 2
+fi
+copied="$(find "$copy" -type f | wc -l)"
+original="$(find "$main/engines/vendor" -type f | wc -l)"
+if [ "$copied" -ne "$original" ]; then
+  echo "setup-worktree: the copied engines hold $copied file(s) and the main checkout's $original; re-run with --refresh-engines" >&2
+  exit 2
+fi
+echo "  engines/vendor: a copy, $copied of $original file(s), no link out of it, no inode shared with the main checkout"
+
 # 2. CORPUS, linked.
+if [ -L "$target/corpus/files" ] && [ ! -e "$target/corpus/files" ]; then
+  echo "setup-worktree: corpus/files links to $(readlink "$target/corpus/files"), which does not exist; remove the link and re-run" >&2
+  exit 2
+fi
 if [ -d "$main/corpus/files" ]; then
   if [ ! -e "$target/corpus/files" ]; then
     ln -s "$main/corpus/files" "$target/corpus/files"
