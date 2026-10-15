@@ -197,16 +197,16 @@ describe("the production build", () => {
   it('the held-list assertions FIRE — a planted /redact-pdf and a planted "redact" op are both caught', () => {
     // THE PROBE THAT MAKES THE HELD ENTRIES MEAN SOMETHING TODAY.
     //
-    // `/redact-pdf` does not exist, so the two assertions above pass over an absent page and an
-    // absent op name. That is the exact shape this repository keeps finding: a check that
-    // examines nothing reads as coverage. Without this, the held entries would be a promise
-    // that the assertions WOULD fire, tested the day somebody wrote the page — which is the
-    // wrong day to find out they do not.
+    // `/redact-pdf` is not in a production build, so the two assertions above pass over an
+    // absent page and an absent op name. That is the exact shape this repository keeps finding:
+    // a check that examines nothing reads as coverage. Without this, the held entries would be
+    // a promise that the assertions WOULD fire.
     //
     // So: plant a fake build, run THE SAME HELPERS the assertions run, and require offenders.
-    // The day the real page appears, that assertion trips unless #125, #180–#182 and #227–#229
-    // are closed and the entry
-    // removed deliberately — and this probe says the tripwire is live in the meantime.
+    // Since #136's S1 the page exists, held in `src/held/` and injected only into harness
+    // builds; the harness control below ("has the held /redact-pdf page in the harness build")
+    // runs the same route helper over the harness build and requires the page there, so this
+    // probe is no longer the only evidence that the predicate can see it.
     const planted = [
       "redact-pdf/index.html",
       "index.html",
@@ -506,6 +506,13 @@ describe("the production build", () => {
       "host/harness-driver.js",
     );
     expect(built).toContain("host/worker-host.js");
+  });
+
+  it("has the held /redact-pdf page in the harness build, so its absence above is the hold", () => {
+    // THE SAME HELPER the held-route assertion runs, over the other build. Without this, a
+    // `/redact-pdf` that was never built anywhere -- a broken injection, a moved entrypoint --
+    // would make "absent from production" true for the wrong reason (#136, S1).
+    expect(routesIn(walk(HARNESS_DIR), "redact-pdf")).toEqual(["redact-pdf/index.html"]);
   });
 
   it("ships no inline <style>, because the CSP would refuse it", () => {

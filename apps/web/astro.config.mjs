@@ -55,10 +55,20 @@ function harnessGating() {
         if (!included) {
           return;
         }
-        logger.warn("BURROW_HARNESS=1 -- /harness IS in this build. Do not deploy it.");
+        logger.warn(
+          "BURROW_HARNESS=1 -- /harness and the held /redact-pdf ARE in this build. Do not deploy it.",
+        );
         injectRoute({
           pattern: "/harness",
           entrypoint: "./src/harness/harness.astro",
+        });
+        // HELD, NOT TEST-ONLY (#136, slice S1). `/redact-pdf` is a real tool page kept off the
+        // site while its ship blockers are open (`docs/ROADMAP.md`), so it is built the way
+        // `/harness` is: outside `src/pages/`, injected only here. A production build never
+        // routes it, which `src/production-build.test.ts` asserts with this build as the control.
+        injectRoute({
+          pattern: "/redact-pdf",
+          entrypoint: "./src/held/redact-pdf.astro",
         });
       },
       "astro:build:done": async ({ dir }) => {
